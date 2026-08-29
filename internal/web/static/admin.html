@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin · Socrates</title>
+<link rel="icon" href="/favicon.svg">
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+<div class="admin-page">
+  <header class="admin-top">
+    <a class="btn sm" href="/">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      Chat
+    </a>
+    <div class="title">Admin</div>
+    <span id="savedHint" style="font-size:13px;color:var(--text-faint)"></span>
+    <button class="btn primary sm" id="saveTop">Save changes</button>
+  </header>
+
+  <div class="admin-wrap">
+    <div class="notice" id="notice"></div>
+
+    <section class="card">
+      <h2>OpenRouter</h2>
+      <p class="card-sub">Socrates itself runs entirely on OpenRouter. The key is stored in your local database.</p>
+      <div class="field">
+        <label for="orKey">API key</label>
+        <input class="input mono" type="password" id="orKey" placeholder="sk-or-v1-…" autocomplete="off">
+        <div class="hint">Create one at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a>.</div>
+      </div>
+      <div class="grid-2">
+        <div class="field">
+          <label for="orBase">API base URL</label>
+          <input class="input mono" type="text" id="orBase" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="orChat">Answering model</label>
+          <input class="input mono" type="text" id="orChat" list="modelList" spellcheck="false">
+          <div class="hint">Needs tool calling. Claude, GPT and Gemini models all work.</div>
+        </div>
+        <div class="field">
+          <label for="orTranscribe">Transcription model</label>
+          <input class="input mono" type="text" id="orTranscribe" list="modelList" spellcheck="false">
+          <div class="hint">Must accept audio input, for example google/gemini-2.5-flash.</div>
+        </div>
+        <div class="field">
+          <label for="orTitle">Title model</label>
+          <input class="input mono" type="text" id="orTitle" list="modelList" spellcheck="false">
+          <div class="hint">Small and cheap is enough — it only names chats.</div>
+        </div>
+      </div>
+      <datalist id="modelList"></datalist>
+      <button class="btn sm" id="loadModels" type="button">Load model list</button>
+    </section>
+
+    <section class="card">
+      <h2>Delegate agents</h2>
+      <p class="card-sub">Describe when each agent should be used. Socrates reads these descriptions and picks the right one for the job.</p>
+      <div id="agents"></div>
+      <button class="btn sm" id="addAgent" type="button">Add agent</button>
+    </section>
+
+    <section class="card">
+      <h2>Orchestration</h2>
+      <p class="card-sub">How the top level agent behaves.</p>
+      <div class="field">
+        <label for="systemPrompt">System prompt</label>
+        <textarea class="textarea" id="systemPrompt" rows="10" spellcheck="false"></textarea>
+        <div class="hint">The list of agents, the working directory and voice mode hints are appended automatically.</div>
+      </div>
+      <div class="grid-2">
+        <div class="field">
+          <label for="maxIterations">Maximum steps per message</label>
+          <input class="input" type="number" id="maxIterations" min="1" max="200">
+          <div class="hint">How often the agent may call itself before it has to answer.</div>
+        </div>
+        <div class="field">
+          <label for="temperature">Temperature</label>
+          <input class="input" type="number" id="temperature" min="0" max="2" step="0.1">
+        </div>
+      </div>
+      <div class="field">
+        <label for="workspaceRoot">Workspace root</label>
+        <input class="input mono" type="text" id="workspaceRoot" spellcheck="false">
+        <div class="hint">Every chat gets its own folder below this path. A chat can be pinned to another directory from the chat itself.</div>
+      </div>
+      <button class="btn sm" id="resetPrompt" type="button">Restore default prompt</button>
+    </section>
+
+    <section class="card">
+      <h2>Voice</h2>
+      <p class="card-sub">Speech input always runs through a model; speech output uses your browser unless you point it at an endpoint.</p>
+      <div class="grid-2">
+        <div class="field">
+          <label for="sttProvider">Speech to text</label>
+          <select class="select" id="sttProvider">
+            <option value="openrouter">OpenRouter audio model</option>
+            <option value="endpoint">OpenAI compatible endpoint</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="sttModel">Transcription model (endpoint)</label>
+          <input class="input mono" type="text" id="sttModel" placeholder="whisper-1" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="sttBase">Endpoint base URL</label>
+          <input class="input mono" type="text" id="sttBase" placeholder="https://api.openai.com/v1" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="sttKey">Endpoint API key</label>
+          <input class="input mono" type="password" id="sttKey" autocomplete="off" placeholder="leave empty to reuse the OpenRouter key">
+        </div>
+      </div>
+      <div class="field">
+        <label for="sttPrompt">Transcription instruction</label>
+        <input class="input" type="text" id="sttPrompt">
+        <div class="hint">Sent with the audio when the OpenRouter provider is used.</div>
+      </div>
+      <div class="divider" style="border-top:1px solid var(--line);margin:6px 0 20px"></div>
+      <div class="grid-2">
+        <div class="field">
+          <label for="ttsProvider">Text to speech</label>
+          <select class="select" id="ttsProvider">
+            <option value="browser">Browser speech synthesis</option>
+            <option value="endpoint">OpenAI compatible endpoint</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="ttsModel">Voice model</label>
+          <input class="input mono" type="text" id="ttsModel" placeholder="gpt-4o-mini-tts" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="ttsBase">Endpoint base URL</label>
+          <input class="input mono" type="text" id="ttsBase" placeholder="https://api.openai.com/v1" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="ttsKey">Endpoint API key</label>
+          <input class="input mono" type="password" id="ttsKey" autocomplete="off" placeholder="leave empty to reuse the OpenRouter key">
+        </div>
+        <div class="field">
+          <label for="ttsVoice">Voice</label>
+          <input class="input" type="text" id="ttsVoice" placeholder="alloy">
+        </div>
+        <div class="field">
+          <label for="ttsRate">Speaking rate</label>
+          <input class="input" type="number" id="ttsRate" min="0.5" max="2" step="0.1">
+        </div>
+      </div>
+      <div class="row" style="gap:22px;flex-wrap:wrap">
+        <label class="switch"><input type="checkbox" id="speakAuto"><span class="track"></span><span>Read answers in auto mode</span></label>
+        <label class="switch"><input type="checkbox" id="speakChat"><span class="track"></span><span>Read answers in normal chat</span></label>
+      </div>
+      <div class="row" style="margin-top:16px">
+        <button class="btn sm" id="testVoice" type="button">Test voice output</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Setup check</h2>
+      <p class="card-sub">Verifies the API key, the workspace and every enabled agent CLI.</p>
+      <button class="btn sm" id="runChecks" type="button">Run checks</button>
+      <div class="checks" id="checks"></div>
+    </section>
+
+    <section class="card">
+      <h2>Password</h2>
+      <p class="card-sub">Changing it signs out every other browser.</p>
+      <div class="grid-2">
+        <div class="field">
+          <label for="pwCurrent">Current password</label>
+          <input class="input" type="password" id="pwCurrent" autocomplete="current-password">
+        </div>
+        <div class="field">
+          <label for="pwNext">New password</label>
+          <input class="input" type="password" id="pwNext" autocomplete="new-password">
+        </div>
+      </div>
+      <button class="btn sm" id="changePw" type="button">Change password</button>
+    </section>
+
+    <div class="admin-foot">
+      <button class="btn primary" id="saveBottom">Save changes</button>
+      <span id="savedHint2" style="font-size:13px;color:var(--text-faint)"></span>
+      <span style="flex:1"></span>
+      <span style="font-size:12px;color:var(--text-faint)" id="versionLabel"></span>
+    </div>
+  </div>
+</div>
+<div class="toasts" id="toasts"></div>
+<script type="module" src="/static/js/admin.js"></script>
+</body>
+</html>

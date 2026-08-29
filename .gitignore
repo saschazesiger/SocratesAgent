@@ -1,0 +1,15 @@
+# build output
+/socrates
+/dist/
+*.exe
+
+# local data
+*.db
+*.db-shm
+*.db-wal
+/data/
+.env
+
+# editors and tooling
+.DS_Store
+node_modules/

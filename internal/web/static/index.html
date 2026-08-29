@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Socrates</title>
+<link rel="icon" href="/favicon.svg">
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar">
+    <div class="side-head">
+      <div class="brand">
+        <span class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none"/></svg></span>
+        Socrates
+      </div>
+      <button class="btn new-chat" id="newChat">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        New chat
+      </button>
+    </div>
+    <nav class="chat-list" id="chatList"></nav>
+    <div class="side-foot">
+      <a class="btn" href="/admin">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 9 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></svg>
+        Admin
+      </a>
+      <button class="btn" id="logout">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+        Sign out
+      </button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <button class="icon-btn menu-btn" id="menuBtn" aria-label="Menu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <div class="title" id="chatTitle">New chat</div>
+      <button class="icon-btn" id="chatSettings" title="Chat settings" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+      </button>
+      <button class="icon-btn" id="stopBtn" title="Stop the current run" hidden>
+        <svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>
+      </button>
+      <label class="switch auto-toggle" title="Hands free voice mode">
+        <span>Auto</span>
+        <input type="checkbox" id="autoToggle">
+        <span class="track"></span>
+      </label>
+    </header>
+
+    <div class="popover" id="chatPanel" hidden>
+      <div class="field">
+        <label for="panelTitle">Chat name</label>
+        <input class="input" type="text" id="panelTitle" placeholder="New chat">
+      </div>
+      <div class="field">
+        <label for="panelWorkspace">Working directory</label>
+        <input class="input mono" type="text" id="panelWorkspace" spellcheck="false">
+        <div class="hint">Where the delegate agents run. Leave empty to use this chat's own folder, or point it at a project on this machine.</div>
+      </div>
+      <div class="row" style="justify-content:flex-end">
+        <button class="btn sm" type="button" id="panelCancel">Cancel</button>
+        <button class="btn sm primary" type="button" id="panelSave">Save</button>
+      </div>
+    </div>
+
+    <div class="thread" id="thread">
+      <div class="thread-inner" id="threadInner"></div>
+    </div>
+
+    <div class="composer-wrap">
+      <form class="composer" id="composer">
+        <textarea id="input" rows="1" placeholder="Message Socrates…" autocomplete="off"></textarea>
+        <div class="actions">
+          <span class="rec-time" id="recTime" hidden>0:00</span>
+          <button type="button" class="round-btn" id="micBtn" title="Speak">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+          </button>
+          <button type="submit" class="round-btn send" id="sendBtn" title="Send" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+          </button>
+        </div>
+      </form>
+      <div class="composer-note">Socrates delegates to Claude Code, Codex and OpenCode on this machine.</div>
+    </div>
+
+    <section class="auto-screen" id="autoScreen">
+      <div class="auto-status" id="autoStatus">Tap the microphone and speak</div>
+      <div class="auto-timer" id="autoTimer" hidden>0:00</div>
+      <div class="auto-transcript" id="autoTranscript" hidden></div>
+      <button class="mic-big" id="autoMic" title="Start listening">
+        <svg id="autoMicIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+      </button>
+      <div class="auto-live" id="autoLive"></div>
+      <div class="auto-answer" id="autoAnswer" hidden></div>
+      <div class="auto-question" id="autoQuestion" hidden></div>
+      <div class="auto-actions" id="autoActions" hidden>
+        <button class="btn" id="autoReplay">Read again</button>
+        <button class="btn" id="autoDetails">Show details</button>
+      </div>
+    </section>
+  </main>
+</div>
+<div class="toasts" id="toasts"></div>
+<script type="module" src="/static/js/chat.js"></script>
+</body>
+</html>

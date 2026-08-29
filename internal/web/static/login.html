@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · Socrates</title>
+<link rel="icon" href="/favicon.svg">
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+<main class="auth">
+  <div class="auth-card">
+    <div class="auth-mark">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.2" fill="currentColor" stroke="none"/></svg>
+    </div>
+    <h1>Welcome back</h1>
+    <p class="sub">Enter your password to open Socrates.</p>
+    <form id="form">
+      <div class="field">
+        <label for="password">Password</label>
+        <input class="input" type="password" id="password" autocomplete="current-password" autofocus required>
+      </div>
+      <button class="btn primary" type="submit" id="submit">Sign in</button>
+    </form>
+    <div class="notice" id="notice"></div>
+  </div>
+</main>
+<script type="module">
+import { api } from '/static/js/api.js';
+const form = document.getElementById('form');
+const notice = document.getElementById('notice');
+const submit = document.getElementById('submit');
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  notice.className = 'notice';
+  submit.disabled = true;
+  submit.textContent = 'Signing in…';
+  try {
+    await api('/api/login', { method: 'POST', body: { password: document.getElementById('password').value } });
+    location.href = '/';
+  } catch (err) {
+    notice.className = 'notice error';
+    notice.textContent = err.message;
+    submit.disabled = false;
+    submit.textContent = 'Sign in';
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Set up · Socrates</title>
+<link rel="icon" href="/favicon.svg">
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+<main class="auth">
+  <div class="auth-card">
+    <div class="auth-mark">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.2" fill="currentColor" stroke="none"/></svg>
+    </div>
+    <h1>Set up Socrates</h1>
+    <p class="sub">Choose the password you will use to sign in. You can change everything else later in the admin dashboard.</p>
+    <form id="form">
+      <div class="field">
+        <label for="password">Password</label>
+        <input class="input" type="password" id="password" autocomplete="new-password" minlength="6" autofocus required>
+        <div class="hint">At least 6 characters. This is the only account.</div>
+      </div>
+      <div class="field">
+        <label for="repeat">Repeat password</label>
+        <input class="input" type="password" id="repeat" autocomplete="new-password" minlength="6" required>
+      </div>
+      <div class="divider"></div>
+      <div class="field">
+        <label for="key">OpenRouter API key <span style="font-weight:400;color:var(--text-faint)">· optional</span></label>
+        <input class="input mono" type="password" id="key" placeholder="sk-or-v1-…" autocomplete="off">
+        <div class="hint">Powers the agent and voice transcription. Get one at openrouter.ai/keys — you can also add it later.</div>
+      </div>
+      <button class="btn primary" type="submit" id="submit">Create workspace</button>
+    </form>
+    <div class="notice" id="notice"></div>
+  </div>
+</main>
+<script type="module">
+import { api } from '/static/js/api.js';
+const form = document.getElementById('form');
+const notice = document.getElementById('notice');
+const submit = document.getElementById('submit');
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  notice.className = 'notice';
+  const password = document.getElementById('password').value;
+  if (password !== document.getElementById('repeat').value) {
+    notice.className = 'notice error';
+    notice.textContent = 'The two passwords do not match.';
+    return;
+  }
+  submit.disabled = true;
+  submit.textContent = 'Setting up…';
+  try {
+    await api('/api/setup', { method: 'POST', body: { password, openrouter_key: document.getElementById('key').value.trim() } });
+    location.href = '/admin?welcome=1';
+  } catch (err) {
+    notice.className = 'notice error';
+    notice.textContent = err.message;
+    submit.disabled = false;
+    submit.textContent = 'Create workspace';
+  }
+});
+</script>
+</body>
+</html>
