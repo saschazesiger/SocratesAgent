@@ -38,8 +38,13 @@ voice.
 - **Auto mode.** One big microphone button, a timer, and the answer shown as
   large as it fits and read out loud. Options are spoken and can be answered by
   voice or by tapping.
+- **Reachable from anywhere, without opening a port.** A managed Cloudflare
+  tunnel publishes the local server on the internet — a throwaway
+  `trycloudflare.com` address in one click, or your own hostname with a tunnel
+  token. Start, stop and watch it from the dashboard.
 - **An admin dashboard for everything.** API key, models, agents, when each
-  agent should be used, prompts, voice, password, and a setup check.
+  agent should be used, prompts, voice, remote access, password, and a setup
+  check.
 - **Single binary.** Go plus embedded HTML/CSS/JS, SQLite for state, no build
   step, no CDN, no telemetry.
 
@@ -51,24 +56,30 @@ voice.
 ## How it works
 
 ```
-     browser
-        │  HTTP + Server Sent Events
-        ▼
-  ┌──────────────────────────────────────────┐
-  │  socrates (single Go binary)             │
-  │                                          │
-  │   web UI  ·  JSON API  ·  SQLite state   │
-  │                    │                     │
-  │            orchestration loop            │
-  │             │              │             │
-  └─────────────┼──────────────┼─────────────┘
-                │              │
-      OpenRouter│              │child processes
-   plan, answer,│              │
-     transcribe ▼              ▼
-                        claude -p --output-format stream-json
-                        codex exec --json
-                        opencode run --format json
+   browser on this machine          browser anywhere
+        │                                │
+        │ http://localhost:8080          │ https://your-hostname
+        │                                ▼
+        │                         Cloudflare edge
+        │                                │
+        │                                ▼
+        │                      cloudflared (child process)
+        ▼                                │
+  ┌─────────────────────────────────────────────────────┐
+  │  socrates (single Go binary)                        │
+  │                                                     │
+  │    web UI  ·  JSON API  ·  SSE  ·  SQLite state     │
+  │                        │                            │
+  │                orchestration loop                   │
+  │                 │              │                    │
+  └─────────────────┼──────────────┼────────────────────┘
+                    │              │
+          OpenRouter│              │child processes
+       plan, answer,│              │
+         transcribe ▼              ▼
+                            claude -p --output-format stream-json
+                            codex exec --json
+                            opencode run --format json
 ```
 
 The orchestrator has exactly two tools: `delegate_to_agent` and `ask_user`.
@@ -83,6 +94,8 @@ dashboard, so routing is configuration, not code.
   [`claude`](https://claude.com/claude-code),
   [`codex`](https://github.com/openai/codex),
   [`opencode`](https://opencode.ai).
+- **`cloudflared`** — optional, only if you want to reach Socrates from outside
+  your machine. See [Remote access](#remote-access).
 
 ## Install
 
@@ -112,7 +125,8 @@ Then open <http://localhost:8080>.
 ## First run
 
 1. `/setup` asks you for the password you will use from now on. You can paste
-   your OpenRouter key right away or add it later.
+   your OpenRouter key right away, and decide whether the instance should be
+   published through a Cloudflare tunnel — both can also be changed later.
 2. You land in the admin dashboard. Check the agents, press **Run checks** — it
    verifies your key, the workspace directory and every enabled agent CLI.
 3. Go back to the chat and ask for something.
@@ -172,11 +186,55 @@ work, and the finished answer shown as large as it fits and read out loud. If
 the agent needs a decision, the question and its options fill the screen and are
 spoken — you can tap an option or simply say "the second one".
 
+## Remote access
+
+Socrates always serves on its local address — that never changes, and it is the
+address you point Cloudflare at. On top of that it can run a
+[Cloudflare tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
+as a supervised child process, so the instance is reachable from the internet
+without opening a port, forwarding anything on your router, or owning a static
+IP.
+
+<p align="center">
+  <img src="docs/screenshot-tunnel.png" alt="The remote access card in the admin dashboard" width="760">
+</p>
+
+Install `cloudflared` first
+([downloads](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)),
+then pick one of two modes in **Admin → Remote access** (or right in the setup
+wizard):
+
+**Quick tunnel** — one click, no Cloudflare account. Cloudflare hands out a
+random `https://….trycloudflare.com` address, which Socrates shows as soon as it
+appears. The address changes on every restart, and anyone who has the link
+reaches your login page, so treat it as a temporary demo door.
+
+**Named tunnel** — your own hostname, your own Cloudflare account:
+
+1. Zero Trust → Networks → Tunnels → **Create a tunnel** → *Cloudflared*.
+2. Copy the token out of the install command it shows you and paste it into
+   Socrates.
+3. Add a public hostname for the tunnel and point it at the local address that
+   the admin dashboard displays (`http://localhost:8080` by default). This is
+   exactly why Socrates keeps serving locally.
+4. Enter the same hostname in Socrates so it can link you to it, then press
+   **Start tunnel**.
+
+The tunnel is supervised: it restarts with backoff if `cloudflared` dies, it
+comes back automatically when Socrates restarts, and it is shut down cleanly on
+exit. The token is passed through the environment, so it never shows up in the
+process list, and it is redacted from the log tail in the dashboard.
+
+> **Put Cloudflare Access in front of it.** A published Socrates is a password
+> away from a shell on your machine, because delegate agents run commands
+> unattended by default. Adding an Access policy (or switching the agents to
+> *Ask me in the web interface*) turns that from a risk into a setup.
+
 ## Configuration
 
 | Flag | Environment | Default | Meaning |
 | --- | --- | --- | --- |
-| `-addr` | `SOCRATES_ADDR` | `:8080` | listen address |
+| `-addr` | `SOCRATES_ADDR` | `127.0.0.1:8080` | listen address; use `:8080` to accept connections from the network |
 | `-data` | `SOCRATES_DATA_DIR` | `~/.socrates` | database and workspaces |
 | `-version` | | | print the version |
 | | `OPENROUTER_API_KEY` | | seeds the key on first start |
@@ -194,8 +252,10 @@ Socrates is built for a single trusted operator.
   that is `HttpOnly` and `SameSite=Lax`, and rate limited logins.
 - Delegated agents run **as the user that runs Socrates**, with auto approval by
   default. Treat access to the web interface as access to a shell.
-- Bind to `127.0.0.1` (or a private network) unless it is behind TLS and you
-  understand the above.
+- The default listen address is loopback only. Publish it with the Cloudflare
+  tunnel, or pass `-addr :8080` if you really want the port open.
+- Requests through a tunnel are rate limited per `CF-Connecting-IP`, and the
+  session cookie is marked `Secure` as soon as the request arrives over HTTPS.
 - The permission bridge only accepts requests carrying a token that is generated
   fresh at every start and never leaves the machine.
 
@@ -216,7 +276,9 @@ internal/openrouter      streaming chat completions, models, audio
 internal/backends        spawn the agent CLIs, normalise their event streams
 internal/agent           the orchestration loop, tools, event bus
 internal/server          HTTP API, auth, SSE, admin, voice
+internal/tunnel          supervised Cloudflare tunnel
 internal/bridge          MCP server for interactive permissions
+internal/proc            process group helpers shared by both
 internal/web/static      the whole front end: plain HTML, CSS and JS
 ```
 

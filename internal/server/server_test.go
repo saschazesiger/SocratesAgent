@@ -5,9 +5,12 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
@@ -224,5 +227,122 @@ func TestPasswordHashing(t *testing.T) {
 	}
 	if strings.Contains(hash, "correct") {
 		t.Error("hash leaks the password")
+	}
+}
+
+// fakeCloudflared writes a stand-in binary that answers --version and then
+// idles, so the tunnel endpoints can be exercised without the real thing.
+func fakeCloudflared(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a POSIX shell")
+	}
+	path := filepath.Join(t.TempDir(), "cloudflared")
+	script := "#!/bin/sh\n" +
+		"case \"$1\" in --version) echo \"cloudflared version 2026.1.0\"; exit 0;; esac\n" +
+		"echo \"|  https://socrates-test.trycloudflare.com  |\" >&2\n" +
+		"sleep 20\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestTunnelEndpoints(t *testing.T) {
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+
+	res, _ := env.do(t, env.anon, "GET", "/api/tunnel", "")
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("the tunnel API must require a session, got %d", res.StatusCode)
+	}
+
+	_, data := env.do(t, env.client, "GET", "/api/tunnel", "")
+	status := data["status"].(map[string]any)
+	if status["state"] != "stopped" {
+		t.Fatalf("a fresh install should have no tunnel: %#v", status)
+	}
+	if data["install"] == nil {
+		t.Error("install hints are missing")
+	}
+
+	res, _ = env.do(t, env.client, "POST", "/api/tunnel/start", `{"tunnel":{"mode":"token","token":""}}`)
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a named tunnel without a token should be rejected, got %d", res.StatusCode)
+	}
+
+	binary := fakeCloudflared(t)
+	body := `{"tunnel":{"mode":"quick","command":"` + binary + `"}}`
+	res, started := env.do(t, env.client, "POST", "/api/tunnel/start", body)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("start failed: %d", res.StatusCode)
+	}
+	if started["tunnel"].(map[string]any)["enabled"] != true {
+		t.Fatalf("the tunnel should be marked enabled: %#v", started["tunnel"])
+	}
+
+	// the public URL shows up once cloudflared prints it
+	var url string
+	for i := 0; i < 60; i++ {
+		_, polled := env.do(t, env.client, "GET", "/api/tunnel", "")
+		if s, ok := polled["status"].(map[string]any); ok {
+			if v, _ := s["url"].(string); v != "" {
+				url = v
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if url != "https://socrates-test.trycloudflare.com" {
+		t.Fatalf("public url = %q", url)
+	}
+
+	res, stopped := env.do(t, env.client, "POST", "/api/tunnel/stop", `{}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("stop failed: %d", res.StatusCode)
+	}
+	if stopped["tunnel"].(map[string]any)["enabled"] != false {
+		t.Fatalf("stop should disable the tunnel: %#v", stopped["tunnel"])
+	}
+}
+
+func TestSetupAcceptsTunnelConfiguration(t *testing.T) {
+	env := newEnv(t)
+	binary := fakeCloudflared(t)
+	body := `{"password":"a-good-password","tunnel":{"enabled":true,"mode":"quick","command":"` + binary + `"}}`
+	res, data := env.do(t, env.client, "POST", "/api/setup", body)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("setup failed: %d", res.StatusCode)
+	}
+	if data["tunnel_error"] != "" {
+		t.Fatalf("the tunnel should have started: %v", data["tunnel_error"])
+	}
+	_, settings := env.do(t, env.client, "GET", "/api/settings", "")
+	tunnelCfg := settings["settings"].(map[string]any)["tunnel"].(map[string]any)
+	if tunnelCfg["enabled"] != true || tunnelCfg["mode"] != "quick" {
+		t.Fatalf("tunnel settings were not stored: %#v", tunnelCfg)
+	}
+	env.do(t, env.client, "POST", "/api/tunnel/stop", `{}`)
+}
+
+func TestStateExposesCloudflaredDuringSetup(t *testing.T) {
+	env := newEnv(t)
+	_, state := env.do(t, env.client, "GET", "/api/state", "")
+	if state["cloudflared"] == nil {
+		t.Fatal("the setup wizard needs to know whether cloudflared is installed")
+	}
+}
+
+func TestClientIPPrefersCloudflareHeader(t *testing.T) {
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "10.0.0.1:1234"
+	req.Header.Set("X-Forwarded-For", "203.0.113.9")
+	req.Header.Set("CF-Connecting-IP", "198.51.100.7")
+	if got := clientIP(req); got != "198.51.100.7" {
+		t.Fatalf("clientIP = %q", got)
+	}
+	req.Header.Del("CF-Connecting-IP")
+	if got := clientIP(req); got != "203.0.113.9" {
+		t.Fatalf("clientIP = %q", got)
 	}
 }

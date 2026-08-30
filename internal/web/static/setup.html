@@ -31,6 +31,27 @@
         <input class="input mono" type="password" id="key" placeholder="sk-or-v1-…" autocomplete="off">
         <div class="hint">Powers the agent and voice transcription. Get one at openrouter.ai/keys — you can also add it later.</div>
       </div>
+      <div class="divider"></div>
+      <div class="field">
+        <label for="tunnelMode">Reach it from outside <span style="font-weight:400;color:var(--text-faint)">· optional</span></label>
+        <select class="select" id="tunnelMode">
+          <option value="off">Local only — http://localhost:8080</option>
+          <option value="quick">Cloudflare quick tunnel — instant public URL</option>
+          <option value="token">Cloudflare named tunnel — your own hostname</option>
+        </select>
+        <div class="hint" id="tunnelHint">Socrates always keeps serving locally, so you can change this later in the admin dashboard.</div>
+      </div>
+      <div id="tunnelNamed" hidden>
+        <div class="field">
+          <label for="tunnelToken">Tunnel token</label>
+          <input class="input mono" type="password" id="tunnelToken" autocomplete="off" placeholder="eyJhIjoi…">
+          <div class="hint">Cloudflare Zero Trust → Networks → Tunnels → Install connector. Point the tunnel's public hostname at <code class="local-url">http://localhost:8080</code>.</div>
+        </div>
+        <div class="field">
+          <label for="tunnelHostname">Public hostname</label>
+          <input class="input mono" type="text" id="tunnelHostname" placeholder="socrates.example.com" spellcheck="false">
+        </div>
+      </div>
       <button class="btn primary" type="submit" id="submit">Create workspace</button>
     </form>
     <div class="notice" id="notice"></div>
@@ -41,6 +62,36 @@ import { api } from '/static/js/api.js';
 const form = document.getElementById('form');
 const notice = document.getElementById('notice');
 const submit = document.getElementById('submit');
+const mode = document.getElementById('tunnelMode');
+const named = document.getElementById('tunnelNamed');
+const hint = document.getElementById('tunnelHint');
+
+let cloudflared = { installed: false, version: '' };
+let localURL = 'http://localhost:8080';
+api('/api/state').then((state) => {
+  cloudflared = (state && state.cloudflared) || cloudflared;
+  if (state && state.local_url) localURL = state.local_url;
+  document.querySelectorAll('.local-url').forEach((node) => { node.textContent = localURL; });
+  renderTunnel();
+}).catch(() => {});
+
+mode.addEventListener('change', renderTunnel);
+
+function renderTunnel() {
+  named.hidden = mode.value !== 'token';
+  if (mode.value === 'off') {
+    hint.textContent = 'Socrates always keeps serving locally, so you can turn this on later in the admin dashboard.';
+    return;
+  }
+  if (!cloudflared.installed) {
+    hint.innerHTML = 'This needs the <code>cloudflared</code> binary, which was not found on this machine. ' +
+      'You can install it later and start the tunnel from the admin dashboard.';
+    return;
+  }
+  hint.textContent = mode.value === 'quick'
+    ? 'A random trycloudflare.com address is created at startup. Handy for a quick test, but anyone with the link reaches your login page.'
+    : 'Your own hostname through your Cloudflare account. Point the tunnel at ' + localURL + '.';
+}
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
   notice.className = 'notice';
@@ -53,7 +104,23 @@ form.addEventListener('submit', async (e) => {
   submit.disabled = true;
   submit.textContent = 'Setting up…';
   try {
-    await api('/api/setup', { method: 'POST', body: { password, openrouter_key: document.getElementById('key').value.trim() } });
+    const body = { password, openrouter_key: document.getElementById('key').value.trim() };
+    if (mode.value !== 'off') {
+      body.tunnel = {
+        enabled: true,
+        mode: mode.value,
+        token: document.getElementById('tunnelToken').value.trim(),
+        hostname: document.getElementById('tunnelHostname').value.trim(),
+        command: 'cloudflared',
+      };
+      if (mode.value === 'token' && !body.tunnel.token) {
+        throw new Error('A named tunnel needs its tunnel token.');
+      }
+    }
+    const result = await api('/api/setup', { method: 'POST', body });
+    if (result && result.tunnel_error) {
+      sessionStorage.setItem('socrates.tunnel_error', result.tunnel_error);
+    }
     location.href = '/admin?welcome=1';
   } catch (err) {
     notice.className = 'notice error';

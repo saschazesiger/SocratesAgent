@@ -15,7 +15,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
+	"github.com/saschazesiger/SocratesAgent/internal/tunnel"
 )
 
 const (
@@ -118,6 +120,11 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request) error {
 }
 
 func clientIP(r *http.Request) string {
+	// Cloudflare puts the real caller here; it is the value to rate limit on
+	// when Socrates is published through a tunnel.
+	if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
+		return cf
+	}
 	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
 		return strings.TrimSpace(strings.SplitN(fwd, ",", 2)[0])
 	}
@@ -167,11 +174,18 @@ func (s *Server) noteLogin(ip string, ok bool) {
 // ---------------------------------------------------------------- handlers
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"setup_required": !s.hasPassword(),
+	setupRequired := !s.hasPassword()
+	payload := map[string]any{
+		"setup_required": setupRequired,
 		"authenticated":  s.authenticated(r),
 		"version":        Version,
-	})
+	}
+	if setupRequired || s.authenticated(r) {
+		installed, version := tunnel.Probe(s.Settings().Tunnel.Command)
+		payload["cloudflared"] = map[string]any{"installed": installed, "version": version}
+		payload["local_url"] = s.LocalURL()
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
@@ -184,9 +198,10 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Password      string `json:"password"`
-		OpenRouterKey string `json:"openrouter_key"`
-		ChatModel     string `json:"chat_model"`
+		Password      string                 `json:"password"`
+		OpenRouterKey string                 `json:"openrouter_key"`
+		ChatModel     string                 `json:"chat_model"`
+		Tunnel        *config.TunnelSettings `json:"tunnel"`
 	}
 	if !readJSON(w, r, &body) {
 		return
@@ -204,14 +219,21 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if strings.TrimSpace(body.OpenRouterKey) != "" || strings.TrimSpace(body.ChatModel) != "" {
-		settings := s.Settings()
-		if v := strings.TrimSpace(body.OpenRouterKey); v != "" {
-			settings.OpenRouter.APIKey = v
-		}
-		if v := strings.TrimSpace(body.ChatModel); v != "" {
-			settings.OpenRouter.ChatModel = v
-		}
+	settings := s.Settings()
+	changed := false
+	if v := strings.TrimSpace(body.OpenRouterKey); v != "" {
+		settings.OpenRouter.APIKey = v
+		changed = true
+	}
+	if v := strings.TrimSpace(body.ChatModel); v != "" {
+		settings.OpenRouter.ChatModel = v
+		changed = true
+	}
+	if body.Tunnel != nil {
+		settings.Tunnel = *body.Tunnel
+		changed = true
+	}
+	if changed {
 		if err := s.saveSettings(settings); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -221,7 +243,16 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+
+	// A tunnel requested during setup starts right away, so the operator sees
+	// the public URL on the very next screen.
+	tunnelErr := ""
+	if s.Settings().Tunnel.Enabled && !s.tunnel.Running() {
+		if err := s.tunnel.Start(); err != nil {
+			tunnelErr = err.Error()
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tunnel_error": tunnelErr})
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {

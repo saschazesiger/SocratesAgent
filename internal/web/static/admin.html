@@ -21,6 +21,7 @@
 
   <div class="admin-wrap">
     <div class="notice" id="notice"></div>
+    <div class="warning-box" id="warning" hidden></div>
 
     <section class="card">
       <h2>OpenRouter</h2>
@@ -155,6 +156,52 @@
       <div class="row" style="margin-top:16px">
         <button class="btn sm" id="testVoice" type="button">Test voice output</button>
       </div>
+    </section>
+
+    <section class="card">
+      <h2>Remote access</h2>
+      <p class="card-sub">Publish Socrates on the internet through a Cloudflare tunnel — no open port, no router configuration. It keeps serving on its local address either way, which is the address you point Cloudflare at.</p>
+
+      <div class="tunnel-status" id="tunnelStatus">
+        <span class="state-dot"></span>
+        <span class="state-label">Loading…</span>
+      </div>
+
+      <div class="grid-2">
+        <div class="field">
+          <label for="tunnelMode">Tunnel type</label>
+          <select class="select" id="tunnelMode">
+            <option value="quick">Quick tunnel — instant, random trycloudflare.com address</option>
+            <option value="token">Named tunnel — your own hostname, needs a token</option>
+          </select>
+          <div class="hint" id="tunnelModeHint"></div>
+        </div>
+        <div class="field">
+          <label for="tunnelHostname">Public hostname</label>
+          <input class="input mono" type="text" id="tunnelHostname" placeholder="socrates.example.com" spellcheck="false">
+          <div class="hint">The hostname you mapped to this tunnel in the Cloudflare dashboard.</div>
+        </div>
+        <div class="field">
+          <label for="tunnelToken">Tunnel token</label>
+          <input class="input mono" type="password" id="tunnelToken" autocomplete="off" placeholder="eyJhIjoi…">
+          <div class="hint">Zero Trust → Networks → Tunnels → your tunnel → Install connector. Copy the token out of the shown command.</div>
+        </div>
+        <div class="field">
+          <label for="tunnelCommand">cloudflared path</label>
+          <input class="input mono" type="text" id="tunnelCommand" placeholder="cloudflared" spellcheck="false">
+          <div class="hint" id="tunnelInstallHint"></div>
+        </div>
+      </div>
+      <div class="field">
+        <label for="tunnelArgs">Extra arguments</label>
+        <input class="input mono" type="text" id="tunnelArgs" placeholder="--loglevel debug" spellcheck="false">
+      </div>
+      <div class="row" style="flex-wrap:wrap">
+        <button class="btn sm primary" id="tunnelStart" type="button">Start tunnel</button>
+        <button class="btn sm" id="tunnelStop" type="button">Stop tunnel</button>
+        <button class="btn sm ghost" id="tunnelLogToggle" type="button">Show log</button>
+      </div>
+      <pre class="log" id="tunnelLog" hidden></pre>
     </section>
 
     <section class="card">

@@ -44,7 +44,25 @@ type Settings struct {
 	OpenRouter OpenRouterSettings `json:"openrouter"`
 	Voice      VoiceSettings      `json:"voice"`
 	Agent      AgentSettings      `json:"agent"`
+	Tunnel     TunnelSettings     `json:"tunnel"`
 	Backends   []Backend          `json:"backends"`
+}
+
+// Tunnel modes.
+const (
+	TunnelQuick = "quick" // free *.trycloudflare.com URL, no account needed
+	TunnelToken = "token" // named tunnel, driven by a Zero Trust tunnel token
+)
+
+// TunnelSettings configures the managed Cloudflare tunnel. Socrates keeps
+// listening locally either way; the tunnel simply publishes that local address.
+type TunnelSettings struct {
+	Enabled   bool     `json:"enabled"`
+	Mode      string   `json:"mode"`
+	Token     string   `json:"token"`
+	Hostname  string   `json:"hostname"`
+	Command   string   `json:"command"`
+	ExtraArgs []string `json:"extra_args"`
 }
 
 // OpenRouterSettings configures access to the OpenRouter API, which powers the
@@ -187,6 +205,11 @@ func Default() Settings {
 			Temperature:   0.3,
 			WorkspaceRoot: DefaultWorkspaceRoot(),
 		},
+		Tunnel: TunnelSettings{
+			Enabled: false,
+			Mode:    TunnelQuick,
+			Command: "cloudflared",
+		},
 		Backends: DefaultBackends(),
 	}
 	return s
@@ -237,6 +260,20 @@ func (s *Settings) Normalize() {
 	}
 	if strings.TrimSpace(s.Agent.WorkspaceRoot) == "" {
 		s.Agent.WorkspaceRoot = d.Agent.WorkspaceRoot
+	}
+	if s.Tunnel.Mode != TunnelToken {
+		s.Tunnel.Mode = TunnelQuick
+	}
+	if strings.TrimSpace(s.Tunnel.Command) == "" {
+		s.Tunnel.Command = d.Tunnel.Command
+	}
+	s.Tunnel.Token = strings.TrimSpace(s.Tunnel.Token)
+	s.Tunnel.Hostname = strings.TrimSpace(strings.TrimPrefix(
+		strings.TrimPrefix(s.Tunnel.Hostname, "https://"), "http://"))
+	s.Tunnel.Hostname = strings.TrimSuffix(s.Tunnel.Hostname, "/")
+	if s.Tunnel.Mode == TunnelToken && s.Tunnel.Token == "" {
+		// A named tunnel without its token can never connect.
+		s.Tunnel.Enabled = false
 	}
 	if s.Backends == nil {
 		s.Backends = d.Backends
@@ -294,6 +331,14 @@ func (s *Settings) EnabledBackends() []Backend {
 		}
 	}
 	return out
+}
+
+// PublicURL is the address the tunnel publishes, when it is known upfront.
+func (t TunnelSettings) PublicURL() string {
+	if t.Hostname == "" {
+		return ""
+	}
+	return "https://" + t.Hostname
 }
 
 // Slug turns arbitrary text into a safe identifier.

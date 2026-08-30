@@ -14,6 +14,7 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
+	"github.com/saschazesiger/SocratesAgent/internal/tunnel"
 	"github.com/saschazesiger/SocratesAgent/internal/web"
 )
 
@@ -27,6 +28,9 @@ type Server struct {
 	store  *store.Store
 	bus    *agent.Bus
 	engine *agent.Engine
+	tunnel *tunnel.Manager
+
+	localURL string
 
 	mu       sync.RWMutex
 	settings config.Settings
@@ -64,6 +68,7 @@ func New(st *store.Store) (*Server, error) {
 
 	s.engine = agent.New(st, s.bus, s.Settings)
 	s.engine.BridgeToken = s.bridgeToken
+	s.tunnel = tunnel.New(s.Settings, s.LocalURL)
 
 	s.routes()
 	return s, nil
@@ -78,17 +83,73 @@ func (s *Server) Settings() config.Settings {
 
 func (s *Server) saveSettings(next config.Settings) error {
 	next.Normalize()
+	previous := s.Settings().Tunnel
 	if err := s.store.SetJSON(settingsKey, next); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	s.settings = next
 	s.mu.Unlock()
+	s.reconcileTunnel(previous, next.Tunnel)
 	return nil
+}
+
+// reconcileTunnel applies a settings change to the running tunnel.
+func (s *Server) reconcileTunnel(previous, next config.TunnelSettings) {
+	if s.tunnel == nil {
+		return
+	}
+	switch {
+	case !next.Enabled:
+		if s.tunnel.Running() {
+			s.tunnel.Stop()
+		}
+	case !s.tunnel.Running(), !sameTunnel(previous, next):
+		if err := s.tunnel.Start(); err != nil {
+			log.Printf("cloudflare tunnel: %v", err)
+		}
+	}
+}
+
+func sameTunnel(a, b config.TunnelSettings) bool {
+	return a.Enabled == b.Enabled && a.Mode == b.Mode && a.Token == b.Token &&
+		a.Hostname == b.Hostname && a.Command == b.Command &&
+		strings.Join(a.ExtraArgs, "\x00") == strings.Join(b.ExtraArgs, "\x00")
 }
 
 // SetBridgeURL tells the engine where delegate agents can reach us.
 func (s *Server) SetBridgeURL(url string) { s.engine.BridgeURL = url }
+
+// SetLocalURL records the loopback address Socrates listens on. It is what the
+// Cloudflare tunnel publishes and what you enter when configuring a named
+// tunnel in the Cloudflare dashboard.
+func (s *Server) SetLocalURL(url string) {
+	s.mu.Lock()
+	s.localURL = url
+	s.mu.Unlock()
+}
+
+// LocalURL returns the loopback address of this server.
+func (s *Server) LocalURL() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.localURL
+}
+
+// StartTunnelIfEnabled brings the Cloudflare tunnel up when it is configured.
+func (s *Server) StartTunnelIfEnabled() {
+	if !s.Settings().Tunnel.Enabled {
+		return
+	}
+	if err := s.tunnel.Start(); err != nil {
+		log.Printf("cloudflare tunnel: %v", err)
+		return
+	}
+	log.Print("cloudflare tunnel: starting")
+}
+
+// StopTunnel shuts the tunnel down, used on graceful shutdown.
+func (s *Server) StopTunnel() { s.tunnel.Stop() }
 
 // Handler returns the root HTTP handler.
 func (s *Server) Handler() http.Handler { return s.mux }
@@ -128,6 +189,11 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/preferences", s.auth(s.handlePreferences))
 	mux.HandleFunc("GET /api/models", s.auth(s.handleModels))
 	mux.HandleFunc("POST /api/diagnostics", s.auth(s.handleDiagnostics))
+
+	// Cloudflare tunnel
+	mux.HandleFunc("GET /api/tunnel", s.auth(s.handleTunnelStatus))
+	mux.HandleFunc("POST /api/tunnel/start", s.auth(s.handleTunnelStart))
+	mux.HandleFunc("POST /api/tunnel/stop", s.auth(s.handleTunnelStop))
 
 	// Voice
 	mux.HandleFunc("POST /api/voice/transcribe", s.auth(s.handleTranscribe))

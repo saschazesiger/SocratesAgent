@@ -13,12 +13,19 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}"
 # to build a slim image and mount your own binaries instead.
 FROM node:22-bookworm-slim
 ARG INSTALL_AGENTS=1
+ARG INSTALL_CLOUDFLARED=1
+ARG TARGETARCH
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates git ripgrep \
+ && apt-get install -y --no-install-recommends ca-certificates curl git ripgrep \
  && rm -rf /var/lib/apt/lists/* \
  && if [ "$INSTALL_AGENTS" = "1" ]; then \
       npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai || \
       echo "warning: could not install every agent CLI, configure paths in /admin"; \
+    fi \
+ && if [ "$INSTALL_CLOUDFLARED" = "1" ]; then \
+      curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${TARGETARCH:-amd64}" \
+        -o /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared || \
+      echo "warning: could not install cloudflared, remote access stays off"; \
     fi
 
 COPY --from=build /out/socrates /usr/local/bin/socrates

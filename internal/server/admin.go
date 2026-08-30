@@ -14,7 +14,15 @@ import (
 
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/openrouter"
+	"github.com/saschazesiger/SocratesAgent/internal/tunnel"
 )
+
+func orLocal(url string) string {
+	if url == "" {
+		return "http://127.0.0.1:8080"
+	}
+	return url
+}
 
 func randomHex(n int) string {
 	b := make([]byte, n)
@@ -37,11 +45,14 @@ func (s *Server) handlePreferences(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
+	settings := s.Settings()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"settings": s.Settings(),
-		"defaults": config.Default(),
-		"kinds":    []string{config.KindClaude, config.KindCodex, config.KindOpenCode, config.KindCustom},
-		"version":  Version,
+		"settings":  settings,
+		"defaults":  config.Default(),
+		"kinds":     []string{config.KindClaude, config.KindCodex, config.KindOpenCode, config.KindCustom},
+		"version":   Version,
+		"local_url": s.LocalURL(),
+		"warning":   tunnelWarning(settings),
 	})
 }
 
@@ -66,7 +77,10 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"settings": s.Settings()})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"settings": s.Settings(),
+		"warning":  tunnelWarning(s.Settings()),
+	})
 }
 
 var (
@@ -160,6 +174,34 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		results = append(results, checkResult{Name: b.Name, OK: true, Detail: version})
+	}
+
+	// Remote access
+	installed, version := tunnel.Probe(settings.Tunnel.Command)
+	switch {
+	case !settings.Tunnel.Enabled:
+		results = append(results, checkResult{Name: "Remote access", OK: true,
+			Detail: "tunnel off, reachable at " + orLocal(s.LocalURL())})
+	case !installed:
+		results = append(results, checkResult{Name: "Remote access", OK: false,
+			Detail: settings.Tunnel.Command + " is not installed"})
+	default:
+		status := s.tunnel.Status()
+		detail := status.State
+		if status.URL != "" {
+			detail += " · " + status.URL
+		}
+		if version != "" {
+			detail += " · " + version
+		}
+		if status.Error != "" {
+			detail += " · " + status.Error
+		}
+		results = append(results, checkResult{
+			Name:   "Remote access",
+			OK:     status.State == tunnel.StateRunning,
+			Detail: detail,
+		})
 	}
 
 	// Voice

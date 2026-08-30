@@ -44,7 +44,7 @@ func main() {
 	}
 
 	fs := flag.NewFlagSet("socrates", flag.ExitOnError)
-	addr := fs.String("addr", envOr("SOCRATES_ADDR", ":8080"), "address to listen on")
+	addr := fs.String("addr", envOr("SOCRATES_ADDR", "127.0.0.1:8080"), "address to listen on (use :8080 to accept connections from the network)")
 	dataDir := fs.String("data", config.DataDir(), "directory for the database and workspaces")
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	fs.Usage = func() {
@@ -84,7 +84,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("could not listen on %s: %v", *addr, err)
 	}
-	srv.SetBridgeURL(bridgeURL(listener.Addr()))
+	local := localBaseURL(listener.Addr())
+	srv.SetBridgeURL(local + "/api/bridge/permission")
+	srv.SetLocalURL(local)
 
 	httpServer := &http.Server{
 		Handler:           srv.Handler(),
@@ -95,6 +97,11 @@ func main() {
 	log.Printf("Socrates %s", version)
 	log.Printf("data directory: %s", *dataDir)
 	log.Printf("open %s in your browser", displayURL(listener.Addr()))
+	if isLoopback(listener.Addr()) {
+		log.Print("listening on loopback only - publish it with the Cloudflare tunnel in /admin, or pass -addr :8080 to open the port")
+	} else {
+		log.Print("warning: this port is reachable from the network; anyone with the password can run commands on this machine")
+	}
 
 	go func() {
 		if err := httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -102,10 +109,13 @@ func main() {
 		}
 	}()
 
+	srv.StartTunnelIfEnabled()
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
 	log.Print("shutting down")
+	srv.StopTunnel()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpServer.Shutdown(ctx)
@@ -118,14 +128,25 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-// bridgeURL is the address delegate agents use to ask for permission. It is
-// always loopback, even when the server listens on every interface.
-func bridgeURL(addr net.Addr) string {
+// localBaseURL is the loopback address of this server. Delegate agents use it
+// to ask for permission and the Cloudflare tunnel publishes it, so it stays on
+// 127.0.0.1 even when the listener is bound to every interface.
+func localBaseURL(addr net.Addr) string {
 	_, port, err := net.SplitHostPort(addr.String())
 	if err != nil {
 		port = "8080"
 	}
-	return fmt.Sprintf("http://127.0.0.1:%s/api/bridge/permission", port)
+	return fmt.Sprintf("http://127.0.0.1:%s", port)
+}
+
+// isLoopback reports whether the listener only accepts local connections.
+func isLoopback(addr net.Addr) bool {
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func displayURL(addr net.Addr) string {

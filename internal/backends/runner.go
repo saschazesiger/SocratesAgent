@@ -9,12 +9,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/config"
+	"github.com/saschazesiger/SocratesAgent/internal/proc"
 )
 
 // Event kinds emitted by a delegate agent.
@@ -88,8 +90,8 @@ func Run(ctx context.Context, req Request, emit Emitter) (*Result, error) {
 	cmd := exec.CommandContext(ctx, req.Backend.Command, args...)
 	cmd.Dir = req.Workdir
 	cmd.Env = environ()
-	configureProcess(cmd)
-	cmd.Cancel = func() error { return killTree(cmd) }
+	proc.Configure(cmd)
+	cmd.Cancel = func() error { return proc.Kill(cmd) }
 	cmd.WaitDelay = 5 * time.Second
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
@@ -274,7 +276,7 @@ func build(req Request) (args []string, stdin string, p parser) {
 }
 
 func environ() []string {
-	env := append([]string{}, osEnviron()...)
+	env := append([]string{}, os.Environ()...)
 	env = append(env,
 		"SOCRATES=1",
 		"CI=1",

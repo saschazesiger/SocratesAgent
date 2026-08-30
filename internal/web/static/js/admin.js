@@ -32,7 +32,16 @@ const FIELDS = [
   ['ttsRate', 'voice.tts_rate', 'number'],
   ['speakAuto', 'voice.speak_in_auto_mode', 'bool'],
   ['speakChat', 'voice.speak_in_chat_mode', 'bool'],
+  ['tunnelMode', 'tunnel.mode'],
+  ['tunnelToken', 'tunnel.token'],
+  ['tunnelHostname', 'tunnel.hostname'],
+  ['tunnelCommand', 'tunnel.command'],
+  ['tunnelArgs', 'tunnel.extra_args', 'args'],
 ];
+
+let tunnelTimer = null;
+let installHints = {};
+let localURL = '';
 
 const APPROVALS = [
   ['auto', 'Run unattended (auto approve)'],
@@ -65,8 +74,16 @@ async function load() {
   fillForm();
   renderAgents();
   bind();
+  if (data.local_url) localURL = data.local_url;
+  showWarning(data.warning);
+  refreshTunnel();
   if (new URLSearchParams(location.search).get('welcome')) {
     showNotice('Welcome. Add your OpenRouter key, check the agents below, then head back to the chat.', 'ok');
+  }
+  const tunnelError = sessionStorage.getItem('socrates.tunnel_error');
+  if (tunnelError) {
+    sessionStorage.removeItem('socrates.tunnel_error');
+    showNotice('The tunnel could not be started: ' + tunnelError, 'error');
   }
 }
 
@@ -76,6 +93,7 @@ function fillForm() {
     if (!node) continue;
     const value = getPath(settings, path);
     if (type === 'bool') node.checked = !!value;
+    else if (type === 'args') node.value = (value || []).join(' ');
     else node.value = value ?? '';
   }
 }
@@ -87,6 +105,7 @@ function collect() {
     if (!node) continue;
     if (type === 'bool') setPath(next, path, node.checked);
     else if (type === 'number') setPath(next, path, Number(node.value) || 0);
+    else if (type === 'args') setPath(next, path, splitArgs(node.value));
     else setPath(next, path, node.value);
   }
   return next;
@@ -99,6 +118,15 @@ function bind() {
   $('loadModels').addEventListener('click', loadModels);
   $('runChecks').addEventListener('click', runChecks);
   $('changePw').addEventListener('click', changePassword);
+  $('tunnelStart').addEventListener('click', startTunnel);
+  $('tunnelStop').addEventListener('click', stopTunnel);
+  $('tunnelMode').addEventListener('change', renderTunnelMode);
+  $('tunnelLogToggle').addEventListener('click', () => {
+    const log = $('tunnelLog');
+    log.hidden = !log.hidden;
+    $('tunnelLogToggle').textContent = log.hidden ? 'Show log' : 'Hide log';
+    if (!log.hidden) refreshTunnel();
+  });
   $('testVoice').addEventListener('click', () => {
     speak('This is how Socrates will read answers to you in auto mode.').catch((err) => toast(err.message, 'error'));
   });
@@ -122,6 +150,8 @@ async function save() {
     settings = data.settings;
     fillForm();
     renderAgents();
+    showWarning(data.warning);
+    refreshTunnel();
     hint('Saved');
     toast('Settings saved');
   } catch (err) {
@@ -287,6 +317,141 @@ function splitArgs(value) {
     out.push(match[1] ?? match[2] ?? match[3]);
   }
   return out;
+}
+
+/* ------------------------------------------------------------ the tunnel */
+
+function showWarning(text) {
+  const box = $('warning');
+  box.hidden = !text;
+  box.textContent = text || '';
+}
+
+function tunnelForm() {
+  return {
+    enabled: true,
+    mode: $('tunnelMode').value,
+    token: $('tunnelToken').value.trim(),
+    hostname: $('tunnelHostname').value.trim(),
+    command: $('tunnelCommand').value.trim() || 'cloudflared',
+    extra_args: splitArgs($('tunnelArgs').value),
+  };
+}
+
+function renderTunnelMode() {
+  const named = $('tunnelMode').value === 'token';
+  $('tunnelToken').closest('.field').style.display = named ? '' : 'none';
+  $('tunnelHostname').closest('.field').style.display = named ? '' : 'none';
+  const local = localURL || 'the local address shown above';
+  $('tunnelModeHint').textContent = named
+    ? 'Runs your own named tunnel. In the Cloudflare dashboard, point its public hostname at ' + local + '.'
+    : 'Free and instant, but the address changes every restart and anyone with the link can reach the login page.';
+}
+
+const STATE_LABEL = {
+  running: 'Tunnel is up',
+  starting: 'Connecting…',
+  failed: 'Tunnel failed',
+  stopped: 'Tunnel is off',
+};
+
+function renderTunnelStatus(status) {
+  const host = $('tunnelStatus');
+  host.innerHTML = '';
+  const parts = [
+    el('span', { class: 'state-dot ' + status.state }),
+    el('span', { class: 'state-label', text: STATE_LABEL[status.state] || status.state }),
+  ];
+  if (status.url) {
+    parts.push(el('span', { class: 'sep', text: '·' }));
+    parts.push(el('a', { href: status.url, target: '_blank', rel: 'noopener', text: status.url }));
+  }
+  parts.push(el('span', { class: 'sep', text: '·' }));
+  parts.push(el('span', { class: 'muted', text: 'local: ' + (status.local_url || 'http://127.0.0.1:8080') }));
+  if (!status.installed) {
+    parts.push(el('span', { class: 'sep', text: '·' }));
+    parts.push(el('span', { text: 'cloudflared not found' }));
+  } else if (status.version) {
+    parts.push(el('span', { class: 'sep', text: '·' }));
+    parts.push(el('span', { class: 'muted', text: status.version }));
+  }
+  if (status.error) {
+    parts.push(el('span', { class: 'sep', text: '·' }));
+    parts.push(el('span', { style: 'color:var(--red)', text: status.error }));
+  }
+  if (status.restarts) {
+    parts.push(el('span', { class: 'sep', text: '·' }));
+    parts.push(el('span', { class: 'muted', text: status.restarts + ' restarts' }));
+  }
+  host.append(...parts);
+
+  const log = $('tunnelLog');
+  if (!log.hidden) {
+    log.textContent = (status.logs || []).join('\n') || 'no output yet';
+    log.scrollTop = log.scrollHeight;
+  }
+  $('tunnelStart').textContent = status.state === 'stopped' ? 'Start tunnel' : 'Restart tunnel';
+  $('tunnelStop').disabled = status.state === 'stopped';
+
+  if (!status.installed && installHints.linux) {
+    const platform = navigator.platform.toLowerCase();
+    const key = platform.includes('mac') ? 'macos' : platform.includes('win') ? 'windows' : 'linux';
+    $('tunnelInstallHint').textContent = 'Not installed. Try: ' + installHints[key];
+  } else {
+    $('tunnelInstallHint').textContent = 'Leave it as "cloudflared" when the binary is in your PATH.';
+  }
+
+  const live = status.state === 'running' || status.state === 'starting' || status.state === 'failed';
+  clearTimeout(tunnelTimer);
+  if (live || !log.hidden) tunnelTimer = setTimeout(refreshTunnel, 3000);
+}
+
+async function refreshTunnel() {
+  try {
+    const data = await api('/api/tunnel');
+    installHints = data.install || installHints;
+    if (data.status && data.status.local_url) localURL = data.status.local_url;
+    if (data.tunnel) {
+      settings.tunnel = data.tunnel;
+      $('tunnelMode').value = data.tunnel.mode || 'quick';
+      $('tunnelCommand').value = data.tunnel.command || 'cloudflared';
+      if (document.activeElement !== $('tunnelHostname')) $('tunnelHostname').value = data.tunnel.hostname || '';
+      if (document.activeElement !== $('tunnelToken')) $('tunnelToken').value = data.tunnel.token || '';
+      if (document.activeElement !== $('tunnelArgs')) $('tunnelArgs').value = (data.tunnel.extra_args || []).join(' ');
+    }
+    renderTunnelMode();
+    renderTunnelStatus(data.status || {});
+  } catch (err) {
+    clearTimeout(tunnelTimer);
+    toast(err.message, 'error');
+  }
+}
+
+async function startTunnel() {
+  const button = $('tunnelStart');
+  button.disabled = true;
+  try {
+    const data = await api('/api/tunnel/start', { method: 'POST', body: { tunnel: tunnelForm() } });
+    settings.tunnel = data.tunnel;
+    renderTunnelStatus(data.status || {});
+    toast('Tunnel starting');
+    setTimeout(refreshTunnel, 1200);
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function stopTunnel() {
+  try {
+    const data = await api('/api/tunnel/stop', { method: 'POST', body: {} });
+    settings.tunnel = data.tunnel;
+    renderTunnelStatus(data.status || {});
+    toast('Tunnel stopped');
+  } catch (err) {
+    toast(err.message, 'error');
+  }
 }
 
 /* ------------------------------------------------------------ side tasks */
