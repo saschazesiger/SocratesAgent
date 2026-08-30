@@ -372,7 +372,10 @@ function renderTunnelStatus(status) {
   parts.push(el('span', { class: 'muted', text: 'local: ' + (status.local_url || 'http://127.0.0.1:8080') }));
   if (!status.installed) {
     parts.push(el('span', { class: 'sep', text: '·' }));
-    parts.push(el('span', { text: 'cloudflared not found' }));
+    parts.push(el('span', {
+      class: 'muted',
+      text: status.can_install ? 'cloudflared is downloaded on start' : 'cloudflared is not installed',
+    }));
   } else if (status.version) {
     parts.push(el('span', { class: 'sep', text: '·' }));
     parts.push(el('span', { class: 'muted', text: status.version }));

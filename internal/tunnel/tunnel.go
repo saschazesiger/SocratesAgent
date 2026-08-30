@@ -249,10 +249,13 @@ func (m *Manager) Resolve(ctx context.Context) (string, error) {
 	if path, err := exec.LookPath(command); err == nil {
 		return path, nil
 	}
-	// A specific binary the operator asked for is never silently replaced by
-	// a download; only the default name falls back to the managed copy.
+	// The configured command is not there. Remote access is supposed to just
+	// work, so fall back to the copy Socrates manages instead of stopping -
+	// and say so, in case the path was a typo the operator wants to fix.
 	if command != "cloudflared" {
-		return "", fmt.Errorf("%s was not found - check the cloudflared path in the admin dashboard", command)
+		m.mu.Lock()
+		m.logs.add(command + " was not found, using the cloudflared Socrates manages instead")
+		m.mu.Unlock()
 	}
 	if m.installer.Installed() {
 		return m.installer.Path(), nil

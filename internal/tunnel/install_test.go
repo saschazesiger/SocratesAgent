@@ -259,13 +259,32 @@ func TestManagerInstallsCloudflaredOnDemand(t *testing.T) {
 	}
 }
 
-func TestResolveKeepsExplicitCommand(t *testing.T) {
+// A configured path that does not exist must not become a dead end: the whole
+// point of the managed copy is that remote access works anyway.
+func TestResolveFallsBackWhenConfiguredCommandIsMissing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake binary is a POSIX script")
+	}
 	t.Setenv("PATH", t.TempDir())
+	server := releaseServer(t, releasePayload(t, "9.9.9"), nil)
+
 	settings := config.Default()
-	settings.Tunnel = config.TunnelSettings{Enabled: true, Mode: config.TunnelQuick, Command: "my-own-cloudflared"}
-	m := New(func() config.Settings { return settings }, func() string { return "" }, t.TempDir())
-	m.installer.BaseURL = "http://127.0.0.1:1" // must never be reached
-	if _, err := m.Resolve(context.Background()); err == nil {
-		t.Fatal("an explicit command that is missing must be reported, not replaced by a download")
+	settings.Tunnel = config.TunnelSettings{
+		Enabled: true, Mode: config.TunnelQuick, Command: "/usr/local/bin/cloudflared",
+	}
+	dir := filepath.Join(t.TempDir(), "bin")
+	m := New(func() config.Settings { return settings }, func() string { return "" }, dir)
+	m.installer.BaseURL = server.URL
+
+	path, err := m.Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if path != filepath.Join(dir, "cloudflared") {
+		t.Fatalf("resolved to %q", path)
+	}
+	logs := strings.Join(m.Status().Logs, "\n")
+	if !strings.Contains(logs, "/usr/local/bin/cloudflared was not found") {
+		t.Errorf("the fallback should be visible in the log: %s", logs)
 	}
 }
