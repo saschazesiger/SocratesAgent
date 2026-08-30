@@ -121,6 +121,7 @@ function bind() {
   $('tunnelStart').addEventListener('click', startTunnel);
   $('tunnelStop').addEventListener('click', stopTunnel);
   $('tunnelMode').addEventListener('change', renderTunnelMode);
+  $('tunnelInstall').addEventListener('click', installCloudflared);
   $('tunnelLogToggle').addEventListener('click', () => {
     const log = $('tunnelLog');
     log.hidden = !log.hidden;
@@ -351,6 +352,7 @@ function renderTunnelMode() {
 const STATE_LABEL = {
   running: 'Tunnel is up',
   starting: 'Connecting…',
+  installing: 'Downloading cloudflared…',
   failed: 'Tunnel failed',
   stopped: 'Tunnel is off',
 };
@@ -393,15 +395,22 @@ function renderTunnelStatus(status) {
   $('tunnelStart').textContent = status.state === 'stopped' ? 'Start tunnel' : 'Restart tunnel';
   $('tunnelStop').disabled = status.state === 'stopped';
 
-  if (!status.installed && installHints.linux) {
+  const installButton = $('tunnelInstall');
+  installButton.hidden = status.installed || !status.can_install;
+  if (status.installed) {
+    $('tunnelInstallHint').textContent = status.managed
+      ? 'Managed by Socrates: ' + status.path
+      : 'Found in your PATH: ' + (status.path || 'cloudflared');
+  } else if (status.can_install) {
+    $('tunnelInstallHint').textContent = 'Not installed yet. Socrates downloads it automatically when you start the tunnel.';
+  } else {
     const platform = navigator.platform.toLowerCase();
     const key = platform.includes('mac') ? 'macos' : platform.includes('win') ? 'windows' : 'linux';
-    $('tunnelInstallHint').textContent = 'Not installed. Try: ' + installHints[key];
-  } else {
-    $('tunnelInstallHint').textContent = 'Leave it as "cloudflared" when the binary is in your PATH.';
+    $('tunnelInstallHint').textContent = 'No build for this platform. Install it yourself: ' + (installHints[key] || installHints.docs);
   }
 
-  const live = status.state === 'running' || status.state === 'starting' || status.state === 'failed';
+  const live = status.state === 'running' || status.state === 'starting' ||
+    status.state === 'installing' || status.state === 'failed';
   clearTimeout(tunnelTimer);
   if (live || !log.hidden) tunnelTimer = setTimeout(refreshTunnel, 3000);
 }
@@ -440,6 +449,26 @@ async function startTunnel() {
     toast(err.message, 'error');
   } finally {
     button.disabled = false;
+  }
+}
+
+async function installCloudflared() {
+  const button = $('tunnelInstall');
+  button.disabled = true;
+  button.textContent = 'Downloading…';
+  $('tunnelLog').hidden = false;
+  $('tunnelLogToggle').textContent = 'Hide log';
+  refreshTunnel();
+  try {
+    const data = await api('/api/tunnel/install', { method: 'POST', body: {} });
+    renderTunnelStatus(data.status || {});
+    toast('cloudflared installed');
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Download cloudflared';
+    refreshTunnel();
   }
 }
 

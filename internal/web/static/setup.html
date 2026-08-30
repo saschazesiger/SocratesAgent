@@ -84,8 +84,11 @@ function renderTunnel() {
     return;
   }
   if (!cloudflared.installed) {
-    hint.innerHTML = 'This needs the <code>cloudflared</code> binary, which was not found on this machine. ' +
-      'You can install it later and start the tunnel from the admin dashboard.';
+    hint.innerHTML = cloudflared.can_install === false
+      ? 'This needs the <code>cloudflared</code> binary and there is no published build for this platform. ' +
+        'Install it yourself and set the path in the admin dashboard.'
+      : 'Socrates downloads <code>cloudflared</code> for you when you finish setup, about 35 MB. ' +
+        'Nothing to install by hand.';
     return;
   }
   hint.textContent = mode.value === 'quick'

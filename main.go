@@ -75,7 +75,7 @@ func main() {
 		log.Printf("warning: could not clean up unfinished runs: %v", err)
 	}
 
-	srv, err := server.New(st)
+	srv, err := server.New(st, *dataDir)
 	if err != nil {
 		log.Fatalf("could not start: %v", err)
 	}

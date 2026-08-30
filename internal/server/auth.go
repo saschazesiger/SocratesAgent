@@ -181,8 +181,13 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		"version":        Version,
 	}
 	if setupRequired || s.authenticated(r) {
-		installed, version := tunnel.Probe(s.Settings().Tunnel.Command)
-		payload["cloudflared"] = map[string]any{"installed": installed, "version": version}
+		installed, version, path := s.tunnel.Probe()
+		payload["cloudflared"] = map[string]any{
+			"installed":   installed,
+			"version":     version,
+			"path":        path,
+			"can_install": tunnel.Supported(),
+		}
 		payload["local_url"] = s.LocalURL()
 	}
 	writeJSON(w, http.StatusOK, payload)

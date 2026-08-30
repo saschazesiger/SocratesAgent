@@ -15,7 +15,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -26,10 +28,11 @@ import (
 
 // States of the managed tunnel.
 const (
-	StateStopped  = "stopped"
-	StateStarting = "starting"
-	StateRunning  = "running"
-	StateFailed   = "failed"
+	StateStopped    = "stopped"
+	StateInstalling = "installing"
+	StateStarting   = "starting"
+	StateRunning    = "running"
+	StateFailed     = "failed"
 )
 
 // quickURL matches the hostname cloudflared prints for a free quick tunnel.
@@ -41,44 +44,51 @@ const readyAfter = 4 * time.Second
 
 // Status is the snapshot the admin dashboard renders.
 type Status struct {
-	State     string   `json:"state"`
-	Mode      string   `json:"mode"`
-	URL       string   `json:"url"`
-	LocalURL  string   `json:"local_url"`
-	Error     string   `json:"error"`
-	Since     int64    `json:"since"`
-	Restarts  int      `json:"restarts"`
-	Installed bool     `json:"installed"`
-	Version   string   `json:"version"`
-	Command   string   `json:"command"`
-	Logs      []string `json:"logs"`
+	State      string   `json:"state"`
+	Mode       string   `json:"mode"`
+	URL        string   `json:"url"`
+	LocalURL   string   `json:"local_url"`
+	Error      string   `json:"error"`
+	Since      int64    `json:"since"`
+	Restarts   int      `json:"restarts"`
+	Installed  bool     `json:"installed"`
+	Version    string   `json:"version"`
+	Command    string   `json:"command"`
+	Path       string   `json:"path"`
+	Managed    bool     `json:"managed"`
+	CanInstall bool     `json:"can_install"`
+	Logs       []string `json:"logs"`
 }
 
 // Manager owns at most one cloudflared process.
 type Manager struct {
-	settings func() config.Settings
-	localURL func() string
+	settings  func() config.Settings
+	localURL  func() string
+	installer *Installer
 
-	mu       sync.Mutex
-	state    string
-	url      string
-	errMsg   string
-	since    time.Time
-	restarts int
-	logs     *ring
-	cancel   context.CancelFunc
-	done     chan struct{}
-	gen      int
+	mu         sync.Mutex
+	state      string
+	installing bool
+	url        string
+	errMsg     string
+	since      time.Time
+	restarts   int
+	logs       *ring
+	cancel     context.CancelFunc
+	done       chan struct{}
+	gen        int
 }
 
 // New creates a manager. localURL reports the address the tunnel should
-// publish, for example http://127.0.0.1:8080.
-func New(settings func() config.Settings, localURL func() string) *Manager {
+// publish, for example http://127.0.0.1:8080. installDir is where Socrates
+// keeps a cloudflared it downloaded itself.
+func New(settings func() config.Settings, localURL func() string, installDir string) *Manager {
 	return &Manager{
-		settings: settings,
-		localURL: localURL,
-		state:    StateStopped,
-		logs:     newRing(200),
+		settings:  settings,
+		localURL:  localURL,
+		installer: NewInstaller(installDir),
+		state:     StateStopped,
+		logs:      newRing(200),
 	}
 }
 
@@ -88,9 +98,6 @@ func (m *Manager) Start() error {
 	cfg := m.settings().Tunnel
 	if cfg.Mode == config.TunnelToken && strings.TrimSpace(cfg.Token) == "" {
 		return errors.New("a named tunnel needs its tunnel token")
-	}
-	if _, err := exec.LookPath(cfg.Command); err != nil {
-		return fmt.Errorf("%s was not found - install cloudflared or set the full path in the admin dashboard", cfg.Command)
 	}
 
 	m.Stop()
@@ -143,8 +150,13 @@ func (m *Manager) Stop() {
 func (m *Manager) Status() Status {
 	cfg := m.settings().Tunnel
 	m.mu.Lock()
+	state := m.state
+	if m.installing && state == StateStopped {
+		// A download started from the dashboard, without a tunnel running.
+		state = StateInstalling
+	}
 	status := Status{
-		State:    m.state,
+		State:    state,
 		Mode:     cfg.Mode,
 		URL:      m.url,
 		Error:    m.errMsg,
@@ -162,7 +174,9 @@ func (m *Manager) Status() Status {
 	if m.localURL != nil {
 		status.LocalURL = m.localURL()
 	}
-	status.Installed, status.Version = probe(cfg.Command)
+	status.Installed, status.Version, status.Path = m.Probe()
+	status.Managed = status.Path != "" && status.Path == m.installer.Path()
+	status.CanInstall = Supported()
 	return status
 }
 
@@ -223,9 +237,84 @@ func (m *Manager) generation() int {
 	return m.gen
 }
 
+// Resolve returns the cloudflared to use: an explicit path, one found in PATH,
+// or the copy Socrates manages - downloading it when it is not there yet.
+func (m *Manager) Resolve(ctx context.Context) (string, error) {
+	cfg := m.settings().Tunnel
+	command := strings.TrimSpace(cfg.Command)
+	if command == "" {
+		command = "cloudflared"
+	}
+	// An explicit path or a binary on PATH always wins.
+	if path, err := exec.LookPath(command); err == nil {
+		return path, nil
+	}
+	// A specific binary the operator asked for is never silently replaced by
+	// a download; only the default name falls back to the managed copy.
+	if command != "cloudflared" {
+		return "", fmt.Errorf("%s was not found - check the cloudflared path in the admin dashboard", command)
+	}
+	if m.installer.Installed() {
+		return m.installer.Path(), nil
+	}
+	if !Supported() {
+		_, _, err := assetFor(runtime.GOOS, runtime.GOARCH)
+		return "", err
+	}
+
+	m.mu.Lock()
+	m.installing = true
+	if m.state != StateStopped {
+		m.state = StateInstalling
+	}
+	m.logs.add("cloudflared is not installed, fetching it")
+	m.mu.Unlock()
+
+	path, err := m.installer.Ensure(ctx, func(line string) {
+		m.mu.Lock()
+		m.logs.add(line)
+		m.mu.Unlock()
+	})
+
+	m.mu.Lock()
+	m.installing = false
+	m.mu.Unlock()
+
+	if err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// Install downloads cloudflared without starting a tunnel.
+func (m *Manager) Install(ctx context.Context) (string, error) {
+	return m.Resolve(ctx)
+}
+
+// Probe reports whether a usable cloudflared exists and which version it is.
+func (m *Manager) Probe() (bool, string, string) {
+	command := strings.TrimSpace(m.settings().Tunnel.Command)
+	if command == "" {
+		command = "cloudflared"
+	}
+	if path, err := exec.LookPath(command); err == nil {
+		_, version := probe(path)
+		return true, version, path
+	}
+	if m.installer.Installed() {
+		_, version := probe(m.installer.Path())
+		return true, version, m.installer.Path()
+	}
+	return false, "", ""
+}
+
 // runOnce runs cloudflared until it exits or the context is cancelled.
 func (m *Manager) runOnce(ctx context.Context, gen int) error {
 	cfg := m.settings().Tunnel
+	binary, err := m.Resolve(ctx)
+	if err != nil {
+		return err
+	}
 	local := "http://127.0.0.1:8080"
 	if m.localURL != nil {
 		if v := m.localURL(); v != "" {
@@ -242,7 +331,7 @@ func (m *Manager) runOnce(ctx context.Context, gen int) error {
 	}
 	args = append(args, cfg.ExtraArgs...)
 
-	cmd := exec.CommandContext(ctx, cfg.Command, args...)
+	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Env = os.Environ()
 	if cfg.Mode == config.TunnelToken {
 		// The token goes through the environment so it never shows up in the
@@ -268,7 +357,7 @@ func (m *Manager) runOnce(ctx context.Context, gen int) error {
 	m.mu.Lock()
 	m.state = StateStarting
 	m.since = time.Now()
-	m.logs.add("cloudflared " + strings.Join(redact(args), " "))
+	m.logs.add(binary + " " + strings.Join(redact(args), " "))
 	m.mu.Unlock()
 
 	var wg sync.WaitGroup
@@ -294,7 +383,7 @@ func (m *Manager) runOnce(ctx context.Context, gen int) error {
 		return nil
 	}
 	if waitErr != nil {
-		return fmt.Errorf("%s: %w", cfg.Command, waitErr)
+		return fmt.Errorf("%s: %w", filepath.Base(binary), waitErr)
 	}
 	return nil
 }
@@ -340,6 +429,9 @@ type probeResult struct {
 }
 
 const probeTTL = 30 * time.Second
+
+// invalidateProbe forgets a cached lookup, used right after an install.
+func invalidateProbe(command string) { probeCache.Delete(command) }
 
 // probe reports whether cloudflared is installed and which version it is.
 func probe(command string) (bool, string) {

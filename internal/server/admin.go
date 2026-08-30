@@ -177,14 +177,14 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Remote access
-	installed, version := tunnel.Probe(settings.Tunnel.Command)
+	installed, version, _ := s.tunnel.Probe()
 	switch {
 	case !settings.Tunnel.Enabled:
 		results = append(results, checkResult{Name: "Remote access", OK: true,
 			Detail: "tunnel off, reachable at " + orLocal(s.LocalURL())})
 	case !installed:
 		results = append(results, checkResult{Name: "Remote access", OK: false,
-			Detail: settings.Tunnel.Command + " is not installed"})
+			Detail: "cloudflared is not installed yet, it is downloaded when the tunnel starts"})
 	default:
 		status := s.tunnel.Status()
 		detail := status.State

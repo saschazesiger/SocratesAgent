@@ -30,7 +30,7 @@ func newEnv(t *testing.T) *testEnv {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	srv, err := New(st)
+	srv, err := New(st, t.TempDir())
 	if err != nil {
 		t.Fatalf("server: %v", err)
 	}

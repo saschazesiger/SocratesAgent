@@ -31,7 +31,7 @@ func newManager(t *testing.T, cfg config.TunnelSettings) *Manager {
 	settings := config.Default()
 	settings.Tunnel = cfg
 	settings.Normalize()
-	m := New(func() config.Settings { return settings }, func() string { return "http://127.0.0.1:9999" })
+	m := New(func() config.Settings { return settings }, func() string { return "http://127.0.0.1:9999" }, t.TempDir())
 	t.Cleanup(m.Stop)
 	return m
 }
@@ -140,18 +140,13 @@ exit 1
 	t.Fatalf("cloudflared was never started again: %#v", m.Status())
 }
 
-func TestStartRejectsMissingBinaryAndToken(t *testing.T) {
-	m := newManager(t, config.TunnelSettings{Enabled: true, Mode: config.TunnelQuick, Command: "cloudflared-does-not-exist"})
-	if err := m.Start(); err == nil {
-		t.Fatal("a missing binary should be reported")
-	}
-
+func TestStartRejectsMissingToken(t *testing.T) {
 	path := fakeCloudflared(t, "sleep 5")
 	m2 := New(func() config.Settings {
 		s := config.Default()
 		s.Tunnel = config.TunnelSettings{Enabled: true, Mode: config.TunnelToken, Command: path}
 		return s
-	}, func() string { return "http://127.0.0.1:9999" })
+	}, func() string { return "http://127.0.0.1:9999" }, t.TempDir())
 	t.Cleanup(m2.Stop)
 	if err := m2.Start(); err == nil {
 		t.Fatal("a named tunnel without a token should be reported")

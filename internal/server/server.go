@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -47,8 +48,9 @@ type attempt struct {
 	until time.Time
 }
 
-// New builds a server around an open store.
-func New(st *store.Store) (*Server, error) {
+// New builds a server around an open store. dataDir is where Socrates keeps
+// its own files, including a cloudflared it downloads itself.
+func New(st *store.Store, dataDir string) (*Server, error) {
 	s := &Server{
 		store:       st,
 		bus:         agent.NewBus(),
@@ -68,7 +70,7 @@ func New(st *store.Store) (*Server, error) {
 
 	s.engine = agent.New(st, s.bus, s.Settings)
 	s.engine.BridgeToken = s.bridgeToken
-	s.tunnel = tunnel.New(s.Settings, s.LocalURL)
+	s.tunnel = tunnel.New(s.Settings, s.LocalURL, filepath.Join(dataDir, "bin"))
 
 	s.routes()
 	return s, nil
@@ -194,6 +196,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/tunnel", s.auth(s.handleTunnelStatus))
 	mux.HandleFunc("POST /api/tunnel/start", s.auth(s.handleTunnelStart))
 	mux.HandleFunc("POST /api/tunnel/stop", s.auth(s.handleTunnelStop))
+	mux.HandleFunc("POST /api/tunnel/install", s.auth(s.handleTunnelInstall))
 
 	// Voice
 	mux.HandleFunc("POST /api/voice/transcribe", s.auth(s.handleTranscribe))

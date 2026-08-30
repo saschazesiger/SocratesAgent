@@ -41,7 +41,8 @@ voice.
 - **Reachable from anywhere, without opening a port.** A managed Cloudflare
   tunnel publishes the local server on the internet — a throwaway
   `trycloudflare.com` address in one click, or your own hostname with a tunnel
-  token. Start, stop and watch it from the dashboard.
+  token. `cloudflared` is downloaded automatically if you do not have it. Start,
+  stop and watch it from the dashboard.
 - **An admin dashboard for everything.** API key, models, agents, when each
   agent should be used, prompts, voice, remote access, password, and a setup
   check.
@@ -94,8 +95,8 @@ dashboard, so routing is configuration, not code.
   [`claude`](https://claude.com/claude-code),
   [`codex`](https://github.com/openai/codex),
   [`opencode`](https://opencode.ai).
-- **`cloudflared`** — optional, only if you want to reach Socrates from outside
-  your machine. See [Remote access](#remote-access).
+- **`cloudflared`** — not required: if you turn on remote access and it is
+  missing, Socrates downloads it for you. See [Remote access](#remote-access).
 
 ## Install
 
@@ -199,9 +200,15 @@ IP.
   <img src="docs/screenshot-tunnel.png" alt="The remote access card in the admin dashboard" width="760">
 </p>
 
-Install `cloudflared` first
-([downloads](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)),
-then pick one of two modes in **Admin → Remote access** (or right in the setup
+There is nothing to install by hand. If `cloudflared` is not on your `PATH`,
+Socrates downloads the official build for your platform from Cloudflare's
+release page into `<data>/bin/cloudflared` the moment you start a tunnel, checks
+that it runs, and uses it from then on. The dashboard shows the download
+progress and has a **Download cloudflared** button if you want it ready
+beforehand. A `cloudflared` that is already installed always wins, and an
+explicit path in the settings is never overridden.
+
+Pick one of two modes in **Admin → Remote access** (or right in the setup
 wizard):
 
 **Quick tunnel** — one click, no Cloudflare account. Cloudflare hands out a
@@ -278,7 +285,7 @@ internal/openrouter      streaming chat completions, models, audio
 internal/backends        spawn the agent CLIs, normalise their event streams
 internal/agent           the orchestration loop, tools, event bus
 internal/server          HTTP API, auth, SSE, admin, voice
-internal/tunnel          supervised Cloudflare tunnel
+internal/tunnel          supervised Cloudflare tunnel and its installer
 internal/bridge          MCP server for interactive permissions
 internal/proc            process group helpers shared by both
 internal/web/static      the whole front end: plain HTML, CSS and JS

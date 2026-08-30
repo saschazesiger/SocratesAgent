@@ -95,3 +95,14 @@ func tunnelWarning(settings config.Settings) string {
 		`effectively has a shell on this machine - put Cloudflare Access in front of the ` +
 		`hostname, or switch the agents to "Ask me in the web interface".`)
 }
+
+// handleTunnelInstall downloads cloudflared without starting a tunnel, so the
+// dashboard can prepare remote access ahead of time.
+func (s *Server) handleTunnelInstall(w http.ResponseWriter, r *http.Request) {
+	path, err := s.tunnel.Install(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"path": path, "status": s.tunnel.Status()})
+}
