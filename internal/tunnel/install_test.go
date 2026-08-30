@@ -18,6 +18,38 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 )
 
+// releasePayload builds what Cloudflare would serve for THIS platform: a bare
+// binary on Linux and Windows, a gzipped tarball on macOS.
+func releasePayload(t *testing.T, version string) []byte {
+	t.Helper()
+	binary := fakeBinary(version)
+	_, archive, err := assetFor(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		t.Skipf("no published build for this platform: %v", err)
+	}
+	if !archive {
+		return binary
+	}
+	var raw bytes.Buffer
+	gz := gzip.NewWriter(&raw)
+	tarball := tar.NewWriter(gz)
+	if err := tarball.WriteHeader(&tar.Header{
+		Name: "cloudflared", Mode: 0o755, Size: int64(len(binary)), Typeflag: tar.TypeReg,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tarball.Write(binary); err != nil {
+		t.Fatal(err)
+	}
+	if err := tarball.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return raw.Bytes()
+}
+
 // fakeBinary is a script that behaves enough like cloudflared, padded past the
 // installer's minimum size check.
 func fakeBinary(version string) []byte {
@@ -27,6 +59,25 @@ func fakeBinary(version string) []byte {
 	buf.WriteString("exit 0\n")
 	buf.WriteString("# " + strings.Repeat("padding ", 160000))
 	return buf.Bytes()
+}
+
+// wrapForPlatform packages arbitrary content like a release asset would be.
+func wrapForPlatform(t *testing.T, content []byte) []byte {
+	t.Helper()
+	_, archive, err := assetFor(runtime.GOOS, runtime.GOARCH)
+	if err != nil || !archive {
+		return content
+	}
+	var raw bytes.Buffer
+	gz := gzip.NewWriter(&raw)
+	tarball := tar.NewWriter(gz)
+	_ = tarball.WriteHeader(&tar.Header{
+		Name: "cloudflared", Mode: 0o755, Size: int64(len(content)), Typeflag: tar.TypeReg,
+	})
+	_, _ = tarball.Write(content)
+	_ = tarball.Close()
+	_ = gz.Close()
+	return raw.Bytes()
 }
 
 func releaseServer(t *testing.T, payload []byte, hits *atomic.Int32) *httptest.Server {
@@ -46,7 +97,7 @@ func TestInstallerDownloadsAndVerifies(t *testing.T) {
 		t.Skip("the fake binary is a POSIX script")
 	}
 	var hits atomic.Int32
-	payload := fakeBinary("9.9.9")
+	payload := releasePayload(t, "9.9.9")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
 		_, _ = w.Write(payload)
@@ -88,9 +139,9 @@ func TestInstallerRejectsSomethingElse(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the fake binary is a POSIX script")
 	}
-	payload := append([]byte("#!/bin/sh\necho \"totally different tool\"\n"),
+	other := append([]byte("#!/bin/sh\necho \"totally different tool\"\n"),
 		[]byte("# "+strings.Repeat("x", 1200000))...)
-	server := releaseServer(t, payload, nil)
+	server := releaseServer(t, wrapForPlatform(t, other), nil)
 
 	installer := NewInstaller(filepath.Join(t.TempDir(), "bin"))
 	installer.BaseURL = server.URL
@@ -180,8 +231,7 @@ func TestManagerInstallsCloudflaredOnDemand(t *testing.T) {
 	// An empty PATH makes the lookup miss deterministically.
 	t.Setenv("PATH", t.TempDir())
 
-	payload := append(fakeBinary("9.9.9"), []byte("\n")...)
-	server := releaseServer(t, payload, nil)
+	server := releaseServer(t, releasePayload(t, "9.9.9"), nil)
 
 	settings := config.Default()
 	settings.Tunnel = config.TunnelSettings{Enabled: true, Mode: config.TunnelQuick, Command: "cloudflared"}
