@@ -2,7 +2,10 @@ package backends
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/saschazesiger/SocratesAgent/internal/config"
@@ -123,4 +126,59 @@ func contains(haystack, needle string) bool {
 		}
 		return false
 	})()
+}
+
+// TestRunCapturesOutputOfFastCommands guards the ordering between draining the
+// pipes and waiting for the process: a command that exits immediately must
+// still deliver every line it printed.
+func TestRunCapturesOutputOfFastCommands(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a POSIX shell")
+	}
+	for i := 0; i < 25; i++ {
+		res, err := Run(context.Background(), Request{
+			Backend: config.Backend{
+				ID: "fast", Kind: config.KindCustom, Name: "Fast", Command: "sh",
+				ExtraArgs:      []string{"-c", "for n in 1 2 3 4 5 6 7 8 9 10; do echo \"line $n\"; done"},
+				TimeoutSeconds: 30,
+			},
+			Workdir: t.TempDir(),
+		}, nil)
+		if err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+		if lines := strings.Count(res.Text, "\n") + 1; lines != 10 {
+			t.Fatalf("run %d captured %d lines: %q", i, lines, res.Text)
+		}
+	}
+}
+
+// TestClaudeStreamSurvivesFastExit is the shape that broke in CI: the result
+// event arrives right before the process exits.
+func TestClaudeStreamSurvivesFastExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a POSIX shell")
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "claude")
+	body := "#!/bin/sh\n" +
+		"echo '{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"m\"}'\n" +
+		"echo '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"all done\"}'\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 25; i++ {
+		res, err := Run(context.Background(), Request{
+			Backend: config.Backend{ID: "claude", Kind: config.KindClaude, Name: "Claude",
+				Command: script, Approval: "auto", TimeoutSeconds: 30},
+			Prompt:  "hi",
+			Workdir: dir,
+		}, nil)
+		if err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+		if res.Text != "all done" {
+			t.Fatalf("run %d lost the result event: %q", i, res.Text)
+		}
+	}
 }

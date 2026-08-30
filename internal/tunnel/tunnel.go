@@ -287,8 +287,9 @@ func (m *Manager) runOnce(ctx context.Context, gen int) error {
 	})
 	defer ready.Stop()
 
-	waitErr := cmd.Wait()
+	// Drain the output before Wait closes the pipes underneath the readers.
 	wg.Wait()
+	waitErr := cmd.Wait()
 	if ctx.Err() != nil {
 		return nil
 	}

@@ -160,8 +160,11 @@ func Run(ctx context.Context, req Request, emit Emitter) (*Result, error) {
 		}
 	}()
 
-	waitErr := cmd.Wait()
+	// cmd.Wait closes the pipes as soon as the process is gone, so every reader
+	// has to be finished first - otherwise a fast agent loses its last lines,
+	// including the result event.
 	wg.Wait()
+	waitErr := cmd.Wait()
 	dur := time.Since(started)
 
 	exitCode := 0
