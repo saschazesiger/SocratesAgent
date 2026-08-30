@@ -44,7 +44,7 @@ func main() {
 	}
 
 	fs := flag.NewFlagSet("socrates", flag.ExitOnError)
-	addr := fs.String("addr", envOr("SOCRATES_ADDR", "127.0.0.1:8080"), "address to listen on (use :8080 to accept connections from the network)")
+	addr := fs.String("addr", envOr("SOCRATES_ADDR", ":8080"), "address to listen on (use 127.0.0.1:8080 to keep it reachable from this machine only)")
 	dataDir := fs.String("data", config.DataDir(), "directory for the database and workspaces")
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	fs.Usage = func() {
@@ -98,9 +98,10 @@ func main() {
 	log.Printf("data directory: %s", *dataDir)
 	log.Printf("open %s in your browser", displayURL(listener.Addr()))
 	if isLoopback(listener.Addr()) {
-		log.Print("listening on loopback only - publish it with the Cloudflare tunnel in /admin, or pass -addr :8080 to open the port")
+		log.Print("listening on loopback only - reachable from this machine, and through the Cloudflare tunnel in /admin")
 	} else {
-		log.Print("warning: this port is reachable from the network; anyone with the password can run commands on this machine")
+		log.Printf("listening on %s - reachable from the network. Anyone who gets past the password can run commands here; "+
+			"pass -addr 127.0.0.1:8080 to keep it local and publish it through the Cloudflare tunnel instead", listener.Addr())
 	}
 
 	go func() {

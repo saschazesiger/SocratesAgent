@@ -234,7 +234,7 @@ process list, and it is redacted from the log tail in the dashboard.
 
 | Flag | Environment | Default | Meaning |
 | --- | --- | --- | --- |
-| `-addr` | `SOCRATES_ADDR` | `127.0.0.1:8080` | listen address; use `:8080` to accept connections from the network |
+| `-addr` | `SOCRATES_ADDR` | `:8080` | listen address; use `127.0.0.1:8080` to accept local connections only |
 | `-data` | `SOCRATES_DATA_DIR` | `~/.socrates` | database and workspaces |
 | `-version` | | | print the version |
 | | `OPENROUTER_API_KEY` | | seeds the key on first start |
@@ -252,8 +252,10 @@ Socrates is built for a single trusted operator.
   that is `HttpOnly` and `SameSite=Lax`, and rate limited logins.
 - Delegated agents run **as the user that runs Socrates**, with auto approval by
   default. Treat access to the web interface as access to a shell.
-- The default listen address is loopback only. Publish it with the Cloudflare
-  tunnel, or pass `-addr :8080` if you really want the port open.
+- Socrates listens on every interface by default, so it works out of the box on
+  a server, in Docker and behind a tunnel. Pass `-addr 127.0.0.1:8080` (or set
+  `SOCRATES_ADDR`) to accept local connections only and publish it exclusively
+  through the Cloudflare tunnel.
 - Requests through a tunnel are rate limited per `CF-Connecting-IP`, and the
   session cookie is marked `Secure` as soon as the request arrives over HTTPS.
 - The permission bridge only accepts requests carrying a token that is generated
