@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -126,6 +127,17 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body io.Re
 	return req, nil
 }
 
+// StatusError is a failure the provider reported with an HTTP status, as
+// opposed to the connection never getting there at all. Keeping the status
+// around is what lets the retry logic tell "rate limited, try again" from
+// "your key is wrong, do not bother".
+type StatusError struct {
+	Status  int
+	Message string
+}
+
+func (e *StatusError) Error() string { return e.Message }
+
 func apiError(resp *http.Response) error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
 	msg := strings.TrimSpace(string(body))
@@ -141,7 +153,90 @@ func apiError(resp *http.Response) error {
 	if msg == "" {
 		msg = resp.Status
 	}
-	return fmt.Errorf("%s: %s", resp.Status, msg)
+	return &StatusError{Status: resp.StatusCode, Message: fmt.Sprintf("%s: %s", resp.Status, msg)}
+}
+
+// retryable reports whether another attempt has a real chance of working. A
+// dropped connection or a mobile network that came back a second later is worth
+// repeating; a rejected key is not.
+func retryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var status *StatusError
+	if errors.As(err, &status) {
+		switch status.Status {
+		case http.StatusRequestTimeout, http.StatusTooManyRequests,
+			http.StatusInternalServerError, http.StatusBadGateway,
+			http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return true
+		}
+		return false
+	}
+	// Anything that is not a status is a transport problem: DNS, TCP, TLS, a
+	// connection reset halfway through. Those are exactly the ones worth
+	// repeating.
+	return true
+}
+
+// maxAttempts is how often a transient failure is repeated before giving up.
+const maxAttempts = 3
+
+// backoff waits before attempt n, or gives up early if the caller does.
+func backoff(ctx context.Context, attempt int) error {
+	delay := time.Duration(1<<uint(attempt-1)) * 700 * time.Millisecond
+	if delay > 5*time.Second {
+		delay = 5 * time.Second
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// send performs a request, repeating it when the failure looks temporary. The
+// body is passed as bytes rather than a reader precisely so that it can be
+// replayed on the next attempt.
+func (c *Client) send(ctx context.Context, method, path string, body []byte, contentType string, decorate func(*http.Request)) (*http.Response, error) {
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			if err := backoff(ctx, attempt-1); err != nil {
+				return nil, lastErr
+			}
+		}
+		var reader io.Reader
+		if body != nil {
+			reader = bytes.NewReader(body)
+		}
+		req, err := c.newRequest(ctx, method, path, reader, contentType)
+		if err != nil {
+			return nil, err
+		}
+		if decorate != nil {
+			decorate(req)
+		}
+		resp, err := c.HTTP.Do(req)
+		if err == nil && resp.StatusCode < 300 {
+			return resp, nil
+		}
+		if err == nil {
+			err = apiError(resp)
+			resp.Body.Close()
+		}
+		lastErr = err
+		if ctx.Err() != nil || !retryable(err) {
+			return nil, err
+		}
+	}
+	return nil, lastErr
 }
 
 // Chat runs a completion. When h is non nil the request is streamed and the
@@ -160,25 +255,80 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest, h *StreamHandler) (*
 	if err != nil {
 		return nil, err
 	}
-	httpReq, err := c.newRequest(ctx, http.MethodPost, "/chat/completions", bytes.NewReader(body), "application/json")
+	decorate := func(r *http.Request) {
+		if req.Stream {
+			r.Header.Set("Accept", "text/event-stream")
+		}
+	}
+
+	// A completion is retried while nothing has reached the screen yet. Once
+	// the first token has been shown, a second attempt would append a whole
+	// answer to half of one, so the failure is reported instead.
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			if err := backoff(ctx, attempt-1); err != nil {
+				return nil, lastErr
+			}
+		}
+		res, emitted, err := c.chatOnce(ctx, body, req.Stream, h, decorate)
+		if err == nil {
+			return res, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil || emitted || !retryable(err) {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
+// chatOnce is one attempt at a completion. It reports whether the handler
+// already produced visible output, because that is what makes an attempt
+// impossible to repeat.
+func (c *Client) chatOnce(ctx context.Context, body []byte, stream bool, h *StreamHandler, decorate func(*http.Request)) (*Result, bool, error) {
+	var reader io.Reader = bytes.NewReader(body)
+	httpReq, err := c.newRequest(ctx, http.MethodPost, "/chat/completions", reader, "application/json")
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	if req.Stream {
-		httpReq.Header.Set("Accept", "text/event-stream")
-	}
+	decorate(httpReq)
 	resp, err := c.HTTP.Do(httpReq)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return nil, apiError(resp)
+		return nil, false, apiError(resp)
 	}
-	if !req.Stream {
-		return parseCompletion(resp.Body)
+	if !stream {
+		res, err := parseCompletion(resp.Body)
+		return res, false, err
 	}
-	return parseStream(resp.Body, h)
+	emitted := false
+	guarded := &StreamHandler{}
+	if h != nil {
+		guarded.OnContent = func(delta string) {
+			emitted = true
+			if h.OnContent != nil {
+				h.OnContent(delta)
+			}
+		}
+		guarded.OnReasoning = func(delta string) {
+			emitted = true
+			if h.OnReasoning != nil {
+				h.OnReasoning(delta)
+			}
+		}
+		guarded.OnToolCall = func(name string) {
+			emitted = true
+			if h.OnToolCall != nil {
+				h.OnToolCall(name)
+			}
+		}
+	}
+	res, err := parseStream(resp.Body, guarded)
+	return res, emitted, err
 }
 
 type completionResponse struct {
@@ -358,18 +508,11 @@ type Model struct {
 func (c *Client) Models(ctx context.Context) ([]Model, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	req, err := c.newRequest(ctx, http.MethodGet, "/models", nil, "")
-	if err != nil {
-		return nil, err
-	}
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.send(ctx, http.MethodGet, "/models", nil, "", nil)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return nil, apiError(resp)
-	}
 	var out struct {
 		Data []Model `json:"data"`
 	}
@@ -395,18 +538,11 @@ func (c *Client) CheckKey(ctx context.Context) (*KeyInfo, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	req, err := c.newRequest(ctx, http.MethodGet, "/key", nil, "")
-	if err != nil {
-		return nil, err
-	}
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.send(ctx, http.MethodGet, "/key", nil, "", nil)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return nil, apiError(resp)
-	}
 	var out struct {
 		Data KeyInfo `json:"data"`
 	}
@@ -459,18 +595,11 @@ func (c *Client) TranscribeEndpoint(ctx context.Context, model string, audio []b
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
-	req, err := c.newRequest(ctx, http.MethodPost, "/audio/transcriptions", &buf, mw.FormDataContentType())
-	if err != nil {
-		return "", err
-	}
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.send(ctx, http.MethodPost, "/audio/transcriptions", buf.Bytes(), mw.FormDataContentType(), nil)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return "", apiError(resp)
-	}
 	var out struct {
 		Text string `json:"text"`
 	}
@@ -495,18 +624,11 @@ func (c *Client) Speech(ctx context.Context, model, voice, text string) ([]byte,
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
-	req, err := c.newRequest(ctx, http.MethodPost, "/audio/speech", bytes.NewReader(body), "application/json")
-	if err != nil {
-		return nil, "", err
-	}
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.send(ctx, http.MethodPost, "/audio/speech", body, "application/json", nil)
 	if err != nil {
 		return nil, "", err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return nil, "", apiError(resp)
-	}
 	audio, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
 		return nil, "", err

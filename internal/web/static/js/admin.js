@@ -1,6 +1,6 @@
 // The admin dashboard: everything about Socrates is configurable here.
 
-import { api, el, toast } from './api.js';
+import { api, el, toast, confirmDialog, isOffline, errorMessage, onWake } from './api.js';
 import { speak } from './voice.js';
 import { combobox } from './combobox.js';
 import * as models from './models.js';
@@ -59,7 +59,19 @@ function setPath(object, path, value) {
   target[last] = value;
 }
 
-load().catch((err) => toast(err.message, 'error'));
+// The admin page is loaded once. If the connection was down at that moment it
+// would otherwise stay blank for good, so it retries and comes back on its own.
+boot();
+
+function boot(attempt = 1) {
+  load().catch((err) => {
+    if (!isOffline(err)) {
+      toast(errorMessage(err), 'error');
+      return;
+    }
+    setTimeout(() => boot(attempt + 1), Math.min(15000, 1500 * attempt));
+  });
+}
 
 async function load() {
   const data = await api('/api/settings');
@@ -188,7 +200,9 @@ async function save() {
   const next = collect();
   next.tools = settings.tools;
   try {
-    const data = await api('/api/settings', { method: 'PUT', body: { settings: next } });
+    // Settings are written whole, so the same body sent twice leaves exactly
+    // the same result - which makes this safe to repeat over a bad link.
+    const data = await api('/api/settings', { method: 'PUT', attempts: 4, body: { settings: next } });
     settings = data.settings;
     fillForm();
     syncModelPickers();
@@ -197,7 +211,7 @@ async function save() {
     hint('Saved');
     toast('Settings saved');
   } catch (err) {
-    toast(err.message, 'error');
+    toast(errorMessage(err), 'error');
   }
 }
 
@@ -239,6 +253,7 @@ function addAgent() {
     skip_permissions: false,
     skip_permission_args: [],
     ask_permission_args: [],
+    env: [],
     driving: 'How do you hand it a task, how do you know it has finished, which keys answer its questions?',
     ready_pattern: '',
     idle_seconds: 5,
@@ -316,8 +331,16 @@ function agentCard(tool, index) {
     el('span', { class: 'spacer' }),
     el('button', {
       class: 'btn sm danger', type: 'button', text: 'Remove',
-      onclick: (event) => {
+      onclick: async (event) => {
         event.stopPropagation();
+        const ok = await confirmDialog({
+          title: 'Remove this tool?',
+          body: '"' + (tool.name || tool.id) + '" disappears from the list. ' +
+            'Nothing is written until you save.',
+          confirmLabel: 'Remove tool',
+          danger: true,
+        });
+        if (!ok) return;
         settings.tools.splice(index, 1);
         renderAgents();
       },
@@ -361,6 +384,11 @@ function agentCard(tool, index) {
       field('Arguments', text((tool.args || []).join(' '),
         (value) => { tool.args = splitArgs(value); },
         { placeholder: '--no-alt-screen' }), 'Always passed, before everything else.'),
+      field('Environment', text((tool.env || []).join(' '),
+        (value) => { tool.env = splitArgs(value); },
+        { placeholder: 'IS_SANDBOX=1' }),
+        'KEY=VALUE pairs put in front of the command, the way you would in a shell. ' +
+        'Claude Code needs IS_SANDBOX=1 to skip permissions as root.'),
       field('Model', modelField(tool),
         'The program\u2019s own model name. Pick one from the list or type anything, for example "sonnet".'),
       field('Model argument', text(tool.model_flag, (value) => { tool.model_flag = value; },
@@ -450,11 +478,22 @@ const STATE_LABEL = {
   stopped: 'Tunnel is off',
 };
 
+// The status line is polled every three seconds. Everything after the dot is
+// redrawn, but the dot itself stays put: one that is taken out of the page and
+// put back that often never gets far enough into its animation to look like it
+// is pulsing - it just blinks.
 function renderTunnelStatus(status) {
   const host = $('tunnelStatus');
-  host.innerHTML = '';
+  let dot = host.querySelector(':scope > .state-dot');
+  if (!dot) {
+    dot = el('span', { class: 'state-dot' });
+    host.prepend(dot);
+  }
+  const dotClass = 'state-dot ' + (status.state || '');
+  if (dot.className !== dotClass) dot.className = dotClass;
+  while (dot.nextSibling) dot.nextSibling.remove();
+
   const parts = [
-    el('span', { class: 'state-dot ' + status.state }),
     el('span', { class: 'state-label', text: STATE_LABEL[status.state] || status.state }),
   ];
   if (status.url) {
@@ -511,6 +550,11 @@ function renderTunnelStatus(status) {
   if (live || !log.hidden) tunnelTimer = setTimeout(refreshTunnel, 3000);
 }
 
+onWake(() => {
+  if (document.visibilityState === 'hidden' || !settings) return;
+  refreshTunnel();
+});
+
 async function refreshTunnel() {
   try {
     const data = await api('/api/tunnel');
@@ -528,7 +572,14 @@ async function refreshTunnel() {
     renderTunnelStatus(data.status || {});
   } catch (err) {
     clearTimeout(tunnelTimer);
-    toast(err.message, 'error');
+    // A poll that could not reach the server is not worth a message - the
+    // connection bar already says so - but it must not stop polling either,
+    // or the page would sit on a status that is no longer true.
+    if (isOffline(err)) {
+      tunnelTimer = setTimeout(refreshTunnel, 5000);
+      return;
+    }
+    toast(errorMessage(err), 'error');
   }
 }
 
@@ -542,7 +593,7 @@ async function startTunnel() {
     toast('Tunnel starting');
     setTimeout(refreshTunnel, 1200);
   } catch (err) {
-    toast(err.message, 'error');
+    toast(errorMessage(err), 'error');
   } finally {
     button.disabled = false;
   }
@@ -560,7 +611,7 @@ async function installCloudflared() {
     renderTunnelStatus(data.status || {});
     toast('cloudflared installed');
   } catch (err) {
-    toast(err.message, 'error');
+    toast(errorMessage(err), 'error');
   } finally {
     button.disabled = false;
     button.textContent = 'Download cloudflared';
@@ -575,7 +626,7 @@ async function stopTunnel() {
     renderTunnelStatus(data.status || {});
     toast('Tunnel stopped');
   } catch (err) {
-    toast(err.message, 'error');
+    toast(errorMessage(err), 'error');
   }
 }
 
@@ -597,7 +648,7 @@ async function runChecks() {
       ));
     }
   } catch (err) {
-    toast(err.message, 'error');
+    toast(errorMessage(err), 'error');
   } finally {
     button.disabled = false;
     button.textContent = 'Run checks';
@@ -617,6 +668,6 @@ async function changePassword() {
     $('pwNext').value = '';
     toast('Password changed');
   } catch (err) {
-    toast(err.message, 'error');
+    toast(errorMessage(err), 'error');
   }
 }

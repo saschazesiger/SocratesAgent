@@ -134,6 +134,11 @@ type Tool struct {
 	// Command and Args are how the program is started.
 	Command string   `json:"command"`
 	Args    []string `json:"args"`
+	// Env is extra environment for the program, as KEY=VALUE lines. It is the
+	// declarative form of writing "KEY=VALUE program" in a shell, and some
+	// programs need it: Claude Code refuses --dangerously-skip-permissions as
+	// root unless IS_SANDBOX=1 is set.
+	Env []string `json:"env"`
 	// Model is passed after ModelFlag when both are set. These are the
 	// program's own model names, not OpenRouter ids.
 	Model     string `json:"model"`
@@ -210,6 +215,10 @@ func (t Tool) Timeout() time.Duration {
 	return time.Duration(t.TimeoutSeconds) * time.Second
 }
 
+// sandboxEnv tells Claude Code that it is already confined, which is what it
+// wants to hear before it will skip permission prompts as root.
+const sandboxEnv = "IS_SANDBOX=1"
+
 // DefaultTools returns the three coding agents Socrates ships with. They are
 // ordinary entries: nothing in the code treats them differently.
 func DefaultTools() []Tool {
@@ -224,6 +233,10 @@ func DefaultTools() []Tool {
 			ModelFlag:       "--model",
 			SkipPermissions: true,
 			SkipArgs:        []string{"--dangerously-skip-permissions"},
+			// Claude Code refuses to skip permissions when it runs as root
+			// unless it is told it is already sandboxed, which is exactly the
+			// case here: Socrates often runs in a container.
+			Env: []string{sandboxEnv},
 			Driving: "Starts an interactive session in the working directory. The first time it " +
 				"runs in a new folder it asks whether the folder is trusted: choose the " +
 				"\"Yes, I trust this folder\" line with the down arrow and press enter. " +
@@ -467,11 +480,30 @@ func (s *Settings) Normalize() {
 		if t.AskArgs == nil {
 			t.AskArgs = []string{}
 		}
+		if t.Env == nil {
+			// A settings file written before tools had an environment gets the
+			// default for this program, so an upgrade does not leave Claude
+			// Code refusing to start as root. An empty list, which is what the
+			// dashboard sends once the field has been cleared, is left alone.
+			t.Env = defaultEnvFor(*t)
+		}
 		// A tool that cannot skip permissions has nothing to skip.
 		if len(t.SkipArgs) == 0 && len(t.AskArgs) == 0 {
 			t.SkipPermissions = false
 		}
 	}
+}
+
+// defaultEnvFor is the environment a tool gets when its settings file predates
+// the field. It only recognises the programs Socrates ships with; anything else
+// starts out with nothing extra.
+func defaultEnvFor(t Tool) []string {
+	for _, d := range DefaultTools() {
+		if d.ID == t.ID || d.Command == t.Command {
+			return append([]string{}, d.Env...)
+		}
+	}
+	return []string{}
 }
 
 // migrateBackends folds a settings document written by an older version into

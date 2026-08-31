@@ -25,11 +25,33 @@ func sub() fs.FS {
 func Static() http.Handler {
 	fileServer := http.FileServer(http.FS(sub()))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, ".css") || strings.HasSuffix(r.URL.Path, ".js") {
+		switch {
+		case strings.HasSuffix(r.URL.Path, ".css"), strings.HasSuffix(r.URL.Path, ".js"):
 			w.Header().Set("Cache-Control", "no-cache")
+		case strings.HasSuffix(r.URL.Path, ".png"):
+			// Nothing in an embedded image carries a modification time, so
+			// without a stated lifetime the browser refetches it every visit.
+			w.Header().Set("Cache-Control", "public, max-age=86400")
 		}
 		fileServer.ServeHTTP(w, r)
 	})
+}
+
+// ServiceWorker serves the offline shell worker. It has to come from the root
+// rather than /static/, because a worker can only take charge of the paths
+// below where it was served from, and it needs all of them.
+func ServiceWorker(w http.ResponseWriter, r *http.Request) {
+	data, err := fs.ReadFile(sub(), "sw.js")
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	// Always revalidated, so a new version of Socrates is never held back by
+	// the very thing that is supposed to make it survive a bad connection.
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Service-Worker-Allowed", "/")
+	_, _ = w.Write(data)
 }
 
 // ServePage writes one of the embedded HTML documents.
@@ -46,15 +68,15 @@ func ServePage(w http.ResponseWriter, r *http.Request, name string) {
 	_, _ = w.Write(data)
 }
 
-const favicon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-<rect width="32" height="32" rx="8" fill="#111318"/>
-<circle cx="16" cy="16" r="7" fill="none" stroke="#fff" stroke-width="2"/>
-<circle cx="16" cy="16" r="2.4" fill="#fff"/>
-</svg>`
-
-// Favicon serves the app icon.
+// Favicon serves the app icon from the root, where a browser looks for it
+// on its own even when a page never says where it is.
 func Favicon(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "image/svg+xml")
+	data, err := fs.ReadFile(sub(), "img/favicon.png")
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
-	_, _ = w.Write([]byte(favicon))
+	_, _ = w.Write(data)
 }

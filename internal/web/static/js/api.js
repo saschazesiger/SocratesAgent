@@ -1,37 +1,46 @@
 // Small helpers shared by every page: JSON fetch, DOM building and toasts.
 
-export async function api(path, options = {}) {
-  const { method = 'GET', body, raw = false, signal } = options;
-  const init = { method, credentials: 'same-origin', headers: {}, signal };
-  if (body !== undefined) {
-    init.headers['Content-Type'] = 'application/json';
-    init.body = JSON.stringify(body);
-  }
-  const res = await fetch(path, init);
-  if (res.status === 401) {
-    location.href = '/login';
-    throw new Error('Signed out');
-  }
-  if (raw) {
-    if (!res.ok) throw new Error(await errorText(res));
-    return res;
-  }
-  if (res.status === 204) return null;
-  const text = await res.text();
-  let data = null;
-  if (text) {
-    try { data = JSON.parse(text); } catch { data = null; }
-  }
-  if (!res.ok) throw new Error((data && data.error) || text || res.statusText);
-  return data;
+import { request, HttpError, NetworkError, mountConnectionBar } from './net.js';
+
+export { clientKey, onWake, LiveStream, Outbox, HttpError, NetworkError, RetryLater } from './net.js';
+
+// Every page gets the connection bar, because every page can be looking at
+// something that stopped being true.
+mountConnectionBar();
+
+// The offline shell. Without it, opening or reloading Socrates with no signal
+// replaces the app with the browser's error page and takes the queued messages
+// and the draft with it. Registration is best effort: it needs a secure
+// context, which plain http on a LAN address is not.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => { /* http on a LAN address */ });
+  });
 }
 
-async function errorText(res) {
-  try {
-    const data = await res.clone().json();
-    if (data && data.error) return data.error;
-  } catch { /* not json */ }
-  return res.statusText || ('HTTP ' + res.status);
+// api is the JSON front door. It keeps the shape callers already expect and
+// gets retries, per attempt deadlines and connection reporting from net.js.
+//
+// A 401 normally means the session is gone and the person has to sign in
+// again. Signing in is the one place where it means "wrong password", and
+// bouncing back to the login page there would only reload it and swallow the
+// message - which is why net.js leaves /api/login alone.
+export async function api(path, options = {}) {
+  return request(path, options);
+}
+
+// isOffline separates "the request never got there" from "the server said no".
+// The first is worth retrying and worth saying out loud; the second is a real
+// answer that the user has to see.
+export function isOffline(err) {
+  return err instanceof NetworkError;
+}
+
+// errorMessage turns any failure into one sentence a person can act on.
+export function errorMessage(err) {
+  if (!err) return 'Something went wrong.';
+  if (isOffline(err)) return err.message;
+  return err.message || String(err);
 }
 
 export function el(tag, attrs = {}, ...children) {
@@ -60,6 +69,59 @@ export function escapeHtml(value) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+// confirmDialog is the app's own version of window.confirm: same promise in,
+// same yes or no out, but it looks like the rest of Socrates, can say what the
+// button actually does, and does not freeze the page while it is open.
+export function confirmDialog(options = {}) {
+  const {
+    title,
+    body = '',
+    confirmLabel = 'Confirm',
+    cancelLabel = 'Cancel',
+    danger = false,
+  } = options;
+
+  return new Promise((resolve) => {
+    const dialog = el('dialog', { class: 'modal' });
+    const cancel = el('button', { class: 'btn sm', type: 'button', text: cancelLabel });
+    const accept = el('button', {
+      class: 'btn sm ' + (danger ? 'danger' : 'primary'), type: 'button', text: confirmLabel,
+    });
+    dialog.append(
+      el('h2', { class: 'modal-title', text: title }),
+      body ? el('p', { class: 'modal-body', text: body }) : null,
+      el('div', { class: 'modal-actions' }, cancel, accept),
+    );
+
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+      dialog.close();
+    };
+    cancel.addEventListener('click', () => finish(false));
+    accept.addEventListener('click', () => finish(true));
+    // Escape and a click on the backdrop both mean no.
+    dialog.addEventListener('cancel', (event) => {
+      event.preventDefault();
+      finish(false);
+    });
+    dialog.addEventListener('click', (event) => {
+      if (event.target === dialog) finish(false);
+    });
+    dialog.addEventListener('close', () => {
+      finish(false);
+      dialog.remove();
+    });
+
+    document.body.append(dialog);
+    dialog.showModal();
+    // A destructive dialog opens on the way out, not on the way through.
+    (danger ? cancel : accept).focus();
+  });
 }
 
 let toastHost = null;

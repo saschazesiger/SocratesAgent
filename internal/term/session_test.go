@@ -204,3 +204,18 @@ func TestStartRejectsMissingCommand(t *testing.T) {
 		t.Errorf("error should say the command was not found, got: %v", err)
 	}
 }
+
+func TestSessionCarriesExtraEnvironment(t *testing.T) {
+	s, err := Start("env-1", "env", "chat", Spec{
+		Command: "sh",
+		Args:    []string{"-c", "printf 'sandbox=[%s]\\n' \"$IS_SANDBOX\""},
+		Env:     []string{"IS_SANDBOX=1"},
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close(time.Second) })
+	if ok, err := s.WaitFor(t.Context(), `sandbox=\[1\]`, 5*time.Second); err != nil || !ok {
+		t.Fatalf("the extra environment never reached the program (ok=%v err=%v)\nscreen:\n%s", ok, err, s.Screen())
+	}
+}

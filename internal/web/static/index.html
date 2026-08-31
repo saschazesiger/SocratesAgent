@@ -4,7 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Socrates</title>
-<link rel="icon" href="/favicon.svg">
+<link rel="icon" href="/favicon.png">
+<link rel="apple-touch-icon" href="/static/img/logo.png">
 <link rel="stylesheet" href="/static/css/app.css">
 </head>
 <body>
@@ -12,7 +13,7 @@
   <aside class="sidebar" id="sidebar">
     <div class="side-head">
       <div class="brand">
-        <span class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none"/></svg></span>
+        <img class="mark" src="/static/img/logo.png" alt="" width="24" height="24">
         Socrates
       </div>
       <button class="btn new-chat" id="newChat">
@@ -95,6 +96,12 @@
       <button class="mic-big" id="autoMic" title="Start listening">
         <svg id="autoMicIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
       </button>
+      <div class="auto-busy" id="autoBusy" hidden aria-label="Working">
+        <i></i><i></i><i></i>
+      </div>
+      <!-- Hands free means the person is driving. A lost connection has to be
+           readable at a glance, not hidden in a corner. -->
+      <div class="auto-offline" id="autoOffline" hidden role="status"></div>
       <div class="auto-live" id="autoLive"></div>
       <div class="auto-answer" id="autoAnswer" hidden></div>
       <div class="auto-question" id="autoQuestion" hidden></div>

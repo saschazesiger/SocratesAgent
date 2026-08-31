@@ -38,6 +38,14 @@ by voice.
 - **Sessions that survive a restart.** Each one runs in its own small host
   process, so restarting Socrates does not interrupt an agent mid task; it
   reconnects to what was already running.
+- **Built for a bad connection.** Losing signal is treated as normal, not as an
+  error. A banner says the moment the live view stops being live and how old
+  what you are looking at is — the chat, the terminal screens and the hands free
+  display all stop pretending. The stream reconnects itself and replays exactly
+  what was missed, so nothing quietly goes stale. Anything you send while the
+  connection is gone — a message, an answer to a question, a half typed draft —
+  is kept and delivered when there is signal again, once and only once. The app
+  even opens with no network at all, and picks up where it left off.
 - **It asks you back.** When something is ambiguous the agent offers two to four
   options as buttons instead of guessing.
 - **Voice in and out.** Record in the browser, transcribe through OpenRouter,
@@ -172,10 +180,10 @@ verbatim, so write them the way you would brief a colleague on their first day.
 | Codex | yes | research, investigation, comparing options, writing up findings |
 | OpenCode | no | an open source alternative implementer |
 
-A tool is: a command, its arguments, an optional model, a permission switch, and
-the "how to drive it" text. That is the whole extension mechanism — point one at
-`aider`, at a REPL, at a deploy script, at anything with a prompt, and describe
-how it behaves. No `kind` field, no code.
+A tool is: a command, its arguments, its environment, an optional model, a
+permission switch, and the "how to drive it" text. That is the whole extension
+mechanism — point one at `aider`, at a REPL, at a deploy script, at anything with
+a prompt, and describe how it behaves. No `kind` field, no code.
 
 Socrates can also just run commands. `git status`, `npm test`, `rg TODO` need no
 configuration at all; the tool list is only for programs it has to hold a
@@ -188,6 +196,12 @@ which is what makes long tasks work without babysitting. Turn the switch off and
 the tool is started with its normal approval flags instead; its questions then
 appear on screen, and Socrates answers them the way you would, after reading
 what is being asked. Both sets of arguments are editable per tool.
+
+**Environment.** Each tool has a list of `KEY=VALUE` pairs, put in front of the
+command exactly the way you would write them in a shell. Claude Code ships with
+`IS_SANDBOX=1`, because it refuses `--dangerously-skip-permissions` when it runs
+as root — which is the normal case in a container — unless it is told it is
+already confined.
 
 **Where they run.** The admin dashboard has a workspace root (default
 `~/.socrates/workspaces`); every chat gets its own directory below it, so chats

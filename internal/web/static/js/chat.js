@@ -1,6 +1,9 @@
 // The chat page: sidebar, live process view, composer, voice and auto mode.
 
-import { api, el, toast, fmtDuration, fmtClock } from './api.js';
+import {
+  api, el, toast, confirmDialog, fmtDuration, fmtClock, isOffline, errorMessage,
+  LiveStream, Outbox, clientKey, onWake, HttpError, RetryLater,
+} from './api.js';
 import { renderMarkdown } from './markdown.js';
 import { Recorder, speak, stopSpeaking, isSpeaking, plainSpeech } from './voice.js';
 
@@ -25,6 +28,8 @@ const dom = {
   autoTranscript: $('autoTranscript'),
   autoMic: $('autoMic'),
   autoLive: $('autoLive'),
+  autoBusy: $('autoBusy'),
+  autoOffline: $('autoOffline'),
   autoAnswer: $('autoAnswer'),
   autoQuestion: $('autoQuestion'),
   autoActions: $('autoActions'),
@@ -42,21 +47,38 @@ const state = {
   chat: null,
   rev: 0,
   busy: false,
-  auto: localStorage.getItem('socrates.auto') === '1',
-  es: null,
+  serverBusy: false,
+  auto: readFlag('socrates.auto'),
+  // The chat event stream, and whether it is actually delivering. Everything
+  // on screen is only as true as this flag.
+  stream: null,
+  live: false,
+  lastSync: 0,
+  // Queues that survive a reload: nothing the person did is lost because the
+  // connection went away between tapping and landing.
+  outbox: null,
+  answers: null,
+  reopenTimer: null,
+  loadFailed: false,
   stepEls: new Map(),
   stepData: new Map(),
+  chatEls: new Map(),
   // One live stream per terminal session on screen.
   termStreams: new Map(),
   turnEls: new Map(),
   expanded: new Set(),
   touched: new Set(),
   pendingQuestion: null,
-  optimisticUser: null,
+  spokeOffline: false,
   lastAnswer: '',
   autoPhase: 'idle',
   recorder: new Recorder(),
   recTimer: null,
+  // The always on "something is happening" row: what it says, when it started
+  // and the ticker that keeps its clock moving.
+  workLabel: '',
+  workSince: 0,
+  workTimer: null,
   prefs: { speak_in_auto_mode: true, speak_in_chat_mode: false, tts_rate: 1, tts_language: '' },
 };
 
@@ -72,22 +94,166 @@ const ICONS = {
   send: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
 };
 
+/* -------------------------------------------------------- local storage */
+
+// Local storage throws in a few real situations - private windows, a browser
+// set to block site data - and none of them are a reason for the chat to stop
+// working. Every access goes through these.
+
+function readFlag(key) {
+  try { return localStorage.getItem(key) === '1'; } catch { return false; }
+}
+
+function writeValue(key, value) {
+  try {
+    if (value) localStorage.setItem(key, value);
+    else localStorage.removeItem(key);
+  } catch { /* nothing to do about it */ }
+}
+
+function readValue(key) {
+  try { return localStorage.getItem(key) || ''; } catch { return ''; }
+}
+
+// The composer is a draft until it is sent. Losing signal mid sentence, or the
+// browser dropping the tab to save memory, must not cost what was typed.
+function draftKey() {
+  return 'socrates.draft.' + (state.chatId || 'new');
+}
+
+// The last known title of a chat. Reopening with no signal cannot ask the
+// server what this conversation is called, and calling it "New chat" would be
+// simply wrong.
+function titleKey(id) {
+  return 'socrates.title.' + id;
+}
+
+function saveDraft() {
+  writeValue(draftKey(), dom.input.value);
+}
+
+function restoreDraft() {
+  dom.input.value = readValue(draftKey());
+  autosize();
+  updateSendButton();
+}
+
 /* ------------------------------------------------------------- bootstrap */
 
-init().catch((err) => toast(err.message, 'error'));
+// BOOT is the request budget for everything the page needs before it can show
+// itself. Two quick attempts, then give up and let the retry loops take over -
+// a blank screen for fifteen seconds is worse than an honest one after two.
+const BOOT = { attempts: 2, timeout: 8000 };
 
 async function init() {
   setAuto(state.auto, true);
+  buildQueues();
   bindUI();
-  try {
-    const prefs = await api('/api/preferences');
-    if (prefs) state.prefs = prefs;
-  } catch { /* defaults are fine */ }
-  await refreshChats();
+  // Preferences are a nicety and the defaults are sensible, so the page is
+  // never held up waiting for them. Everything on the boot path is deliberately
+  // impatient: on a bad connection what matters is that the app appears and
+  // says what is wrong, not that it eventually loads everything.
+  api('/api/preferences', BOOT)
+    .then((prefs) => { if (prefs) state.prefs = prefs; })
+    .catch(() => { /* defaults are fine */ });
+  await refreshChats(BOOT);
+  // The address bar is the more reliable of the two: reopening the app with no
+  // signal cannot fetch the chat list, and falling back to a blank new chat
+  // there would lose both the place and the draft that belongs to it.
   const fromHash = location.hash.replace(/^#/, '');
-  if (fromHash && state.chats.some((c) => c.id === fromHash)) await openChat(fromHash);
+  if (fromHash) await openChat(fromHash);
   else if (state.chats.length) await openChat(state.chats[0].id);
-  else showEmptyState();
+  else {
+    showEmptyState();
+    restoreDraft();
+  }
+}
+
+// boot keeps trying. Opening the app in a tunnel or a dead spot used to leave
+// an empty page that never healed; now it says so and comes back on its own as
+// soon as there is a connection again.
+function boot(attempt = 1) {
+  init().catch((err) => {
+    if (!isOffline(err)) {
+      toast(errorMessage(err), 'error');
+      return;
+    }
+    showLoadError('Socrates could not be reached.', () => boot(1));
+    const delay = Math.min(15000, 1500 * attempt);
+    clearTimeout(state.reopenTimer);
+    state.reopenTimer = setTimeout(() => boot(attempt + 1), delay);
+  });
+}
+
+// buildQueues wires the two things a person can hand to Socrates - a message
+// and an answer to a question - onto durable queues. Both carry a key that the
+// server recognises, so a retry after a dropped connection is a no-op rather
+// than a second message.
+function buildQueues() {
+  state.outbox = new Outbox('messages', sendQueuedMessage);
+  state.answers = new Outbox('answers', sendQueuedAnswer);
+  state.outbox.onChange(renderPending);
+  state.answers.onChange(() => {
+    refreshQuestionSteps();
+    updateWorkRow();
+    updateLiveUI();
+  });
+}
+
+// sendQueuedMessage is the whole "say something" transaction: create the chat
+// if there is not one yet, then post the message. Both halves are keyed, so
+// the pair can be repeated from the start without duplicating anything.
+async function sendQueuedMessage(payload, item) {
+  if (!payload.chatId) {
+    const created = await api('/api/chats', { method: 'POST', body: { client_id: payload.chatKey } });
+    payload.chatId = created.chat.id;
+    state.outbox.persist();
+    adoptCreatedChat(created.chat, item);
+  }
+  try {
+    await api('/api/chats/' + payload.chatId + '/messages', {
+      method: 'POST',
+      body: { text: payload.text, auto: payload.auto, client_id: payload.key },
+    });
+  } catch (err) {
+    // The chat is busy with the previous turn. That passes on its own, so the
+    // message waits rather than being thrown back at the user.
+    if (err instanceof HttpError && err.status === 409) {
+      throw new RetryLater('Socrates is still finishing the previous message.');
+    }
+    throw err;
+  }
+}
+
+async function sendQueuedAnswer(payload) {
+  try {
+    await api('/api/questions/' + payload.questionId + '/answer', {
+      method: 'POST',
+      body: { value: payload.value },
+    });
+  } catch (err) {
+    // Already answered, or the question is gone with its run: either way there
+    // is nothing left to deliver and the queue should let go of it.
+    if (err instanceof HttpError && (err.status === 404 || err.status === 409)) return;
+    throw err;
+  }
+}
+
+// adoptCreatedChat moves the page onto the chat the queue just created, but
+// only if the person is still looking at the blank one they typed into.
+function adoptCreatedChat(chat, item) {
+  const queued = state.outbox.items.filter((entry) => entry.id !== item.id && !entry.payload.chatId);
+  for (const entry of queued) entry.payload.chatId = chat.id;
+  state.outbox.persist();
+  if (state.chatId) return;
+  state.chatId = chat.id;
+  state.chat = chat;
+  state.effectiveWorkspace = '';
+  state.rev = 0;
+  dom.chatSettings.hidden = false;
+  location.hash = chat.id;
+  connect();
+  refreshChats();
 }
 
 function bindUI() {
@@ -97,7 +263,15 @@ function bindUI() {
   });
   dom.input.addEventListener('input', () => {
     autosize();
-    dom.sendBtn.disabled = !dom.input.value.trim() || state.busy;
+    updateSendButton();
+    saveDraft();
+  });
+  // The button under the composer is where a person looks for both actions, so
+  // it sends while idle and stops while a run is going.
+  dom.sendBtn.addEventListener('click', (event) => {
+    if (!state.busy) return;
+    event.preventDefault();
+    stopRun();
   });
   dom.input.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
@@ -108,7 +282,9 @@ function bindUI() {
   $('newChat').addEventListener('click', () => startNewChat());
   $('menuBtn').addEventListener('click', () => document.body.classList.toggle('nav-open'));
   $('logout').addEventListener('click', async () => {
-    await api('/api/logout', { method: 'POST' });
+    // Signing out locally is the part that matters; if the server could not be
+    // told, the page still leaves rather than hanging on a spinner.
+    try { await api('/api/logout', { method: 'POST', attempts: 2 }); } catch { /* leave anyway */ }
     location.href = '/login';
   });
   dom.stopBtn.addEventListener('click', stopRun);
@@ -129,14 +305,30 @@ function bindUI() {
     else if (state.lastAnswer) speak(state.lastAnswer, { rate: state.prefs.tts_rate, lang: state.prefs.tts_language });
   });
   dom.autoDetails.addEventListener('click', () => setAuto(false));
-  window.addEventListener('beforeunload', () => disconnect());
+  window.addEventListener('beforeunload', () => {
+    saveDraft();
+    disconnect();
+  });
+  // pagehide is the one that actually fires on iOS when the browser is put
+  // away, which is exactly when a draft would otherwise be lost.
+  window.addEventListener('pagehide', saveDraft);
   window.addEventListener('hashchange', () => {
     const id = location.hash.replace(/^#/, '');
-    if (id && id !== state.chatId) openChat(id).catch((err) => toast(err.message, 'error'));
+    if (id && id !== state.chatId) openChat(id).catch((err) => toast(errorMessage(err), 'error'));
   });
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') document.body.classList.remove('nav-open');
   });
+  // Coming back from a locked phone: the sidebar and the chat are both refreshed
+  // rather than trusted, because the stream may have been asleep for hours.
+  onWake(() => {
+    if (document.visibilityState === 'hidden') return;
+    refreshChats();
+    if (state.loadFailed && state.chatId) openChat(state.chatId, { force: true }).catch(() => {});
+  });
+  // The clock in the working row and the "how old is this" line have to keep
+  // moving even when nothing arrives, because that is the whole point of them.
+  setInterval(updateLiveUI, 1000);
 }
 
 function autosize() {
@@ -146,47 +338,116 @@ function autosize() {
 
 /* ----------------------------------------------------------------- chats */
 
-async function refreshChats() {
-  const data = await api('/api/chats');
-  state.chats = data.chats || [];
-  renderChatList();
+// refreshChats never empties the sidebar because of a bad moment: a list that
+// could not be fetched leaves the previous one alone.
+async function refreshChats(options = {}) {
+  try {
+    const data = await api('/api/chats', options);
+    state.chats = data.chats || [];
+    renderChatList();
+  } catch (err) {
+    if (!isOffline(err)) throw err;
+  }
 }
 
+// The sidebar is patched rather than rebuilt. Its rows carry the running dot,
+// and a dot that is thrown away and made again every time a run event arrives
+// restarts its animation - which is what made it look like it was flickering
+// instead of pulsing.
 function renderChatList() {
-  dom.chatList.innerHTML = '';
   if (!state.chats.length) {
+    dom.chatList.innerHTML = '';
+    state.chatEls.clear();
     dom.chatList.append(el('div', { class: 'group-label', text: 'No chats yet' }));
     return;
   }
-  dom.chatList.append(el('div', { class: 'group-label', text: 'Chats' }));
+
+  let label = dom.chatList.querySelector(':scope > .group-label');
+  if (!label || label.textContent !== 'Chats') {
+    dom.chatList.innerHTML = '';
+    state.chatEls.clear();
+    label = el('div', { class: 'group-label', text: 'Chats' });
+    dom.chatList.append(label);
+  }
+
+  const live = new Set(state.chats.map((chat) => chat.id));
+  for (const [id, node] of state.chatEls) {
+    if (live.has(id)) continue;
+    node.remove();
+    state.chatEls.delete(id);
+  }
+
+  let previous = label;
   for (const chat of state.chats) {
-    const item = el('div', {
-      class: 'chat-item' + (chat.id === state.chatId ? ' active' : ''),
-      onclick: (event) => {
-        if (event.target.closest('.del')) return;
-        openChat(chat.id);
-        document.body.classList.remove('nav-open');
-      },
+    let item = state.chatEls.get(chat.id);
+    if (!item) {
+      item = buildChatItem(chat);
+      state.chatEls.set(chat.id, item);
+    }
+    item.update(chat);
+    if (previous.nextElementSibling !== item) previous.after(item);
+    previous = item;
+  }
+}
+
+function buildChatItem(chat) {
+  const item = el('div', {
+    class: 'chat-item',
+    onclick: (event) => {
+      if (event.target.closest('.del')) return;
+      openChat(item.dataset.chat);
+      document.body.classList.remove('nav-open');
     },
-      chat.id === state.chatId && state.busy ? el('span', { class: 'dot' }) : null,
-      el('span', { class: 'label', text: chat.title || 'New chat' }),
-      el('button', {
-        class: 'icon-btn del',
-        title: 'Delete chat',
-        html: ICONS.trash,
-        onclick: (event) => {
-          event.stopPropagation();
-          deleteChat(chat);
-        },
-      }),
-    );
-    dom.chatList.append(item);
+  });
+  const dot = el('span', { class: 'dot', hidden: true, title: 'Working' });
+  const label = el('span', { class: 'label' });
+  const remove = el('button', {
+    class: 'icon-btn del',
+    title: 'Delete chat',
+    html: ICONS.trash,
+    onclick: (event) => {
+      event.stopPropagation();
+      const current = state.chats.find((c) => c.id === item.dataset.chat);
+      if (current) deleteChat(current);
+    },
+  });
+  item.append(dot, label, remove);
+  item.update = (next) => {
+    item.dataset.chat = next.id;
+    const active = next.id === state.chatId;
+    item.classList.toggle('active', active);
+    const title = next.title || 'New chat';
+    if (label.textContent !== title) label.textContent = title;
+    dot.hidden = !(active && state.busy);
+  };
+  return item;
+}
+
+// markChatBusy only touches the running dots, so switching between busy and
+// idle never rebuilds the list.
+function markChatBusy() {
+  for (const [id, item] of state.chatEls) {
+    const dot = item.querySelector(':scope > .dot');
+    if (dot) dot.hidden = !(id === state.chatId && state.busy);
   }
 }
 
 async function deleteChat(chat) {
-  if (!confirm('Delete "' + (chat.title || 'New chat') + '"? This cannot be undone.')) return;
-  await api('/api/chats/' + chat.id, { method: 'DELETE' });
+  const ok = await confirmDialog({
+    title: 'Delete this chat?',
+    body: '"' + (chat.title || 'New chat') + '" and everything in it goes away. This cannot be undone.',
+    confirmLabel: 'Delete chat',
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    await api('/api/chats/' + chat.id, { method: 'DELETE', attempts: 3 });
+  } catch (err) {
+    toast(isOffline(err) ? 'No connection — the chat is still there.' : errorMessage(err), 'error');
+    return;
+  }
+  writeValue(titleKey(chat.id), '');
+  writeValue('socrates.draft.' + chat.id, '');
   if (state.chatId === chat.id) {
     disconnect();
     state.chatId = null;
@@ -198,12 +459,15 @@ async function deleteChat(chat) {
 }
 
 function startNewChat() {
+  saveDraft();
   disconnect();
   state.chatId = null;
   state.chat = null;
   state.rev = 0;
   state.pendingQuestion = null;
   state.lastAnswer = '';
+  state.loadFailed = false;
+  clearTimeout(state.reopenTimer);
   location.hash = '';
   dom.title.textContent = 'New chat';
   dom.chatSettings.hidden = true;
@@ -212,27 +476,54 @@ function startNewChat() {
   showEmptyState();
   renderChatList();
   resetAutoScreen('Tap the microphone and speak');
+  restoreDraft();
   dom.input.focus();
 }
 
-async function openChat(id) {
-  if (state.chatId === id && state.es) return;
+async function openChat(id, options = {}) {
+  if (!options.force && state.chatId === id && state.stream && !state.loadFailed) return;
+  saveDraft();
   disconnect();
+  clearTimeout(state.reopenTimer);
   state.chatId = id;
   state.rev = 0;
   state.pendingQuestion = null;
   state.lastAnswer = '';
+  state.workSince = 0;
+  state.workLabel = '';
+  state.loadFailed = false;
   location.hash = id;
-  const data = await api('/api/chats/' + id);
+
+  let data;
+  try {
+    data = await api('/api/chats/' + id, { attempts: 2, timeout: 12000 });
+  } catch (err) {
+    // A chat that could not be loaded must not look like an empty one. It says
+    // what happened, offers a retry, and takes one by itself when the network
+    // comes back.
+    if (!isOffline(err)) throw err;
+    state.loadFailed = true;
+    dom.title.textContent = readValue(titleKey(id)) || 'Chat';
+    showLoadError('This chat could not be loaded.', () => openChat(id, { force: true }).catch(() => {}));
+    // Whatever was half typed belongs to this chat, and it is still here.
+    restoreDraft();
+    renderPending();
+    updateLiveUI();
+    state.reopenTimer = setTimeout(() => openChat(id, { force: true }).catch(() => {}), 4000);
+    return;
+  }
+
   state.chat = data.chat;
   state.effectiveWorkspace = data.effective_workspace || '';
   state.rev = data.rev || 0;
   dom.title.textContent = data.chat.title || 'New chat';
+  writeValue(titleKey(id), data.chat.title || '');
   dom.chatSettings.hidden = false;
   renderSnapshot(data);
   renderChatList();
   setBusy(!!data.busy);
   connect();
+  restoreDraft();
   resetAutoScreen(state.busy ? 'Working…' : 'Tap the microphone and speak');
   const lastAssistant = [...(data.messages || [])].reverse().find((m) => m.role === 'assistant');
   if (lastAssistant) state.lastAnswer = lastAssistant.content;
@@ -242,6 +533,23 @@ async function openChat(id) {
     if (lastAssistant) showAutoAnswer(lastAssistant.content, false);
     if (pending) showAutoQuestion(pending, false);
   }
+}
+
+// showLoadError replaces the thread with a plain explanation and a way out,
+// instead of the blank screen a failed load used to leave behind.
+function showLoadError(message, retry) {
+  dom.threadInner.innerHTML = '';
+  closeAllTerminalStreams();
+  state.stepEls.clear();
+  state.stepData.clear();
+  state.turnEls.clear();
+  const card = el('div', { class: 'empty load-error' },
+    el('h2', { text: message }),
+    el('p', { text: 'Socrates keeps trying on its own. Nothing you sent has been lost.' }),
+    el('button', { class: 'btn primary', type: 'button', text: 'Try again now', onclick: () => retry() }),
+  );
+  dom.threadInner.append(card);
+  renderPending();
 }
 
 /* ------------------------------------------------------------- rendering */
@@ -266,6 +574,8 @@ function showEmptyState() {
   }
   wrap.append(suggestions);
   dom.threadInner.append(wrap);
+  renderPending();
+  updateWorkRow();
 }
 
 function renderSnapshot(data) {
@@ -274,10 +584,15 @@ function renderSnapshot(data) {
   state.stepEls.clear();
   state.stepData.clear();
   state.turnEls.clear();
-  state.optimisticUser = null;
 
   for (const message of data.messages || []) addMessage(message, false);
   for (const step of data.steps || []) upsertStep(step, false);
+  // Whatever is still queued belongs at the end of the transcript it was typed
+  // into, snapshot or not.
+  renderPending();
+  const last = (data.steps || [])[(data.steps || []).length - 1];
+  state.workLabel = last ? workLabelFor(last) : '';
+  updateWorkRow();
   scrollToEnd(true);
 }
 
@@ -296,10 +611,16 @@ function addMessage(message, animate = true) {
   if (empty) empty.remove();
 
   if (message.role === 'user') {
-    if (state.optimisticUser) {
-      // adopt the bubble we rendered before the server confirmed
-      state.optimisticUser.dataset.msg = message.id;
-      state.optimisticUser = null;
+    // The bubble may already be on screen as a queued send. Adopting it keeps
+    // the text in place instead of removing one node and appending an
+    // identical one, and clears the "sending" line in the same breath.
+    const pending = message.client_id ? findPending(message.client_id) : null;
+    if (pending) {
+      pending.dataset.msg = message.id;
+      delete pending.dataset.pending;
+      pending.classList.remove('pending', 'stuck');
+      const line = pending.querySelector(':scope > .msg-state');
+      if (line) line.remove();
       ensureTurn(message.run_id);
       return;
     }
@@ -320,14 +641,181 @@ function addMessage(message, animate = true) {
   scrollToEnd();
 }
 
+/* --------------------------------------------------------- working row */
+
+// While a run is going, one row is always on screen saying so. Steps come and
+// go - the model thinks before it writes anything, a program starts before it
+// prints anything - and in those gaps there used to be nothing at all to show
+// that Socrates was still busy.
+const workRow = buildWorkRow();
+
+function buildWorkRow() {
+  const node = el('div', { class: 'working' },
+    el('span', { class: 'working-dots' }, el('i'), el('i'), el('i')),
+    el('span', { class: 'working-label' }),
+    el('span', { class: 'working-time' }),
+  );
+  // It always sorts after every step, so a step that arrives later is still
+  // inserted above it.
+  node.dataset.seq = String(Number.MAX_SAFE_INTEGER);
+  return node;
+}
+
+// workRowHome is the process list of the newest turn, so the row lines up with
+// the steps above it, or the thread itself before the first turn exists.
+function workRowHome() {
+  const siblings = [...dom.threadInner.children].filter((child) => child !== workRow);
+  const last = siblings[siblings.length - 1];
+  if (last && last.classList.contains('turn')) {
+    const process = last.querySelector(':scope > .process');
+    if (process) return process;
+  }
+  return dom.threadInner;
+}
+
+// queuedHere counts the messages waiting to be delivered for the open chat.
+// They keep the working row on screen even before the server knows about them.
+function queuedHere() {
+  if (!state.outbox) return 0;
+  return state.outbox.items.filter((item) => sameChat(item.payload.chatId) && item.state !== 'failed').length;
+}
+
+// queuedAnswer is the answer a person has already given that has not reached
+// the server yet. The card has to show it, or the buttons look untouched and
+// the same decision gets made twice.
+function queuedAnswer(questionId) {
+  if (!state.answers || !questionId) return null;
+  const item = state.answers.items.find((entry) => entry.payload.questionId === questionId);
+  return item ? item : null;
+}
+
+function queuedAnswersHere() {
+  if (!state.answers) return 0;
+  return state.answers.items.filter((item) => sameChat(item.payload.chatId) && item.state !== 'failed').length;
+}
+
+// refreshQuestionSteps redraws the question cards after the answer queue moved.
+function refreshQuestionSteps() {
+  for (const [id, node] of state.stepEls) {
+    const step = state.stepData.get(id);
+    if (step && step.kind === 'question' && typeof node.update === 'function') node.update(step);
+  }
+}
+
+function updateWorkRow() {
+  if (!state.busy && !queuedHere() && !queuedAnswersHere()) {
+    if (state.workTimer) {
+      clearInterval(state.workTimer);
+      state.workTimer = null;
+    }
+    state.workSince = 0;
+    state.workLabel = '';
+    workRow.remove();
+    return;
+  }
+  const home = workRowHome();
+  // Steps are inserted above it by sequence number, so inside a process list it
+  // stays last on its own. Anything appended to the thread itself - the message
+  // the person just sent, a new turn - lands after it and it has to move.
+  if (workRow.parentNode !== home || home.lastElementChild !== workRow) {
+    home.append(workRow);
+    scrollToEnd();
+  }
+  if (!state.workSince) state.workSince = Date.now();
+  if (!state.workTimer) state.workTimer = setInterval(tickWorkRow, 1000);
+  tickWorkRow();
+}
+
+// tickWorkRow says what is going on in one line. The order matters: a lost
+// connection outranks everything, because while it is down nothing else the
+// row could say is known to still be true.
+function tickWorkRow() {
+  if (!workRow.isConnected) return;
+  const queued = queuedHere();
+  const waiting = !!state.pendingQuestion;
+  const lost = !!state.chatId && !state.live;
+  let label;
+  const heldAnswers = queuedAnswersHere();
+  if (lost && (queued || heldAnswers)) label = 'Saved — it will send itself when there is signal';
+  else if (lost) label = 'Reconnecting — this is the last update that got through';
+  else if (heldAnswers && !queued) label = 'Sending your answer…';
+  else if (queued) label = queued > 1 ? 'Sending ' + queued + ' messages…' : 'Sending…';
+  else if (waiting) label = 'Waiting for your answer…';
+  else label = state.workLabel || 'Working…';
+  workRow.classList.toggle('waiting', waiting && !lost);
+  workRow.classList.toggle('lost', lost);
+  const labelNode = workRow.querySelector('.working-label');
+  if (labelNode.textContent !== label) labelNode.textContent = label;
+  const timeNode = workRow.querySelector('.working-time');
+  if (lost) {
+    const since = state.lastSync || state.workSince || Date.now();
+    const away = Math.floor((Date.now() - since) / 1000);
+    timeNode.textContent = away >= 2 ? fmtClock(away) + ' ago' : '';
+    return;
+  }
+  const seconds = Math.floor((Date.now() - state.workSince) / 1000);
+  timeNode.textContent = seconds >= 2 ? fmtClock(seconds) : '';
+}
+
+// workLabelFor turns the newest step into one line of plain language, so the
+// row says what is happening rather than only that something is.
+function workLabelFor(step) {
+  const detail = detailOf(step);
+  switch (step.kind) {
+    case 'terminal':
+      return isRunning(step.status)
+        ? (step.title || 'The program') + ' is working…'
+        : (step.title || 'The program') + ' finished';
+    case 'shell': return 'Running ' + (detail.command || step.title || 'a command') + '…';
+    case 'thinking': return 'Thinking…';
+    case 'text': return 'Writing the answer…';
+    case 'question': return step.status === 'pending' ? 'Waiting for your answer…' : '';
+    case 'error': return '';
+    case 'sub_thinking': return 'Reasoning…';
+    case 'sub_tool': return (step.title || 'tool') + ': ' + ((step.body || '').split('\n')[0] || '');
+    default: return '';
+  }
+}
+
+function noteWork(step) {
+  const label = workLabelFor(step);
+  if (label) state.workLabel = label;
+  updateWorkRow();
+}
+
 function insertBySeq(container, node, seq) {
   node.dataset.seq = seq;
   const sibling = [...container.children].find((child) => Number(child.dataset.seq) > Number(seq));
   container.insertBefore(node, sibling || null);
 }
 
+// A step is written once and then patched. Streamed text arrives many times a
+// second, and rebuilding the row each time restarted every animation inside it
+// - which is why the spinners looked like they were flickering rather than
+// turning, and why finished rows kept fading back in.
 function upsertStep(step, animate = true) {
   state.stepData.set(step.id, step);
+  const existing = state.stepEls.get(step.id);
+  if (existing && existing.dataset.kind === step.kind && typeof existing.update === 'function') {
+    existing.update(step);
+    scrollToEnd();
+    return;
+  }
+
+  const node = buildStep(step);
+  node.dataset.kind = step.kind;
+  if (existing) {
+    // The kind changed under us, which should not happen - rebuild, but do not
+    // replay the entrance animation for a row that is already on screen.
+    node.style.animation = 'none';
+    node.dataset.seq = existing.dataset.seq || step.seq;
+    existing.replaceWith(node);
+    state.stepEls.set(step.id, node);
+    scrollToEnd();
+    return;
+  }
+
+  if (!animate) node.style.animation = 'none';
   const turn = ensureTurn(step.run_id);
   let container = turn.querySelector(':scope > .process');
   if (step.parent_id) {
@@ -335,23 +823,7 @@ function upsertStep(step, animate = true) {
     const children = parentNode && parentNode.querySelector(':scope > .children');
     if (children) container = children;
   }
-
-  const existing = state.stepEls.get(step.id);
-  // A terminal step redraws constantly. Rebuilding its node would throw away
-  // the scroll position and the caret of whoever is typing into it, so the
-  // existing one is updated in place.
-  if (existing && step.kind === 'terminal') {
-    updateTerminal(existing, step);
-    return;
-  }
-  const node = buildStep(step);
-  if (!animate) node.style.animation = 'none';
-  if (existing) {
-    node.dataset.seq = existing.dataset.seq || step.seq;
-    existing.replaceWith(node);
-  } else {
-    insertBySeq(container, node, step.seq);
-  }
+  insertBySeq(container, node, step.seq);
   state.stepEls.set(step.id, node);
   scrollToEnd();
 }
@@ -362,11 +834,36 @@ function detailOf(step) {
   try { return JSON.parse(step.detail); } catch { return {}; }
 }
 
-function statusIcon(status) {
-  if (status === 'running' || status === 'pending') return el('span', { class: 'step-icon' }, el('span', { class: 'spinner' }));
-  if (status === 'failed') return el('span', { class: 'step-icon cross', html: ICONS.cross });
-  if (status === 'interrupted' || status === 'cancelled') return el('span', { class: 'step-icon', html: ICONS.cross });
-  return el('span', { class: 'step-icon tick', html: ICONS.check });
+function isRunning(status) {
+  return status === 'running' || status === 'pending';
+}
+
+// statusIcon holds one spinner and one glyph and shows whichever the status
+// calls for. The spinner element is never replaced, so it keeps turning from
+// the moment the step starts until the moment it stops.
+function statusIcon(restIcon = ICONS.check) {
+  const slot = el('span', { class: 'step-icon' },
+    el('span', { class: 'spinner', hidden: true }),
+    el('span', { class: 'glyph' }),
+  );
+  const spinner = slot.firstElementChild;
+  const glyph = slot.lastElementChild;
+  let shown = null;
+  slot.set = (status) => {
+    const running = isRunning(status);
+    spinner.hidden = !running;
+    glyph.hidden = running;
+    const failed = status === 'failed';
+    const stopped = failed || status === 'interrupted' || status === 'cancelled';
+    slot.classList.toggle('tick', !running && !stopped && restIcon === ICONS.check);
+    slot.classList.toggle('cross', failed);
+    const icon = stopped ? ICONS.cross : restIcon;
+    if (!running && shown !== icon) {
+      shown = icon;
+      glyph.innerHTML = icon;
+    }
+  };
+  return slot;
 }
 
 function toggleStep(node, id) {
@@ -376,34 +873,67 @@ function toggleStep(node, id) {
   else state.expanded.delete(id);
 }
 
+// Every builder returns a node with an update(step) on it. buildStep is only
+// ever called once per step; everything after that goes through update, so no
+// running animation is interrupted by a redraw.
 function buildStep(step) {
   const detail = detailOf(step);
   switch (step.kind) {
     case 'terminal': return buildTerminal(step, detail);
-    case 'shell': return buildShell(step, detail);
-    case 'question': return buildQuestion(step, detail);
-    case 'error': return el('div', { class: 'step error-step', 'data-step': step.id },
-      el('div', { text: step.title || 'Error' }),
-      step.body ? el('div', { style: 'margin-top:4px;opacity:.85', text: step.body }) : null);
-    case 'thinking': return buildCollapsible(step, 'Reasoning', step.body, ICONS.spark);
-    case 'text': {
-      const node = el('div', { class: 'step text-step', 'data-step': step.id },
-        el('div', { class: 'body md', html: renderMarkdown(step.body) }));
-      return node;
-    }
-    default: return buildSubLine(step, detail);
+    case 'shell': return buildShell(step);
+    case 'question': return buildQuestion(step);
+    case 'error': return buildError(step);
+    case 'thinking': return buildCollapsible(step, 'Reasoning', ICONS.spark);
+    case 'text': return buildText(step);
+    default: return buildSubLine(step);
   }
 }
 
-function buildCollapsible(step, label, body, iconHtml) {
+function buildError(step) {
+  const node = el('div', { class: 'step error-step', 'data-step': step.id });
+  const title = el('div');
+  const body = el('div', { style: 'margin-top:4px;opacity:.85' });
+  node.append(title, body);
+  node.update = (next) => {
+    title.textContent = next.title || 'Error';
+    body.textContent = next.body || '';
+    body.hidden = !next.body;
+  };
+  node.update(step);
+  return node;
+}
+
+function buildText(step) {
+  const node = el('div', { class: 'step text-step', 'data-step': step.id });
+  const body = el('div', { class: 'body md' });
+  node.append(body);
+  let shown = null;
+  node.update = (next) => {
+    if (shown === next.body) return;
+    shown = next.body;
+    body.innerHTML = renderMarkdown(next.body);
+  };
+  node.update(step);
+  return node;
+}
+
+function buildCollapsible(step, label, iconHtml) {
   const node = el('div', { class: 'step collapsible', 'data-step': step.id });
+  const icon = statusIcon(iconHtml || ICONS.dot);
   const head = el('div', { class: 'head' },
-    el('span', { class: 'step-icon', html: iconHtml || ICONS.dot }),
+    icon,
     el('span', { class: 'name', text: label }),
     el('span', { class: 'chev', html: ICONS.chev }),
   );
   head.addEventListener('click', () => toggleStep(node, step.id));
-  node.append(head, el('div', { class: 'body', text: body || '' }));
+  const body = el('div', { class: 'body' });
+  node.append(head, body);
+  node.update = (next) => {
+    icon.set(next.status);
+    const text = next.body || '';
+    if (body.textContent !== text) body.textContent = text;
+  };
+  node.update(step);
   if (state.expanded.has(step.id)) node.classList.add('open');
   return node;
 }
@@ -419,32 +949,46 @@ function subTag(step) {
   }
 }
 
-function buildSubLine(step, detail) {
-  const node = el('div', { class: 'step collapsible', 'data-step': step.id });
+function subExtra(step, detail) {
   const value = (step.body || step.title || '').split('\n')[0] || '';
-  const extraParts = [];
-  if (detail.input) extraParts.push(typeof detail.input === 'string' ? detail.input : JSON.stringify(detail.input, null, 2));
-  if (step.body && step.body.includes('\n')) extraParts.push(step.body);
-  if (detail.result) extraParts.push(String(detail.result));
-  if (detail.command && detail.command !== value) extraParts.push(detail.command);
-  const extra = extraParts.join('\n\n');
+  const parts = [];
+  if (detail.input) parts.push(typeof detail.input === 'string' ? detail.input : JSON.stringify(detail.input, null, 2));
+  if (step.body && step.body.includes('\n')) parts.push(step.body);
+  if (detail.result) parts.push(String(detail.result));
+  if (detail.command && detail.command !== value) parts.push(detail.command);
+  return parts.join('\n\n');
+}
 
+function buildSubLine(step) {
+  const node = el('div', { class: 'step collapsible', 'data-step': step.id });
   const classes = ['sub-line'];
   if (step.kind === 'sub_log') classes.push('log');
   if (step.kind === 'sub_error') classes.push('err');
 
-  const head = el('div', { class: classes.join(' ') },
-    step.status === 'running' ? el('span', { class: 'spinner' }) : null,
-    el('span', { class: 'tag', text: subTag(step) }),
-    el('span', { class: 'val', text: value }),
-  );
-  node.append(head);
-  if (extra.trim()) {
-    head.style.cursor = 'pointer';
-    head.addEventListener('click', () => toggleStep(node, step.id));
-    node.append(el('div', { class: 'body code', text: extra }));
-    if (state.expanded.has(step.id)) node.classList.add('open');
-  }
+  const spinner = el('span', { class: 'spinner', hidden: true });
+  const tag = el('span', { class: 'tag' });
+  const val = el('span', { class: 'val' });
+  const head = el('div', { class: classes.join(' ') }, spinner, tag, val);
+  const body = el('div', { class: 'body code', hidden: true });
+  node.append(head, body);
+  head.addEventListener('click', () => {
+    if (body.hidden) return;
+    toggleStep(node, step.id);
+  });
+
+  node.update = (next) => {
+    const detail = detailOf(next);
+    spinner.hidden = !isRunning(next.status);
+    tag.textContent = subTag(next);
+    val.textContent = (next.body || next.title || '').split('\n')[0] || '';
+    const extra = subExtra(next, detail);
+    body.hidden = !extra.trim();
+    head.style.cursor = body.hidden ? '' : 'pointer';
+    if (!body.hidden && body.textContent !== extra) body.textContent = extra;
+    if (body.hidden) node.classList.remove('open');
+  };
+  node.update(step);
+  if (state.expanded.has(step.id)) node.classList.add('open');
   return node;
 }
 
@@ -456,7 +1000,10 @@ function buildTerminal(step, detail) {
   const name = el('span', { class: 'nm', text: step.title || 'terminal' });
   const cmd = el('span', { class: 'cmd', text: detail.command || '' });
   const meta = el('span', { class: 'meta', style: 'font-size:11px;color:#8d9099' });
-  const head = el('div', { class: 'term-head' }, dot, name, cmd, meta);
+  // The chip is the terminal's own honesty: it appears the moment this screen
+  // stops being live, and says how long it has been standing still.
+  const liveChip = el('span', { class: 'term-live', hidden: true });
+  const head = el('div', { class: 'term-head' }, dot, name, cmd, meta, liveChip);
 
   const screen = el('pre', { class: 'term-screen', text: step.body || '' });
 
@@ -466,13 +1013,21 @@ function buildTerminal(step, detail) {
     spellcheck: 'false',
     autocomplete: 'off',
   });
+  // Typing into a session is the one thing here that must not be retried
+  // blindly: a keystroke that arrives twice is a different keystroke. So it is
+  // attempted once and, if it did not get through, said so plainly.
   const send = (text, keys) => {
     const session = detailOf(state.stepData.get(step.id) || step).session;
     if (!session) return;
     api('/api/terminals/' + encodeURIComponent(session) + '/input', {
       method: 'POST',
+      attempts: 1,
       body: { text: text || '', keys: keys || [] },
-    }).catch((err) => toast(err.message, 'error'));
+    }).catch((err) => {
+      toast(isOffline(err)
+        ? 'That did not reach the terminal — no connection. Try again.'
+        : errorMessage(err), 'error');
+    });
   };
   const form = el('form', {
     class: 'term-foot',
@@ -491,7 +1046,10 @@ function buildTerminal(step, detail) {
 
   node.append(head, screen, form,
     el('div', { class: 'term-note', text: 'Socrates is driving this session. Anything you type goes to the same program.' }));
-  updateTerminal(node, step);
+  // A terminal redraws constantly. Rebuilding its node would throw away the
+  // scroll position and the caret of whoever is typing into it.
+  node.update = (next) => updateTerminal(node, next);
+  node.update(step);
   watchTerminal(node, step);
   return node;
 }
@@ -507,78 +1065,206 @@ function updateTerminal(node, step) {
   }
   const running = detail.running !== false && step.status === 'running';
   const dot = node.querySelector('.term-dot');
-  dot.className = 'term-dot' + (running ? '' : (step.status === 'failed' ? ' failed' : ' stopped'));
+  // Assigning the same class list is a no op, so the pulse is never restarted
+  // by the screen refresh that arrives several times a second.
+  const dotClass = 'term-dot' + (running ? ' live' : (step.status === 'failed' ? ' failed' : ' stopped'));
+  if (dot.className !== dotClass) dot.className = dotClass;
   const meta = node.querySelector('.term-head .meta');
   meta.textContent = running ? 'running'
     : (detail.exit_code ? 'exited ' + detail.exit_code : 'exited');
   node.querySelector('.term-foot').hidden = !running;
+  const session = detail.session;
+  const stream = session && state.termStreams.get(session);
+  if (stream) paintTerminalStatus(session, stream);
 }
 
 // watchTerminal subscribes to the session's own stream, which is far quicker
 // than the once a second screen that arrives with the chat events.
+//
+// A terminal is the easiest place in the app to be fooled by a stale screen:
+// it looks alive whether or not anything is still arriving. So the stream
+// reconnects itself, the header says plainly whether the screen is live, and a
+// session that has actually gone is reported as gone rather than retried
+// forever.
 function watchTerminal(node, step) {
   const session = detailOf(step).session;
   if (!session || state.termStreams.has(session)) return;
-  const source = new EventSource('/api/terminals/' + encodeURIComponent(session) + '/events');
-  state.termStreams.set(session, source);
-  source.onmessage = (event) => {
-    let payload = null;
-    try { payload = JSON.parse(event.data); } catch { return; }
-    const terminal = payload && payload.terminal;
-    if (!terminal) return;
-    const current = state.stepData.get(step.id) || step;
-    updateTerminal(node, Object.assign({}, current, {
-      body: terminal.screen,
-      status: terminal.running ? 'running' : (terminal.exit_code ? 'failed' : 'done'),
-      detail: Object.assign({}, detailOf(current), {
-        running: terminal.running,
-        exit_code: terminal.exit_code,
-      }),
-    }));
-    if (!terminal.running) closeTerminalStream(session);
-  };
-  source.onerror = () => closeTerminalStream(session);
+  const stream = new LiveStream({
+    url: () => '/api/terminals/' + encodeURIComponent(session) + '/events',
+    // The chat stream already speaks for the app as a whole; a terminal that
+    // ended should not put an alarm at the top of the page.
+    reportsGlobal: false,
+    onMessage: (payload) => {
+      if (payload && payload.type === 'closed') {
+        stream.ended = true;
+        closeTerminalStream(session);
+        return;
+      }
+      const terminal = payload && payload.terminal;
+      if (!terminal) return;
+      const current = state.stepData.get(step.id) || step;
+      updateTerminal(node, Object.assign({}, current, {
+        body: terminal.screen,
+        status: terminal.running ? 'running' : (terminal.exit_code ? 'failed' : 'done'),
+        detail: Object.assign({}, detailOf(current), {
+          running: terminal.running,
+          exit_code: terminal.exit_code,
+        }),
+      }));
+      if (!terminal.running) {
+        stream.ended = true;
+        closeTerminalStream(session);
+      }
+    },
+    onStatus: () => {
+      paintTerminalStatus(session, stream);
+      // Repeated failures may mean the session is simply gone - after a
+      // restart, or once it was cleaned up. Asking once settles it instead of
+      // reconnecting to nothing until the page is closed.
+      if (stream.attempt === 3) probeTerminal(session, stream);
+    },
+  });
+  stream.node = node;
+  state.termStreams.set(session, stream);
+  stream.start();
+  paintTerminalStatus(session, stream);
+}
+
+// probeTerminal answers the one question a stream cannot: does this session
+// still exist? EventSource hides the status code, so it takes a plain request.
+async function probeTerminal(session, stream) {
+  try {
+    await api('/api/terminals/' + encodeURIComponent(session), { attempts: 1 });
+  } catch (err) {
+    if (err instanceof HttpError && err.status === 404) {
+      stream.gone = true;
+      closeTerminalStream(session);
+    }
+  }
+}
+
+// paintTerminalStatus writes the state of the stream into the terminal header,
+// so a frozen screen is labelled as frozen.
+function paintTerminalStatus(session, stream) {
+  const node = stream.node;
+  if (!node || !node.isConnected) return;
+  const chip = node.querySelector('.term-live');
+  if (!chip) return;
+  const step = state.stepData.get(node.dataset.step);
+  const running = step ? detailOf(step).running !== false && step.status === 'running' : true;
+  let label = '';
+  let kind = '';
+  if (stream.gone) {
+    label = 'session gone';
+    kind = 'gone';
+  } else if (stream.ended || !running) {
+    label = '';
+  } else if (stream.status === 'live') {
+    label = '';
+  } else if (stream.status === 'offline') {
+    label = 'offline — screen frozen';
+    kind = 'lost';
+  } else {
+    const age = stream.secondsSinceData;
+    label = age > 2 ? 'reconnecting — frozen ' + age + 's' : 'reconnecting…';
+    kind = 'lost';
+  }
+  node.classList.toggle('term-stale', !!kind);
+  chip.hidden = !label;
+  chip.className = 'term-live ' + kind;
+  if (chip.textContent !== label) chip.textContent = label;
 }
 
 function closeAllTerminalStreams() {
-  for (const source of state.termStreams.values()) source.close();
+  for (const stream of state.termStreams.values()) stream.stop();
   state.termStreams.clear();
 }
 
 function closeTerminalStream(session) {
-  const source = state.termStreams.get(session);
-  if (!source) return;
-  source.close();
+  const stream = state.termStreams.get(session);
+  if (!stream) return;
+  stream.stop();
+  paintTerminalStatus(session, stream);
   state.termStreams.delete(session);
 }
 
 // A shell command is a one shot: the command line and what it printed.
-function buildShell(step, detail) {
+function buildShell(step) {
   const node = el('div', { class: 'step collapsible', 'data-step': step.id });
+  const spinner = el('span', { class: 'spinner', hidden: true });
+  const val = el('span', { class: 'val' });
+  const meta = el('span', { class: 'meta', hidden: true });
   const head = el('div', { class: 'sub-line' },
-    step.status === 'running' ? el('span', { class: 'spinner' }) : null,
+    spinner,
     el('span', { class: 'tag', text: 'shell' }),
-    el('span', { class: 'val', text: detail.command || step.title || '' }),
-    detail.exit_code ? el('span', { class: 'meta', text: 'exit ' + detail.exit_code }) : null,
+    val,
+    meta,
   );
   head.style.cursor = 'pointer';
   head.addEventListener('click', () => toggleStep(node, step.id));
-  node.append(head, el('div', { class: 'body code', text: step.body || '(no output)' }));
+  const body = el('div', { class: 'body code' });
+  node.append(head, body);
+
+  node.update = (next) => {
+    const detail = detailOf(next);
+    spinner.hidden = !isRunning(next.status);
+    val.textContent = detail.command || next.title || '';
+    meta.hidden = !detail.exit_code;
+    if (detail.exit_code) meta.textContent = 'exit ' + detail.exit_code;
+    const text = next.body || '(no output)';
+    if (body.textContent !== text) body.textContent = text;
+  };
+  node.update(step);
   if (state.expanded.has(step.id)) node.classList.add('open');
   return node;
 }
 
-function buildQuestion(step, detail) {
+// The card itself survives an update so it does not slide in again every time;
+// only its contents are redrawn, and only when the question actually changed.
+function buildQuestion(step) {
   const node = el('div', { class: 'step question', 'data-step': step.id });
+  let shown = null;
+  node.update = (next) => {
+    const detail = detailOf(next);
+    const queued = queuedAnswer(detail.question_id);
+    const signature = next.status + '\u0000' + (next.body || '') + '\u0000' + JSON.stringify(detail) +
+      '\u0000' + (queued ? queued.state + queued.payload.value : '');
+    if (shown === signature) return;
+    shown = signature;
+    node.innerHTML = '';
+    fillQuestion(node, next, detail, queued);
+  };
+  node.update(step);
+  return node;
+}
+
+function fillQuestion(node, step, detail, queued) {
   const answered = step.status !== 'pending';
-  if (answered) node.classList.add('answered');
+  node.classList.toggle('answered', answered || !!queued);
   node.append(el('div', { class: 'q-label', text: detail.kind === 'permission' ? 'Permission needed' : 'Your input' }));
   node.append(el('div', { class: 'q-text', text: step.body || '' }));
 
   if (answered) {
     const label = detail.answer || (step.status === 'cancelled' ? 'cancelled' : '—');
     node.append(el('div', { class: 'answered-note' }, 'You answered: ', el('b', { text: label })));
-    return node;
+    return;
+  }
+
+  // The answer was given but has not reached the server. Showing it as taken
+  // is both honest and what stops the same decision being made twice.
+  if (queued) {
+    const note = el('div', { class: 'answered-note' }, 'You answered: ', el('b', { text: queued.payload.value }));
+    if (queued.state === 'failed') {
+      note.append(el('span', { class: 'msg-state' },
+        el('span', { text: queued.error || 'Could not be sent.' }),
+        el('button', { class: 'link', type: 'button', text: 'Try again', onclick: () => state.answers.retry(queued.id) }),
+      ));
+    } else {
+      note.append(el('span', { class: 'msg-state' },
+        el('span', { text: 'Waiting for the connection — it will be sent automatically.' })));
+    }
+    node.append(note);
+    return;
   }
 
   const options = el('div', { class: 'options' });
@@ -601,23 +1287,22 @@ function buildQuestion(step, detail) {
     }, input, el('button', { class: 'btn sm primary', type: 'submit', text: 'Send' }));
     node.append(form);
   }
-  return node;
 }
 
-async function answerQuestion(questionId, value) {
+// answerQuestion queues the answer rather than posting it and hoping. In auto
+// mode the person is driving; an answer that quietly failed to send would
+// leave the run stuck with no way to know why.
+function answerQuestion(questionId, value) {
   if (!questionId) {
     toast('This question can no longer be answered.', 'error');
     return;
   }
-  try {
-    await api('/api/questions/' + questionId + '/answer', { method: 'POST', body: { value } });
-    state.pendingQuestion = null;
-    hideAutoQuestion();
-    updateMicState();
-    setAutoStatus('Working…');
-  } catch (err) {
-    toast(err.message, 'error');
-  }
+  state.answers.add({ questionId, value, chatId: state.chatId });
+  state.pendingQuestion = null;
+  hideAutoQuestion();
+  updateMicState();
+  updateWorkRow();
+  setAutoStatus('Working…');
 }
 
 function toggleChatPanel() {
@@ -640,11 +1325,12 @@ async function saveChatSettings() {
     });
     state.chat = data.chat;
     dom.title.textContent = data.chat.title || 'New chat';
+    writeValue(titleKey(data.chat.id), data.chat.title || '');
     dom.chatPanel.hidden = true;
     await refreshChats();
     toast('Chat updated');
   } catch (err) {
-    toast(err.message, 'error');
+    toast(errorMessage(err), 'error');
   }
 }
 
@@ -657,30 +1343,82 @@ function scrollToEnd(force = false) {
 
 /* -------------------------------------------------------------- streaming */
 
+// connect opens the chat's event stream. The stream reconnects itself, asks
+// for everything that happened while it was away by revision number, and says
+// out loud when it is not delivering - so the thread on screen is either
+// current or visibly marked as not.
 function connect() {
   disconnect();
   if (!state.chatId) return;
-  const source = new EventSource('/api/chats/' + state.chatId + '/events?rev=' + state.rev);
-  source.onmessage = (event) => {
-    let payload;
-    try { payload = JSON.parse(event.data); } catch { return; }
-    handleEvent(payload);
-  };
-  source.onerror = () => {
-    source.close();
-    if (state.es === source) {
-      state.es = null;
-      setTimeout(() => { if (state.chatId && !state.es) connect(); }, 1500);
-    }
-  };
-  state.es = source;
+  const chatId = state.chatId;
+  state.stream = new LiveStream({
+    // Read fresh on every attempt: the revision moves while the stream is up,
+    // and a reconnect must ask for what this client is actually missing.
+    url: () => '/api/chats/' + chatId + '/events?rev=' + state.rev,
+    onMessage: (payload) => {
+      if (state.chatId !== chatId) return;
+      state.lastSync = Date.now();
+      handleEvent(payload);
+    },
+    onStatus: (status) => {
+      if (state.chatId !== chatId) return;
+      setLive(status === 'live');
+    },
+    // A stream that keeps failing looks the same whether the network is gone
+    // or the session expired. One ordinary request settles it: a 401 sends the
+    // person to the login page instead of leaving them watching a frozen chat
+    // that will never come back.
+    onFail: (attempt) => {
+      if (attempt !== 3) return;
+      api('/api/chats', { attempts: 1 }).then((data) => {
+        if (!data) return;
+        state.chats = data.chats || [];
+        renderChatList();
+      }).catch(() => { /* the stream keeps retrying either way */ });
+    },
+  });
+  state.stream.start();
 }
 
 function disconnect() {
-  if (state.es) {
-    state.es.close();
-    state.es = null;
+  if (state.stream) {
+    state.stream.stop();
+    state.stream = null;
   }
+  state.live = false;
+  document.body.classList.remove('stale');
+}
+
+// setLive is the single switch between "what you see is happening now" and
+// "what you see is the last thing that got through".
+function setLive(live) {
+  if (state.live === live) return;
+  state.live = live;
+  if (live) {
+    state.lastSync = Date.now();
+    state.spokeOffline = false;
+  } else if (state.auto && state.busy && state.prefs.speak_in_auto_mode !== false && !state.spokeOffline) {
+    // In hands free mode the person is looking at the road. A single spoken
+    // notice is the only way they learn the answer they are waiting for has
+    // stopped coming.
+    state.spokeOffline = true;
+    speak('The connection dropped. I will keep trying.',
+      { rate: state.prefs.tts_rate, lang: state.prefs.tts_language }).catch(() => {});
+  }
+  document.body.classList.toggle('stale', !live);
+  updateLiveUI();
+  updateWorkRow();
+  updateAutoBusy();
+}
+
+// updateLiveUI keeps every "this may be out of date" marker honest, once a
+// second, whether or not anything arrived.
+function updateLiveUI() {
+  const stale = !!state.chatId && !state.live;
+  document.body.classList.toggle('stale', stale);
+  for (const [session, stream] of state.termStreams) paintTerminalStatus(session, stream);
+  if (state.busy || stale) tickWorkRow();
+  updateAutoOffline(stale);
 }
 
 function handleEvent(event) {
@@ -688,6 +1426,7 @@ function handleEvent(event) {
     case 'step':
       state.rev = Math.max(state.rev, event.step.rev || 0);
       upsertStep(event.step);
+      noteWork(event.step);
       updateAutoLive(event.step);
       break;
     case 'step_removed': {
@@ -698,7 +1437,9 @@ function handleEvent(event) {
       break;
     }
     case 'message':
+      state.rev = Math.max(state.rev, event.message.rev || 0);
       addMessage(event.message);
+      updateWorkRow();
       if (event.message.role === 'assistant') {
         state.lastAnswer = event.message.content;
         if (state.auto) {
@@ -717,6 +1458,9 @@ function handleEvent(event) {
       state.chat = event.chat;
       dom.chatSettings.hidden = false;
       dom.title.textContent = event.chat.title || 'New chat';
+      // Titles are written after the first message, so this is usually where a
+      // chat gets the name an offline reload will show.
+      writeValue(titleKey(event.chat.id), event.chat.title || '');
       refreshChats();
       break;
     case 'question':
@@ -729,28 +1473,78 @@ function handleEvent(event) {
         hideAutoQuestion();
         updateMicState();
       }
+      updateWorkRow();
       break;
     case 'ready':
-      state.rev = Math.max(state.rev, event.rev || 0);
-      // Anything that arrived while the stream was down is replayed here.
+      // Anything that arrived while the stream was down is replayed here: the
+      // steps and messages came first, and step_ids says which rows still
+      // exist, so anything deleted during the outage goes away instead of
+      // sitting there looking current.
       for (const message of event.messages || []) addMessage(message, false);
+      if (event.step_ids) reconcileSteps(event.step_ids);
+      state.rev = Math.max(state.rev, event.rev || 0);
       setBusy(!!event.busy);
+      setLive(true);
       break;
     case 'resync':
-      connect();
+      // The server could not keep up with this client and gave up on the
+      // buffer. Reconnecting replays from the last revision, so nothing is
+      // lost - it just costs one round trip.
+      if (state.stream) state.stream.reconnect(0);
       break;
     default:
       break;
   }
 }
 
+// reconcileSteps drops the rows the server no longer has. A deletion cannot
+// carry a revision, so a client that was away would otherwise keep showing a
+// step that has since been replaced by the finished answer.
+function reconcileSteps(ids) {
+  const live = new Set(ids);
+  for (const [id, node] of state.stepEls) {
+    if (live.has(id)) continue;
+    node.remove();
+    state.stepEls.delete(id);
+    state.stepData.delete(id);
+  }
+}
+
+// setBusy records what the server says. Whether the composer is actually
+// blocked is a wider question - a message sitting in the queue because there is
+// no signal is work in progress too - so the two are kept apart.
 function setBusy(busy) {
+  state.serverBusy = busy;
+  refreshBusy();
+}
+
+function refreshBusy() {
+  const busy = state.serverBusy || queuedHere() > 0;
+  const changed = state.busy !== busy;
   state.busy = busy;
-  dom.sendBtn.disabled = busy || !dom.input.value.trim();
+  updateSendButton();
   dom.stopBtn.hidden = !busy;
+  document.body.classList.toggle('busy', busy);
   updateMicState();
-  const active = state.chats.find((c) => c.id === state.chatId);
-  if (active) renderChatList();
+  markChatBusy();
+  if (changed && busy) state.workLabel = '';
+  updateWorkRow();
+  updateAutoBusy();
+}
+
+// updateSendButton keeps the composer button honest: an arrow that sends, or a
+// square that stops whatever is running.
+function updateSendButton() {
+  const stopping = state.busy;
+  dom.sendBtn.classList.toggle('stop', stopping);
+  dom.sendBtn.disabled = stopping ? false : !dom.input.value.trim();
+  dom.sendBtn.title = stopping ? 'Stop generating' : 'Send';
+  dom.sendBtn.setAttribute('aria-label', dom.sendBtn.title);
+  const icon = stopping ? ICONS.stop : ICONS.send;
+  if (dom.sendBtn.dataset.icon !== (stopping ? 'stop' : 'send')) {
+    dom.sendBtn.dataset.icon = stopping ? 'stop' : 'send';
+    dom.sendBtn.innerHTML = icon;
+  }
 }
 
 // The microphone stays usable while a question is waiting: the answer can be
@@ -760,57 +1554,118 @@ function updateMicState() {
   dom.autoMic.classList.toggle('busy', blocked);
   dom.autoMic.disabled = blocked;
   dom.micBtn.disabled = blocked;
+  updateAutoBusy();
 }
 
 async function stopRun() {
   if (!state.chatId) return;
+  // Anything queued but not yet sent is part of what "stop" means: it would
+  // otherwise start a new run the moment the connection came back.
+  const queued = state.outbox.items.filter((item) => sameChat(item.payload.chatId));
+  for (const item of queued) state.outbox.drop(item.id);
   try {
-    await api('/api/chats/' + state.chatId + '/stop', { method: 'POST' });
+    await api('/api/chats/' + state.chatId + '/stop', { method: 'POST', attempts: 3 });
     setAutoStatus('Stopped');
   } catch (err) {
-    toast(err.message, 'error');
+    toast(isOffline(err) ? 'No connection — could not stop the run yet.' : errorMessage(err), 'error');
   }
 }
 
 /* --------------------------------------------------------------- sending */
 
-async function submitText(raw) {
+// submitText hands the message to the queue and returns. Nothing here waits
+// for the network: the bubble appears immediately, the queue keeps the text
+// until the server has it, and a dropped connection only delays it.
+function submitText(raw) {
   const text = (raw || '').trim();
   if (!text || state.busy) return;
   dom.input.value = '';
+  saveDraft();
   autosize();
-  dom.sendBtn.disabled = true;
+  // Busy from the moment the person presses send, not from the moment the
+  // server confirms: creating the chat and posting the message are two round
+  // trips, and there used to be nothing on screen for either of them.
+  state.workLabel = '';
+  state.workSince = 0;
+  const empty = dom.threadInner.querySelector('.empty');
+  if (empty) empty.remove();
+  // Adding to the queue is what makes the page busy: the bubble, the working
+  // row and the locked composer all follow from there, with no round trip in
+  // between.
+  state.outbox.add({
+    chatId: state.chatId,
+    chatKey: state.chatId ? '' : clientKey(),
+    key: clientKey(),
+    text,
+    auto: state.auto,
+  });
+  setAutoStatus('Working…');
+  scrollToEnd(true);
+}
 
-  try {
-    if (!state.chatId) {
-      const created = await api('/api/chats', { method: 'POST', body: {} });
-      state.chatId = created.chat.id;
-      state.chat = created.chat;
-      state.effectiveWorkspace = '';
-      dom.chatSettings.hidden = false;
-      state.rev = 0;
-      location.hash = state.chatId;
-      await refreshChats();
-      connect();
-    }
-    const empty = dom.threadInner.querySelector('.empty');
-    if (empty) empty.remove();
-    const bubble = el('div', { class: 'msg user', text });
-    dom.threadInner.append(bubble);
-    state.optimisticUser = bubble;
-    scrollToEnd(true);
+// renderPending draws the messages that are queued but not yet acknowledged.
+// They look like ordinary bubbles with a line underneath saying where they
+// stand, so it is never a mystery whether something was actually sent.
+function renderPending() {
+  if (!state.outbox) return;
+  const mine = state.outbox.items.filter((item) => sameChat(item.payload.chatId));
+  const wanted = new Map(mine.map((item) => [item.payload.key, item]));
 
-    await api('/api/chats/' + state.chatId + '/messages', { method: 'POST', body: { text, auto: state.auto } });
-    setBusy(true);
-    setAutoStatus('Working…');
-  } catch (err) {
-    toast(err.message, 'error');
-    if (state.optimisticUser) {
-      state.optimisticUser.remove();
-      state.optimisticUser = null;
-    }
-    setBusy(false);
+  for (const node of [...dom.threadInner.querySelectorAll('[data-pending]')]) {
+    if (!wanted.has(node.dataset.pending)) node.remove();
   }
+  for (const [key, item] of wanted) {
+    let node = findPending(key);
+    if (!node) {
+      node = el('div', { class: 'msg user pending', 'data-pending': key, text: item.payload.text },
+        el('div', { class: 'msg-state' }));
+      dom.threadInner.append(node);
+    }
+    const failed = item.state === 'failed';
+    node.classList.toggle('stuck', failed);
+    const line = node.querySelector(':scope > .msg-state');
+    line.innerHTML = '';
+    if (failed) {
+      line.append(
+        el('span', { text: item.error || 'Could not be sent.' }),
+        el('button', { class: 'link', type: 'button', text: 'Try again', onclick: () => state.outbox.retry(item.id) }),
+        el('button', {
+          class: 'link',
+          type: 'button',
+          text: 'Discard',
+          onclick: () => {
+            dom.input.value = dom.input.value || item.payload.text;
+            autosize();
+            saveDraft();
+            updateSendButton();
+            state.outbox.drop(item.id);
+          },
+        }),
+      );
+    } else {
+      line.append(el('span', {
+        text: state.live && item.attempts <= 1 ? 'Sending…' : 'Waiting for the connection — it will be sent automatically.',
+      }));
+    }
+  }
+  // A message waiting in the queue is work in progress, so the composer has to
+  // agree: this also runs after a chat is opened, when the queue itself has not
+  // changed but the chat it belongs to has.
+  refreshBusy();
+}
+
+function findPending(key) {
+  for (const node of dom.threadInner.querySelectorAll('[data-pending]')) {
+    if (node.dataset.pending === key) return node;
+  }
+  return null;
+}
+
+// sameChat treats "the chat that does not exist yet" as the open one, so a
+// first message typed into a blank page is shown where it was typed.
+function sameChat(chatId) {
+  if (!chatId) return !state.chatId;
+  return chatId === state.chatId;
 }
 
 /* ----------------------------------------------------------------- voice */
@@ -840,6 +1695,7 @@ async function toggleRecording(origin) {
     dom.autoTimer.hidden = false;
     dom.autoTranscript.hidden = true;
     setAutoStatus('Listening…');
+    updateAutoBusy();
   } else {
     dom.micBtn.classList.add('rec');
     dom.micBtn.innerHTML = ICONS.stop;
@@ -872,11 +1728,19 @@ async function finishRecording(origin) {
 
   let text = '';
   try {
-    const data = await api('/api/voice/transcribe', { method: 'POST', body: { audio: result.base64, format: result.format } });
+    // Transcription only reads the audio back as words, so repeating it costs
+    // a moment and loses nothing - which is exactly what a car needs.
+    const data = await api('/api/voice/transcribe', {
+      method: 'POST',
+      attempts: 3,
+      timeout: 60000,
+      body: { audio: result.base64, format: result.format },
+    });
     text = (data && data.text) || '';
   } catch (err) {
-    toast(err.message, 'error');
-    setAutoStatus('Transcription failed');
+    const offline = isOffline(err);
+    toast(offline ? 'No connection — that recording could not be transcribed.' : errorMessage(err), 'error');
+    setAutoStatus(offline ? 'No connection. Try again when you have signal.' : 'Transcription failed');
     return;
   }
   if (!text) {
@@ -886,7 +1750,7 @@ async function finishRecording(origin) {
 
   if (state.pendingQuestion) {
     const value = matchOption(text, state.pendingQuestion.options || []);
-    await answerQuestion(state.pendingQuestion.id, value);
+    answerQuestion(state.pendingQuestion.id, value);
     return;
   }
 
@@ -896,11 +1760,11 @@ async function finishRecording(origin) {
     dom.autoAnswer.hidden = true;
     dom.autoActions.hidden = true;
     dom.autoTimer.hidden = true;
-    await submitText(text);
+    submitText(text);
   } else {
     dom.input.value = dom.input.value ? dom.input.value + ' ' + text : text;
     autosize();
-    dom.sendBtn.disabled = !dom.input.value.trim() || state.busy;
+    updateSendButton();
     dom.input.focus();
   }
 }
@@ -912,6 +1776,7 @@ function resetRecordingUI() {
   dom.autoMic.classList.remove('recording');
   dom.autoMic.innerHTML = ICONS.mic;
   dom.autoTimer.hidden = true;
+  updateAutoBusy();
 }
 
 // matchOption maps a spoken answer onto one of the offered options.
@@ -934,7 +1799,7 @@ function matchOption(spoken, options) {
 
 function setAuto(on, silent = false) {
   state.auto = on;
-  localStorage.setItem('socrates.auto', on ? '1' : '0');
+  writeValue('socrates.auto', on ? '1' : '0');
   document.body.classList.toggle('auto', on);
   dom.autoToggle.checked = on;
   if (!on) {
@@ -956,6 +1821,30 @@ function resetAutoScreen(status) {
   dom.autoActions.hidden = true;
   dom.autoTranscript.hidden = true;
   dom.autoLive.textContent = '';
+  updateAutoBusy();
+  updateAutoOffline(!!state.chatId && !state.live);
+}
+
+// updateAutoBusy shows the same three dots on the hands free screen, so it too
+// is never silent about a run that is still going.
+function updateAutoBusy() {
+  if (!dom.autoBusy) return;
+  dom.autoBusy.hidden = !(state.busy && !state.pendingQuestion && !state.recorder.recording);
+}
+
+// updateAutoOffline is the big screen version of the status bar. The car case
+// is the whole reason this app has a hands free mode, and it is also the case
+// where a frozen answer is least likely to be noticed.
+function updateAutoOffline(stale) {
+  if (!dom.autoOffline) return;
+  dom.autoOffline.hidden = !stale;
+  if (!stale) return;
+  const queued = queuedHere() + queuedAnswersHere();
+  const away = state.lastSync ? Math.round((Date.now() - state.lastSync) / 1000) : 0;
+  const text = queued
+    ? 'No connection. What you said is saved and will be sent as soon as there is signal.'
+    : 'No connection. Reconnecting…' + (away > 3 ? ' Last update ' + fmtClock(away) + ' ago.' : '');
+  if (dom.autoOffline.textContent !== text) dom.autoOffline.textContent = text;
 }
 
 function updateAutoLive(step) {
@@ -1001,6 +1890,7 @@ function showAutoAnswer(text, doSpeak) {
   dom.autoAnswer.textContent = plainAnswer(text);
   dom.autoActions.hidden = false;
   dom.autoScreen.classList.add('answering');
+  updateAutoBusy();
   fitAnswer();
   if (doSpeak) speak(text, { rate: state.prefs.tts_rate, lang: state.prefs.tts_language }).catch(() => {});
 }
@@ -1043,3 +1933,7 @@ function hideAutoQuestion() {
   dom.autoQuestion.hidden = true;
   dom.autoQuestion.innerHTML = '';
 }
+
+// Last, so that every value this module builds at load time - the working row
+// among them - exists before the first line of it runs.
+boot();

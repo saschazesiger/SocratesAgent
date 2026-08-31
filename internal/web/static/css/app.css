@@ -187,13 +187,9 @@ a { color: inherit; }
 .auth-mark {
   width: 42px;
   height: 42px;
-  border-radius: 12px;
-  background: var(--accent);
-  display: grid;
-  place-items: center;
+  object-fit: contain;
   margin-bottom: 22px;
 }
-.auth-mark svg { width: 22px; height: 22px; color: #fff; }
 .auth h1 {
   font-size: 24px;
   letter-spacing: -.03em;
@@ -254,13 +250,10 @@ a { color: inherit; }
 .brand .mark {
   width: 24px;
   height: 24px;
-  border-radius: 7px;
-  background: var(--accent);
-  display: grid;
-  place-items: center;
   flex: none;
+  /* The logo carries its own shape and colour, so it wants no tile behind it. */
+  object-fit: contain;
 }
-.brand .mark svg { width: 14px; height: 14px; color: #fff; }
 .new-chat {
   width: 100%;
   justify-content: flex-start;
@@ -315,7 +308,8 @@ a { color: inherit; }
 .chat-item .dot {
   width: 6px; height: 6px; border-radius: 50%;
   background: var(--green); flex: none;
-  animation: pulse 1.6s ease-in-out infinite;
+  transform-origin: center;
+  animation: pulse 1.8s cubic-bezier(.45, 0, .55, 1) infinite;
 }
 
 .side-foot {
@@ -342,11 +336,34 @@ a { color: inherit; }
   align-items: center;
   gap: 12px;
   padding: 0 18px;
+  position: relative;
   border-bottom: 1px solid var(--line);
   background: rgba(255, 255, 255, .8);
   backdrop-filter: blur(8px);
   z-index: 3;
 }
+/* While a run is going, a thin bar runs under the header. It is the one signal
+   that is visible no matter how far the thread is scrolled. */
+.topbar::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  opacity: 0;
+  background: linear-gradient(90deg,
+    transparent 0%, var(--text) 42%, var(--text) 58%, transparent 100%);
+  background-size: 42% 100%;
+  background-repeat: no-repeat;
+  transition: opacity .2s ease;
+  pointer-events: none;
+}
+body.busy .topbar::after {
+  opacity: .55;
+  animation: sweep 1.5s cubic-bezier(.45, .05, .55, .95) infinite;
+}
+
 .topbar .title {
   flex: 1;
   min-width: 0;
@@ -462,6 +479,56 @@ a { color: inherit; }
 .process:empty { display: none; }
 
 .step { animation: fade .2s ease both; font-size: 13.5px; }
+
+/* The row that says a run is still going. It sits at the end of the process
+   list and is the one thing on screen that is never absent while Socrates is
+   busy - between two steps there would otherwise be nothing to look at. */
+.working {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 0;
+  font-size: 13.5px;
+  color: var(--text-soft);
+  animation: fade .2s ease both;
+}
+.thread-inner > .working {
+  border-left: 2px solid var(--line);
+  padding-left: 16px;
+  margin-left: 2px;
+}
+.working-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  height: 15px;
+}
+.working-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-soft);
+  animation: wave 1.25s cubic-bezier(.45, 0, .55, 1) infinite;
+}
+.working-dots i:nth-child(2) { animation-delay: .16s; }
+.working-dots i:nth-child(3) { animation-delay: .32s; }
+/* Waiting for the person is not the same as working, so the dots hold still. */
+.working.waiting .working-dots i { animation: none; opacity: .5; background: var(--amber); }
+.working.waiting { color: var(--amber); }
+.working-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.working-time {
+  margin-left: auto;
+  flex: none;
+  font-size: 12.5px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
 .step > .head {
   display: flex;
   align-items: center;
@@ -508,11 +575,17 @@ a { color: inherit; }
 .step-icon svg { width: 14px; height: 14px; }
 .spinner {
   width: 12px; height: 12px;
+  flex: none;
+  box-sizing: border-box;
   border: 1.6px solid var(--line-strong);
   border-top-color: var(--text-soft);
+  border-right-color: var(--text-soft);
   border-radius: 50%;
-  animation: spin .7s linear infinite;
+  transform-origin: 50% 50%;
+  will-change: transform;
+  animation: spin .8s linear infinite;
 }
+.step-icon .glyph { display: grid; place-items: center; }
 .tick { color: var(--green); }
 .cross { color: var(--red); }
 
@@ -828,9 +901,25 @@ body.auto .auto-screen {
 .auto-screen.answering .auto-answer,
 .auto-screen.answering .auto-question { order: 1; }
 .auto-screen.answering .auto-actions { order: 2; }
+.auto-screen.answering .auto-busy { order: 3; margin-top: 0; }
 .auto-screen.answering .auto-live { order: 3; }
 .auto-screen.answering .mic-big { order: 4; width: 104px; height: 104px; box-shadow: 0 6px 20px rgba(16,17,20,.14); }
 .auto-screen.answering .mic-big svg { width: 40px; height: 40px; }
+.auto-busy {
+  display: flex;
+  gap: 7px;
+  margin-top: 22px;
+}
+.auto-busy i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--text-soft);
+  animation: wave 1.25s cubic-bezier(.45, 0, .55, 1) infinite;
+}
+.auto-busy i:nth-child(2) { animation-delay: .16s; }
+.auto-busy i:nth-child(3) { animation-delay: .32s; }
+
 .auto-live {
   max-width: 760px;
   width: 100%;
@@ -846,6 +935,43 @@ body.auto .auto-screen {
   color: var(--text-soft);
   font-size: 16px;
   font-style: italic;
+}
+
+/* --------------------------------------------------------------- modal */
+
+.modal {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
+  background: var(--bg);
+  color: var(--text);
+  padding: 22px 24px 18px;
+  width: min(420px, calc(100vw - 32px));
+  margin: auto;
+  animation: pop .16s cubic-bezier(.3, .8, .4, 1) both;
+}
+.modal::backdrop {
+  background: rgba(16, 17, 20, .32);
+  backdrop-filter: blur(2px);
+  animation: fade .16s ease both;
+}
+.modal-title {
+  margin: 0 0 8px;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -.02em;
+}
+.modal-body {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 22px;
 }
 
 /* --------------------------------------------------------------- toasts */
@@ -979,7 +1105,10 @@ body.auto .auto-screen {
   flex: none;
 }
 .state-dot.running { background: var(--green); }
-.state-dot.starting { background: var(--amber); animation: pulse 1.4s ease-in-out infinite; }
+.state-dot.starting, .state-dot.installing {
+  background: var(--amber);
+  animation: pulse 1.8s cubic-bezier(.45, 0, .55, 1) infinite;
+}
 .state-dot.failed { background: var(--red); }
 .tunnel-status .state-label { font-weight: 550; }
 .tunnel-status .sep { color: var(--line-strong); }
@@ -1024,17 +1153,39 @@ body.auto .auto-screen {
 
 /* -------------------------------------------------------------- motion */
 
-@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .4; transform: scale(.68); }
+}
+@keyframes sweep {
+  from { background-position: -45% 0; }
+  to { background-position: 145% 0; }
+}
+@keyframes pop {
+  from { opacity: 0; transform: translateY(8px) scale(.98); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes wave {
+  0%, 70%, 100% { opacity: .28; transform: translateY(0); }
+  35% { opacity: 1; transform: translateY(-3px); }
+}
 @keyframes pulse-rec {
   0%, 100% { box-shadow: 0 0 0 0 rgba(207, 63, 63, .35); }
   50% { box-shadow: 0 0 0 14px rgba(207, 63, 63, 0); }
 }
 
+/* Turning off decoration must not turn off the one thing that says work is
+   still happening, so the loading marks keep a slow, gentle beat. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  .spinner, .chat-item .dot, .state-dot.starting, .state-dot.installing,
+  .working-dots i, .auto-busy i, .term-dot.live, .conn-dot {
+    animation-duration: 2.4s !important;
+  }
+  .spinner { animation-name: pulse !important; }
   .thread { scroll-behavior: auto; }
 }
 
@@ -1218,6 +1369,7 @@ body.auto .auto-screen {
   flex: none;
 }
 
+.term-dot.live { animation: pulse 1.8s cubic-bezier(.45, 0, .55, 1) infinite; }
 .term-dot.stopped { background: #6b6e76; }
 .term-dot.failed { background: var(--red); }
 
@@ -1278,3 +1430,154 @@ body.auto .auto-screen {
   color: #8d9099;
   border-top: 1px solid #2a2b31;
 }
+
+/* ------------------------------------------------------- the connection */
+
+/* One bar, on every page, above everything. Socrates is used from a phone in
+   a moving car; a lost connection has to be impossible to miss, and it has to
+   say what is being done about it rather than just complaining. */
+
+.conn-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: calc(9px + env(safe-area-inset-top, 0px))
+           calc(14px + env(safe-area-inset-right, 0px))
+           9px
+           calc(14px + env(safe-area-inset-left, 0px));
+  background: #4b3a10;
+  color: #fdf3dd;
+  font-size: 13.5px;
+  line-height: 1.35;
+  letter-spacing: -.005em;
+  box-shadow: 0 6px 18px rgba(16, 17, 20, .18);
+  animation: rise .18s ease both;
+}
+.conn-bar.offline { background: #5a2020; color: #fde4e4; }
+
+.conn-dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #f2c14e;
+  animation: pulse 1.4s cubic-bezier(.45, 0, .55, 1) infinite;
+}
+.conn-bar.offline .conn-dot { background: #f08a8a; animation: none; }
+
+.conn-label {
+  flex: 1;
+  min-width: 0;
+}
+.conn-count {
+  flex: none;
+  opacity: .8;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.conn-retry {
+  flex: none;
+  border: 1px solid rgba(255, 255, 255, .35);
+  background: rgba(255, 255, 255, .1);
+  color: inherit;
+  border-radius: 999px;
+  padding: 3px 11px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.conn-retry:hover { background: rgba(255, 255, 255, .2); }
+
+/* The bar takes the top of the screen, so the page moves down under it rather
+   than being covered by it. Its real height is measured and published as
+   --conn-bar-h, because it grows with a notch and with wrapped text. */
+body.conn-lost .app,
+body.conn-lost .admin-page,
+body.conn-lost .auth { padding-top: var(--conn-bar-h, 40px); }
+
+/* While the stream is down, the live parts of the page stop pretending. The
+   thread is still readable - it is the last thing that got through, and that
+   is often exactly what the person wants to re-read - but the animations that
+   say "this is happening right now" stop. */
+body.stale .topbar::after { animation: none; opacity: .2; }
+body.stale .working-dots i,
+body.stale .auto-busy i,
+body.stale .term-dot.live,
+body.stale .spinner { animation-play-state: paused; opacity: .45; }
+body.stale .chat-item .dot { animation: none; opacity: .4; }
+
+.working.lost { color: var(--amber); align-items: flex-start; }
+.working.lost .working-dots i { animation: none; background: var(--amber); opacity: .5; }
+/* Losing the connection is the one thing this row must never abbreviate into
+   an ellipsis, so here it is allowed the second line it needs. */
+.working.lost .working-label { white-space: normal; overflow: visible; }
+
+/* --------------------------------------------------- messages in flight */
+
+/* A queued message looks like a sent one, because it will be. The line under
+   it is the difference, and it never disappears until the server has the
+   message. */
+.msg.user.pending { opacity: .72; }
+.msg.user.stuck { opacity: 1; box-shadow: inset 0 0 0 1px #f0d4d4; }
+.msg-state {
+  margin-top: 5px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  white-space: normal;
+}
+.msg.user.stuck .msg-state { color: var(--red); }
+.msg-state .link {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.empty.load-error h2 { color: var(--text); }
+.empty.load-error .btn { margin-top: 14px; }
+
+/* ------------------------------------------------- terminals gone quiet */
+
+/* A terminal screen looks alive whether or not anything is still arriving,
+   which makes it the easiest place in the app to be misled. The chip appears
+   the moment the stream stops delivering and says how long the screen has been
+   standing still. */
+.term-live {
+  flex: none;
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.term-live.lost { background: #fbf1da; color: #7a5a12; }
+.term-live.gone { background: var(--bg-sunken); color: var(--text-faint); }
+.step.term.term-stale .term-screen { opacity: .6; }
+.step.term.term-stale .term-dot.live { animation: none; background: var(--amber); }
+
+/* -------------------------------------------------- auto mode, offline */
+
+/* The hands free screen is read at a glance from behind a steering wheel, so
+   it gets the same message in a size that survives that. */
+.auto-offline {
+  max-width: 620px;
+  width: 100%;
+  padding: 12px 18px;
+  border-radius: var(--r);
+  background: #fbf1da;
+  color: #7a5a12;
+  font-size: clamp(15px, 3.6vw, 19px);
+  line-height: 1.4;
+}
+.auto-screen.answering .auto-offline { order: 0; }

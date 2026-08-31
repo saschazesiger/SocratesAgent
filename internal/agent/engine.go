@@ -56,6 +56,12 @@ type Engine struct {
 	// does happens in one of them.
 	Terminals *term.Manager
 
+	// commitMu makes writing a row and announcing it one indivisible step. The
+	// browser treats the highest revision it has seen as "everything up to
+	// here is mine", and that is only true if events reach it in the order the
+	// revisions were handed out.
+	commitMu sync.Mutex
+
 	mu      sync.Mutex
 	active  map[string]*runHandle
 	waiters map[string]chan string
@@ -85,6 +91,41 @@ func newID(prefix string) string {
 
 func (e *Engine) publish(chatID string, ev Event) { e.Bus.Publish(chatID, ev) }
 
+// commitStep writes a step and publishes it without letting another writer in
+// between, so revision order and delivery order are the same thing.
+func (e *Engine) commitStep(st *store.Step) error {
+	e.commitMu.Lock()
+	defer e.commitMu.Unlock()
+	if err := e.Store.PutStep(st); err != nil {
+		return err
+	}
+	e.publish(st.ChatID, Event{Type: "step", Step: copyStep(st)})
+	return nil
+}
+
+// commitMessage does the same for a visible chat bubble.
+func (e *Engine) commitMessage(m *store.Message) error {
+	e.commitMu.Lock()
+	defer e.commitMu.Unlock()
+	if err := e.Store.AddMessage(m); err != nil {
+		return err
+	}
+	e.publish(m.ChatID, Event{Type: "message", Message: m})
+	return nil
+}
+
+// commitStepRemoval retires a step. A deletion carries no revision of its own,
+// which is why a reconnecting client is also told which steps still exist.
+func (e *Engine) commitStepRemoval(chatID, stepID string) error {
+	e.commitMu.Lock()
+	defer e.commitMu.Unlock()
+	if err := e.Store.DeleteStep(stepID); err != nil {
+		return err
+	}
+	e.publish(chatID, Event{Type: "step_removed", StepID: stepID})
+	return nil
+}
+
 // Busy reports whether a chat has an active run.
 func (e *Engine) Busy(chatID string) bool {
 	e.mu.Lock()
@@ -105,11 +146,31 @@ func (e *Engine) Stop(chatID string) bool {
 	return true
 }
 
-// Start records the user message and launches the orchestration loop.
-func (e *Engine) Start(chatID, text string, auto bool) (*store.Run, error) {
+// Turn is one user message on its way into a chat: what was typed, whether
+// the browser is in hands free mode, and the key that makes sending it safe to
+// repeat over a connection that may drop mid request.
+type Turn struct {
+	ChatID   string
+	Text     string
+	Auto     bool
+	ClientID string
+}
+
+// Start records the user message and launches the orchestration loop. A turn
+// that carries a ClientID is idempotent: sending it again - because the phone
+// lost signal before the response came back - returns the run that already
+// exists instead of saying the same thing twice.
+func (e *Engine) Start(turn Turn) (*store.Run, error) {
+	chatID, text := turn.ChatID, turn.Text
 	chat, err := e.Store.GetChat(chatID)
 	if err != nil {
 		return nil, err
+	}
+	if existing, err := e.Store.MessageByClientID(chatID, turn.ClientID); err == nil {
+		if run, err := e.Store.GetRun(existing.RunID); err == nil {
+			return run, nil
+		}
+		return &store.Run{ID: existing.RunID, ChatID: chatID, Status: store.RunDone}, nil
 	}
 	e.mu.Lock()
 	if _, busy := e.active[chatID]; busy {
@@ -117,7 +178,7 @@ func (e *Engine) Start(chatID, text string, auto bool) (*store.Run, error) {
 		return nil, ErrBusy
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	run := &store.Run{ID: newID("run"), ChatID: chatID, Status: store.RunRunning, Auto: auto}
+	run := &store.Run{ID: newID("run"), ChatID: chatID, Status: store.RunRunning, Auto: turn.Auto}
 	h := &runHandle{id: run.ID, cancel: cancel}
 	e.active[chatID] = h
 	e.mu.Unlock()
@@ -130,9 +191,9 @@ func (e *Engine) Start(chatID, text string, auto bool) (*store.Run, error) {
 		return nil, err
 	}
 
-	msg := &store.Message{ID: newID("msg"), ChatID: chatID, RunID: run.ID, Role: "user", Content: text}
-	if err := e.Store.AddMessage(msg); err != nil {
-		return fail(err)
+	msg := &store.Message{
+		ID: newID("msg"), ChatID: chatID, RunID: run.ID,
+		Role: "user", Content: text, ClientID: turn.ClientID,
 	}
 	if err := e.Store.AppendLLMMessage(chatID, mustJSON(openrouter.Message{Role: "user", Content: text})); err != nil {
 		return fail(err)
@@ -140,9 +201,11 @@ func (e *Engine) Start(chatID, text string, auto bool) (*store.Run, error) {
 	if err := e.Store.CreateRun(run); err != nil {
 		return fail(err)
 	}
+	if err := e.commitMessage(msg); err != nil {
+		return fail(err)
+	}
 	_ = e.Store.TouchChat(chatID)
 
-	e.publish(chatID, Event{Type: "message", Message: msg})
 	e.publish(chatID, Event{Type: "run", Run: run})
 
 	go e.loop(ctx, chat, run, h, text)
@@ -273,8 +336,8 @@ func (e *Engine) loop(ctx context.Context, chat *store.Chat, run *store.Run, h *
 func (e *Engine) finish(run *store.Run, chat *store.Chat, status, errMsg, answer string) {
 	if answer != "" {
 		msg := &store.Message{ID: newID("msg"), ChatID: chat.ID, RunID: run.ID, Role: "assistant", Content: answer}
-		if err := e.Store.AddMessage(msg); err == nil {
-			e.publish(chat.ID, Event{Type: "message", Message: msg})
+		if err := e.commitMessage(msg); err != nil {
+			log.Printf("agent: store answer: %v", err)
 		}
 	}
 	if err := e.Store.SetRunStatus(run.ID, status, errMsg); err != nil {
@@ -465,11 +528,9 @@ func (e *Engine) addStep(run *store.Run, parent, kind, title, body, status strin
 	if detail != nil {
 		st.Detail = mustJSON(detail)
 	}
-	if err := e.Store.PutStep(st); err != nil {
+	if err := e.commitStep(st); err != nil {
 		log.Printf("agent: put step: %v", err)
-		return st
 	}
-	e.publish(run.ChatID, Event{Type: "step", Step: copyStep(st)})
 	return st
 }
 
@@ -483,11 +544,9 @@ func copyStep(st *store.Step) *store.Step {
 }
 
 func (e *Engine) updateStep(st *store.Step) {
-	if err := e.Store.PutStep(st); err != nil {
+	if err := e.commitStep(st); err != nil {
 		log.Printf("agent: update step: %v", err)
-		return
 	}
-	e.publish(st.ChatID, Event{Type: "step", Step: copyStep(st)})
 }
 
 // liveStep is a step whose body grows while the model streams. Writes are
@@ -541,11 +600,9 @@ func (l *liveStep) Discard() {
 	if !l.created {
 		return
 	}
-	if err := l.engine.Store.DeleteStep(l.step.ID); err != nil {
+	if err := l.engine.commitStepRemoval(l.step.ChatID, l.step.ID); err != nil {
 		log.Printf("agent: delete step: %v", err)
-		return
 	}
-	l.engine.publish(l.step.ChatID, Event{Type: "step_removed", StepID: l.step.ID})
 }
 
 func (l *liveStep) flushLocked(status string) {
@@ -654,6 +711,7 @@ func (e *Engine) openTerminal(ctx context.Context, chat *store.Chat, run *store.
 		}
 		tool = found
 		spec.Command, spec.Args = tool.CommandLine()
+		spec.Env = tool.Env
 		spec.Cols, spec.Rows = tool.Cols, tool.Rows
 		spec.Meta[metaTool] = tool.ID
 		if label == "" {

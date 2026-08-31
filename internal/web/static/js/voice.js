@@ -195,12 +195,23 @@ export async function speak(text, options = {}) {
   stopSpeaking();
   speakingFlag = true;
   try {
-    const res = await fetch('/api/voice/speak', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
-      body: JSON.stringify({ text: content }),
-    });
+    // A stalled connection must not leave the answer unsaid. The request gets a
+    // deadline of its own, and missing it falls through to the voice built into
+    // the browser, which needs no network at all.
+    const controller = new AbortController();
+    const deadline = setTimeout(() => controller.abort(), 20000);
+    let res;
+    try {
+      res = await fetch('/api/voice/speak', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        signal: controller.signal,
+        body: JSON.stringify({ text: content }),
+      });
+    } finally {
+      clearTimeout(deadline);
+    }
     if (res.status === 204) return await browserSpeak(content, options);
     if (!res.ok) throw new Error('tts endpoint failed');
     const blob = await res.blob();

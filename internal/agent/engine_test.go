@@ -211,7 +211,7 @@ func TestShellRunFeedsOutputBackToTheModel(t *testing.T) {
 	if err := st.CreateChat(chat); err != nil {
 		t.Fatal(err)
 	}
-	run, err := engine.Start(chat.ID, "please do the thing", false)
+	run, err := engine.Start(Turn{ChatID: chat.ID, Text: "please do the thing", Auto: false})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -263,7 +263,7 @@ func TestShellRunReportsAFailingCommand(t *testing.T) {
 	if err := st.CreateChat(chat); err != nil {
 		t.Fatal(err)
 	}
-	run, _ := engine.Start(chat.ID, "run it", false)
+	run, _ := engine.Start(Turn{ChatID: chat.ID, Text: "run it", Auto: false})
 	waitForRun(t, st, run.ID, store.RunDone)
 
 	payload := lastPayload(t, router, 1)
@@ -308,7 +308,7 @@ func TestDrivesAnInteractiveProgram(t *testing.T) {
 	if err := st.CreateChat(chat); err != nil {
 		t.Fatal(err)
 	}
-	run, err := engine.Start(chat.ID, "ask the agent something", false)
+	run, err := engine.Start(Turn{ChatID: chat.ID, Text: "ask the agent something", Auto: false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,6 +350,41 @@ func TestDrivesAnInteractiveProgram(t *testing.T) {
 	}
 }
 
+// A tool's environment is the declarative form of writing "KEY=VALUE program"
+// in a shell, and Claude Code will not skip permissions as root without it.
+func TestToolEnvironmentReachesTheProgram(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a real terminal")
+	}
+	router := &mockRouter{responses: []string{
+		sseToolCall("terminal_open", `{"tool":"env-probe"}`),
+		sseText("Checked."),
+	}}
+	engine, st := newTestEngine(t, router, []config.Tool{{
+		ID: "env-probe", Name: "Env Probe", Enabled: true,
+		Description: "prints one environment variable",
+		Command:     "sh",
+		Args:        []string{"-c", `printf 'sandbox=[%s]\r\n' "$IS_SANDBOX"; sleep 5`},
+		Env:         []string{"IS_SANDBOX=1"},
+		IdleSeconds: 1, TimeoutSeconds: 60,
+	}})
+
+	chat := &store.Chat{ID: "chat-env"}
+	if err := st.CreateChat(chat); err != nil {
+		t.Fatal(err)
+	}
+	run, err := engine.Start(Turn{ChatID: chat.ID, Text: "start the probe", Auto: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForRun(t, st, run.ID, store.RunDone)
+
+	opened := lastPayload(t, router, 1)
+	if !strings.Contains(opened, "sandbox=[1]") {
+		t.Errorf("the tool's environment never reached the program: %s", opened)
+	}
+}
+
 func TestUnknownToolIsReportedToModel(t *testing.T) {
 	router := &mockRouter{responses: []string{
 		sseToolCall("terminal_open", `{"tool":"ghost"}`),
@@ -362,7 +397,7 @@ func TestUnknownToolIsReportedToModel(t *testing.T) {
 	if err := st.CreateChat(chat); err != nil {
 		t.Fatal(err)
 	}
-	run, err := engine.Start(chat.ID, "use ghost", false)
+	run, err := engine.Start(Turn{ChatID: chat.ID, Text: "use ghost", Auto: false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +417,7 @@ func TestUnknownSessionIsReportedToModel(t *testing.T) {
 	if err := st.CreateChat(chat); err != nil {
 		t.Fatal(err)
 	}
-	run, _ := engine.Start(chat.ID, "type into nothing", false)
+	run, _ := engine.Start(Turn{ChatID: chat.ID, Text: "type into nothing", Auto: false})
 	waitForRun(t, st, run.ID, store.RunDone)
 	if payload := lastPayload(t, router, 1); !strings.Contains(payload, "no session called") {
 		t.Errorf("the model was not told the session is unknown: %s", payload)
@@ -400,7 +435,7 @@ func TestRunAsksUserAndResumes(t *testing.T) {
 	if err := st.CreateChat(chat); err != nil {
 		t.Fatal(err)
 	}
-	run, err := engine.Start(chat.ID, "decide for me", false)
+	run, err := engine.Start(Turn{ChatID: chat.ID, Text: "decide for me", Auto: false})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -437,12 +472,12 @@ func TestStartRejectsSecondRun(t *testing.T) {
 	if err := st.CreateChat(chat); err != nil {
 		t.Fatal(err)
 	}
-	run, err := engine.Start(chat.ID, "first", false)
+	run, err := engine.Start(Turn{ChatID: chat.ID, Text: "first", Auto: false})
 	if err != nil {
 		t.Fatal(err)
 	}
 	waitForRun(t, st, run.ID, store.RunWaiting)
-	if _, err := engine.Start(chat.ID, "second", false); err == nil {
+	if _, err := engine.Start(Turn{ChatID: chat.ID, Text: "second", Auto: false}); err == nil {
 		t.Fatal("a second run should be rejected while one is in flight")
 	}
 	engine.Stop(chat.ID)

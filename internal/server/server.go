@@ -188,7 +188,10 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /login", s.pageLogin)
 	mux.HandleFunc("GET /setup", s.pageSetup)
 	mux.Handle("GET /static/", http.StripPrefix("/static/", web.Static()))
-	mux.HandleFunc("GET /favicon.svg", web.Favicon)
+	mux.HandleFunc("GET /favicon.png", web.Favicon)
+	// The offline shell worker is deliberately outside the auth wall: it holds
+	// no data, and it has to be reachable to be updated.
+	mux.HandleFunc("GET /sw.js", web.ServiceWorker)
 
 	// Session
 	mux.HandleFunc("GET /api/state", s.handleState)

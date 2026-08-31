@@ -110,6 +110,11 @@ func (s *Server) handleTerminalClose(w http.ResponseWriter, r *http.Request) {
 // handleTerminalEvents streams the screen of one session. The chat stream
 // carries the same screens, but only once a second; this one is quick enough
 // to type into.
+//
+// Like the chat stream it heartbeats with a real event, so a browser that lost
+// the network learns within seconds that the screen in front of it has stopped
+// being live, and it says goodbye explicitly when the session ends so the
+// client stops reconnecting to something that is over.
 func (s *Server) handleTerminalEvents(w http.ResponseWriter, r *http.Request) {
 	handle, ok := s.terminal(w, r)
 	if !ok {
@@ -121,7 +126,7 @@ func (s *Server) handleTerminalEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
@@ -130,22 +135,25 @@ func (s *Server) handleTerminalEvents(w http.ResponseWriter, r *http.Request) {
 	updates := handle.Watch()
 	defer handle.Unwatch(updates)
 
-	send := func(state term.State) bool {
-		payload, err := json.Marshal(map[string]any{"terminal": state})
+	send := func(payload map[string]any) bool {
+		body, err := json.Marshal(payload)
 		if err != nil {
 			return false
 		}
-		if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", body); err != nil {
 			return false
 		}
 		flusher.Flush()
 		return true
 	}
-	if !send(handle.State()) {
+	sendState := func(state term.State) bool {
+		return send(map[string]any{"terminal": state})
+	}
+	if !sendState(handle.State()) {
 		return
 	}
 
-	ping := time.NewTicker(25 * time.Second)
+	ping := time.NewTicker(heartbeatInterval)
 	defer ping.Stop()
 	for {
 		select {
@@ -153,19 +161,22 @@ func (s *Server) handleTerminalEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		case state, open := <-updates:
 			if !open {
+				send(map[string]any{"type": "closed"})
 				return
 			}
-			if !send(state) {
+			if !sendState(state) {
 				return
 			}
 			if !state.Running {
+				// The program is gone. Saying so ends the stream on purpose,
+				// which is different from losing it.
+				send(map[string]any{"type": "closed"})
 				return
 			}
 		case <-ping.C:
-			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
+			if !send(map[string]any{"type": "ping", "now": time.Now().UnixMilli()}) {
 				return
 			}
-			flusher.Flush()
 		}
 	}
 }

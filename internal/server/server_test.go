@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"encoding/json"
 	"net/http"
 	"net/http/cookiejar"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -380,4 +382,201 @@ func TestClientIPPrefersCloudflareHeader(t *testing.T) {
 	if got := clientIP(req); got != "203.0.113.9" {
 		t.Fatalf("clientIP = %q", got)
 	}
+}
+
+// A phone that lost signal between sending and hearing back cannot tell a lost
+// request from a lost reply, so it sends again. The key it carries has to make
+// that a no-op rather than a second message in the conversation.
+func TestRepeatedSendWithTheSameKeyIsOneMessage(t *testing.T) {
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"correct horse"}`)
+
+	_, created := env.do(t, env.client, "POST", "/api/chats", `{"client_id":"chat-key"}`)
+	chat := created["chat"].(map[string]any)
+	id := chat["id"].(string)
+
+	// Creating the chat again with the same key gives back the same chat.
+	_, again := env.do(t, env.client, "POST", "/api/chats", `{"client_id":"chat-key"}`)
+	if again["chat"].(map[string]any)["id"] != id {
+		t.Fatalf("a repeated create made a second chat: %v", again)
+	}
+	if chats, err := env.store.ListChats(); err != nil || len(chats) != 1 {
+		t.Fatalf("expected exactly one chat, got %#v (%v)", chats, err)
+	}
+
+	body := `{"text":"do the thing","client_id":"msg-key"}`
+	res, first := env.do(t, env.client, "POST", "/api/chats/"+id+"/messages", body)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("first send = %d %v", res.StatusCode, first)
+	}
+	runID := first["run"].(map[string]any)["id"]
+
+	// The retry lands while the first run is still going. Without the key this
+	// would be a 409; with it, it is the same answer as before.
+	res, second := env.do(t, env.client, "POST", "/api/chats/"+id+"/messages", body)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("the retry should be accepted, got %d %v", res.StatusCode, second)
+	}
+	if second["run"].(map[string]any)["id"] != runID {
+		t.Fatalf("the retry started a different run: %v then %v", runID, second["run"])
+	}
+
+	messages, err := env.store.ListMessages(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	users := 0
+	for _, m := range messages {
+		if m.Role == "user" {
+			users++
+		}
+	}
+	if users != 1 {
+		t.Fatalf("the same message was stored %d times", users)
+	}
+}
+
+// The event stream is what keeps the browser honest. A reconnect names the last
+// revision it saw and must be told everything that changed since, plus which
+// steps still exist so deleted ones do not linger on screen.
+func TestEventStreamReplaysFromARevision(t *testing.T) {
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"correct horse"}`)
+	_, created := env.do(t, env.client, "POST", "/api/chats", `{}`)
+	id := created["chat"].(map[string]any)["id"].(string)
+
+	// Two steps and a message written before the client connects; one of the
+	// steps is then removed, the way a streamed answer is when it becomes a
+	// real chat bubble.
+	for _, stepID := range []string{"s-old", "s-gone"} {
+		if err := env.store.PutStep(&store.Step{
+			ID: stepID, ChatID: id, RunID: "r1", Kind: "text", Body: stepID, Status: "done",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mark := env.store.Rev()
+	if err := env.store.PutStep(&store.Step{
+		ID: "s-new", ChatID: id, RunID: "r1", Kind: "text", Body: "after the outage", Status: "done",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.store.AddMessage(&store.Message{
+		ID: "m-new", ChatID: id, RunID: "r1", Role: "assistant", Content: "landed while away",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.store.DeleteStep("s-gone"); err != nil {
+		t.Fatal(err)
+	}
+
+	events := env.readEvents(t, "/api/chats/"+id+"/events?rev="+strconv.FormatInt(mark, 10))
+
+	var ready map[string]any
+	steps := map[string]bool{}
+	for _, ev := range events {
+		switch ev["type"] {
+		case "step":
+			steps[ev["step"].(map[string]any)["id"].(string)] = true
+		case "ready":
+			ready = ev
+		}
+	}
+	if ready == nil {
+		t.Fatalf("the stream never said it was ready: %#v", events)
+	}
+	if !steps["s-new"] {
+		t.Errorf("the step written during the outage was not replayed")
+	}
+	if steps["s-old"] {
+		t.Errorf("a step the client already had was replayed again")
+	}
+
+	messages, _ := ready["messages"].([]any)
+	if len(messages) != 1 || messages[0].(map[string]any)["id"] != "m-new" {
+		t.Errorf("expected only the missed message, got %#v", messages)
+	}
+
+	ids, _ := ready["step_ids"].([]any)
+	live := map[string]bool{}
+	for _, v := range ids {
+		live[v.(string)] = true
+	}
+	if !live["s-old"] || !live["s-new"] {
+		t.Errorf("step_ids should list what still exists, got %#v", ids)
+	}
+	if live["s-gone"] {
+		t.Errorf("step_ids still lists a step that was deleted")
+	}
+}
+
+// A first connection has just loaded the transcript over the JSON API, so it is
+// not told about revisions it never had - but it does get the tail of the
+// conversation, because a message published a moment before the subscription
+// existed would otherwise be lost until a reload.
+func TestFirstConnectionGetsTheRecentMessages(t *testing.T) {
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"correct horse"}`)
+	_, created := env.do(t, env.client, "POST", "/api/chats", `{}`)
+	id := created["chat"].(map[string]any)["id"].(string)
+	if err := env.store.AddMessage(&store.Message{
+		ID: "m1", ChatID: id, RunID: "r1", Role: "user", Content: "hello",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, ev := range env.readEvents(t, "/api/chats/"+id+"/events") {
+		if ev["type"] != "ready" {
+			continue
+		}
+		messages, _ := ev["messages"].([]any)
+		if len(messages) != 1 || messages[0].(map[string]any)["id"] != "m1" {
+			t.Fatalf("a fresh stream should carry the recent messages, got %#v", messages)
+		}
+		if _, ok := ev["step_ids"]; ok {
+			t.Errorf("a fresh stream does not need the reconciliation set")
+		}
+		return
+	}
+	t.Fatal("the stream never said it was ready")
+}
+
+// readEvents opens an SSE stream and collects what it sends up to and including
+// the ready event, then hangs up.
+func (e *testEnv) readEvents(t *testing.T, path string) []map[string]any {
+	t.Helper()
+	req, err := http.NewRequest("GET", e.server.URL+path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := e.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("stream = %d", res.StatusCode)
+	}
+
+	out := []map[string]any{}
+	scanner := bufio.NewScanner(res.Body)
+	deadline := time.Now().Add(10 * time.Second)
+	for scanner.Scan() {
+		if time.Now().After(deadline) {
+			t.Fatal("the stream never became ready")
+		}
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
+			continue
+		}
+		out = append(out, event)
+		if event["type"] == "ready" {
+			return out
+		}
+	}
+	return out
 }

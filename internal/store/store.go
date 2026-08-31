@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS chats (
   id         TEXT PRIMARY KEY,
   title      TEXT NOT NULL DEFAULT '',
   workspace  TEXT NOT NULL DEFAULT '',
+  client_id  TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -47,6 +48,8 @@ CREATE TABLE IF NOT EXISTS messages (
   role       TEXT NOT NULL,
   content    TEXT NOT NULL,
   seq        INTEGER NOT NULL,
+  rev        INTEGER NOT NULL DEFAULT 0,
+  client_id  TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, seq);
@@ -125,12 +128,73 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
 	s := &Store{db: db}
+	// The revision counter has to start above everything already written, or a
+	// reconnecting browser would be told that old rows are new.
 	var maxRev sql.NullInt64
-	if err := db.QueryRow(`SELECT MAX(rev) FROM steps`).Scan(&maxRev); err == nil && maxRev.Valid {
+	if err := db.QueryRow(`SELECT MAX(r) FROM (SELECT MAX(rev) AS r FROM steps UNION ALL SELECT MAX(rev) FROM messages)`).
+		Scan(&maxRev); err == nil && maxRev.Valid {
 		s.rev.Store(maxRev.Int64)
 	}
 	return s, nil
+}
+
+// migrate adds what came after the first release. CREATE TABLE IF NOT EXISTS
+// leaves an existing table alone, so every column added later has to be
+// applied to databases that are already out there.
+func migrate(db *sql.DB) error {
+	for _, add := range []struct{ table, column, definition string }{
+		{"chats", "client_id", "TEXT NOT NULL DEFAULT ''"},
+		{"messages", "rev", "INTEGER NOT NULL DEFAULT 0"},
+		{"messages", "client_id", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		has, err := hasColumn(db, add.table, add.column)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if _, err := db.Exec("ALTER TABLE " + add.table + " ADD COLUMN " + add.column + " " + add.definition); err != nil {
+			return err
+		}
+	}
+	// The unique indexes are what make a retried request idempotent: the same
+	// client id can only ever produce one chat and one message.
+	_, err := db.Exec(`
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chats_client ON chats(client_id) WHERE client_id <> '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_client ON messages(chat_id, client_id) WHERE client_id <> '';
+CREATE INDEX IF NOT EXISTS idx_messages_rev ON messages(chat_id, rev);
+`)
+	return err
+}
+
+func hasColumn(db *sql.DB, table, column string) (bool, error) {
+	rows, err := db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid        int
+			name, typ  string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultVal, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, rows.Err()
+		}
+	}
+	return false, rows.Err()
 }
 
 // Close closes the database.
@@ -191,8 +255,22 @@ type Chat struct {
 	ID        string `json:"id"`
 	Title     string `json:"title"`
 	Workspace string `json:"workspace"`
+	// ClientID is the key the browser generated for the request that created
+	// this chat. It is what makes creating a chat safe to retry.
+	ClientID  string `json:"client_id,omitempty"`
 	CreatedAt int64  `json:"created_at"`
 	UpdatedAt int64  `json:"updated_at"`
+}
+
+const chatCols = `id, title, workspace, client_id, created_at, updated_at`
+
+func scanChat(row interface{ Scan(...any) error }) (*Chat, error) {
+	c := &Chat{}
+	err := row.Scan(&c.ID, &c.Title, &c.Workspace, &c.ClientID, &c.CreatedAt, &c.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return c, err
 }
 
 // CreateChat inserts a new chat.
@@ -203,25 +281,28 @@ func (s *Store) CreateChat(c *Chat) error {
 		c.CreatedAt = now()
 	}
 	c.UpdatedAt = c.CreatedAt
-	_, err := s.db.Exec(`INSERT INTO chats(id, title, workspace, created_at, updated_at)
-		VALUES(?, ?, ?, ?, ?)`, c.ID, c.Title, c.Workspace, c.CreatedAt, c.UpdatedAt)
+	_, err := s.db.Exec(`INSERT INTO chats(id, title, workspace, client_id, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?)`, c.ID, c.Title, c.Workspace, c.ClientID, c.CreatedAt, c.UpdatedAt)
 	return err
 }
 
 // GetChat loads one chat.
 func (s *Store) GetChat(id string) (*Chat, error) {
-	c := &Chat{}
-	err := s.db.QueryRow(`SELECT id, title, workspace, created_at, updated_at FROM chats WHERE id = ?`, id).
-		Scan(&c.ID, &c.Title, &c.Workspace, &c.CreatedAt, &c.UpdatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
+	return scanChat(s.db.QueryRow(`SELECT `+chatCols+` FROM chats WHERE id = ?`, id))
+}
+
+// ChatByClientID finds the chat a browser already created under this key, so
+// that a request repeated over a flaky connection does not create a second one.
+func (s *Store) ChatByClientID(clientID string) (*Chat, error) {
+	if clientID == "" {
 		return nil, ErrNotFound
 	}
-	return c, err
+	return scanChat(s.db.QueryRow(`SELECT `+chatCols+` FROM chats WHERE client_id = ?`, clientID))
 }
 
 // ListChats returns all chats, newest activity first.
 func (s *Store) ListChats() ([]Chat, error) {
-	rows, err := s.db.Query(`SELECT id, title, workspace, created_at, updated_at FROM chats ORDER BY updated_at DESC`)
+	rows, err := s.db.Query(`SELECT ` + chatCols + ` FROM chats ORDER BY updated_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +310,7 @@ func (s *Store) ListChats() ([]Chat, error) {
 	out := []Chat{}
 	for rows.Next() {
 		var c Chat
-		if err := rows.Scan(&c.ID, &c.Title, &c.Workspace, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.Title, &c.Workspace, &c.ClientID, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -282,13 +363,35 @@ func (s *Store) DeleteChat(id string) error {
 
 // Message is one visible chat bubble.
 type Message struct {
-	ID        string `json:"id"`
-	ChatID    string `json:"chat_id"`
-	RunID     string `json:"run_id"`
-	Role      string `json:"role"`
-	Content   string `json:"content"`
-	Seq       int64  `json:"seq"`
+	ID      string `json:"id"`
+	ChatID  string `json:"chat_id"`
+	RunID   string `json:"run_id"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	Seq     int64  `json:"seq"`
+	// Rev shares the counter with steps, so one revision number is enough for
+	// a reconnecting browser to ask for everything it missed.
+	Rev int64 `json:"rev"`
+	// ClientID is the key the browser generated for the send. Repeating the
+	// request with the same key returns the message that already exists.
+	ClientID  string `json:"client_id,omitempty"`
 	CreatedAt int64  `json:"created_at"`
+}
+
+const messageCols = `id, chat_id, run_id, role, content, seq, rev, client_id, created_at`
+
+func scanMessages(rows *sql.Rows) ([]Message, error) {
+	defer rows.Close()
+	out := []Message{}
+	for rows.Next() {
+		var m Message
+		if err := rows.Scan(&m.ID, &m.ChatID, &m.RunID, &m.Role, &m.Content, &m.Seq, &m.Rev,
+			&m.ClientID, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }
 
 // AddMessage appends a visible message.
@@ -305,28 +408,49 @@ func (s *Store) AddMessage(m *Message) error {
 		}
 		m.Seq = maxSeq.Int64 + 1
 	}
-	_, err := s.db.Exec(`INSERT INTO messages(id, chat_id, run_id, role, content, seq, created_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?)`, m.ID, m.ChatID, m.RunID, m.Role, m.Content, m.Seq, m.CreatedAt)
+	m.Rev = s.rev.Add(1)
+	_, err := s.db.Exec(`INSERT INTO messages(`+messageCols+`)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`, m.ID, m.ChatID, m.RunID, m.Role, m.Content, m.Seq, m.Rev,
+		m.ClientID, m.CreatedAt)
 	return err
 }
 
 // ListMessages returns the visible transcript of a chat.
 func (s *Store) ListMessages(chatID string) ([]Message, error) {
-	rows, err := s.db.Query(`SELECT id, chat_id, run_id, role, content, seq, created_at
-		FROM messages WHERE chat_id = ? ORDER BY seq`, chatID)
+	rows, err := s.db.Query(`SELECT `+messageCols+` FROM messages WHERE chat_id = ? ORDER BY seq`, chatID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []Message{}
-	for rows.Next() {
-		var m Message
-		if err := rows.Scan(&m.ID, &m.ChatID, &m.RunID, &m.Role, &m.Content, &m.Seq, &m.CreatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, m)
+	return scanMessages(rows)
+}
+
+// MessagesSince returns the messages of a chat written after a revision. It is
+// the message half of what a reconnecting client replays.
+func (s *Store) MessagesSince(chatID string, rev int64) ([]Message, error) {
+	rows, err := s.db.Query(`SELECT `+messageCols+` FROM messages WHERE chat_id = ? AND rev > ? ORDER BY seq`, chatID, rev)
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return scanMessages(rows)
+}
+
+// MessageByClientID finds the message a browser already sent under this key.
+func (s *Store) MessageByClientID(chatID, clientID string) (*Message, error) {
+	if clientID == "" {
+		return nil, ErrNotFound
+	}
+	rows, err := s.db.Query(`SELECT `+messageCols+` FROM messages WHERE chat_id = ? AND client_id = ?`, chatID, clientID)
+	if err != nil {
+		return nil, err
+	}
+	msgs, err := scanMessages(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(msgs) == 0 {
+		return nil, ErrNotFound
+	}
+	return &msgs[0], nil
 }
 
 // ------------------------------------------------------------ llm messages
@@ -609,6 +733,26 @@ func (s *Store) StepsSince(chatID string, rev int64) ([]Step, error) {
 		return nil, err
 	}
 	return scanSteps(rows)
+}
+
+// StepIDs lists every step a chat still has. A deletion is not a revision, so
+// this is how a client that was away learns which rows went away while it was
+// gone instead of showing them forever.
+func (s *Store) StepIDs(chatID string) ([]string, error) {
+	rows, err := s.db.Query(`SELECT id FROM steps WHERE chat_id = ?`, chatID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 // --------------------------------------------------------------- questions

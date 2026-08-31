@@ -137,3 +137,104 @@ func TestSpeechReturnsAudio(t *testing.T) {
 		t.Fatalf("audio = %v %q", audio, contentType)
 	}
 }
+
+// A dropped connection on the way to the model is not a failed answer, it is a
+// failed attempt. As long as nothing has reached the screen, it is worth
+// another try.
+func TestChatRetriesATransientFailure(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 3 {
+			w.WriteHeader(http.StatusBadGateway)
+			io.WriteString(w, `{"error":{"message":"upstream hiccup"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, `data: {"choices":[{"delta":{"content":"eventually"},"finish_reason":"stop"}]}`+"\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "key")
+	res, err := client.Chat(context.Background(),
+		ChatRequest{Model: "m", Messages: []Message{{Role: "user", Content: "hi"}}},
+		&StreamHandler{OnContent: func(string) {}})
+	if err != nil {
+		t.Fatalf("chat should have survived two bad gateways: %v", err)
+	}
+	if res.Content != "eventually" {
+		t.Fatalf("content = %q", res.Content)
+	}
+	if attempts != 3 {
+		t.Fatalf("expected three attempts, got %d", attempts)
+	}
+}
+
+// A rejected key is not going to start working, and repeating the request only
+// makes the person wait longer to be told.
+func TestChatDoesNotRetryARefusal(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusUnauthorized)
+		io.WriteString(w, `{"error":{"message":"bad key"}}`)
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "key")
+	_, err := client.Chat(context.Background(),
+		ChatRequest{Model: "m", Messages: []Message{{Role: "user", Content: "hi"}}}, nil)
+	if err == nil {
+		t.Fatal("expected the refusal to be reported")
+	}
+	if !strings.Contains(err.Error(), "bad key") {
+		t.Errorf("the provider's reason should survive: %v", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("a refusal must not be repeated, got %d attempts", attempts)
+	}
+}
+
+// Once tokens have been shown, a second attempt would append a whole answer to
+// half of one. The failure is reported instead.
+func TestChatDoesNotRetryOnceTextHasBeenShown(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		io.WriteString(w, `data: {"choices":[{"delta":{"content":"half an "}}]}`+"\n\n")
+		flusher.Flush()
+		// Hang up without ever finishing the stream.
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			t.Errorf("cannot simulate a dropped connection here")
+			return
+		}
+		conn, _, err := hijacker.Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		conn.Close()
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "key")
+	var shown strings.Builder
+	res, err := client.Chat(context.Background(),
+		ChatRequest{Model: "m", Messages: []Message{{Role: "user", Content: "hi"}}},
+		&StreamHandler{OnContent: func(d string) { shown.WriteString(d) }})
+	if attempts != 1 {
+		t.Fatalf("expected a single attempt once text was shown, got %d", attempts)
+	}
+	// The stream ended early: either an error, or a result holding only the
+	// half that arrived. Either way it must not have been said twice.
+	if err == nil && res != nil && res.Content != "half an " {
+		t.Fatalf("content = %q", res.Content)
+	}
+	if shown.String() != "half an " {
+		t.Fatalf("the handler saw %q, so the answer was repeated", shown.String())
+	}
+}
