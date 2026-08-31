@@ -14,9 +14,10 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/term"
 )
 
-// The orchestrator's whole capability set is a terminal. Everything else -
-// running a build, driving Claude Code, reading a file - is something you do
-// *in* a terminal, which is why there is no tool per coding agent.
+// The orchestrator's whole capability set is a terminal. It does none of the
+// work itself: driving Claude Code, running a build, reading a file are all
+// things that happen *in* a session it opened for the program that does them,
+// which is why there is no tool per coding agent.
 const (
 	toolShellRun      = "shell_run"
 	toolTerminalOpen  = "terminal_open"
@@ -24,10 +25,6 @@ const (
 	toolTerminalWait  = "terminal_wait"
 	toolTerminalRead  = "terminal_read"
 	toolTerminalClose = "terminal_close"
-
-	// The two internet tools only exist when someone switched them on.
-	toolWebSearch = "web_search"
-	toolWebFetch  = "web_fetch"
 )
 
 // buildTools describes those capabilities to the model.
@@ -48,15 +45,30 @@ func buildTools(s config.Settings) []openrouter.Tool {
 		"anything interactive: a coding agent, a REPL, a dev server, a command that will ask questions. " +
 		"Give either `skill` (one of the configured skills below, started with the right arguments for " +
 		"you) or `command` (any command line), not both. With neither you get a plain interactive shell.\n" +
+		"Each chat has exactly one terminal - the screen the user is watching - so this call fails while " +
+		"a session is still running. That is not a dead end: call terminal_close on it and then " +
+		"terminal_open again, which is how you reset the terminal or swap one program for another.\n" +
 		"The session stays open across your turns and across messages from the user, so open one session " +
 		"and keep talking to it rather than starting a new one for every instruction.\n" +
 		"Each skill's entry in the system prompt says how to drive that program and whether it may be " +
 		"used any other way. Most may not: start those here, never through shell_run.")
 	enabled := s.EnabledSkills()
 	if len(enabled) > 0 {
-		openDesc.WriteString("\n\nConfigured skills for `skill`:\n")
+		openDesc.WriteString("\n\nConfigured skills for `skill`, each with the models it may be started " +
+			"with. Pick the model the same way you pick the skill - by reading what it is for - and name " +
+			"it in `model`. The first model of a skill is what you get if you leave `model` out.\n")
 		for _, sk := range enabled {
 			fmt.Fprintf(&openDesc, "- %s (%s): %s\n", sk.ID, sk.Name, strings.TrimSpace(sk.Description))
+			for _, m := range sk.Models {
+				fmt.Fprintf(&openDesc, "  - model `%s`", m.ID)
+				if effort := config.NormalizeEffort(m.Effort); effort != "" {
+					fmt.Fprintf(&openDesc, ", effort %s", effort)
+				}
+				if when := strings.TrimSpace(m.UseWhen); when != "" {
+					fmt.Fprintf(&openDesc, ": %s", when)
+				}
+				openDesc.WriteString("\n")
+			}
 		}
 	}
 	ids := make([]string, 0, len(enabled))
@@ -74,12 +86,17 @@ func buildTools(s config.Settings) []openrouter.Tool {
 
 	tools := []openrouter.Tool{
 		fn(toolShellRun,
-			"Run one shell command and wait for it to finish. This is the quick path for anything that "+
-				"does not need a conversation: git, ls, cat, grep, npm, a build, a test run. It returns the "+
-				"exit code and the output. Do not use it for a program that will ask you something or that "+
-				"never exits - open a terminal session for those.\n"+
-				"A skill marked interactive only is never run here, in any form: it belongs in a terminal "+
-				"session where the user can watch it and take over.",
+			"Run one shell command and wait for it to finish. It returns the exit code and the output. "+
+				"This is for orchestration mechanics only: seeing whether a process is still alive, "+
+				"listing a directory so your brief can name the right paths, checking that a repository is "+
+				"where you think it is.\n"+
+				"It is never where the task gets done. A build, a test run, an edit, a search through the "+
+				"code to work an answer out - all of that belongs to a skill in a terminal session, and so "+
+				"does checking the result: you ask the agent to run the tests and read what it shows you, "+
+				"rather than running them here.\n"+
+				"Do not use it for a program that will ask you something or that never exits - open a "+
+				"terminal session for those. A skill marked interactive only is never run here, in any "+
+				"form: it belongs in a terminal session where the user can watch it and take over.",
 			`{
   "type": "object",
   "properties": {
@@ -96,6 +113,7 @@ func buildTools(s config.Settings) []openrouter.Tool {
   "properties": {
     `+skillProperty+`
     "tool": {"type": "string", "description": "Deprecated alias for `+"`skill`"+`, still accepted."},
+    "model": {"type": "string", "description": "Which of that skill's configured models to start it with, by its id from the list above. Only meaningful together with a skill. Leave it out for the skill's first model."},
     "command": {"type": "string", "description": "Any command line to start instead of a configured skill."},
     "name": {"type": "string", "description": "Short label shown to the user, for example \"claude · refactor auth\"."},
     "directory": {"type": "string", "description": "Working directory. Relative paths are resolved against the chat's working directory. Optional."}
@@ -171,39 +189,6 @@ func buildTools(s config.Settings) []openrouter.Tool {
 }`),
 	}
 
-	if s.Internet.Enabled {
-		tools = append(tools,
-			fn(toolWebSearch,
-				"Search the web and get back a numbered list of pages with short excerpts. Reach for it "+
-					"whenever the answer depends on something current or on a fact you are not certain of: a "+
-					"release version, a price, an API that may have changed, today's news. It returns "+
-					"excerpts, not whole pages - follow it with web_fetch when you need the detail.",
-				`{
-  "type": "object",
-  "properties": {
-    "query": {"type": "string", "description": "What to search for, in plain words."},
-    "max_results": {"type": "integer", "description": "How many results to return, 1-10. Defaults to the configured number."}
-  },
-  "required": ["query"],
-  "additionalProperties": false
-}`),
-			fn(toolWebFetch,
-				"Read one web page and get it back as text. Use it for a URL the user gave you, for a "+
-					"promising search result, or for documentation you need in full. Only public http and "+
-					"https addresses can be read: anything on this machine or on the local network is "+
-					"refused, and belongs in shell_run instead.",
-				`{
-  "type": "object",
-  "properties": {
-    "url": {"type": "string", "description": "The absolute http(s) URL to read."},
-    "max_chars": {"type": "integer", "description": "How much text to return at most, up to 40000. Default 12000."}
-  },
-  "required": ["url"],
-  "additionalProperties": false
-}`),
-		)
-	}
-
 	return tools
 }
 
@@ -223,10 +208,6 @@ func (e *Engine) execTool(ctx context.Context, chat *store.Chat, run *store.Run,
 		return e.execTerminalRead(ctx, chat, args)
 	case toolTerminalClose:
 		return e.execTerminalClose(ctx, chat, args)
-	case toolWebSearch:
-		return e.execWebSearch(ctx, run, args)
-	case toolWebFetch:
-		return e.execWebFetch(ctx, run, args)
 	default:
 		return fmt.Sprintf("There is no tool called %q.", call.Function.Name)
 	}
@@ -269,6 +250,7 @@ func (e *Engine) execTerminalOpen(ctx context.Context, chat *store.Chat, run *st
 	var args struct {
 		Skill     string `json:"skill"`
 		Tool      string `json:"tool"`
+		Model     string `json:"model"`
 		Command   string `json:"command"`
 		Name      string `json:"name"`
 		Directory string `json:"directory"`
@@ -285,7 +267,11 @@ func (e *Engine) execTerminalOpen(ctx context.Context, chat *store.Chat, run *st
 	if skill != "" && strings.TrimSpace(args.Command) != "" {
 		return "Give either `skill` or `command`, not both."
 	}
-	return e.openTerminal(ctx, chat, run, skill, args.Command, args.Name, args.Directory)
+	if skill == "" && strings.TrimSpace(args.Model) != "" {
+		return "`model` names one of a skill's configured models, so it only means something together " +
+			"with `skill`. A command line started with `command` carries its own arguments."
+	}
+	return e.openTerminal(ctx, chat, run, skill, args.Model, args.Command, args.Name, args.Directory)
 }
 
 func (e *Engine) execTerminalSend(ctx context.Context, chat *store.Chat, raw string) string {

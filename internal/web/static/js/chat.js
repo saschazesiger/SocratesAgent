@@ -1,4 +1,4 @@
-// The chat page: sidebar, live process view, composer, voice and auto mode.
+// The chat page: sidebar, live process view, composer, voice and audio mode.
 
 import {
   api, el, toast, confirmDialog, fmtDuration, fmtClock, isOffline, errorMessage,
@@ -13,12 +13,24 @@ const $ = (id) => document.getElementById(id);
 
 // The terminal sessions of this chat live beside the conversation, not inside
 // it. The transcript keeps one line per session; the dock keeps the screen.
-const dock = mountTerminalDock();
+//
+// The slider in the top bar is the one place that says what the pane is
+// doing, so the dock reports the times it opens or closes itself - a line in
+// the transcript asking for a session, its own corner, escape on a phone -
+// and the slider follows rather than contradicting it.
+const dock = mountTerminalDock({
+  onOpenChange: (open) => {
+    if (open === (state.view === 'split')) return;
+    setView(open ? 'split' : 'chat');
+  },
+});
 
 const dom = {
   sidebar: $('sidebar'),
+  navScrim: $('navScrim'),
   chatList: $('chatList'),
   chatScope: $('chatScope'),
+  viewSlider: $('viewSlider'),
   thread: $('thread'),
   threadInner: $('threadInner'),
   title: $('chatTitle'),
@@ -29,8 +41,6 @@ const dom = {
   sendBtn: $('sendBtn'),
   micBtn: $('micBtn'),
   recTime: $('recTime'),
-  stopBtn: $('stopBtn'),
-  autoToggle: $('autoToggle'),
   autoScreen: $('autoScreen'),
   autoStatus: $('autoStatus'),
   autoTimer: $('autoTimer'),
@@ -58,10 +68,15 @@ const state = {
   chatScope: readValue('socrates.chatScope') === 'all' ? 'all' : 'active',
   chatId: null,
   chat: null,
+  // Which of the four the pane is showing: the conversation, the conversation
+  // with its terminal beside it, the terminal itself, or the hands free
+  // screen. Remembered per chat, because it is how that chat is used rather
+  // than a passing choice - except hands free, which follows the person.
+  // What was remembered is read in init, once the page is there to show it.
+  view: 'chat',
   rev: 0,
   busy: false,
   serverBusy: false,
-  auto: readFlag('socrates.auto'),
   // The chat event stream, and whether it is actually delivering. Everything
   // on screen is only as true as this flag.
   stream: null,
@@ -183,7 +198,7 @@ const OFFLINE_NOTICE = {
 };
 
 async function init() {
-  setAuto(state.auto, true);
+  setView(storedView(null), { silent: true });
   buildQueues();
   bindUI();
   // Preferences are a nicety and the defaults are sensible, so the page is
@@ -269,6 +284,9 @@ function adoptCreatedChat(chat, item) {
   state.effectiveWorkspace = '';
   state.rev = 0;
   dom.chatSettings.hidden = false;
+  // The chat that was typed into now exists, so the two stops that need one
+  // are open for business.
+  setView(state.view, { silent: true });
   location.hash = chat.id;
   connect();
   refreshChats();
@@ -298,21 +316,58 @@ function bindUI() {
     }
   });
   $('newChat').addEventListener('click', () => startNewChat());
+  $('newTerminal').addEventListener('click', () => { startNewTerminalChat().catch(() => {}); });
   dom.chatScope.addEventListener('click', (event) => {
     const button = event.target.closest('.seg');
     if (button) setChatScope(button.dataset.scope);
   });
+  dom.viewSlider.addEventListener('click', (event) => {
+    const stop = event.target.closest('.stop');
+    if (stop && stop.getAttribute('aria-disabled') !== 'true') setView(stop.dataset.view);
+  });
+  // One knob on one slider is one radio group, and a radio group is driven
+  // with the arrow keys.
+  dom.viewSlider.addEventListener('keydown', (event) => {
+    const step = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1
+      : event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 0;
+    if (!step) return;
+    event.preventDefault();
+    const stops = [...dom.viewSlider.querySelectorAll('.stop')]
+      .filter((stop) => stop.getAttribute('aria-disabled') !== 'true');
+    if (!stops.length) return;
+    const at = stops.findIndex((stop) => stop.dataset.view === state.view);
+    const stop = stops[(Math.max(at, 0) + step + stops.length) % stops.length];
+    setView(stop.dataset.view);
+    stop.focus();
+  });
+  // The knob is placed from the layout the browser made, so it is placed again
+  // whenever that layout can have changed: the bar narrowing past the width
+  // where the stops give up their words, or a font arriving late.
+  if (window.ResizeObserver) new ResizeObserver(placeKnob).observe(dom.viewSlider);
+  window.addEventListener('resize', placeKnob);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(placeKnob).catch(() => {});
   // The remembered choice has to be on the buttons before the first list
   // arrives, or the sidebar would say "Active" while showing everything.
   setChatScope(state.chatScope);
-  $('menuBtn').addEventListener('click', () => document.body.classList.toggle('nav-open'));
+  $('menuBtn').addEventListener('click', () => setNav(!navOpen()));
+  // Tapping beside the drawer closes it. The scrim is what "beside" means: it
+  // covers everything the drawer is over, so this one handler is every empty
+  // spot, the conversation behind it and the terminal under that.
+  dom.navScrim.addEventListener('click', closeNav);
+  // The rest of "beside", for the few things that sit above the scrim - the
+  // connection bar - and for a wide window, where there is no scrim at all.
+  // The menu button is left out because it is the one thing that toggles.
+  document.addEventListener('click', (event) => {
+    if (!navOpen()) return;
+    if (event.target.closest('#sidebar') || event.target.closest('#menuBtn')) return;
+    closeNav();
+  });
   $('logout').addEventListener('click', async () => {
     // Signing out locally is the part that matters; if the server could not be
     // told, the page still leaves rather than hanging on a spinner.
     try { await api('/api/logout', { method: 'POST', attempts: 2 }); } catch { /* leave anyway */ }
     location.href = '/login';
   });
-  dom.stopBtn.addEventListener('click', stopRun);
   dom.chatSettings.addEventListener('click', toggleChatPanel);
   $('panelCancel').addEventListener('click', () => { dom.chatPanel.hidden = true; });
   $('panelSave').addEventListener('click', saveChatSettings);
@@ -323,13 +378,11 @@ function bindUI() {
   });
   dom.micBtn.addEventListener('click', () => toggleRecording('chat'));
   dom.autoMic.addEventListener('click', () => toggleRecording('auto'));
-  dom.autoToggle.checked = state.auto;
-  dom.autoToggle.addEventListener('change', () => setAuto(dom.autoToggle.checked));
   dom.autoReplay.addEventListener('click', () => {
     if (isSpeaking()) stopSpeaking();
     else if (state.lastAnswer) speak(state.lastAnswer, speechOptions());
   });
-  dom.autoDetails.addEventListener('click', () => setAuto(false));
+  dom.autoDetails.addEventListener('click', () => setView('chat'));
   window.addEventListener('beforeunload', () => {
     saveDraft();
     disconnect();
@@ -342,7 +395,7 @@ function bindUI() {
     if (id && id !== state.chatId) openChat(id).catch((err) => toast(errorMessage(err), 'error'));
   });
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') document.body.classList.remove('nav-open');
+    if (event.key === 'Escape') closeNav();
   });
   // Coming back from a locked phone: the sidebar and the chat are both refreshed
   // rather than trusted, because the stream may have been asleep for hours.
@@ -400,6 +453,155 @@ function setChatScope(scope) {
     renderChatList();
   }
   refreshChats().catch(() => { /* the sidebar keeps what it has */ });
+}
+
+/* ------------------------------------------------------------ chat view */
+
+// Four ways to use a chat: the conversation, the conversation with its
+// terminal beside it, the terminal on its own, and the hands free screen.
+// They are one slider in the top bar because they are one decision - which of
+// them has the pane - and separate switches for it could disagree.
+const VIEWS = ['chat', 'split', 'terminal', 'auto'];
+
+// The view is remembered per chat: a terminal chat is still a terminal the
+// next time it is opened, whatever was done in between.
+function viewKey(id) { return 'socrates.view.' + id; }
+
+// What chats used to be told in before the slider: one key for the mode, one
+// flag for hands free.
+function modeKey(id) { return 'socrates.mode.' + id; }
+
+// storedView is where a chat starts. Hands free is the one choice that follows
+// the person rather than the chat - it says how the app is being used right
+// now, in a car say - so it carries over to whatever is opened next, while a
+// chat with nothing remembered is a conversation.
+function storedView(id) {
+  const saved = id ? readValue(viewKey(id)) : '';
+  if (VIEWS.includes(saved)) return saved;
+  if (id && readValue(modeKey(id)) === 'terminal') return 'terminal';
+  return readFlag('socrates.auto') ? 'auto' : 'chat';
+}
+
+// setView is the only thing that decides what the pane shows. Each of the four
+// is a whole screen rather than a panel, so switching is a matter of handing
+// the pane over: nothing about the chat, its stream or the session running at
+// its terminal changes underneath.
+function setView(view, options = {}) {
+  const wanted = VIEWS.includes(view) ? view : 'chat';
+  // A terminal needs a chat to run in, and a blank page has none yet.
+  const next = !state.chatId && (wanted === 'split' || wanted === 'terminal') ? 'chat' : wanted;
+  const before = state.view;
+  state.view = next;
+  renderViewSlider();
+  if (!options.silent && state.chatId) writeValue(viewKey(state.chatId), next);
+  if (!options.silent) writeValue('socrates.auto', next === 'auto' ? '1' : '0');
+  setClass(document.body, 'term-mode', next === 'terminal');
+  setClass(document.body, 'auto', next === 'auto');
+  if (before === 'auto' && next !== 'auto') stopSpeaking();
+  if (next === 'auto' && before !== 'auto' && !options.silent && state.lastAnswer) {
+    showAutoAnswer(state.lastAnswer, false);
+  }
+  if (!dock) return;
+  dock.setFullscreen(next === 'terminal');
+  dock.setOpen(next === 'split');
+  if ((next !== 'terminal' && next !== 'split') || !state.chatId) return;
+  // Both of those stops mean this chat has a shell running in it. Asking for
+  // one that is already there costs nothing: the server keeps one per chat
+  // and says so.
+  dock.ensureTerminal(state.chatId).catch((err) => {
+    toast(isOffline(err)
+      ? 'No connection — the terminal will open when there is signal.'
+      : errorMessage(err), 'error');
+  });
+}
+
+// updateSliderLive is the dot on the terminal stop: whether there is a program
+// running at this chat's terminal. It is kept honest by the same second that
+// keeps the rest of the page honest, and again the moment the pane changes -
+// switching chats takes the sessions of the old one with it.
+function updateSliderLive() {
+  setClass(dom.viewSlider, 'live', !!(dock && dock.isLive()));
+}
+
+// renderViewSlider says two things: which stop has the pane, and which of them
+// can have it at all.
+function renderViewSlider() {
+  for (const stop of dom.viewSlider.querySelectorAll('.stop')) {
+    const on = stop.dataset.view === state.view;
+    const off = !state.chatId && (stop.dataset.view === 'split' || stop.dataset.view === 'terminal');
+    stop.setAttribute('aria-checked', on ? 'true' : 'false');
+    stop.setAttribute('aria-disabled', off ? 'true' : 'false');
+    // One tab stop for the group, the way a set of radio buttons behaves.
+    stop.tabIndex = on ? 0 : -1;
+  }
+  updateSliderLive();
+  placeKnob();
+}
+
+// The stops are as wide as their words, and the words come and go with the
+// width of the bar, so the knob is measured from the layout the browser
+// actually made rather than assumed to be a quarter of the slider.
+function placeKnob() {
+  const active = dom.viewSlider.querySelector('.stop[aria-checked="true"]');
+  if (!active || !active.offsetWidth) return;
+  dom.viewSlider.style.setProperty('--knob-x', active.offsetLeft + 'px');
+  dom.viewSlider.style.setProperty('--knob-w', active.offsetWidth + 'px');
+  // The first placement is the one that must not slide: a knob gliding in from
+  // the left edge on load reads as the page changing its mind.
+  if (!dom.viewSlider.classList.contains('placed')) {
+    requestAnimationFrame(() => setClass(dom.viewSlider, 'placed', true));
+  }
+}
+
+// restoreView puts a chat back into the view it was last used in.
+function restoreView(id) {
+  setView(storedView(id), { silent: true });
+}
+
+// A terminal chat gets a name it can be told apart by in the list. Six
+// characters is enough to never see the same one twice in a sidebar.
+function terminalName() {
+  const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let tail = '';
+  for (let i = 0; i < 6; i += 1) tail += alphabet[Math.floor(Math.random() * alphabet.length)];
+  return 'Terminal ' + tail;
+}
+
+// busyButton is the smallest honest answer to a tap that has to wait for the
+// network: the control stops taking taps and says it is working.
+function busyButton(button, on) {
+  if (!button) return;
+  button.disabled = on;
+  setClass(button, 'is-busy', on);
+  const spin = button.querySelector(':scope > .spinner');
+  if (on && !spin) button.prepend(el('span', { class: 'spinner' }));
+  if (!on && spin) spin.remove();
+}
+
+// startNewTerminalChat makes a chat whose whole point is its terminal. It is
+// an ordinary chat - it shows up in the list, it survives a restart with its
+// session - opened straight into Terminal Mode.
+async function startNewTerminalChat() {
+  const button = $('newTerminal');
+  busyButton(button, true);
+  try {
+    const created = await api('/api/chats', {
+      method: 'POST', attempts: 2, body: { client_id: clientKey(), title: terminalName() },
+    });
+    const chat = created && created.chat;
+    if (!chat) throw new Error('The terminal chat could not be created.');
+    // Written before the chat is opened, so opening it lands on the terminal
+    // the same way every other chat restores the view it was left in.
+    writeValue(viewKey(chat.id), 'terminal');
+    state.chats = [chat, ...state.chats.filter((c) => c.id !== chat.id)];
+    renderChatList();
+    await openChat(chat.id);
+    refreshChats().catch(() => { /* the sidebar keeps what it has */ });
+  } catch (err) {
+    toast(isOffline(err) ? 'No connection — the terminal could not be opened yet.' : errorMessage(err), 'error');
+  } finally {
+    busyButton(button, false);
+  }
 }
 
 // The sidebar is patched rather than rebuilt. Its rows carry the running dot,
@@ -502,7 +704,6 @@ function buildChatItem(chat) {
     onclick: (event) => {
       if (event.target.closest('.act')) return;
       openChat(item.dataset.chat);
-      document.body.classList.remove('nav-open');
     },
   });
   // Both actions work on the chat as it is right now, not on the one this row
@@ -563,29 +764,42 @@ async function setArchived(chat, archived) {
     });
     if (!ok) return;
   }
-  try {
-    await api('/api/chats/' + chat.id + (archived ? '/archive' : '/unarchive'), {
-      method: 'POST', attempts: 3,
-    });
-  } catch (err) {
-    toast(isOffline(err) ? 'No connection — nothing was changed.' : errorMessage(err), 'error');
-    return;
-  }
+  // The list moves first and the server is told afterwards. Archiving is a
+  // decision, not a question, and waiting for the round trip left a tap that
+  // looked like it had done nothing.
   const known = state.chats.find((c) => c.id === chat.id);
+  const before = known ? !!known.archived : null;
   if (known) known.archived = archived;
-  if (state.chat && state.chat.id === chat.id) {
+  const open = state.chat && state.chat.id === chat.id;
+  if (open) {
     state.chat.archived = archived;
     updateArchivedMark();
-    // The sessions of this chat have just been ended, so the dock is reloaded
-    // rather than left showing tabs for programs that are gone.
-    if (dock && archived) {
-      dock.setChat(null);
-      dock.setChat(chat.id);
+    // Everything this chat had running has just been ended, so a terminal on
+    // screen is a picture of a program that is gone.
+    if (archived) {
+      if (state.view === 'split' || state.view === 'terminal') setView('chat');
+      if (dock) {
+        dock.setChat(null);
+        dock.setChat(chat.id);
+      }
     }
   }
   renderChatList();
-  await refreshChats();
-  toast(archived ? 'Chat archived' : 'Chat restored');
+  api('/api/chats/' + chat.id + (archived ? '/archive' : '/unarchive'), {
+    method: 'POST', attempts: 3,
+  }).then(() => {
+    refreshChats().catch(() => { /* the sidebar keeps what it has */ });
+    toast(archived ? 'Chat archived' : 'Chat restored');
+  }).catch((err) => {
+    // It did not happen, so the sidebar has to stop saying that it did.
+    if (known && before !== null) known.archived = before;
+    if (open) {
+      state.chat.archived = before;
+      updateArchivedMark();
+    }
+    renderChatList();
+    toast(isOffline(err) ? 'No connection — nothing was changed.' : errorMessage(err), 'error');
+  });
 }
 
 // markChatBusy only touches the running dots, so switching between busy and
@@ -605,24 +819,54 @@ async function deleteChat(chat) {
     danger: true,
   });
   if (!ok) return;
-  try {
-    await api('/api/chats/' + chat.id, { method: 'DELETE', attempts: 3 });
-  } catch (err) {
-    toast(isOffline(err) ? 'No connection — the chat is still there.' : errorMessage(err), 'error');
-    return;
-  }
+  // The row goes at once. A delete that was already confirmed has nothing left
+  // to wait for, and a chat that sits there for another round trip reads as a
+  // tap that missed.
+  const index = state.chats.findIndex((c) => c.id === chat.id);
+  const removed = index >= 0 ? state.chats.splice(index, 1)[0] : null;
+  renderChatList();
   writeValue(titleKey(chat.id), '');
   writeValue('socrates.draft.' + chat.id, '');
+  writeValue(viewKey(chat.id), '');
+  writeValue(modeKey(chat.id), '');
   if (state.chatId === chat.id) {
     disconnect();
     state.chatId = null;
     if (dock) dock.setChat(null);
     state.chat = null;
+    setView(state.view, { silent: true });
     updateArchivedMark();
+    dom.title.textContent = 'New chat';
+    dom.chatSettings.hidden = true;
+    dom.chatPanel.hidden = true;
     showEmptyState();
+    const next = firstChatId();
+    if (next) openChat(next).catch(() => {});
   }
-  await refreshChats();
-  if (!state.chatId && firstChatId()) openChat(firstChatId());
+  api('/api/chats/' + chat.id, { method: 'DELETE', attempts: 3 })
+    .then(() => refreshChats().catch(() => {}))
+    .catch((err) => {
+      // Still there after all: it goes back where it was rather than leaving
+      // the sidebar quietly wrong.
+      if (removed && index >= 0) state.chats.splice(index, 0, removed);
+      renderChatList();
+      toast(isOffline(err) ? 'No connection — the chat is still there.' : errorMessage(err), 'error');
+    });
+}
+
+// The drawer has one switch, and everything that opens or closes it goes
+// through here rather than reaching for the class: on a wide window the class
+// means nothing, and on a narrow one it has to take the scrim with it.
+function navOpen() {
+  return document.body.classList.contains('nav-open');
+}
+
+function setNav(open) {
+  setClass(document.body, 'nav-open', open);
+}
+
+function closeNav() {
+  setNav(false);
 }
 
 // firstChatId is what "the chat to fall back to" means: the most recent one
@@ -633,11 +877,13 @@ function firstChatId() {
 }
 
 function startNewChat() {
+  closeNav();
   saveDraft();
   disconnect();
   state.chatId = null;
   if (dock) dock.setChat(null);
   state.chat = null;
+  setView(state.view, { silent: true });
   updateArchivedMark();
   state.rev = 0;
   state.lastAnswer = '';
@@ -656,12 +902,18 @@ function startNewChat() {
 }
 
 async function openChat(id, options = {}) {
+  // Before the early return: tapping the chat that is already open is still
+  // someone saying they are done with the list.
+  closeNav();
   if (!options.force && state.chatId === id && state.stream && !state.loadFailed) return;
   saveDraft();
   disconnect();
   clearTimeout(state.reopenTimer);
   state.chatId = id;
   if (dock) dock.setChat(id);
+  // The view belongs to the chat, and it is restored before anything is
+  // fetched: a terminal chat opened with no signal is still a terminal.
+  restoreView(id);
   state.rev = 0;
   state.lastAnswer = '';
   state.workSince = 0;
@@ -705,7 +957,7 @@ async function openChat(id, options = {}) {
   resetAutoScreen(state.busy ? 'Working…' : 'Tap the microphone and speak');
   const lastAssistant = [...(data.messages || [])].reverse().find((m) => m.role === 'assistant');
   if (lastAssistant) state.lastAnswer = lastAssistant.content;
-  if (state.auto && lastAssistant) showAutoAnswer(lastAssistant.content, false);
+  if (state.view === 'auto' && lastAssistant) showAutoAnswer(lastAssistant.content, false);
 }
 
 // showLoadError replaces the thread with a plain explanation and a way out,
@@ -1255,30 +1507,54 @@ function toggleChatPanel() {
   dom.panelTitle.focus();
 }
 
-async function saveChatSettings() {
+// saveChatSettings answers on screen and tells the server afterwards. The
+// title is what the person is watching while they press Save, so it changes
+// there and then; if the write did not land, it goes back and says so.
+function saveChatSettings() {
   if (!state.chat) return;
-  try {
-    // The field is prefilled with the directory the chat is actually using,
-    // which for most chats is the folder they get by default. Saving that back
-    // unchanged would pin them to a path that was never chosen, so it is sent
-    // as "no directory of my own" - which is what it means.
-    const typed = dom.panelWorkspace.value.trim();
-    const workspace = typed === state.defaultWorkspace ? '' : typed;
-    const data = await api('/api/chats/' + state.chat.id, {
-      method: 'PATCH',
-      body: { title: dom.panelTitle.value.trim(), workspace },
-    });
-    state.chat = data.chat;
-    updateArchivedMark();
-    dom.title.textContent = data.chat.title || 'New chat';
-    writeValue(titleKey(data.chat.id), data.chat.title || '');
-    fillChatPanel({ force: true });
-    dom.chatPanel.hidden = true;
-    await refreshChats();
+  const chat = state.chat;
+  // The field is prefilled with the directory the chat is actually using,
+  // which for most chats is the folder they get by default. Saving that back
+  // unchanged would pin them to a path that was never chosen, so it is sent
+  // as "no directory of my own" - which is what it means.
+  const typed = dom.panelWorkspace.value.trim();
+  const workspace = typed === state.defaultWorkspace ? '' : typed;
+  const title = dom.panelTitle.value.trim();
+  const before = { title: chat.title, workspace: chat.workspace };
+  chat.title = title;
+  chat.workspace = workspace;
+  dom.title.textContent = title || 'New chat';
+  writeValue(titleKey(chat.id), title);
+  patchChatListItem(chat);
+  fillChatPanel({ force: true });
+  dom.chatPanel.hidden = true;
+  api('/api/chats/' + chat.id, {
+    method: 'PATCH',
+    attempts: 2,
+    body: { title, workspace },
+  }).then((data) => {
+    if (!data || !data.chat) return;
+    if (state.chat && state.chat.id === data.chat.id) {
+      state.chat = data.chat;
+      updateArchivedMark();
+      dom.title.textContent = data.chat.title || 'New chat';
+      writeValue(titleKey(data.chat.id), data.chat.title || '');
+      fillChatPanel({ force: true });
+    }
+    patchChatListItem(data.chat);
+    refreshChats().catch(() => {});
     toast('Chat updated');
-  } catch (err) {
-    toast(errorMessage(err), 'error');
-  }
+  }).catch((err) => {
+    chat.title = before.title;
+    chat.workspace = before.workspace;
+    if (state.chat && state.chat.id === chat.id) {
+      dom.title.textContent = before.title || 'New chat';
+      writeValue(titleKey(chat.id), before.title || '');
+      fillChatPanel({ force: true });
+    }
+    patchChatListItem(chat);
+    toast(isOffline(err) ? 'No connection — the chat was not changed.' : errorMessage(err), 'error');
+  });
 }
 
 function scrollToEnd(force = false) {
@@ -1391,7 +1667,7 @@ function updateLiveUI() {
   setClass(document.body, 'stale', stale);
   if (stale && !state.staleShown) {
     state.staleShown = true;
-    if (state.auto && state.busy && state.prefs.speak_in_auto_mode !== false && !state.spokeOffline) {
+    if (state.view === 'auto' && state.busy && state.prefs.speak_in_auto_mode !== false && !state.spokeOffline) {
       // In hands free mode the person is looking at the road. A single spoken
       // notice is the only way they learn the answer they are waiting for has
       // stopped coming.
@@ -1402,6 +1678,7 @@ function updateLiveUI() {
     state.staleShown = false;
   }
   if (dock) dock.tick();
+  updateSliderLive();
   if (state.busy || stale) tickWorkRow();
   updateAutoOffline(stale);
 }
@@ -1427,7 +1704,7 @@ function handleEvent(event) {
       updateWorkRow();
       if (event.message.role === 'assistant') {
         state.lastAnswer = event.message.content;
-        if (state.auto) {
+        if (state.view === 'auto') {
           showAutoAnswer(event.message.content, state.prefs.speak_in_auto_mode !== false);
         } else if (state.prefs.speak_in_chat_mode) {
           speak(event.message.content, speechOptions()).catch(() => {});
@@ -1504,7 +1781,6 @@ function refreshBusy() {
   const changed = state.busy !== busy;
   state.busy = busy;
   updateSendButton();
-  dom.stopBtn.hidden = !busy;
   setClass(document.body, 'busy', busy);
   updateMicState();
   markChatBusy();
@@ -1578,7 +1854,7 @@ function submitText(raw) {
     chatKey: state.chatId ? '' : clientKey(),
     key: clientKey(),
     text,
-    auto: state.auto,
+    auto: state.view === 'auto',
   });
   setAutoStatus('Working…');
   scrollToEnd(true);
@@ -1761,19 +2037,7 @@ function resetRecordingUI() {
   updateAutoBusy();
 }
 
-/* ------------------------------------------------------------- auto mode */
-
-function setAuto(on, silent = false) {
-  state.auto = on;
-  writeValue('socrates.auto', on ? '1' : '0');
-  setClass(document.body, 'auto', on);
-  dom.autoToggle.checked = on;
-  if (!on) {
-    stopSpeaking();
-    return;
-  }
-  if (!silent && state.lastAnswer) showAutoAnswer(state.lastAnswer, false);
-}
+/* ------------------------------------------------------------ audio mode */
 
 function setAutoStatus(text) {
   dom.autoStatus.textContent = text;
@@ -1813,7 +2077,7 @@ function updateAutoOffline(stale) {
 }
 
 function updateAutoLive(step) {
-  if (!state.auto) return;
+  if (state.view !== 'auto') return;
   const detail = detailOf(step);
   let label = '';
   switch (step.kind) {
@@ -1832,7 +2096,7 @@ function updateAutoLive(step) {
   if (state.busy) setAutoStatus('Working…');
 }
 
-// plainAnswer strips markdown so the big auto mode text stays readable.
+// plainAnswer strips markdown so the big audio mode text stays readable.
 function plainAnswer(text) {
   return String(text || '')
     .replace(/```[\s\S]*?```/g, (block) => block.replace(/```\w*\n?/g, '').trim())

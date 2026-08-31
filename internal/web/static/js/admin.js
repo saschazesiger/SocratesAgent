@@ -1,23 +1,37 @@
 // The admin dashboard: everything about Socrates is configurable here.
 
-import { api, el, toast, confirmDialog, isOffline, errorMessage, setClass, onWake } from './api.js';
+import { api, el, toast, isOffline, errorMessage, setClass, onWake } from './api.js';
 import { speak } from './voice.js';
 import { combobox } from './combobox.js';
 import * as models from './models.js';
 
 const $ = (id) => document.getElementById(id);
 
+// busyButton is the smallest honest answer to a tap that has to wait for the
+// network: the control stops taking taps and says it is working.
+function busyButton(button, on, label) {
+  if (!button) return;
+  button.disabled = on;
+  setClass(button, 'is-busy', on);
+  if (label !== undefined) {
+    if (on) {
+      if (button.dataset.idleLabel === undefined) button.dataset.idleLabel = button.textContent;
+      button.textContent = label;
+    } else if (button.dataset.idleLabel !== undefined) {
+      button.textContent = button.dataset.idleLabel;
+    }
+  }
+}
+
 let settings = null;
 let defaults = null;
-let presets = [];
 
 // The three OpenRouter models are picked with a searchable dropdown rather
 // than a text field, so they are not in FIELDS.
 const MODEL_PICKERS = [
-  ['orChat', 'openrouter.chat_model', () => models.all()],
+  ['orChat', 'openrouter.chat_model', () => models.chat()],
   ['orTranscribe', 'openrouter.transcribe_model', () => models.audio()],
-  ['orTitle', 'openrouter.title_model', () => models.all()],
-  ['netSearchModel', 'internet.search_model', () => models.all()],
+  ['orTitle', 'openrouter.title_model', () => models.chat()],
 ];
 
 const FIELDS = [
@@ -41,12 +55,6 @@ const FIELDS = [
   ['ttsRate', 'voice.tts_rate', 'number'],
   ['speakAuto', 'voice.speak_in_auto_mode', 'bool'],
   ['speakChat', 'voice.speak_in_chat_mode', 'bool'],
-  ['netEnabled', 'internet.enabled', 'bool'],
-  ['netProvider', 'internet.search_provider'],
-  ['netTavilyKey', 'internet.tavily_api_key'],
-  ['netJinaKey', 'internet.jina_api_key'],
-  ['netMaxResults', 'internet.max_results', 'number'],
-  ['netFetchEngine', 'internet.fetch_engine'],
   ['tunnelMode', 'tunnel.mode'],
   ['tunnelToken', 'tunnel.token'],
   ['tunnelHostname', 'tunnel.hostname'],
@@ -86,12 +94,11 @@ async function load() {
   const data = await api('/api/settings');
   settings = data.settings;
   defaults = data.defaults;
-  presets = data.presets || [];
+  catalogue = data.skills || [];
   $('versionLabel').textContent = 'Socrates ' + (data.version || '');
   fillForm();
   buildModelPickers();
   renderSkills();
-  renderInternet();
   bind();
   loadModels();
   if (data.local_url) localURL = data.local_url;
@@ -158,9 +165,6 @@ function syncModelPickers() {
   for (const [id, path] of MODEL_PICKERS) {
     if (pickers[id]) pickers[id].setValue(getPath(settings, path) || '', false);
   }
-  for (const picker of skillModelPickers) {
-    picker.refresh();
-  }
 }
 
 async function loadModels() {
@@ -179,15 +183,11 @@ async function loadModels() {
 function bind() {
   $('saveTop').addEventListener('click', save);
   $('saveBottom').addEventListener('click', save);
-  $('addSkill').addEventListener('click', addSkill);
-  $('addPreset').addEventListener('click', addFromPreset);
   $('runChecks').addEventListener('click', runChecks);
   $('changePw').addEventListener('click', changePassword);
   $('tunnelStart').addEventListener('click', startTunnel);
   $('tunnelStop').addEventListener('click', stopTunnel);
   $('tunnelMode').addEventListener('change', renderTunnelMode);
-  $('netEnabled').addEventListener('change', renderInternet);
-  $('netProvider').addEventListener('change', renderInternet);
   $('tunnelInstall').addEventListener('click', installCloudflared);
   $('tunnelLogToggle').addEventListener('click', () => {
     const log = $('tunnelLog');
@@ -205,7 +205,7 @@ function bind() {
     const language = $('voiceLanguage').value;
     const sample = language === 'de'
       ? 'So klingt Socrates, wenn dir eine Antwort im Freisprechmodus vorgelesen wird.'
-      : 'This is how Socrates will read answers to you in auto mode.';
+      : 'This is how Socrates will read answers to you in audio mode.';
     speak(sample, { lang: language }).catch((err) => toast(err.message, 'error'));
   });
   $('resetPrompt').addEventListener('click', () => {
@@ -223,6 +223,8 @@ function bind() {
 async function save() {
   const next = collect();
   next.skills = settings.skills;
+  const buttons = [$('saveTop'), $('saveBottom')];
+  for (const button of buttons) busyButton(button, true, 'Saving…');
   try {
     // Settings are written whole, so the same body sent twice leaves exactly
     // the same result - which makes this safe to repeat over a bad link.
@@ -231,12 +233,13 @@ async function save() {
     fillForm();
     syncModelPickers();
     renderSkills();
-    renderInternet();
     refreshTunnel();
     hint('Saved');
     toast('Settings saved');
   } catch (err) {
     toast(errorMessage(err), 'error');
+  } finally {
+    for (const button of buttons) busyButton(button, false, 'Saving…');
   }
 }
 
@@ -255,129 +258,33 @@ function showNotice(text, kind) {
   notice.textContent = text;
 }
 
-/* -------------------------------------------------------------- internet */
-
-// Every provider needs a different field, so the card only shows the one that
-// belongs to the choice in the dropdown. Nothing is hidden that is in use.
-const PROVIDER_HINTS = {
-  openrouter: 'No second account needed — the search runs on your OpenRouter key and OpenRouter bills it per search, on top of the tokens.',
-  tavily: 'A search API built for agents. Returns a short answer alongside the results.',
-  jina: 'Works without a key at a low rate limit; a key raises it.',
-};
-
-function renderInternet() {
-  const on = $('netEnabled').checked;
-  const provider = $('netProvider').value || 'openrouter';
-  $('netBody').hidden = !on;
-  $('netProviderHint').textContent = PROVIDER_HINTS[provider] || '';
-  $('netTavilyField').hidden = provider !== 'tavily';
-  $('netJinaField').hidden = provider !== 'jina';
-  $('netSearchModelField').hidden = provider !== 'openrouter';
-}
-
 /* ---------------------------------------------------------------- skills */
 
-function slug(text) {
-  return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-}
-
-// skillModelPickers holds the per skill dropdowns so they can be refreshed
-// when the model catalogue finishes loading.
-let skillModelPickers = [];
-
-// The manual: the sections that tell Socrates how to work this program. They
-// are ordinary prose, which is what makes a new program usable without any
-// code change.
-const MANUAL = [
-  ['startup', 'Starting it',
-    'The screens right after launch and the exact keys that get past them — trust dialogs, update notices, login — and what "ready" looks like.'],
-  ['giving_tasks', 'Giving it a task',
-    'Where to type, how to submit, how to write more than one line, slash commands worth knowing.'],
-  ['reading_state', 'Reading its state',
-    'How to tell working from idle from waiting for an answer. Name the phrases or patterns to look for.'],
-  ['answering', 'Answering its questions',
-    'Every dialog it can show and the exact keys that answer it.'],
-  ['exiting', 'Interrupting and quitting',
-    'How to stop what it is doing, and how to leave cleanly.'],
-  ['notes', 'Notes',
-    'Pitfalls, version quirks, anything that did not fit above.'],
-];
-
-function blankSkill() {
-  return {
-    id: 'skill-' + (settings.skills.length + 1),
-    name: 'New skill',
-    enabled: false,
-    preset: '',
-    description: 'Describe when Socrates should reach for this program.',
-    command: '',
-    args: [],
-    env: [],
-    model: '',
-    model_flag: '',
-    skip_permissions: false,
-    skip_permission_args: [],
-    ask_permission_args: [],
-    startup: '',
-    giving_tasks: '',
-    reading_state: '',
-    answering: '',
-    exiting: '',
-    notes: '',
-    interactive_only: true,
-    headless_forms: '',
-    headless_usage: '',
-    ready_pattern: '',
-    busy_pattern: '',
-    idle_seconds: 5,
-    timeout_seconds: 1800,
-  };
-}
-
-function addSkill() {
-  settings.skills.push(blankSkill());
-  renderSkills();
-}
-
-// missingPresets are the shipped skills this installation does not have. An
-// installation that was set up before a preset existed never receives it
-// silently, so this is how it is offered instead.
-function missingPresets() {
-  const have = new Set(settings.skills.map((skill) => skill.preset || skill.id));
-  return presets.filter((preset) => !have.has(preset.id));
-}
-
-function addFromPreset() {
-  const id = $('presetPick').value;
-  const preset = presets.find((p) => p.id === id);
-  if (!preset) {
-    toast('Every preset is already in the list.');
-    return;
-  }
-  settings.skills.push(JSON.parse(JSON.stringify(preset)));
-  renderSkills();
-  toast(preset.name + ' added. Do not forget to save.');
-}
-
-function renderPresetPicker() {
-  const pick = $('presetPick');
-  const button = $('addPreset');
-  if (!pick || !button) return;
-  const missing = missingPresets();
-  pick.innerHTML = '';
-  for (const preset of missing) {
-    pick.append(el('option', { value: preset.id, text: preset.name }));
-  }
-  pick.hidden = missing.length === 0;
-  button.hidden = missing.length === 0;
-}
+// catalogue is what the app ships: the name of each skill, the program it
+// runs, the wording it uses by default, the models it suggests and - read only
+// - how a model and an effort actually reach that program. How a skill is
+// started and its manual belong to the app and are kept up to date with it, so
+// the card offers exactly the decisions the settings document stores: the
+// switch, the description, and the list of models.
+let catalogue = [];
 
 function renderSkills() {
   const host = $('skills');
   host.innerHTML = '';
-  skillModelPickers = [];
-  settings.skills.forEach((skill, index) => host.append(skillCard(skill, index)));
-  renderPresetPicker();
+  for (const skill of catalogue) host.append(skillCard(skill));
+}
+
+// settingFor is the stored decision about one skill. The server sends one per
+// shipped skill, so this normally finds it; a skill it somehow says nothing
+// about gets an entry rather than a dead switch.
+function settingFor(id) {
+  if (!Array.isArray(settings.skills)) settings.skills = [];
+  let found = settings.skills.find((entry) => entry.id === id);
+  if (!found) {
+    found = { id, enabled: false, description: '' };
+    settings.skills.push(found);
+  }
+  return found;
 }
 
 function field(label, control, hintText) {
@@ -387,215 +294,126 @@ function field(label, control, hintText) {
     hintText ? el('div', { class: 'hint', text: hintText }) : null);
 }
 
-function text(value, onInput, attrs = {}) {
-  return el('input', Object.assign({
-    class: 'input mono', type: 'text', value: value || '',
-    oninput: (event) => onInput(event.target.value),
-  }, attrs));
-}
-
-function area(value, onInput, rows = '4') {
-  return el('textarea', {
-    class: 'textarea', rows, value: value || '',
-    oninput: (event) => onInput(event.target.value),
-  });
-}
-
-function number(value, onInput, attrs = {}) {
-  return el('input', Object.assign({
-    class: 'input', type: 'number', value: value ?? 0,
-    oninput: (event) => onInput(Number(event.target.value) || 0),
-  }, attrs));
-}
-
-function toggle(checked, onChange, label) {
-  return el('label', { class: 'switch' },
-    el('input', { type: 'checkbox', checked, onchange: (event) => onChange(event.target.checked) }),
-    el('span', { class: 'track' }),
-    el('span', { text: label }));
-}
-
-// modelField is the same searchable dropdown as the OpenRouter models, except
-// that a skill's model name belongs to that program - Claude Code wants
-// "sonnet", Codex wants "gpt-5-codex" - so anything typed is kept as is.
-function modelField(skill) {
-  const picker = combobox({
-    value: skill.model || '',
-    items: () => models.all(),
-    placeholder: 'leave empty for the program default',
-    onChange: (value) => { skill.model = value; },
-  });
-  skillModelPickers.push({ refresh: () => picker.setValue(skill.model || '', false) });
-  return picker.node;
-}
-
-function skillCard(skill, index) {
-  const card = el('div', { class: 'skill' });
-  const titleNode = el('span', { class: 'nm', text: skill.name || skill.id });
-  const modeNode = el('span', {
-    class: 'kind',
-    text: skill.skip_permissions ? 'skips permissions' : 'asks permission',
-  });
-
+function skillCard(skill) {
+  const setting = settingFor(skill.id);
   const head = el('div', { class: 'skill-head' },
-    el('label', { class: 'switch', onclick: (event) => event.stopPropagation() },
+    el('label', { class: 'switch' },
       el('input', {
-        type: 'checkbox', checked: skill.enabled,
-        onchange: (event) => { skill.enabled = event.target.checked; },
+        type: 'checkbox', checked: !!setting.enabled,
+        onchange: (event) => { setting.enabled = event.target.checked; },
       }),
       el('span', { class: 'track' })),
-    titleNode,
-    modeNode,
-    skill.preset ? el('span', { class: 'kind', text: 'preset · ' + skill.preset }) : null,
-    el('span', { class: 'spacer' }),
-    skill.preset ? el('button', {
-      class: 'btn sm', type: 'button', text: 'Reset to preset',
-      onclick: async (event) => {
-        event.stopPropagation();
-        const preset = presets.find((p) => p.id === skill.preset);
-        if (!preset) {
-          toast('This installation does not ship a preset called "' + skill.preset + '".', 'error');
-          return;
-        }
-        const ok = await confirmDialog({
-          title: 'Reset to the shipped preset?',
-          body: 'Everything you changed about "' + (skill.name || skill.id) +
-            '" goes back to what Socrates ships, except whether it is enabled. ' +
-            'Nothing is written until you save.',
-          confirmLabel: 'Reset',
-        });
-        if (!ok) return;
-        const copy = JSON.parse(JSON.stringify(preset));
-        copy.enabled = skill.enabled;
-        settings.skills[index] = copy;
-        renderSkills();
-      },
-    }) : null,
-    el('button', {
-      class: 'btn sm danger', type: 'button', text: 'Remove',
-      onclick: async (event) => {
-        event.stopPropagation();
-        const ok = await confirmDialog({
-          title: 'Remove this skill?',
-          body: '"' + (skill.name || skill.id) + '" disappears from the list. ' +
-            'Nothing is written until you save.',
-          confirmLabel: 'Remove skill',
-          danger: true,
-        });
-        if (!ok) return;
-        settings.skills.splice(index, 1);
-        renderSkills();
-      },
-    }),
-  );
-  head.addEventListener('click', (event) => {
-    if (event.target.closest('button') || event.target.closest('.switch')) return;
-    card.classList.toggle('open');
-  });
-
-  const skipArgsField = field('Arguments that skip permissions',
-    text((skill.skip_permission_args || []).join(' '),
-      (value) => { skill.skip_permission_args = splitArgs(value); },
-      { placeholder: '--dangerously-skip-permissions' }),
-    'Added when the switch above is on.');
-
-  const askArgsField = field('Arguments that keep permissions on',
-    text((skill.ask_permission_args || []).join(' '),
-      (value) => { skill.ask_permission_args = splitArgs(value); },
-      { placeholder: '--ask-for-approval on-request' }),
-    'Added when the switch above is off. Socrates then answers the prompts on screen itself.');
-
-  const headlessUsageField = field('Headless usage',
-    area(skill.headless_usage, (value) => { skill.headless_usage = value; }, '3'),
-    'How to use it without a terminal. Only this text reaches Socrates, and only while the switch above is off.');
-
-  const manualFields = MANUAL.map(([key, label, hintText]) =>
-    field(label, area(skill[key], (value) => { skill[key] = value; }), hintText));
+    el('span', { class: 'nm', text: skill.name || skill.id }),
+    el('span', { class: 'kind', text: 'runs ' + skill.command }));
 
   const body = el('div', { class: 'skill-body' },
-    el('div', { class: 'grid-2' },
-      field('Display name', text(skill.name, (value) => {
-        skill.name = value;
-        titleNode.textContent = value || skill.id;
-      }, { class: 'input' })),
-      field('Identifier', text(skill.id, (value) => { skill.id = slug(value); },
-        { placeholder: 'codex' }), 'How Socrates refers to this skill.'),
-    ),
     field('When should Socrates use it?',
-      area(skill.description, (value) => { skill.description = value; }, '3'),
-      'Goes straight into the system prompt, so write it the way you would explain it to a colleague.'),
-    el('div', { class: 'grid-2' },
-      field('Command', text(skill.command, (value) => { skill.command = value; },
-        { placeholder: 'claude' }), 'Binary name or absolute path.'),
-      field('Arguments', text((skill.args || []).join(' '),
-        (value) => { skill.args = splitArgs(value); },
-        { placeholder: '--no-alt-screen' }), 'Always passed, before everything else.'),
-      field('Environment', text((skill.env || []).join(' '),
-        (value) => { skill.env = splitArgs(value); },
-        { placeholder: 'IS_SANDBOX=1' }),
-        'KEY=VALUE pairs put in front of the command, the way you would in a shell. ' +
-        'Claude Code needs IS_SANDBOX=1 to skip permissions as root.'),
-      field('Model', modelField(skill),
-        'The program’s own model name. Pick one from the list or type anything, for example "sonnet".'),
-      field('Model argument', text(skill.model_flag, (value) => { skill.model_flag = value; },
-        { placeholder: '--model' }), 'The flag the model name follows. Leave empty to never pass one.'),
-    ),
-    el('div', { class: 'row', style: 'margin: 4px 0 18px' },
-      toggle(!!skill.skip_permissions, (checked) => {
-        skill.skip_permissions = checked;
-        modeNode.textContent = checked ? 'skips permissions' : 'asks permission';
-        skipArgsField.hidden = !checked;
-        askArgsField.hidden = checked;
-      }, 'Skip permission prompts (run unattended)')),
-    el('div', { class: 'hint', style: 'margin: -14px 0 16px' },
-      'On, the program is started in its own unattended mode and never stops to ask. ' +
-      'Off, it asks before it acts and Socrates answers the prompts on screen the way you would.'),
-    skipArgsField,
-    askArgsField,
-    el('h3', { class: 'skill-section', text: 'The manual' }),
-    el('div', { class: 'hint', style: 'margin: -8px 0 14px' },
-      'What Socrates reads before it touches this program. Write it as you would brief a colleague ' +
-      'who has never seen it; leave a section empty and it is simply not mentioned.'),
-    ...manualFields,
-    el('h3', { class: 'skill-section', text: 'How it may be used' }),
-    el('div', { class: 'row', style: 'margin: 4px 0 18px' },
-      toggle(skill.interactive_only !== false, (checked) => {
-        skill.interactive_only = checked;
-        headlessUsageField.hidden = checked;
-      }, 'Interactive only')),
-    el('div', { class: 'hint', style: 'margin: -14px 0 16px' },
-      'On, Socrates may only drive this program in a terminal session, where you can watch it and ' +
-      'take the keyboard. Off, it may also run it as a plain shell command.'),
-    field('Headless forms',
-      area(skill.headless_forms, (value) => { skill.headless_forms = value; }, '3'),
-      'The program’s non-interactive invocations, named so Socrates knows exactly what to avoid.'),
-    headlessUsageField,
-    el('h3', { class: 'skill-section', text: 'Timing' }),
-    el('div', { class: 'grid-2' },
-      field('Ready when the screen matches', text(skill.ready_pattern, (value) => { skill.ready_pattern = value; },
-        { placeholder: 'leave empty to wait for it to go quiet' }),
-        'Regular expression. Only needed if waiting for silence starts typing too early.'),
-      field('Busy pattern', text(skill.busy_pattern, (value) => { skill.busy_pattern = value; },
-        { placeholder: 'for example: esc to interrupt' }),
-        'Regular expression that means the program is still working. While it matches, Socrates keeps waiting instead of answering.'),
-      field('Counts as finished after (seconds)',
-        number(skill.idle_seconds, (value) => { skill.idle_seconds = value; }, { min: '1', max: '300' }),
-        'How long the program must print nothing before its turn is treated as over.'),
-      field('Timeout (seconds)',
-        number(skill.timeout_seconds, (value) => { skill.timeout_seconds = value; }, { min: '30' })),
-      field('Window size', el('div', { class: 'row', style: 'gap:8px' },
-        number(skill.cols || 0, (value) => { skill.cols = value; }, { min: '0', max: '400', placeholder: 'cols' }),
-        number(skill.rows || 0, (value) => { skill.rows = value; }, { min: '0', max: '200', placeholder: 'rows' })),
-        'Columns and rows the program is given. Zero for the default.'),
-    ),
-  );
+      el('textarea', {
+        class: 'textarea', rows: '3', value: setting.description || '',
+        placeholder: skill.description || '',
+        oninput: (event) => { setting.description = event.target.value; },
+      }),
+      'Goes straight into the system prompt, so write it the way you would explain it to a ' +
+      'colleague. Leave empty for the default.'),
+    modelList(skill, setting));
 
-  skipArgsField.hidden = !skill.skip_permissions;
-  askArgsField.hidden = !!skill.skip_permissions;
-  headlessUsageField.hidden = skill.interactive_only !== false;
+  return el('div', { class: 'skill' }, head, body);
+}
 
-  card.append(head, body);
-  return card;
+/* ----------------------------------------------------------- model lists */
+
+const EFFORTS = [
+  ['', 'default'],
+  ['low', 'low'],
+  ['medium', 'medium'],
+  ['high', 'high'],
+];
+
+// modelList is the second half of a skill card: which models Socrates may
+// start this program on. Socrates picks one per session by reading the "when
+// to use" column, exactly the way it picks the skill itself by reading the
+// description above.
+//
+// The rows are edited in place in the stored setting. An empty list is not a
+// decision - it means "whatever the app ships" - so clearing every row brings
+// the shipped list back on the next save, the same as an empty description.
+function modelList(skill, setting) {
+  const shipped = skill.models || [];
+  const rows = el('div', { class: 'models' });
+
+  // The stored list is what the user has changed; with nothing stored the card
+  // shows the shipped list, so what is on screen is always what will run.
+  if (!Array.isArray(setting.models) || setting.models.length === 0) {
+    setting.models = shipped.map((m) => ({ id: m.id, effort: m.effort || '', use_when: m.use_when || '' }));
+  }
+
+  const draw = () => {
+    rows.innerHTML = '';
+    for (const entry of setting.models) rows.append(modelRow(setting, entry, draw));
+    if (setting.models.length === 0) {
+      rows.append(el('div', { class: 'hint', text: 'No models. Saving like this restores the ones that ship with the app.' }));
+    }
+  };
+  draw();
+
+  const add = el('button', {
+    type: 'button', class: 'btn sm', text: 'Add model',
+    onclick: () => {
+      setting.models.push({ id: '', effort: '', use_when: '' });
+      draw();
+    },
+  });
+
+  const reset = shipped.length
+    ? el('button', {
+      type: 'button', class: 'btn sm ghost', text: 'Reset to shipped',
+      onclick: () => {
+        setting.models = shipped.map((m) => ({ id: m.id, effort: m.effort || '', use_when: m.use_when || '' }));
+        draw();
+      },
+    })
+    : null;
+
+  return el('div', { class: 'field' },
+    el('label', { text: 'Models it may run on' }),
+    rows,
+    el('div', { class: 'row models-actions' }, add, reset),
+    el('div', { class: 'hint' },
+      'Model names in ' + (skill.name || skill.id) + '’s own naming, not OpenRouter ids. Socrates ' +
+      'reads the "when to use" line and picks one when it opens the session; the first row is what it ' +
+      'gets when it does not pick.'),
+    el('div', { class: 'hint mono', text: skill.applying || '' }));
+}
+
+function modelRow(setting, entry, draw) {
+  const remove = el('button', {
+    type: 'button', class: 'btn sm ghost', title: 'Remove this model', text: 'Remove',
+    onclick: () => {
+      setting.models = setting.models.filter((m) => m !== entry);
+      draw();
+    },
+  });
+
+  const effort = el('select', {
+    class: 'select', 'aria-label': 'Reasoning effort',
+    onchange: (event) => { entry.effort = event.target.value; },
+  }, EFFORTS.map(([value, label]) => el('option', {
+    value, text: label, selected: (entry.effort || '') === value,
+  })));
+
+  return el('div', { class: 'model-row' },
+    el('input', {
+      class: 'input mono', type: 'text', value: entry.id || '',
+      placeholder: 'model id', 'aria-label': 'Model id',
+      oninput: (event) => { entry.id = event.target.value; },
+    }),
+    effort,
+    el('input', {
+      class: 'input', type: 'text', value: entry.use_when || '',
+      placeholder: 'when to use this model', 'aria-label': 'When to use this model',
+      oninput: (event) => { entry.use_when = event.target.value; },
+    }),
+    remove);
 }
 
 // splitArgs understands simple quoting so paths with spaces survive.
@@ -746,7 +564,7 @@ async function refreshTunnel() {
 
 async function startTunnel() {
   const button = $('tunnelStart');
-  button.disabled = true;
+  busyButton(button, true, 'Starting…');
   try {
     const data = await api('/api/tunnel/start', { method: 'POST', body: { tunnel: tunnelForm() } });
     settings.tunnel = data.tunnel;
@@ -756,7 +574,7 @@ async function startTunnel() {
   } catch (err) {
     toast(errorMessage(err), 'error');
   } finally {
-    button.disabled = false;
+    busyButton(button, false, 'Starting…');
   }
 }
 
@@ -781,6 +599,8 @@ async function installCloudflared() {
 }
 
 async function stopTunnel() {
+  const button = $('tunnelStop');
+  busyButton(button, true, 'Stopping…');
   try {
     const data = await api('/api/tunnel/stop', { method: 'POST', body: {} });
     settings.tunnel = data.tunnel;
@@ -788,6 +608,10 @@ async function stopTunnel() {
     toast('Tunnel stopped');
   } catch (err) {
     toast(errorMessage(err), 'error');
+  } finally {
+    busyButton(button, false, 'Stopping…');
+    // renderTunnelStatus decides whether this button belongs enabled at all.
+    refreshTunnel();
   }
 }
 
@@ -823,6 +647,8 @@ async function changePassword() {
     toast('Fill in both password fields.', 'error');
     return;
   }
+  const button = $('changePw');
+  busyButton(button, true, 'Changing…');
   try {
     await api('/api/settings/password', { method: 'POST', body: { current, next } });
     $('pwCurrent').value = '';
@@ -830,5 +656,7 @@ async function changePassword() {
     toast('Password changed');
   } catch (err) {
     toast(errorMessage(err), 'error');
+  } finally {
+    busyButton(button, false, 'Changing…');
   }
 }

@@ -669,3 +669,79 @@ func TestArchivingAChatClosesItsTerminals(t *testing.T) {
 		t.Fatalf("the chat does not report itself as archived: %#v", snapshot["chat"])
 	}
 }
+
+// TestUserOpensATerminal is the button in the dock: the person wants a shell in
+// the chat's working directory without asking Socrates for one. There is only
+// ever one terminal per chat, so asking twice hands back the one that is
+// already there rather than a second screen.
+func TestUserOpensATerminal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a real terminal")
+	}
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+
+	workspaces := t.TempDir()
+	_, data := env.do(t, env.client, "GET", "/api/settings", "")
+	settings := data["settings"].(map[string]any)
+	settings["agent"].(map[string]any)["workspace_root"] = workspaces
+	body, _ := json.Marshal(map[string]any{"settings": settings})
+	if res, _ := env.do(t, env.client, "PUT", "/api/settings", string(body)); res.StatusCode != http.StatusOK {
+		t.Fatalf("could not set the workspace root: %d", res.StatusCode)
+	}
+
+	_, created := env.do(t, env.client, "POST", "/api/chats", `{}`)
+	chatID := created["chat"].(map[string]any)["id"].(string)
+
+	res, opened := env.do(t, env.client, "POST", "/api/chats/"+chatID+"/terminals", `{}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("opening a terminal failed: %d %#v", res.StatusCode, opened)
+	}
+	terminal, _ := opened["terminal"].(map[string]any)
+	if terminal == nil {
+		t.Fatalf("no terminal in the answer: %#v", opened)
+	}
+	id, _ := terminal["id"].(string)
+	if !strings.HasPrefix(id, "term_") {
+		t.Fatalf("terminal id = %q", id)
+	}
+	if terminal["name"] != "terminal" {
+		t.Errorf("name = %v, want \"terminal\"", terminal["name"])
+	}
+	if terminal["chat_id"] != chatID {
+		t.Errorf("chat_id = %v, want %q", terminal["chat_id"], chatID)
+	}
+	if terminal["running"] != true {
+		t.Errorf("the session should be running: %#v", terminal)
+	}
+	if dir, _ := terminal["dir"].(string); dir != filepath.Join(workspaces, chatID) {
+		t.Errorf("dir = %q, want the chat's workspace under %q", dir, workspaces)
+	}
+	t.Cleanup(func() { env.do(t, env.client, "POST", "/api/terminals/"+id+"/close", `{}`) })
+
+	// It is an ordinary session: the chat lists it like any other.
+	_, listed := env.do(t, env.client, "GET", "/api/chats/"+chatID+"/terminals", "")
+	terminals, _ := listed["terminals"].([]any)
+	if len(terminals) != 1 || terminals[0].(map[string]any)["id"] != id {
+		t.Fatalf("the chat should list exactly the new session: %#v", terminals)
+	}
+
+	// A second one is refused, with the id of the session that already exists
+	// so the browser can simply show it.
+	res, again := env.do(t, env.client, "POST", "/api/chats/"+chatID+"/terminals", `{}`)
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("a second terminal should be refused, got %d %#v", res.StatusCode, again)
+	}
+	if again["terminal_id"] != id {
+		t.Errorf("terminal_id = %v, want the running session %q", again["terminal_id"], id)
+	}
+	if s, _ := again["error"].(string); strings.TrimSpace(s) == "" {
+		t.Error("the refusal came without an explanation")
+	}
+
+	// And a chat that does not exist is a 404, not a stray shell.
+	res, _ = env.do(t, env.client, "POST", "/api/chats/does-not-exist/terminals", `{}`)
+	if res.StatusCode != http.StatusNotFound {
+		t.Errorf("opening a terminal for a missing chat = %d, want 404", res.StatusCode)
+	}
+}

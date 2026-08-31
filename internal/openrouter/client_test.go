@@ -298,3 +298,142 @@ func TestChatDoesNotRetryOnceTextHasBeenShown(t *testing.T) {
 		t.Fatalf("the handler saw %q, so the answer was repeated", shown.String())
 	}
 }
+
+// fakeGateway stands in for OpenRouter, which serves the two kinds of
+// transcription model on two different endpoints and refuses each at the
+// other's - the refusal this test is really about.
+func fakeGateway(t *testing.T, transcription string, chat string) (*httptest.Server, *[]string) {
+	t.Helper()
+	var seen []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/audio/transcriptions":
+			if transcription == "" {
+				w.WriteHeader(http.StatusBadRequest)
+				io.WriteString(w, `{"error":{"message":"Model m does not exist"}}`)
+				return
+			}
+			io.WriteString(w, `{"text":"`+transcription+`"}`)
+		case "/chat/completions":
+			if chat == "" {
+				w.WriteHeader(http.StatusBadRequest)
+				io.WriteString(w, `{"error":{"message":"m is a transcription model and cannot be used with the chat/completions endpoint. Use the /api/v1/audio/transcriptions endpoint instead."}}`)
+				return
+			}
+			io.WriteString(w, `{"choices":[{"message":{"content":"`+chat+`"},"finish_reason":"stop"}]}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server, &seen
+}
+
+// A transcription model refuses /chat/completions outright. Sending a
+// recording there was the whole of the "502" the microphone used to answer
+// with, so the refusal has to be read and the other endpoint used.
+func TestTranscribeFallsBackToTheTranscriptionEndpoint(t *testing.T) {
+	server, seen := fakeGateway(t, "hallo zusammen", "")
+	client := New(server.URL, "key")
+
+	text, err := client.Transcribe(context.Background(), "vendor/listen-1", "verbatim", []byte("audio"), "wav", "de")
+	if err != nil {
+		t.Fatalf("transcribe: %v", err)
+	}
+	if text != "hallo zusammen" {
+		t.Fatalf("text = %q", text)
+	}
+	if len(*seen) != 2 || (*seen)[0] != "/chat/completions" || (*seen)[1] != "/audio/transcriptions" {
+		t.Fatalf("requests = %v", *seen)
+	}
+
+	// And what worked is remembered, so the next recording is uploaded once.
+	if _, err := client.Transcribe(context.Background(), "vendor/listen-1", "verbatim", []byte("audio"), "wav", "de"); err != nil {
+		t.Fatalf("second transcribe: %v", err)
+	}
+	if len(*seen) != 3 || (*seen)[2] != "/audio/transcriptions" {
+		t.Fatalf("requests = %v", *seen)
+	}
+}
+
+// The same the other way round: a name that reads like a transcriber but is an
+// audio capable chat model still gets its recording transcribed.
+func TestTranscribeFallsBackToTheChatEndpoint(t *testing.T) {
+	server, seen := fakeGateway(t, "", "guten Morgen")
+	client := New(server.URL, "key")
+
+	text, err := client.Transcribe(context.Background(), "vendor/whisper-chat", "verbatim", []byte("audio"), "wav", "de")
+	if err != nil {
+		t.Fatalf("transcribe: %v", err)
+	}
+	if text != "guten Morgen" {
+		t.Fatalf("text = %q", text)
+	}
+	if len(*seen) != 2 || (*seen)[0] != "/audio/transcriptions" || (*seen)[1] != "/chat/completions" {
+		t.Fatalf("requests = %v", *seen)
+	}
+}
+
+// A refusal that is not about the endpoint is reported as it is, rather than
+// costing a second upload of the same recording.
+func TestTranscribeDoesNotRetryARealRefusal(t *testing.T) {
+	var seen []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.URL.Path)
+		w.WriteHeader(http.StatusUnauthorized)
+		io.WriteString(w, `{"error":{"message":"No auth credentials found"}}`)
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "key")
+	_, err := client.Transcribe(context.Background(), "vendor/model", "verbatim", []byte("audio"), "wav", "de")
+	if err == nil || !strings.Contains(err.Error(), "No auth credentials") {
+		t.Fatalf("err = %v", err)
+	}
+	if len(seen) != 1 {
+		t.Fatalf("requests = %v", seen)
+	}
+}
+
+// The catalogue is what the dashboard filters on. OpenRouter nests the
+// modalities under "architecture" and keeps the transcription models out of
+// the main list, so both have to be read - otherwise every picker offers every
+// model and a model that cannot listen ends up transcribing.
+func TestModelsMergeTheTranscriptionCatalogue(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("output_modalities") == "transcription" {
+			io.WriteString(w, `{"data":[{"id":"vendor/listen-1","name":"Listen",
+				"architecture":{"input_modalities":["audio"],"output_modalities":["transcription"]}}]}`)
+			return
+		}
+		io.WriteString(w, `{"data":[
+			{"id":"vendor/chat-1","name":"Chat","architecture":{"input_modalities":["text","audio"],"output_modalities":["text"]}},
+			{"id":"vendor/text-1","name":"Text","architecture":{"input_modalities":["text"],"output_modalities":["text"]}}]}`)
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "key")
+	models, err := client.Models(context.Background())
+	if err != nil {
+		t.Fatalf("models: %v", err)
+	}
+	if len(models) != 3 {
+		t.Fatalf("models = %#v", models)
+	}
+	byID := map[string]Model{}
+	for _, m := range models {
+		byID[m.ID] = m
+	}
+	if !byID["vendor/listen-1"].Hears() || !byID["vendor/listen-1"].Transcribes() {
+		t.Errorf("listen-1 = %#v", byID["vendor/listen-1"])
+	}
+	if !byID["vendor/chat-1"].Hears() || byID["vendor/chat-1"].Transcribes() {
+		t.Errorf("chat-1 = %#v", byID["vendor/chat-1"])
+	}
+	if byID["vendor/text-1"].Hears() {
+		t.Errorf("text-1 = %#v", byID["vendor/text-1"])
+	}
+}

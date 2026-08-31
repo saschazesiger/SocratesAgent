@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -25,6 +26,21 @@ func speechInstructions(language string) string {
 	name := config.LanguageName(language)
 	return "Read the text aloud in " + name + ", as a native speaker of " + name +
 		" would, with natural pronunciation and no foreign accent."
+}
+
+// upstreamStatus turns a provider failure into the status the page should see.
+// The page retries a 502 three times before it says anything, which is right
+// for a gateway that hiccuped and wrong for a model that does not exist: the
+// same refusal would come back three times, after three uploads of the same
+// recording on a connection that has better things to do. So a refusal the
+// provider blames on the request is reported as one.
+func upstreamStatus(err error) int {
+	var status *openrouter.StatusError
+	if errors.As(err, &status) && status.Status >= 400 && status.Status < 500 &&
+		status.Status != http.StatusRequestTimeout && status.Status != http.StatusTooManyRequests {
+		return http.StatusBadRequest
+	}
+	return http.StatusBadGateway
 }
 
 // handleTranscribe converts recorded audio into text.
@@ -82,11 +98,16 @@ func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 		}
 		client := openrouter.New(settings.OpenRouter.BaseURL, settings.OpenRouter.APIKey)
 		prompt := strings.TrimSpace(settings.Voice.STTPrompt) + transcriptionHint(language)
-		text, err = client.TranscribeChat(r.Context(), settings.OpenRouter.TranscribeModel,
-			prompt, body.Audio, format)
+		text, err = client.Transcribe(r.Context(), settings.OpenRouter.TranscribeModel,
+			prompt, raw, format, language)
 	}
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		code := upstreamStatus(err)
+		message := err.Error()
+		if code == http.StatusBadRequest {
+			message += " - open /admin and pick a transcription model"
+		}
+		writeError(w, code, message)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"text": strings.TrimSpace(text)})
@@ -124,7 +145,7 @@ func (s *Server) handleSpeak(w http.ResponseWriter, r *http.Request) {
 	audio, contentType, err := client.Speech(r.Context(), settings.Voice.TTSModel, settings.Voice.TTSVoice,
 		text, speechInstructions(language))
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		writeError(w, upstreamStatus(err), err.Error())
 		return
 	}
 	w.Header().Set("Content-Type", contentType)

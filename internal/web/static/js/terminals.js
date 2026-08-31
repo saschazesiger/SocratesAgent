@@ -1,14 +1,17 @@
-// The terminal dock: every session of the open chat, in one panel beside the
-// conversation.
+// The terminal of the open chat: one session, in one panel beside the
+// conversation - or, in Terminal Mode, filling the pane the conversation
+// usually has.
 //
 // A terminal used to live inside the transcript, which read badly and scrolled
 // worse: the screen a program paints is not a step in a story, it is a place
 // you look at while the story goes on next to it. So the transcript keeps one
 // line saying a session was opened, and the session itself lives here - docked
-// on the right on a desktop, a full height drawer on a phone.
+// on the right on a desktop, a full height drawer on a phone, or the whole
+// pane when the chat is being used as a terminal.
 //
-// Socrates and the person share this keyboard. Whatever either of them sends
-// goes to the same program, which is the whole point of showing it at all.
+// A chat has at most one running session, so there is nothing to choose
+// between: no tabs, no count, no input line. The screen is the session. You
+// tap it and type into the program, and Socrates is at the same keyboard.
 
 import { api, el, toast, confirmDialog, isOffline, errorMessage, setClass, LiveStream, HttpError } from './api.js';
 
@@ -32,8 +35,6 @@ const KEY_NAMES = {
   PageDown: 'pagedown',
   Insert: 'insert',
 };
-
-const QUICK_KEYS = ['enter', 'escape', 'tab', 'up', 'down', 'ctrl+c', 'ctrl+d'];
 
 // The characters the server can turn into a control code. Anything else after
 // ctrl is refused there, so it is never sent from here.
@@ -147,45 +148,69 @@ function writeValue(key, value) {
   } catch { /* private mode, quota */ }
 }
 
-export function mountTerminalDock() {
+// The one control that says what the pane is doing lives in the top bar, so
+// the dock does not own its own openness: it is told, and it reports back the
+// times it closes or opens itself - from its own corner, from escape on a
+// phone, or from a line in the transcript asking for a session by name.
+export function mountTerminalDock(options = {}) {
   const dom = {
-    btn: $('termBtn'),
-    badge: $('termBadge'),
     dock: $('termDock'),
-    tabs: $('dockTabs'),
-    screen: $('dockScreen'),
-    status: $('dockStatus'),
-    form: $('dockForm'),
-    input: $('dockInput'),
-    keys: $('dockKeys'),
-    error: $('dockError'),
+    name: $('dockName'),
     close: $('dockClose'),
     grip: $('dockGrip'),
-    meta: $('dockMeta'),
-    empty: $('dockEmpty'),
-    dismiss: $('dockDismiss'),
   };
-  if (!dom.dock || !dom.btn) return null;
+  if (!dom.dock) return null;
+
+  // Two frames, one session. Everything below paints into whichever of them is
+  // showing, so the fullscreen terminal is the dock's screen in another box
+  // rather than a second copy of the same code.
+  const views = {
+    dock: {
+      root: dom.dock,
+      screen: $('dockScreen'),
+      status: $('dockStatus'),
+      meta: $('dockMeta'),
+      empty: $('dockEmpty'),
+      error: $('dockError'),
+      dismiss: $('dockDismiss'),
+      capture: $('dockCapture'),
+    },
+    full: {
+      root: $('termFull'),
+      screen: $('fullScreen'),
+      status: $('fullStatus'),
+      meta: $('fullMeta'),
+      empty: $('fullEmpty'),
+      error: $('fullError'),
+      dismiss: $('fullDismiss'),
+      capture: $('fullCapture'),
+    },
+  };
 
   const state = {
     chatId: null,
-    // session id -> record. Insertion order is the tab order, which is the
-    // order the sessions were opened in.
+    // session id -> record. Insertion order is the order they were opened in,
+    // which is how "the most recent one" is found when none is running.
     sessions: new Map(),
-    active: null,
     open: false,
-    // The last screen text painted, so a redraw several times a second does
-    // not throw away a selection or reset the scroll position for nothing.
+    // Terminal Mode: the session has the whole pane instead of the column.
+    full: false,
+    // The last screen painted, and the frame it was painted into, so a redraw
+    // several times a second does not throw away a selection or reset the
+    // scroll position for nothing.
     painted: '',
+    paintedIn: null,
     resizeTimer: null,
     lastError: null,
     // Sessions the person took off the shelf. A finished session must not come
     // back the next time the transcript repeats itself.
     dismissed: new Set(),
-    // session id -> its tab. The tabs are kept and patched rather than made
-    // again, because each one carries the dot that says the session is alive.
-    tabs: new Map(),
+    // The request that opens the chat's shell, so two taps do not open two.
+    opening: null,
   };
+
+  function view() { return state.full ? views.full : views.dock; }
+  function other() { return state.full ? views.dock : views.full; }
 
   /* ------------------------------------------------------------ sessions */
 
@@ -211,7 +236,6 @@ export function mountTerminalDock() {
       sentCols: 0,
     };
     state.sessions.set(id, session);
-    if (!state.active) state.active = id;
     return session;
   }
 
@@ -266,11 +290,11 @@ export function mountTerminalDock() {
     } catch {
       // The transcript already named the sessions; the list only adds their
       // live screens, and it will be tried again when the page wakes.
-      return;
+      return [];
     }
-    if (state.chatId !== chatId) return;
-    // Oldest first, so the tabs are in the order the sessions were opened
-    // whichever source got here first.
+    if (state.chatId !== chatId) return [];
+    // Oldest first, so "the most recent session" means the last one here
+    // whichever source got to it first.
     const list = [...((data && data.terminals) || [])].sort((a, b) => (a.started_at || 0) - (b.started_at || 0));
     for (const term of list) {
       note(term.id, {
@@ -284,6 +308,7 @@ export function mountTerminalDock() {
       });
     }
     render();
+    return list;
   }
 
   function setChat(chatId) {
@@ -291,16 +316,58 @@ export function mountTerminalDock() {
     for (const session of state.sessions.values()) stopStream(session);
     state.sessions.clear();
     state.dismissed.clear();
-    state.tabs.clear();
-    dom.tabs.innerHTML = '';
-    state.active = null;
+    state.opening = null;
     state.painted = '';
     state.lastError = null;
     state.chatId = chatId || null;
     state.open = chatId ? readValue(openKey(chatId)) === '1' : false;
+    clearError();
     applyWidth();
     render();
     if (chatId) loadList(chatId);
+  }
+
+  // ensureTerminal is Terminal Mode's one demand of the server: this chat has
+  // a shell running, whether or not it had one a moment ago. One session per
+  // chat is the server's rule, so a 409 is not a failure - it is the answer.
+  async function ensureTerminal(chatId) {
+    const id = chatId || state.chatId;
+    if (!id) return null;
+    const live = liveSession();
+    if (live) return live;
+    if (state.opening) return state.opening;
+    const attempt = (async () => {
+      try {
+        const data = await api('/api/chats/' + encodeURIComponent(id) + '/terminals', {
+          method: 'POST', attempts: 1, body: {},
+        });
+        const term = data && data.terminal;
+        if (!term || !term.id) return null;
+        note(term.id, {
+          name: term.name || 'terminal',
+          command: term.command || '',
+          screen: term.screen || '',
+          cols: term.cols || 0,
+          rows: term.rows || 0,
+          running: term.running !== false,
+          exitCode: term.exit_code || 0,
+        });
+        render();
+        return state.sessions.get(term.id) || null;
+      } catch (err) {
+        // The chat already has one. Whatever this page thought, the list is
+        // the truth, so it is fetched rather than guessed at.
+        if (err instanceof HttpError && err.status === 409) {
+          await loadList(id);
+          return liveSession() || active();
+        }
+        throw err;
+      } finally {
+        state.opening = null;
+      }
+    })();
+    state.opening = attempt;
+    return attempt;
   }
 
   /* ------------------------------------------------------------- streams */
@@ -386,7 +453,7 @@ export function mountTerminalDock() {
 
   // Typing into a session is the one thing here that must not be retried
   // blindly: a keystroke that arrives twice is a different keystroke. So it is
-  // attempted once and, if it did not get through, the dock says so and keeps
+  // attempted once and, if it did not get through, the panel says so and keeps
   // what was typed within reach rather than swallowing it.
   function send(text, keys, describe) {
     const session = active();
@@ -411,33 +478,32 @@ export function mountTerminalDock() {
 
   function showError(message, label, text, keys) {
     state.lastError = { text, keys };
-    dom.error.innerHTML = '';
-    dom.error.append(
+    const box = view().error;
+    box.innerHTML = '';
+    box.append(
       el('span', { class: 'msg', text: message + (label ? ' (' + label + ')' : '') }),
       el('button', {
         class: 'again', type: 'button', text: 'Send again',
         onclick: () => {
           const pending = state.lastError;
           if (!pending) return;
-          send(pending.text, pending.keys, label).then(() => {
-            // The failed text was put back in the box so it could be edited.
-            // Once the retry has landed it has to leave, or the next Enter
-            // sends the same line a second time.
-            if (pending.text && dom.input.value === pending.text) dom.input.value = '';
-          }).catch(() => {});
+          send(pending.text, pending.keys, label).catch(() => {});
         },
       }),
       el('button', {
         class: 'again', type: 'button', text: 'Dismiss', onclick: clearError,
       }),
     );
-    dom.error.hidden = false;
+    box.hidden = false;
   }
 
   function clearError() {
     state.lastError = null;
-    dom.error.hidden = true;
-    dom.error.innerHTML = '';
+    for (const box of [views.dock.error, views.full.error]) {
+      if (!box) continue;
+      box.hidden = true;
+      box.innerHTML = '';
+    }
   }
 
   /* --------------------------------------------------------------- sizes */
@@ -445,19 +511,21 @@ export function mountTerminalDock() {
   // The server renders the screen at a fixed width, so a session opened at 160
   // columns wraps into nonsense in a 60 column drawer on a phone. Measuring the
   // real character width and telling the server about it is what makes the two
-  // agree.
+  // agree - and it has to be measured in whichever frame is on screen, because
+  // a full pane and a column are not the same width.
   function measureCols() {
+    const screen = view().screen;
     const probeEl = el('span', {
       class: 'term-measure',
       text: 'MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM',
     });
-    dom.screen.append(probeEl);
+    screen.append(probeEl);
     const width = probeEl.getBoundingClientRect().width / 40;
     probeEl.remove();
     if (!width || !isFinite(width)) return 0;
-    const styles = getComputedStyle(dom.screen);
+    const styles = getComputedStyle(screen);
     const padding = parseFloat(styles.paddingLeft || '0') + parseFloat(styles.paddingRight || '0');
-    const usable = dom.screen.clientWidth - padding;
+    const usable = screen.clientWidth - padding;
     if (usable <= 0) return 0;
     return Math.max(40, Math.min(400, Math.floor(usable / width)));
   }
@@ -466,11 +534,11 @@ export function mountTerminalDock() {
     clearTimeout(state.resizeTimer);
     state.resizeTimer = setTimeout(() => {
       const session = active();
-      if (!state.open || !session || !session.running) return;
+      if (!showing() || !session || !session.running) return;
       const cols = measureCols();
-      // Remembered per session: each one has to be told the width of the panel
-      // it is being shown in, and switching tabs must not make the dock think
-      // the new one already knows.
+      // Remembered per session: each one has to be told the width of the frame
+      // it is being shown in, and moving between the dock and the full pane
+      // must not let the session think it already knows.
       if (!cols || cols === session.sentCols) return;
       session.sentCols = cols;
       api('/api/terminals/' + encodeURIComponent(session.id) + '/resize', {
@@ -483,149 +551,109 @@ export function mountTerminalDock() {
 
   /* ------------------------------------------------------------ rendering */
 
+  // One chat, one terminal. The running session is the one that matters; when
+  // none is running the most recent one is the picture of what happened.
   function active() {
-    if (state.active && state.sessions.has(state.active)) return state.sessions.get(state.active);
-    const first = state.sessions.keys().next();
-    state.active = first.done ? null : first.value;
-    return state.active ? state.sessions.get(state.active) : null;
+    let live = null;
+    let latest = null;
+    for (const session of state.sessions.values()) {
+      if (!live && session.running) live = session;
+      latest = session;
+    }
+    return live || latest;
   }
 
-  function running() {
-    let count = 0;
-    for (const session of state.sessions.values()) if (session.running) count += 1;
-    return count;
+  function liveSession() {
+    for (const session of state.sessions.values()) if (session.running) return session;
+    return null;
+  }
+
+  // showing answers "is a terminal actually on screen right now", which is what
+  // resizing and the status ticker both depend on.
+  function showing() {
+    return state.full || state.open;
   }
 
   function render() {
-    const count = state.sessions.size;
-    dom.btn.hidden = count === 0;
-    // A chat that has not loaded its sessions yet is not a chat with the panel
-    // closed: forgetting that here is how a reload used to lose the dock.
-    const live = running();
-    setClass(dom.btn, 'live', live > 0);
-    dom.badge.hidden = count < 2;
-    dom.badge.textContent = String(count);
-    // The badge is decoration for the eye; the label is the same fact spelled
-    // out, so a screen reader is not left with a bare number.
-    const title = count
-      ? (live ? live + ' of ' + count + ' terminal session' + (count > 1 ? 's' : '') + ' running'
-        : 'Terminal sessions (all finished)')
-      : 'Terminal sessions';
-    dom.btn.title = title;
-    dom.btn.setAttribute('aria-label', title);
-    dom.dock.hidden = !state.open || !count;
-    setClass(document.body, 'dock-open', !dom.dock.hidden);
-    dom.btn.setAttribute('aria-expanded', dom.dock.hidden ? 'false' : 'true');
-    if (dom.dock.hidden) return;
+    if (views.full.root) views.full.root.hidden = !state.full;
+    // A column that was asked for is shown while the shell is still being
+    // started: an empty panel saying so is the truth, and a panel that only
+    // appears once the server answers looks like the tap did nothing.
+    dom.dock.hidden = state.full || !state.open;
+    if (!showing()) return;
 
-    // active() is resolved first: after a dismiss it picks the session that
-    // takes over, and renderTabs has to know that to mark the right tab.
-    // Doing it the other way round left the panel with no selected tab for a
-    // render, and the tablist with no aria-selected="true" at all.
     const session = active();
-    renderTabs();
-    if (!session) return;
+    renderName(session);
+    const frame = view();
+    // Moving between the dock and the full pane means the screen in hand has
+    // never been painted, whatever the last signature said.
+    if (state.paintedIn !== frame) {
+      state.painted = '';
+      state.paintedIn = frame;
+    }
+    if (!session) {
+      if (state.painted !== ' none') {
+        frame.screen.textContent = '';
+        state.painted = ' none';
+      }
+      frame.empty.hidden = false;
+      frame.empty.textContent = 'Starting a shell…';
+      frame.meta.textContent = '';
+      frame.status.className = 'dock-status';
+      frame.status.textContent = '';
+      frame.dismiss.hidden = true;
+      return;
+    }
+    frame.dismiss.hidden = false;
 
-    dom.empty.hidden = !!session.screen;
+    frame.empty.hidden = !!session.screen;
+    frame.empty.textContent = 'Waiting for the program to paint its first screen…';
     const text = session.screen || '';
     const styled = session.styled;
     // The caret belongs to a program that is still running; a finished session
     // is a picture of what happened, not a place to type.
     const caret = session.running && session.cursor && session.cursor.visible ? session.cursor : null;
-    const signature = text + '\u0000' + styleSignature(styled, caret);
+    const signature = text + ' ' + styleSignature(styled, caret);
     if (state.painted !== signature) {
       // Auto scroll only while the person is already at the bottom: someone
       // reading back through what happened must not be yanked to the end by
       // the next redraw.
-      const atBottom = dom.screen.scrollHeight - dom.screen.scrollTop - dom.screen.clientHeight < 24;
+      const atBottom = frame.screen.scrollHeight - frame.screen.scrollTop - frame.screen.clientHeight < 24;
       // Colours when the server sent them, plain text when it did not, which
       // is what an old server and an uncoloured program both look like.
-      if (styled) dom.screen.replaceChildren(styledFragment(styled, caret));
-      else dom.screen.textContent = text;
+      if (styled) frame.screen.replaceChildren(styledFragment(styled, caret));
+      else frame.screen.textContent = text;
       state.painted = signature;
-      if (atBottom) dom.screen.scrollTop = dom.screen.scrollHeight;
+      if (atBottom) frame.screen.scrollTop = frame.screen.scrollHeight;
     }
 
-    dom.meta.textContent = session.command || '';
-    dom.form.hidden = !session.running;
-    dom.keys.hidden = !session.running;
+    frame.meta.textContent = session.command || '';
     paintStatus();
     syncSize();
   }
 
-  // The tabs are patched, never rebuilt. Each one carries the dot that says its
-  // session is alive, and a dot that was thrown away and made again whenever
-  // another session opened - or whenever the screen it belongs to repainted -
-  // never got far enough into its pulse to look like anything but a blink.
-  //
-  // Keying by session id also means a tab finally notices its session ending:
-  // the old signature only knew which sessions existed, so a finished one kept
-  // a pulsing green dot until the whole panel was rebuilt for another reason.
-  function renderTabs() {
-    setClass(dom.tabs, 'single', state.sessions.size <= 1);
-
-    for (const [id, tab] of state.tabs) {
-      if (state.sessions.has(id)) continue;
-      tab.remove();
-      state.tabs.delete(id);
+  // The dock head says which session this is, and nothing more: there is only
+  // ever one, so there is nothing to pick between. The dot is patched rather
+  // than replaced, because it is the one mark that says the program is alive.
+  function renderName(session) {
+    if (!dom.name) return;
+    const dot = dom.name.querySelector('.dot');
+    const label = dom.name.querySelector('.nm');
+    const name = (session && session.name) || 'terminal';
+    if (label && label.textContent !== name) label.textContent = name;
+    if (dot) {
+      setClass(dot, 'live', !!(session && session.running));
+      setClass(dot, 'failed', !!(session && !session.running && session.exitCode > 0));
     }
-
-    let previous = null;
-    for (const session of state.sessions.values()) {
-      let tab = state.tabs.get(session.id);
-      if (!tab) {
-        tab = buildTab(session.id);
-        state.tabs.set(session.id, tab);
-      }
-      tab.update(session);
-      // Only ever moved when it is genuinely in the wrong place: taking a node
-      // out of the page and putting it back restarts everything animating
-      // inside it, which is the very thing this is here to avoid.
-      const inPlace = previous ? previous.nextElementSibling === tab : dom.tabs.firstElementChild === tab;
-      if (!inPlace) {
-        if (previous) previous.after(tab);
-        else dom.tabs.prepend(tab);
-      }
-      previous = tab;
-    }
+    dom.name.title = (session && (session.command || session.name)) || 'terminal';
   }
 
-  function buildTab(id) {
-    const dot = el('span', { class: 'dot' });
-    const name = el('span', { class: 'nm' });
-    const tab = el('button', {
-      class: 'dock-tab',
-      type: 'button',
-      role: 'tab',
-      onclick: () => {
-        if (state.active === id) return;
-        state.active = id;
-        state.painted = '';
-        clearError();
-        render();
-      },
-    }, dot, name);
-    tab.update = (session) => {
-      const chosen = session.id === state.active;
-      setClass(tab, 'active', chosen);
-      const selected = chosen ? 'true' : 'false';
-      if (tab.getAttribute('aria-selected') !== selected) tab.setAttribute('aria-selected', selected);
-      const title = session.command || session.name || 'terminal';
-      if (tab.title !== title) tab.title = title;
-      const label = session.name || 'terminal';
-      if (name.textContent !== label) name.textContent = label;
-      // Three states, one dot: nothing here is written unless it changed.
-      setClass(dot, 'live', !!session.running);
-      setClass(dot, 'failed', !session.running && session.exitCode > 0);
-    };
-    return tab;
-  }
-
-  // paintStatus is the dock's honesty: it says whether what is on screen is
+  // paintStatus is the panel's honesty: it says whether what is on screen is
   // still arriving, and for how long it has been standing still if it is not.
   function paintStatus() {
     const session = active();
     if (!session) return;
+    const frame = view();
     let label = '';
     let kind = '';
     if (session.gone) {
@@ -649,19 +677,23 @@ export function mountTerminalDock() {
       label = age > 2 ? 'reconnecting — frozen ' + age + 's' : 'reconnecting…';
       kind = 'lost';
     }
-    setClass(dom.dock, 'stale', kind === 'lost' || kind === 'gone');
+    setClass(frame.root, 'stale', kind === 'lost' || kind === 'gone');
     const cls = 'dock-status ' + kind;
-    if (dom.status.className !== cls) dom.status.className = cls;
-    if (dom.status.textContent !== label) dom.status.textContent = label;
+    if (frame.status.className !== cls) frame.status.className = cls;
+    if (frame.status.textContent !== label) frame.status.textContent = label;
     // One control, two meanings: end a session that is still going, take a
     // finished one off the shelf. Both are what a person means by "close".
     const text = session.running ? 'End session' : 'Dismiss';
-    if (dom.dismiss.textContent !== text) dom.dismiss.textContent = text;
+    if (frame.dismiss.textContent !== text) frame.dismiss.textContent = text;
   }
 
   // dismiss ends a running session, or clears away a finished one. A finished
   // session is only removed from this panel; the line in the transcript that
   // says it happened stays where it is.
+  //
+  // Ending is done on screen first and asked for afterwards. Waiting for the
+  // server meant a tap that looked like nothing had happened for as long as
+  // the program took to die - and the answer was never in doubt.
   async function dismissActive() {
     const session = active();
     if (!session) return;
@@ -673,27 +705,22 @@ export function mountTerminalDock() {
         danger: true,
       });
       if (!ok) return;
-      try {
-        await api('/api/terminals/' + encodeURIComponent(session.id) + '/close', { method: 'POST', attempts: 1 });
-      } catch (err) {
-        toast(errorMessage(err), 'error');
-        return;
-      }
       session.running = false;
       session.ended = true;
+      session.exitCode = -1;
       stopStream(session);
       render();
+      api('/api/terminals/' + encodeURIComponent(session.id) + '/close', { method: 'POST', attempts: 1 })
+        .catch((err) => {
+          toast(isOffline(err)
+            ? 'No connection — the session may still be running.'
+            : errorMessage(err), 'error');
+        });
       return;
     }
     stopStream(session);
     state.dismissed.add(session.id);
     state.sessions.delete(session.id);
-    const tab = state.tabs.get(session.id);
-    if (tab) {
-      tab.remove();
-      state.tabs.delete(session.id);
-    }
-    state.active = null;
     state.painted = '';
     clearError();
     render();
@@ -704,17 +731,41 @@ export function mountTerminalDock() {
   function openKey(chatId) { return 'socrates.term.open.' + chatId; }
   function widthKey(chatId) { return 'socrates.term.width.' + chatId; }
 
-  function setOpen(open, remember = true) {
-    state.open = !!open;
+  // notify is off for the one caller that is already the top bar telling the
+  // dock what to do; anything else is news the top bar has to hear.
+  function setOpen(open, remember = true, notify = true) {
+    const next = !!open;
+    const changed = state.open !== next;
+    state.open = next;
     if (remember && state.chatId) writeValue(openKey(state.chatId), state.open ? '1' : '0');
     state.painted = '';
     render();
-    if (state.open) {
-      // The input is where a person is about to type; opening the dock and
-      // then making them tap once more is a small insult on a phone.
-      const session = active();
-      if (session && session.running) setTimeout(() => dom.input.focus(), 0);
-    }
+    if (state.open) focusScreen();
+    if (notify && changed && typeof options.onOpenChange === 'function') options.onOpenChange(next);
+  }
+
+  // setFullscreen hands the same session to the other frame. Nothing about the
+  // session changes: the stream stays up, and only the box around it moves.
+  function setFullscreen(on) {
+    const next = !!on;
+    if (state.full === next) return;
+    state.full = next;
+    state.painted = '';
+    render();
+    // The width the session was told about belongs to the frame it left.
+    const session = active();
+    if (session) session.sentCols = 0;
+    syncSize();
+    if (state.full) focusScreen();
+  }
+
+  // A phone will not open its keyboard for anything it was not asked to focus
+  // during a tap, so this is only ever a nicety on a desktop.
+  function focusScreen() {
+    const session = active();
+    if (!session || !session.running) return;
+    if (window.matchMedia('(pointer: coarse)').matches) return;
+    setTimeout(() => { view().capture.focus({ preventScroll: true }); }, 0);
   }
 
   // One definition of "there is no room for a column beside the chat", shared
@@ -731,39 +782,17 @@ export function mountTerminalDock() {
 
   /* ---------------------------------------------------------------- wiring */
 
-  dom.btn.addEventListener('click', () => setOpen(!state.open));
   dom.close.addEventListener('click', () => setOpen(false));
-  dom.dismiss.addEventListener('click', () => { dismissActive().catch(() => {}); });
-
-  dom.form.addEventListener('submit', (event) => {
-    event.preventDefault();
-    const text = dom.input.value;
-    dom.input.value = '';
-    // The caret stays where the next keystroke is going, which is the whole
-    // difference between a text box and a terminal.
-    dom.input.focus();
-    send(text, ['enter'], text).catch(() => { dom.input.value = text; });
-  });
-
-  for (const key of QUICK_KEYS) {
-    dom.keys.append(el('button', {
-      class: 'term-key', type: 'button', title: 'Press ' + key, text: key,
-      onclick: () => {
-        send('', [key], key).catch(() => {});
-        dom.input.focus();
-      },
-    }));
-  }
 
   // A focused screen is a real keyboard. Arrows, control combinations and
   // plain characters all go straight through, so a menu can be answered
-  // without the input line below it.
-  dom.screen.addEventListener('keydown', (event) => {
+  // without any input line at all.
+  function onKeydown(event) {
     const session = active();
     if (!session || !session.running) return;
     // A phone keyboard composes before it commits; the half finished syllable
-    // is not a keystroke for the program.
-    if (event.metaKey || event.isComposing) return;
+    // is not a keystroke for the program. It arrives as text below instead.
+    if (event.metaKey || event.isComposing || event.keyCode === 229) return;
     // Ctrl+Shift+C and Ctrl+Shift+V are copy and paste, and the browser owns
     // them. Folding the shift away turned a copy into a ctrl+c, which killed
     // the session under review.
@@ -798,7 +827,73 @@ export function mountTerminalDock() {
       event.preventDefault();
       send(event.key, [], event.key).catch(() => {});
     }
-  });
+  }
+
+  // wireView is everything a frame needs to behave like a terminal: a screen
+  // that takes the keyboard, a hidden box that makes a phone offer one, and
+  // the control that ends the session.
+  function wireView(frame) {
+    if (!frame.root || !frame.screen) return;
+    frame.dismiss.addEventListener('click', () => { dismissActive().catch(() => {}); });
+    frame.screen.addEventListener('keydown', onKeydown);
+
+    // The screen is a <pre>, and no phone opens its keyboard for one. Tapping
+    // it focuses an invisible box instead, which is what the keyboard actually
+    // belongs to; the caret the person watches stays in the screen.
+    frame.screen.addEventListener('click', () => {
+      const session = active();
+      if (!session || !session.running) return;
+      // Someone selecting text to copy is not asking for a keyboard.
+      const selection = window.getSelection();
+      if (selection && String(selection).length) return;
+      frame.capture.focus({ preventScroll: true });
+    });
+
+    const capture = frame.capture;
+    if (!capture) return;
+    let composing = false;
+
+    const flush = () => {
+      const typed = capture.value;
+      capture.value = '';
+      if (!typed) return;
+      // Autocorrect and dictation commit whole words, sometimes with the
+      // return that finished them. The text goes as text, the return as a key.
+      const enter = /\n$/.test(typed);
+      const text = typed.replace(/\n/g, '');
+      if (text) send(text, enter ? ['enter'] : [], text).catch(() => {});
+      else if (enter) send('', ['enter'], 'enter').catch(() => {});
+    };
+
+    capture.addEventListener('keydown', onKeydown);
+    // The keys a phone keyboard refuses to name arrive as edits instead:
+    // backspace deletes, return inserts a line break. Both are keystrokes.
+    capture.addEventListener('beforeinput', (event) => {
+      const kind = event.inputType || '';
+      if (kind === 'deleteContentBackward' || kind === 'deleteWordBackward' || kind === 'deleteSoftLineBackward') {
+        event.preventDefault();
+        send('', ['backspace'], 'backspace').catch(() => {});
+        return;
+      }
+      if (kind === 'insertLineBreak' || kind === 'insertParagraph') {
+        event.preventDefault();
+        send('', ['enter'], 'enter').catch(() => {});
+      }
+    });
+    capture.addEventListener('compositionstart', () => { composing = true; });
+    capture.addEventListener('compositionend', () => { composing = false; flush(); });
+    capture.addEventListener('input', (event) => {
+      if (composing || event.isComposing) return;
+      flush();
+    });
+    // The caret is drawn in the screen, so the screen has to look focused
+    // while the keyboard is really pointed at the box beside it.
+    capture.addEventListener('focus', () => setClass(frame.screen, 'focused', true));
+    capture.addEventListener('blur', () => setClass(frame.screen, 'focused', false));
+  }
+
+  wireView(views.dock);
+  wireView(views.full);
 
   // Dragging the edge is a desktop nicety; it is measured against the window
   // so it behaves the same whether or not the chat sidebar is open.
@@ -824,10 +919,10 @@ export function mountTerminalDock() {
 
   window.addEventListener('resize', () => syncSize());
   document.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape' || !state.open) return;
+    if (event.key !== 'Escape' || !state.open || state.full) return;
     // Escape on the screen belongs to the program - it is how a menu is
     // dismissed - and must not close the drawer out from under it.
-    if (event.defaultPrevented || event.target === dom.screen) return;
+    if (event.defaultPrevented || event.target === views.dock.screen || event.target === views.dock.capture) return;
     // On a phone the drawer covers the chat, so escape has to get out of it
     // before anything else claims the key.
     if (isNarrow()) setOpen(false);
@@ -840,20 +935,25 @@ export function mountTerminalDock() {
   return {
     setChat,
     noteStep,
+    setFullscreen,
+    ensureTerminal,
+    // The top bar deciding what the pane shows. It is not news to it, so it is
+    // not reported back.
+    setOpen: (open) => setOpen(open, true, false),
+    hasSession: () => state.sessions.size > 0,
+    // Whether a program is running at this chat's terminal, which is what the
+    // dot on the slider says from the other three stops.
+    isLive: () => !!liveSession(),
     // open is the transcript asking for a session by name. It carries the step
     // with it so a session that was dismissed earlier comes back rather than
     // leaving the link pointing at nothing.
     open: (id, step, detail) => {
       if (id) state.dismissed.delete(id);
       if (step) noteStep(step, detail);
-      if (id && state.sessions.has(id)) {
-        state.active = id;
-        state.painted = '';
-      }
       setOpen(true);
     },
     // tick keeps the "frozen for Ns" line moving even when nothing arrives,
     // which is exactly when it matters.
-    tick: () => { if (!dom.dock.hidden) paintStatus(); },
+    tick: () => { if (showing()) paintStatus(); },
   };
 }

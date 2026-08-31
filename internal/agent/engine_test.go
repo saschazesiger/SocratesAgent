@@ -124,14 +124,6 @@ func TestMain(m *testing.M) {
 
 func newTestEngine(t *testing.T, router *mockRouter, skills []config.Skill) (*Engine, *store.Store) {
 	t.Helper()
-	return newTestEngineWith(t, router, skills, nil)
-}
-
-// newTestEngineWith is newTestEngine with a hook for tests that need to change
-// a setting - switching internet access on, for instance - before the engine
-// reads it.
-func newTestEngineWith(t *testing.T, router *mockRouter, skills []config.Skill, tweak func(*config.Settings)) (*Engine, *store.Store) {
-	t.Helper()
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
 
@@ -141,6 +133,11 @@ func newTestEngineWith(t *testing.T, router *mockRouter, skills []config.Skill, 
 	}
 	t.Cleanup(func() { st.Close() })
 
+	// Skills are predefined by the app, so a test that needs a program of its
+	// own says the app ships that program.
+	if skills != nil {
+		t.Cleanup(config.SwapPresets(skills))
+	}
 	settings := config.Default()
 	settings.OpenRouter.APIKey = "test-key"
 	settings.OpenRouter.BaseURL = server.URL
@@ -148,12 +145,6 @@ func newTestEngineWith(t *testing.T, router *mockRouter, skills []config.Skill, 
 	settings.OpenRouter.TitleModel = "title-model"
 	settings.Agent.WorkspaceRoot = t.TempDir()
 	settings.Agent.MaxIterations = 6
-	if skills != nil {
-		settings.Skills = skills
-	}
-	if tweak != nil {
-		tweak(&settings)
-	}
 	settings.Normalize()
 
 	terminals, err := term.NewManager(filepath.Join(t.TempDir(), "terminals"), os.Args[0])
@@ -306,12 +297,10 @@ func TestShellRunReportsAFailingCommand(t *testing.T) {
 func TestSystemPromptCarriesTheSkillManual(t *testing.T) {
 	router := &mockRouter{responses: []string{sseText("Nothing to do.")}}
 	preset, _ := config.PresetByID("claude")
-	headless := false
 	engine, st := newTestEngine(t, router, []config.Skill{preset, {
 		ID: "jq", Name: "jq", Enabled: true, Command: "jq",
-		Description:     "reshapes JSON",
-		InteractiveOnly: &headless,
-		HeadlessUsage:   "jq '.field' file.json prints one field",
+		Description:   "reshapes JSON",
+		HeadlessUsage: "jq '.field' file.json prints one field",
 	}})
 	chat := &store.Chat{ID: "chat-prompt"}
 	if err := st.CreateChat(chat); err != nil {
@@ -366,7 +355,8 @@ func TestDrivesAnInteractiveProgram(t *testing.T) {
 		Args: []string{"-c", `printf 'ready> '; while IFS= read -r line; do ` +
 			`case "$line" in hello) printf 'world\r\n';; quit) exit 0;; ` +
 			`*) printf 'you said: %s\r\n' "$line";; esac; printf 'ready> '; done`},
-		Startup:     "type and press enter",
+		Startup:         "type and press enter",
+		InteractiveOnly: true, HoldReplyWhileBusy: true,
 		IdleSeconds: 1, TimeoutSeconds: 60,
 	}})
 
@@ -428,10 +418,11 @@ func TestSkillEnvironmentReachesTheProgram(t *testing.T) {
 	}}
 	engine, st := newTestEngine(t, router, []config.Skill{{
 		ID: "env-probe", Name: "Env Probe", Enabled: true,
-		Description: "prints one environment variable",
-		Command:     "sh",
-		Args:        []string{"-c", `printf 'sandbox=[%s]\r\n' "$IS_SANDBOX"; sleep 5`},
-		Env:         []string{"IS_SANDBOX=1"},
+		Description:     "prints one environment variable",
+		Command:         "sh",
+		Args:            []string{"-c", `printf 'sandbox=[%s]\r\n' "$IS_SANDBOX"; sleep 5`},
+		Env:             []string{"IS_SANDBOX=1"},
+		InteractiveOnly: true, HoldReplyWhileBusy: true,
 		IdleSeconds: 1, TimeoutSeconds: 60,
 	}})
 
@@ -458,6 +449,7 @@ func TestUnknownSkillIsReportedToModel(t *testing.T) {
 	}}
 	engine, st := newTestEngine(t, router, []config.Skill{{
 		ID: "echo", Name: "Echo", Enabled: true, Command: "sh", TimeoutSeconds: 10,
+		InteractiveOnly: true, HoldReplyWhileBusy: true,
 	}})
 	chat := &store.Chat{ID: "chat3"}
 	if err := st.CreateChat(chat); err != nil {
@@ -541,6 +533,35 @@ func TestStartRejectsSecondRun(t *testing.T) {
 	waitForBusy(t, engine, chat.ID)
 	if _, err := engine.Start(Turn{ChatID: chat.ID, Text: "second", Auto: false}); err == nil {
 		t.Fatal("a second run should be rejected while one is in flight")
+	}
+}
+
+// With nothing to delegate to, the answer is not "then do it yourself" - that
+// is precisely the thing Socrates never does. The way out of an installation
+// with no skills runs through the admin dashboard, and the prompt has to say
+// so rather than pointing at the shell.
+func TestSystemPromptWithoutSkillsRefusesToDoTheWork(t *testing.T) {
+	engine, _ := newTestEngine(t, &mockRouter{}, nil)
+	chat := &store.Chat{ID: "c"}
+
+	settings := config.Default()
+	settings.Agent.WorkspaceRoot = t.TempDir()
+	settings.Normalize()
+	for i := range settings.Skills {
+		settings.Skills[i].Enabled = false
+	}
+	if n := len(settings.EnabledSkills()); n != 0 {
+		t.Fatalf("%d skills are still enabled", n)
+	}
+
+	prompt := engine.systemPrompt(chat, settings, nil)
+	for _, want := range []string{"cannot do the work yourself", "admin dashboard"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("the prompt for an installation with no skills is missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "you can do the work") {
+		t.Error("the prompt still invites the orchestrator to do the work itself")
 	}
 }
 

@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/config"
-	"github.com/saschazesiger/SocratesAgent/internal/internet"
 	"github.com/saschazesiger/SocratesAgent/internal/server"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/term"
@@ -69,7 +68,6 @@ func main() {
 	}
 
 	server.Version = version
-	internet.Version = version
 
 	if err := os.MkdirAll(*dataDir, 0o700); err != nil {
 		log.Fatalf("could not create the data directory %s: %v", *dataDir, err)

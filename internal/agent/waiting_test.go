@@ -163,8 +163,6 @@ func TestTerminalWaitLabelsAStillWorkingProgram(t *testing.T) {
 	}
 }
 
-func busyText(p string) *string { return &p }
-
 // busySkill is a skill whose program says it is working the way the real
 // coding agents do.
 func busySkill(script string) config.Skill {
@@ -172,7 +170,8 @@ func busySkill(script string) config.Skill {
 		ID: "busy-fake", Name: "Busy Fake", Enabled: true,
 		Description: "a program that says when it is working",
 		Command:     "sh", Args: []string{"-c", script},
-		BusyPattern: busyText("esc to interrupt"),
+		BusyPattern:     "esc to interrupt",
+		InteractiveOnly: true, HoldReplyWhileBusy: true,
 		IdleSeconds: 1, TimeoutSeconds: 60,
 	}
 }
@@ -244,6 +243,7 @@ func TestAnswerIsNotHeldWhenTheProgramIsQuiet(t *testing.T) {
 		ID: "quiet-fake", Name: "Quiet Fake", Enabled: true,
 		Description: "a program that just waits",
 		Command:     "sh", Args: []string{"-c", `printf 'ready> '; sleep 60`},
+		InteractiveOnly: true, HoldReplyWhileBusy: true,
 		IdleSeconds: 1, TimeoutSeconds: 60,
 	}})
 

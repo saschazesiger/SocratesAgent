@@ -3,8 +3,9 @@
 **A top level agent for Claude Code, Codex and OpenCode.**
 One Go binary with a ChatGPT style web interface, a live view of what the coding
 agents are doing, and a hands free voice mode. It runs entirely on
-[OpenRouter](https://openrouter.ai) and does the actual work at a real terminal
-on your machine — which is also how it drives the agent CLIs you already have.
+[OpenRouter](https://openrouter.ai) and does none of the work itself: it hands
+every job to one of the agent CLIs you already have, at a real terminal on your
+machine.
 
 <p align="center">
   <img src="docs/screenshot-chat.png" alt="Socrates chat with the live process view" width="900">
@@ -17,13 +18,14 @@ on your machine — which is also how it drives the agent CLIs you already have.
 Claude Code, Codex and OpenCode are excellent at doing the work. They are less
 good at deciding *which* of them should do it, and they live in a terminal.
 
-Socrates sits one level above them: you talk to it, it plans, and then it sits
-down at a terminal and works. It starts the right agent the way you would, types
-the brief into it, reads the screen, answers what the agent asks, and waits for
-it to finish. In between it runs ordinary commands — `git`, a build, a test
-suite — because it has a shell, not a fixed list of things it can do. When a
-decision is genuinely yours it asks in its reply and hands the turn back, and it
-answers you in one place: by text or by voice.
+Socrates sits one level above them and stays there. It never writes a line of
+code itself: it decides which agent should do the job, on which model and at
+what reasoning effort, starts it at a terminal the way you would, types the
+brief into it, reads the screen, answers what the agent asks, and waits for it
+to finish. Even checking the work is delegated — it asks the agent to run the
+tests and reads the output off the screen. When a decision is genuinely yours it
+asks in its reply and hands the turn back, and it answers you in one place: by
+text or by voice.
 
 ## What you get
 
@@ -52,13 +54,9 @@ answers you in one place: by text or by voice.
   at all, and picks up where it left off.
 - **It asks you back.** When something is ambiguous the agent asks in its reply
   and stops, instead of guessing. You answer with the next message.
-- **The web, when you want it.** Switch on internet access and Socrates can
-  search and read pages instead of guessing at a version or a price — every
-  request visible as its own step, and the page fetcher locked to the public
-  internet so a link can never reach your own network.
 - **Voice in and out.** Record in the browser, transcribe through OpenRouter,
   have the answer read back to you.
-- **Auto mode.** One big microphone button, a timer, and the answer shown as
+- **Audio mode.** One big microphone button, a timer, and the answer shown as
   large as it fits and read out loud. When it ends on a question you hear it and
   simply speak your reply.
 - **Reachable from anywhere, without opening a port.** A managed Cloudflare
@@ -73,7 +71,7 @@ answers you in one place: by text or by voice.
   step, no CDN, no telemetry.
 
 <p align="center">
-  <img src="docs/screenshot-auto.png" alt="Auto mode" width="440">
+  <img src="docs/screenshot-auto.png" alt="Audio mode" width="440">
 </p>
 
 ## How it works
@@ -109,11 +107,13 @@ answers you in one place: by text or by voice.
                             claude · codex · opencode · bash · anything
 ```
 
-The orchestrator has one capability: a terminal. `shell_run` for a command that
-just needs running, and `terminal_open` / `terminal_send` / `terminal_wait` /
-`terminal_read` / `terminal_close` for anything it has to hold a conversation
-with. When the decision is yours it simply asks in its reply and ends its turn;
-your next message picks the conversation up again.
+The orchestrator has one capability: a terminal. `terminal_open` /
+`terminal_send` / `terminal_wait` / `terminal_read` / `terminal_close` are how
+it drives the program that is actually doing the job, and `shell_run` is there
+for orchestration mechanics only — is that process still alive, what is in this
+directory — never for the work itself. When the decision is yours it simply asks
+in its reply and ends its turn; your next message picks the conversation up
+again.
 
 Claude Code, Codex and OpenCode are not special cases in the code. They are
 entries in a list, each one saying which command to start and — in plain
@@ -178,10 +178,9 @@ Then open <http://localhost:8080>.
 
 ## Skills
 
-A skill teaches Socrates how to operate a program the way a person does. It
-answers two questions — *when should I use you?* and *how do I work you?* — and
-both go into the model's instructions verbatim, so they are written the way you
-would brief a colleague on their first day.
+A skill is a program Socrates knows how to operate the way a person does. Each
+one answers two questions — *when should I use you?* and *how do I work you?* —
+and both go into the model's instructions verbatim.
 
 | Skill | Ships enabled | Good at |
 | --- | --- | --- |
@@ -189,55 +188,63 @@ would brief a colleague on their first day.
 | Codex | yes | research, investigation, comparing options, writing up findings |
 | OpenCode | no | an open source alternative implementer |
 
-A skill is: a command, its arguments, its environment, an optional model, a
-permission switch, and a manual in six sections —
+Skills are predefined by the app. How each one is started — its command, its
+arguments, its environment, its permission flags — and the manual for driving
+it come with the release: the screens right after launch and the keys that get
+past them, where to type, how to tell working from idle, every dialog it can
+show and the key that answers it, how to interrupt it and how to quit. They were
+written by driving Claude Code 2.1.251, codex-cli 0.146.0 and opencode 1.17.13
+in a terminal and writing down what they actually did.
 
-- **Starting it** — the screens right after launch and the exact keys that get
-  past them, plus what "ready" looks like.
-- **Giving it a task** — where to type, how to submit, how to write more than
-  one line.
-- **Reading its state** — how to tell working from idle from waiting for an
-  answer.
-- **Answering its questions** — every dialog it can show and the keys that
-  answer it.
-- **Interrupting and quitting** — how to stop it, how to leave cleanly.
-- **Notes** — pitfalls and version quirks.
+In the dashboard a skill therefore has exactly three controls:
 
-That is the whole extension mechanism. Point one at `aider`, at a REPL, at a
-deploy script, at anything with a prompt, write down how it behaves, and
-Socrates can drive it. No `kind` field, no code.
+- **The switch** — whether Socrates may use this program at all.
+- **When should Socrates use it?** — the one sentence that decides what it is
+  reached for. Leave it empty for the wording that ships with the app.
+- **Models it may run on** — the list Socrates picks from when it opens the
+  session. Empty restores the list that ships with the app.
 
-Socrates can also just run commands. `git status`, `npm test`, `rg TODO` need no
-skill at all; skills are for programs it has to hold a conversation with.
+**Models.** Each row is a model in that program's own naming — `sonnet`,
+`gpt-5.6-sol`, `opencode/big-pickle`, never an OpenRouter id — a reasoning
+effort, and a sentence saying when that combination is the right one. Socrates
+reads those sentences the same way it reads the skill descriptions and picks one
+per session; the first row is what it gets when it does not pick. How the two
+values reach the program is not yours to configure, because it is a property of
+the program, and each card prints the mechanism it uses:
 
-**Interactive only.** A skill is interactive only by default: Socrates may open
-it in a terminal session and nowhere else. That is the point of the app — you
+| Skill | Model | Reasoning effort |
+| --- | --- | --- |
+| Claude Code | `--model <id>` | `--effort <level>` |
+| Codex | `-m <slug>` | `-c model_reasoning_effort="<level>"` |
+| OpenCode | `-m provider/model` | no launch-time form — it calls them *variants* and they are picked inside the running program with `/variants` |
+
+Everything else is not a setting, and that is the point: when a new version
+improves a manual, fixes a command line or teaches a skill a new dialog, every
+installation gets the improvement on upgrade instead of keeping a copy of the
+old one. Upgrading an installation that predates this keeps your switches and
+any description you wrote yourself; skills you had added by hand are dropped,
+and the server log names them on the first start.
+
+A skill is the only way work gets done. There is a shell as well, but it is for
+orchestration mechanics — checking whether something is running, looking at a
+directory so the brief names the right paths — and the system prompt says so in
+as many words: no builds, no test runs, no edits. With no skill enabled Socrates
+will tell you to enable one in the dashboard rather than roll up its sleeves.
+Being able to write your own skills may come back in a future version.
+
+**Interactive only.** The shipped skills are interactive only: Socrates may open
+them in a terminal session and nowhere else. That is the point of the app — you
 are watching that terminal and can take the keyboard at any moment, which a
-batch run would hide from you. The skill also names the program's headless modes
-(`claude -p`, `codex exec`, `opencode run` …) so the orchestrator knows exactly
-what not to reach for. Turn the switch off for a program that is fine as a plain
-command, and write down how to use it that way in **Headless usage**.
+batch run would hide from you. Each skill also names its program's headless
+modes (`claude -p`, `codex exec`, `opencode run` …) so the orchestrator knows
+exactly what not to reach for.
 
-**Presets and reset.** The three shipped skills are presets: their manuals were
-written by driving Claude Code 2.1.251, codex-cli 0.146.0 and opencode 1.17.13 in
-a terminal and writing down what they actually did. Edit one freely — **Reset to
-preset** puts it back. A preset is never added to your list behind your back, so
-if an upgrade brings a new one, **Add from preset** offers it.
-
-**Permissions.** Every shipped skill starts in its own unattended mode by
-default — `--dangerously-skip-permissions` for Claude Code,
+**Permissions.** Every skill starts in its own unattended mode —
+`--dangerously-skip-permissions` for Claude Code,
 `--dangerously-bypass-approvals-and-sandbox` for Codex, `--auto` for OpenCode —
-which is what makes long tasks work without babysitting. Turn the switch off and
-the program is started with its normal approval flags instead
-(`--permission-mode manual`, `--ask-for-approval on-request`); its questions then
-appear on screen, and Socrates answers them the way you would, after reading what
-is being asked. Both sets of arguments are editable per skill.
-
-**Environment.** Each skill has a list of `KEY=VALUE` pairs, put in front of the
-command exactly the way you would write them in a shell. Claude Code ships with
-`IS_SANDBOX=1`, because it refuses `--dangerously-skip-permissions` when it runs
-as root — which is the normal case in a container — unless it is told it is
-already confined.
+which is what makes long tasks work without babysitting. Claude Code also ships
+with `IS_SANDBOX=1`, because it refuses to skip permissions when it runs as root
+— the normal case in a container — unless it is told it is already confined.
 
 **Where they run.** The admin dashboard has a workspace root (default
 `~/.socrates/workspaces`); every chat gets its own directory below it, so chats
@@ -257,72 +264,19 @@ you can answer a prompt yourself, correct a wrong turn, or just watch.
 
 ## Choosing models
 
-The model fields are searchable dropdowns over the live OpenRouter catalogue,
-grouped by provider and annotated with context length and price. The list is
-fetched when the dashboard opens — OpenRouter serves it without a key, so it
-works before you have pasted one — and every field still accepts anything you
-type, which is what you need for a program's own model names such as `sonnet` or
-`gpt-5-codex`.
+Two different kinds of model live in the dashboard, and they are not
+interchangeable. The three at the top — the orchestrator, transcription, titles
+— are OpenRouter models, picked with searchable dropdowns over the live
+OpenRouter catalogue, grouped by provider and annotated with context length and
+price. The list is fetched when the dashboard opens; OpenRouter serves it
+without a key, so it works before you have pasted one, and every field still
+accepts anything you type.
 
-## Internet
-
-Socrates has no internet access until you give it some. Turn it on under
-**Internet** in the admin dashboard and it gains two tools:
-
-- **`web_search`** — a query in, a numbered list of pages with short excerpts
-  out. It is what stops the agent guessing at a version number, a price or an
-  API that has changed since its training data.
-- **`web_fetch`** — one URL in, the readable text of that page out. Search
-  gives snippets; this gives the page.
-
-Every call shows up in the process view as its own step — *Searched: …*,
-*Read: …* — with the full result folded away underneath, so you can see exactly
-what Socrates asked the outside world and what came back.
-
-### Search providers
-
-| Provider | Account | Cost |
-| --- | --- | --- |
-| **OpenRouter** (default) | none, it uses the key you already have | OpenRouter bills each search on top of the tokens |
-| **Tavily** | key from [app.tavily.com](https://app.tavily.com) | free tier, then per search |
-| **Jina** | optional key from [jina.ai](https://jina.ai/reader) | free without a key at a low rate limit |
-
-The OpenRouter provider runs one extra completion with OpenRouter's `web`
-plugin attached and returns the summary together with the pages it cited. You
-can point it at a cheaper model than your answering model with the optional
-**Search model** field.
-
-### Reading pages
-
-The page reader is either **Local** or **Jina Reader**. Local fetches the page
-here, runs it through a readability extraction and hands the model markdown —
-nothing leaves this machine except the request to the page itself. Jina Reader
-sends the URL to jina.ai, which renders it for you; it is the one to pick for
-PDFs and for pages that only exist after JavaScript has run.
-
-Results are capped at 12 000 characters by default (40 000 at most) and the
-response body at 5 MB.
-
-### What it will not fetch
-
-`web_fetch` reads the public internet and nothing else. The model picks the
-URL, so the fetch is guarded rather than trusted:
-
-- Only `http` and `https`. No `file:`, no `gopher:`, no anything else.
-- Every hostname is resolved here and the resulting address is checked before
-  a single packet leaves — loopback, RFC1918 (`10/8`, `172.16/12`,
-  `192.168/16`), CGNAT (`100.64/10`), link local including the cloud metadata
-  address `169.254.169.254`, IPv6 loopback, unique local and link local, plus
-  multicast and reserved space. IPv4 addresses wearing an IPv6 hat
-  (`::ffff:127.0.0.1`) are unwrapped first.
-- The connection is made to the address that was checked, so a name that
-  answers differently on the second lookup gains nothing.
-- Redirects are re-checked on every hop, and there are at most five of them.
-- No proxy, a 20 second timeout, and a 5 MB body cap.
-
-In short: a link cannot be used to make Socrates read your router's admin page,
-your instance credentials or its own API. Anything on this machine is what
-`shell_run` is for, and that is behind your password already.
+The models on a skill card are the coding agent's own, and they never go through
+OpenRouter: Claude Code, Codex and OpenCode each talk to their own provider with
+their own credentials, so a row there is a name that program understands —
+`opus`, `gpt-5.6-sol`, `opencode/big-pickle` — typed by hand. See **Skills**
+above.
 
 ## Voice
 
@@ -344,13 +298,15 @@ your instance credentials or its own API. Anything on this machine is what
   is what makes a German answer come out with an English accent. English is the
   default; there is no detection and nothing to configure per chat.
 
-## Auto mode
+## Audio mode
 
-The toggle in the top right turns the chat into a hands free surface: a large
-microphone button with a recording timer, a short status line while the agents
-work, and the finished answer shown as large as it fits and read out loud. If
-the agent needs a decision it asks for it in that answer, which is read out with
-the rest — you tap the microphone and say what you want.
+The top bar has one slider for what the pane shows — **Chat**, **Chat +
+Terminal**, **Terminal**, **Audio** — and only one of them at a time. Its last
+stop turns the chat into a hands free surface: a large microphone button with a
+recording timer, a short status line while the agents work, and the finished
+answer shown as large as it fits and read out loud. If the agent needs a
+decision it asks for it in that answer, which is read out with the rest — you
+tap the microphone and say what you want.
 
 ## Remote access
 
@@ -428,11 +384,6 @@ Socrates is built for a single trusted operator.
   through the Cloudflare tunnel.
 - Requests through a tunnel are rate limited per `CF-Connecting-IP`, and the
   session cookie is marked `Secure` as soon as the request arrives over HTTPS.
-- Internet access is off until you turn it on. When it is on, the page fetcher
-  resolves every hostname itself and refuses loopback, private, CGNAT and link
-  local addresses — the cloud metadata address included — re-checking on every
-  redirect, so a URL the model chose cannot be turned into a request against
-  your own services. See [Internet](#internet).
 - Terminal sessions are reachable only through the authenticated API, are scoped
   to the chat that opened them, and talk to their host process over a unix
   socket inside the data directory.

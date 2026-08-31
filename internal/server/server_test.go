@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -192,22 +193,24 @@ func TestSettingsRoundTrip(t *testing.T) {
 		t.Fatalf("model was not stored: %#v", updated)
 	}
 
-	// The shipped presets come along with the settings, because the dashboard
-	// offers them to an installation that already has its own skills.
-	presets, _ := data["presets"].([]any)
-	if len(presets) != 3 {
-		t.Fatalf("expected the three presets in the response, got %#v", data["presets"])
+	// The shipped skills come along with the settings, read only: the
+	// dashboard needs their names, what they run and the wording it uses as
+	// the placeholder of the one field it lets the user rewrite.
+	catalogue, _ := data["skills"].([]any)
+	if len(catalogue) != 3 {
+		t.Fatalf("expected the three shipped skills in the response, got %#v", data["skills"])
 	}
-	if presets[0].(map[string]any)["startup"] == "" {
-		t.Fatal("a preset arrived without its manual")
+	if catalogue[0].(map[string]any)["startup"] == "" {
+		t.Fatal("a shipped skill arrived without its manual")
 	}
 
-	// Two skills with the same id would make the orchestrator's choice
-	// ambiguous, so saving has to separate them rather than fail.
+	// Everything the settings document stores about a skill is whether it is
+	// on and what it should be used for. A document that says more - one
+	// written by an older version - is folded back onto the shipped list.
 	settings["skills"] = []any{
-		map[string]any{"id": "same", "name": "A", "command": "claude", "enabled": true,
-			"startup": "press enter", "interactive_only": true},
-		map[string]any{"id": "same", "name": "B", "command": "codex", "enabled": true},
+		map[string]any{"id": "opencode", "name": "B", "command": "opencode", "enabled": true,
+			"description": "my own words", "startup": "press enter", "idle_seconds": 90},
+		map[string]any{"id": "invented", "name": "Mine", "command": "mine", "enabled": true},
 	}
 	body, _ = json.Marshal(map[string]any{"settings": settings})
 	res, saved = env.do(t, env.client, "PUT", "/api/settings", string(body))
@@ -215,26 +218,115 @@ func TestSettingsRoundTrip(t *testing.T) {
 		t.Fatalf("save failed: %d", res.StatusCode)
 	}
 	skills, _ := saved["settings"].(map[string]any)["skills"].([]any)
-	if len(skills) != 2 {
-		t.Fatalf("expected two skills, got %#v", skills)
+	if len(skills) != 3 {
+		t.Fatalf("expected one entry per shipped skill, got %#v", skills)
 	}
-	first := skills[0].(map[string]any)
-	second := skills[1].(map[string]any)
-	if first["id"] == second["id"] {
-		t.Fatalf("duplicate skill ids survived the save: %v and %v", first["id"], second["id"])
+	stored := map[string]map[string]any{}
+	for _, entry := range skills {
+		sk := entry.(map[string]any)
+		stored[sk["id"].(string)] = sk
+		if _, ok := sk["command"]; ok {
+			t.Fatalf("the settings document still stores how a skill is run: %#v", sk)
+		}
 	}
-	if first["startup"] != "press enter" {
-		t.Fatalf("the manual was not stored: %#v", first)
+	if stored["invented"] != nil {
+		t.Fatal("a skill the app does not ship survived the save")
 	}
-	if second["interactive_only"] != true {
-		t.Fatalf("a skill that says nothing has to come back interactive only: %#v", second)
+	if stored["opencode"]["enabled"] != true || stored["opencode"]["description"] != "my own words" {
+		t.Fatalf("the two decisions were not stored: %#v", stored["opencode"])
+	}
+	if stored["claude"]["enabled"] != true {
+		t.Fatalf("a shipped skill lost its default: %#v", stored["claude"])
 	}
 
 	// And it survives a reload, which is what the dashboard reads.
 	_, again := env.do(t, env.client, "GET", "/api/settings", "")
 	reloaded := again["settings"].(map[string]any)["skills"].([]any)
-	if len(reloaded) != 2 || reloaded[0].(map[string]any)["startup"] != "press enter" {
+	if len(reloaded) != 3 {
 		t.Fatalf("skills did not survive the reload: %#v", reloaded)
+	}
+	last := reloaded[len(reloaded)-1].(map[string]any)
+	if last["id"] != "opencode" || last["description"] != "my own words" {
+		t.Fatalf("the description did not survive the reload: %#v", last)
+	}
+}
+
+// The third decision the dashboard makes about a skill: which models Socrates
+// may start it on. The list has to reach the server and come back, and the
+// shipped catalogue has to carry both a default list and the mechanism that
+// applies it, so the dashboard can show a placeholder and say how it works.
+func TestSkillModelsRoundTrip(t *testing.T) {
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+
+	_, data := env.do(t, env.client, "GET", "/api/settings", "")
+	catalogue, _ := data["skills"].([]any)
+	if len(catalogue) == 0 {
+		t.Fatalf("no shipped skills in %#v", data)
+	}
+	for _, entry := range catalogue {
+		preset := entry.(map[string]any)
+		shipped, _ := preset["models"].([]any)
+		if len(shipped) == 0 {
+			t.Fatalf("%v ships without a default model list: %#v", preset["id"], preset)
+		}
+		if strings.TrimSpace(fmt.Sprint(preset["applying"])) == "" {
+			t.Fatalf("%v does not say how a model reaches the program", preset["id"])
+		}
+		first := shipped[0].(map[string]any)
+		if first["id"] == "" || first["use_when"] == "" {
+			t.Fatalf("%v ships a model nobody can read or ask for: %#v", preset["id"], first)
+		}
+	}
+
+	settings, _ := data["settings"].(map[string]any)
+	settings["skills"] = []any{
+		map[string]any{"id": "claude", "enabled": true, "models": []any{
+			// The blank id and the second entry under the same id are what a
+			// half filled row in the dashboard sends.
+			map[string]any{"id": "opus", "effort": "HIGH", "use_when": "the hard ones"},
+			map[string]any{"id": "", "effort": "low", "use_when": "a row nobody filled in"},
+			map[string]any{"id": "opus", "effort": "low", "use_when": "the same one again"},
+			map[string]any{"id": "haiku", "effort": "ludicrous", "use_when": "chores"},
+		}},
+	}
+	body, _ := json.Marshal(map[string]any{"settings": settings})
+	res, saved := env.do(t, env.client, "PUT", "/api/settings", string(body))
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("save failed: %d", res.StatusCode)
+	}
+	stored := map[string]map[string]any{}
+	for _, entry := range saved["settings"].(map[string]any)["skills"].([]any) {
+		sk := entry.(map[string]any)
+		stored[sk["id"].(string)] = sk
+	}
+	models, _ := stored["claude"]["models"].([]any)
+	if len(models) != 2 {
+		t.Fatalf("the model list was not cleaned up on the way in: %#v", stored["claude"]["models"])
+	}
+	first := models[0].(map[string]any)
+	if first["id"] != "opus" || first["effort"] != "high" {
+		t.Fatalf("the first model came back as %#v", first)
+	}
+	if second := models[1].(map[string]any); second["id"] != "haiku" || second["effort"] != nil {
+		t.Fatalf("an effort nobody has should fall back to the program's own: %#v", second)
+	}
+	// A skill the save said nothing about keeps the shipped list, which is
+	// stored as nothing at all so that a later version can improve it.
+	if _, ok := stored["codex"]["models"]; ok {
+		t.Fatalf("the shipped list was written into the settings document: %#v", stored["codex"])
+	}
+
+	_, again := env.do(t, env.client, "GET", "/api/settings", "")
+	for _, entry := range again["settings"].(map[string]any)["skills"].([]any) {
+		sk := entry.(map[string]any)
+		if sk["id"] != "claude" {
+			continue
+		}
+		reloaded, _ := sk["models"].([]any)
+		if len(reloaded) != 2 || reloaded[0].(map[string]any)["id"] != "opus" {
+			t.Fatalf("the model list did not survive the reload: %#v", sk["models"])
+		}
 	}
 }
 

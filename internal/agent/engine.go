@@ -532,14 +532,16 @@ func (e *Engine) systemPrompt(chat *store.Chat, settings config.Settings, run *s
 		"the way you would brief a new colleague on it. Read the skill before you use it.\n")
 	enabled := settings.EnabledSkills()
 	if len(enabled) == 0 {
-		b.WriteString("No skills are configured. You still have a shell, so you can do the work " +
-			"yourself with ordinary commands - and tell the user that no skills are enabled in the " +
-			"admin dashboard.\n")
+		b.WriteString("No skills are configured, so there is nobody to delegate to and you cannot do " +
+			"the work yourself. Tell the user that no skill is enabled and that they have to enable " +
+			"one in the admin dashboard before you can get anything done. Do not reach for the shell " +
+			"instead.\n")
 	}
 	for _, sk := range enabled {
 		fmt.Fprintf(&b, "\n### %s (skill `%s`)\n%s\n", sk.Name, sk.ID, strings.TrimSpace(sk.Description))
-		command, args := sk.CommandLine()
+		command, args := sk.CommandLine(sk.DefaultModel())
 		fmt.Fprintf(&b, "Started as: `%s`\n", strings.TrimSpace(command+" "+strings.Join(args, " ")))
+		writeSkillModels(&b, sk)
 		// Only worth saying for a program that has an unattended mode at all:
 		// anything else simply behaves the way it behaves.
 		if !sk.SkipPermissions && (len(sk.AskArgs) > 0 || len(sk.SkipArgs) > 0) {
@@ -574,15 +576,6 @@ func (e *Engine) systemPrompt(chat *store.Chat, settings config.Settings, run *s
 			b.WriteString("\n**Also usable non-interactively** via shell_run when a terminal session " +
 				"would be overkill.\n")
 		}
-	}
-
-	// The internet paragraph is rendered rather than stored, so it appears
-	// exactly when the two tools do and never describes a capability that is
-	// switched off.
-	if settings.Internet.Enabled {
-		b.WriteString("\n## Reading the web\n")
-		b.WriteString(config.InternetPrompt)
-		b.WriteString("\n")
 	}
 
 	b.WriteString("\n## Driving a program\n" +
@@ -621,6 +614,31 @@ func (e *Engine) systemPrompt(chat *store.Chat, settings config.Settings, run *s
 	return b.String()
 }
 
+// writeSkillModels renders the models a skill may be started with. Choosing
+// one is the same kind of decision as choosing the skill - read what it is for,
+// pick the one that fits - so it is written the same way: an id, how hard that
+// model is told to think, and the user's own sentence about when it is right.
+func writeSkillModels(b *strings.Builder, sk config.Skill) {
+	if len(sk.Models) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "\n**Models.** Choose one with the `model` argument of terminal_open. "+
+		"Without it you get `%s`, the first on the list.\n", sk.DefaultModel().ID)
+	for _, m := range sk.Models {
+		fmt.Fprintf(b, "- `%s`", m.ID)
+		if effort := config.NormalizeEffort(m.Effort); effort != "" {
+			fmt.Fprintf(b, ", effort %s", effort)
+		}
+		if when := strings.TrimSpace(m.UseWhen); when != "" {
+			fmt.Fprintf(b, " - %s", when)
+		}
+		b.WriteString("\n")
+	}
+	if applying := strings.TrimSpace(sk.Applying); applying != "" {
+		fmt.Fprintf(b, "How that reaches the program: %s\n", applying)
+	}
+}
+
 // sessionSummary lists the sessions of a chat for the system prompt, so the
 // orchestrator knows what is already running without having to ask.
 func (e *Engine) sessionSummary(chat *store.Chat) string {
@@ -644,12 +662,20 @@ func (e *Engine) sessionSummary(chat *store.Chat) string {
 	return b.String()
 }
 
-// workspaceFor returns the directory a chat works in.
-func (e *Engine) workspaceFor(chat *store.Chat, settings config.Settings) string {
+// Workspace returns the directory a chat works in: the one it was given, or
+// its own folder under the workspace root. The HTTP layer opens terminals for
+// the user too, and both paths have to land in the same directory, so this is
+// the one place that decides.
+func Workspace(chat *store.Chat, settings config.Settings) string {
 	if strings.TrimSpace(chat.Workspace) != "" {
 		return chat.Workspace
 	}
 	return filepath.Join(settings.Agent.WorkspaceRoot, chat.ID)
+}
+
+// workspaceFor returns the directory a chat works in.
+func (e *Engine) workspaceFor(chat *store.Chat, settings config.Settings) string {
+	return Workspace(chat, settings)
 }
 
 func (e *Engine) generateTitle(chatID, text string) {
@@ -825,9 +851,15 @@ const (
 	metaSkill = "skill"
 	// metaLegacySkill is where the same id lived before skills had their name.
 	metaLegacySkill = "tool"
-	metaStep        = "step"
-	metaRun         = "run"
-	metaChat        = "chat"
+	// metaModel and metaEffort remember which of a skill's models this session
+	// was started on. The process view redraws itself from the session rather
+	// than from the call that opened it, and a session outlives a restart of
+	// Socrates, so this has to live with the session.
+	metaModel  = "model"
+	metaEffort = "effort"
+	metaStep   = "step"
+	metaRun    = "run"
+	metaChat   = "chat"
 )
 
 // session resolves a session id for a chat. Sessions are scoped to their chat
@@ -889,7 +921,7 @@ func (e *Engine) resolveDir(chat *store.Chat, settings config.Settings, dir stri
 
 // openTerminal starts a session, shows it in the process view and returns the
 // first screen for the model.
-func (e *Engine) openTerminal(ctx context.Context, chat *store.Chat, run *store.Run, skillID, command, name, dir string) string {
+func (e *Engine) openTerminal(ctx context.Context, chat *store.Chat, run *store.Run, skillID, modelID, command, name, dir string) string {
 	if e.Terminals == nil {
 		return "Terminal sessions are not available in this installation."
 	}
@@ -902,6 +934,7 @@ func (e *Engine) openTerminal(ctx context.Context, chat *store.Chat, run *store.
 	spec := term.Spec{Dir: workdir, Meta: map[string]string{metaChat: chat.ID, metaRun: run.ID}}
 	label := strings.TrimSpace(name)
 	var skill config.Skill
+	var model config.ModelChoice
 
 	switch {
 	case strings.TrimSpace(skillID) != "":
@@ -919,12 +952,37 @@ func (e *Engine) openTerminal(ctx context.Context, chat *store.Chat, run *store.
 				skillID, strings.Join(names, ", "))
 		}
 		skill = found
-		spec.Command, spec.Args = skill.CommandLine()
+		// A model has to be one the user configured for this skill. Inventing
+		// one would be worse than ignoring it: the program would start on
+		// something nobody asked for, or refuse to start at all.
+		chosen, ok := skill.ModelByID(modelID)
+		if !ok {
+			ids := skill.ModelIDs()
+			if len(ids) == 0 {
+				return fmt.Sprintf("The %s skill has no models configured, so it cannot be started with "+
+					"%q. Leave `model` out and it starts on its own default.", skill.Name, modelID)
+			}
+			return fmt.Sprintf("There is no model called %q configured for the %s skill. Configured: %s.",
+				modelID, skill.Name, strings.Join(ids, ", "))
+		}
+		model = chosen
+		spec.Command, spec.Args = skill.CommandLine(model)
 		spec.Env = skill.Env
 		spec.Cols, spec.Rows = skill.Cols, skill.Rows
 		spec.Meta[metaSkill] = skill.ID
+		if id := strings.TrimSpace(model.ID); id != "" {
+			spec.Meta[metaModel] = id
+		}
+		if effort := config.NormalizeEffort(model.Effort); effort != "" {
+			spec.Meta[metaEffort] = effort
+		}
 		if label == "" {
+			// The model is part of what the user is watching, so it belongs in
+			// the name of the session rather than only in its command line.
 			label = skill.Name
+			if id := strings.TrimSpace(model.ID); id != "" {
+				label += " · " + id
+			}
 		}
 
 	case strings.TrimSpace(command) != "":
@@ -948,6 +1006,8 @@ func (e *Engine) openTerminal(ctx context.Context, chat *store.Chat, run *store.
 	step := e.addStep(run, "", store.StepTerminal, label, "", store.StatusRunning, map[string]any{
 		"session":   handle.ID(),
 		"skill":     spec.Meta[metaSkill],
+		"model":     strings.TrimSpace(model.ID),
+		"effort":    config.NormalizeEffort(model.Effort),
 		"command":   term.Describe(term.Spec{Command: spec.Command, Args: spec.Args}),
 		"workspace": workdir,
 	})
@@ -967,6 +1027,16 @@ func (e *Engine) openTerminal(ctx context.Context, chat *store.Chat, run *store.
 	}
 
 	note := fmt.Sprintf("Started %s as session `%s` in %s.", label, handle.ID(), workdir)
+	if !model.Empty() {
+		note += "\nRunning on " + model.Label() + "."
+		// A program with no launch-time effort flag has been told nothing about
+		// how hard to think, whatever the list says, so the one place that
+		// knows the difference says so rather than letting it look applied.
+		if config.NormalizeEffort(model.Effort) != "" && len(skill.EffortArgs) == 0 {
+			note += " The effort was not applied on the command line - this program has no flag for it. " +
+				strings.TrimSpace(skill.Applying)
+		}
+	}
 	if startup := strings.TrimSpace(skill.Startup); startup != "" {
 		note += "\nStarting it: " + startup
 	}
@@ -1057,6 +1127,8 @@ func (e *Engine) watchSession(handle *term.Handle, step *store.Step) {
 			step.Detail = mustJSON(map[string]any{
 				"session":   handle.ID(),
 				"skill":     handle.Meta(metaSkill),
+				"model":     handle.Meta(metaModel),
+				"effort":    handle.Meta(metaEffort),
 				"command":   latest.Command,
 				"workspace": latest.Dir,
 				"running":   latest.Running,

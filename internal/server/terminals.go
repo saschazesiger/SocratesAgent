@@ -1,12 +1,13 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
+	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/term"
 )
 
@@ -98,18 +99,65 @@ func (s *Server) handleTerminalResize(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// handleTerminalClose ends a session. A program that is given its grace period
+// to save its work can take several seconds to go, and on a phone that is a
+// tap that appears to have done nothing, so the answer comes back the moment
+// the session is out of the list and the waiting happens behind it. The
+// session's event stream is what tells the browser the program is really over.
 func (s *Server) handleTerminalClose(w http.ResponseWriter, r *http.Request) {
 	handle, ok := s.terminal(w, r)
 	if !ok {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := s.terminals.Close(ctx, handle.ID(), 8*time.Second); err != nil {
+	if err := s.terminals.CloseAsync(handle.ID(), 8*time.Second); err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleOpenTerminal is the user opening a terminal for themselves, without
+// asking Socrates for one: a plain login shell in the chat's working
+// directory. From here on it is an ordinary session - it is listed, streamed,
+// typed into and closed exactly like one the agent started.
+func (s *Server) handleOpenTerminal(w http.ResponseWriter, r *http.Request) {
+	chat, err := s.store.GetChat(r.PathValue("id"))
+	if err != nil {
+		s.notFound(w, err)
+		return
+	}
+	var body struct{}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	// One terminal per chat, so an existing one is not an error to puzzle over:
+	// the browser is told which session it already has and shows that instead.
+	for _, h := range s.terminals.List(chat.ID) {
+		if h.Alive() {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":       "this chat already has a terminal session running",
+				"terminal_id": h.ID(),
+			})
+			return
+		}
+	}
+
+	workdir := agent.Workspace(chat, s.Settings())
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// An empty command is the user's login shell.
+	handle, err := s.terminals.Open(r.Context(), chat.ID, "terminal", term.Spec{Dir: workdir})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	state := handle.State()
+	state.ID = handle.ID()
+	state.Name = handle.Name()
+	state.ChatID = handle.ChatID()
+	writeJSON(w, http.StatusOK, map[string]any{"terminal": state.Plain()})
 }
 
 // terminalCoalesce is the shortest gap between two screens on a session

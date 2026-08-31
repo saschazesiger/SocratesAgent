@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Admin · Socrates</title>
 <link rel="icon" href="/favicon.png">
 <link rel="apple-touch-icon" href="/static/img/logo.png">
@@ -44,7 +44,7 @@
         <div class="field">
           <label>Transcription model</label>
           <div id="orTranscribe"></div>
-          <div class="hint">Must accept audio input, for example google/gemini-2.5-flash.</div>
+          <div class="hint">A transcription model such as openai/whisper-1, or a chat model that accepts audio such as google/gemini-2.5-flash.</div>
         </div>
         <div class="field">
           <label>Title model</label>
@@ -57,13 +57,8 @@
 
     <section class="card">
       <h2>Skills</h2>
-      <p class="card-sub">A skill teaches Socrates how to operate a program the way a person does: how it is started, what its screens look like, which keys answer its questions. The three that ship with Socrates are written against the versions installed here — add your own for any other program, and anything without a skill can still be run as an ordinary shell command.</p>
+      <p class="card-sub">A skill is a program Socrates knows how to operate the way a person does: how it is started, what its screens look like, which keys answer its questions. All of that ships with the app and is kept up to date with it. You decide which ones Socrates may use, what it should use them for, and which models it may run each of them on.</p>
       <div id="skills"></div>
-      <div class="row" style="flex-wrap: wrap">
-        <button class="btn sm" id="addSkill" type="button">Add a skill</button>
-        <select class="input" id="presetPick" aria-label="Preset to add" style="width: auto"></select>
-        <button class="btn sm" id="addPreset" type="button">Add from preset</button>
-      </div>
     </section>
 
     <section class="card">
@@ -91,55 +86,6 @@
         <div class="hint">Every chat gets its own folder below this path. A chat can be pinned to another directory from the chat itself.</div>
       </div>
       <button class="btn sm" id="resetPrompt" type="button">Restore default prompt</button>
-    </section>
-
-    <section class="card">
-      <h2>Internet</h2>
-      <p class="card-sub">Two extra tools: a web search and a page reader. With them switched on, Socrates looks things up instead of guessing at a version number or a price. Pages are fetched over the public internet only — anything on this machine or the local network is refused, so a link cannot be used to reach your own services.</p>
-      <div class="row" style="margin-bottom:16px">
-        <label class="switch"><input type="checkbox" id="netEnabled"><span class="track"></span><span>Let Socrates search and read the web</span></label>
-      </div>
-      <div id="netBody">
-        <div class="grid-2">
-          <div class="field">
-            <label for="netProvider">Search provider</label>
-            <select class="select" id="netProvider">
-              <option value="openrouter">OpenRouter web search</option>
-              <option value="tavily">Tavily</option>
-              <option value="jina">Jina</option>
-            </select>
-            <div class="hint" id="netProviderHint"></div>
-          </div>
-          <div class="field">
-            <label for="netMaxResults">Results per search</label>
-            <input class="input" type="number" id="netMaxResults" min="1" max="10">
-            <div class="hint">Between 1 and 10. More results cost more and rarely help.</div>
-          </div>
-          <div class="field" id="netTavilyField" hidden>
-            <label for="netTavilyKey">Tavily API key</label>
-            <input class="input mono" type="password" id="netTavilyKey" autocomplete="off" placeholder="tvly-…">
-            <div class="hint">Get one at <a href="https://app.tavily.com" target="_blank" rel="noopener">app.tavily.com</a>. The free tier is enough for occasional lookups.</div>
-          </div>
-          <div class="field" id="netJinaField" hidden>
-            <label for="netJinaKey">Jina API key (optional)</label>
-            <input class="input mono" type="password" id="netJinaKey" autocomplete="off" placeholder="jina_…">
-            <div class="hint">Jina answers without a key at a low rate limit. A key raises it — see <a href="https://jina.ai/reader" target="_blank" rel="noopener">jina.ai/reader</a>.</div>
-          </div>
-          <div class="field" id="netSearchModelField">
-            <label>Search model</label>
-            <div id="netSearchModel"></div>
-            <div class="hint">Optional. The model that runs the OpenRouter search plugin; empty uses the answering model.</div>
-          </div>
-          <div class="field">
-            <label for="netFetchEngine">Page reader</label>
-            <select class="select" id="netFetchEngine">
-              <option value="local">Local — fetch and extract here</option>
-              <option value="jina">Jina Reader — handles PDFs and JavaScript pages</option>
-            </select>
-            <div class="hint">Local reading never leaves this machine. Jina Reader sends the URL to jina.ai, which renders the page for you.</div>
-          </div>
-        </div>
-      </div>
     </section>
 
     <section class="card">
@@ -177,7 +123,7 @@
       <div class="field">
         <label for="sttPrompt">Transcription instruction</label>
         <input class="input" type="text" id="sttPrompt">
-        <div class="hint">Sent with the audio when the OpenRouter provider is used.</div>
+        <div class="hint">Sent with the audio when a chat model does the transcribing. A dedicated transcription model is given the language instead.</div>
       </div>
       <div class="divider" style="border-top:1px solid var(--line);margin:6px 0 20px"></div>
       <div class="grid-2">
@@ -210,7 +156,7 @@
         </div>
       </div>
       <div class="row" style="gap:22px;flex-wrap:wrap">
-        <label class="switch"><input type="checkbox" id="speakAuto"><span class="track"></span><span>Read answers in auto mode</span></label>
+        <label class="switch"><input type="checkbox" id="speakAuto"><span class="track"></span><span>Read answers in audio mode</span></label>
         <label class="switch"><input type="checkbox" id="speakChat"><span class="track"></span><span>Read answers in normal chat</span></label>
       </div>
       <div class="row" style="margin-top:16px">

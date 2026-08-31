@@ -120,6 +120,9 @@ a { color: inherit; }
   color: var(--text-faint);
   margin-top: 6px;
   line-height: 1.5;
+  /* A hint often carries a URL or a path inline, and one unbreakable token is
+     all it takes to push a 320px screen sideways. */
+  overflow-wrap: anywhere;
 }
 /* A path is long and has no spaces to wrap at, so it is allowed to break
    anywhere rather than pushing the dialog wider than the screen. */
@@ -181,7 +184,13 @@ a { color: inherit; }
   min-height: 100%;
   display: grid;
   place-items: center;
-  padding: 32px;
+  /* 20px is what a 320px screen can spare either side; the card is centred and
+     capped, so a wider screen looks exactly as it did. The insets keep the
+     card clear of a rounded corner in landscape. */
+  padding: 32px
+           calc(20px + env(safe-area-inset-right, 0px))
+           calc(32px + env(safe-area-inset-bottom, 0px))
+           calc(20px + env(safe-area-inset-left, 0px));
   background:
     radial-gradient(1200px 600px at 50% -10%, #f6f7f9 0%, transparent 60%),
     var(--bg);
@@ -240,6 +249,9 @@ a { color: inherit; }
   flex-direction: column;
   min-height: 0;
 }
+/* A column has nothing beside it to tap, so the scrim only exists once the
+   sidebar has become a drawer. */
+.nav-scrim { display: none; }
 .side-head {
   padding: 14px 12px 10px;
   display: flex;
@@ -262,12 +274,18 @@ a { color: inherit; }
   /* The logo carries its own shape and colour, so it wants no tile behind it. */
   object-fit: contain;
 }
-.new-chat {
+.new-chat, .new-terminal {
   width: 100%;
   justify-content: flex-start;
   background: var(--bg);
   box-shadow: var(--shadow-sm);
 }
+.new-terminal { color: var(--text-soft); }
+.new-terminal:hover { color: var(--text); }
+
+/* A control that is waiting on the network says so where it was tapped. */
+.btn.is-busy { opacity: .75; cursor: default; }
+.btn.is-busy .ico { display: none; }
 
 /* Active or all: two words, one tap, and it stays where it was put. */
 .scope {
@@ -381,6 +399,11 @@ a { color: inherit; }
   min-width: 0;
   min-height: 0;
   position: relative;
+  /* The top bar runs out of room in two different ways: on a phone, and on a
+     desktop where the terminal takes half the window. Both are the same thing
+     - a narrow column - so the bar is measured against its column rather than
+     against the window, and one set of rules covers both. */
+  container-type: inline-size;
 }
 
 .topbar {
@@ -406,17 +429,78 @@ a { color: inherit; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.topbar .auto-toggle {
+/* Four ways to use a chat, one at a time: the conversation, the conversation
+   with its terminal beside it, the terminal on its own, hands free. The knob
+   is the only thing that moves, so where it sits is the whole answer to "what
+   am I looking at", and there is no second control to disagree with it.
+   The stops are as wide as their words rather than a quarter of the bar each,
+   so the knob is placed from the layout the browser actually made. */
+.view-slider {
+  position: relative;
+  flex: none;
   display: flex;
   align-items: center;
-  gap: 9px;
-  font-size: 13px;
-  color: var(--text-soft);
-  padding: 5px 10px 5px 12px;
-  border: 1px solid var(--line);
+  gap: 2px;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+}
+.view-slider .knob {
+  position: absolute;
+  top: 2px;
+  left: 0;
+  height: calc(100% - 4px);
+  width: var(--knob-w, 0px);
+  transform: translateX(var(--knob-x, 0px));
   border-radius: 999px;
   background: var(--bg);
+  box-shadow: var(--shadow-sm);
+  pointer-events: none;
 }
+/* It only slides once it has been placed: the first measurement happens after
+   the first paint, and a knob gliding in from the left edge on load reads as
+   the page changing its mind. */
+.view-slider.placed .knob {
+  transition: transform .2s cubic-bezier(.3, .8, .4, 1), width .2s cubic-bezier(.3, .8, .4, 1);
+}
+.view-slider .stop {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1;
+  color: var(--text-soft);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color .12s ease;
+}
+.view-slider .stop:hover { color: var(--text); }
+.view-slider .stop[aria-checked="true"] { color: var(--text); font-weight: 550; }
+.view-slider .stop .ico { width: 15px; height: 15px; flex: none; }
+/* A terminal needs a chat to run in, and a blank page has none yet. The two
+   stops that would open a shell say so by looking unavailable rather than by
+   disappearing and shuffling everything else along the bar. */
+.view-slider .stop[aria-disabled="true"] { opacity: .38; cursor: default; }
+.view-slider .stop[aria-disabled="true"]:hover { color: var(--text-soft); }
+/* The one thing the other stops have to say: a program is running at the
+   terminal. It is the dot the terminal button used to carry. */
+.view-slider .live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  flex: none;
+  display: none;
+}
+.view-slider.live .live-dot { display: block; }
+body.stale .view-slider.live .live-dot { background: var(--amber); }
 .menu-btn { display: none; }
 
 .popover {
@@ -773,16 +857,14 @@ a { color: inherit; }
   color: var(--text-faint);
 }
 
-/* ------------------------------------------------------------- auto mode */
+/* ------------------------------------------------------------ audio mode */
 
 .auto-screen { display: none; }
 body.auto .thread, body.auto .composer-wrap { display: none; }
-/* Auto mode is a focused, hands free surface: only the top bar stays - and
-   the terminal dock, which keeps the same right hand column it has in chat
-   mode. The sidebar is out of the flow, so two tracks are left: the hands
-   free screen, and the dock, which is `auto` and therefore takes no room at
-   all while it is hidden. On a phone the dock is fixed and covers the screen,
-   exactly as it does in chat mode. */
+/* Audio mode is a focused, hands free surface: nothing but the top bar and the
+   screen itself. It is one of the four stops on the slider, so the terminal
+   dock is closed while it has the pane; the sidebar is out of the flow, which
+   leaves the hands free screen the whole width. */
 body.auto .app { grid-template-columns: minmax(0, 1fr) auto; }
 body.auto .sidebar { display: none; }
 body.auto .menu-btn { display: none; }
@@ -920,6 +1002,7 @@ body.auto .auto-screen {
 }
 .modal-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 22px;
@@ -929,7 +1012,7 @@ body.auto .auto-screen {
 
 .toasts {
   position: fixed;
-  bottom: 20px;
+  bottom: calc(20px + env(safe-area-inset-bottom, 0px));
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -946,7 +1029,9 @@ body.auto .auto-screen {
   font-size: 13.5px;
   box-shadow: var(--shadow);
   animation: rise .2s ease both;
-  max-width: 420px;
+  /* Centred on the viewport, so anything wider than the screen would hang off
+     both edges at once. */
+  max-width: min(420px, calc(100vw - 24px));
 }
 .toast.error { background: #b53a3a; }
 
@@ -1006,40 +1091,46 @@ body.auto .auto-screen {
   flex-wrap: wrap;
   gap: 8px 12px;
   padding: 12px 14px;
-  cursor: pointer;
   background: var(--bg-soft);
 }
 .skill-head .nm { font-weight: 550; font-size: 14px; }
 .skill-head .kind {
   font-family: var(--mono);
+  /* The command line stays on one line, but a long one is cut rather than
+     allowed to push the card past the edge of a phone. */
   white-space: nowrap;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 11.5px;
   color: var(--text-faint);
   background: var(--bg-sunken);
   padding: 2px 7px;
   border-radius: 999px;
 }
-.skill-head .spacer { flex: 1; }
-/* On a phone the badges alone fill the row, so the buttons take their own
-   line rather than being pushed off the side of the card. */
-@media (max-width: 560px) {
-  .skill-head .spacer { flex-basis: 100%; height: 0; }
-  .skill-head .btn { flex: 1 1 auto; }
+.skill-body { padding: 16px 16px 2px; border-top: 1px solid var(--line); }
+/* One row per model a skill may run on: the id, the effort, what it is for,
+   and the button that removes it. The columns wrap rather than shrink, so on a
+   narrow screen the row becomes three stacked full width controls instead of
+   three fields too small to type in. */
+.models { display: flex; flex-direction: column; gap: 8px; }
+.model-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
-.skill-body { display: none; padding: 18px 16px 4px; border-top: 1px solid var(--line); }
-.skill.open .skill-body { display: block; }
-.skill-section {
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-faint);
-  margin: 22px 0 10px;
-}
+.model-row > .input:first-child { flex: 1 1 150px; min-width: 130px; }
+.model-row > .select { flex: 0 1 130px; min-width: 110px; width: auto; }
+.model-row > .input:nth-of-type(2) { flex: 4 1 220px; min-width: 180px; }
+.model-row > .btn { flex: none; }
+.models-actions { margin-top: 10px; }
 .checks { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
 .check {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   font-size: 13.5px;
   padding: 9px 12px;
@@ -1079,9 +1170,11 @@ body.auto .auto-screen {
 .state-dot.failed { background: var(--red); }
 .tunnel-status .state-label { font-weight: 550; }
 .tunnel-status .sep { color: var(--line-strong); }
-.tunnel-status a { font-family: var(--mono); font-size: 13px; color: var(--blue); text-decoration: none; }
+/* A tunnel hostname is one long word with nothing to wrap at, so it is allowed
+   to break mid token rather than widen the card. */
+.tunnel-status a { font-family: var(--mono); font-size: 13px; color: var(--blue); text-decoration: none; min-width: 0; overflow-wrap: anywhere; }
 .tunnel-status a:hover { text-decoration: underline; }
-.tunnel-status .muted { color: var(--text-faint); font-family: var(--mono); font-size: 12.5px; }
+.tunnel-status .muted { color: var(--text-faint); font-family: var(--mono); font-size: 12.5px; min-width: 0; overflow-wrap: anywhere; }
 
 .log {
   font-family: var(--mono);
@@ -1113,6 +1206,7 @@ body.auto .auto-screen {
   border-top: 1px solid var(--line);
   padding: 18px 0 0;
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   align-items: center;
   margin-top: 4px;
@@ -1145,8 +1239,7 @@ body.auto .auto-screen {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
   .spinner, .chat-item .dot, .state-dot.starting, .state-dot.installing,
-  .working-dots i, .auto-busy i, .term-dot.live, .dock-tab .dot.live,
-  .term-btn.live .term-live-dot, .conn-dot {
+  .working-dots i, .auto-busy i, .conn-dot {
     animation-duration: 2.4s !important;
   }
   .spinner { animation-name: pulse !important; }
@@ -1155,32 +1248,166 @@ body.auto .auto-screen {
 
 /* -------------------------------------------------------------- mobile */
 
-@media (max-width: 860px) {
+/* One breakpoint decides that the screen is too narrow for two things side by
+   side: the chat list beside the conversation, and the conversation beside the
+   terminal. It is the same 900px the terminal dock and terminals.js use, so a
+   window never lands in a width where only half of the layout has folded. */
+@media (max-width: 900px) {
   .app { grid-template-columns: 1fr; }
   .sidebar {
     position: fixed;
     inset: 0 auto 0 0;
-    width: 274px;
-    z-index: 20;
+    /* Narrower than the screen either way, so the conversation behind it stays
+       visible and the scrim is tappable. */
+    width: min(274px, 84vw);
+    padding-left: env(safe-area-inset-left, 0px);
+    /* Above the terminal dock, which covers the whole screen below the top
+       bar on a phone: a drawer that opens behind it is a drawer that never
+       opened. */
+    z-index: 40;
     transform: translateX(-100%);
     transition: transform .22s cubic-bezier(.3,.8,.4,1);
     box-shadow: var(--shadow);
   }
+  .side-foot { padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)); }
   body.nav-open .sidebar { transform: none; }
-  body.nav-open::after {
-    content: "";
+  .nav-scrim {
+    display: block;
     position: fixed;
     inset: 0;
     background: rgba(16,17,20,.28);
-    z-index: 10;
+    /* Under the drawer, over everything the drawer is covering. */
+    z-index: 35;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .22s ease;
+    /* Safari hands a click to an ordinary element far more willingly when it
+       looks clickable, and this one is nothing but a click target. */
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
   }
+  body.nav-open .nav-scrim { opacity: 1; pointer-events: auto; }
+  /* Audio mode takes the sidebar out of the layout entirely, so a scrim left
+     over from it would darken the screen with nothing behind it. */
+  body.auto .nav-scrim { display: none; }
   .menu-btn { display: inline-flex; }
   .thread { padding: 20px 14px 8px; }
-  .composer-wrap { padding: 8px 12px 14px; }
+  .composer-wrap {
+    padding: 8px
+             calc(12px + env(safe-area-inset-right, 0px))
+             calc(14px + env(safe-area-inset-bottom, 0px))
+             calc(12px + env(safe-area-inset-left, 0px));
+  }
   .msg.user { max-width: 88%; }
-  .grid-2 { grid-template-columns: 1fr; }
   .mic-big { width: 156px; height: 156px; }
+  .topbar {
+    gap: 8px;
+    padding: 0
+             calc(12px + env(safe-area-inset-right, 0px))
+             0
+             calc(12px + env(safe-area-inset-left, 0px));
+  }
   .mic-big svg { width: 60px; height: 60px; }
+}
+
+/* Two fields side by side need room for both. This is the admin page's own
+   measurement and has nothing to do with the chat shell, so it keeps its own
+   breakpoint. */
+@media (max-width: 860px) {
+  .grid-2 { grid-template-columns: 1fr; }
+}
+
+/* A phone in portrait. The admin page is all cards inside cards, and its three
+   layers of padding are what a 320px screen cannot afford. */
+@media (max-width: 620px) {
+  .admin-top { padding: 0 14px; gap: 8px; }
+  .admin-wrap { padding: 18px 14px calc(48px + env(safe-area-inset-bottom, 0px)); }
+  .card { padding: 18px 16px; border-radius: var(--r); }
+  .skill-body { padding: 14px 12px 2px; }
+  .check .nm { min-width: 0; }
+  /* One control per line, each one wide enough to actually type in, with the
+     row's own hairline so two of them cannot be read as one. */
+  .model-row { padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+  .model-row:last-child { padding-bottom: 0; border-bottom: 0; }
+  .model-row > .input:first-child,
+  .model-row > .input:nth-of-type(2) { flex: 1 1 100%; min-width: 0; }
+  .model-row > .select { flex: 1 1 100%; min-width: 0; width: 100%; }
+  .model-row > .btn { margin-left: auto; }
+  .dock-error .msg { min-width: 0; }
+}
+
+/* Under 16px a phone browser zooms the page the moment a field takes focus,
+   and a zoomed page scrolls sideways. Only the widths a phone actually has,
+   so a desktop window keeps the smaller, quieter type. */
+@media (max-width: 620px) {
+  .input, .select, .textarea, .combo-input, .composer textarea { font-size: 16px; }
+  .input.mono, .textarea.mono { font-size: 16px; }
+}
+
+/* A finger has no pointer to aim with, so the smallest controls - the ones a
+   mouse hits by hovering first - grow to something worth tapping. The top bar
+   is left out on purpose: its own rules already decide what fits there. */
+@media (pointer: coarse) {
+  .icon-btn { width: 38px; height: 38px; }
+  .chat-item .act { width: 30px; height: 30px; }
+  .btn.sm { height: 34px; }
+  .scope .seg { padding: 7px 10px; }
+  .dock-dismiss, .conn-retry { padding: 5px 12px; }
+}
+
+/* The narrowest screens in use. */
+@media (max-width: 420px) {
+  .thread { padding: 16px 12px 8px; }
+  .admin-wrap { padding: 16px 12px calc(44px + env(safe-area-inset-bottom, 0px)); }
+  .card { padding: 16px 14px; }
+  .admin-foot .btn { flex: 1 1 auto; }
+}
+
+/* The slider sheds its words before the bar sheds anything else: the stop you
+   are on keeps its name, the other three are their icon. It is the one that
+   matters - the knob says where you are, and the word says what that is. */
+@container (max-width: 620px) {
+  .view-slider .stop .lbl { display: none; }
+  .view-slider .stop[aria-checked="true"] .lbl { display: inline; }
+}
+/* Narrower than any phone in portrait. Even the name goes, rather than the
+   bar wrapping onto a second line. */
+@container (max-width: 300px) {
+  .view-slider .stop[aria-checked="true"] .lbl { display: none; }
+}
+
+/* The top bar, measured against its own column. A title and three controls fit
+   comfortably in a desktop pane; in a phone's width, or in what is left of a
+   window with the terminal open beside it, they give up their spacing in two
+   steps rather than spilling off the edge. */
+@container (max-width: 440px) {
+  .topbar {
+    gap: 6px;
+    padding: 0
+             calc(10px + env(safe-area-inset-right, 0px))
+             0
+             calc(10px + env(safe-area-inset-left, 0px));
+  }
+  .view-slider .stop { padding: 6px 8px; }
+}
+/* Narrower than this the title has room for one letter and an ellipsis that
+   does not fit, which reads as a glitch rather than as a name. It keeps its
+   place in the row as the spacer that pushes the controls apart, and stops
+   showing the one letter. */
+@container (max-width: 345px) {
+  .topbar .title { visibility: hidden; }
+}
+@container (max-width: 380px) {
+  .topbar {
+    gap: 5px;
+    padding: 0
+             calc(8px + env(safe-area-inset-right, 0px))
+             0
+             calc(8px + env(safe-area-inset-left, 0px));
+  }
+  .topbar .icon-btn { width: 32px; height: 32px; }
+  .view-slider { gap: 0; }
+  .view-slider .stop { padding: 6px 7px; }
 }
 
 /* ------------------------------------------------------------- combobox */
@@ -1301,7 +1528,8 @@ body.auto .auto-screen {
   flex: none;
 }
 
-.term-dot.live { animation: pulse 1.8s cubic-bezier(.45, 0, .55, 1) infinite; }
+/* A terminal that is up is simply up: the dot says so and then holds still.
+   A pulse here read as an alarm on a screen that already moves by itself. */
 .term-dot.stopped { background: #6b6e76; }
 .term-dot.failed { background: var(--red); }
 
@@ -1357,24 +1585,16 @@ body.auto .auto-screen {
   color: var(--term-bg);
   border-radius: 1px;
 }
-.term-screen:not(:focus) .tcur {
+.term-screen.focused .tcur {
+  background: var(--term-fg);
+  color: var(--term-bg);
+  box-shadow: none;
+}
+.term-screen:not(:focus):not(.focused) .tcur {
   background: none;
   color: inherit;
   box-shadow: inset 0 0 0 1px rgba(228, 229, 233, .55);
 }
-
-.term-key {
-  background: #26272d;
-  border: 1px solid #34353c;
-  color: #c9cad0;
-  border-radius: var(--r-sm);
-  padding: 5px 9px;
-  font-size: 11px;
-  cursor: pointer;
-  font-family: var(--mono);
-}
-
-.term-key:hover { background: #32333a; }
 
 .term-note {
   padding: 6px 12px;
@@ -1390,39 +1610,13 @@ body.auto .auto-screen {
    away inside the transcript. On a phone there is no room for a column, so it
    becomes a drawer over the chat with one obvious way out. */
 
-.term-btn { position: relative; }
-.term-btn .term-live-dot {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--green);
-  display: none;
-}
-.term-btn.live .term-live-dot { display: block; animation: pulse 1.8s cubic-bezier(.45, 0, .55, 1) infinite; }
-body.stale .term-btn.live .term-live-dot { animation: none; background: var(--amber); }
-.term-btn .term-badge {
-  position: absolute;
-  bottom: 2px;
-  right: 1px;
-  min-width: 14px;
-  height: 14px;
-  padding: 0 3px;
-  border-radius: 999px;
-  background: var(--text);
-  color: var(--bg);
-  font-size: 10px;
-  line-height: 14px;
-  font-weight: 600;
-  text-align: center;
-}
-body.dock-open .term-btn { background: var(--bg-hover); }
-
 .term-dock {
   position: relative;
-  width: clamp(360px, var(--dock-w, 46vw), 74vw);
+  /* Wide enough for a terminal to be worth looking at, never wider than the
+     window itself - the floor gives way before the viewport does. Untouched,
+     it also leaves the conversation beside it a column worth reading; drag the
+     grip and that is the person's decision to make. */
+  width: clamp(min(360px, 100vw), var(--dock-w, min(46vw, calc(100vw - 640px))), 74vw);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1454,43 +1648,29 @@ body.dock-open .term-btn { background: var(--bg-hover); }
   background: #202126;
   border-bottom: 1px solid #2a2b31;
 }
-.dock-tabs {
+ /* One chat, one session: there is nothing to choose between, so the head
+    says which program this is and leaves it at that. */
+.dock-name {
   flex: 1;
   min-width: 0;
   display: flex;
-  gap: 4px;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.dock-tabs::-webkit-scrollbar { display: none; }
-.dock-tab {
-  display: flex;
   align-items: center;
   gap: 7px;
-  flex: none;
-  max-width: 200px;
-  padding: 5px 10px;
-  border-radius: 8px;
-  border: 1px solid transparent;
-  background: transparent;
-  color: #9fa1a9;
-  font: inherit;
+  color: #eceef2;
   font-size: 12.5px;
-  cursor: pointer;
+  font-weight: 600;
 }
-.dock-tab .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dock-tab.active { background: #2c2d33; border-color: #3a3b43; color: #eceef2; font-weight: 550; }
-.dock-tabs.single .dock-tab { background: none; border-color: transparent; color: #eceef2; font-weight: 600; cursor: default; }
-.dock-tab .dot {
+.dock-name .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dock-name .dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   flex: none;
   background: #6b6e76;
 }
-.dock-tab .dot.live { background: var(--green); animation: pulse 1.8s cubic-bezier(.45, 0, .55, 1) infinite; }
-.dock-tab .dot.failed { background: var(--red); }
-body.stale .dock-tab .dot.live { animation: none; background: var(--amber); }
+.dock-name .dot.live { background: var(--green); }
+.dock-name .dot.failed { background: var(--red); }
+body.stale .dock-name .dot.live { background: var(--amber); }
 
 .dock-close {
   flex: none;
@@ -1593,44 +1773,68 @@ body.stale .dock-tab .dot.live { animation: none; background: var(--amber); }
 }
 .dock-error .again:hover { background: #4a2c2c; }
 
-.dock-foot {
-  flex: none;
-  display: flex;
-  gap: 6px;
-  padding: 8px;
-  border-top: 1px solid #2a2b31;
-  background: #1b1c20;
-}
-.dock-foot input {
-  flex: 1;
-  min-width: 0;
-  background: #101114;
-  border: 1px solid #303138;
-  border-radius: var(--r-sm);
-  color: #e4e5e9;
-  padding: 8px 10px;
-  font-family: var(--mono);
-  font-size: 13px;
-}
-.dock-foot input:focus { outline: none; border-color: #4a4c55; }
-
-.dock-keys {
-  flex: none;
-  display: flex;
-  gap: 6px;
-  padding: 0 8px 8px;
-  overflow-x: auto;
-  scrollbar-width: none;
-  background: #1b1c20;
-}
-.dock-keys::-webkit-scrollbar { display: none; }
-.dock-keys .term-key { flex: none; padding: 7px 11px; font-size: 12px; }
-.term-key.send { background: #33414f; border-color: #43566a; color: #dbe7f2; }
-
 .term-dock .term-note {
   flex: none;
   background: #1b1c20;
 }
+
+/* A <pre> is not a text field, and no phone offers a keyboard for one. This is
+   the field the keyboard actually belongs to: one transparent pixel over the
+   screen, focused when the screen is tapped, with everything it catches
+   forwarded to the program. The caret the person watches stays in the screen.
+   It is never display:none - a box that cannot be focused summons nothing. */
+.term-capture {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  outline: none;
+  opacity: 0;
+  resize: none;
+  overflow: hidden;
+  background: transparent;
+  color: transparent;
+  caret-color: transparent;
+  /* Anything smaller and iOS zooms the page the moment it takes focus. */
+  font-size: 16px;
+  z-index: 1;
+}
+
+/* ------------------------------------------------------- terminal mode */
+
+/* Terminal Mode: the session takes the pane the conversation had. It is the
+   dock's screen and the dock's stream in a bigger box - nothing about the
+   session changes, only the frame around it. */
+.term-full {
+  display: none;
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  background: #16171a;
+  color: #e4e5e9;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+body.term-mode .term-full { display: flex; }
+.term-full[hidden] { display: none; }
+body.term-mode .thread,
+body.term-mode .composer-wrap,
+body.term-mode .auto-screen,
+body.term-mode .term-dock { display: none; }
+.full-screen {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  border-radius: 0;
+  outline: none;
+}
+.full-screen:focus-visible { box-shadow: inset 0 0 0 2px rgba(120, 160, 255, .5); }
+.term-full.stale .full-screen { opacity: .6; }
+.term-full .dock-sub { border-top: 1px solid #2a2b31; }
 
 /* The one line the transcript keeps. It says a session was opened and gets out
    of the way; the session itself is in the dock. */
@@ -1657,20 +1861,22 @@ body.stale .dock-tab .dot.live { animation: none; background: var(--amber); }
 .step.term-line .open-term:hover { color: var(--text); }
 
 @media (max-width: 900px) {
-  /* No room for a column on a phone, so the dock covers the chat entirely and
-     the way out is the first thing in it. */
+  /* No room for a column on a phone, so the dock covers the chat - but not the
+     top bar. The slider that put the terminal there is also the way back out
+     of it, and a drawer over it would leave only the corner cross. */
   .term-dock {
     position: fixed;
-    inset: 0;
+    inset: 56px 0 0;
     width: 100%;
     border-left: 0;
     z-index: 30;
-    padding-top: env(safe-area-inset-top);
     padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
   }
   .dock-grip { display: none; }
   .dock-close { background: #34353c; color: #fff; }
-  .dock-screen { font-size: 11.5px; }
+  .dock-screen, .full-screen { font-size: 11.5px; }
 }
 
 /* ------------------------------------------------------- the connection */
@@ -1747,8 +1953,8 @@ body.conn-lost .auth { padding-top: var(--conn-bar-h, 40px); }
    say "this is happening right now" stop. */
 body.stale .working-dots i,
 body.stale .auto-busy i,
-body.stale .term-dot.live,
 body.stale .spinner { animation-play-state: paused; opacity: .45; }
+body.stale .term-dot.live { opacity: .45; }
 body.stale .chat-item .dot { animation: none; opacity: .4; }
 
 .working.lost { color: var(--amber); align-items: flex-start; }
@@ -1788,7 +1994,7 @@ body.stale .chat-item .dot { animation: none; opacity: .4; }
 .empty.load-error h2 { color: var(--text); }
 .empty.load-error .btn { margin-top: 14px; }
 
-/* -------------------------------------------------- auto mode, offline */
+/* ------------------------------------------------- audio mode, offline */
 
 /* The hands free screen is read at a glance from behind a steering wheel, so
    it gets the same message in a size that survives that. */

@@ -17,9 +17,11 @@ import (
 	"time"
 )
 
-// MaxSessionsPerChat keeps a runaway agent from filling the machine with
-// abandoned programs.
-const MaxSessionsPerChat = 12
+// MaxSessionsPerChat is one on purpose: a chat has a single terminal, the one
+// the user is watching. Socrates and the person share that keyboard, and a
+// second screen nobody is looking at is how abandoned programs pile up. To
+// start something else, end the session first and open a new one.
+const MaxSessionsPerChat = 1
 
 // Manager owns every terminal session. Each session lives in its own directory
 // below Root, with the socket of its host process, so that a Socrates which
@@ -59,7 +61,8 @@ func (m *Manager) Open(ctx context.Context, chatID, name string, spec Spec) (*Ha
 		}
 	}
 	if running >= MaxSessionsPerChat {
-		return nil, fmt.Errorf("this chat already has %d terminal sessions running - close one before opening another", running)
+		return nil, fmt.Errorf("this chat already has a terminal session running, and there is only ever one - " +
+			"end it with terminal_close and then call terminal_open again to start over")
 	}
 	if m.SelfPath == "" {
 		return nil, fmt.Errorf("the path of the Socrates binary is unknown, cannot start a terminal session")
@@ -304,20 +307,47 @@ func (m *Manager) States(chatID string) []State {
 	return out
 }
 
-// Close ends one session and forgets it.
-func (m *Manager) Close(ctx context.Context, id string, grace time.Duration) error {
+// take removes a session from the list and hands over its handle.
+func (m *Manager) take(id string) (*Handle, bool) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	h, ok := m.sessions[id]
 	if ok {
 		delete(m.sessions, id)
 	}
-	m.mu.Unlock()
+	return h, ok
+}
+
+// Close ends one session and forgets it.
+func (m *Manager) Close(ctx context.Context, id string, grace time.Duration) error {
+	h, ok := m.take(id)
 	if !ok {
 		return fmt.Errorf("there is no terminal session called %q", id)
 	}
 	err := h.Close(ctx, grace)
 	_ = os.RemoveAll(filepath.Join(m.Root, id))
 	return err
+}
+
+// CloseAsync takes the session out of the list at once and then lets it shut
+// down on its own goroutine. A program given its grace period can take the
+// better part of a minute to go, which is far too long to keep a phone waiting
+// on an HTTP response; the session's event stream says when it is really over.
+func (m *Manager) CloseAsync(id string, grace time.Duration) error {
+	h, ok := m.take(id)
+	if !ok {
+		return fmt.Errorf("there is no terminal session called %q", id)
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		err := h.Close(ctx, grace)
+		_ = os.RemoveAll(filepath.Join(m.Root, id))
+		if err != nil {
+			log.Printf("terminal: closing %s: %v", id, err)
+		}
+	}()
+	return nil
 }
 
 // CloseChat ends every session of one chat, used when a chat is deleted.

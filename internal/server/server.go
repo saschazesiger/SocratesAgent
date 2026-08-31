@@ -211,6 +211,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/chats/{id}/stop", s.auth(s.handleStopRun))
 	mux.HandleFunc("GET /api/chats/{id}/events", s.auth(s.handleEvents))
 	mux.HandleFunc("GET /api/chats/{id}/terminals", s.auth(s.handleListTerminals))
+	mux.HandleFunc("POST /api/chats/{id}/terminals", s.auth(s.handleOpenTerminal))
 
 	// Terminal sessions: watch one live, or take the keyboard yourself.
 	mux.HandleFunc("GET /api/terminals/{id}", s.auth(s.handleGetTerminal))

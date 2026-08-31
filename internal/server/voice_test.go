@@ -191,3 +191,97 @@ func TestTranscriptionHintNamesTheLanguageAndForbidsTranslating(t *testing.T) {
 		t.Fatalf("english speech = %q", speechInstructions(config.LanguageEN))
 	}
 }
+
+// configureOpenRouter points the server at a stand in gateway, the same way
+// the dashboard's OpenRouter section does.
+func (e *testEnv) configureOpenRouter(t *testing.T, fields map[string]any) {
+	t.Helper()
+	_, data := e.do(t, e.client, "GET", "/api/settings", "")
+	settings := data["settings"].(map[string]any)
+	current := settings["openrouter"].(map[string]any)
+	for key, value := range fields {
+		current[key] = value
+	}
+	body, _ := json.Marshal(map[string]any{"settings": settings})
+	if res, _ := e.do(t, e.client, "PUT", "/api/settings", string(body)); res.StatusCode != http.StatusOK {
+		t.Fatalf("saving the openrouter settings failed: %d", res.StatusCode)
+	}
+}
+
+func (e *testEnv) transcribe(t *testing.T) (*http.Response, map[string]any) {
+	t.Helper()
+	audio := base64.StdEncoding.EncodeToString(make([]byte, 4000))
+	body, _ := json.Marshal(map[string]any{"audio": audio, "format": "wav"})
+	return e.do(t, e.client, "POST", "/api/voice/transcribe", string(body))
+}
+
+// A dedicated transcription model is served on /audio/transcriptions and
+// refuses /chat/completions. Sending the recording to the chat endpoint anyway
+// is what turned the microphone into a 502, so the refusal has to be followed.
+func TestTranscribeThroughOpenRouterUsesTheTranscriptionEndpoint(t *testing.T) {
+	var seen []string
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/chat/completions" {
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, `{"error":{"message":"openai/gpt-transcribe is a transcription model and cannot be used with the chat/completions endpoint."}}`)
+			return
+		}
+		io.WriteString(w, `{"text":"hallo zusammen"}`)
+	}))
+	defer gateway.Close()
+
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+	env.configureVoice(t, map[string]any{"language": "de", "stt_provider": "openrouter"})
+	env.configureOpenRouter(t, map[string]any{
+		"base_url": gateway.URL, "api_key": "k", "transcribe_model": "openai/gpt-transcribe",
+	})
+
+	res, decoded := env.transcribe(t)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("transcribe failed: %d (%v)", res.StatusCode, decoded)
+	}
+	if decoded["text"] != "hallo zusammen" {
+		t.Fatalf("text = %#v", decoded["text"])
+	}
+	if len(seen) == 0 || seen[len(seen)-1] != "/audio/transcriptions" {
+		t.Fatalf("requests = %v", seen)
+	}
+}
+
+// A model that does not exist will not exist on the next attempt either. The
+// page retries a 502 three times before it says anything, so a refusal the
+// provider blames on the settings has to arrive as one - once, with a sentence
+// that says where to fix it.
+func TestTranscribeReportsAConfigurationRefusalWithoutRetries(t *testing.T) {
+	attempts := 0
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, `{"error":{"message":"Model vendor/nope does not exist"}}`)
+	}))
+	defer gateway.Close()
+
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+	env.configureVoice(t, map[string]any{"language": "de", "stt_provider": "openrouter"})
+	env.configureOpenRouter(t, map[string]any{
+		"base_url": gateway.URL, "api_key": "k", "transcribe_model": "vendor/nope",
+	})
+
+	res, decoded := env.transcribe(t)
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d (%v)", res.StatusCode, decoded)
+	}
+	message, _ := decoded["error"].(string)
+	if !strings.Contains(message, "does not exist") || !strings.Contains(message, "/admin") {
+		t.Fatalf("error = %q", message)
+	}
+	// Both endpoints were tried once, and neither was tried again.
+	if attempts != 2 {
+		t.Fatalf("attempts = %d", attempts)
+	}
+}

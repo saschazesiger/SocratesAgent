@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -81,26 +83,9 @@ type ChatRequest struct {
 	Temperature *float64  `json:"temperature,omitempty"`
 	MaxTokens   int       `json:"max_tokens,omitempty"`
 	Stream      bool      `json:"stream,omitempty"`
-	// Plugins are OpenRouter's own extensions, notably the "web" plugin that
-	// runs a search before the model answers. They are passed through as they
-	// were written, because the plugin catalogue is not ours to model.
-	Plugins []any `json:"plugins,omitempty"`
-	Usage   *struct {
+	Usage       *struct {
 		Include bool `json:"include"`
 	} `json:"usage,omitempty"`
-}
-
-// Annotation is a citation the provider attached to an assistant message. The
-// web plugin returns one per page it read.
-type Annotation struct {
-	Type        string `json:"type"`
-	URLCitation struct {
-		URL        string `json:"url"`
-		Title      string `json:"title"`
-		Content    string `json:"content"`
-		StartIndex int    `json:"start_index"`
-		EndIndex   int    `json:"end_index"`
-	} `json:"url_citation"`
 }
 
 // Usage reports token consumption.
@@ -116,7 +101,6 @@ type Result struct {
 	Content      string
 	Reasoning    string
 	ToolCalls    []ToolCall
-	Annotations  []Annotation
 	FinishReason string
 	Usage        Usage
 	Model        string
@@ -354,10 +338,9 @@ type completionResponse struct {
 	Choices []struct {
 		FinishReason string `json:"finish_reason"`
 		Message      struct {
-			Content     string       `json:"content"`
-			Reasoning   string       `json:"reasoning"`
-			ToolCalls   []ToolCall   `json:"tool_calls"`
-			Annotations []Annotation `json:"annotations"`
+			Content   string     `json:"content"`
+			Reasoning string     `json:"reasoning"`
+			ToolCalls []ToolCall `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
 	Usage Usage `json:"usage"`
@@ -382,7 +365,6 @@ func parseCompletion(r io.Reader) (*Result, error) {
 		Content:      ch.Message.Content,
 		Reasoning:    ch.Message.Reasoning,
 		ToolCalls:    ch.Message.ToolCalls,
-		Annotations:  ch.Message.Annotations,
 		FinishReason: ch.FinishReason,
 		Usage:        cr.Usage,
 		Model:        cr.Model,
@@ -518,17 +500,91 @@ type Model struct {
 	Name          string   `json:"name"`
 	ContextLength int      `json:"context_length"`
 	Modalities    []string `json:"input_modalities"`
+	Produces      []string `json:"output_modalities"`
 	Pricing       struct {
 		Prompt     string `json:"prompt"`
 		Completion string `json:"completion"`
 	} `json:"pricing"`
 }
 
+// UnmarshalJSON reads both shapes of the catalogue: OpenRouter nests the
+// modalities under "architecture", other OpenAI compatible gateways put them at
+// the top level. Reading only the top level leaves every entry with no modality
+// at all, and a picker with nothing to filter on offers the whole catalogue -
+// which is how a model that cannot listen ends up chosen for listening.
+func (m *Model) UnmarshalJSON(data []byte) error {
+	type plain Model
+	var flat plain
+	if err := json.Unmarshal(data, &flat); err != nil {
+		return err
+	}
+	var nested struct {
+		Architecture struct {
+			Input  []string `json:"input_modalities"`
+			Output []string `json:"output_modalities"`
+		} `json:"architecture"`
+	}
+	_ = json.Unmarshal(data, &nested)
+	*m = Model(flat)
+	if len(m.Modalities) == 0 {
+		m.Modalities = nested.Architecture.Input
+	}
+	if len(m.Produces) == 0 {
+		m.Produces = nested.Architecture.Output
+	}
+	return nil
+}
+
+// Hears reports whether the model accepts audio at all.
+func (m Model) Hears() bool { return hasModality(m.Modalities, "audio") }
+
+// Transcribes reports whether this is a dedicated transcription model. Those
+// answer on /audio/transcriptions and refuse /chat/completions outright, so
+// telling the two apart is what decides where a recording is sent.
+func (m Model) Transcribes() bool { return hasModality(m.Produces, "transcription") }
+
+func hasModality(list []string, want string) bool {
+	for _, item := range list {
+		if strings.EqualFold(item, want) {
+			return true
+		}
+	}
+	return false
+}
+
 // Models fetches the catalogue for the admin model pickers.
+//
+// OpenRouter keeps the dedicated transcription models out of its main list, so
+// both are fetched and merged: without the second one the transcription picker
+// cannot offer whisper and friends at all, and a chat model is the only thing
+// left to pick for a job it may not do.
 func (c *Client) Models(ctx context.Context) ([]Model, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	resp, err := c.send(ctx, http.MethodGet, "/models", nil, "", nil)
+	models, err := c.catalogue(ctx, "/models")
+	if err != nil {
+		return nil, err
+	}
+	// Best effort. A gateway that does not know the filter answers with its
+	// whole list, which the merge drops as duplicates, or with an error, which
+	// is no reason to leave the dashboard without any models at all.
+	if extra, err := c.catalogue(ctx, "/models?output_modalities=transcription"); err == nil {
+		seen := make(map[string]bool, len(models))
+		for _, m := range models {
+			seen[m.ID] = true
+		}
+		for _, m := range extra {
+			if !seen[m.ID] {
+				models = append(models, m)
+			}
+		}
+	}
+	c.rememberRoutes(models)
+	return models, nil
+}
+
+func (c *Client) catalogue(ctx context.Context, path string) ([]Model, error) {
+	resp, err := c.send(ctx, http.MethodGet, path, nil, "", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -539,7 +595,6 @@ func (c *Client) Models(ctx context.Context) ([]Model, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, err
 	}
-	// Some gateways nest input modalities under architecture.
 	return out.Data, nil
 }
 
@@ -572,9 +627,113 @@ func (c *Client) CheckKey(ctx context.Context) (*KeyInfo, error) {
 	return &out.Data, nil
 }
 
+// Two kinds of model turn a recording into words, and each is served by its
+// own endpoint: a dedicated transcription model (audio -> transcription)
+// answers on /audio/transcriptions, an audio capable chat model on
+// /chat/completions. Sending one to the other's endpoint is a flat refusal -
+// "openai/gpt-transcribe is a transcription model and cannot be used with the
+// chat/completions endpoint" - and no id says reliably which kind it is:
+// deepgram/nova-3 and google/chirp-3 transcribe, google/gemini-2.5-flash
+// chats. So the route is learned: from the catalogue when the dashboard has
+// fetched it, from the refusal itself otherwise, and remembered either way, so
+// a recording is uploaded twice at most once per model.
+var transcribeRoutes sync.Map // baseURL + "\n" + model -> bool (dedicated endpoint)
+
+func (c *Client) routeKey(model string) string { return c.BaseURL + "\n" + model }
+
+// rememberRoutes records what the catalogue says, so the first recording after
+// a visit to the dashboard already goes to the right place.
+func (c *Client) rememberRoutes(models []Model) {
+	for _, m := range models {
+		if m.Hears() {
+			transcribeRoutes.Store(c.routeKey(m.ID), m.Transcribes())
+		}
+	}
+}
+
+// route is the endpoint to try first for a model.
+func (c *Client) route(model string) bool {
+	if known, ok := transcribeRoutes.Load(c.routeKey(model)); ok {
+		return known.(bool)
+	}
+	return looksLikeTranscriber(model)
+}
+
+// looksLikeTranscriber is the guess for a model nobody has asked about yet. It
+// only has to be right often enough to save an upload: being wrong costs the
+// second attempt that Transcribe makes anyway.
+func looksLikeTranscriber(model string) bool {
+	id := strings.ToLower(model)
+	for _, hint := range []string{"transcribe", "whisper", "-asr", "-stt", "speech-to-text"} {
+		if strings.Contains(id, hint) {
+			return true
+		}
+	}
+	return false
+}
+
+// wrongEndpoint reports whether a refusal was about where the request went
+// rather than about the request itself. OpenRouter says so in words, both ways
+// round: a transcription model on /chat/completions is "a transcription model
+// and cannot be used with the chat/completions endpoint", a chat model on
+// /audio/transcriptions "does not exist". Neither sentence is a contract, but
+// reading one wrong only ever costs one more attempt.
+func wrongEndpoint(err error) bool {
+	var status *StatusError
+	if !errors.As(err, &status) {
+		return false
+	}
+	if status.Status != http.StatusBadRequest && status.Status != http.StatusNotFound {
+		return false
+	}
+	msg := strings.ToLower(status.Message)
+	for _, hint := range []string{
+		"transcription model", "does not exist", "no endpoints found",
+		"not a valid model", "audio/transcriptions", "chat/completions",
+	} {
+		if strings.Contains(msg, hint) {
+			return true
+		}
+	}
+	return false
+}
+
+// Transcribe turns a recording into text with whichever kind of model is
+// configured. prompt steers an audio capable chat model; a dedicated
+// transcription model is given the language instead, which is what it
+// understands.
+func (c *Client) Transcribe(ctx context.Context, model, prompt string, audio []byte, format, language string) (string, error) {
+	if strings.TrimSpace(model) == "" {
+		return "", fmt.Errorf("no transcription model configured - open /admin and pick one")
+	}
+	dedicated := c.route(model)
+	text, err := c.transcribeVia(ctx, dedicated, model, prompt, audio, format, language)
+	if err == nil {
+		transcribeRoutes.Store(c.routeKey(model), dedicated)
+		return text, nil
+	}
+	if !wrongEndpoint(err) {
+		return "", err
+	}
+	// The gateway says the model lives at the other endpoint. Believe it, and
+	// remember it, so the next recording goes straight there.
+	text, retry := c.transcribeVia(ctx, !dedicated, model, prompt, audio, format, language)
+	if retry != nil {
+		return "", retry
+	}
+	transcribeRoutes.Store(c.routeKey(model), !dedicated)
+	return text, nil
+}
+
+func (c *Client) transcribeVia(ctx context.Context, dedicated bool, model, prompt string, audio []byte, format, language string) (string, error) {
+	if dedicated {
+		return c.TranscribeEndpoint(ctx, model, audio, "audio."+format, language)
+	}
+	return c.TranscribeChat(ctx, model, prompt, base64.StdEncoding.EncodeToString(audio), format)
+}
+
 // TranscribeChat converts speech to text by handing the audio to a multimodal
-// chat model. OpenRouter has no dedicated transcription endpoint, but every
-// audio capable model accepts an input_audio content part.
+// chat model, which accepts it as an input_audio content part.
 func (c *Client) TranscribeChat(ctx context.Context, model, prompt, audioB64, format string) (string, error) {
 	msg := Message{
 		Role: "user",
