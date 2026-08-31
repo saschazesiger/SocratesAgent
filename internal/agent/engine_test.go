@@ -179,6 +179,19 @@ func lastPayload(t *testing.T, router *mockRouter, index int) string {
 	return buf.String()
 }
 
+// waitForBusy blocks until the engine reports a run in flight for this chat.
+func waitForBusy(t *testing.T, engine *Engine, chatID string) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if engine.Busy(chatID) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("the run never became busy")
+}
+
 func waitForRun(t *testing.T, st *store.Store, runID string, want string) *store.Run {
 	t.Helper()
 	deadline := time.Now().Add(15 * time.Second)
@@ -187,7 +200,7 @@ func waitForRun(t *testing.T, st *store.Store, runID string, want string) *store
 		if err == nil && run.Status == want {
 			return run
 		}
-		if err == nil && run.Status != store.RunRunning && run.Status != store.RunWaiting && run.Status != want {
+		if err == nil && run.Status != store.RunRunning && run.Status != want {
 			t.Fatalf("run ended as %q (%s), wanted %q", run.Status, run.Error, want)
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -466,48 +479,44 @@ func TestUnknownSessionIsReportedToModel(t *testing.T) {
 	}
 }
 
-func TestRunAsksUserAndResumes(t *testing.T) {
+// Socrates has no way to stop and wait any more: when it needs something from
+// the person it asks in its reply and the turn is over. The run must finish
+// clean, with nothing parked waiting for an answer.
+func TestARunThatEndsWithAQuestionSimplyFinishes(t *testing.T) {
 	router := &mockRouter{responses: []string{
-		sseToolCall("ask_user", `{"question":"Which one?","options":[{"label":"Left"},{"label":"Right"}]}`),
-		sseText("Going left then."),
+		sseText("Which database do you prefer — Postgres or SQLite?"),
 	}}
 	engine, st := newTestEngine(t, router, nil)
 
-	chat := &store.Chat{ID: "chat2"}
+	chat := &store.Chat{ID: "chat-asks"}
 	if err := st.CreateChat(chat); err != nil {
 		t.Fatal(err)
 	}
-	run, err := engine.Start(Turn{ChatID: chat.ID, Text: "decide for me", Auto: false})
+	run, err := engine.Start(Turn{ChatID: chat.ID, Text: "set up the database", Auto: false})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	waitForRun(t, st, run.ID, store.RunWaiting)
-
-	question, err := st.PendingQuestion(chat.ID)
-	if err != nil {
-		t.Fatalf("pending question: %v", err)
-	}
-	if len(question.Options) != 2 || question.Options[0].Label != "Left" {
-		t.Fatalf("options = %#v", question.Options)
-	}
-	if err := engine.Answer(question.ID, "Left"); err != nil {
-		t.Fatalf("answer: %v", err)
-	}
 	waitForRun(t, st, run.ID, store.RunDone)
 
-	messages, _ := st.ListMessages(chat.ID)
-	if messages[len(messages)-1].Content != "Going left then." {
-		t.Fatalf("unexpected answer %#v", messages[len(messages)-1])
+	// Nothing is in flight, so the next message is free to start its own run.
+	if engine.Busy(chat.ID) {
+		t.Fatal("the chat is still busy after a run that ended with a question")
 	}
-	raw, _ := json.Marshal(router.bodies[1]["messages"])
-	if !strings.Contains(string(raw), "The user answered: Left") {
-		t.Errorf("the answer never reached the model: %s", raw)
+	if _, err := st.ActiveRun(chat.ID); err == nil {
+		t.Fatal("a finished run is still reported as active")
+	}
+	messages, _ := st.ListMessages(chat.ID)
+	last := messages[len(messages)-1]
+	if last.Role != "assistant" || !strings.Contains(last.Content, "Postgres or SQLite") {
+		t.Fatalf("the question was not written as the assistant reply: %#v", last)
 	}
 }
 
 func TestStartRejectsSecondRun(t *testing.T) {
+	// A shell command that outlives the test is what keeps the first run in
+	// flight while the second one is attempted.
 	router := &mockRouter{responses: []string{
-		sseToolCall("ask_user", `{"question":"wait?"}`),
+		sseToolCall("shell_run", `{"command":"sleep 30"}`),
 	}}
 	engine, st := newTestEngine(t, router, nil)
 	chat := &store.Chat{ID: "chat4"}
@@ -518,7 +527,8 @@ func TestStartRejectsSecondRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, st, run.ID, store.RunWaiting)
+	_ = run
+	waitForBusy(t, engine, chat.ID)
 	if _, err := engine.Start(Turn{ChatID: chat.ID, Text: "second", Auto: false}); err == nil {
 		t.Fatal("a second run should be rejected while one is in flight")
 	}

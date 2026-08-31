@@ -1,7 +1,7 @@
 // Package agent implements the top level orchestration loop: it talks to the
 // model over OpenRouter, works at a real terminal on the user's machine - which
-// is also how it drives the coding agents - asks the user when it needs a
-// decision, and streams every step to the browser.
+// is also how it drives the coding agents - and streams every step to the
+// browser.
 package agent
 
 import (
@@ -31,13 +31,12 @@ var ErrBusy = errors.New("this chat is still working on the previous message")
 
 // Event is the envelope pushed to the browser over SSE.
 type Event struct {
-	Type     string          `json:"type"`
-	Step     *store.Step     `json:"step,omitempty"`
-	StepID   string          `json:"step_id,omitempty"`
-	Run      *store.Run      `json:"run,omitempty"`
-	Message  *store.Message  `json:"message,omitempty"`
-	Chat     *store.Chat     `json:"chat,omitempty"`
-	Question *store.Question `json:"question,omitempty"`
+	Type    string         `json:"type"`
+	Step    *store.Step    `json:"step,omitempty"`
+	StepID  string         `json:"step_id,omitempty"`
+	Run     *store.Run     `json:"run,omitempty"`
+	Message *store.Message `json:"message,omitempty"`
+	Chat    *store.Chat    `json:"chat,omitempty"`
 }
 
 type runHandle struct {
@@ -62,9 +61,8 @@ type Engine struct {
 	// revisions were handed out.
 	commitMu sync.Mutex
 
-	mu      sync.Mutex
-	active  map[string]*runHandle
-	waiters map[string]chan string
+	mu     sync.Mutex
+	active map[string]*runHandle
 	// watching tracks which sessions already have a goroutine mirroring their
 	// screen into the process view.
 	watching map[string]bool
@@ -78,7 +76,6 @@ func New(st *store.Store, bus *Bus, settings func() config.Settings, terminals *
 		Settings:  settings,
 		Terminals: terminals,
 		active:    map[string]*runHandle{},
-		waiters:   map[string]chan string{},
 		watching:  map[string]bool{},
 	}
 }
@@ -433,6 +430,15 @@ func (e *Engine) systemPrompt(chat *store.Chat, settings config.Settings, run *s
 		}
 	}
 
+	// The internet paragraph is rendered rather than stored, so it appears
+	// exactly when the two tools do and never describes a capability that is
+	// switched off.
+	if settings.Internet.Enabled {
+		b.WriteString("\n## Reading the web\n")
+		b.WriteString(config.InternetPrompt)
+		b.WriteString("\n")
+	}
+
 	b.WriteString("\n## Driving a program\n" +
 		"Open it with terminal_open, wait for it to finish starting, type the brief and submit it, " +
 		"then wait for it to go idle and read the screen. If it asks something, answer it: a menu is " +
@@ -457,7 +463,8 @@ func (e *Engine) systemPrompt(chat *store.Chat, settings config.Settings, run *s
 	if run != nil && run.Auto {
 		b.WriteString("\n## Voice mode\nThe user is in hands free voice mode. Your final answer is read out " +
 			"loud: keep it under roughly 120 words, use plain sentences, no markdown, no code blocks, no lists " +
-			"of file paths. When you use ask_user, keep every option to a few spoken words.\n")
+			"of file paths. If you need a decision from the user, ask for it in one short spoken " +
+			"sentence and end your turn - they will answer out loud.\n")
 	}
 	return b.String()
 }
@@ -1058,122 +1065,6 @@ func shellCommand(command string) (string, []string) {
 		shell = "/bin/sh"
 	}
 	return shell, []string{"-lc", command}
-}
-
-// --------------------------------------------------------------- questions
-
-// Ask puts a question to the user and blocks until it is answered.
-func (e *Engine) Ask(ctx context.Context, run *store.Run, parent, kind, question string, options []store.Option, freeText bool, asker string) (string, error) {
-	q := &store.Question{
-		ID:       newID("q"),
-		ChatID:   run.ChatID,
-		RunID:    run.ID,
-		Kind:     kind,
-		Question: question,
-		Options:  options,
-		Status:   store.StatusPending,
-		Source:   asker,
-	}
-	step := e.addStep(run, parent, store.StepQuestion, "Waiting for you", question, store.StatusPending, map[string]any{
-		"options":   options,
-		"free_text": freeText,
-		"kind":      kind,
-		"source":    asker,
-	})
-	q.StepID = step.ID
-	if err := e.Store.CreateQuestion(q); err != nil {
-		return "", err
-	}
-	// The browser needs the question id to post the answer back.
-	step.Detail = mustJSON(map[string]any{
-		"options":     options,
-		"free_text":   freeText,
-		"kind":        kind,
-		"question_id": q.ID,
-		"source":      asker,
-	})
-	e.updateStep(step)
-	_ = e.Store.SetRunStatus(run.ID, store.RunWaiting, "")
-	if r, err := e.Store.GetRun(run.ID); err == nil {
-		e.publish(run.ChatID, Event{Type: "run", Run: r})
-	}
-	e.publish(run.ChatID, Event{Type: "question", Question: q})
-
-	ch := make(chan string, 1)
-	e.mu.Lock()
-	e.waiters[q.ID] = ch
-	e.mu.Unlock()
-	defer func() {
-		e.mu.Lock()
-		delete(e.waiters, q.ID)
-		e.mu.Unlock()
-	}()
-
-	var answer string
-	select {
-	case answer = <-ch:
-	case <-ctx.Done():
-		_ = e.Store.AnswerQuestion(q.ID, "", store.StatusCancelled)
-		// The browser is still showing the question panel, and only a question
-		// event takes it down again.
-		q.Status = store.StatusCancelled
-		e.publish(run.ChatID, Event{Type: "question", Question: q})
-		step.Status = store.StatusCancelled
-		step.Detail = mustJSON(map[string]any{
-			"options":     options,
-			"free_text":   freeText,
-			"kind":        kind,
-			"question_id": q.ID,
-			"source":      asker,
-		})
-		e.updateStep(step)
-		return "", ctx.Err()
-	}
-
-	step.Status = store.StatusAnswered
-	step.Detail = mustJSON(map[string]any{
-		"options":     options,
-		"free_text":   freeText,
-		"kind":        kind,
-		"question_id": q.ID,
-		"source":      asker,
-		"answer":      answer,
-	})
-	e.updateStep(step)
-	_ = e.Store.SetRunStatus(run.ID, store.RunRunning, "")
-	if r, err := e.Store.GetRun(run.ID); err == nil {
-		e.publish(run.ChatID, Event{Type: "run", Run: r})
-	}
-	return answer, nil
-}
-
-// Answer resolves a pending question. Called by the HTTP API.
-func (e *Engine) Answer(id, value string) error {
-	q, err := e.Store.GetQuestion(id)
-	if err != nil {
-		return err
-	}
-	if q.Status != store.StatusPending {
-		return fmt.Errorf("this question was already answered")
-	}
-	if err := e.Store.AnswerQuestion(id, value, store.StatusAnswered); err != nil {
-		return err
-	}
-	q.Status = store.StatusAnswered
-	q.Answer = value
-	e.publish(q.ChatID, Event{Type: "question", Question: q})
-
-	e.mu.Lock()
-	ch := e.waiters[id]
-	e.mu.Unlock()
-	if ch == nil {
-		return fmt.Errorf("nobody is waiting for this question any more")
-	}
-	select {
-	case ch <- value:
-	default:
-	}
-	return nil
 }
 
 // ------------------------------------------------------------------ utils

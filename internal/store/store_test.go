@@ -106,33 +106,11 @@ func TestStepsSinceRevision(t *testing.T) {
 	}
 }
 
-func TestQuestions(t *testing.T) {
-	st := openTest(t)
-	_ = st.CreateChat(&Chat{ID: "c1"})
-	_ = st.CreateRun(&Run{ID: "r1", ChatID: "c1", Status: RunWaiting})
-	q := &Question{ID: "q1", ChatID: "c1", RunID: "r1", Kind: "ask", Question: "Which?",
-		Options: []Option{{Value: "a", Label: "A"}}, Status: StatusPending}
-	if err := st.CreateQuestion(q); err != nil {
-		t.Fatal(err)
-	}
-	pending, err := st.PendingQuestion("c1")
-	if err != nil || pending.Options[0].Label != "A" {
-		t.Fatalf("pending = %#v (%v)", pending, err)
-	}
-	if err := st.AnswerQuestion("q1", "a", StatusAnswered); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.PendingQuestion("c1"); err != ErrNotFound {
-		t.Fatalf("expected no pending question, got %v", err)
-	}
-}
-
 func TestRecoverRuns(t *testing.T) {
 	st := openTest(t)
 	_ = st.CreateChat(&Chat{ID: "c1"})
 	_ = st.CreateRun(&Run{ID: "r1", ChatID: "c1", Status: RunRunning})
 	_ = st.PutStep(&Step{ID: "s1", RunID: "r1", ChatID: "c1", Kind: StepText, Status: StatusRunning})
-	_ = st.CreateQuestion(&Question{ID: "q1", ChatID: "c1", RunID: "r1", Status: StatusPending})
 
 	if err := st.RecoverRuns(); err != nil {
 		t.Fatal(err)
@@ -144,9 +122,6 @@ func TestRecoverRuns(t *testing.T) {
 	steps, _ := st.ListSteps("c1")
 	if steps[0].Status != StatusInterrupted {
 		t.Errorf("step status = %q", steps[0].Status)
-	}
-	if _, err := st.PendingQuestion("c1"); err != ErrNotFound {
-		t.Errorf("pending question survived recovery")
 	}
 }
 

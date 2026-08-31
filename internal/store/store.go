@@ -1,7 +1,6 @@
 // Package store is the persistence layer. Everything the web UI shows -
-// chats, messages, the live process view and pending questions - lives in a
-// single SQLite file so that a browser refresh (or a server restart) restores
-// the exact state.
+// chats, messages and the live process view - lives in a single SQLite file
+// so that a browser refresh (or a server restart) restores the exact state.
 package store
 
 import (
@@ -86,21 +85,6 @@ CREATE TABLE IF NOT EXISTS steps (
 );
 CREATE INDEX IF NOT EXISTS idx_steps_run ON steps(run_id, seq);
 CREATE INDEX IF NOT EXISTS idx_steps_chat_rev ON steps(chat_id, rev);
-CREATE TABLE IF NOT EXISTS questions (
-  id          TEXT PRIMARY KEY,
-  chat_id     TEXT NOT NULL,
-  run_id      TEXT NOT NULL,
-  step_id     TEXT NOT NULL,
-  kind        TEXT NOT NULL,
-  question    TEXT NOT NULL,
-  options     TEXT NOT NULL DEFAULT '[]',
-  status      TEXT NOT NULL,
-  answer      TEXT NOT NULL DEFAULT '',
-  source      TEXT NOT NULL DEFAULT '',
-  created_at  INTEGER NOT NULL,
-  answered_at INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_questions_chat ON questions(chat_id, created_at);
 CREATE TABLE IF NOT EXISTS sessions (
   token      TEXT PRIMARY KEY,
   created_at INTEGER NOT NULL,
@@ -152,7 +136,6 @@ func migrate(db *sql.DB) error {
 		{"chats", "client_id", "TEXT NOT NULL DEFAULT ''"},
 		{"messages", "rev", "INTEGER NOT NULL DEFAULT 0"},
 		{"messages", "client_id", "TEXT NOT NULL DEFAULT ''"},
-		{"questions", "source", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		has, err := hasColumn(db, add.table, add.column)
 		if err != nil {
@@ -350,7 +333,6 @@ func (s *Store) DeleteChat(id string) error {
 		`DELETE FROM messages WHERE chat_id = ?`,
 		`DELETE FROM llm_messages WHERE chat_id = ?`,
 		`DELETE FROM steps WHERE chat_id = ?`,
-		`DELETE FROM questions WHERE chat_id = ?`,
 		`DELETE FROM runs WHERE chat_id = ?`,
 		`DELETE FROM chats WHERE id = ?`,
 	} {
@@ -489,7 +471,6 @@ func (s *Store) LLMMessages(chatID string) ([]json.RawMessage, error) {
 // Run states.
 const (
 	RunRunning     = "running"
-	RunWaiting     = "waiting_input"
 	RunDone        = "done"
 	RunFailed      = "failed"
 	RunCancelled   = "cancelled"
@@ -572,7 +553,7 @@ func (s *Store) ActiveRun(chatID string) (*Run, error) {
 	r := &Run{}
 	var auto int
 	err := s.db.QueryRow(`SELECT id, chat_id, status, error, auto, created_at, updated_at FROM runs
-		WHERE chat_id = ? AND status IN ('running','waiting_input') ORDER BY created_at DESC LIMIT 1`, chatID).
+		WHERE chat_id = ? AND status = 'running' ORDER BY created_at DESC LIMIT 1`, chatID).
 		Scan(&r.ID, &r.ChatID, &r.Status, &r.Error, &auto, &r.CreatedAt, &r.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -587,14 +568,14 @@ func (s *Store) RecoverRuns() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ts := now()
+	// 'waiting_input' is gone as a state, but databases written by older
+	// versions still hold runs that were parked in it. They are recovered here
+	// like any other run that never finished.
 	if _, err := s.db.Exec(`UPDATE runs SET status = 'interrupted', error = 'Server restarted while this run was in progress.', updated_at = ?
 		WHERE status IN ('running','waiting_input')`, ts); err != nil {
 		return err
 	}
-	if _, err := s.db.Exec(`UPDATE steps SET status = 'interrupted', updated_at = ? WHERE status = 'running'`, ts); err != nil {
-		return err
-	}
-	_, err := s.db.Exec(`UPDATE questions SET status = 'cancelled', answered_at = ? WHERE status = 'pending'`, ts)
+	_, err := s.db.Exec(`UPDATE steps SET status = 'interrupted', updated_at = ? WHERE status = 'running'`, ts)
 	return err
 }
 
@@ -606,8 +587,10 @@ const (
 	StepText     = "text"
 	StepTerminal = "terminal"
 	StepShell    = "shell"
-	StepQuestion = "question"
 	StepError    = "error"
+	// StepSubTool is the generic "a tool ran" line: a tag, one line of what it
+	// was asked, and the answer folded away underneath.
+	StepSubTool = "sub_tool"
 )
 
 // Step statuses.
@@ -615,9 +598,6 @@ const (
 	StatusRunning     = "running"
 	StatusDone        = "done"
 	StatusFailed      = "failed"
-	StatusPending     = "pending"
-	StatusAnswered    = "answered"
-	StatusCancelled   = "cancelled"
 	StatusInterrupted = "interrupted"
 )
 
@@ -753,113 +733,6 @@ func (s *Store) StepIDs(chatID string) ([]string, error) {
 			return nil, err
 		}
 		out = append(out, id)
-	}
-	return out, rows.Err()
-}
-
-// --------------------------------------------------------------- questions
-
-// Question is an interactive prompt that blocks a run: either the orchestrator
-// asking the user something.
-type Question struct {
-	ID       string   `json:"id"`
-	ChatID   string   `json:"chat_id"`
-	RunID    string   `json:"run_id"`
-	StepID   string   `json:"step_id"`
-	Kind     string   `json:"kind"` // ask | permission
-	Question string   `json:"question"`
-	Options  []Option `json:"options"`
-	Status   string   `json:"status"`
-	Answer   string   `json:"answer"`
-	// Source names who is really asking, so the browser can say "Claude Code
-	// asks…" instead of putting every question in Socrates' own voice. Empty
-	// means Socrates itself.
-	Source     string `json:"source,omitempty"`
-	CreatedAt  int64  `json:"created_at"`
-	AnsweredAt int64  `json:"answered_at"`
-}
-
-// Option is one selectable answer.
-type Option struct {
-	Value       string `json:"value"`
-	Label       string `json:"label"`
-	Description string `json:"description,omitempty"`
-}
-
-// CreateQuestion stores a pending question.
-func (s *Store) CreateQuestion(q *Question) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if q.CreatedAt == 0 {
-		q.CreatedAt = now()
-	}
-	opts, err := json.Marshal(q.Options)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.Exec(`INSERT INTO questions(id, chat_id, run_id, step_id, kind, question, options, status, answer, source, created_at, answered_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		q.ID, q.ChatID, q.RunID, q.StepID, q.Kind, q.Question, string(opts), q.Status, q.Answer, q.Source, q.CreatedAt, q.AnsweredAt)
-	return err
-}
-
-// GetQuestion loads a question.
-func (s *Store) GetQuestion(id string) (*Question, error) {
-	q := &Question{}
-	var opts string
-	err := s.db.QueryRow(`SELECT id, chat_id, run_id, step_id, kind, question, options, status, answer, source, created_at, answered_at
-		FROM questions WHERE id = ?`, id).
-		Scan(&q.ID, &q.ChatID, &q.RunID, &q.StepID, &q.Kind, &q.Question, &opts, &q.Status, &q.Answer, &q.Source, &q.CreatedAt, &q.AnsweredAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, err
-	}
-	_ = json.Unmarshal([]byte(opts), &q.Options)
-	return q, nil
-}
-
-// AnswerQuestion records the user's choice.
-func (s *Store) AnswerQuestion(id, answer, status string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, err := s.db.Exec(`UPDATE questions SET answer = ?, status = ?, answered_at = ? WHERE id = ?`,
-		answer, status, now(), id)
-	return err
-}
-
-// PendingQuestion returns the open question of a chat, if any.
-func (s *Store) PendingQuestion(chatID string) (*Question, error) {
-	var id string
-	err := s.db.QueryRow(`SELECT id FROM questions WHERE chat_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1`, chatID).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, err
-	}
-	return s.GetQuestion(id)
-}
-
-// ListQuestions returns all questions of a chat.
-func (s *Store) ListQuestions(chatID string) ([]Question, error) {
-	rows, err := s.db.Query(`SELECT id, chat_id, run_id, step_id, kind, question, options, status, answer, source, created_at, answered_at
-		FROM questions WHERE chat_id = ? ORDER BY created_at`, chatID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []Question{}
-	for rows.Next() {
-		var q Question
-		var opts string
-		if err := rows.Scan(&q.ID, &q.ChatID, &q.RunID, &q.StepID, &q.Kind, &q.Question, &opts,
-			&q.Status, &q.Answer, &q.Source, &q.CreatedAt, &q.AnsweredAt); err != nil {
-			return nil, err
-		}
-		_ = json.Unmarshal([]byte(opts), &q.Options)
-		out = append(out, q)
 	}
 	return out, rows.Err()
 }

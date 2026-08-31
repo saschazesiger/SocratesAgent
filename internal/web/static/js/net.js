@@ -19,6 +19,32 @@ export function clientKey() {
   return 'k-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
 }
 
+// setClass turns one class on or off and touches the element only when that
+// actually changes something.
+//
+// To be clear about what this does and does not fix: writing the identical
+// class list back onto an element does *not* restart a CSS animation - that
+// was measured, not assumed. What does restart one is taking a connected node
+// out of the page and putting it back, which is what append() and
+// insertBefore() do even when the node lands in the position it was already
+// in. (moveBefore() is the exception; it keeps the animation running.)
+//
+// So the load-bearing part of keeping this page's animations smooth is
+// elsewhere: the lists that are keyed and patched in place rather than
+// rebuilt, and the nodes that are only ever moved when they are genuinely in
+// the wrong place. This helper is hygiene on top of that - it keeps class
+// writes honest, makes "only touch it when it changed" the obvious shape at
+// every call site, and costs nothing.
+//
+// It lives in net.js because this is the file every other one imports, and
+// api.js re-exports it so callers can take it from the same place as el().
+export function setClass(node, name, on) {
+  if (!node || !name) return;
+  const want = !!on;
+  if (node.classList.contains(name) === want) return;
+  node.classList.toggle(name, want);
+}
+
 // backoffDelay grows the wait between attempts and adds jitter, so a server
 // coming back up is not hit by every tab at the same instant.
 function backoffDelay(attempt, { base = 600, max = 20000 } = {}) {
@@ -187,12 +213,12 @@ export function mountConnectionBar() {
     const offline = state.status === OFFLINE || !state.online;
     const live = state.status === LIVE;
     bar.hidden = live;
-    document.body.classList.toggle('conn-lost', !live);
+    setClass(document.body, 'conn-lost', !live);
     if (live) {
       if (ticker) { clearInterval(ticker); ticker = null; }
       return;
     }
-    bar.classList.toggle('offline', offline);
+    setClass(bar, 'offline', offline);
 
     // Read at a glance, possibly from behind a steering wheel: what is wrong,
     // and how old what is on screen is.

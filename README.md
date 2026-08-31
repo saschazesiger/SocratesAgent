@@ -21,9 +21,9 @@ Socrates sits one level above them: you talk to it, it plans, and then it sits
 down at a terminal and works. It starts the right agent the way you would, types
 the brief into it, reads the screen, answers what the agent asks, and waits for
 it to finish. In between it runs ordinary commands — `git`, a build, a test
-suite — because it has a shell, not a fixed list of things it can do. It asks you
-when a decision is genuinely yours, and it answers you in one place: by text or
-by voice.
+suite — because it has a shell, not a fixed list of things it can do. When a
+decision is genuinely yours it asks in its reply and hands the turn back, and it
+answers you in one place: by text or by voice.
 
 ## What you get
 
@@ -43,16 +43,16 @@ by voice.
   what you are looking at is — the chat, the terminal screens and the hands free
   display all stop pretending. The stream reconnects itself and replays exactly
   what was missed, so nothing quietly goes stale. Anything you send while the
-  connection is gone — a message, an answer to a question, a half typed draft —
-  is kept and delivered when there is signal again, once and only once. The app
-  even opens with no network at all, and picks up where it left off.
-- **It asks you back.** When something is ambiguous the agent offers two to four
-  options as buttons instead of guessing.
+  connection is gone — a message, a half typed draft — is kept and delivered when
+  there is signal again, once and only once. The app even opens with no network
+  at all, and picks up where it left off.
+- **It asks you back.** When something is ambiguous the agent asks in its reply
+  and stops, instead of guessing. You answer with the next message.
 - **Voice in and out.** Record in the browser, transcribe through OpenRouter,
   have the answer read back to you.
 - **Auto mode.** One big microphone button, a timer, and the answer shown as
-  large as it fits and read out loud. Options are spoken and can be answered by
-  voice or by tapping.
+  large as it fits and read out loud. When it ends on a question you hear it and
+  simply speak your reply.
 - **Reachable from anywhere, without opening a port.** A managed Cloudflare
   tunnel publishes the local server on the internet — a throwaway
   `trycloudflare.com` address in one click, or your own hostname with a tunnel
@@ -66,7 +66,6 @@ by voice.
 
 <p align="center">
   <img src="docs/screenshot-auto.png" alt="Auto mode" width="440">
-  <img src="docs/screenshot-question.png" alt="The agent asking a question in auto mode" width="440">
 </p>
 
 ## How it works
@@ -105,7 +104,8 @@ by voice.
 The orchestrator has one capability: a terminal. `shell_run` for a command that
 just needs running, and `terminal_open` / `terminal_send` / `terminal_wait` /
 `terminal_read` / `terminal_close` for anything it has to hold a conversation
-with. Plus `ask_user`, for when the decision is yours.
+with. When the decision is yours it simply asks in its reply and ends its turn;
+your next message picks the conversation up again.
 
 Claude Code, Codex and OpenCode are not special cases in the code. They are
 entries in a list, each one saying which command to start and — in plain
@@ -281,8 +281,8 @@ type, which is what you need for a program's own model names such as `sonnet` or
 The toggle in the top right turns the chat into a hands free surface: a large
 microphone button with a recording timer, a short status line while the agents
 work, and the finished answer shown as large as it fits and read out loud. If
-the agent needs a decision, the question and its options fill the screen and are
-spoken — you can tap an option or simply say "the second one".
+the agent needs a decision it asks for it in that answer, which is read out with
+the rest — you tap the microphone and say what you want.
 
 ## Remote access
 
@@ -377,7 +377,7 @@ Layout:
 ```
 main.go                  flags, startup, graceful shutdown
 internal/config          settings document and defaults
-internal/store           SQLite persistence (chats, runs, steps, questions)
+internal/store           SQLite persistence (chats, runs, steps, messages)
 internal/openrouter      streaming chat completions, models, audio
 internal/term            pseudo terminals, screen rendering, session hosts
 internal/agent           the orchestration loop, tools, event bus

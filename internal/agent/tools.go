@@ -24,7 +24,10 @@ const (
 	toolTerminalWait  = "terminal_wait"
 	toolTerminalRead  = "terminal_read"
 	toolTerminalClose = "terminal_close"
-	toolAsk           = "ask_user"
+
+	// The two internet tools only exist when someone switched them on.
+	toolWebSearch = "web_search"
+	toolWebFetch  = "web_fetch"
 )
 
 // buildTools describes those capabilities to the model.
@@ -69,7 +72,7 @@ func buildTools(s config.Settings) []openrouter.Tool {
 	keyList := term.KeyNames()
 	sort.Strings(keyList)
 
-	return []openrouter.Tool{
+	tools := []openrouter.Tool{
 		fn(toolShellRun,
 			"Run one shell command and wait for it to finish. This is the quick path for anything that "+
 				"does not need a conversation: git, ls, cat, grep, npm, a build, a test run. It returns the "+
@@ -163,34 +166,42 @@ func buildTools(s config.Settings) []openrouter.Tool {
   "required": ["session"],
   "additionalProperties": false
 }`),
+	}
 
-		fn(toolAsk,
-			"Ask the user a question and wait for their answer. Use it when a decision is genuinely theirs "+
-				"to make, and offer 2 to 4 short options. The question and the options may be read out loud.",
-			`{
+	if s.Internet.Enabled {
+		tools = append(tools,
+			fn(toolWebSearch,
+				"Search the web and get back a numbered list of pages with short excerpts. Reach for it "+
+					"whenever the answer depends on something current or on a fact you are not certain of: a "+
+					"release version, a price, an API that may have changed, today's news. It returns "+
+					"excerpts, not whole pages - follow it with web_fetch when you need the detail.",
+				`{
   "type": "object",
   "properties": {
-    "question": {"type": "string", "description": "The question, one sentence."},
-    "options": {
-      "type": "array",
-      "maxItems": 4,
-      "description": "Selectable answers. Keep every label to a few words.",
-      "items": {
-        "type": "object",
-        "properties": {
-          "label": {"type": "string"},
-          "description": {"type": "string", "description": "Optional one line explanation."}
-        },
-        "required": ["label"],
-        "additionalProperties": false
-      }
-    },
-    "allow_free_text": {"type": "boolean", "description": "Also let the user type their own answer. Default true."}
+    "query": {"type": "string", "description": "What to search for, in plain words."},
+    "max_results": {"type": "integer", "description": "How many results to return, 1-10. Defaults to the configured number."}
   },
-  "required": ["question"],
+  "required": ["query"],
   "additionalProperties": false
 }`),
+			fn(toolWebFetch,
+				"Read one web page and get it back as text. Use it for a URL the user gave you, for a "+
+					"promising search result, or for documentation you need in full. Only public http and "+
+					"https addresses can be read: anything on this machine or on the local network is "+
+					"refused, and belongs in shell_run instead.",
+				`{
+  "type": "object",
+  "properties": {
+    "url": {"type": "string", "description": "The absolute http(s) URL to read."},
+    "max_chars": {"type": "integer", "description": "How much text to return at most, up to 40000. Default 12000."}
+  },
+  "required": ["url"],
+  "additionalProperties": false
+}`),
+		)
 	}
+
+	return tools
 }
 
 // execTool runs one tool call and returns the string handed back to the model.
@@ -209,8 +220,10 @@ func (e *Engine) execTool(ctx context.Context, chat *store.Chat, run *store.Run,
 		return e.execTerminalRead(ctx, chat, args)
 	case toolTerminalClose:
 		return e.execTerminalClose(ctx, chat, args)
-	case toolAsk:
-		return e.execAsk(ctx, run, args)
+	case toolWebSearch:
+		return e.execWebSearch(ctx, run, args)
+	case toolWebFetch:
+		return e.execWebFetch(ctx, run, args)
 	default:
 		return fmt.Sprintf("There is no tool called %q.", call.Function.Name)
 	}
@@ -416,65 +429,6 @@ func (e *Engine) execTerminalClose(ctx context.Context, chat *store.Chat, raw st
 		return fmt.Sprintf("Could not close %s: %v", args.Session, err)
 	}
 	return fmt.Sprintf("Closed the %s session (%s).", name, args.Session)
-}
-
-func (e *Engine) execAsk(ctx context.Context, run *store.Run, raw string) string {
-	var args struct {
-		Question string `json:"question"`
-		Options  []struct {
-			Label       string `json:"label"`
-			Description string `json:"description"`
-		} `json:"options"`
-		AllowFreeText *bool `json:"allow_free_text"`
-	}
-	if err := json.Unmarshal([]byte(raw), &args); err != nil {
-		return badArgs(err, "Send valid JSON with a `question`.")
-	}
-	if strings.TrimSpace(args.Question) == "" {
-		return "The `question` argument was empty."
-	}
-	options := make([]store.Option, 0, len(args.Options))
-	for _, o := range args.Options {
-		label := strings.TrimSpace(o.Label)
-		if label == "" {
-			continue
-		}
-		options = append(options, store.Option{Value: label, Label: label, Description: strings.TrimSpace(o.Description)})
-	}
-	freeText := true
-	if args.AllowFreeText != nil {
-		freeText = *args.AllowFreeText
-	}
-	answer, err := e.Ask(ctx, run, "", "ask", strings.TrimSpace(args.Question), options, freeText, e.askerName(run))
-	if err != nil {
-		if ctx.Err() != nil {
-			return "The run was stopped by the user."
-		}
-		return fmt.Sprintf("Could not ask the user: %v", err)
-	}
-	return fmt.Sprintf("The user answered: %s", answer)
-}
-
-// askerName names whoever the question really comes from. When a coding agent
-// is on screen the orchestrator is usually relaying its question, and the user
-// should be told that Claude Code is asking rather than Socrates. An empty
-// name means Socrates is asking on its own account.
-func (e *Engine) askerName(run *store.Run) string {
-	if e.Terminals == nil || run == nil {
-		return ""
-	}
-	settings := e.Settings()
-	// List is newest first, so the newest live session that came from a
-	// configured skill is the one the user is looking at.
-	for _, h := range e.Terminals.List(run.ChatID) {
-		if !h.Alive() {
-			continue
-		}
-		if skill, ok := settings.Skill(skillIDOf(h)); ok {
-			return skill.Name
-		}
-	}
-	return ""
 }
 
 // typeInto types text and checks that it actually arrived. A full screen

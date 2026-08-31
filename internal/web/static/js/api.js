@@ -2,7 +2,7 @@
 
 import { request, HttpError, NetworkError, mountConnectionBar } from './net.js';
 
-export { clientKey, onWake, LiveStream, Outbox, HttpError, NetworkError, RetryLater } from './net.js';
+export { clientKey, onWake, LiveStream, Outbox, HttpError, NetworkError, RetryLater, setClass } from './net.js';
 
 // Every page gets the connection bar, because every page can be looking at
 // something that stopped being true.

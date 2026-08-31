@@ -5,9 +5,11 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -18,6 +20,24 @@ const (
 	DefaultTranscribeModel   = "google/gemini-2.5-flash"
 	DefaultTitleModel        = "google/gemini-2.5-flash-lite"
 	DefaultMaxIterations     = 24
+
+	// Internet access defaults.
+	DefaultTavilyBaseURL     = "https://api.tavily.com"
+	DefaultJinaSearchBaseURL = "https://s.jina.ai"
+	DefaultJinaReaderBaseURL = "https://r.jina.ai"
+	DefaultSearchResults     = 5
+	DefaultFetchChars        = 12000
+	MaxFetchChars            = 40000
+)
+
+// Search providers and fetch engines.
+const (
+	SearchOpenRouter = "openrouter"
+	SearchTavily     = "tavily"
+	SearchJina       = "jina"
+
+	FetchLocal = "local"
+	FetchJina  = "jina"
 )
 
 // DefaultSystemPrompt is the instruction set of the top level agent. It is
@@ -42,17 +62,36 @@ How you work:
 - Keep going until the job is really done. Check the agent's work - read the
   files it changed, run the tests - instead of trusting its summary.
 - Answer trivial questions yourself instead of starting anything.
-- If something important is ambiguous, call ask_user with 2-4 concrete options
-  instead of guessing. Keep the options short, they may be read out loud.
+- If something important is ambiguous, ask for it in your reply and end your
+  turn. You have no way to interrupt yourself and wait: the person reads what
+  you wrote and answers with their next message, which continues this
+  conversation. Ask one clear question, name the concrete choices in a sentence,
+  and do not start guessing work in the same turn.
 - The final message you write is what the user sees and possibly hears. Make it
   self contained, friendly and to the point. Prefer short paragraphs over long
   bullet lists, and never mention the internal tool names.`
+
+// InternetPrompt is appended to the system prompt when the internet tools are
+// switched on. It only makes sense while those tools exist, which is why it
+// lives beside the prompt rather than inside it.
+const InternetPrompt = `You can also reach the open internet.
+
+- Use web_search whenever the answer depends on something current or on a fact
+  you are not sure of: a release version, a price, an API that may have changed,
+  today's news, a library's documentation. Searching is cheaper than guessing.
+- Use web_fetch to read a page in full: a URL the user gave you, or the most
+  promising result of a search. Search gives you snippets, web_fetch gives you
+  the page.
+- Cite the URL you used in your answer, so the user can check it.
+- Do not open a terminal session or reach for curl to look something up. These
+  two tools are the way you read the web.`
 
 // Settings is the full configuration document.
 type Settings struct {
 	OpenRouter OpenRouterSettings `json:"openrouter"`
 	Voice      VoiceSettings      `json:"voice"`
 	Agent      AgentSettings      `json:"agent"`
+	Internet   InternetSettings   `json:"internet"`
 	Tunnel     TunnelSettings     `json:"tunnel"`
 	// Skills are the programs Socrates knows how to operate, each with its
 	// own manual for driving it.
@@ -172,6 +211,54 @@ type VoiceSettings struct {
 
 	SpeakInAutoMode bool `json:"speak_in_auto_mode"`
 	SpeakInChatMode bool `json:"speak_in_chat_mode"`
+}
+
+// InternetSettings configures the two tools that let Socrates read the web:
+// a search and a fetch. Both are off until someone turns them on, because an
+// agent that can reach the open internet is a different thing from one that
+// can only reach this machine.
+type InternetSettings struct {
+	Enabled bool `json:"enabled"`
+
+	// SearchProvider is "openrouter", "tavily" or "jina". OpenRouter needs no
+	// second account - it bills the search to the key that is already there.
+	SearchProvider string `json:"search_provider"`
+	TavilyAPIKey   string `json:"tavily_api_key"`
+	// JinaAPIKey is optional: Jina answers without a key at a lower rate limit.
+	JinaAPIKey string `json:"jina_api_key"`
+	// SearchModel is the model that runs the OpenRouter web plugin. Empty
+	// means the ordinary chat model.
+	SearchModel string `json:"search_model"`
+	MaxResults  int    `json:"max_results"`
+
+	// FetchEngine is "local" (fetch and extract here) or "jina" (Jina Reader,
+	// which also copes with PDFs and pages that need JavaScript).
+	FetchEngine string `json:"fetch_engine"`
+
+	// SearchBaseURL and FetchBaseURL are advanced overrides, meant for tests
+	// and for a self hosted mirror of one of these APIs. Empty means the
+	// provider's own address.
+	SearchBaseURL string `json:"search_base_url"`
+	FetchBaseURL  string `json:"fetch_base_url"`
+}
+
+// SearchEndpoint is the base URL of the configured search provider.
+func (i InternetSettings) SearchEndpoint() string {
+	if v := strings.TrimRight(strings.TrimSpace(i.SearchBaseURL), "/"); v != "" {
+		return v
+	}
+	if i.SearchProvider == SearchJina {
+		return DefaultJinaSearchBaseURL
+	}
+	return DefaultTavilyBaseURL
+}
+
+// FetchEndpoint is the base URL of the Jina Reader.
+func (i InternetSettings) FetchEndpoint() string {
+	if v := strings.TrimRight(strings.TrimSpace(i.FetchBaseURL), "/"); v != "" {
+		return v
+	}
+	return DefaultJinaReaderBaseURL
 }
 
 // AgentSettings configures the orchestration loop.
@@ -748,6 +835,12 @@ func Default() Settings {
 			Temperature:   0.3,
 			WorkspaceRoot: DefaultWorkspaceRoot(),
 		},
+		Internet: InternetSettings{
+			Enabled:        false,
+			SearchProvider: SearchOpenRouter,
+			MaxResults:     DefaultSearchResults,
+			FetchEngine:    FetchLocal,
+		},
 		Tunnel: TunnelSettings{
 			Enabled: false,
 			Mode:    TunnelQuick,
@@ -800,6 +893,7 @@ func (s *Settings) Normalize() {
 	if strings.TrimSpace(s.Agent.SystemPrompt) == "" {
 		s.Agent.SystemPrompt = d.Agent.SystemPrompt
 	}
+	s.adoptCurrentPrompt()
 	if s.Agent.MaxIterations <= 0 {
 		s.Agent.MaxIterations = d.Agent.MaxIterations
 	}
@@ -812,6 +906,25 @@ func (s *Settings) Normalize() {
 	if strings.TrimSpace(s.Agent.WorkspaceRoot) == "" {
 		s.Agent.WorkspaceRoot = d.Agent.WorkspaceRoot
 	}
+	switch s.Internet.SearchProvider {
+	case SearchTavily, SearchJina:
+	default:
+		s.Internet.SearchProvider = SearchOpenRouter
+	}
+	if s.Internet.FetchEngine != FetchJina {
+		s.Internet.FetchEngine = FetchLocal
+	}
+	if s.Internet.MaxResults <= 0 {
+		s.Internet.MaxResults = DefaultSearchResults
+	}
+	if s.Internet.MaxResults > 10 {
+		s.Internet.MaxResults = 10
+	}
+	s.Internet.TavilyAPIKey = strings.TrimSpace(s.Internet.TavilyAPIKey)
+	s.Internet.JinaAPIKey = strings.TrimSpace(s.Internet.JinaAPIKey)
+	s.Internet.SearchModel = strings.TrimSpace(s.Internet.SearchModel)
+	s.Internet.SearchBaseURL = strings.TrimRight(strings.TrimSpace(s.Internet.SearchBaseURL), "/")
+	s.Internet.FetchBaseURL = strings.TrimRight(strings.TrimSpace(s.Internet.FetchBaseURL), "/")
 	if s.Tunnel.Mode != TunnelToken {
 		s.Tunnel.Mode = TunnelQuick
 	}
@@ -901,6 +1014,37 @@ func (s *Settings) Normalize() {
 		// A program that cannot skip permissions has nothing to skip.
 		if len(sk.SkipArgs) == 0 && len(sk.AskArgs) == 0 {
 			sk.SkipPermissions = false
+		}
+	}
+}
+
+// staleDefaultMarkers name tools that the shipped prompt used to describe and
+// that no longer exist. A saved prompt mentioning one of them is not something
+// a user wrote: it is a copy of an old default that the dashboard stored the
+// first time anyone opened it, and leaving it in place teaches every model to
+// reach for tools that are gone.
+var staleDefaultMarkers = []string{"delegate_to_agent", "ask_user"}
+
+// promptMigrationOnce keeps the log line to one, however often settings are
+// read and normalized.
+var promptMigrationOnce sync.Once
+
+// adoptCurrentPrompt replaces a stored copy of a long dead default prompt with
+// the current one. A prompt somebody actually edited never mentions those
+// tools, so nothing hand written is thrown away.
+func (s *Settings) adoptCurrentPrompt() {
+	stored := s.Agent.SystemPrompt
+	if strings.TrimSpace(stored) == "" || stored == DefaultSystemPrompt {
+		return
+	}
+	for _, marker := range staleDefaultMarkers {
+		if strings.Contains(stored, marker) {
+			s.Agent.SystemPrompt = DefaultSystemPrompt
+			promptMigrationOnce.Do(func() {
+				log.Printf("config: the saved system prompt still described %s, which no longer exists - "+
+					"replaced it with the current default", marker)
+			})
+			return
 		}
 	}
 }

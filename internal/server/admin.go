@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/config"
+	"github.com/saschazesiger/SocratesAgent/internal/internet"
 	"github.com/saschazesiger/SocratesAgent/internal/openrouter"
 	"github.com/saschazesiger/SocratesAgent/internal/term"
 	"github.com/saschazesiger/SocratesAgent/internal/tunnel"
@@ -229,7 +230,58 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 		results = append(results, checkResult{Name: "Text to speech", OK: true, Detail: "browser speech synthesis"})
 	}
 
+	// Internet access. These are real requests, which is the only way to know
+	// whether the key works - so they are kept as cheap as the provider allows
+	// and only run when someone pressed the button.
+	if settings.Internet.Enabled {
+		results = append(results, internetChecks(r.Context(), settings)...)
+	} else {
+		results = append(results, checkResult{Name: "Internet", OK: true, Detail: "off"})
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{"checks": results})
+}
+
+// internetChecks does one search against the configured provider and one
+// ordinary page fetch, so the dashboard can say whether the two tools would
+// actually work rather than whether the fields look filled in.
+func internetChecks(ctx context.Context, settings config.Settings) []checkResult {
+	out := []checkResult{}
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+
+	name := "Web search · " + settings.Internet.SearchProvider
+	switch settings.Internet.SearchProvider {
+	case config.SearchOpenRouter:
+		// This one costs money per search, so it is only worth spending a
+		// single result on confirming that the plugin is reachable at all.
+		if strings.TrimSpace(settings.OpenRouter.APIKey) == "" {
+			out = append(out, checkResult{Name: name, OK: false, Detail: "no OpenRouter key set"})
+			break
+		}
+		client := openrouter.New(settings.OpenRouter.BaseURL, settings.OpenRouter.APIKey)
+		if _, err := internet.Search(ctx, settings.Internet, client,
+			settings.OpenRouter.ChatModel, "SocratesAgent", 1); err != nil {
+			out = append(out, checkResult{Name: name, OK: false, Detail: err.Error()})
+		} else {
+			out = append(out, checkResult{Name: name, OK: true, Detail: "one search ran and was billed by OpenRouter"})
+		}
+	default:
+		if _, err := internet.Search(ctx, settings.Internet, nil, "", "SocratesAgent", 1); err != nil {
+			out = append(out, checkResult{Name: name, OK: false, Detail: err.Error()})
+		} else {
+			out = append(out, checkResult{Name: name, OK: true, Detail: "search answered"})
+		}
+	}
+
+	engine := "Page reader · " + settings.Internet.FetchEngine
+	if text, err := internet.Fetch(ctx, settings.Internet, "https://example.com", 400); err != nil {
+		out = append(out, checkResult{Name: engine, OK: false, Detail: err.Error()})
+	} else {
+		out = append(out, checkResult{Name: engine, OK: true,
+			Detail: fmt.Sprintf("read example.com, %d characters", len([]rune(text)))})
+	}
+	return out
 }
 
 // stripControl keeps a version banner on one readable line.

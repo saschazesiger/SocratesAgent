@@ -1,6 +1,6 @@
 // The admin dashboard: everything about Socrates is configurable here.
 
-import { api, el, toast, confirmDialog, isOffline, errorMessage, onWake } from './api.js';
+import { api, el, toast, confirmDialog, isOffline, errorMessage, setClass, onWake } from './api.js';
 import { speak } from './voice.js';
 import { combobox } from './combobox.js';
 import * as models from './models.js';
@@ -17,6 +17,7 @@ const MODEL_PICKERS = [
   ['orChat', 'openrouter.chat_model', () => models.all()],
   ['orTranscribe', 'openrouter.transcribe_model', () => models.audio()],
   ['orTitle', 'openrouter.title_model', () => models.all()],
+  ['netSearchModel', 'internet.search_model', () => models.all()],
 ];
 
 const FIELDS = [
@@ -40,6 +41,12 @@ const FIELDS = [
   ['ttsRate', 'voice.tts_rate', 'number'],
   ['speakAuto', 'voice.speak_in_auto_mode', 'bool'],
   ['speakChat', 'voice.speak_in_chat_mode', 'bool'],
+  ['netEnabled', 'internet.enabled', 'bool'],
+  ['netProvider', 'internet.search_provider'],
+  ['netTavilyKey', 'internet.tavily_api_key'],
+  ['netJinaKey', 'internet.jina_api_key'],
+  ['netMaxResults', 'internet.max_results', 'number'],
+  ['netFetchEngine', 'internet.fetch_engine'],
   ['tunnelMode', 'tunnel.mode'],
   ['tunnelToken', 'tunnel.token'],
   ['tunnelHostname', 'tunnel.hostname'],
@@ -84,6 +91,7 @@ async function load() {
   fillForm();
   buildModelPickers();
   renderSkills();
+  renderInternet();
   bind();
   loadModels();
   if (data.local_url) localURL = data.local_url;
@@ -178,6 +186,8 @@ function bind() {
   $('tunnelStart').addEventListener('click', startTunnel);
   $('tunnelStop').addEventListener('click', stopTunnel);
   $('tunnelMode').addEventListener('change', renderTunnelMode);
+  $('netEnabled').addEventListener('change', renderInternet);
+  $('netProvider').addEventListener('change', renderInternet);
   $('tunnelInstall').addEventListener('click', installCloudflared);
   $('tunnelLogToggle').addEventListener('click', () => {
     const log = $('tunnelLog');
@@ -221,6 +231,7 @@ async function save() {
     fillForm();
     syncModelPickers();
     renderSkills();
+    renderInternet();
     refreshTunnel();
     hint('Saved');
     toast('Settings saved');
@@ -242,6 +253,26 @@ function showNotice(text, kind) {
   const notice = $('notice');
   notice.className = 'notice ' + kind;
   notice.textContent = text;
+}
+
+/* -------------------------------------------------------------- internet */
+
+// Every provider needs a different field, so the card only shows the one that
+// belongs to the choice in the dropdown. Nothing is hidden that is in use.
+const PROVIDER_HINTS = {
+  openrouter: 'No second account needed — the search runs on your OpenRouter key and OpenRouter bills it per search, on top of the tokens.',
+  tavily: 'A search API built for agents. Returns a short answer alongside the results.',
+  jina: 'Works without a key at a low rate limit; a key raises it.',
+};
+
+function renderInternet() {
+  const on = $('netEnabled').checked;
+  const provider = $('netProvider').value || 'openrouter';
+  $('netBody').hidden = !on;
+  $('netProviderHint').textContent = PROVIDER_HINTS[provider] || '';
+  $('netTavilyField').hidden = provider !== 'tavily';
+  $('netJinaField').hidden = provider !== 'jina';
+  $('netSearchModelField').hidden = provider !== 'openrouter';
 }
 
 /* ---------------------------------------------------------------- skills */
@@ -616,8 +647,7 @@ function renderTunnelStatus(status) {
     dot = el('span', { class: 'state-dot' });
     host.prepend(dot);
   }
-  const dotClass = 'state-dot ' + (status.state || '');
-  if (dot.className !== dotClass) dot.className = dotClass;
+  for (const name of Object.keys(STATE_LABEL)) setClass(dot, name, status.state === name);
   while (dot.nextSibling) dot.nextSibling.remove();
 
   const parts = [

@@ -10,7 +10,7 @@
 // Socrates and the person share this keyboard. Whatever either of them sends
 // goes to the same program, which is the whole point of showing it at all.
 
-import { api, el, toast, confirmDialog, isOffline, errorMessage, LiveStream, HttpError } from './api.js';
+import { api, el, toast, confirmDialog, isOffline, errorMessage, setClass, LiveStream, HttpError } from './api.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -69,7 +69,6 @@ export function mountTerminalDock() {
     meta: $('dockMeta'),
     empty: $('dockEmpty'),
     dismiss: $('dockDismiss'),
-    hint: $('dockHint'),
   };
   if (!dom.dock || !dom.btn) return null;
 
@@ -85,12 +84,12 @@ export function mountTerminalDock() {
     painted: '',
     resizeTimer: null,
     lastError: null,
-    // Whether the chat is waiting on an answer. The panel it is asked in sits
-    // under the drawer on a phone.
-    question: false,
     // Sessions the person took off the shelf. A finished session must not come
     // back the next time the transcript repeats itself.
     dismissed: new Set(),
+    // session id -> its tab. The tabs are kept and patched rather than made
+    // again, because each one carries the dot that says the session is alive.
+    tabs: new Map(),
   };
 
   /* ------------------------------------------------------------ sessions */
@@ -194,6 +193,8 @@ export function mountTerminalDock() {
     for (const session of state.sessions.values()) stopStream(session);
     state.sessions.clear();
     state.dismissed.clear();
+    state.tabs.clear();
+    dom.tabs.innerHTML = '';
     state.active = null;
     state.painted = '';
     state.lastError = null;
@@ -399,7 +400,7 @@ export function mountTerminalDock() {
     // A chat that has not loaded its sessions yet is not a chat with the panel
     // closed: forgetting that here is how a reload used to lose the dock.
     const live = running();
-    dom.btn.classList.toggle('live', live > 0);
+    setClass(dom.btn, 'live', live > 0);
     dom.badge.hidden = count < 2;
     dom.badge.textContent = String(count);
     // The badge is decoration for the eye; the label is the same fact spelled
@@ -411,12 +412,16 @@ export function mountTerminalDock() {
     dom.btn.title = title;
     dom.btn.setAttribute('aria-label', title);
     dom.dock.hidden = !state.open || !count;
-    document.body.classList.toggle('dock-open', !dom.dock.hidden);
+    setClass(document.body, 'dock-open', !dom.dock.hidden);
     dom.btn.setAttribute('aria-expanded', dom.dock.hidden ? 'false' : 'true');
     if (dom.dock.hidden) return;
 
-    renderTabs();
+    // active() is resolved first: after a dismiss it picks the session that
+    // takes over, and renderTabs has to know that to mark the right tab.
+    // Doing it the other way round left the panel with no selected tab for a
+    // render, and the tablist with no aria-selected="true" at all.
     const session = active();
+    renderTabs();
     if (!session) return;
 
     dom.empty.hidden = !!session.screen;
@@ -432,40 +437,78 @@ export function mountTerminalDock() {
     }
 
     dom.meta.textContent = session.command || '';
-    if (dom.hint) dom.hint.hidden = !state.question;
     dom.form.hidden = !session.running;
     dom.keys.hidden = !session.running;
     paintStatus();
     syncSize();
   }
 
+  // The tabs are patched, never rebuilt. Each one carries the dot that says its
+  // session is alive, and a dot that was thrown away and made again whenever
+  // another session opened - or whenever the screen it belongs to repainted -
+  // never got far enough into its pulse to look like anything but a blink.
+  //
+  // Keying by session id also means a tab finally notices its session ending:
+  // the old signature only knew which sessions existed, so a finished one kept
+  // a pulsing green dot until the whole panel was rebuilt for another reason.
   function renderTabs() {
-    const wanted = [...state.sessions.keys()].join('|') + '#' + state.active;
-    if (dom.tabs.dataset.sig === wanted) return;
-    dom.tabs.dataset.sig = wanted;
-    dom.tabs.innerHTML = '';
-    const many = state.sessions.size > 1;
-    dom.tabs.classList.toggle('single', !many);
-    for (const session of state.sessions.values()) {
-      const chosen = session.id === state.active;
-      const tab = el('button', {
-        class: 'dock-tab' + (chosen ? ' active' : ''),
-        type: 'button',
-        role: 'tab',
-        'aria-selected': chosen ? 'true' : 'false',
-        title: session.command || session.name,
-        onclick: () => {
-          if (state.active === session.id) return;
-          state.active = session.id;
-          state.painted = '';
-          clearError();
-          render();
-        },
-      },
-      el('span', { class: 'dot' + (session.running ? ' live' : (session.exitCode > 0 ? ' failed' : ' stopped')) }),
-      el('span', { class: 'nm', text: session.name || 'terminal' }));
-      dom.tabs.append(tab);
+    setClass(dom.tabs, 'single', state.sessions.size <= 1);
+
+    for (const [id, tab] of state.tabs) {
+      if (state.sessions.has(id)) continue;
+      tab.remove();
+      state.tabs.delete(id);
     }
+
+    let previous = null;
+    for (const session of state.sessions.values()) {
+      let tab = state.tabs.get(session.id);
+      if (!tab) {
+        tab = buildTab(session.id);
+        state.tabs.set(session.id, tab);
+      }
+      tab.update(session);
+      // Only ever moved when it is genuinely in the wrong place: taking a node
+      // out of the page and putting it back restarts everything animating
+      // inside it, which is the very thing this is here to avoid.
+      const inPlace = previous ? previous.nextElementSibling === tab : dom.tabs.firstElementChild === tab;
+      if (!inPlace) {
+        if (previous) previous.after(tab);
+        else dom.tabs.prepend(tab);
+      }
+      previous = tab;
+    }
+  }
+
+  function buildTab(id) {
+    const dot = el('span', { class: 'dot' });
+    const name = el('span', { class: 'nm' });
+    const tab = el('button', {
+      class: 'dock-tab',
+      type: 'button',
+      role: 'tab',
+      onclick: () => {
+        if (state.active === id) return;
+        state.active = id;
+        state.painted = '';
+        clearError();
+        render();
+      },
+    }, dot, name);
+    tab.update = (session) => {
+      const chosen = session.id === state.active;
+      setClass(tab, 'active', chosen);
+      const selected = chosen ? 'true' : 'false';
+      if (tab.getAttribute('aria-selected') !== selected) tab.setAttribute('aria-selected', selected);
+      const title = session.command || session.name || 'terminal';
+      if (tab.title !== title) tab.title = title;
+      const label = session.name || 'terminal';
+      if (name.textContent !== label) name.textContent = label;
+      // Three states, one dot: nothing here is written unless it changed.
+      setClass(dot, 'live', !!session.running);
+      setClass(dot, 'failed', !session.running && session.exitCode > 0);
+    };
+    return tab;
   }
 
   // paintStatus is the dock's honesty: it says whether what is on screen is
@@ -496,7 +539,7 @@ export function mountTerminalDock() {
       label = age > 2 ? 'reconnecting — frozen ' + age + 's' : 'reconnecting…';
       kind = 'lost';
     }
-    dom.dock.classList.toggle('stale', kind === 'lost' || kind === 'gone');
+    setClass(dom.dock, 'stale', kind === 'lost' || kind === 'gone');
     const cls = 'dock-status ' + kind;
     if (dom.status.className !== cls) dom.status.className = cls;
     if (dom.status.textContent !== label) dom.status.textContent = label;
@@ -535,6 +578,11 @@ export function mountTerminalDock() {
     stopStream(session);
     state.dismissed.add(session.id);
     state.sessions.delete(session.id);
+    const tab = state.tabs.get(session.id);
+    if (tab) {
+      tab.remove();
+      state.tabs.delete(session.id);
+    }
     state.active = null;
     state.painted = '';
     clearError();
@@ -674,24 +722,6 @@ export function mountTerminalDock() {
     // before anything else claims the key.
     if (isNarrow()) setOpen(false);
   });
-
-  // A question takes the composer's place at the bottom of the chat, and on a
-  // phone the drawer is on top of it. Nothing else can happen until it is
-  // answered, so the drawer gets out of the way and says why when it returns.
-  const askPanel = document.getElementById('askPanel');
-  if (askPanel) {
-    const readAsk = () => {
-      const pending = !askPanel.hidden;
-      if (state.question === pending) return;
-      state.question = pending;
-      // Getting out of the way is this panel's doing, not the person's, so it
-      // must not overwrite the preference they set for this chat.
-      if (pending && state.open && isNarrow()) setOpen(false, false);
-      else render();
-    };
-    new MutationObserver(readAsk).observe(askPanel, { attributes: true, attributeFilter: ['hidden'] });
-    readAsk();
-  }
 
   // The streams are the page's, and they leave with it.
   window.addEventListener('beforeunload', stopAll);

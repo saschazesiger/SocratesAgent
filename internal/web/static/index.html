@@ -79,10 +79,6 @@
     </div>
 
     <div class="composer-wrap">
-      <!-- A question the run is waiting on takes the composer's place. There is
-           nothing else to do until it is answered, and on a phone the answer
-           belongs where the thumb already is. -->
-      <section class="ask-panel" id="askPanel" hidden aria-live="polite"></section>
       <form class="composer" id="composer">
         <textarea id="input" rows="1" placeholder="Message Socrates…" autocomplete="off"></textarea>
         <div class="actions">
@@ -113,7 +109,6 @@
       <div class="auto-offline" id="autoOffline" hidden role="status"></div>
       <div class="auto-live" id="autoLive"></div>
       <div class="auto-answer" id="autoAnswer" hidden></div>
-      <div class="auto-question" id="autoQuestion" hidden></div>
       <div class="auto-actions" id="autoActions" hidden>
         <button class="btn" id="autoReplay">Read again</button>
         <button class="btn" id="autoDetails">Show details</button>
@@ -128,10 +123,6 @@
     <div class="dock-grip" id="dockGrip" title="Drag to resize"></div>
     <div class="dock-head">
       <div class="dock-tabs" id="dockTabs" role="tablist" aria-label="Terminal sessions"></div>
-      <!-- A question is answered in the chat, which this drawer covers on a
-           phone. Saying so beats leaving someone tapping at a screen that is
-           waiting on them. -->
-      <span class="dock-hint" id="dockHint" hidden>Socrates is asking — see the chat</span>
       <button class="icon-btn dock-close" id="dockClose" title="Close the terminal panel" aria-label="Close the terminal panel">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
       </button>

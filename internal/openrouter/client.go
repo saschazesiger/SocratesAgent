@@ -81,9 +81,26 @@ type ChatRequest struct {
 	Temperature *float64  `json:"temperature,omitempty"`
 	MaxTokens   int       `json:"max_tokens,omitempty"`
 	Stream      bool      `json:"stream,omitempty"`
-	Usage       *struct {
+	// Plugins are OpenRouter's own extensions, notably the "web" plugin that
+	// runs a search before the model answers. They are passed through as they
+	// were written, because the plugin catalogue is not ours to model.
+	Plugins []any `json:"plugins,omitempty"`
+	Usage   *struct {
 		Include bool `json:"include"`
 	} `json:"usage,omitempty"`
+}
+
+// Annotation is a citation the provider attached to an assistant message. The
+// web plugin returns one per page it read.
+type Annotation struct {
+	Type        string `json:"type"`
+	URLCitation struct {
+		URL        string `json:"url"`
+		Title      string `json:"title"`
+		Content    string `json:"content"`
+		StartIndex int    `json:"start_index"`
+		EndIndex   int    `json:"end_index"`
+	} `json:"url_citation"`
 }
 
 // Usage reports token consumption.
@@ -99,6 +116,7 @@ type Result struct {
 	Content      string
 	Reasoning    string
 	ToolCalls    []ToolCall
+	Annotations  []Annotation
 	FinishReason string
 	Usage        Usage
 	Model        string
@@ -336,9 +354,10 @@ type completionResponse struct {
 	Choices []struct {
 		FinishReason string `json:"finish_reason"`
 		Message      struct {
-			Content   string     `json:"content"`
-			Reasoning string     `json:"reasoning"`
-			ToolCalls []ToolCall `json:"tool_calls"`
+			Content     string       `json:"content"`
+			Reasoning   string       `json:"reasoning"`
+			ToolCalls   []ToolCall   `json:"tool_calls"`
+			Annotations []Annotation `json:"annotations"`
 		} `json:"message"`
 	} `json:"choices"`
 	Usage Usage `json:"usage"`
@@ -363,6 +382,7 @@ func parseCompletion(r io.Reader) (*Result, error) {
 		Content:      ch.Message.Content,
 		Reasoning:    ch.Message.Reasoning,
 		ToolCalls:    ch.Message.ToolCalls,
+		Annotations:  ch.Message.Annotations,
 		FinishReason: ch.FinishReason,
 		Usage:        cr.Usage,
 		Model:        cr.Model,

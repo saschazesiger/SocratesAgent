@@ -344,28 +344,6 @@ a { color: inherit; }
   backdrop-filter: blur(8px);
   z-index: 3;
 }
-/* While a run is going, a thin bar runs under the header. It is the one signal
-   that is visible no matter how far the thread is scrolled. */
-.topbar::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: -1px;
-  height: 2px;
-  opacity: 0;
-  background: linear-gradient(90deg,
-    transparent 0%, var(--text) 42%, var(--text) 58%, transparent 100%);
-  background-size: 42% 100%;
-  background-repeat: no-repeat;
-  transition: opacity .2s ease;
-  pointer-events: none;
-}
-body.busy .topbar::after {
-  opacity: .55;
-  animation: sweep 1.5s cubic-bezier(.45, .05, .55, .95) infinite;
-}
-
 .topbar .title {
   flex: 1;
   min-width: 0;
@@ -515,9 +493,6 @@ body.busy .topbar::after {
 }
 .working-dots i:nth-child(2) { animation-delay: .16s; }
 .working-dots i:nth-child(3) { animation-delay: .32s; }
-/* Waiting for the person is not the same as working, so the dots hold still. */
-.working.waiting .working-dots i { animation: none; opacity: .5; background: var(--amber); }
-.working.waiting { color: var(--amber); }
 .working-label {
   min-width: 0;
   overflow: hidden;
@@ -629,27 +604,6 @@ body.busy .topbar::after {
 .step.collapsible.open > .sub-line::after { transform: rotate(45deg); }
 .sub-line.log .val { font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); }
 .sub-line.err .val { color: var(--red); }
-
-/* the record a question leaves behind in the transcript - while it is still
-   open it lives over the composer, not here */
-.step.question {
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r);
-  padding: 14px 16px;
-  background: var(--bg);
-  box-shadow: var(--shadow-sm);
-  margin: 8px 0;
-  animation: rise .24s ease both;
-}
-.step.question .q-record { font-size: 13.5px; color: var(--text-soft); overflow-wrap: anywhere; }
-.step.question .q-record .q-lead { font-weight: 600; color: var(--text); margin-right: 5px; }
-.step.question .q-record .q-text { color: var(--text); white-space: pre-wrap; }
-.step.question.answered { background: var(--bg-soft); box-shadow: none; }
-.step.question .answered-note {
-  font-size: 13px;
-  color: var(--text-soft);
-}
-.step.question .answered-note b { color: var(--text); font-weight: 600; }
 
 .step.error-step {
   border: 1px solid #f1dada;
@@ -767,89 +721,6 @@ body.busy .topbar::after {
   color: var(--text-faint);
 }
 
-/* ----------------------------------------------------------- ask panel */
-
-.ask-panel {
-  max-width: 720px;
-  margin: 0 auto;
-  border: 1px solid var(--amber);
-  border-radius: 20px;
-  background: var(--bg);
-  box-shadow: var(--shadow);
-  padding: 14px 16px;
-  /* Long questions with many options must not push the buttons off a phone
-     screen: the panel scrolls inside itself instead. */
-  max-height: min(64vh, 560px);
-  overflow-y: auto;
-  animation: rise .2s ease both;
-}
-.ask-head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-bottom: 6px;
-}
-.ask-who {
-  font-size: 11.5px;
-  text-transform: uppercase;
-  letter-spacing: .04em;
-  font-weight: 600;
-  color: var(--amber);
-  overflow-wrap: anywhere;
-}
-.ask-kind { font-size: 11.5px; color: var(--text-faint); }
-.ask-q {
-  font-size: 15px;
-  line-height: 1.5;
-  color: var(--text);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  margin-bottom: 12px;
-}
-.ask-opts { display: grid; gap: 8px; }
-.ask-opt {
-  display: block;
-  width: 100%;
-  text-align: left;
-  border: 1px solid var(--line-strong);
-  background: var(--bg);
-  border-radius: 12px;
-  padding: 10px 14px;
-  cursor: pointer;
-  color: var(--text);
-  transition: background .14s ease, border-color .14s ease;
-}
-.ask-opt:hover { background: var(--bg-hover); border-color: #c8c9cf; }
-.ask-opt:active { background: var(--bg-sunken); }
-.ask-opt .l {
-  display: block;
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1.35;
-  overflow-wrap: anywhere;
-}
-.ask-opt .d {
-  display: block;
-  font-size: 12.5px;
-  line-height: 1.45;
-  color: var(--text-faint);
-  margin-top: 3px;
-  overflow-wrap: anywhere;
-}
-.ask-free { display: flex; gap: 8px; margin-top: 10px; }
-.ask-free .input { flex: 1; height: 40px; }
-.ask-sending {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13.5px;
-  color: var(--text-soft);
-  overflow-wrap: anywhere;
-}
-.ask-sending b { color: var(--text); font-weight: 600; }
-.ask-note { margin-top: 6px; }
-
 /* ------------------------------------------------------------- auto mode */
 
 .auto-screen { display: none; }
@@ -917,48 +788,12 @@ body.auto .auto-screen {
   overflow-wrap: anywhere;
   animation: rise .3s ease both;
 }
-.auto-question {
-  max-width: 1000px;
-  width: 100%;
-  animation: rise .3s ease both;
-}
-.auto-question .q {
-  font-size: clamp(20px, 2.8vw, 38px);
-  line-height: 1.25;
-  letter-spacing: -.03em;
-  margin-bottom: 26px;
-}
-.auto-question .opts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  justify-content: center;
-}
-.auto-question .opts button {
-  border: 1px solid var(--line-strong);
-  background: var(--bg);
-  border-radius: 16px;
-  padding: 16px 26px;
-  font-size: clamp(15px, 1.5vw, 22px);
-  cursor: pointer;
-  box-shadow: var(--shadow-sm);
-  transition: background .14s ease, transform .1s ease;
-}
-.auto-question .opts button:hover { background: var(--bg-hover); }
-.auto-question .opts button:active { transform: translateY(1px); }
-.auto-question .opts button .num {
-  display: inline-block;
-  min-width: 24px;
-  color: var(--text-faint);
-  font-variant-numeric: tabular-nums;
-}
 .auto-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
 
 /* Once there is something to read, the text takes the stage and the
    microphone shrinks to a control at the bottom. */
 .auto-screen.answering { justify-content: center; gap: 18px; }
-.auto-screen.answering .auto-answer,
-.auto-screen.answering .auto-question { order: 1; }
+.auto-screen.answering .auto-answer { order: 1; }
 .auto-screen.answering .auto-actions { order: 2; }
 .auto-screen.answering .auto-busy { order: 3; margin-top: 0; }
 .auto-screen.answering .auto-live { order: 3; }
@@ -1235,10 +1070,6 @@ body.auto .auto-screen {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: .4; transform: scale(.68); }
 }
-@keyframes sweep {
-  from { background-position: -45% 0; }
-  to { background-position: 145% 0; }
-}
 @keyframes pop {
   from { opacity: 0; transform: translateY(8px) scale(.98); }
   to { opacity: 1; transform: none; }
@@ -1257,7 +1088,8 @@ body.auto .auto-screen {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
   .spinner, .chat-item .dot, .state-dot.starting, .state-dot.installing,
-  .working-dots i, .auto-busy i, .term-dot.live, .conn-dot {
+  .working-dots i, .auto-busy i, .term-dot.live, .dock-tab .dot.live,
+  .term-btn.live .term-live-dot, .conn-dot {
     animation-duration: 2.4s !important;
   }
   .spinner { animation-name: pulse !important; }
@@ -1288,7 +1120,6 @@ body.auto .auto-screen {
   .menu-btn { display: inline-flex; }
   .thread { padding: 20px 14px 8px; }
   .composer-wrap { padding: 8px 12px 14px; }
-  .ask-panel { padding: 12px 13px; max-height: 70vh; border-radius: 16px; }
   .msg.user { max-width: 88%; }
   .grid-2 { grid-template-columns: 1fr; }
   .mic-big { width: 156px; height: 156px; }
@@ -1558,19 +1389,6 @@ body.dock-open .term-btn { background: var(--bg-hover); }
 .dock-tab .dot.failed { background: var(--red); }
 body.stale .dock-tab .dot.live { animation: none; background: var(--amber); }
 
-.dock-hint {
-  flex: none;
-  max-width: 45%;
-  padding: 3px 9px;
-  border-radius: 999px;
-  background: #4a3c18;
-  color: #f2d99b;
-  font-size: 11.5px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .dock-close {
   flex: none;
   color: #b9bbc2;
@@ -1824,7 +1642,6 @@ body.conn-lost .auth { padding-top: var(--conn-bar-h, 40px); }
    thread is still readable - it is the last thing that got through, and that
    is often exactly what the person wants to re-read - but the animations that
    say "this is happening right now" stop. */
-body.stale .topbar::after { animation: none; opacity: .2; }
 body.stale .working-dots i,
 body.stale .auto-busy i,
 body.stale .term-dot.live,

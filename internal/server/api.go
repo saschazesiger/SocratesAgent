@@ -82,11 +82,6 @@ func (s *Server) handleGetChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	questions, err := s.store.ListQuestions(id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
 	settings := s.Settings()
 	workspace := chat.Workspace
 	if workspace == "" {
@@ -97,7 +92,6 @@ func (s *Server) handleGetChat(w http.ResponseWriter, r *http.Request) {
 		"messages":            messages,
 		"steps":               steps,
 		"runs":                runs,
-		"questions":           questions,
 		"rev":                 s.store.Rev(),
 		"busy":                s.engine.Busy(id),
 		"effective_workspace": workspace,
@@ -189,35 +183,12 @@ func (s *Server) handleStopRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"stopped": s.engine.Stop(id)})
 }
 
-func (s *Server) handleAnswer(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	var body struct {
-		Value string `json:"value"`
-	}
-	if !readJSON(w, r, &body) {
-		return
-	}
-	if strings.TrimSpace(body.Value) == "" {
-		writeError(w, http.StatusBadRequest, "the answer is empty")
-		return
-	}
-	if err := s.engine.Answer(id, strings.TrimSpace(body.Value)); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "question not found")
-			return
-		}
-		writeError(w, http.StatusConflict, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
 // handleEvents is the SSE stream that drives the live process view.
 //
 // It is written for a browser on a bad connection: every reconnect names the
 // revision it last saw, and the stream answers with everything that changed
-// since - steps, messages, the run, a pending question - plus the ids of the
-// steps that still exist, so rows deleted during the outage disappear instead
+// since - steps, messages, the run - plus the ids of the steps that still
+// exist, so rows deleted during the outage disappear instead
 // of lingering as stale truth. A heartbeat goes out as a real event rather
 // than an SSE comment, because a comment is invisible to EventSource and the
 // client needs something it can actually time out on.
@@ -282,9 +253,6 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	if run, err := s.store.ActiveRun(id); err == nil {
 		send(agent.Event{Type: "run", Run: run})
-	}
-	if q, err := s.store.PendingQuestion(id); err == nil {
-		send(agent.Event{Type: "question", Question: q})
 	}
 
 	// A reconnect gets exactly the messages it missed, however long it was

@@ -94,6 +94,55 @@
     </section>
 
     <section class="card">
+      <h2>Internet</h2>
+      <p class="card-sub">Two extra tools: a web search and a page reader. With them switched on, Socrates looks things up instead of guessing at a version number or a price. Pages are fetched over the public internet only — anything on this machine or the local network is refused, so a link cannot be used to reach your own services.</p>
+      <div class="row" style="margin-bottom:16px">
+        <label class="switch"><input type="checkbox" id="netEnabled"><span class="track"></span><span>Let Socrates search and read the web</span></label>
+      </div>
+      <div id="netBody">
+        <div class="grid-2">
+          <div class="field">
+            <label for="netProvider">Search provider</label>
+            <select class="select" id="netProvider">
+              <option value="openrouter">OpenRouter web search</option>
+              <option value="tavily">Tavily</option>
+              <option value="jina">Jina</option>
+            </select>
+            <div class="hint" id="netProviderHint"></div>
+          </div>
+          <div class="field">
+            <label for="netMaxResults">Results per search</label>
+            <input class="input" type="number" id="netMaxResults" min="1" max="10">
+            <div class="hint">Between 1 and 10. More results cost more and rarely help.</div>
+          </div>
+          <div class="field" id="netTavilyField" hidden>
+            <label for="netTavilyKey">Tavily API key</label>
+            <input class="input mono" type="password" id="netTavilyKey" autocomplete="off" placeholder="tvly-…">
+            <div class="hint">Get one at <a href="https://app.tavily.com" target="_blank" rel="noopener">app.tavily.com</a>. The free tier is enough for occasional lookups.</div>
+          </div>
+          <div class="field" id="netJinaField" hidden>
+            <label for="netJinaKey">Jina API key (optional)</label>
+            <input class="input mono" type="password" id="netJinaKey" autocomplete="off" placeholder="jina_…">
+            <div class="hint">Jina answers without a key at a low rate limit. A key raises it — see <a href="https://jina.ai/reader" target="_blank" rel="noopener">jina.ai/reader</a>.</div>
+          </div>
+          <div class="field" id="netSearchModelField">
+            <label>Search model</label>
+            <div id="netSearchModel"></div>
+            <div class="hint">Optional. The model that runs the OpenRouter search plugin; empty uses the answering model.</div>
+          </div>
+          <div class="field">
+            <label for="netFetchEngine">Page reader</label>
+            <select class="select" id="netFetchEngine">
+              <option value="local">Local — fetch and extract here</option>
+              <option value="jina">Jina Reader — handles PDFs and JavaScript pages</option>
+            </select>
+            <div class="hint">Local reading never leaves this machine. Jina Reader sends the URL to jina.ai, which renders the page for you.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
       <h2>Voice</h2>
       <p class="card-sub">Speech input always runs through a model; speech output uses your browser unless you point it at an endpoint.</p>
       <div class="field">
