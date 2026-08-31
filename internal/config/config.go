@@ -4,9 +4,11 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Defaults that are used on a fresh installation.
@@ -22,17 +24,23 @@ const (
 // user editable in the admin dashboard.
 const DefaultSystemPrompt = `You are Socrates, a top level orchestration agent.
 
-You talk to the user in a natural, concise way and you get work done by
-delegating to specialised coding agents that run on the user's machine.
+You talk to the user in a natural, concise way, and you get work done at a real
+terminal on the user's machine - the same terminal a person would use.
 
-Rules of engagement:
-- Think about what the user actually wants before acting.
-- If a task matches one of the available agents (see the list below), delegate
-  it with the delegate_to_agent tool. Give the agent a complete, self contained
-  brief: it cannot see this conversation.
-- You may delegate several times, refine the brief, and delegate again until the
-  job is really done. Never stop half way.
-- Answer trivial questions yourself instead of delegating.
+How you work:
+- You have an interactive shell. Run anything in it: git, ls, npm, a build, a
+  test suite. Read the output and decide what to do next.
+- For real engineering work, start one of the coding agents listed below inside
+  a terminal session and drive it the way a person does: type the brief, press
+  enter, watch the screen, answer whatever it asks, and wait until it is done.
+  Every one of them is an ordinary program you launch, not a special case.
+- Read the screen before you type. If you cannot tell what a program wants,
+  look at the screen again rather than guessing at a keypress.
+- Give a coding agent a complete, self contained brief: it cannot see this
+  conversation.
+- Keep going until the job is really done. Check the agent's work - read the
+  files it changed, run the tests - instead of trusting its summary.
+- Answer trivial questions yourself instead of starting anything.
 - If something important is ambiguous, call ask_user with 2-4 concrete options
   instead of guessing. Keep the options short, they may be read out loud.
 - The final message you write is what the user sees and possibly hears. Make it
@@ -45,7 +53,11 @@ type Settings struct {
 	Voice      VoiceSettings      `json:"voice"`
 	Agent      AgentSettings      `json:"agent"`
 	Tunnel     TunnelSettings     `json:"tunnel"`
-	Backends   []Backend          `json:"backends"`
+	// Tools are the programs Socrates knows how to run in a terminal.
+	Tools []Tool `json:"tools"`
+	// Backends is the shape settings had before Socrates drove its tools
+	// interactively. It is read once, migrated into Tools and then dropped.
+	Backends []legacyBackend `json:"backends,omitempty"`
 }
 
 // Tunnel modes.
@@ -108,74 +120,197 @@ type AgentSettings struct {
 	WorkspaceRoot string  `json:"workspace_root"`
 }
 
-// Backend describes one delegate agent CLI.
-type Backend struct {
-	ID          string `json:"id"`
-	Kind        string `json:"kind"` // claude | codex | opencode | custom
-	Name        string `json:"name"`
-	Enabled     bool   `json:"enabled"`
-	Description string `json:"description"` // when should the orchestrator use it
+// Tool is one program Socrates can run in a terminal session. There is nothing
+// special about the coding agents: Claude Code, Codex and OpenCode are three
+// entries below, and a fourth program is added by filling in the same fields.
+type Tool struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+	// Description tells Socrates when to reach for this tool. It goes into the
+	// system prompt as written.
+	Description string `json:"description"`
 
-	Command   string   `json:"command"`
-	ExtraArgs []string `json:"extra_args"`
-	Model     string   `json:"model"`
+	// Command and Args are how the program is started.
+	Command string   `json:"command"`
+	Args    []string `json:"args"`
+	// Model is passed after ModelFlag when both are set. These are the
+	// program's own model names, not OpenRouter ids.
+	Model     string `json:"model"`
+	ModelFlag string `json:"model_flag"`
 
-	// Approval is "auto" (the agent runs unattended) or "ask" (permission
-	// requests are surfaced in the web UI). "ask" is fully interactive for the
-	// claude backend and maps to a restrictive sandbox for the others.
-	Approval string `json:"approval"`
-	// Sandbox is used by the codex backend: read-only | workspace-write |
-	// danger-full-access.
-	Sandbox        string `json:"sandbox"`
-	TimeoutSeconds int    `json:"timeout_seconds"`
+	// SkipPermissions runs the program in its own unattended mode, which is
+	// what the coding agents call "dangerously skip permissions" or "yolo".
+	// SkipArgs is added when it is on, AskArgs when it is off.
+	SkipPermissions bool     `json:"skip_permissions"`
+	SkipArgs        []string `json:"skip_permission_args"`
+	AskArgs         []string `json:"ask_permission_args"`
+
+	// Driving is free text that goes into the system prompt: how to hand this
+	// program a task, how to tell that it has finished, which keys answer its
+	// questions. It is the whole extension mechanism - a new tool needs an
+	// entry here, not a change to the code.
+	Driving string `json:"driving"`
+	// ReadyPattern is a regular expression that means "the program has
+	// finished starting and will accept input". Empty means: wait for it to
+	// stop printing instead.
+	ReadyPattern string `json:"ready_pattern"`
+	// IdleSeconds is how long the program has to stay quiet before Socrates
+	// treats its turn as finished.
+	IdleSeconds    int `json:"idle_seconds"`
+	TimeoutSeconds int `json:"timeout_seconds"`
+	// Cols and Rows size the window this program gets. Zero means the default.
+	Cols int `json:"cols"`
+	Rows int `json:"rows"`
 }
 
-// Kinds that ship with a dedicated event parser.
-const (
-	KindClaude   = "claude"
-	KindCodex    = "codex"
-	KindOpenCode = "opencode"
-	KindCustom   = "custom"
-)
+// legacyBackend is the pre terminal shape of a delegate agent, kept only long
+// enough to migrate an existing installation.
+type legacyBackend struct {
+	ID             string   `json:"id"`
+	Kind           string   `json:"kind"`
+	Name           string   `json:"name"`
+	Enabled        bool     `json:"enabled"`
+	Description    string   `json:"description"`
+	Command        string   `json:"command"`
+	ExtraArgs      []string `json:"extra_args"`
+	Model          string   `json:"model"`
+	Approval       string   `json:"approval"`
+	Sandbox        string   `json:"sandbox"`
+	TimeoutSeconds int      `json:"timeout_seconds"`
+}
 
-// DefaultBackends returns the three agents that Socrates knows out of the box.
-func DefaultBackends() []Backend {
-	return []Backend{
+// CommandLine assembles the argv this tool is started with.
+func (t Tool) CommandLine() (string, []string) {
+	args := append([]string{}, t.Args...)
+	if t.SkipPermissions {
+		args = append(args, t.SkipArgs...)
+	} else {
+		args = append(args, t.AskArgs...)
+	}
+	if flag := strings.TrimSpace(t.ModelFlag); flag != "" && strings.TrimSpace(t.Model) != "" {
+		args = append(args, flag, strings.TrimSpace(t.Model))
+	}
+	return t.Command, args
+}
+
+// Idle is the quiet window that means this tool has finished its turn.
+func (t Tool) Idle() time.Duration {
+	if t.IdleSeconds <= 0 {
+		return 5 * time.Second
+	}
+	return time.Duration(t.IdleSeconds) * time.Second
+}
+
+// Timeout is the longest a single turn of this tool may take.
+func (t Tool) Timeout() time.Duration {
+	if t.TimeoutSeconds <= 0 {
+		return 30 * time.Minute
+	}
+	return time.Duration(t.TimeoutSeconds) * time.Second
+}
+
+// DefaultTools returns the three coding agents Socrates ships with. They are
+// ordinary entries: nothing in the code treats them differently.
+func DefaultTools() []Tool {
+	return []Tool{
 		{
 			ID:      "claude",
-			Kind:    KindClaude,
 			Name:    "Claude Code",
 			Enabled: true,
 			Description: "Best for writing, refactoring and debugging code in an existing " +
 				"project, for multi step engineering tasks and for careful file edits.",
-			Command:        "claude",
-			Approval:       "auto",
+			Command:         "claude",
+			ModelFlag:       "--model",
+			SkipPermissions: true,
+			SkipArgs:        []string{"--dangerously-skip-permissions"},
+			Driving: "Starts an interactive session in the working directory. The first time it " +
+				"runs in a new folder it asks whether the folder is trusted: choose the " +
+				"\"Yes, I trust this folder\" line with the down arrow and press enter. " +
+				"It can look ready a moment before it accepts keys, so check that what you " +
+				"typed actually appeared on the screen. " +
+				"Type the brief into the prompt box at the bottom and press enter to send it. " +
+				"It is working while a spinner line is visible and finished when the prompt box " +
+				"is empty again. Press escape to interrupt it, and type /exit then enter to quit.",
+			IdleSeconds:    5,
 			TimeoutSeconds: 1800,
 		},
 		{
 			ID:      "codex",
-			Kind:    KindCodex,
 			Name:    "Codex",
 			Enabled: true,
 			Description: "Best for research, investigation and analysis: exploring an unfamiliar " +
 				"codebase, gathering facts, comparing options and writing up findings.",
-			Command:        "codex",
-			Approval:       "auto",
-			Sandbox:        "workspace-write",
+			Command:         "codex",
+			Args:            []string{"--no-alt-screen"},
+			ModelFlag:       "-m",
+			SkipPermissions: true,
+			SkipArgs:        []string{"--dangerously-bypass-approvals-and-sandbox"},
+			AskArgs:         []string{"--ask-for-approval", "on-request", "--sandbox", "workspace-write"},
+			Driving: "Starts an interactive session. On the way up it may show a numbered menu " +
+				"twice: an update notice, where \"Skip\" is the right answer, and a question about " +
+				"whether the directory is trusted, where \"Yes, continue\" is. Answer each by typing " +
+				"the number and pressing enter, and look at the screen again afterwards - the second " +
+				"menu only appears once the first is gone. It runs inline rather than on its own " +
+				"screen, so an answered menu stays visible further up: judge what it wants from the " +
+				"bottom of the screen, not from anything scrolled above it. Then type the brief at the prompt marked " +
+				"with a single angle bracket and press enter. It answers below the prompt and is " +
+				"finished when it stops printing. Press escape twice to interrupt it, and type /quit " +
+				"then enter to leave.",
+			IdleSeconds:    5,
 			TimeoutSeconds: 1800,
 		},
 		{
 			ID:      "opencode",
-			Kind:    KindOpenCode,
 			Name:    "OpenCode",
 			Enabled: false,
 			Description: "Open source coding agent. Useful as an alternative implementer or for " +
 				"quick scripted tasks.",
-			Command:        "opencode",
-			Approval:       "auto",
+			Command:         "opencode",
+			ModelFlag:       "-m",
+			SkipPermissions: true,
+			SkipArgs:        []string{"--auto"},
+			Driving: "Starts an interactive session. Type the brief and press enter. Its answer " +
+				"appears above the input box, followed by a line with the model name and how " +
+				"long the turn took, which means it has finished. Press ctrl+c to interrupt " +
+				"and type /exit then enter to quit.",
+			IdleSeconds:    5,
 			TimeoutSeconds: 1800,
 		},
 	}
+}
+
+// migrateBackend turns a pre terminal delegate agent into a tool.
+func migrateBackend(b legacyBackend) Tool {
+	tool := Tool{
+		ID:              Slug(b.ID),
+		Name:            b.Name,
+		Enabled:         b.Enabled,
+		Description:     b.Description,
+		Command:         b.Command,
+		Args:            b.ExtraArgs,
+		Model:           b.Model,
+		SkipPermissions: b.Approval != "ask",
+		TimeoutSeconds:  b.TimeoutSeconds,
+	}
+	// Take everything else from the matching default, so an upgrade keeps the
+	// user's own choices and gains the interactive settings.
+	for _, d := range DefaultTools() {
+		if d.ID != tool.ID && d.Command != tool.Command {
+			continue
+		}
+		tool.ModelFlag = d.ModelFlag
+		tool.SkipArgs = d.SkipArgs
+		tool.AskArgs = d.AskArgs
+		tool.Driving = d.Driving
+		tool.ReadyPattern = d.ReadyPattern
+		tool.IdleSeconds = d.IdleSeconds
+		if len(tool.Args) == 0 {
+			tool.Args = d.Args
+		}
+		break
+	}
+	return tool
 }
 
 // Default returns a fresh settings document, seeded from the environment where
@@ -210,7 +345,7 @@ func Default() Settings {
 			Mode:    TunnelQuick,
 			Command: "cloudflared",
 		},
-		Backends: DefaultBackends(),
+		Tools: DefaultTools(),
 	}
 	return s
 }
@@ -275,59 +410,100 @@ func (s *Settings) Normalize() {
 		// A named tunnel without its token can never connect.
 		s.Tunnel.Enabled = false
 	}
-	if s.Backends == nil {
-		s.Backends = d.Backends
+	s.migrateBackends()
+	if len(s.Tools) == 0 {
+		s.Tools = d.Tools
 	}
-	for i := range s.Backends {
-		b := &s.Backends[i]
-		b.ID = Slug(b.ID)
-		if b.ID == "" {
-			b.ID = Slug(b.Name)
+	seen := map[string]bool{}
+	for i := range s.Tools {
+		t := &s.Tools[i]
+		t.ID = Slug(t.ID)
+		if t.ID == "" {
+			t.ID = Slug(t.Name)
 		}
-		if b.ID == "" {
-			b.ID = "agent"
+		if t.ID == "" {
+			t.ID = "tool"
 		}
-		switch b.Kind {
-		case KindClaude, KindCodex, KindOpenCode, KindCustom:
-		default:
-			b.Kind = KindCustom
+		// Two tools with the same id would make the orchestrator's choice
+		// ambiguous, so later duplicates are given a suffix.
+		if seen[t.ID] {
+			for n := 2; ; n++ {
+				candidate := fmt.Sprintf("%s-%d", t.ID, n)
+				if !seen[candidate] {
+					t.ID = candidate
+					break
+				}
+			}
 		}
-		if strings.TrimSpace(b.Name) == "" {
-			b.Name = b.ID
+		seen[t.ID] = true
+
+		if strings.TrimSpace(t.Name) == "" {
+			t.Name = t.ID
 		}
-		if strings.TrimSpace(b.Command) == "" {
-			b.Command = b.ID
+		if strings.TrimSpace(t.Command) == "" {
+			t.Command = t.ID
 		}
-		if b.Approval != "ask" {
-			b.Approval = "auto"
+		if t.IdleSeconds <= 0 {
+			t.IdleSeconds = 5
 		}
-		switch b.Sandbox {
-		case "read-only", "workspace-write", "danger-full-access":
-		default:
-			b.Sandbox = "workspace-write"
+		if t.IdleSeconds > 300 {
+			t.IdleSeconds = 300
 		}
-		if b.TimeoutSeconds <= 0 {
-			b.TimeoutSeconds = 1800
+		if t.TimeoutSeconds <= 0 {
+			t.TimeoutSeconds = 1800
+		}
+		if t.Cols < 0 {
+			t.Cols = 0
+		}
+		if t.Rows < 0 {
+			t.Rows = 0
+		}
+		if t.Args == nil {
+			t.Args = []string{}
+		}
+		if t.SkipArgs == nil {
+			t.SkipArgs = []string{}
+		}
+		if t.AskArgs == nil {
+			t.AskArgs = []string{}
+		}
+		// A tool that cannot skip permissions has nothing to skip.
+		if len(t.SkipArgs) == 0 && len(t.AskArgs) == 0 {
+			t.SkipPermissions = false
 		}
 	}
 }
 
-// Backend looks up an enabled backend by id.
-func (s *Settings) Backend(id string) (Backend, bool) {
-	for _, b := range s.Backends {
-		if b.ID == id {
-			return b, true
+// migrateBackends folds a settings document written by an older version into
+// the tool list, so upgrading keeps the agents the user had configured.
+func (s *Settings) migrateBackends() {
+	if len(s.Backends) == 0 {
+		return
+	}
+	if len(s.Tools) == 0 {
+		for _, b := range s.Backends {
+			s.Tools = append(s.Tools, migrateBackend(b))
 		}
 	}
-	return Backend{}, false
+	s.Backends = nil
 }
 
-// EnabledBackends returns every backend the orchestrator may delegate to.
-func (s *Settings) EnabledBackends() []Backend {
-	out := make([]Backend, 0, len(s.Backends))
-	for _, b := range s.Backends {
-		if b.Enabled {
-			out = append(out, b)
+// Tool looks up a tool by id.
+func (s *Settings) Tool(id string) (Tool, bool) {
+	for _, t := range s.Tools {
+		if t.ID == id {
+			return t, true
+		}
+	}
+	return Tool{}, false
+}
+
+// EnabledTools returns every tool Socrates may start.
+func (s *Settings) EnabledTools() []Tool {
+	out := make([]Tool, 0, len(s.Tools))
+	for _, t := range s.Tools {
+		if t.Enabled {
+			out = append(out, t)
 		}
 	}
 	return out

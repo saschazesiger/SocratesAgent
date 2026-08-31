@@ -190,24 +190,59 @@ func TestSettingsRoundTrip(t *testing.T) {
 		t.Fatalf("model was not stored: %#v", updated)
 	}
 
-	// duplicate agent ids are rejected
-	settings["backends"] = []any{
-		map[string]any{"id": "same", "kind": "claude", "name": "A", "command": "claude"},
-		map[string]any{"id": "same", "kind": "codex", "name": "B", "command": "codex"},
+	// Two tools with the same id would make the orchestrator's choice
+	// ambiguous, so saving has to separate them rather than fail.
+	settings["tools"] = []any{
+		map[string]any{"id": "same", "name": "A", "command": "claude", "enabled": true},
+		map[string]any{"id": "same", "name": "B", "command": "codex", "enabled": true},
 	}
 	body, _ = json.Marshal(map[string]any{"settings": settings})
-	res, _ = env.do(t, env.client, "PUT", "/api/settings", string(body))
-	if res.StatusCode != http.StatusBadRequest {
-		t.Fatalf("duplicate ids should be rejected, got %d", res.StatusCode)
+	res, saved = env.do(t, env.client, "PUT", "/api/settings", string(body))
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("save failed: %d", res.StatusCode)
+	}
+	tools, _ := saved["settings"].(map[string]any)["tools"].([]any)
+	if len(tools) != 2 {
+		t.Fatalf("expected two tools, got %#v", tools)
+	}
+	first := tools[0].(map[string]any)["id"]
+	second := tools[1].(map[string]any)["id"]
+	if first == second {
+		t.Fatalf("duplicate tool ids survived the save: %v and %v", first, second)
 	}
 }
 
-func TestBridgeRequiresToken(t *testing.T) {
+func TestTerminalEndpointsNeedAuth(t *testing.T) {
 	env := newEnv(t)
 	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
-	res, _ := env.do(t, env.client, "POST", "/api/bridge/permission", `{"run_id":"x"}`)
+
+	// A session that does not exist is a 404, not a crash.
+	res, _ := env.do(t, env.client, "GET", "/api/terminals/term_missing", "")
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown session should be 404, got %d", res.StatusCode)
+	}
+
+	// And without a session cookie nothing is reachable at all.
+	anonymous := &http.Client{}
+	res, _ = env.do(t, anonymous, "GET", "/api/terminals/term_missing", "")
 	if res.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("bridge must reject requests without the token, got %d", res.StatusCode)
+		t.Fatalf("terminal endpoints must require a login, got %d", res.StatusCode)
+	}
+}
+
+func TestListTerminalsIsEmptyForANewChat(t *testing.T) {
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+	_, chat := env.do(t, env.client, "POST", "/api/chats", `{}`)
+	id := chat["chat"].(map[string]any)["id"].(string)
+
+	_, data := env.do(t, env.client, "GET", "/api/chats/"+id+"/terminals", "")
+	terminals, ok := data["terminals"].([]any)
+	if !ok {
+		t.Fatalf("no terminal list in %#v", data)
+	}
+	if len(terminals) != 0 {
+		t.Fatalf("a new chat should have no sessions, got %#v", terminals)
 	}
 }
 

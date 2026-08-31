@@ -2,7 +2,6 @@ package server
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 )
@@ -73,27 +72,6 @@ func installHint() map[string]string {
 		"windows": "winget install --id Cloudflare.cloudflared",
 		"docs":    "https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/",
 	}
-}
-
-// tunnelWarning is shown once a tunnel is live: the app is then reachable from
-// the internet by anyone who knows the URL and the password.
-func tunnelWarning(settings config.Settings) string {
-	if !settings.Tunnel.Enabled {
-		return ""
-	}
-	auto := 0
-	for _, b := range settings.Backends {
-		if b.Enabled && b.Approval != "ask" {
-			auto++
-		}
-	}
-	if auto == 0 {
-		return ""
-	}
-	return strings.TrimSpace(`Your Socrates instance is published on the internet and ` +
-		`delegate agents run commands without asking. Anyone who gets past the password ` +
-		`effectively has a shell on this machine - put Cloudflare Access in front of the ` +
-		`hostname, or switch the agents to "Ask me in the web interface".`)
 }
 
 // handleTunnelInstall downloads cloudflared without starting a tunnel, so the

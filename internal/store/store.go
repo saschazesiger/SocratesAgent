@@ -478,7 +478,8 @@ func (s *Store) RecoverRuns() error {
 const (
 	StepThinking = "thinking"
 	StepText     = "text"
-	StepDelegate = "delegate"
+	StepTerminal = "terminal"
+	StepShell    = "shell"
 	StepQuestion = "question"
 	StepError    = "error"
 )
@@ -573,6 +574,24 @@ func scanSteps(rows *sql.Rows) ([]Step, error) {
 
 const stepCols = `id, run_id, chat_id, parent_id, seq, rev, kind, title, body, detail, status, created_at, updated_at`
 
+// GetStep loads one step by id.
+func (s *Store) GetStep(id string) (*Step, error) {
+	rows, err := s.db.Query(`SELECT id, run_id, chat_id, parent_id, seq, rev, kind, title, body,
+		detail, status, created_at, updated_at FROM steps WHERE id = ?`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	steps, err := scanSteps(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(steps) == 0 {
+		return nil, ErrNotFound
+	}
+	return &steps[0], nil
+}
+
 // ListSteps returns every step of a chat in display order.
 func (s *Store) ListSteps(chatID string) ([]Step, error) {
 	rows, err := s.db.Query(`SELECT `+stepCols+` FROM steps WHERE chat_id = ? ORDER BY seq, created_at`, chatID)
@@ -595,7 +614,7 @@ func (s *Store) StepsSince(chatID string, rev int64) ([]Step, error) {
 // --------------------------------------------------------------- questions
 
 // Question is an interactive prompt that blocks a run: either the orchestrator
-// asking the user something, or a delegate agent requesting permission.
+// asking the user something.
 type Question struct {
 	ID         string   `json:"id"`
 	ChatID     string   `json:"chat_id"`

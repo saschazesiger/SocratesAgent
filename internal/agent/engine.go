@@ -1,6 +1,7 @@
 // Package agent implements the top level orchestration loop: it talks to the
-// model over OpenRouter, delegates work to the coding agents, asks the user
-// when it needs a decision, and streams every step to the browser.
+// model over OpenRouter, works at a real terminal on the user's machine - which
+// is also how it drives the coding agents - asks the user when it needs a
+// decision, and streams every step to the browser.
 package agent
 
 import (
@@ -13,15 +14,16 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/saschazesiger/SocratesAgent/internal/backends"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/openrouter"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
+	"github.com/saschazesiger/SocratesAgent/internal/term"
 )
 
 // ErrBusy is returned when a chat already has a run in flight.
@@ -50,27 +52,28 @@ type Engine struct {
 	Bus      *Bus
 	Settings func() config.Settings
 
-	// SelfPath and Bridge* are used to launch the MCP permission bridge for
-	// delegate agents that run in interactive approval mode.
-	SelfPath    string
-	BridgeURL   string
-	BridgeToken string
+	// Terminals owns the interactive sessions. Every piece of work Socrates
+	// does happens in one of them.
+	Terminals *term.Manager
 
 	mu      sync.Mutex
 	active  map[string]*runHandle
 	waiters map[string]chan string
+	// watching tracks which sessions already have a goroutine mirroring their
+	// screen into the process view.
+	watching map[string]bool
 }
 
 // New creates an engine.
-func New(st *store.Store, bus *Bus, settings func() config.Settings) *Engine {
-	self, _ := os.Executable()
+func New(st *store.Store, bus *Bus, settings func() config.Settings, terminals *term.Manager) *Engine {
 	return &Engine{
-		Store:    st,
-		Bus:      bus,
-		Settings: settings,
-		SelfPath: self,
-		active:   map[string]*runHandle{},
-		waiters:  map[string]chan string{},
+		Store:     st,
+		Bus:       bus,
+		Settings:  settings,
+		Terminals: terminals,
+		active:    map[string]*runHandle{},
+		waiters:   map[string]chan string{},
+		watching:  map[string]bool{},
 	}
 }
 
@@ -78,13 +81,6 @@ func newID(prefix string) string {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
 	return prefix + "_" + hex.EncodeToString(b[:])
-}
-
-// NewToken returns a random secret, used for the bridge handshake.
-func NewToken() string {
-	var b [24]byte
-	_, _ = rand.Read(b[:])
-	return hex.EncodeToString(b[:])
 }
 
 func (e *Engine) publish(chatID string, ev Event) { e.Bus.Publish(chatID, ev) }
@@ -320,17 +316,42 @@ func (e *Engine) buildMessages(chat *store.Chat, settings config.Settings, run *
 func (e *Engine) systemPrompt(chat *store.Chat, settings config.Settings, run *store.Run) string {
 	var b strings.Builder
 	b.WriteString(settings.Agent.SystemPrompt)
-	b.WriteString("\n\n## Available delegate agents\n")
-	enabled := settings.EnabledBackends()
+
+	workdir := e.workspaceFor(chat, settings)
+	fmt.Fprintf(&b, "\n\n## Working directory\n`%s`. Commands and new terminal sessions start here "+
+		"unless you say otherwise, and relative paths are resolved against it.\n", workdir)
+
+	b.WriteString("\n## Programs you can run\n")
+	enabled := settings.EnabledTools()
 	if len(enabled) == 0 {
-		b.WriteString("None are configured right now. Answer from your own knowledge and tell the user " +
-			"that no delegate agents are enabled in the admin dashboard.\n")
+		b.WriteString("No coding agents are configured. You still have a shell, so you can do the work " +
+			"yourself with ordinary commands - and tell the user that no agents are enabled in the " +
+			"admin dashboard.\n")
 	}
-	for _, be := range enabled {
-		fmt.Fprintf(&b, "- `%s` (%s): %s\n", be.ID, be.Name, strings.TrimSpace(be.Description))
+	for _, t := range enabled {
+		fmt.Fprintf(&b, "\n### %s (`%s`)\n%s\n", t.Name, t.ID, strings.TrimSpace(t.Description))
+		command, args := t.CommandLine()
+		fmt.Fprintf(&b, "Started as: `%s`\n", strings.TrimSpace(command+" "+strings.Join(args, " ")))
+		if !t.SkipPermissions {
+			b.WriteString("It will ask before it changes anything, so expect permission prompts on the " +
+				"screen and answer them.\n")
+		}
+		if driving := strings.TrimSpace(t.Driving); driving != "" {
+			fmt.Fprintf(&b, "How to drive it: %s\n", driving)
+		}
 	}
-	fmt.Fprintf(&b, "\n## Working directory\nDelegate agents run in `%s`. Mention paths relative to it.\n",
-		e.workspaceFor(chat, settings))
+
+	b.WriteString("\n## Driving a program\n" +
+		"Open it with terminal_open, wait for it to finish starting, type the brief and submit it, " +
+		"then wait for it to go idle and read the screen. If it asks something, answer it: a menu is " +
+		"answered with the arrow keys and enter, or by typing the number next to the choice. " +
+		"Never assume a keypress worked - the screen comes back with every call, so look at it.\n")
+
+	if sessions := e.sessionSummary(chat); sessions != "" {
+		b.WriteString("\n## Open terminal sessions\n")
+		b.WriteString(sessions)
+	}
+
 	fmt.Fprintf(&b, "\n## Context\nCurrent date: %s.\n", time.Now().Format("2006-01-02"))
 	if run != nil && run.Auto {
 		b.WriteString("\n## Voice mode\nThe user is in hands free voice mode. Your final answer is read out " +
@@ -340,7 +361,30 @@ func (e *Engine) systemPrompt(chat *store.Chat, settings config.Settings, run *s
 	return b.String()
 }
 
-// workspaceFor returns the directory delegate agents work in for a chat.
+// sessionSummary lists the sessions of a chat for the system prompt, so the
+// orchestrator knows what is already running without having to ask.
+func (e *Engine) sessionSummary(chat *store.Chat) string {
+	if e.Terminals == nil {
+		return ""
+	}
+	handles := e.Terminals.List(chat.ID)
+	if len(handles) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, h := range handles {
+		state := h.State()
+		status := "running"
+		if !h.Alive() {
+			status = fmt.Sprintf("finished, exit code %d", state.ExitCode)
+		}
+		fmt.Fprintf(&b, "- `%s` - %s (%s) in %s, %s\n",
+			h.ID(), h.Name(), state.Command, orDefault(state.Dir, "."), status)
+	}
+	return b.String()
+}
+
+// workspaceFor returns the directory a chat works in.
 func (e *Engine) workspaceFor(chat *store.Chat, settings config.Settings) string {
 	if strings.TrimSpace(chat.Workspace) != "" {
 		return chat.Workspace
@@ -425,8 +469,17 @@ func (e *Engine) addStep(run *store.Run, parent, kind, title, body, status strin
 		log.Printf("agent: put step: %v", err)
 		return st
 	}
-	e.publish(run.ChatID, Event{Type: "step", Step: st})
+	e.publish(run.ChatID, Event{Type: "step", Step: copyStep(st)})
 	return st
+}
+
+// copyStep is what gets published. The caller keeps its own pointer and may
+// well go on writing to it - a terminal step is rewritten every second for as
+// long as its session lives - while the browser stream is still serialising
+// the previous version.
+func copyStep(st *store.Step) *store.Step {
+	clone := *st
+	return &clone
 }
 
 func (e *Engine) updateStep(st *store.Step) {
@@ -434,7 +487,7 @@ func (e *Engine) updateStep(st *store.Step) {
 		log.Printf("agent: update step: %v", err)
 		return
 	}
-	e.publish(st.ChatID, Event{Type: "step", Step: st})
+	e.publish(st.ChatID, Event{Type: "step", Step: copyStep(st)})
 }
 
 // liveStep is a step whose body grows while the model streams. Writes are
@@ -510,132 +563,393 @@ func (l *liveStep) flushLocked(status string) {
 	l.engine.updateStep(l.step)
 }
 
-// ------------------------------------------------------------- delegation
+// ----------------------------------------------------------- the terminal
 
-func (e *Engine) runDelegate(ctx context.Context, chat *store.Chat, run *store.Run, backend config.Backend, task, title string) (string, error) {
-	settings := e.Settings()
-	workdir := e.workspaceFor(chat, settings)
-	if err := os.MkdirAll(workdir, 0o755); err != nil {
-		return "", fmt.Errorf("create workspace %s: %w", workdir, err)
+// sessionMeta keys stored with a session, so a restart does not lose track of
+// what a session is and where it is shown.
+const (
+	metaTool = "tool"
+	metaStep = "step"
+	metaRun  = "run"
+	metaChat = "chat"
+)
+
+// session resolves a session id for a chat. Sessions are scoped to their chat
+// so one conversation can never type into another one's terminal.
+func (e *Engine) session(chat *store.Chat, id string) (*term.Handle, string) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, "The `session` argument was empty. Open a session with terminal_open first."
 	}
-
-	label := strings.TrimSpace(title)
-	if label == "" {
-		label = firstLine(task, 90)
+	if e.Terminals == nil {
+		return nil, "Terminal sessions are not available in this installation."
 	}
-	parent := e.addStep(run, "", store.StepDelegate, backend.Name, label, store.StatusRunning, map[string]any{
-		"agent":      backend.ID,
-		"agent_name": backend.Name,
-		"task":       task,
-		"workspace":  workdir,
-		"approval":   backend.Approval,
-	})
-
-	// Child steps are keyed by the agent's own event ids so updates land on
-	// the same row (a tool call that finishes later, for example).
-	var childMu sync.Mutex
-	children := map[string]*store.Step{}
-	started := time.Now()
-
-	emit := func(ev backends.Event) {
-		childMu.Lock()
-		defer childMu.Unlock()
-		key := ev.ID
-		if key == "" {
-			key = newID("ev")
+	handle, ok := e.Terminals.Get(id)
+	if !ok || handle.ChatID() != chat.ID {
+		open := e.sessionSummary(chat)
+		if open == "" {
+			return nil, fmt.Sprintf("There is no session called %q in this chat, and nothing is open. "+
+				"Start one with terminal_open.", id)
 		}
-		st, ok := children[key]
-		if !ok {
-			st = &store.Step{
-				ID: newID("step"), RunID: run.ID, ChatID: run.ChatID, ParentID: parent.ID,
-				Seq: e.nextSeq(run), Kind: subKind(ev.Kind), CreatedAt: time.Now().UnixMilli(),
-			}
-			children[key] = st
-		}
-		st.Title = ev.Title
-		st.Body = ev.Body
-		st.Status = ev.Status
-		if st.Status == "" {
-			st.Status = store.StatusDone
-		}
-		if ev.Detail != nil {
-			st.Detail = mustJSON(ev.Detail)
-		}
-		e.updateStep(st)
+		return nil, fmt.Sprintf("There is no session called %q in this chat. Open sessions:\n%s", id, open)
 	}
-
-	req := backends.Request{
-		Backend:     backend,
-		Prompt:      task,
-		Workdir:     workdir,
-		SelfPath:    e.SelfPath,
-		BridgeURL:   e.BridgeURL,
-		BridgeToken: e.BridgeToken,
-		RunID:       run.ID,
-		StepID:      parent.ID,
-	}
-	res, runErr := backends.Run(ctx, req, emit)
-
-	detail := map[string]any{
-		"agent":       backend.ID,
-		"agent_name":  backend.Name,
-		"task":        task,
-		"workspace":   workdir,
-		"approval":    backend.Approval,
-		"duration_ms": time.Since(started).Milliseconds(),
-	}
-	if res != nil {
-		detail["result"] = truncate(res.Text, 4000)
-		detail["exit_code"] = res.ExitCode
-		for k, v := range res.Meta {
-			detail[k] = v
-		}
-	}
-	parent.Detail = mustJSON(detail)
-
-	// Any child still marked running was cut short with the process.
-	childMu.Lock()
-	for _, st := range children {
-		if st.Status == store.StatusRunning {
-			st.Status = store.StatusInterrupted
-			e.updateStep(st)
-		}
-	}
-	childMu.Unlock()
-
-	if runErr != nil {
-		parent.Status = store.StatusFailed
-		detail["error"] = runErr.Error()
-		parent.Detail = mustJSON(detail)
-		e.updateStep(parent)
-		if errors.Is(runErr, context.Canceled) {
-			return "", runErr
-		}
-		return "", runErr
-	}
-	parent.Status = store.StatusDone
-	e.updateStep(parent)
-	if res == nil {
-		return "", fmt.Errorf("no result")
-	}
-	return res.Text, nil
+	return handle, ""
 }
 
-func subKind(kind string) string {
-	switch kind {
-	case backends.EventThinking:
-		return "sub_thinking"
-	case backends.EventText:
-		return "sub_text"
-	case backends.EventTool:
-		return "sub_tool"
-	case backends.EventError:
-		return "sub_error"
-	case backends.EventLog:
-		return "sub_log"
-	default:
-		return "sub_status"
+// toolOfSession returns the configured tool a session was started from, or a
+// zero tool with usable defaults for an ad hoc command.
+func (e *Engine) toolOfSession(handle *term.Handle) config.Tool {
+	settings := e.Settings()
+	if tool, ok := settings.Tool(handle.Meta(metaTool)); ok {
+		return tool
 	}
+	return config.Tool{}
+}
+
+// resolveDir turns a directory argument into an absolute path. Relative paths
+// belong to the chat's workspace; an absolute path is taken as given, because
+// Socrates is meant to be able to work anywhere on the machine.
+func (e *Engine) resolveDir(chat *store.Chat, settings config.Settings, dir string) string {
+	workdir := e.workspaceFor(chat, settings)
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return workdir
+	}
+	if filepath.IsAbs(dir) {
+		return filepath.Clean(dir)
+	}
+	return filepath.Clean(filepath.Join(workdir, dir))
+}
+
+// openTerminal starts a session, shows it in the process view and returns the
+// first screen for the model.
+func (e *Engine) openTerminal(ctx context.Context, chat *store.Chat, run *store.Run, toolID, command, name, dir string) string {
+	if e.Terminals == nil {
+		return "Terminal sessions are not available in this installation."
+	}
+	settings := e.Settings()
+	workdir := e.resolveDir(chat, settings, dir)
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		return fmt.Sprintf("Could not create the working directory %s: %v", workdir, err)
+	}
+
+	spec := term.Spec{Dir: workdir, Meta: map[string]string{metaChat: chat.ID, metaRun: run.ID}}
+	label := strings.TrimSpace(name)
+	var tool config.Tool
+
+	switch {
+	case strings.TrimSpace(toolID) != "":
+		found, ok := settings.Tool(strings.TrimSpace(toolID))
+		if !ok || !found.Enabled {
+			names := []string{}
+			for _, t := range settings.EnabledTools() {
+				names = append(names, t.ID)
+			}
+			if len(names) == 0 {
+				return fmt.Sprintf("There is no enabled program called %q, and none are configured. "+
+					"Use `command` to run something directly.", toolID)
+			}
+			return fmt.Sprintf("There is no enabled program called %q. Available: %s.",
+				toolID, strings.Join(names, ", "))
+		}
+		tool = found
+		spec.Command, spec.Args = tool.CommandLine()
+		spec.Cols, spec.Rows = tool.Cols, tool.Rows
+		spec.Meta[metaTool] = tool.ID
+		if label == "" {
+			label = tool.Name
+		}
+
+	case strings.TrimSpace(command) != "":
+		shell, args := shellCommand(command)
+		spec.Command, spec.Args = shell, args
+		if label == "" {
+			label = firstLine(command, 60)
+		}
+
+	default:
+		if label == "" {
+			label = "shell"
+		}
+	}
+
+	handle, err := e.Terminals.Open(ctx, chat.ID, label, spec)
+	if err != nil {
+		return fmt.Sprintf("Could not start the session: %v", err)
+	}
+
+	step := e.addStep(run, "", store.StepTerminal, label, "", store.StatusRunning, map[string]any{
+		"session":   handle.ID(),
+		"tool":      spec.Meta[metaTool],
+		"command":   term.Describe(term.Spec{Command: spec.Command, Args: spec.Args}),
+		"workspace": workdir,
+	})
+	if err := e.Terminals.SetMeta(handle.ID(), metaStep, step.ID); err != nil {
+		log.Printf("agent: remember the step of session %s: %v", handle.ID(), err)
+	}
+	e.watchSession(handle, step)
+
+	// Give the program time to paint its first screen and honour a configured
+	// ready pattern when there is one. A full screen program can go quiet a
+	// second before it is actually listening, so waiting for silence alone is
+	// not enough - terminal_send checks that what it types arrives.
+	if pattern := strings.TrimSpace(tool.ReadyPattern); pattern != "" {
+		_, _, _ = handle.WaitFor(ctx, pattern, 45*time.Second)
+	} else {
+		_, _, _ = handle.WaitIdle(ctx, 2500*time.Millisecond, 45*time.Second)
+	}
+
+	note := fmt.Sprintf("Started %s as session `%s` in %s.", label, handle.ID(), workdir)
+	if driving := strings.TrimSpace(tool.Driving); driving != "" {
+		note += "\nHow to drive it: " + driving
+	}
+	return e.describeSession(ctx, handle, note, false)
+}
+
+// describeSession renders a session for the model: what it is, whether it is
+// still running, and the screen as a person would see it.
+func (e *Engine) describeSession(ctx context.Context, handle *term.Handle, note string, transcript bool) string {
+	state, err := handle.Refresh(ctx)
+	if err != nil {
+		state = handle.State()
+	}
+	var b strings.Builder
+	status := "running"
+	if !handle.Alive() {
+		status = fmt.Sprintf("exited with code %d", state.ExitCode)
+	}
+	fmt.Fprintf(&b, "Session `%s` (%s) - %s.\n", handle.ID(), handle.Name(), status)
+	if strings.TrimSpace(note) != "" {
+		b.WriteString(note)
+		b.WriteString("\n")
+	}
+	b.WriteString("\nScreen:\n```\n")
+	screen := state.Screen
+	if strings.TrimSpace(screen) == "" {
+		screen = "(the screen is empty)"
+	}
+	b.WriteString(truncateMiddle(screen, 12000))
+	b.WriteString("\n```\n")
+
+	if transcript {
+		out, err := handle.Output(ctx, 24000)
+		if err == nil && strings.TrimSpace(out) != "" {
+			b.WriteString("\nEverything it has printed:\n```\n")
+			b.WriteString(out)
+			b.WriteString("\n```\n")
+		}
+	}
+	return b.String()
+}
+
+// closeTerminal ends a session and marks its step finished.
+func (e *Engine) closeTerminal(handle *term.Handle) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return e.Terminals.Close(ctx, handle.ID(), 8*time.Second)
+}
+
+// watchSession mirrors a session's screen into its step, so the browser shows
+// the terminal live and a page refresh restores it.
+func (e *Engine) watchSession(handle *term.Handle, step *store.Step) {
+	e.mu.Lock()
+	if e.watching[handle.ID()] {
+		e.mu.Unlock()
+		return
+	}
+	e.watching[handle.ID()] = true
+	e.mu.Unlock()
+
+	updates := handle.Watch()
+	go func() {
+		defer func() {
+			handle.Unwatch(updates)
+			e.mu.Lock()
+			delete(e.watching, handle.ID())
+			e.mu.Unlock()
+		}()
+		// The screen changes far more often than a person can read it, so the
+		// step is written at most once a second.
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		var latest term.State
+		dirty := false
+		write := func() {
+			if !dirty {
+				return
+			}
+			dirty = false
+			step.Body = latest.Screen
+			step.Status = store.StatusRunning
+			if !latest.Running {
+				step.Status = store.StatusDone
+				if latest.ExitCode != 0 {
+					step.Status = store.StatusFailed
+				}
+			}
+			step.Detail = mustJSON(map[string]any{
+				"session":   handle.ID(),
+				"tool":      handle.Meta(metaTool),
+				"command":   latest.Command,
+				"workspace": latest.Dir,
+				"running":   latest.Running,
+				"exit_code": latest.ExitCode,
+				"cols":      latest.Cols,
+				"rows":      latest.Rows,
+			})
+			e.updateStep(step)
+		}
+		for {
+			select {
+			case state, ok := <-updates:
+				if !ok {
+					write()
+					return
+				}
+				latest = state
+				dirty = true
+				if !state.Running {
+					write()
+					return
+				}
+			case <-ticker.C:
+				write()
+			}
+		}
+	}()
+}
+
+// AdoptSessions re-attaches the process view to sessions that outlived a
+// restart of Socrates.
+func (e *Engine) AdoptSessions() {
+	if e.Terminals == nil {
+		return
+	}
+	for _, handle := range e.Terminals.List("") {
+		stepID := handle.Meta(metaStep)
+		if stepID == "" {
+			continue
+		}
+		step, err := e.Store.GetStep(stepID)
+		if err != nil {
+			continue
+		}
+		e.watchSession(handle, step)
+	}
+}
+
+// runShellCommand runs one command to completion in a throwaway session and
+// returns what it printed. It is the quick path: no conversation, one result.
+func (e *Engine) runShellCommand(ctx context.Context, chat *store.Chat, run *store.Run, command, dir string, timeout time.Duration) (string, error) {
+	if e.Terminals == nil {
+		return "", fmt.Errorf("terminal sessions are not available in this installation")
+	}
+	settings := e.Settings()
+	workdir := e.resolveDir(chat, settings, dir)
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		return "", fmt.Errorf("create the working directory %s: %w", workdir, err)
+	}
+
+	shell, args := shellCommand(command)
+	step := e.addStep(run, "", store.StepShell, firstLine(command, 90), "", store.StatusRunning, map[string]any{
+		"command":   command,
+		"workspace": workdir,
+	})
+
+	handle, err := e.Terminals.Open(ctx, chat.ID, firstLine(command, 40), term.Spec{
+		Command: shell, Args: args, Dir: workdir,
+		Meta: map[string]string{metaChat: chat.ID, metaRun: run.ID, metaStep: step.ID},
+	})
+	if err != nil {
+		step.Status = store.StatusFailed
+		step.Body = err.Error()
+		e.updateStep(step)
+		return "", err
+	}
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		_ = e.Terminals.Close(closeCtx, handle.ID(), 5*time.Second)
+	}()
+
+	finished := e.awaitExit(ctx, handle, step, timeout)
+	output, err := handle.Output(ctx, 24000)
+	if err != nil {
+		output = handle.State().Screen
+	}
+	state := handle.State()
+
+	step.Body = output
+	step.Status = store.StatusDone
+	if !finished {
+		step.Status = store.StatusInterrupted
+	} else if state.ExitCode != 0 {
+		step.Status = store.StatusFailed
+	}
+	step.Detail = mustJSON(map[string]any{
+		"command":   command,
+		"workspace": workdir,
+		"exit_code": state.ExitCode,
+		"timed_out": !finished,
+	})
+	e.updateStep(step)
+
+	var b strings.Builder
+	if !finished {
+		fmt.Fprintf(&b, "The command was still running after %s and was stopped.\n", timeout)
+	} else {
+		fmt.Fprintf(&b, "Exit code %d.\n", state.ExitCode)
+	}
+	if strings.TrimSpace(output) == "" {
+		b.WriteString("It printed nothing.")
+	} else {
+		b.WriteString("\nOutput:\n```\n")
+		b.WriteString(output)
+		b.WriteString("\n```")
+	}
+	return b.String(), nil
+}
+
+// awaitExit waits for a one shot command to finish, keeping its step up to
+// date so that a slow build is not a blank box in the browser for minutes. It
+// reports false if the timeout ran out first. Everything here runs on the one
+// goroutine that owns the step, so nothing else can be writing to it.
+func (e *Engine) awaitExit(ctx context.Context, handle *term.Handle, step *store.Step, timeout time.Duration) bool {
+	limit := time.Now().Add(timeout)
+	ticker := time.NewTicker(700 * time.Millisecond)
+	defer ticker.Stop()
+	shown := ""
+	for {
+		if !handle.Alive() {
+			return true
+		}
+		if time.Now().After(limit) {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-ticker.C:
+			if screen := handle.State().Screen; screen != shown {
+				shown = screen
+				step.Body = screen
+				e.updateStep(step)
+			}
+		}
+	}
+}
+
+// shellCommand wraps a command line so the shell interprets it, which is what
+// makes pipes, redirections and globs work.
+func shellCommand(command string) (string, []string) {
+	if runtime.GOOS == "windows" {
+		return "cmd.exe", []string{"/c", command}
+	}
+	shell := os.Getenv("SHELL")
+	if strings.TrimSpace(shell) == "" {
+		shell = "/bin/sh"
+	}
+	return shell, []string{"-lc", command}
 }
 
 // --------------------------------------------------------------- questions
@@ -743,31 +1057,6 @@ func (e *Engine) Answer(id, value string) error {
 	default:
 	}
 	return nil
-}
-
-// RequestPermission is called by the MCP bridge when a delegate agent wants to
-// use a tool while running in interactive approval mode.
-func (e *Engine) RequestPermission(ctx context.Context, runID, stepID, agentName, toolName, inputSummary string) (bool, string, error) {
-	run, err := e.Store.GetRun(runID)
-	if err != nil {
-		return false, "", err
-	}
-	question := fmt.Sprintf("%s wants to use %s", orDefault(agentName, "The agent"), toolName)
-	if strings.TrimSpace(inputSummary) != "" {
-		question += ":\n" + truncate(inputSummary, 800)
-	}
-	options := []store.Option{
-		{Value: "allow", Label: "Allow"},
-		{Value: "deny", Label: "Deny"},
-	}
-	answer, err := e.Ask(ctx, run, stepID, "permission", question, options, false)
-	if err != nil {
-		return false, "", err
-	}
-	if strings.EqualFold(answer, "allow") || strings.EqualFold(answer, "yes") {
-		return true, "", nil
-	}
-	return false, "The user denied this action. Continue without it or explain what you need.", nil
 }
 
 // ------------------------------------------------------------------ utils

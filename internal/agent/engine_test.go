@@ -1,12 +1,15 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -15,6 +18,7 @@ import (
 
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
+	"github.com/saschazesiger/SocratesAgent/internal/term"
 )
 
 // mockRouter serves OpenAI style streaming responses in a fixed order.
@@ -23,6 +27,10 @@ type mockRouter struct {
 	responses []string
 	index     int
 	bodies    []map[string]any
+	// rewriteSession swaps the placeholder SESSION in a scripted tool call for
+	// the session id that the previous call actually returned.
+	rewriteSession bool
+	session        string
 }
 
 func (m *mockRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -39,6 +47,11 @@ func (m *mockRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.bodies = append(m.bodies, body)
+	if m.rewriteSession {
+		if id := findSessionID(raw); id != "" {
+			m.session = id
+		}
+	}
 	var chunk string
 	if m.index < len(m.responses) {
 		chunk = m.responses[m.index]
@@ -46,10 +59,20 @@ func (m *mockRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else {
 		chunk = sseText("fallback")
 	}
+	if m.rewriteSession && m.session != "" {
+		chunk = strings.ReplaceAll(chunk, "SESSION", m.session)
+	}
 	m.mu.Unlock()
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	fmt.Fprint(w, chunk)
+}
+
+// findSessionID picks the session id out of a tool result the engine sent.
+var sessionPattern = regexp.MustCompile(`term_[0-9a-f]+`)
+
+func findSessionID(raw []byte) string {
+	return sessionPattern.FindString(string(raw))
 }
 
 func (m *mockRouter) calls() int {
@@ -80,7 +103,26 @@ func sseToolCall(name, args string) string {
 	return "data: " + string(payload) + "\n\ndata: " + string(done) + "\n\ndata: [DONE]\n\n"
 }
 
-func newTestEngine(t *testing.T, router *mockRouter, backends []config.Backend) (*Engine, *store.Store) {
+// TestMain lets the test binary stand in for the Socrates binary, which is
+// what the terminal manager re-executes to host a session.
+func TestMain(m *testing.M) {
+	if len(os.Args) > 2 && os.Args[1] == "term-host" {
+		dir := ""
+		for i := 2; i < len(os.Args)-1; i++ {
+			if os.Args[i] == "--dir" || os.Args[i] == "-dir" {
+				dir = os.Args[i+1]
+			}
+		}
+		if err := term.RunHost(dir); err != nil {
+			fmt.Fprintln(os.Stderr, "host:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	os.Exit(m.Run())
+}
+
+func newTestEngine(t *testing.T, router *mockRouter, tools []config.Tool) (*Engine, *store.Store) {
 	t.Helper()
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
@@ -98,11 +140,43 @@ func newTestEngine(t *testing.T, router *mockRouter, backends []config.Backend) 
 	settings.OpenRouter.TitleModel = "title-model"
 	settings.Agent.WorkspaceRoot = t.TempDir()
 	settings.Agent.MaxIterations = 6
-	settings.Backends = backends
+	if tools != nil {
+		settings.Tools = tools
+	}
 	settings.Normalize()
 
-	engine := New(st, NewBus(), func() config.Settings { return settings })
+	terminals, err := term.NewManager(filepath.Join(t.TempDir(), "terminals"), os.Args[0])
+	if err != nil {
+		t.Fatalf("terminal manager: %v", err)
+	}
+	t.Cleanup(func() {
+		for _, h := range terminals.List("") {
+			_ = terminals.Close(context.Background(), h.ID(), time.Second)
+		}
+		terminals.Detach()
+	})
+
+	engine := New(st, NewBus(), func() config.Settings { return settings }, terminals)
 	return engine, st
+}
+
+// lastPayload returns the messages of the nth model call, as text.
+func lastPayload(t *testing.T, router *mockRouter, index int) string {
+	t.Helper()
+	router.mu.Lock()
+	defer router.mu.Unlock()
+	if index >= len(router.bodies) {
+		t.Fatalf("only %d model calls were made, wanted at least %d", len(router.bodies), index+1)
+	}
+	var buf strings.Builder
+	encoder := json.NewEncoder(&buf)
+	// Without this, > and < come back as \u003e and \u003c and every
+	// assertion about a shell prompt fails for the wrong reason.
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(router.bodies[index]["messages"]); err != nil {
+		t.Fatalf("encode payload: %v", err)
+	}
+	return buf.String()
 }
 
 func waitForRun(t *testing.T, st *store.Store, runID string, want string) *store.Run {
@@ -123,20 +197,15 @@ func waitForRun(t *testing.T, st *store.Store, runID string, want string) *store
 	return nil
 }
 
-func TestRunDelegatesAndAnswers(t *testing.T) {
+func TestShellRunFeedsOutputBackToTheModel(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("needs a POSIX shell")
 	}
 	router := &mockRouter{responses: []string{
-		sseToolCall("delegate_to_agent", `{"agent":"echo","task":"say something","title":"Echoing"}`),
+		sseToolCall("shell_run", `{"command":"echo hello-from-the-shell"}`),
 		sseText("All done."),
 	}}
-	engine, st := newTestEngine(t, router, []config.Backend{{
-		ID: "echo", Kind: config.KindCustom, Name: "Echo", Enabled: true,
-		Description: "echoes", Command: "sh",
-		ExtraArgs:      []string{"-c", "printf 'delegate output\n'"},
-		TimeoutSeconds: 30,
-	}})
+	engine, st := newTestEngine(t, router, nil)
 
 	chat := &store.Chat{ID: "chat1"}
 	if err := st.CreateChat(chat); err != nil {
@@ -152,48 +221,171 @@ func TestRunDelegatesAndAnswers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	last := messages[len(messages)-1]
-	if last.Role != "assistant" || last.Content != "All done." {
+	if last := messages[len(messages)-1]; last.Role != "assistant" || last.Content != "All done." {
 		t.Fatalf("last message = %#v", last)
+	}
+
+	if payload := lastPayload(t, router, 1); !strings.Contains(payload, "hello-from-the-shell") {
+		t.Errorf("the command output never reached the model: %s", payload)
 	}
 
 	steps, err := st.ListSteps(chat.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var delegate *store.Step
-	var sub *store.Step
+	var shell *store.Step
 	for i := range steps {
-		if steps[i].Kind == store.StepDelegate {
-			delegate = &steps[i]
-		}
-		if strings.HasPrefix(steps[i].Kind, "sub_") {
-			sub = &steps[i]
+		if steps[i].Kind == store.StepShell {
+			shell = &steps[i]
 		}
 	}
-	if delegate == nil {
-		t.Fatal("no delegate step was recorded")
+	if shell == nil {
+		t.Fatal("the command was not recorded in the process view")
 	}
-	if delegate.Status != store.StatusDone {
-		t.Errorf("delegate status = %q", delegate.Status)
+	if shell.Status != store.StatusDone {
+		t.Errorf("shell step status = %q", shell.Status)
 	}
-	if delegate.Body != "Echoing" {
-		t.Errorf("delegate label = %q", delegate.Body)
+	if !strings.Contains(shell.Body, "hello-from-the-shell") {
+		t.Errorf("the step is missing the output: %q", shell.Body)
 	}
-	if !strings.Contains(string(delegate.Detail), "delegate output") {
-		t.Errorf("delegate detail missing the result: %s", delegate.Detail)
+}
+
+func TestShellRunReportsAFailingCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a POSIX shell")
 	}
-	if sub == nil {
-		t.Error("no child step from the delegate agent")
+	router := &mockRouter{responses: []string{
+		sseToolCall("shell_run", `{"command":"echo nope >&2; exit 7"}`),
+		sseText("That failed."),
+	}}
+	engine, st := newTestEngine(t, router, nil)
+	chat := &store.Chat{ID: "chat-fail"}
+	if err := st.CreateChat(chat); err != nil {
+		t.Fatal(err)
+	}
+	run, _ := engine.Start(chat.ID, "run it", false)
+	waitForRun(t, st, run.ID, store.RunDone)
+
+	payload := lastPayload(t, router, 1)
+	if !strings.Contains(payload, "Exit code 7") {
+		t.Errorf("the model was not told the exit code: %s", payload)
+	}
+	if !strings.Contains(payload, "nope") {
+		t.Errorf("stderr never reached the model: %s", payload)
+	}
+}
+
+// The whole point of the rework: Socrates opens a program, types into it and
+// reads the screen, rather than running it once with an unattended flag.
+func TestDrivesAnInteractiveProgram(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a real terminal")
+	}
+	router := &mockRouter{responses: []string{
+		sseToolCall("terminal_open", `{"tool":"fake","name":"fake agent"}`),
+		sseToolCall("terminal_send", `{"session":"SESSION","text":"hello","submit":true,"settle_seconds":3}`),
+		sseToolCall("terminal_wait", `{"session":"SESSION","until":"text","text":"world","seconds":10}`),
+		sseText("The agent answered."),
+	}}
+	// The session id is only known once it exists, so the mock rewrites the
+	// placeholder with whatever the previous call returned.
+	router.rewriteSession = true
+
+	// A prompt driven program, which is all a coding agent looks like from the
+	// outside: it prints a prompt, waits for a line, answers, prompts again.
+	engine, st := newTestEngine(t, router, []config.Tool{{
+		ID: "fake", Name: "Fake Agent", Enabled: true,
+		Description: "a scripted interactive program",
+		Command:     "sh",
+		Args: []string{"-c", `printf 'ready> '; while IFS= read -r line; do ` +
+			`case "$line" in hello) printf 'world\r\n';; quit) exit 0;; ` +
+			`*) printf 'you said: %s\r\n' "$line";; esac; printf 'ready> '; done`},
+		Driving:     "type and press enter",
+		IdleSeconds: 1, TimeoutSeconds: 60,
+	}})
+
+	chat := &store.Chat{ID: "chat-drive"}
+	if err := st.CreateChat(chat); err != nil {
+		t.Fatal(err)
+	}
+	run, err := engine.Start(chat.ID, "ask the agent something", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForRun(t, st, run.ID, store.RunDone)
+
+	// Every call after the first must have seen the screen.
+	opened := lastPayload(t, router, 1)
+	if !strings.Contains(opened, "ready>") {
+		t.Errorf("the first screen was not handed to the model: %s", opened)
+	}
+	if !strings.Contains(opened, "type and press enter") {
+		t.Errorf("the model was not told how to drive the program: %s", opened)
+	}
+	answered := lastPayload(t, router, 3)
+	if !strings.Contains(answered, "world") {
+		t.Errorf("the program's answer never reached the model: %s", answered)
 	}
 
-	// The second model call must contain the tool result.
-	if router.calls() < 2 {
-		t.Fatalf("expected two model calls, got %d", router.calls())
+	steps, err := st.ListSteps(chat.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	raw, _ := json.Marshal(router.bodies[1]["messages"])
-	if !strings.Contains(string(raw), "delegate output") {
-		t.Errorf("tool result was not fed back to the model: %s", raw)
+	var terminal *store.Step
+	for i := range steps {
+		if steps[i].Kind == store.StepTerminal {
+			terminal = &steps[i]
+		}
+	}
+	if terminal == nil {
+		t.Fatal("the session does not show up in the process view")
+	}
+	if terminal.Title != "fake agent" {
+		t.Errorf("session label = %q", terminal.Title)
+	}
+
+	// The session is still open: it belongs to the chat, not to the run.
+	if got := len(engine.Terminals.List(chat.ID)); got != 1 {
+		t.Errorf("chat has %d sessions after the run, want 1", got)
+	}
+}
+
+func TestUnknownToolIsReportedToModel(t *testing.T) {
+	router := &mockRouter{responses: []string{
+		sseToolCall("terminal_open", `{"tool":"ghost"}`),
+		sseText("Sorry, that program is not available."),
+	}}
+	engine, st := newTestEngine(t, router, []config.Tool{{
+		ID: "echo", Name: "Echo", Enabled: true, Command: "sh", TimeoutSeconds: 10,
+	}})
+	chat := &store.Chat{ID: "chat3"}
+	if err := st.CreateChat(chat); err != nil {
+		t.Fatal(err)
+	}
+	run, err := engine.Start(chat.ID, "use ghost", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForRun(t, st, run.ID, store.RunDone)
+	if payload := lastPayload(t, router, 1); !strings.Contains(payload, "no enabled program called") {
+		t.Errorf("the model was not told about the bad tool id: %s", payload)
+	}
+}
+
+func TestUnknownSessionIsReportedToModel(t *testing.T) {
+	router := &mockRouter{responses: []string{
+		sseToolCall("terminal_send", `{"session":"term_nonexistent","text":"hi"}`),
+		sseText("There is no such session."),
+	}}
+	engine, st := newTestEngine(t, router, nil)
+	chat := &store.Chat{ID: "chat-nosession"}
+	if err := st.CreateChat(chat); err != nil {
+		t.Fatal(err)
+	}
+	run, _ := engine.Start(chat.ID, "type into nothing", false)
+	waitForRun(t, st, run.ID, store.RunDone)
+	if payload := lastPayload(t, router, 1); !strings.Contains(payload, "no session called") {
+		t.Errorf("the model was not told the session is unknown: %s", payload)
 	}
 }
 
@@ -233,30 +425,6 @@ func TestRunAsksUserAndResumes(t *testing.T) {
 	raw, _ := json.Marshal(router.bodies[1]["messages"])
 	if !strings.Contains(string(raw), "The user answered: Left") {
 		t.Errorf("the answer never reached the model: %s", raw)
-	}
-}
-
-func TestUnknownAgentIsReportedToModel(t *testing.T) {
-	router := &mockRouter{responses: []string{
-		sseToolCall("delegate_to_agent", `{"agent":"ghost","task":"x"}`),
-		sseText("Sorry, that agent is not available."),
-	}}
-	engine, st := newTestEngine(t, router, []config.Backend{{
-		ID: "echo", Kind: config.KindCustom, Name: "Echo", Enabled: true, Command: "sh",
-		ExtraArgs: []string{"-c", "true"}, TimeoutSeconds: 10,
-	}})
-	chat := &store.Chat{ID: "chat3"}
-	if err := st.CreateChat(chat); err != nil {
-		t.Fatal(err)
-	}
-	run, err := engine.Start(chat.ID, "use ghost", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	waitForRun(t, st, run.ID, store.RunDone)
-	raw, _ := json.Marshal(router.bodies[1]["messages"])
-	if !strings.Contains(string(raw), "no enabled agent") {
-		t.Errorf("model was not told about the bad agent id: %s", raw)
 	}
 }
 

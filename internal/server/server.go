@@ -2,11 +2,13 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -15,6 +17,7 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
+	"github.com/saschazesiger/SocratesAgent/internal/term"
 	"github.com/saschazesiger/SocratesAgent/internal/tunnel"
 	"github.com/saschazesiger/SocratesAgent/internal/web"
 )
@@ -26,18 +29,18 @@ const settingsKey = "settings"
 
 // Server wires storage, the agent engine and the HTTP handlers together.
 type Server struct {
-	store  *store.Store
-	bus    *agent.Bus
-	engine *agent.Engine
-	tunnel *tunnel.Manager
+	store     *store.Store
+	bus       *agent.Bus
+	engine    *agent.Engine
+	tunnel    *tunnel.Manager
+	terminals *term.Manager
 
 	localURL string
 
 	mu       sync.RWMutex
 	settings config.Settings
 
-	bridgeToken string
-	mux         *http.ServeMux
+	mux *http.ServeMux
 
 	loginMu   sync.Mutex
 	loginFail map[string]*attempt
@@ -52,10 +55,9 @@ type attempt struct {
 // its own files, including a cloudflared it downloads itself.
 func New(st *store.Store, dataDir string) (*Server, error) {
 	s := &Server{
-		store:       st,
-		bus:         agent.NewBus(),
-		bridgeToken: agent.NewToken(),
-		loginFail:   map[string]*attempt{},
+		store:     st,
+		bus:       agent.NewBus(),
+		loginFail: map[string]*attempt{},
 	}
 
 	settings := config.Default()
@@ -68,8 +70,18 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 		return nil, err
 	}
 
-	s.engine = agent.New(st, s.bus, s.Settings)
-	s.engine.BridgeToken = s.bridgeToken
+	// Terminal sessions run in their own processes, started by re-executing
+	// this binary, so that they survive a restart of the web server.
+	self, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("could not locate the Socrates binary: %w", err)
+	}
+	s.terminals, err = term.NewManager(filepath.Join(dataDir, "terminals"), self)
+	if err != nil {
+		return nil, err
+	}
+
+	s.engine = agent.New(st, s.bus, s.Settings, s.terminals)
 	s.tunnel = tunnel.New(s.Settings, s.LocalURL, filepath.Join(dataDir, "bin"))
 
 	s.routes()
@@ -119,9 +131,6 @@ func sameTunnel(a, b config.TunnelSettings) bool {
 		strings.Join(a.ExtraArgs, "\x00") == strings.Join(b.ExtraArgs, "\x00")
 }
 
-// SetBridgeURL tells the engine where delegate agents can reach us.
-func (s *Server) SetBridgeURL(url string) { s.engine.BridgeURL = url }
-
 // SetLocalURL records the loopback address Socrates listens on. It is what the
 // Cloudflare tunnel publishes and what you enter when configuring a named
 // tunnel in the Cloudflare dashboard.
@@ -149,6 +158,20 @@ func (s *Server) StartTunnelIfEnabled() {
 	}
 	log.Print("cloudflare tunnel: starting")
 }
+
+// ResumeTerminals reconnects to the terminal sessions that kept running while
+// Socrates was restarted, and puts them back into the process view.
+func (s *Server) ResumeTerminals() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	s.terminals.Restore(ctx)
+	s.terminals.Prune()
+	s.engine.AdoptSessions()
+}
+
+// DetachTerminals lets go of the running sessions without stopping them, so a
+// restart does not interrupt work in progress.
+func (s *Server) DetachTerminals() { s.terminals.Detach() }
 
 // StopTunnel shuts the tunnel down, used on graceful shutdown.
 func (s *Server) StopTunnel() { s.tunnel.Stop() }
@@ -182,7 +205,15 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/chats/{id}/messages", s.auth(s.handleSendMessage))
 	mux.HandleFunc("POST /api/chats/{id}/stop", s.auth(s.handleStopRun))
 	mux.HandleFunc("GET /api/chats/{id}/events", s.auth(s.handleEvents))
+	mux.HandleFunc("GET /api/chats/{id}/terminals", s.auth(s.handleListTerminals))
 	mux.HandleFunc("POST /api/questions/{id}/answer", s.auth(s.handleAnswer))
+
+	// Terminal sessions: watch one live, or take the keyboard yourself.
+	mux.HandleFunc("GET /api/terminals/{id}", s.auth(s.handleGetTerminal))
+	mux.HandleFunc("GET /api/terminals/{id}/events", s.auth(s.handleTerminalEvents))
+	mux.HandleFunc("POST /api/terminals/{id}/input", s.auth(s.handleTerminalInput))
+	mux.HandleFunc("POST /api/terminals/{id}/resize", s.auth(s.handleTerminalResize))
+	mux.HandleFunc("POST /api/terminals/{id}/close", s.auth(s.handleTerminalClose))
 
 	// Admin
 	mux.HandleFunc("GET /api/settings", s.auth(s.handleGetSettings))
@@ -201,9 +232,6 @@ func (s *Server) routes() {
 	// Voice
 	mux.HandleFunc("POST /api/voice/transcribe", s.auth(s.handleTranscribe))
 	mux.HandleFunc("POST /api/voice/speak", s.auth(s.handleSpeak))
-
-	// Delegate agent permission bridge (authenticated by a per process token)
-	mux.HandleFunc("POST /api/bridge/permission", s.handleBridgePermission)
 
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": Version})

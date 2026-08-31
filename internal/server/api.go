@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -120,6 +121,11 @@ func (s *Server) handleUpdateChat(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteChat(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.engine.Stop(id)
+	// Terminal sessions outlive a run on purpose, so deleting the chat they
+	// belong to is what actually ends them.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	s.terminals.CloseChat(ctx, id)
 	if err := s.store.DeleteChat(id); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -274,52 +280,6 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
-}
-
-// handleBridgePermission is called by the MCP bridge process of a delegate
-// agent. It blocks until the user decides in the web UI.
-func (s *Server) handleBridgePermission(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("X-Socrates-Bridge-Token") != s.bridgeToken {
-		writeError(w, http.StatusUnauthorized, "invalid bridge token")
-		return
-	}
-	var body struct {
-		RunID     string          `json:"run_id"`
-		StepID    string          `json:"step_id"`
-		AgentName string          `json:"agent_name"`
-		ToolName  string          `json:"tool_name"`
-		Input     json.RawMessage `json:"input"`
-	}
-	if !readJSON(w, r, &body) {
-		return
-	}
-	allow, msg, err := s.engine.RequestPermission(r.Context(), body.RunID, body.StepID,
-		body.AgentName, body.ToolName, summarizeInput(body.Input))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"allow": allow, "message": msg})
-}
-
-func summarizeInput(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return string(raw)
-	}
-	for _, key := range []string{"command", "file_path", "path", "url", "pattern"} {
-		if v, ok := m[key].(string); ok && v != "" {
-			return v
-		}
-	}
-	pretty, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return string(raw)
-	}
-	return string(pretty)
 }
 
 func (s *Server) notFound(w http.ResponseWriter, err error) {

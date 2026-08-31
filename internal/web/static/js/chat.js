@@ -46,6 +46,8 @@ const state = {
   es: null,
   stepEls: new Map(),
   stepData: new Map(),
+  // One live stream per terminal session on screen.
+  termStreams: new Map(),
   turnEls: new Map(),
   expanded: new Set(),
   touched: new Set(),
@@ -246,6 +248,7 @@ async function openChat(id) {
 
 function showEmptyState() {
   dom.threadInner.innerHTML = '';
+  closeAllTerminalStreams();
   state.stepEls.clear();
   state.stepData.clear();
   state.turnEls.clear();
@@ -267,6 +270,7 @@ function showEmptyState() {
 
 function renderSnapshot(data) {
   dom.threadInner.innerHTML = '';
+  closeAllTerminalStreams();
   state.stepEls.clear();
   state.stepData.clear();
   state.turnEls.clear();
@@ -333,8 +337,11 @@ function upsertStep(step, animate = true) {
   }
 
   const existing = state.stepEls.get(step.id);
-  if (existing && step.kind === 'delegate') {
-    updateDelegateHead(existing, step);
+  // A terminal step redraws constantly. Rebuilding its node would throw away
+  // the scroll position and the caret of whoever is typing into it, so the
+  // existing one is updated in place.
+  if (existing && step.kind === 'terminal') {
+    updateTerminal(existing, step);
     return;
   }
   const node = buildStep(step);
@@ -372,7 +379,8 @@ function toggleStep(node, id) {
 function buildStep(step) {
   const detail = detailOf(step);
   switch (step.kind) {
-    case 'delegate': return buildDelegate(step, detail);
+    case 'terminal': return buildTerminal(step, detail);
+    case 'shell': return buildShell(step, detail);
     case 'question': return buildQuestion(step, detail);
     case 'error': return el('div', { class: 'step error-step', 'data-step': step.id },
       el('div', { text: step.title || 'Error' }),
@@ -440,35 +448,124 @@ function buildSubLine(step, detail) {
   return node;
 }
 
-function buildDelegate(step, detail) {
-  const node = el('div', { class: 'step delegate', 'data-step': step.id });
-  const head = el('div', { class: 'head' });
-  head.addEventListener('click', () => toggleStep(node, step.id));
-  node.append(head, el('div', { class: 'children' }));
-  updateDelegateHead(node, step);
-  const openByDefault = step.status === 'running';
-  if (state.touched.has(step.id) ? state.expanded.has(step.id) : openByDefault) {
-    node.classList.add('open');
-    state.expanded.add(step.id);
+// A terminal step shows the live screen of a session, and lets the user take
+// the keyboard: Socrates and the person type into the same program.
+function buildTerminal(step, detail) {
+  const node = el('div', { class: 'step term', 'data-step': step.id });
+  const dot = el('span', { class: 'term-dot' });
+  const name = el('span', { class: 'nm', text: step.title || 'terminal' });
+  const cmd = el('span', { class: 'cmd', text: detail.command || '' });
+  const meta = el('span', { class: 'meta', style: 'font-size:11px;color:#8d9099' });
+  const head = el('div', { class: 'term-head' }, dot, name, cmd, meta);
+
+  const screen = el('pre', { class: 'term-screen', text: step.body || '' });
+
+  const input = el('input', {
+    type: 'text',
+    placeholder: 'Type here to take over…',
+    spellcheck: 'false',
+    autocomplete: 'off',
+  });
+  const send = (text, keys) => {
+    const session = detailOf(state.stepData.get(step.id) || step).session;
+    if (!session) return;
+    api('/api/terminals/' + encodeURIComponent(session) + '/input', {
+      method: 'POST',
+      body: { text: text || '', keys: keys || [] },
+    }).catch((err) => toast(err.message, 'error'));
+  };
+  const form = el('form', {
+    class: 'term-foot',
+    onsubmit: (event) => {
+      event.preventDefault();
+      send(input.value, ['enter']);
+      input.value = '';
+    },
+  }, input);
+  for (const key of ['enter', 'escape', 'up', 'down', 'ctrl+c']) {
+    form.append(el('button', {
+      class: 'term-key', type: 'button', title: 'Press ' + key, text: key,
+      onclick: () => send('', [key]),
+    }));
   }
+
+  node.append(head, screen, form,
+    el('div', { class: 'term-note', text: 'Socrates is driving this session. Anything you type goes to the same program.' }));
+  updateTerminal(node, step);
+  watchTerminal(node, step);
   return node;
 }
 
-function updateDelegateHead(node, step) {
-  const detail = detailOf(step);
+function updateTerminal(node, step) {
   state.stepData.set(step.id, step);
-  const head = node.querySelector(':scope > .head');
-  head.innerHTML = '';
-  head.append(...[
-    statusIcon(step.status),
-    el('span', { class: 'agent-badge', text: detail.agent_name || step.title || 'Agent' }),
-    el('span', { class: 'task', text: step.body || '' }),
-    detail.duration_ms ? el('span', { class: 'meta', text: fmtDuration(detail.duration_ms) }) : null,
-    el('span', { class: 'chev', html: ICONS.chev }),
-  ].filter(Boolean));
-  if (!state.touched.has(step.id)) {
-    node.classList.toggle('open', step.status === 'running');
+  const detail = detailOf(step);
+  const screen = node.querySelector(':scope > .term-screen');
+  const wasAtBottom = screen.scrollHeight - screen.scrollTop - screen.clientHeight < 24;
+  if (screen.textContent !== (step.body || '')) {
+    screen.textContent = step.body || '';
+    if (wasAtBottom) screen.scrollTop = screen.scrollHeight;
   }
+  const running = detail.running !== false && step.status === 'running';
+  const dot = node.querySelector('.term-dot');
+  dot.className = 'term-dot' + (running ? '' : (step.status === 'failed' ? ' failed' : ' stopped'));
+  const meta = node.querySelector('.term-head .meta');
+  meta.textContent = running ? 'running'
+    : (detail.exit_code ? 'exited ' + detail.exit_code : 'exited');
+  node.querySelector('.term-foot').hidden = !running;
+}
+
+// watchTerminal subscribes to the session's own stream, which is far quicker
+// than the once a second screen that arrives with the chat events.
+function watchTerminal(node, step) {
+  const session = detailOf(step).session;
+  if (!session || state.termStreams.has(session)) return;
+  const source = new EventSource('/api/terminals/' + encodeURIComponent(session) + '/events');
+  state.termStreams.set(session, source);
+  source.onmessage = (event) => {
+    let payload = null;
+    try { payload = JSON.parse(event.data); } catch { return; }
+    const terminal = payload && payload.terminal;
+    if (!terminal) return;
+    const current = state.stepData.get(step.id) || step;
+    updateTerminal(node, Object.assign({}, current, {
+      body: terminal.screen,
+      status: terminal.running ? 'running' : (terminal.exit_code ? 'failed' : 'done'),
+      detail: Object.assign({}, detailOf(current), {
+        running: terminal.running,
+        exit_code: terminal.exit_code,
+      }),
+    }));
+    if (!terminal.running) closeTerminalStream(session);
+  };
+  source.onerror = () => closeTerminalStream(session);
+}
+
+function closeAllTerminalStreams() {
+  for (const source of state.termStreams.values()) source.close();
+  state.termStreams.clear();
+}
+
+function closeTerminalStream(session) {
+  const source = state.termStreams.get(session);
+  if (!source) return;
+  source.close();
+  state.termStreams.delete(session);
+}
+
+// A shell command is a one shot: the command line and what it printed.
+function buildShell(step, detail) {
+  const node = el('div', { class: 'step collapsible', 'data-step': step.id });
+  const head = el('div', { class: 'sub-line' },
+    step.status === 'running' ? el('span', { class: 'spinner' }) : null,
+    el('span', { class: 'tag', text: 'shell' }),
+    el('span', { class: 'val', text: detail.command || step.title || '' }),
+    detail.exit_code ? el('span', { class: 'meta', text: 'exit ' + detail.exit_code }) : null,
+  );
+  head.style.cursor = 'pointer';
+  head.addEventListener('click', () => toggleStep(node, step.id));
+  node.append(head, el('div', { class: 'body code', text: step.body || '(no output)' }));
+  if (state.expanded.has(step.id)) node.classList.add('open');
+  return node;
 }
 
 function buildQuestion(step, detail) {
@@ -866,9 +963,10 @@ function updateAutoLive(step) {
   const detail = detailOf(step);
   let label = '';
   switch (step.kind) {
-    case 'delegate':
-      label = (detail.agent_name || 'Agent') + (step.status === 'running' ? ' is working…' : ' finished');
+    case 'terminal':
+      label = (step.title || 'A program') + (step.status === 'running' ? ' is working…' : ' finished');
       break;
+    case 'shell': label = 'Running ' + (detail.command || 'a command') + '…'; break;
     case 'thinking': label = 'Thinking…'; break;
     case 'text': label = 'Writing the answer…'; break;
     case 'sub_tool': label = (step.title || 'tool') + ': ' + (step.body || '').split('\n')[0]; break;

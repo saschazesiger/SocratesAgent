@@ -2,19 +2,25 @@
 
 import { api, el, toast } from './api.js';
 import { speak } from './voice.js';
+import { combobox } from './combobox.js';
+import * as models from './models.js';
 
 const $ = (id) => document.getElementById(id);
 
 let settings = null;
 let defaults = null;
-let kinds = ['claude', 'codex', 'opencode', 'custom'];
+
+// The three OpenRouter models are picked with a searchable dropdown rather
+// than a text field, so they are not in FIELDS.
+const MODEL_PICKERS = [
+  ['orChat', 'openrouter.chat_model', () => models.all()],
+  ['orTranscribe', 'openrouter.transcribe_model', () => models.audio()],
+  ['orTitle', 'openrouter.title_model', () => models.all()],
+];
 
 const FIELDS = [
   ['orKey', 'openrouter.api_key'],
   ['orBase', 'openrouter.base_url'],
-  ['orChat', 'openrouter.chat_model'],
-  ['orTranscribe', 'openrouter.transcribe_model'],
-  ['orTitle', 'openrouter.title_model'],
   ['systemPrompt', 'agent.system_prompt'],
   ['maxIterations', 'agent.max_iterations', 'number'],
   ['temperature', 'agent.temperature', 'number'],
@@ -43,16 +49,6 @@ let tunnelTimer = null;
 let installHints = {};
 let localURL = '';
 
-const APPROVALS = [
-  ['auto', 'Run unattended (auto approve)'],
-  ['ask', 'Ask me in the web interface'],
-];
-const SANDBOXES = [
-  ['workspace-write', 'workspace-write'],
-  ['read-only', 'read-only'],
-  ['danger-full-access', 'danger-full-access'],
-];
-
 function getPath(object, path) {
   return path.split('.').reduce((acc, key) => (acc == null ? acc : acc[key]), object);
 }
@@ -69,16 +65,16 @@ async function load() {
   const data = await api('/api/settings');
   settings = data.settings;
   defaults = data.defaults;
-  if (Array.isArray(data.kinds) && data.kinds.length) kinds = data.kinds;
   $('versionLabel').textContent = 'Socrates ' + (data.version || '');
   fillForm();
+  buildModelPickers();
   renderAgents();
   bind();
+  loadModels();
   if (data.local_url) localURL = data.local_url;
-  showWarning(data.warning);
   refreshTunnel();
   if (new URLSearchParams(location.search).get('welcome')) {
-    showNotice('Welcome. Add your OpenRouter key, check the agents below, then head back to the chat.', 'ok');
+    showNotice('Welcome. Add your OpenRouter key, check the tools below, then head back to the chat.', 'ok');
   }
   const tunnelError = sessionStorage.getItem('socrates.tunnel_error');
   if (tunnelError) {
@@ -111,11 +107,56 @@ function collect() {
   return next;
 }
 
+/* ---------------------------------------------------------- model pickers */
+
+const pickers = {};
+
+// buildModelPickers replaces the three model text fields with dropdowns. They
+// are built before the catalogue arrives, so the dashboard is usable straight
+// away and simply gains its list a moment later.
+function buildModelPickers() {
+  for (const [id, path, items] of MODEL_PICKERS) {
+    const host = $(id);
+    if (!host) continue;
+    host.innerHTML = '';
+    const picker = combobox({
+      value: getPath(settings, path) || '',
+      items,
+      placeholder: 'anthropic/claude-sonnet-4.5',
+      onChange: (value) => { setPath(settings, path, value); },
+    });
+    pickers[id] = picker;
+    host.append(picker.node);
+  }
+}
+
+// syncModelPickers pushes values back into the dropdowns after a save.
+function syncModelPickers() {
+  for (const [id, path] of MODEL_PICKERS) {
+    if (pickers[id]) pickers[id].setValue(getPath(settings, path) || '', false);
+  }
+  for (const picker of agentModelPickers) {
+    picker.refresh();
+  }
+}
+
+async function loadModels() {
+  const hint = $('modelsHint');
+  try {
+    await models.load();
+    if (hint) hint.textContent = models.count() + ' models loaded from OpenRouter. Type to search, or enter any id by hand.';
+  } catch (err) {
+    if (hint) {
+      hint.textContent = 'Could not load the model list (' + err.message +
+        '). The fields still accept a model id typed by hand.';
+    }
+  }
+}
+
 function bind() {
   $('saveTop').addEventListener('click', save);
   $('saveBottom').addEventListener('click', save);
   $('addAgent').addEventListener('click', addAgent);
-  $('loadModels').addEventListener('click', loadModels);
   $('runChecks').addEventListener('click', runChecks);
   $('changePw').addEventListener('click', changePassword);
   $('tunnelStart').addEventListener('click', startTunnel);
@@ -145,13 +186,13 @@ function bind() {
 
 async function save() {
   const next = collect();
-  next.backends = settings.backends;
+  next.tools = settings.tools;
   try {
     const data = await api('/api/settings', { method: 'PUT', body: { settings: next } });
     settings = data.settings;
     fillForm();
+    syncModelPickers();
     renderAgents();
-    showWarning(data.warning);
     refreshTunnel();
     hint('Saved');
     toast('Settings saved');
@@ -175,24 +216,32 @@ function showNotice(text, kind) {
   notice.textContent = text;
 }
 
-/* ---------------------------------------------------------------- agents */
+/* ----------------------------------------------------------------- tools */
 
 function slug(text) {
   return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
 
+// agentModelPickers holds the per tool dropdowns so they can be refreshed when
+// the catalogue finishes loading.
+let agentModelPickers = [];
+
 function addAgent() {
-  settings.backends.push({
-    id: 'agent-' + (settings.backends.length + 1),
-    kind: 'custom',
-    name: 'New agent',
+  settings.tools.push({
+    id: 'tool-' + (settings.tools.length + 1),
+    name: 'New tool',
     enabled: false,
-    description: 'Describe when Socrates should use this agent.',
+    description: 'Describe when Socrates should reach for this program.',
     command: '',
-    extra_args: [],
+    args: [],
     model: '',
-    approval: 'auto',
-    sandbox: 'workspace-write',
+    model_flag: '',
+    skip_permissions: false,
+    skip_permission_args: [],
+    ask_permission_args: [],
+    driving: 'How do you hand it a task, how do you know it has finished, which keys answer its questions?',
+    ready_pattern: '',
+    idle_seconds: 5,
     timeout_seconds: 1800,
   });
   renderAgents();
@@ -201,7 +250,8 @@ function addAgent() {
 function renderAgents() {
   const host = $('agents');
   host.innerHTML = '';
-  settings.backends.forEach((backend, index) => host.append(agentCard(backend, index)));
+  agentModelPickers = [];
+  settings.tools.forEach((tool, index) => host.append(agentCard(tool, index)));
 }
 
 function field(label, control, hintText) {
@@ -211,15 +261,6 @@ function field(label, control, hintText) {
     hintText ? el('div', { class: 'hint', text: hintText }) : null);
 }
 
-function select(value, options, onChange) {
-  const node = el('select', { class: 'select', onchange: (event) => onChange(event.target.value) });
-  for (const [optionValue, optionLabel] of options) {
-    node.append(el('option', { value: optionValue, selected: optionValue === value }, optionLabel));
-  }
-  node.value = value;
-  return node;
-}
-
 function text(value, onInput, attrs = {}) {
   return el('input', Object.assign({
     class: 'input mono', type: 'text', value: value ?? '',
@@ -227,26 +268,57 @@ function text(value, onInput, attrs = {}) {
   }, attrs));
 }
 
-function agentCard(backend, index) {
+function number(value, onInput, attrs = {}) {
+  return el('input', Object.assign({
+    class: 'input', type: 'number', value: value ?? 0,
+    oninput: (event) => onInput(Number(event.target.value) || 0),
+  }, attrs));
+}
+
+function toggle(checked, onChange, label) {
+  return el('label', { class: 'switch' },
+    el('input', { type: 'checkbox', checked, onchange: (event) => onChange(event.target.checked) }),
+    el('span', { class: 'track' }),
+    el('span', { text: label }));
+}
+
+// modelField is the same searchable dropdown as the OpenRouter models, except
+// that a tool's model name belongs to that program - Claude Code wants
+// "sonnet", Codex wants "gpt-5-codex" - so anything typed is kept as is.
+function modelField(tool) {
+  const picker = combobox({
+    value: tool.model || '',
+    items: () => models.all(),
+    placeholder: 'leave empty for the program default',
+    onChange: (value) => { tool.model = value; },
+  });
+  agentModelPickers.push({ refresh: () => picker.setValue(tool.model || '', false) });
+  return picker.node;
+}
+
+function agentCard(tool, index) {
   const card = el('div', { class: 'agent' });
-  const titleNode = el('span', { class: 'nm', text: backend.name || backend.id });
-  const kindNode = el('span', { class: 'kind', text: backend.kind });
+  const titleNode = el('span', { class: 'nm', text: tool.name || tool.id });
+  const modeNode = el('span', {
+    class: 'kind',
+    text: tool.skip_permissions ? 'skips permissions' : 'asks permission',
+  });
 
   const head = el('div', { class: 'agent-head' },
     el('label', { class: 'switch', onclick: (event) => event.stopPropagation() },
       el('input', {
-        type: 'checkbox', checked: backend.enabled,
-        onchange: (event) => { backend.enabled = event.target.checked; },
+        type: 'checkbox', checked: tool.enabled,
+        onchange: (event) => { tool.enabled = event.target.checked; },
       }),
       el('span', { class: 'track' })),
     titleNode,
-    kindNode,
+    modeNode,
     el('span', { class: 'spacer' }),
     el('button', {
       class: 'btn sm danger', type: 'button', text: 'Remove',
       onclick: (event) => {
         event.stopPropagation();
-        settings.backends.splice(index, 1);
+        settings.tools.splice(index, 1);
         renderAgents();
       },
     }),
@@ -256,54 +328,81 @@ function agentCard(backend, index) {
     card.classList.toggle('open');
   });
 
-  const body = el('div', { class: 'agent-body' });
-  body.append(
+  const skipArgsField = field('Arguments that skip permissions',
+    text((tool.skip_permission_args || []).join(' '),
+      (value) => { tool.skip_permission_args = splitArgs(value); },
+      { placeholder: '--dangerously-skip-permissions' }),
+    'Added when the switch above is on.');
+
+  const askArgsField = field('Arguments that keep permissions on',
+    text((tool.ask_permission_args || []).join(' '),
+      (value) => { tool.ask_permission_args = splitArgs(value); },
+      { placeholder: '--ask-for-approval on-request' }),
+    'Added when the switch above is off. Socrates then answers the prompts on screen itself.');
+
+  const body = el('div', { class: 'agent-body' },
     el('div', { class: 'grid-2' },
-      field('Display name', text(backend.name, (value) => {
-        backend.name = value;
-        titleNode.textContent = value || backend.id;
+      field('Display name', text(tool.name, (value) => {
+        tool.name = value;
+        titleNode.textContent = value || tool.id;
       }, { class: 'input' })),
-      field('Identifier', text(backend.id, (value) => { backend.id = slug(value); },
-        { placeholder: 'codex' }), 'Used by the orchestrator to select this agent.'),
+      field('Identifier', text(tool.id, (value) => { tool.id = slug(value); },
+        { placeholder: 'codex' }), 'How Socrates refers to this tool.'),
     ),
     field('When should Socrates use it?',
       el('textarea', {
-        class: 'textarea', rows: '3', value: backend.description,
-        oninput: (event) => { backend.description = event.target.value; },
+        class: 'textarea', rows: '3', value: tool.description,
+        oninput: (event) => { tool.description = event.target.value; },
       }),
-      'This text goes straight into the tool description the model reads.'),
+      'Goes straight into the system prompt, so write it the way you would explain it to a colleague.'),
     el('div', { class: 'grid-2' },
-      field('Type', select(backend.kind, kinds.map((k) => [k, k]), (value) => {
-        backend.kind = value;
-        kindNode.textContent = value;
-        renderAgents();
-      }), 'Decides how the output stream is parsed.'),
-      field('Command', text(backend.command, (value) => { backend.command = value; },
+      field('Command', text(tool.command, (value) => { tool.command = value; },
         { placeholder: 'claude' }), 'Binary name or absolute path.'),
-      field('Model override', text(backend.model, (value) => { backend.model = value; },
-        { placeholder: 'leave empty for the agent default' })),
-      field('Extra arguments', text((backend.extra_args || []).join(' '),
-        (value) => { backend.extra_args = splitArgs(value); },
-        { placeholder: '--add-dir /srv' }),
-        backend.kind === 'custom' ? 'Use {{prompt}} where the task text should go, otherwise it is piped to stdin.' : 'Appended to the generated command line.'),
-      field('Permissions', select(backend.approval || 'auto', APPROVALS, (value) => { backend.approval = value; }),
-        backend.kind === 'claude'
-          ? 'Ask mode routes every tool call through the web interface.'
-          : 'Ask mode falls back to a restrictive sandbox for this agent.'),
-      backend.kind === 'codex'
-        ? field('Sandbox', select(backend.sandbox || 'workspace-write', SANDBOXES, (value) => { backend.sandbox = value; }))
-        : field('Timeout (seconds)', el('input', {
-            class: 'input', type: 'number', min: '30', value: backend.timeout_seconds,
-            oninput: (event) => { backend.timeout_seconds = Number(event.target.value) || 1800; },
-          })),
+      field('Arguments', text((tool.args || []).join(' '),
+        (value) => { tool.args = splitArgs(value); },
+        { placeholder: '--no-alt-screen' }), 'Always passed, before everything else.'),
+      field('Model', modelField(tool),
+        'The program\u2019s own model name. Pick one from the list or type anything, for example "sonnet".'),
+      field('Model argument', text(tool.model_flag, (value) => { tool.model_flag = value; },
+        { placeholder: '--model' }), 'The flag the model name follows. Leave empty to never pass one.'),
+    ),
+    el('div', { class: 'row', style: 'margin: 4px 0 18px' },
+      toggle(!!tool.skip_permissions, (checked) => {
+        tool.skip_permissions = checked;
+        modeNode.textContent = checked ? 'skips permissions' : 'asks permission';
+        skipArgsField.hidden = !checked;
+        askArgsField.hidden = checked;
+      }, 'Skip permission prompts (run unattended)')),
+    el('div', { class: 'hint', style: 'margin: -14px 0 16px' },
+      'On, the program is started in its own unattended mode and never stops to ask. ' +
+      'Off, it asks before it acts and Socrates answers the prompts on screen the way you would.'),
+    skipArgsField,
+    askArgsField,
+    field('How to drive it',
+      el('textarea', {
+        class: 'textarea', rows: '4', value: tool.driving || '',
+        oninput: (event) => { tool.driving = event.target.value; },
+      }),
+      'How to hand it a task, how to tell that it has finished, which keys answer its questions. ' +
+      'This is what makes a new program usable without changing any code.'),
+    el('div', { class: 'grid-2' },
+      field('Ready when the screen matches', text(tool.ready_pattern, (value) => { tool.ready_pattern = value; },
+        { placeholder: 'leave empty to wait for it to go quiet' }),
+        'Regular expression. Only needed if waiting for silence starts typing too early.'),
+      field('Counts as finished after (seconds)',
+        number(tool.idle_seconds, (value) => { tool.idle_seconds = value; }, { min: '1', max: '300' }),
+        'How long the program must print nothing before its turn is treated as over.'),
+      field('Timeout (seconds)',
+        number(tool.timeout_seconds, (value) => { tool.timeout_seconds = value; }, { min: '30' })),
+      field('Window size', el('div', { class: 'row', style: 'gap:8px' },
+        number(tool.cols || 0, (value) => { tool.cols = value; }, { min: '0', max: '400', placeholder: 'cols' }),
+        number(tool.rows || 0, (value) => { tool.rows = value; }, { min: '0', max: '200', placeholder: 'rows' })),
+        'Columns and rows the program is given. Zero for the default.'),
     ),
   );
-  if (backend.kind === 'codex') {
-    body.append(field('Timeout (seconds)', el('input', {
-      class: 'input', type: 'number', min: '30', value: backend.timeout_seconds,
-      oninput: (event) => { backend.timeout_seconds = Number(event.target.value) || 1800; },
-    })));
-  }
+
+  skipArgsField.hidden = !tool.skip_permissions;
+  askArgsField.hidden = !!tool.skip_permissions;
 
   card.append(head, body);
   return card;
@@ -321,12 +420,6 @@ function splitArgs(value) {
 }
 
 /* ------------------------------------------------------------ the tunnel */
-
-function showWarning(text) {
-  const box = $('warning');
-  box.hidden = !text;
-  box.textContent = text || '';
-}
 
 function tunnelForm() {
   return {
@@ -487,26 +580,6 @@ async function stopTunnel() {
 }
 
 /* ------------------------------------------------------------ side tasks */
-
-async function loadModels() {
-  const button = $('loadModels');
-  button.disabled = true;
-  button.textContent = 'Loading…';
-  try {
-    const data = await api('/api/models');
-    const list = $('modelList');
-    list.innerHTML = '';
-    for (const model of data.models || []) {
-      list.append(el('option', { value: model.id }, model.name || model.id));
-    }
-    toast((data.models || []).length + ' models loaded');
-  } catch (err) {
-    toast(err.message, 'error');
-  } finally {
-    button.disabled = false;
-    button.textContent = 'Load model list';
-  }
-}
 
 async function runChecks() {
   const button = $('runChecks');

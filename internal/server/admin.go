@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/openrouter"
+	"github.com/saschazesiger/SocratesAgent/internal/term"
 	"github.com/saschazesiger/SocratesAgent/internal/tunnel"
 )
 
@@ -49,10 +51,8 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"settings":  settings,
 		"defaults":  config.Default(),
-		"kinds":     []string{config.KindClaude, config.KindCodex, config.KindOpenCode, config.KindCustom},
 		"version":   Version,
 		"local_url": s.LocalURL(),
-		"warning":   tunnelWarning(settings),
 	})
 }
 
@@ -64,23 +64,14 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next := body.Settings
+	// Normalize gives every tool a unique, usable id, so a half filled form
+	// from the dashboard can never break the orchestrator.
 	next.Normalize()
-	seen := map[string]bool{}
-	for _, b := range next.Backends {
-		if seen[b.ID] {
-			writeError(w, http.StatusBadRequest, "two agents share the id "+b.ID)
-			return
-		}
-		seen[b.ID] = true
-	}
 	if err := s.saveSettings(next); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"settings": s.Settings(),
-		"warning":  tunnelWarning(s.Settings()),
-	})
+	writeJSON(w, http.StatusOK, map[string]any{"settings": s.Settings()})
 }
 
 var (
@@ -153,27 +144,36 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Delegate agents
-	for _, b := range settings.Backends {
-		if !b.Enabled {
+	// A real terminal is what makes driving the coding agents possible.
+	if term.HasPTY {
+		results = append(results, checkResult{Name: "Terminal", OK: true,
+			Detail: fmt.Sprintf("interactive, %d session(s) open", len(s.terminals.States("")))})
+	} else {
+		results = append(results, checkResult{Name: "Terminal", OK: false,
+			Detail: "this build has no pseudo terminal, so full screen programs will not run interactively"})
+	}
+
+	// The programs Socrates can run
+	for _, tool := range settings.Tools {
+		if !tool.Enabled {
 			continue
 		}
-		path, err := exec.LookPath(b.Command)
+		path, err := exec.LookPath(tool.Command)
 		if err != nil {
-			results = append(results, checkResult{Name: b.Name, OK: false,
-				Detail: "command " + b.Command + " not found in PATH"})
+			results = append(results, checkResult{Name: tool.Name, OK: false,
+				Detail: "command " + tool.Command + " not found in PATH"})
 			continue
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 		out, err := exec.CommandContext(ctx, path, "--version").CombinedOutput()
 		cancel()
-		version := strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
+		version := strings.TrimSpace(strings.SplitN(stripControl(string(out)), "\n", 2)[0])
 		if err != nil {
-			results = append(results, checkResult{Name: b.Name, OK: false,
+			results = append(results, checkResult{Name: tool.Name, OK: false,
 				Detail: path + " failed to report a version: " + strings.TrimSpace(err.Error()+" "+version)})
 			continue
 		}
-		results = append(results, checkResult{Name: b.Name, OK: true, Detail: version})
+		results = append(results, checkResult{Name: tool.Name, OK: true, Detail: version})
 	}
 
 	// Remote access
@@ -229,4 +229,17 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"checks": results})
+}
+
+// stripControl keeps a version banner on one readable line.
+func stripControl(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' {
+			return r
+		}
+		if r < 32 || r == 127 {
+			return -1
+		}
+		return r
+	}, term.StripANSI(s))
 }

@@ -21,7 +21,6 @@
 
   <div class="admin-wrap">
     <div class="notice" id="notice"></div>
-    <div class="warning-box" id="warning" hidden></div>
 
     <section class="card">
       <h2>OpenRouter</h2>
@@ -37,30 +36,29 @@
           <input class="input mono" type="text" id="orBase" spellcheck="false">
         </div>
         <div class="field">
-          <label for="orChat">Answering model</label>
-          <input class="input mono" type="text" id="orChat" list="modelList" spellcheck="false">
+          <label>Answering model</label>
+          <div id="orChat"></div>
           <div class="hint">Needs tool calling. Claude, GPT and Gemini models all work.</div>
         </div>
         <div class="field">
-          <label for="orTranscribe">Transcription model</label>
-          <input class="input mono" type="text" id="orTranscribe" list="modelList" spellcheck="false">
+          <label>Transcription model</label>
+          <div id="orTranscribe"></div>
           <div class="hint">Must accept audio input, for example google/gemini-2.5-flash.</div>
         </div>
         <div class="field">
-          <label for="orTitle">Title model</label>
-          <input class="input mono" type="text" id="orTitle" list="modelList" spellcheck="false">
+          <label>Title model</label>
+          <div id="orTitle"></div>
           <div class="hint">Small and cheap is enough — it only names chats.</div>
         </div>
       </div>
-      <datalist id="modelList"></datalist>
-      <button class="btn sm" id="loadModels" type="button">Load model list</button>
+      <div class="hint" id="modelsHint">Loading the model list from OpenRouter…</div>
     </section>
 
     <section class="card">
-      <h2>Delegate agents</h2>
-      <p class="card-sub">Describe when each agent should be used. Socrates reads these descriptions and picks the right one for the job.</p>
+      <h2>Tools Socrates can run</h2>
+      <p class="card-sub">Socrates works at a real terminal. These are the programs it knows how to start there, and what you write here is what it reads before deciding which one to use. Anything else can still be run as an ordinary shell command.</p>
       <div id="agents"></div>
-      <button class="btn sm" id="addAgent" type="button">Add agent</button>
+      <button class="btn sm" id="addAgent" type="button">Add a tool</button>
     </section>
 
     <section class="card">
@@ -69,7 +67,7 @@
       <div class="field">
         <label for="systemPrompt">System prompt</label>
         <textarea class="textarea" id="systemPrompt" rows="10" spellcheck="false"></textarea>
-        <div class="hint">The list of agents, the working directory and voice mode hints are appended automatically.</div>
+        <div class="hint">The list of tools, how to drive each of them, the working directory, the open terminal sessions and the voice mode hints are appended automatically.</div>
       </div>
       <div class="grid-2">
         <div class="field">
@@ -207,7 +205,7 @@
 
     <section class="card">
       <h2>Setup check</h2>
-      <p class="card-sub">Verifies the API key, the workspace and every enabled agent CLI.</p>
+      <p class="card-sub">Verifies the API key, the workspace, the terminal and every enabled tool.</p>
       <button class="btn sm" id="runChecks" type="button">Run checks</button>
       <div class="checks" id="checks"></div>
     </section>

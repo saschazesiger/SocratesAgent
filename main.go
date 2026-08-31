@@ -17,10 +17,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/saschazesiger/SocratesAgent/internal/bridge"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/server"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
+	"github.com/saschazesiger/SocratesAgent/internal/term"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".
@@ -29,10 +29,17 @@ var version = "dev"
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime)
 
-	// "socrates bridge" is the MCP permission helper that delegate agents
-	// launch; it speaks JSON-RPC on stdio and must not print anything else.
-	if len(os.Args) > 1 && os.Args[1] == "bridge" {
-		if err := bridge.Run(); err != nil {
+	// "socrates term-host" owns a single terminal session. Socrates starts it
+	// detached, so the program inside the session - a coding agent, a build, a
+	// shell - keeps running even while the web server is restarted.
+	if len(os.Args) > 2 && os.Args[1] == "term-host" {
+		hostFlags := flag.NewFlagSet("term-host", flag.ExitOnError)
+		dir := hostFlags.String("dir", "", "session directory")
+		if err := hostFlags.Parse(os.Args[2:]); err != nil {
+			os.Exit(2)
+		}
+		if err := term.RunHost(*dir); err != nil {
+			log.Printf("terminal host: %v", err)
 			os.Exit(1)
 		}
 		return
@@ -49,7 +56,7 @@ func main() {
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Socrates %s - a top level agent for Claude Code, Codex and OpenCode\n\n", version)
-		fmt.Fprintf(os.Stderr, "Usage:\n  socrates [flags]        start the web server\n  socrates bridge         internal: MCP approval bridge\n\nFlags:\n")
+		fmt.Fprintf(os.Stderr, "Usage:\n  socrates [flags]        start the web server\n  socrates term-host      internal: hosts one terminal session\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -84,9 +91,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("could not listen on %s: %v", *addr, err)
 	}
-	local := localBaseURL(listener.Addr())
-	srv.SetBridgeURL(local + "/api/bridge/permission")
-	srv.SetLocalURL(local)
+	srv.SetLocalURL(localBaseURL(listener.Addr()))
 
 	httpServer := &http.Server{
 		Handler:           srv.Handler(),
@@ -111,11 +116,15 @@ func main() {
 	}()
 
 	srv.StartTunnelIfEnabled()
+	srv.ResumeTerminals()
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
 	log.Print("shutting down")
+	// The terminal sessions keep running: whatever an agent is in the middle
+	// of is still there when Socrates comes back.
+	srv.DetachTerminals()
 	srv.StopTunnel()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -129,9 +138,9 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-// localBaseURL is the loopback address of this server. Delegate agents use it
-// to ask for permission and the Cloudflare tunnel publishes it, so it stays on
-// 127.0.0.1 even when the listener is bound to every interface.
+// localBaseURL is the loopback address of this server. The Cloudflare tunnel
+// publishes it, so it stays on 127.0.0.1 even when the listener is bound to
+// every interface.
 func localBaseURL(addr net.Addr) string {
 	_, port, err := net.SplitHostPort(addr.String())
 	if err != nil {
