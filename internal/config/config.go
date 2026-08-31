@@ -87,6 +87,53 @@ type OpenRouterSettings struct {
 	TitleModel      string `json:"title_model"`
 }
 
+// Spoken languages voice mode can be pinned to. LanguageAuto is the default:
+// each side works out for itself what is being spoken, which is the right
+// answer for anyone who switches between languages mid conversation.
+const (
+	LanguageAuto = "auto"
+	LanguageDE   = "de"
+	LanguageEN   = "en"
+)
+
+// spokenLanguage is one language the voice pipeline knows by name.
+type spokenLanguage struct {
+	// Name is the English name of the language, which is what goes into an
+	// instruction to a model.
+	Name string
+	// Tag is the BCP 47 tag the browser's speech synthesiser matches voices
+	// against.
+	Tag string
+}
+
+var spokenLanguages = map[string]spokenLanguage{
+	LanguageDE: {Name: "German", Tag: "de-DE"},
+	LanguageEN: {Name: "English", Tag: "en-US"},
+}
+
+// LanguageName is the English name of a voice language, which is the form a
+// model understands in an instruction. It is empty for automatic, and that
+// emptiness is the signal to let the model decide for itself.
+func LanguageName(code string) string { return spokenLanguages[code].Name }
+
+// LanguageTag is the BCP 47 tag of a voice language, empty for automatic.
+func LanguageTag(code string) string { return spokenLanguages[code].Tag }
+
+// NormalizeLanguage maps whatever is in the settings document onto one of the
+// languages voice mode knows. A regional tag such as "de-CH" counts as its
+// base language, and anything unknown falls back to automatic rather than
+// pinning the voice to a language nothing can speak.
+func NormalizeLanguage(code string) string {
+	c := strings.ToLower(strings.TrimSpace(code))
+	if i := strings.IndexAny(c, "-_"); i > 0 {
+		c = c[:i]
+	}
+	if _, ok := spokenLanguages[c]; ok {
+		return c
+	}
+	return LanguageAuto
+}
+
 // VoiceSettings configures speech to text and text to speech.
 //
 // OpenRouter itself only exposes chat completions, so transcription happens by
@@ -94,6 +141,13 @@ type OpenRouterSettings struct {
 // done in the browser by default and can optionally be routed to any
 // OpenAI compatible /audio/speech endpoint.
 type VoiceSettings struct {
+	// Language is the language of the spoken conversation: "auto", "de" or
+	// "en". One setting drives all three sides of it - which language the
+	// transcript is written in, which voice reads the answer out loud, and
+	// which language the agent writes that answer in - because a conversation
+	// where those three disagree is worse than any of them being wrong alone.
+	Language string `json:"language"`
+
 	STTProvider string `json:"stt_provider"` // "openrouter" | "endpoint"
 	STTBaseURL  string `json:"stt_base_url"`
 	STTAPIKey   string `json:"stt_api_key"`
@@ -106,7 +160,9 @@ type VoiceSettings struct {
 	TTSModel    string  `json:"tts_model"`
 	TTSVoice    string  `json:"tts_voice"`
 	TTSRate     float64 `json:"tts_rate"`
-	TTSLanguage string  `json:"tts_language"`
+	// TTSLanguage is where the language used to live, back when it only
+	// applied to playback. It is read once, folded into Language and dropped.
+	TTSLanguage string `json:"tts_language,omitempty"`
 
 	SpeakInAutoMode bool `json:"speak_in_auto_mode"`
 	SpeakInChatMode bool `json:"speak_in_chat_mode"`
@@ -338,6 +394,7 @@ func Default() Settings {
 			TitleModel:      DefaultTitleModel,
 		},
 		Voice: VoiceSettings{
+			Language:        LanguageAuto,
 			STTProvider:     "openrouter",
 			STTPrompt:       "Transcribe the spoken audio verbatim. Reply with the transcript only, no commentary, no quotes.",
 			TTSProvider:     "browser",
@@ -380,6 +437,14 @@ func (s *Settings) Normalize() {
 	if strings.TrimSpace(s.OpenRouter.TitleModel) == "" {
 		s.OpenRouter.TitleModel = s.OpenRouter.ChatModel
 	}
+	// An older settings document carried the language on the playback side
+	// only. Reading it here is what keeps an existing installation's choice
+	// alive now that one setting covers the whole conversation.
+	if strings.TrimSpace(s.Voice.Language) == "" {
+		s.Voice.Language = s.Voice.TTSLanguage
+	}
+	s.Voice.Language = NormalizeLanguage(s.Voice.Language)
+	s.Voice.TTSLanguage = ""
 	if s.Voice.STTProvider != "endpoint" {
 		s.Voice.STTProvider = "openrouter"
 	}

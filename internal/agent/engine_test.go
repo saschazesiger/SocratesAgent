@@ -482,3 +482,29 @@ func TestStartRejectsSecondRun(t *testing.T) {
 	}
 	engine.Stop(chat.ID)
 }
+
+// The answer is read out loud by a voice that speaks one language. An English
+// answer coming out of a German voice is the worst of both, so the language
+// chosen for speech is also the language the agent is told to write in.
+func TestSystemPromptCarriesTheSpokenLanguage(t *testing.T) {
+	engine, _ := newTestEngine(t, &mockRouter{}, nil)
+	chat := &store.Chat{ID: "c"}
+
+	settings := config.Default()
+	settings.Agent.WorkspaceRoot = t.TempDir()
+	settings.Voice.Language = config.LanguageDE
+	settings.Normalize()
+	prompt := engine.systemPrompt(chat, settings, nil)
+	if !strings.Contains(prompt, "in German") {
+		t.Fatalf("german was not requested:\n%s", prompt)
+	}
+
+	settings.Voice.Language = config.LanguageAuto
+	prompt = engine.systemPrompt(chat, settings, nil)
+	if strings.Contains(prompt, "in German") {
+		t.Fatalf("automatic pinned a language:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "language they wrote or spoke to you in") {
+		t.Fatalf("automatic did not follow the user:\n%s", prompt)
+	}
+}

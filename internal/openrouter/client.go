@@ -575,8 +575,11 @@ func (c *Client) TranscribeChat(ctx context.Context, model, prompt, audioB64, fo
 }
 
 // TranscribeEndpoint posts the audio to an OpenAI compatible
-// /audio/transcriptions endpoint (Whisper and friends).
-func (c *Client) TranscribeEndpoint(ctx context.Context, model string, audio []byte, filename string) (string, error) {
+// /audio/transcriptions endpoint (Whisper and friends). language is an
+// ISO 639-1 code, or empty to let the endpoint detect it - naming it up front
+// is both faster and more accurate, because the model no longer has to guess
+// from the first second of audio.
+func (c *Client) TranscribeEndpoint(ctx context.Context, model string, audio []byte, filename, language string) (string, error) {
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 	fw, err := mw.CreateFormFile("file", filename)
@@ -588,6 +591,9 @@ func (c *Client) TranscribeEndpoint(ctx context.Context, model string, audio []b
 	}
 	if model != "" {
 		_ = mw.WriteField("model", model)
+	}
+	if language = strings.TrimSpace(language); language != "" {
+		_ = mw.WriteField("language", language)
 	}
 	_ = mw.WriteField("response_format", "json")
 	if err := mw.Close(); err != nil {
@@ -611,12 +617,20 @@ func (c *Client) TranscribeEndpoint(ctx context.Context, model string, audio []b
 
 // Speech calls an OpenAI compatible /audio/speech endpoint and returns the
 // audio bytes together with their content type.
-func (c *Client) Speech(ctx context.Context, model, voice, text string) ([]byte, string, error) {
+//
+// instructions steer the delivery - which language to read in, and with which
+// accent. They are only sent when the model understands them: the original
+// tts-1 family rejects the field outright, and a rejected request is a silent
+// answer, which is worse than an answer read with the wrong accent.
+func (c *Client) Speech(ctx context.Context, model, voice, text, instructions string) ([]byte, string, error) {
 	payload := map[string]any{
 		"model":           model,
 		"voice":           voice,
 		"input":           text,
 		"response_format": "mp3",
+	}
+	if instructions = strings.TrimSpace(instructions); instructions != "" && !strings.HasPrefix(model, "tts-1") {
+		payload["instructions"] = instructions
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

@@ -241,6 +241,18 @@ type, which is what you need for a tool's own model names such as `sonnet` or
 - **Text to speech** uses the browser's own speech synthesis by default, which
   needs no key and no network. For a better voice, configure any OpenAI
   compatible `/audio/speech` endpoint in the admin dashboard.
+- **Spoken language** is one setting in the admin dashboard - automatic,
+  Deutsch or English - and it covers the whole conversation: which language
+  the transcript is written in, which installed voice reads the answer out
+  loud, and which language Socrates writes its answers in. Getting this wrong
+  is what makes a German answer come out with an English accent.
+
+  Automatic is the default and the right choice if you switch between
+  languages. Transcription is left to detect the spoken language and is told
+  never to translate; playback works the language out from the answer itself,
+  in the browser, so it still picks the right voice with no signal at all. Pin
+  a language instead if you always speak the same one - it makes transcription
+  a little faster and more accurate, because the model no longer has to guess.
 
 ## Auto mode
 

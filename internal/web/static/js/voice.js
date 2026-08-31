@@ -168,16 +168,101 @@ function toBase64(bytes) {
   return btoa(binary);
 }
 
+/* ------------------------------------------------------------- language */
+
+// Which language a piece of text is in decides which voice reads it, and a
+// German sentence read by an English voice is the one thing about voice mode
+// nobody forgives. The admin setting names a language or says "auto"; auto
+// means: work it out from the text itself, here, without asking anything over
+// the network - the fallback voice has to work with no signal at all.
+
+const LANGUAGE_TAGS = { de: 'de-DE', en: 'en-US' };
+
+// Words that are common in one of the two languages and effectively absent
+// from the other. Anything that exists in both - "in", "so", "war", "was",
+// "will", "also", "hat", "man", "die" - is left out on purpose: a marker that
+// can point either way is worse than no marker.
+const MARKERS = {
+  de: ['der', 'das', 'und', 'ist', 'nicht', 'ich', 'du', 'wir', 'ihr', 'sie', 'es', 'mir', 'mich',
+    'dir', 'dich', 'für', 'mit', 'auf', 'aus', 'bei', 'von', 'zum', 'zur', 'im', 'eine', 'einen',
+    'einem', 'dem', 'den', 'des', 'sich', 'auch', 'noch', 'schon', 'nur', 'mal', 'wieder', 'immer',
+    'etwas', 'nichts', 'alles', 'haben', 'habe', 'wird', 'werden', 'kann', 'können', 'soll',
+    'muss', 'müssen', 'dass', 'weil', 'wenn', 'dann', 'über', 'nach', 'vor', 'sehr', 'mehr',
+    'jetzt', 'heute', 'gerade', 'fertig', 'bitte', 'danke', 'nein', 'wie', 'wer', 'warum',
+    'oder', 'aber', 'hier', 'dort'],
+  en: ['the', 'and', 'is', 'are', 'you', 'not', 'with', 'for', 'this', 'that', 'have', 'has',
+    'can', 'could', 'should', 'would', 'must', 'because', 'about', 'after', 'before', 'very',
+    'here', 'there', 'now', 'today', 'just', 'done', 'please', 'thanks', 'yes', 'what', 'why',
+    'how', 'from', 'your', 'my', 'it', 'its', 'they', 'we', 'of', 'to', 'at', 'on', 'but', 'or',
+    'if', 'then', 'only', 'again', 'always', 'something', 'nothing', 'everything'],
+};
+
+const MARKER_SETS = {
+  de: new Set(MARKERS.de),
+  en: new Set(MARKERS.en),
+};
+
+// detectLanguage returns 'de' or 'en' for text it recognises, and null when
+// the text is too short or too neutral to tell - "Fertig." carries no marker
+// at all, and guessing from one word would be worse than falling back.
+export function detectLanguage(text) {
+  const words = String(text || '').toLowerCase().match(/[a-zäöüß]+/g);
+  if (!words) return null;
+  let de = 0;
+  let en = 0;
+  for (const word of words) {
+    // An umlaut or an eszett is the strongest single hint there is: no English
+    // word carries one.
+    if (/[äöüß]/.test(word)) de += 2;
+    if (MARKER_SETS.de.has(word)) de++;
+    else if (MARKER_SETS.en.has(word)) en++;
+  }
+  if (de === en) return null;
+  return de > en ? 'de' : 'en';
+}
+
+// preferredLanguage is what the device itself says, used when the text gives
+// nothing away. On a German phone that is the right guess far more often than
+// defaulting to English would be.
+function preferredLanguage() {
+  const tags = navigator.languages && navigator.languages.length
+    ? navigator.languages : [navigator.language || ''];
+  for (const tag of tags) {
+    const base = String(tag).toLowerCase().split(/[-_]/)[0];
+    if (LANGUAGE_TAGS[base]) return base;
+  }
+  return 'en';
+}
+
+// resolveLanguage turns the configured setting plus the text about to be read
+// into one concrete language. A configured language always wins; 'auto' asks
+// the text, then the device.
+export function resolveLanguage(setting, text) {
+  const base = String(setting || '').toLowerCase().split(/[-_]/)[0];
+  if (LANGUAGE_TAGS[base]) return base;
+  return detectLanguage(text) || preferredLanguage();
+}
+
+// languageTag is the BCP 47 tag the speech synthesiser matches voices against.
+export function languageTag(language) {
+  return LANGUAGE_TAGS[language] || LANGUAGE_TAGS[preferredLanguage()];
+}
+
 /* ------------------------------------------------------------- playback */
 
 let currentAudio = null;
 let speakingFlag = false;
+// Every utterance belongs to a generation. Stopping bumps it, so the callbacks
+// of the speech that was interrupted quietly stop instead of queueing the rest
+// of a cancelled answer on top of the new one.
+let generation = 0;
 
 export function isSpeaking() {
   return speakingFlag || (window.speechSynthesis && window.speechSynthesis.speaking);
 }
 
 export function stopSpeaking() {
+  generation++;
   speakingFlag = false;
   if (currentAudio) {
     try { currentAudio.pause(); } catch { /* ignore */ }
@@ -192,7 +277,9 @@ export function stopSpeaking() {
 export async function speak(text, options = {}) {
   const content = plainSpeech(text);
   if (!content) return;
+  const language = resolveLanguage(options.lang, content);
   stopSpeaking();
+  const mine = generation;
   speakingFlag = true;
   try {
     // A stalled connection must not leave the answer unsaid. The request gets a
@@ -207,14 +294,19 @@ export async function speak(text, options = {}) {
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
         signal: controller.signal,
-        body: JSON.stringify({ text: content }),
+        // The server decides for itself when a language is configured; this is
+        // what it uses while the setting is on automatic, because only the page
+        // has the text in front of it.
+        body: JSON.stringify({ text: content, lang: language }),
       });
     } finally {
       clearTimeout(deadline);
     }
-    if (res.status === 204) return await browserSpeak(content, options);
+    if (mine !== generation) return;
+    if (res.status === 204) return await browserSpeak(content, language, options);
     if (!res.ok) throw new Error('tts endpoint failed');
     const blob = await res.blob();
+    if (mine !== generation) return;
     const url = URL.createObjectURL(blob);
     await new Promise((resolve) => {
       const audio = new Audio(url);
@@ -227,51 +319,125 @@ export async function speak(text, options = {}) {
       audio.play().catch(() => resolve());
     });
   } catch {
-    await browserSpeak(content, options);
+    if (mine === generation) await browserSpeak(content, language, options);
   } finally {
-    speakingFlag = false;
+    if (mine === generation) speakingFlag = false;
   }
 }
 
-function pickVoice(lang) {
-  if (!window.speechSynthesis) return null;
-  const voices = window.speechSynthesis.getVoices() || [];
-  if (!voices.length) return null;
-  const wanted = (lang || document.documentElement.lang || navigator.language || 'en').toLowerCase();
-  const base = wanted.split('-')[0];
-  return voices.find((v) => v.lang && v.lang.toLowerCase() === wanted)
-    || voices.find((v) => v.lang && v.lang.toLowerCase().startsWith(base))
-    || voices.find((v) => v.default)
-    || voices[0];
+// voices resolves the installed voices. Chrome fills the list asynchronously,
+// so asking for it too early hands back an empty array - and an empty array is
+// how German text ends up being read by whatever default voice the browser
+// happens to have, which is the accent problem in the first place.
+function voices() {
+  if (!window.speechSynthesis) return Promise.resolve([]);
+  const ready = window.speechSynthesis.getVoices() || [];
+  if (ready.length) return Promise.resolve(ready);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve(window.speechSynthesis.getVoices() || []);
+    };
+    try {
+      window.speechSynthesis.addEventListener('voiceschanged', finish, { once: true });
+    } catch { /* older browsers fire nothing; the timer below covers them */ }
+    // Safari never fires the event when there is nothing left to load, so the
+    // wait is capped rather than open ended.
+    setTimeout(finish, 1200);
+  });
 }
 
-function browserSpeak(text, options = {}) {
-  return new Promise((resolve) => {
-    if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) {
-      resolve();
-      return;
+function normalizedTag(voice) {
+  return String(voice.lang || '').toLowerCase().replace('_', '-');
+}
+
+// rankVoice scores one candidate for a language. Exactness comes first, then
+// whether the voice lives on the device: a remote voice sounds better but goes
+// silent the moment the signal does, and voice mode is used in a moving car.
+function rankVoice(voice, tag) {
+  let score = 0;
+  if (normalizedTag(voice) === tag.toLowerCase()) score += 4;
+  if (voice.localService) score += 3;
+  if (/google|natural|neural|premium|enhanced|siri/i.test(voice.name || '')) score += 2;
+  if (voice.default) score += 1;
+  return score;
+}
+
+// pickVoice returns the best installed voice for a language, or null when the
+// device has none - in which case the utterance still carries the language tag
+// and the browser gets to make its own choice.
+function pickVoice(installed, tag) {
+  const base = tag.toLowerCase().split('-')[0];
+  const candidates = installed.filter((voice) => normalizedTag(voice).split('-')[0] === base);
+  if (!candidates.length) return null;
+  let best = candidates[0];
+  let bestScore = rankVoice(best, tag);
+  for (const voice of candidates.slice(1)) {
+    const score = rankVoice(voice, tag);
+    if (score > bestScore) {
+      best = voice;
+      bestScore = score;
     }
+  }
+  return best;
+}
+
+async function browserSpeak(text, language, options = {}) {
+  if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) return;
+  const mine = generation;
+  const tag = languageTag(language);
+  const installed = await voices();
+  if (mine !== generation) return;
+  let voice = pickVoice(installed, tag);
+  // Kept aside for the one failure a browser voice actually has: a voice that
+  // is synthesised on a server needs the network, and losing it mid answer
+  // would otherwise swallow the sentence.
+  const offlineVoice = pickVoice(installed.filter((v) => v.localService), tag);
+
+  return new Promise((resolve) => {
     // Chrome truncates long utterances, so read sentence by sentence.
     const parts = chunkSentences(text, 220);
-    const voice = pickVoice(options.lang);
     let index = 0;
+    const done = () => {
+      if (mine === generation) speakingFlag = false;
+      resolve();
+    };
     const next = () => {
-      if (index >= parts.length) {
-        speakingFlag = false;
-        resolve();
+      index++;
+      say();
+    };
+    const say = () => {
+      if (mine !== generation || index >= parts.length) {
+        done();
         return;
       }
-      const utterance = new SpeechSynthesisUtterance(parts[index++]);
-      if (voice) {
-        utterance.voice = voice;
-        utterance.lang = voice.lang;
-      }
+      const utterance = new SpeechSynthesisUtterance(parts[index]);
+      // The tag is set whether or not a matching voice was found: without a
+      // voice it is the only thing telling the engine which language this is.
+      utterance.lang = voice ? voice.lang : tag;
+      if (voice) utterance.voice = voice;
       utterance.rate = options.rate || 1;
       utterance.onend = next;
-      utterance.onerror = next;
+      utterance.onerror = (event) => {
+        const reason = event && event.error;
+        if (reason === 'canceled' || reason === 'interrupted') {
+          done();
+          return;
+        }
+        if (reason === 'network' && voice && !voice.localService && offlineVoice && offlineVoice !== voice) {
+          // No signal: swap to a voice that lives on the device and read the
+          // same sentence again rather than skipping it.
+          voice = offlineVoice;
+          say();
+          return;
+        }
+        next();
+      };
       window.speechSynthesis.speak(utterance);
     };
-    next();
+    say();
   });
 }
 

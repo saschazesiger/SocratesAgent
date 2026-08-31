@@ -220,7 +220,9 @@ a { color: inherit; }
 
 .app {
   display: grid;
-  grid-template-columns: 264px 1fr;
+  /* Three tracks: the chat list, the conversation, and the terminal dock. The
+     last one is `auto`, so it takes no room at all while it is hidden. */
+  grid-template-columns: 264px minmax(0, 1fr) auto;
   height: 100%;
   overflow: hidden;
 }
@@ -628,7 +630,8 @@ body.busy .topbar::after {
 .sub-line.log .val { font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); }
 .sub-line.err .val { color: var(--red); }
 
-/* question card */
+/* the record a question leaves behind in the transcript - while it is still
+   open it lives over the composer, not here */
 .step.question {
   border: 1px solid var(--line-strong);
   border-radius: var(--r);
@@ -638,36 +641,9 @@ body.busy .topbar::after {
   margin: 8px 0;
   animation: rise .24s ease both;
 }
-.step.question .q-label {
-  font-size: 11.5px;
-  text-transform: uppercase;
-  letter-spacing: .04em;
-  font-weight: 600;
-  color: var(--amber);
-  margin-bottom: 6px;
-}
-.step.question .q-text {
-  font-size: 14.5px;
-  color: var(--text);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  margin-bottom: 12px;
-}
-.step.question .options { display: flex; flex-wrap: wrap; gap: 8px; }
-.step.question .options .opt {
-  border: 1px solid var(--line-strong);
-  background: var(--bg);
-  border-radius: 10px;
-  padding: 8px 14px;
-  cursor: pointer;
-  text-align: left;
-  transition: background .14s ease, border-color .14s ease;
-}
-.step.question .options .opt:hover { background: var(--bg-hover); border-color: #c8c9cf; }
-.step.question .options .opt .l { font-size: 13.5px; font-weight: 500; }
-.step.question .options .opt .d { font-size: 12px; color: var(--text-faint); }
-.step.question .free { display: flex; gap: 8px; margin-top: 10px; }
-.step.question .free .input { height: 38px; }
+.step.question .q-record { font-size: 13.5px; color: var(--text-soft); overflow-wrap: anywhere; }
+.step.question .q-record .q-lead { font-weight: 600; color: var(--text); margin-right: 5px; }
+.step.question .q-record .q-text { color: var(--text); white-space: pre-wrap; }
 .step.question.answered { background: var(--bg-soft); box-shadow: none; }
 .step.question .answered-note {
   font-size: 13px;
@@ -790,6 +766,89 @@ body.busy .topbar::after {
   font-size: 11.5px;
   color: var(--text-faint);
 }
+
+/* ----------------------------------------------------------- ask panel */
+
+.ask-panel {
+  max-width: 720px;
+  margin: 0 auto;
+  border: 1px solid var(--amber);
+  border-radius: 20px;
+  background: var(--bg);
+  box-shadow: var(--shadow);
+  padding: 14px 16px;
+  /* Long questions with many options must not push the buttons off a phone
+     screen: the panel scrolls inside itself instead. */
+  max-height: min(64vh, 560px);
+  overflow-y: auto;
+  animation: rise .2s ease both;
+}
+.ask-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.ask-who {
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  font-weight: 600;
+  color: var(--amber);
+  overflow-wrap: anywhere;
+}
+.ask-kind { font-size: 11.5px; color: var(--text-faint); }
+.ask-q {
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin-bottom: 12px;
+}
+.ask-opts { display: grid; gap: 8px; }
+.ask-opt {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--line-strong);
+  background: var(--bg);
+  border-radius: 12px;
+  padding: 10px 14px;
+  cursor: pointer;
+  color: var(--text);
+  transition: background .14s ease, border-color .14s ease;
+}
+.ask-opt:hover { background: var(--bg-hover); border-color: #c8c9cf; }
+.ask-opt:active { background: var(--bg-sunken); }
+.ask-opt .l {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.ask-opt .d {
+  display: block;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-faint);
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
+.ask-free { display: flex; gap: 8px; margin-top: 10px; }
+.ask-free .input { flex: 1; height: 40px; }
+.ask-sending {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  color: var(--text-soft);
+  overflow-wrap: anywhere;
+}
+.ask-sending b { color: var(--text); font-weight: 600; }
+.ask-note { margin-top: 6px; }
 
 /* ------------------------------------------------------------- auto mode */
 
@@ -1213,6 +1272,7 @@ body.auto .auto-screen {
   .menu-btn { display: inline-flex; }
   .thread { padding: 20px 14px 8px; }
   .composer-wrap { padding: 8px 12px 14px; }
+  .ask-panel { padding: 12px 13px; max-height: 70vh; border-radius: 16px; }
   .msg.user { max-width: 88%; }
   .grid-2 { grid-template-columns: 1fr; }
   .mic-big { width: 156px; height: 156px; }
@@ -1329,38 +1389,6 @@ body.auto .auto-screen {
 
 /* ------------------------------------------------------------- terminals */
 
-.step.term { animation: rise .24s ease both; }
-
-.term {
-  border: 1px solid var(--line);
-  border-radius: var(--r);
-  overflow: hidden;
-  background: #16171a;
-  margin-top: 8px;
-}
-
-.term-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
-  background: #202126;
-  color: #d7d8dc;
-  font-size: 12px;
-}
-
-.term-head .nm { font-weight: 600; }
-
-.term-head .cmd {
-  font-family: var(--mono);
-  color: #8d9099;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-  min-width: 0;
-}
-
 .term-dot {
   width: 7px;
   height: 7px;
@@ -1382,33 +1410,7 @@ body.auto .auto-screen {
   color: #e4e5e9;
   white-space: pre;
   overflow-x: auto;
-  max-height: 460px;
   overflow-y: auto;
-}
-
-.term-foot {
-  display: flex;
-  gap: 6px;
-  padding: 8px;
-  border-top: 1px solid #2a2b31;
-  background: #1b1c20;
-}
-
-.term-foot input {
-  flex: 1;
-  min-width: 0;
-  background: #101114;
-  border: 1px solid #303138;
-  border-radius: var(--r-sm);
-  color: #e4e5e9;
-  padding: 6px 9px;
-  font-family: var(--mono);
-  font-size: 12px;
-}
-
-.term-foot input:focus {
-  outline: none;
-  border-color: #4a4c55;
 }
 
 .term-key {
@@ -1429,6 +1431,309 @@ body.auto .auto-screen {
   font-size: 11px;
   color: #8d9099;
   border-top: 1px solid #2a2b31;
+}
+
+/* ----------------------------------------------------------- terminal dock */
+
+/* A terminal is not a step in a story. It is a place you look at while the
+   story goes on beside it, so it lives in its own column instead of scrolling
+   away inside the transcript. On a phone there is no room for a column, so it
+   becomes a drawer over the chat with one obvious way out. */
+
+.term-btn { position: relative; }
+.term-btn .term-live-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+  display: none;
+}
+.term-btn.live .term-live-dot { display: block; animation: pulse 1.8s cubic-bezier(.45, 0, .55, 1) infinite; }
+body.stale .term-btn.live .term-live-dot { animation: none; background: var(--amber); }
+.term-btn .term-badge {
+  position: absolute;
+  bottom: 2px;
+  right: 1px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--text);
+  color: var(--bg);
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 600;
+  text-align: center;
+}
+body.dock-open .term-btn { background: var(--bg-hover); }
+
+.term-dock {
+  position: relative;
+  width: clamp(360px, var(--dock-w, 46vw), 74vw);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #16171a;
+  border-left: 1px solid var(--line-strong);
+  color: #e4e5e9;
+  z-index: 4;
+}
+
+.dock-grip {
+  position: absolute;
+  left: -3px;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  cursor: col-resize;
+  z-index: 2;
+  touch-action: none;
+}
+.dock-grip:hover { background: rgba(255, 255, 255, .12); }
+
+.dock-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 6px 6px 10px;
+  min-height: 44px;
+  background: #202126;
+  border-bottom: 1px solid #2a2b31;
+}
+.dock-tabs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.dock-tabs::-webkit-scrollbar { display: none; }
+.dock-tab {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  max-width: 200px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #9fa1a9;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.dock-tab .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dock-tab.active { background: #2c2d33; border-color: #3a3b43; color: #eceef2; font-weight: 550; }
+.dock-tabs.single .dock-tab { background: none; border-color: transparent; color: #eceef2; font-weight: 600; cursor: default; }
+.dock-tab .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: #6b6e76;
+}
+.dock-tab .dot.live { background: var(--green); animation: pulse 1.8s cubic-bezier(.45, 0, .55, 1) infinite; }
+.dock-tab .dot.failed { background: var(--red); }
+body.stale .dock-tab .dot.live { animation: none; background: var(--amber); }
+
+.dock-hint {
+  flex: none;
+  max-width: 45%;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: #4a3c18;
+  color: #f2d99b;
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dock-close {
+  flex: none;
+  color: #b9bbc2;
+}
+.dock-close:hover { background: #34353c; color: #fff; }
+
+.dock-sub {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 10px;
+  font-size: 11.5px;
+  background: #1b1c20;
+  border-bottom: 1px solid #2a2b31;
+}
+.dock-status {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  background: #26272d;
+  color: #9fa1a9;
+}
+.dock-status.live { background: rgba(37, 160, 96, .18); color: #6cd39a; }
+.dock-status.failed { background: rgba(190, 60, 60, .18); color: #f0a0a0; }
+/* A frozen screen has to say so. It is the one thing about a terminal that
+   cannot be worked out by looking at it. */
+.dock-status.lost { background: #fbf1da; color: #7a5a12; }
+.dock-status.gone { background: #26272d; color: #8d9099; }
+.dock-meta {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  color: #7f828b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dock-dismiss {
+  flex: none;
+  background: none;
+  border: 1px solid #34353c;
+  color: #9fa1a9;
+  border-radius: 999px;
+  padding: 2px 9px;
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.dock-dismiss:hover { background: #2c2d33; color: #e4e5e9; }
+
+.dock-screen {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  border-radius: 0;
+  outline: none;
+}
+.dock-screen:focus-visible { box-shadow: inset 0 0 0 2px rgba(120, 160, 255, .5); }
+.term-dock.stale .dock-screen { opacity: .6; }
+.term-measure {
+  position: absolute;
+  visibility: hidden;
+  white-space: pre;
+  pointer-events: none;
+}
+
+.dock-empty {
+  flex: none;
+  padding: 0 12px 10px;
+  font-size: 12px;
+  color: #7f828b;
+}
+
+.dock-error {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #3a2323;
+  color: #ffd8d8;
+  font-size: 12px;
+  border-top: 1px solid #4a2c2c;
+}
+.dock-error .msg { flex: 1; min-width: 160px; }
+.dock-error .again {
+  background: none;
+  border: 1px solid #6a3f3f;
+  color: inherit;
+  border-radius: var(--r-sm);
+  padding: 3px 9px;
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.dock-error .again:hover { background: #4a2c2c; }
+
+.dock-foot {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid #2a2b31;
+  background: #1b1c20;
+}
+.dock-foot input {
+  flex: 1;
+  min-width: 0;
+  background: #101114;
+  border: 1px solid #303138;
+  border-radius: var(--r-sm);
+  color: #e4e5e9;
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.dock-foot input:focus { outline: none; border-color: #4a4c55; }
+
+.dock-keys {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  padding: 0 8px 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  background: #1b1c20;
+}
+.dock-keys::-webkit-scrollbar { display: none; }
+.dock-keys .term-key { flex: none; padding: 7px 11px; font-size: 12px; }
+.term-key.send { background: #33414f; border-color: #43566a; color: #dbe7f2; }
+
+.term-dock .term-note {
+  flex: none;
+  background: #1b1c20;
+}
+
+/* The one line the transcript keeps. It says a session was opened and gets out
+   of the way; the session itself is in the dock. */
+.step.term-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-soft);
+  animation: rise .24s ease both;
+}
+.step.term-line .term-dot { flex: none; }
+.step.term-line .what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.step.term-line .open-term {
+  flex: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.step.term-line .open-term:hover { color: var(--text); }
+
+@media (max-width: 900px) {
+  /* No room for a column on a phone, so the dock covers the chat entirely and
+     the way out is the first thing in it. */
+  .term-dock {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    border-left: 0;
+    z-index: 30;
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .dock-grip { display: none; }
+  .dock-close { background: #34353c; color: #fff; }
+  .dock-screen { font-size: 11.5px; }
 }
 
 /* ------------------------------------------------------- the connection */
@@ -1546,25 +1851,6 @@ body.stale .chat-item .dot { animation: none; opacity: .4; }
 
 .empty.load-error h2 { color: var(--text); }
 .empty.load-error .btn { margin-top: 14px; }
-
-/* ------------------------------------------------- terminals gone quiet */
-
-/* A terminal screen looks alive whether or not anything is still arriving,
-   which makes it the easiest place in the app to be misled. The chip appears
-   the moment the stream stops delivering and says how long the screen has been
-   standing still. */
-.term-live {
-  flex: none;
-  font-size: 11px;
-  padding: 1px 8px;
-  border-radius: 999px;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.term-live.lost { background: #fbf1da; color: #7a5a12; }
-.term-live.gone { background: var(--bg-sunken); color: var(--text-faint); }
-.step.term.term-stale .term-screen { opacity: .6; }
-.step.term.term-stale .term-dot.live { animation: none; background: var(--amber); }
 
 /* -------------------------------------------------- auto mode, offline */
 

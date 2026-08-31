@@ -25,6 +25,7 @@ const FIELDS = [
   ['maxIterations', 'agent.max_iterations', 'number'],
   ['temperature', 'agent.temperature', 'number'],
   ['workspaceRoot', 'agent.workspace_root'],
+  ['voiceLanguage', 'voice.language'],
   ['sttProvider', 'voice.stt_provider'],
   ['sttBase', 'voice.stt_base_url'],
   ['sttKey', 'voice.stt_api_key'],
@@ -182,7 +183,14 @@ function bind() {
     if (!log.hidden) refreshTunnel();
   });
   $('testVoice').addEventListener('click', () => {
-    speak('This is how Socrates will read answers to you in auto mode.').catch((err) => toast(err.message, 'error'));
+    // The sample is read in the language the form currently shows, not the one
+    // that was last saved, so the button answers the question you are actually
+    // asking: does this setting sound right?
+    const language = $('voiceLanguage').value;
+    const sample = language === 'de'
+      ? 'So klingt Socrates, wenn dir eine Antwort im Freisprechmodus vorgelesen wird.'
+      : 'This is how Socrates will read answers to you in auto mode.';
+    speak(sample, { lang: language }).catch((err) => toast(err.message, 'error'));
   });
   $('resetPrompt').addEventListener('click', () => {
     $('systemPrompt').value = defaults.agent.system_prompt;

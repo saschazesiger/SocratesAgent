@@ -408,7 +408,13 @@ func (e *Engine) systemPrompt(chat *store.Chat, settings config.Settings, run *s
 		"Open it with terminal_open, wait for it to finish starting, type the brief and submit it, " +
 		"then wait for it to go idle and read the screen. If it asks something, answer it: a menu is " +
 		"answered with the arrow keys and enter, or by typing the number next to the choice. " +
-		"Never assume a keypress worked - the screen comes back with every call, so look at it.\n")
+		"Never assume a keypress worked - the screen comes back with every call, so look at it.\n" +
+		"A coding agent is only ever used this way: as its interactive interface, in a terminal session, " +
+		"driven key by key. Never run one through shell_run and never start one in a headless mode - no " +
+		"`claude -p`, `--print`, `--output-format`, `codex exec`, `opencode run`, no prompt piped in on " +
+		"stdin or read from a file. Those calls are refused. The reason is not tidiness: the user is " +
+		"watching the session in their browser and wants to read along and take the keyboard when they " +
+		"disagree, and a batch run hides all of it from them.\n")
 
 	if sessions := e.sessionSummary(chat); sessions != "" {
 		b.WriteString("\n## Open terminal sessions\n")
@@ -416,6 +422,18 @@ func (e *Engine) systemPrompt(chat *store.Chat, settings config.Settings, run *s
 	}
 
 	fmt.Fprintf(&b, "\n## Context\nCurrent date: %s.\n", time.Now().Format("2006-01-02"))
+
+	// The answer is read out loud by a voice that speaks one language. An
+	// English answer coming out of a German voice is the worst of both, so the
+	// language the user chose for speech is also the language to write in.
+	if name := config.LanguageName(settings.Voice.Language); name != "" {
+		fmt.Fprintf(&b, "\n## Language\nWrite every message to the user in %s, whatever language the "+
+			"terminal output or the code you are reading happens to be in. Only quote a command, a "+
+			"path or an error message in its original wording.\n", name)
+	} else {
+		b.WriteString("\n## Language\nWrite every message to the user in the language they wrote or " +
+			"spoke to you in, and keep to that language for the whole conversation.\n")
+	}
 	if run != nil && run.Auto {
 		b.WriteString("\n## Voice mode\nThe user is in hands free voice mode. Your final answer is read out " +
 			"loud: keep it under roughly 120 words, use plain sentences, no markdown, no code blocks, no lists " +
@@ -1013,7 +1031,7 @@ func shellCommand(command string) (string, []string) {
 // --------------------------------------------------------------- questions
 
 // Ask puts a question to the user and blocks until it is answered.
-func (e *Engine) Ask(ctx context.Context, run *store.Run, parent, kind, question string, options []store.Option, freeText bool) (string, error) {
+func (e *Engine) Ask(ctx context.Context, run *store.Run, parent, kind, question string, options []store.Option, freeText bool, asker string) (string, error) {
 	q := &store.Question{
 		ID:       newID("q"),
 		ChatID:   run.ChatID,
@@ -1022,11 +1040,13 @@ func (e *Engine) Ask(ctx context.Context, run *store.Run, parent, kind, question
 		Question: question,
 		Options:  options,
 		Status:   store.StatusPending,
+		Source:   asker,
 	}
 	step := e.addStep(run, parent, store.StepQuestion, "Waiting for you", question, store.StatusPending, map[string]any{
 		"options":   options,
 		"free_text": freeText,
 		"kind":      kind,
+		"source":    asker,
 	})
 	q.StepID = step.ID
 	if err := e.Store.CreateQuestion(q); err != nil {
@@ -1038,6 +1058,7 @@ func (e *Engine) Ask(ctx context.Context, run *store.Run, parent, kind, question
 		"free_text":   freeText,
 		"kind":        kind,
 		"question_id": q.ID,
+		"source":      asker,
 	})
 	e.updateStep(step)
 	_ = e.Store.SetRunStatus(run.ID, store.RunWaiting, "")
@@ -1061,12 +1082,17 @@ func (e *Engine) Ask(ctx context.Context, run *store.Run, parent, kind, question
 	case answer = <-ch:
 	case <-ctx.Done():
 		_ = e.Store.AnswerQuestion(q.ID, "", store.StatusCancelled)
+		// The browser is still showing the question panel, and only a question
+		// event takes it down again.
+		q.Status = store.StatusCancelled
+		e.publish(run.ChatID, Event{Type: "question", Question: q})
 		step.Status = store.StatusCancelled
 		step.Detail = mustJSON(map[string]any{
 			"options":     options,
 			"free_text":   freeText,
 			"kind":        kind,
 			"question_id": q.ID,
+			"source":      asker,
 		})
 		e.updateStep(step)
 		return "", ctx.Err()
@@ -1078,6 +1104,7 @@ func (e *Engine) Ask(ctx context.Context, run *store.Run, parent, kind, question
 		"free_text":   freeText,
 		"kind":        kind,
 		"question_id": q.ID,
+		"source":      asker,
 		"answer":      answer,
 	})
 	e.updateStep(step)

@@ -5,9 +5,14 @@ import {
   LiveStream, Outbox, clientKey, onWake, HttpError, RetryLater,
 } from './api.js';
 import { renderMarkdown } from './markdown.js';
-import { Recorder, speak, stopSpeaking, isSpeaking, plainSpeech } from './voice.js';
+import { mountTerminalDock } from './terminals.js';
+import { Recorder, speak, stopSpeaking, isSpeaking, plainSpeech, resolveLanguage } from './voice.js';
 
 const $ = (id) => document.getElementById(id);
+
+// The terminal sessions of this chat live beside the conversation, not inside
+// it. The transcript keeps one line per session; the dock keeps the screen.
+const dock = mountTerminalDock();
 
 const dom = {
   sidebar: $('sidebar'),
@@ -16,6 +21,8 @@ const dom = {
   threadInner: $('threadInner'),
   title: $('chatTitle'),
   composer: $('composer'),
+  composerNote: $('composerNote'),
+  askPanel: $('askPanel'),
   input: $('input'),
   sendBtn: $('sendBtn'),
   micBtn: $('micBtn'),
@@ -63,12 +70,20 @@ const state = {
   stepEls: new Map(),
   stepData: new Map(),
   chatEls: new Map(),
-  // One live stream per terminal session on screen.
-  termStreams: new Map(),
   turnEls: new Map(),
   expanded: new Set(),
   touched: new Set(),
   pendingQuestion: null,
+  // The answer that has just been given and is on its way out. It keeps the
+  // question panel on screen for a moment longer, saying so, instead of the
+  // composer snapping back as if nothing had happened.
+  askSending: null,
+  askTimer: null,
+  askShown: null,
+  // Who asked what, learned from the question rows. The step a question leaves
+  // behind does not carry it, so the record in the transcript would otherwise
+  // forget whose question it was the moment it was answered.
+  questionSources: new Map(),
   spokeOffline: false,
   lastAnswer: '',
   autoPhase: 'idle',
@@ -79,7 +94,7 @@ const state = {
   workLabel: '',
   workSince: 0,
   workTimer: null,
-  prefs: { speak_in_auto_mode: true, speak_in_chat_mode: false, tts_rate: 1, tts_language: '' },
+  prefs: { speak_in_auto_mode: true, speak_in_chat_mode: false, tts_rate: 1, language: 'auto' },
 };
 
 const ICONS = {
@@ -144,6 +159,28 @@ function restoreDraft() {
 // itself. Two quick attempts, then give up and let the retry loops take over -
 // a blank screen for fifteen seconds is worse than an honest one after two.
 const BOOT = { attempts: 2, timeout: 8000 };
+
+// speechOptions is how every spoken line is configured: the rate the admin
+// chose, and the language setting - which voice.js turns into a concrete
+// language, falling back to the language of the text itself.
+function speechOptions() {
+  return { rate: state.prefs.tts_rate, lang: state.prefs.language };
+}
+
+// spokenLanguage resolves the language of the moment for the few lines the app
+// says in its own words. The last answer is the best evidence there is: on
+// automatic, the app should speak the language the conversation is in.
+function spokenLanguage() {
+  return resolveLanguage(state.prefs.language, state.lastAnswer || '');
+}
+
+// The one sentence Socrates says on its own behalf, in the languages it can be
+// set to. It is spoken when the connection drops, which is exactly when
+// nothing can be fetched to translate it.
+const OFFLINE_NOTICE = {
+  de: 'Die Verbindung ist weg. Ich versuche es weiter.',
+  en: 'The connection dropped. I will keep trying.',
+};
 
 async function init() {
   setAuto(state.auto, true);
@@ -247,6 +284,7 @@ function adoptCreatedChat(chat, item) {
   state.outbox.persist();
   if (state.chatId) return;
   state.chatId = chat.id;
+  if (dock) dock.setChat(chat.id);
   state.chat = chat;
   state.effectiveWorkspace = '';
   state.rev = 0;
@@ -302,7 +340,7 @@ function bindUI() {
   dom.autoToggle.addEventListener('change', () => setAuto(dom.autoToggle.checked));
   dom.autoReplay.addEventListener('click', () => {
     if (isSpeaking()) stopSpeaking();
-    else if (state.lastAnswer) speak(state.lastAnswer, { rate: state.prefs.tts_rate, lang: state.prefs.tts_language });
+    else if (state.lastAnswer) speak(state.lastAnswer, speechOptions());
   });
   dom.autoDetails.addEventListener('click', () => setAuto(false));
   window.addEventListener('beforeunload', () => {
@@ -451,6 +489,7 @@ async function deleteChat(chat) {
   if (state.chatId === chat.id) {
     disconnect();
     state.chatId = null;
+    if (dock) dock.setChat(null);
     state.chat = null;
     showEmptyState();
   }
@@ -462,9 +501,13 @@ function startNewChat() {
   saveDraft();
   disconnect();
   state.chatId = null;
+  if (dock) dock.setChat(null);
   state.chat = null;
   state.rev = 0;
   state.pendingQuestion = null;
+  clearAskSending();
+  updateAskPanel();
+  state.questionSources.clear();
   state.lastAnswer = '';
   state.loadFailed = false;
   clearTimeout(state.reopenTimer);
@@ -486,8 +529,12 @@ async function openChat(id, options = {}) {
   disconnect();
   clearTimeout(state.reopenTimer);
   state.chatId = id;
+  if (dock) dock.setChat(id);
   state.rev = 0;
   state.pendingQuestion = null;
+  clearAskSending();
+  updateAskPanel();
+  state.questionSources.clear();
   state.lastAnswer = '';
   state.workSince = 0;
   state.workLabel = '';
@@ -527,8 +574,14 @@ async function openChat(id, options = {}) {
   resetAutoScreen(state.busy ? 'Working…' : 'Tap the microphone and speak');
   const lastAssistant = [...(data.messages || [])].reverse().find((m) => m.role === 'assistant');
   if (lastAssistant) state.lastAnswer = lastAssistant.content;
-  const pending = (data.questions || []).find((q) => q.status === 'pending');
-  if (pending) state.pendingQuestion = pending;
+  // Assigned either way: a chat with nothing pending must not inherit the
+  // question that belonged to the one before it.
+  for (const question of data.questions || []) rememberAsker(question);
+  const pending = (data.questions || []).find((q) => q.status === 'pending') || null;
+  state.pendingQuestion = pending;
+  state.askSending = null;
+  updateAskPanel();
+  refreshQuestionSteps();
   if (state.auto) {
     if (lastAssistant) showAutoAnswer(lastAssistant.content, false);
     if (pending) showAutoQuestion(pending, false);
@@ -539,7 +592,6 @@ async function openChat(id, options = {}) {
 // instead of the blank screen a failed load used to leave behind.
 function showLoadError(message, retry) {
   dom.threadInner.innerHTML = '';
-  closeAllTerminalStreams();
   state.stepEls.clear();
   state.stepData.clear();
   state.turnEls.clear();
@@ -556,7 +608,6 @@ function showLoadError(message, retry) {
 
 function showEmptyState() {
   dom.threadInner.innerHTML = '';
-  closeAllTerminalStreams();
   state.stepEls.clear();
   state.stepData.clear();
   state.turnEls.clear();
@@ -580,7 +631,6 @@ function showEmptyState() {
 
 function renderSnapshot(data) {
   dom.threadInner.innerHTML = '';
-  closeAllTerminalStreams();
   state.stepEls.clear();
   state.stepData.clear();
   state.turnEls.clear();
@@ -700,6 +750,7 @@ function refreshQuestionSteps() {
     const step = state.stepData.get(id);
     if (step && step.kind === 'question' && typeof node.update === 'function') node.update(step);
   }
+  updateAskPanel();
 }
 
 function updateWorkRow() {
@@ -992,200 +1043,44 @@ function buildSubLine(step) {
   return node;
 }
 
-// A terminal step shows the live screen of a session, and lets the user take
-// the keyboard: Socrates and the person type into the same program.
+// A terminal keeps one line in the transcript, and no more. The screen itself
+// is in the dock beside the conversation: a program painting a full screen
+// several times a second is something you look at, not something you scroll
+// past on the way to the next message.
 function buildTerminal(step, detail) {
-  const node = el('div', { class: 'step term', 'data-step': step.id });
+  const node = el('div', { class: 'step term-line', 'data-step': step.id });
   const dot = el('span', { class: 'term-dot' });
-  const name = el('span', { class: 'nm', text: step.title || 'terminal' });
-  const cmd = el('span', { class: 'cmd', text: detail.command || '' });
-  const meta = el('span', { class: 'meta', style: 'font-size:11px;color:#8d9099' });
-  // The chip is the terminal's own honesty: it appears the moment this screen
-  // stops being live, and says how long it has been standing still.
-  const liveChip = el('span', { class: 'term-live', hidden: true });
-  const head = el('div', { class: 'term-head' }, dot, name, cmd, meta, liveChip);
-
-  const screen = el('pre', { class: 'term-screen', text: step.body || '' });
-
-  const input = el('input', {
-    type: 'text',
-    placeholder: 'Type here to take over…',
-    spellcheck: 'false',
-    autocomplete: 'off',
-  });
-  // Typing into a session is the one thing here that must not be retried
-  // blindly: a keystroke that arrives twice is a different keystroke. So it is
-  // attempted once and, if it did not get through, said so plainly.
-  const send = (text, keys) => {
-    const session = detailOf(state.stepData.get(step.id) || step).session;
-    if (!session) return;
-    api('/api/terminals/' + encodeURIComponent(session) + '/input', {
-      method: 'POST',
-      attempts: 1,
-      body: { text: text || '', keys: keys || [] },
-    }).catch((err) => {
-      toast(isOffline(err)
-        ? 'That did not reach the terminal — no connection. Try again.'
-        : errorMessage(err), 'error');
-    });
-  };
-  const form = el('form', {
-    class: 'term-foot',
-    onsubmit: (event) => {
-      event.preventDefault();
-      send(input.value, ['enter']);
-      input.value = '';
-    },
-  }, input);
-  for (const key of ['enter', 'escape', 'up', 'down', 'ctrl+c']) {
-    form.append(el('button', {
-      class: 'term-key', type: 'button', title: 'Press ' + key, text: key,
-      onclick: () => send('', [key]),
-    }));
-  }
-
-  node.append(head, screen, form,
-    el('div', { class: 'term-note', text: 'Socrates is driving this session. Anything you type goes to the same program.' }));
-  // A terminal redraws constantly. Rebuilding its node would throw away the
-  // scroll position and the caret of whoever is typing into it.
-  node.update = (next) => updateTerminal(node, next);
-  node.update(step);
-  watchTerminal(node, step);
-  return node;
-}
-
-function updateTerminal(node, step) {
-  state.stepData.set(step.id, step);
-  const detail = detailOf(step);
-  const screen = node.querySelector(':scope > .term-screen');
-  const wasAtBottom = screen.scrollHeight - screen.scrollTop - screen.clientHeight < 24;
-  if (screen.textContent !== (step.body || '')) {
-    screen.textContent = step.body || '';
-    if (wasAtBottom) screen.scrollTop = screen.scrollHeight;
-  }
-  const running = detail.running !== false && step.status === 'running';
-  const dot = node.querySelector('.term-dot');
-  // Assigning the same class list is a no op, so the pulse is never restarted
-  // by the screen refresh that arrives several times a second.
-  const dotClass = 'term-dot' + (running ? ' live' : (step.status === 'failed' ? ' failed' : ' stopped'));
-  if (dot.className !== dotClass) dot.className = dotClass;
-  const meta = node.querySelector('.term-head .meta');
-  meta.textContent = running ? 'running'
-    : (detail.exit_code ? 'exited ' + detail.exit_code : 'exited');
-  node.querySelector('.term-foot').hidden = !running;
-  const session = detail.session;
-  const stream = session && state.termStreams.get(session);
-  if (stream) paintTerminalStatus(session, stream);
-}
-
-// watchTerminal subscribes to the session's own stream, which is far quicker
-// than the once a second screen that arrives with the chat events.
-//
-// A terminal is the easiest place in the app to be fooled by a stale screen:
-// it looks alive whether or not anything is still arriving. So the stream
-// reconnects itself, the header says plainly whether the screen is live, and a
-// session that has actually gone is reported as gone rather than retried
-// forever.
-function watchTerminal(node, step) {
-  const session = detailOf(step).session;
-  if (!session || state.termStreams.has(session)) return;
-  const stream = new LiveStream({
-    url: () => '/api/terminals/' + encodeURIComponent(session) + '/events',
-    // The chat stream already speaks for the app as a whole; a terminal that
-    // ended should not put an alarm at the top of the page.
-    reportsGlobal: false,
-    onMessage: (payload) => {
-      if (payload && payload.type === 'closed') {
-        stream.ended = true;
-        closeTerminalStream(session);
-        return;
-      }
-      const terminal = payload && payload.terminal;
-      if (!terminal) return;
+  const what = el('span', { class: 'what' });
+  const open = el('button', {
+    class: 'open-term', type: 'button', text: 'Open terminal',
+    onclick: () => {
+      if (!dock) return;
       const current = state.stepData.get(step.id) || step;
-      updateTerminal(node, Object.assign({}, current, {
-        body: terminal.screen,
-        status: terminal.running ? 'running' : (terminal.exit_code ? 'failed' : 'done'),
-        detail: Object.assign({}, detailOf(current), {
-          running: terminal.running,
-          exit_code: terminal.exit_code,
-        }),
-      }));
-      if (!terminal.running) {
-        stream.ended = true;
-        closeTerminalStream(session);
-      }
-    },
-    onStatus: () => {
-      paintTerminalStatus(session, stream);
-      // Repeated failures may mean the session is simply gone - after a
-      // restart, or once it was cleaned up. Asking once settles it instead of
-      // reconnecting to nothing until the page is closed.
-      if (stream.attempt === 3) probeTerminal(session, stream);
+      const now = detailOf(current);
+      dock.open(now.session, current, now);
     },
   });
-  stream.node = node;
-  state.termStreams.set(session, stream);
-  stream.start();
-  paintTerminalStatus(session, stream);
-}
-
-// probeTerminal answers the one question a stream cannot: does this session
-// still exist? EventSource hides the status code, so it takes a plain request.
-async function probeTerminal(session, stream) {
-  try {
-    await api('/api/terminals/' + encodeURIComponent(session), { attempts: 1 });
-  } catch (err) {
-    if (err instanceof HttpError && err.status === 404) {
-      stream.gone = true;
-      closeTerminalStream(session);
-    }
-  }
-}
-
-// paintTerminalStatus writes the state of the stream into the terminal header,
-// so a frozen screen is labelled as frozen.
-function paintTerminalStatus(session, stream) {
-  const node = stream.node;
-  if (!node || !node.isConnected) return;
-  const chip = node.querySelector('.term-live');
-  if (!chip) return;
-  const step = state.stepData.get(node.dataset.step);
-  const running = step ? detailOf(step).running !== false && step.status === 'running' : true;
-  let label = '';
-  let kind = '';
-  if (stream.gone) {
-    label = 'session gone';
-    kind = 'gone';
-  } else if (stream.ended || !running) {
-    label = '';
-  } else if (stream.status === 'live') {
-    label = '';
-  } else if (stream.status === 'offline') {
-    label = 'offline — screen frozen';
-    kind = 'lost';
-  } else {
-    const age = stream.secondsSinceData;
-    label = age > 2 ? 'reconnecting — frozen ' + age + 's' : 'reconnecting…';
-    kind = 'lost';
-  }
-  node.classList.toggle('term-stale', !!kind);
-  chip.hidden = !label;
-  chip.className = 'term-live ' + kind;
-  if (chip.textContent !== label) chip.textContent = label;
-}
-
-function closeAllTerminalStreams() {
-  for (const stream of state.termStreams.values()) stream.stop();
-  state.termStreams.clear();
-}
-
-function closeTerminalStream(session) {
-  const stream = state.termStreams.get(session);
-  if (!stream) return;
-  stream.stop();
-  paintTerminalStatus(session, stream);
-  state.termStreams.delete(session);
+  node.append(dot, what, open);
+  node.update = (next) => {
+    state.stepData.set(next.id, next);
+    const now = detailOf(next);
+    const running = now.running !== false && next.status === 'running';
+    // Assigning the same class list is a no op, so the pulse is never
+    // restarted by an update that changed nothing about it.
+    const cls = 'term-dot' + (running ? ' live' : (next.status === 'failed' ? ' failed' : ' stopped'));
+    if (dot.className !== cls) dot.className = cls;
+    const name = next.title || now.tool || 'a program';
+    const text = running
+      ? 'Opened ' + name + ' in a terminal'
+      : 'Ran ' + name + ' in a terminal — ' + (now.exit_code ? 'exited ' + now.exit_code : 'finished');
+    if (what.textContent !== text) what.textContent = text;
+    open.hidden = !now.session;
+    // The dock learns about every session from the step that opened it, so a
+    // reloaded page finds its terminals again without a second endpoint.
+    if (dock) dock.noteStep(next, now);
+  };
+  node.update(Object.assign({}, step, { detail: detail || step.detail }));
+  return node;
 }
 
 // A shell command is a one shot: the command line and what it printed.
@@ -1219,41 +1114,62 @@ function buildShell(step) {
   return node;
 }
 
-// The card itself survives an update so it does not slide in again every time;
-// only its contents are redrawn, and only when the question actually changed.
+// The row a question leaves in the transcript. While the question is still
+// open it is not drawn at all: the panel over the composer is the one place it
+// is asked, and a second copy of the same buttons is one too many. What stays
+// here afterwards is the record - what was asked, and what was answered - so
+// reading the conversation back still makes sense.
 function buildQuestion(step) {
   const node = el('div', { class: 'step question', 'data-step': step.id });
   let shown = null;
   node.update = (next) => {
     const detail = detailOf(next);
     const queued = queuedAnswer(detail.question_id);
+    // While the panel over the composer is showing this very question, the
+    // transcript stays out of it: one question, one place it is put.
+    const onPanel = next.status === 'pending' && !!state.pendingQuestion &&
+      state.pendingQuestion.id === detail.question_id;
     const signature = next.status + '\u0000' + (next.body || '') + '\u0000' + JSON.stringify(detail) +
-      '\u0000' + (queued ? queued.state + queued.payload.value : '');
+      '\u0000' + (queued ? queued.state + queued.payload.value : '') + '\u0000' + onPanel;
     if (shown === signature) return;
     shown = signature;
     node.innerHTML = '';
-    fillQuestion(node, next, detail, queued);
+    fillQuestion(node, next, detail, queued, onPanel);
   };
   node.update(step);
   return node;
 }
 
-function fillQuestion(node, step, detail, queued) {
-  const answered = step.status !== 'pending';
-  node.classList.toggle('answered', answered || !!queued);
-  node.append(el('div', { class: 'q-label', text: detail.kind === 'permission' ? 'Permission needed' : 'Your input' }));
-  node.append(el('div', { class: 'q-text', text: step.body || '' }));
+function fillQuestion(node, step, detail, queued, onPanel) {
+  // Still open: it lives over the composer, not here.
+  const open = onPanel || (step.status === 'pending' && !queued);
+  node.hidden = open;
+  if (open) return;
 
-  if (answered) {
-    const label = detail.answer || (step.status === 'cancelled' ? 'cancelled' : '—');
-    node.append(el('div', { class: 'answered-note' }, 'You answered: ', el('b', { text: label })));
+  node.classList.add('answered');
+  const asker = ((detail.source || '') || state.questionSources.get(detail.question_id) || '').trim();
+  const lead = detail.kind === 'permission'
+    ? (asker ? asker + ' asked for permission:' : 'Permission asked:')
+    : (asker ? asker + ' asked:' : 'Asked:');
+  node.append(el('div', { class: 'q-record' },
+    el('span', { class: 'q-lead', text: lead }),
+    el('span', { class: 'q-text', text: step.body || '' }),
+  ));
+
+  // A cancelled question was never answered - the run was stopped underneath
+  // it. Writing "Answered: cancelled" would put words in the person's mouth.
+  if (step.status === 'cancelled' && !queued) {
+    node.append(el('div', { class: 'answered-note' },
+      el('b', { text: 'Not answered' }), ' \u2014 the run was stopped.'));
     return;
   }
 
-  // The answer was given but has not reached the server. Showing it as taken
-  // is both honest and what stops the same decision being made twice.
+  const answer = queued ? queued.payload.value : (detail.answer || '\u2014');
+  const note = el('div', { class: 'answered-note' }, 'Answered: ', el('b', { text: answer }));
+
+  // The answer was given but has not reached the server. Saying so here is
+  // both honest and what stops the same decision being made twice.
   if (queued) {
-    const note = el('div', { class: 'answered-note' }, 'You answered: ', el('b', { text: queued.payload.value }));
     if (queued.state === 'failed') {
       note.append(el('span', { class: 'msg-state' },
         el('span', { text: queued.error || 'Could not be sent.' }),
@@ -1261,31 +1177,161 @@ function fillQuestion(node, step, detail, queued) {
       ));
     } else {
       note.append(el('span', { class: 'msg-state' },
-        el('span', { text: 'Waiting for the connection — it will be sent automatically.' })));
+        el('span', { text: 'Waiting for the connection \u2014 it will be sent automatically.' })));
     }
-    node.append(note);
+  }
+  node.append(note);
+}
+
+/* ------------------------------------------------------- question panel */
+
+// A question blocks the run, so it also blocks the composer: there is nothing
+// useful to type until it is answered. The panel takes the composer's place at
+// the bottom of the screen, where the answer is one thumb away.
+
+// How long the panel stays up saying the answer is on its way. Long enough to
+// read, short enough that the composer does not feel gone.
+const ASK_SENDING_MS = 700;
+
+// askerName is who is really asking. The orchestrator asks in its own name;
+// a question relayed from a harness says whose it is, so "allow this?" is not
+// mistaken for Socrates' own idea.
+function askerName(question) {
+  return ((question && question.source) || '').trim();
+}
+
+// rememberAsker keeps the attribution around for the transcript.
+function rememberAsker(question) {
+  if (!question || !question.id) return;
+  const source = askerName(question);
+  if (source) state.questionSources.set(question.id, source);
+}
+
+function askHeading(question) {
+  const who = askerName(question) || 'Socrates';
+  return who + ' asks:';
+}
+
+// questionFreeText reads the flag off the step the question belongs to: the
+// question row itself does not carry it. Anything unknown allows typing, which
+// is the harmless direction to be wrong in.
+function questionFreeText(question) {
+  const step = question && question.step_id ? state.stepData.get(question.step_id) : null;
+  if (!step) return true;
+  return detailOf(step).free_text !== false;
+}
+
+function clearAskSending() {
+  clearTimeout(state.askTimer);
+  state.askTimer = null;
+  state.askSending = null;
+}
+
+// clearPendingQuestion takes a question off the screen once it can no longer be
+// answered here: it was answered on another device, the run was stopped, or the
+// run ended while this browser was away. The transcript keeps the record; the
+// composer comes back.
+function clearPendingQuestion() {
+  if (!state.pendingQuestion && !state.askSending) return;
+  state.pendingQuestion = null;
+  clearAskSending();
+  hideAutoQuestion();
+  updateMicState();
+  updateAskPanel();
+  // The transcript held the row back while the panel had it. Now it is the
+  // only place the question is still visible.
+  refreshQuestionSteps();
+  updateWorkRow();
+}
+
+// updateAskPanel is the single place that decides whether the person sees the
+// composer or a question. It redraws only when what it would draw changed, so
+// a half typed free text answer survives every event that arrives meanwhile.
+function updateAskPanel() {
+  if (!dom.askPanel) return;
+  const question = state.pendingQuestion || (state.askSending && state.askSending.question) || null;
+  // A leftover "sending" belongs to the question it was given for and to no
+  // other. A second question arriving right behind the first must not inherit
+  // the answer to the one before it.
+  if (state.askSending && (!question || state.askSending.questionId !== question.id)) clearAskSending();
+  const sending = state.askSending;
+  const active = !!question;
+  dom.askPanel.hidden = !active;
+  dom.composer.hidden = active;
+  dom.composerNote.hidden = active;
+  if (!active) {
+    dom.askPanel.innerHTML = '';
+    state.askShown = null;
+    return;
+  }
+  // The answer may already be given and only waiting for a connection. Coming
+  // back to it - a reconnect, a replayed snapshot - must not offer the buttons
+  // again: the decision has been made, it just has not landed.
+  const queued = queuedAnswer(question.id);
+  const signature = JSON.stringify([
+    question.id, question.question, question.kind, question.source || '', question.options || [],
+    questionFreeText(question), sending ? sending.value : null,
+    queued ? queued.state + '\u0000' + queued.payload.value : null,
+  ]);
+  if (state.askShown === signature) return;
+  state.askShown = signature;
+  dom.askPanel.innerHTML = '';
+  fillAskPanel(question, sending, queued);
+}
+
+function fillAskPanel(question, sending, queued) {
+  const node = dom.askPanel;
+  node.append(el('div', { class: 'ask-head' },
+    el('span', { class: 'ask-who', text: askHeading(question) }),
+    question.kind === 'permission' ? el('span', { class: 'ask-kind', text: 'Permission needed' }) : null,
+  ));
+  node.append(el('div', { class: 'ask-q', text: question.question || '' }));
+
+  if (sending || queued) {
+    const value = sending ? sending.value : queued.payload.value;
+    const stuck = !!queued && queued.state === 'failed';
+    node.append(el('div', { class: 'ask-sending' },
+      stuck ? null : el('span', { class: 'spinner' }),
+      el('span', {}, sending ? 'Sending your answer: ' : 'Your answer: ', el('b', { text: value })),
+    ));
+    if (stuck) {
+      node.append(el('div', { class: 'msg-state ask-note' },
+        el('span', { text: queued.error || 'Could not be sent.' }),
+        el('button', { class: 'link', type: 'button', text: 'Try again', onclick: () => state.answers.retry(queued.id) }),
+      ));
+    } else if (queued && !sending) {
+      node.append(el('div', { class: 'msg-state ask-note',
+        text: 'Waiting for the connection \u2014 it will be sent automatically.' }));
+    }
     return;
   }
 
-  const options = el('div', { class: 'options' });
-  for (const option of detail.options || []) {
-    options.append(el('button', { class: 'opt', type: 'button', onclick: () => answerQuestion(detail.question_id, option.value || option.label) },
-      el('div', { class: 'l', text: option.label }),
-      option.description ? el('div', { class: 'd', text: option.description }) : null,
-    ));
+  // Every option in full, label and description both. "Option 2" is useless on
+  // a phone screen a minute later, and it is exactly the moment where picking
+  // the wrong one costs the most.
+  const options = (question.options || []).filter((option) => option && (option.label || option.value));
+  if (options.length) {
+    const list = el('div', { class: 'ask-opts' });
+    for (const option of options) {
+      const value = option.value || option.label;
+      list.append(el('button', { class: 'ask-opt', type: 'button', onclick: () => answerQuestion(question.id, value) },
+        el('span', { class: 'l', text: option.label || option.value }),
+        option.description ? el('span', { class: 'd', text: option.description }) : null,
+      ));
+    }
+    node.append(list);
   }
-  node.append(options);
-  if (detail.free_text !== false) {
-    const input = el('input', { class: 'input', type: 'text', placeholder: 'Type your answer…' });
-    const form = el('form', {
-      class: 'free',
+
+  if (questionFreeText(question)) {
+    const input = el('input', { class: 'input', type: 'text', id: 'askFree', placeholder: 'Or type your answer\u2026', autocomplete: 'off' });
+    node.append(el('form', {
+      class: 'ask-free',
       onsubmit: (event) => {
         event.preventDefault();
         const value = input.value.trim();
-        if (value) answerQuestion(detail.question_id, value);
+        if (value) answerQuestion(question.id, value);
       },
-    }, input, el('button', { class: 'btn sm primary', type: 'submit', text: 'Send' }));
-    node.append(form);
+    }, input, el('button', { class: 'btn sm primary', type: 'submit', text: 'Send' })));
   }
 }
 
@@ -1297,12 +1343,27 @@ function answerQuestion(questionId, value) {
     toast('This question can no longer be answered.', 'error');
     return;
   }
+  const asked = state.pendingQuestion && state.pendingQuestion.id === questionId ? state.pendingQuestion : null;
+  // Durable first: from here on the answer survives a reload, a dead zone and
+  // a closed tab, whatever the panel does next.
   state.answers.add({ questionId, value, chatId: state.chatId });
   state.pendingQuestion = null;
+  if (asked) {
+    clearTimeout(state.askTimer);
+    state.askSending = { questionId, value, question: asked };
+    state.askTimer = setTimeout(() => {
+      if (state.askSending && state.askSending.questionId === questionId) clearAskSending();
+      updateAskPanel();
+    }, ASK_SENDING_MS);
+  }
+  updateAskPanel();
+  // The transcript was holding this row back while the panel had the question.
+  // It takes over now, queue state and all.
+  refreshQuestionSteps();
   hideAutoQuestion();
   updateMicState();
   updateWorkRow();
-  setAutoStatus('Working…');
+  setAutoStatus('Working\u2026');
 }
 
 function toggleChatPanel() {
@@ -1402,8 +1463,7 @@ function setLive(live) {
     // notice is the only way they learn the answer they are waiting for has
     // stopped coming.
     state.spokeOffline = true;
-    speak('The connection dropped. I will keep trying.',
-      { rate: state.prefs.tts_rate, lang: state.prefs.tts_language }).catch(() => {});
+    speak(OFFLINE_NOTICE[spokenLanguage()], speechOptions()).catch(() => {});
   }
   document.body.classList.toggle('stale', !live);
   updateLiveUI();
@@ -1416,7 +1476,7 @@ function setLive(live) {
 function updateLiveUI() {
   const stale = !!state.chatId && !state.live;
   document.body.classList.toggle('stale', stale);
-  for (const [session, stream] of state.termStreams) paintTerminalStatus(session, stream);
+  if (dock) dock.tick();
   if (state.busy || stale) tickWorkRow();
   updateAutoOffline(stale);
 }
@@ -1428,6 +1488,14 @@ function handleEvent(event) {
       upsertStep(event.step);
       noteWork(event.step);
       updateAutoLive(event.step);
+      // A question step that stopped being pending settles the panel too. Stop
+      // and an answer given on another device both arrive as this event, and
+      // without it the composer stays hidden behind a question that nobody is
+      // waiting for any more.
+      if (event.step.kind === 'question' && event.step.status !== 'pending' &&
+          state.pendingQuestion && detailOf(event.step).question_id === state.pendingQuestion.id) {
+        clearPendingQuestion();
+      }
       break;
     case 'step_removed': {
       const node = state.stepEls.get(event.step_id);
@@ -1445,15 +1513,20 @@ function handleEvent(event) {
         if (state.auto) {
           showAutoAnswer(event.message.content, state.prefs.speak_in_auto_mode !== false);
         } else if (state.prefs.speak_in_chat_mode) {
-          speak(event.message.content, { rate: state.prefs.tts_rate, lang: state.prefs.tts_language }).catch(() => {});
+          speak(event.message.content, speechOptions()).catch(() => {});
         }
       }
       break;
-    case 'run':
-      setBusy(event.run.status === 'running' || event.run.status === 'waiting_input');
+    case 'run': {
+      const alive = event.run.status === 'running' || event.run.status === 'waiting_input';
+      setBusy(alive);
       if (event.run.status === 'failed' && event.run.error) toast(event.run.error, 'error');
+      // The run is over - stopped, finished or failed. Nothing can be waiting
+      // for an answer any more, so the composer comes back either way.
+      if (!alive) clearPendingQuestion();
       if (!state.busy) setAutoStatus(state.lastAnswer ? '' : 'Tap the microphone and speak');
       break;
+    }
     case 'chat':
       state.chat = event.chat;
       dom.chatSettings.hidden = false;
@@ -1464,15 +1537,18 @@ function handleEvent(event) {
       refreshChats();
       break;
     case 'question':
+      rememberAsker(event.question);
       if (event.question.status === 'pending') {
         state.pendingQuestion = event.question;
         updateMicState();
         if (state.auto) showAutoQuestion(event.question, state.prefs.speak_in_auto_mode !== false);
-      } else if (state.pendingQuestion && state.pendingQuestion.id === event.question.id) {
-        state.pendingQuestion = null;
-        hideAutoQuestion();
-        updateMicState();
+      } else if ((state.pendingQuestion && state.pendingQuestion.id === event.question.id) ||
+                 (state.askSending && state.askSending.questionId === event.question.id)) {
+        // Answered, or cancelled with the run: either way it is settled.
+        clearPendingQuestion();
       }
+      updateAskPanel();
+      refreshQuestionSteps();
       updateWorkRow();
       break;
     case 'ready':
@@ -1484,6 +1560,10 @@ function handleEvent(event) {
       if (event.step_ids) reconcileSteps(event.step_ids);
       state.rev = Math.max(state.rev, event.rev || 0);
       setBusy(!!event.busy);
+      // A run that ended while this client was away takes its question with it,
+      // step and all. Nothing then arrives to close the panel, so the snapshot
+      // itself has to say so.
+      if (!event.busy) clearPendingQuestion();
       setLive(true);
       break;
     case 'resync':
@@ -1802,8 +1882,16 @@ function setAuto(on, silent = false) {
   writeValue('socrates.auto', on ? '1' : '0');
   document.body.classList.toggle('auto', on);
   dom.autoToggle.checked = on;
+  updateAskPanel();
   if (!on) {
     stopSpeaking();
+    return;
+  }
+  // Switching into hands free mode with a question already waiting has to show
+  // it: the composer panel is gone with the rest of the chat surface, and the
+  // run would otherwise look stuck.
+  if (state.pendingQuestion) {
+    showAutoQuestion(state.pendingQuestion, false);
     return;
   }
   if (!silent && state.lastAnswer) showAutoAnswer(state.lastAnswer, false);
@@ -1892,7 +1980,7 @@ function showAutoAnswer(text, doSpeak) {
   dom.autoScreen.classList.add('answering');
   updateAutoBusy();
   fitAnswer();
-  if (doSpeak) speak(text, { rate: state.prefs.tts_rate, lang: state.prefs.tts_language }).catch(() => {});
+  if (doSpeak) speak(text, speechOptions()).catch(() => {});
 }
 
 function fitAnswer() {
@@ -1904,6 +1992,7 @@ function fitAnswer() {
 
 function showAutoQuestion(question, doSpeak) {
   state.pendingQuestion = question;
+  updateAskPanel();
   dom.autoScreen.classList.add('answering');
   dom.autoAnswer.hidden = true;
   dom.autoActions.hidden = true;
@@ -1925,7 +2014,7 @@ function showAutoQuestion(question, doSpeak) {
     (question.options || []).forEach((option, index) => {
       spoken.push('Option ' + (index + 1) + ': ' + option.label + '.');
     });
-    speak(spoken.join(' '), { rate: state.prefs.tts_rate, lang: state.prefs.tts_language }).catch(() => {});
+    speak(spoken.join(' '), speechOptions()).catch(() => {});
   }
 }
 

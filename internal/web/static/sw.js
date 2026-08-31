@@ -12,7 +12,7 @@
 // network could not answer. So being online never means looking at an old
 // version of the app.
 
-const CACHE = 'socrates-shell-v2';
+const CACHE = 'socrates-shell-v3';
 
 // The API is state, not the app. It is never cached: a stale answer presented
 // as current is exactly the thing this whole change is against.
@@ -37,6 +37,7 @@ self.addEventListener('install', (event) => {
       '/static/js/net.js',
       '/static/js/api.js',
       '/static/js/chat.js',
+      '/static/js/terminals.js',
       '/static/js/markdown.js',
       '/static/js/models.js',
       '/static/js/combobox.js',

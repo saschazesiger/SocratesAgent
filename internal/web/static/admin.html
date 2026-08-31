@@ -92,6 +92,15 @@
     <section class="card">
       <h2>Voice</h2>
       <p class="card-sub">Speech input always runs through a model; speech output uses your browser unless you point it at an endpoint.</p>
+      <div class="field">
+        <label for="voiceLanguage">Spoken language</label>
+        <select class="select" id="voiceLanguage">
+          <option value="auto">Automatic — follow whatever is spoken</option>
+          <option value="de">Deutsch</option>
+          <option value="en">English</option>
+        </select>
+        <div class="hint">One setting for the whole conversation: how your recording is transcribed, which voice reads the answer out loud, and which language Socrates answers in. Automatic detects it per message, which is the right choice if you switch between languages.</div>
+      </div>
       <div class="grid-2">
         <div class="field">
           <label for="sttProvider">Speech to text</label>

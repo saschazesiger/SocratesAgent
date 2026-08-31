@@ -123,18 +123,78 @@ func TestTranscribeChatSendsAudioPart(t *testing.T) {
 }
 
 func TestSpeechReturnsAudio(t *testing.T) {
+	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		w.Header().Set("Content-Type", "audio/mpeg")
 		_, _ = w.Write([]byte{0xff, 0xfb, 0x00})
 	}))
 	defer server.Close()
 	client := New(server.URL, "key")
-	audio, contentType, err := client.Speech(context.Background(), "tts", "alloy", "hi")
+	audio, contentType, err := client.Speech(context.Background(), "gpt-4o-mini-tts", "alloy", "hi", "Read it in German.")
 	if err != nil {
 		t.Fatalf("speech: %v", err)
 	}
 	if len(audio) != 3 || contentType != "audio/mpeg" {
 		t.Fatalf("audio = %v %q", audio, contentType)
+	}
+	if body["instructions"] != "Read it in German." {
+		t.Fatalf("instructions = %#v", body["instructions"])
+	}
+}
+
+// The tts-1 family rejects instructions outright, and a rejected request is a
+// silent answer - which is worse than an answer read with the wrong accent.
+func TestSpeechKeepsInstructionsFromModelsThatRefuseThem(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, _ = w.Write([]byte{0xff})
+	}))
+	defer server.Close()
+	client := New(server.URL, "key")
+	if _, _, err := client.Speech(context.Background(), "tts-1-hd", "alloy", "hi", "Read it in German."); err != nil {
+		t.Fatalf("speech: %v", err)
+	}
+	if _, ok := body["instructions"]; ok {
+		t.Fatalf("instructions were sent to tts-1-hd: %#v", body)
+	}
+}
+
+// Naming the language up front is both faster and more accurate than letting
+// the endpoint guess it from the first second of audio.
+func TestTranscribeEndpointSendsTheLanguage(t *testing.T) {
+	var fields map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Errorf("parse form: %v", err)
+		}
+		fields = map[string]string{}
+		for key, values := range r.MultipartForm.Value {
+			fields[key] = values[0]
+		}
+		io.WriteString(w, `{"text":" hallo "}`)
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "key")
+	text, err := client.TranscribeEndpoint(context.Background(), "whisper-1", []byte("audio"), "audio.wav", "de")
+	if err != nil {
+		t.Fatalf("transcribe: %v", err)
+	}
+	if text != "hallo" {
+		t.Fatalf("text = %q", text)
+	}
+	if fields["language"] != "de" || fields["model"] != "whisper-1" {
+		t.Fatalf("fields = %#v", fields)
+	}
+
+	// Automatic sends no language at all, so the endpoint detects it itself.
+	if _, err := client.TranscribeEndpoint(context.Background(), "whisper-1", []byte("audio"), "audio.wav", ""); err != nil {
+		t.Fatalf("transcribe: %v", err)
+	}
+	if _, ok := fields["language"]; ok {
+		t.Fatalf("language was sent for automatic: %#v", fields)
 	}
 }
 

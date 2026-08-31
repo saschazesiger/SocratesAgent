@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS questions (
   options     TEXT NOT NULL DEFAULT '[]',
   status      TEXT NOT NULL,
   answer      TEXT NOT NULL DEFAULT '',
+  source      TEXT NOT NULL DEFAULT '',
   created_at  INTEGER NOT NULL,
   answered_at INTEGER NOT NULL DEFAULT 0
 );
@@ -151,6 +152,7 @@ func migrate(db *sql.DB) error {
 		{"chats", "client_id", "TEXT NOT NULL DEFAULT ''"},
 		{"messages", "rev", "INTEGER NOT NULL DEFAULT 0"},
 		{"messages", "client_id", "TEXT NOT NULL DEFAULT ''"},
+		{"questions", "source", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		has, err := hasColumn(db, add.table, add.column)
 		if err != nil {
@@ -760,17 +762,21 @@ func (s *Store) StepIDs(chatID string) ([]string, error) {
 // Question is an interactive prompt that blocks a run: either the orchestrator
 // asking the user something.
 type Question struct {
-	ID         string   `json:"id"`
-	ChatID     string   `json:"chat_id"`
-	RunID      string   `json:"run_id"`
-	StepID     string   `json:"step_id"`
-	Kind       string   `json:"kind"` // ask | permission
-	Question   string   `json:"question"`
-	Options    []Option `json:"options"`
-	Status     string   `json:"status"`
-	Answer     string   `json:"answer"`
-	CreatedAt  int64    `json:"created_at"`
-	AnsweredAt int64    `json:"answered_at"`
+	ID       string   `json:"id"`
+	ChatID   string   `json:"chat_id"`
+	RunID    string   `json:"run_id"`
+	StepID   string   `json:"step_id"`
+	Kind     string   `json:"kind"` // ask | permission
+	Question string   `json:"question"`
+	Options  []Option `json:"options"`
+	Status   string   `json:"status"`
+	Answer   string   `json:"answer"`
+	// Source names who is really asking, so the browser can say "Claude Code
+	// asks…" instead of putting every question in Socrates' own voice. Empty
+	// means Socrates itself.
+	Source     string `json:"source,omitempty"`
+	CreatedAt  int64  `json:"created_at"`
+	AnsweredAt int64  `json:"answered_at"`
 }
 
 // Option is one selectable answer.
@@ -791,9 +797,9 @@ func (s *Store) CreateQuestion(q *Question) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`INSERT INTO questions(id, chat_id, run_id, step_id, kind, question, options, status, answer, created_at, answered_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		q.ID, q.ChatID, q.RunID, q.StepID, q.Kind, q.Question, string(opts), q.Status, q.Answer, q.CreatedAt, q.AnsweredAt)
+	_, err = s.db.Exec(`INSERT INTO questions(id, chat_id, run_id, step_id, kind, question, options, status, answer, source, created_at, answered_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		q.ID, q.ChatID, q.RunID, q.StepID, q.Kind, q.Question, string(opts), q.Status, q.Answer, q.Source, q.CreatedAt, q.AnsweredAt)
 	return err
 }
 
@@ -801,9 +807,9 @@ func (s *Store) CreateQuestion(q *Question) error {
 func (s *Store) GetQuestion(id string) (*Question, error) {
 	q := &Question{}
 	var opts string
-	err := s.db.QueryRow(`SELECT id, chat_id, run_id, step_id, kind, question, options, status, answer, created_at, answered_at
+	err := s.db.QueryRow(`SELECT id, chat_id, run_id, step_id, kind, question, options, status, answer, source, created_at, answered_at
 		FROM questions WHERE id = ?`, id).
-		Scan(&q.ID, &q.ChatID, &q.RunID, &q.StepID, &q.Kind, &q.Question, &opts, &q.Status, &q.Answer, &q.CreatedAt, &q.AnsweredAt)
+		Scan(&q.ID, &q.ChatID, &q.RunID, &q.StepID, &q.Kind, &q.Question, &opts, &q.Status, &q.Answer, &q.Source, &q.CreatedAt, &q.AnsweredAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -838,7 +844,7 @@ func (s *Store) PendingQuestion(chatID string) (*Question, error) {
 
 // ListQuestions returns all questions of a chat.
 func (s *Store) ListQuestions(chatID string) ([]Question, error) {
-	rows, err := s.db.Query(`SELECT id, chat_id, run_id, step_id, kind, question, options, status, answer, created_at, answered_at
+	rows, err := s.db.Query(`SELECT id, chat_id, run_id, step_id, kind, question, options, status, answer, source, created_at, answered_at
 		FROM questions WHERE chat_id = ? ORDER BY created_at`, chatID)
 	if err != nil {
 		return nil, err
@@ -849,7 +855,7 @@ func (s *Store) ListQuestions(chatID string) ([]Question, error) {
 		var q Question
 		var opts string
 		if err := rows.Scan(&q.ID, &q.ChatID, &q.RunID, &q.StepID, &q.Kind, &q.Question, &opts,
-			&q.Status, &q.Answer, &q.CreatedAt, &q.AnsweredAt); err != nil {
+			&q.Status, &q.Answer, &q.Source, &q.CreatedAt, &q.AnsweredAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(opts), &q.Options)

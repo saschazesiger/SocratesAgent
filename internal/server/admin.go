@@ -41,8 +41,8 @@ func (s *Server) handlePreferences(w http.ResponseWriter, r *http.Request) {
 		"speak_in_auto_mode": settings.Voice.SpeakInAutoMode,
 		"speak_in_chat_mode": settings.Voice.SpeakInChatMode,
 		"tts_rate":           settings.Voice.TTSRate,
-		"tts_language":       settings.Voice.TTSLanguage,
 		"tts_provider":       settings.Voice.TTSProvider,
+		"language":           settings.Voice.Language,
 	})
 }
 

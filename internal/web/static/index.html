@@ -40,6 +40,11 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
       </button>
       <div class="title" id="chatTitle">New chat</div>
+      <button class="icon-btn term-btn" id="termBtn" title="Terminal sessions" aria-expanded="false" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></svg>
+        <span class="term-live-dot" aria-hidden="true"></span>
+        <span class="term-badge" id="termBadge" aria-hidden="true" hidden>1</span>
+      </button>
       <button class="icon-btn" id="chatSettings" title="Chat settings" hidden>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
       </button>
@@ -74,6 +79,10 @@
     </div>
 
     <div class="composer-wrap">
+      <!-- A question the run is waiting on takes the composer's place. There is
+           nothing else to do until it is answered, and on a phone the answer
+           belongs where the thumb already is. -->
+      <section class="ask-panel" id="askPanel" hidden aria-live="polite"></section>
       <form class="composer" id="composer">
         <textarea id="input" rows="1" placeholder="Message Socrates…" autocomplete="off"></textarea>
         <div class="actions">
@@ -86,7 +95,7 @@
           </button>
         </div>
       </form>
-      <div class="composer-note">Socrates works at a terminal on this machine, and drives Claude Code, Codex and OpenCode there.</div>
+      <div class="composer-note" id="composerNote">Socrates works at a terminal on this machine, and drives Claude Code, Codex and OpenCode there.</div>
     </div>
 
     <section class="auto-screen" id="autoScreen">
@@ -111,6 +120,39 @@
       </div>
     </section>
   </main>
+
+  <!-- The terminal dock. A terminal is a place you look at while the
+       conversation goes on beside it, not a step in the transcript, so it is
+       docked here: a column on a desktop, a full height drawer on a phone. -->
+  <aside class="term-dock" id="termDock" hidden aria-label="Terminal sessions">
+    <div class="dock-grip" id="dockGrip" title="Drag to resize"></div>
+    <div class="dock-head">
+      <div class="dock-tabs" id="dockTabs" role="tablist" aria-label="Terminal sessions"></div>
+      <!-- A question is answered in the chat, which this drawer covers on a
+           phone. Saying so beats leaving someone tapping at a screen that is
+           waiting on them. -->
+      <span class="dock-hint" id="dockHint" hidden>Socrates is asking — see the chat</span>
+      <button class="icon-btn dock-close" id="dockClose" title="Close the terminal panel" aria-label="Close the terminal panel">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <div class="dock-sub">
+      <span class="dock-status" id="dockStatus"></span>
+      <span class="dock-meta" id="dockMeta"></span>
+      <button class="dock-dismiss" id="dockDismiss" type="button">Dismiss</button>
+    </div>
+    <pre class="term-screen dock-screen" id="dockScreen" tabindex="0" aria-label="Terminal screen"></pre>
+    <div class="dock-empty" id="dockEmpty" hidden>Waiting for the program to paint its first screen…</div>
+    <!-- Typing here is never queued: a keystroke that arrives twice is a
+         different keystroke. If it did not land, the panel says so. -->
+    <div class="dock-error" id="dockError" hidden role="status"></div>
+    <form class="dock-foot" id="dockForm">
+      <input id="dockInput" type="text" placeholder="Type here to take over…" spellcheck="false" autocomplete="off" autocapitalize="off">
+      <button class="term-key send" type="submit" title="Send and press enter">send</button>
+    </form>
+    <div class="dock-keys" id="dockKeys"></div>
+    <div class="term-note">Socrates is driving this session. Anything you type goes to the same program.</div>
+  </aside>
 </div>
 <div class="toasts" id="toasts"></div>
 <script type="module" src="/static/js/chat.js"></script>

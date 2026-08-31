@@ -247,3 +247,54 @@ func TestSettingsRoundTripKeepsAnEmptiedEnvironment(t *testing.T) {
 		t.Errorf("env = %#v after a round trip, want it left empty", back.Tools[0].Env)
 	}
 }
+
+func TestNormalizeDefaultsTheLanguageToAutomatic(t *testing.T) {
+	s := Settings{}
+	s.Normalize()
+	if s.Voice.Language != LanguageAuto {
+		t.Fatalf("language = %q", s.Voice.Language)
+	}
+	if LanguageName(s.Voice.Language) != "" || LanguageTag(s.Voice.Language) != "" {
+		t.Fatalf("automatic must not name a language")
+	}
+}
+
+// The language used to live on the playback side only. An installation that
+// set it there keeps its choice now that one setting covers the whole
+// conversation.
+func TestNormalizeMigratesTheOldPlaybackLanguage(t *testing.T) {
+	s := Settings{}
+	s.Voice.TTSLanguage = "de-DE"
+	s.Normalize()
+	if s.Voice.Language != LanguageDE {
+		t.Fatalf("language = %q", s.Voice.Language)
+	}
+	if s.Voice.TTSLanguage != "" {
+		t.Fatalf("the old field was kept: %q", s.Voice.TTSLanguage)
+	}
+	if LanguageName(s.Voice.Language) != "German" || LanguageTag(s.Voice.Language) != "de-DE" {
+		t.Fatalf("german = %q / %q", LanguageName(s.Voice.Language), LanguageTag(s.Voice.Language))
+	}
+}
+
+func TestNormalizeLanguage(t *testing.T) {
+	cases := map[string]string{
+		"":              LanguageAuto,
+		"auto":          LanguageAuto,
+		"de":            LanguageDE,
+		"DE":            LanguageDE,
+		" de-CH ":       LanguageDE,
+		"de_DE":         LanguageDE,
+		"en-GB":         LanguageEN,
+		"fr":            LanguageAuto,
+		"nonsense":      LanguageAuto,
+		"-":             LanguageAuto,
+		"deutsch":       LanguageAuto,
+		string(rune(0)): LanguageAuto,
+	}
+	for in, want := range cases {
+		if got := NormalizeLanguage(in); got != want {
+			t.Errorf("NormalizeLanguage(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
