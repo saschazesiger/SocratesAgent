@@ -43,29 +43,27 @@ func buildTools(s config.Settings) []openrouter.Tool {
 	var openDesc strings.Builder
 	openDesc.WriteString("Start a program in a new terminal session and keep it running. Use it for " +
 		"anything interactive: a coding agent, a REPL, a dev server, a command that will ask questions. " +
-		"Give either `tool` (one of the configured programs below, started with the right arguments for you) " +
-		"or `command` (any command line), not both. With neither you get a plain interactive shell.\n" +
-		"The session stays open across your turns and across messages from the user, so open one agent " +
-		"session and keep talking to it rather than starting a new one for every instruction.\n" +
-		"A coding agent is always started with `tool`, never as a `command` in a headless mode: no `-p`, " +
-		"`--print`, `--output-format`, `codex exec`, `opencode run`, no prompt piped in on stdin. Those are " +
-		"refused. The user is watching this terminal and wants to be able to take the keyboard, which only " +
-		"the real interactive session gives them.")
-	enabled := s.EnabledTools()
+		"Give either `skill` (one of the configured skills below, started with the right arguments for " +
+		"you) or `command` (any command line), not both. With neither you get a plain interactive shell.\n" +
+		"The session stays open across your turns and across messages from the user, so open one session " +
+		"and keep talking to it rather than starting a new one for every instruction.\n" +
+		"Each skill's entry in the system prompt says how to drive that program and whether it may be " +
+		"used any other way. Most may not: start those here, never through shell_run.")
+	enabled := s.EnabledSkills()
 	if len(enabled) > 0 {
-		openDesc.WriteString("\n\nConfigured programs for `tool`:\n")
-		for _, t := range enabled {
-			fmt.Fprintf(&openDesc, "- %s (%s): %s\n", t.ID, t.Name, strings.TrimSpace(t.Description))
+		openDesc.WriteString("\n\nConfigured skills for `skill`:\n")
+		for _, sk := range enabled {
+			fmt.Fprintf(&openDesc, "- %s (%s): %s\n", sk.ID, sk.Name, strings.TrimSpace(sk.Description))
 		}
 	}
 	ids := make([]string, 0, len(enabled))
-	for _, t := range enabled {
-		ids = append(ids, t.ID)
+	for _, sk := range enabled {
+		ids = append(ids, sk.ID)
 	}
 	enumJSON, _ := json.Marshal(ids)
-	toolProperty := `"tool": {"type": "string", "description": "One of the configured programs."},`
+	skillProperty := `"skill": {"type": "string", "description": "One of the configured skills."},`
 	if len(ids) > 0 {
-		toolProperty = fmt.Sprintf(`"tool": {"type": "string", "enum": %s, "description": "One of the configured programs."},`, enumJSON)
+		skillProperty = fmt.Sprintf(`"skill": {"type": "string", "enum": %s, "description": "One of the configured skills."},`, enumJSON)
 	}
 
 	keyList := term.KeyNames()
@@ -77,10 +75,8 @@ func buildTools(s config.Settings) []openrouter.Tool {
 				"does not need a conversation: git, ls, cat, grep, npm, a build, a test run. It returns the "+
 				"exit code and the output. Do not use it for a program that will ask you something or that "+
 				"never exits - open a terminal session for those.\n"+
-				"Never run a coding agent (claude, codex, opencode) here, not even in a print, exec or "+
-				"--output-format mode and not with a prompt piped in: it is refused. Those programs are only "+
-				"ever used interactively through terminal_open, because the user is watching the session and "+
-				"wants to be able to take over.",
+				"A skill marked interactive only is never run here, in any form: it belongs in a terminal "+
+				"session where the user can watch it and take over.",
 			`{
   "type": "object",
   "properties": {
@@ -95,8 +91,9 @@ func buildTools(s config.Settings) []openrouter.Tool {
 		fn(toolTerminalOpen, openDesc.String(), `{
   "type": "object",
   "properties": {
-    `+toolProperty+`
-    "command": {"type": "string", "description": "Any command line to start instead of a configured program."},
+    `+skillProperty+`
+    "tool": {"type": "string", "description": "Deprecated alias for `+"`skill`"+`, still accepted."},
+    "command": {"type": "string", "description": "Any command line to start instead of a configured skill."},
     "name": {"type": "string", "description": "Short label shown to the user, for example \"claude · refactor auth\"."},
     "directory": {"type": "string", "description": "Working directory. Relative paths are resolved against the chat's working directory. Optional."}
   },
@@ -235,9 +232,6 @@ func (e *Engine) execShellRun(ctx context.Context, chat *store.Chat, run *store.
 	if strings.TrimSpace(args.Command) == "" {
 		return "The `command` argument was empty."
 	}
-	if refusal := guardShellCommand(args.Command, newHarnessRules(e.Settings())); refusal != "" {
-		return refusal
-	}
 	timeout := time.Duration(args.Timeout) * time.Second
 	if args.Timeout <= 0 {
 		timeout = 2 * time.Minute
@@ -257,23 +251,25 @@ func (e *Engine) execShellRun(ctx context.Context, chat *store.Chat, run *store.
 
 func (e *Engine) execTerminalOpen(ctx context.Context, chat *store.Chat, run *store.Run, raw string) string {
 	var args struct {
+		Skill     string `json:"skill"`
 		Tool      string `json:"tool"`
 		Command   string `json:"command"`
 		Name      string `json:"name"`
 		Directory string `json:"directory"`
 	}
 	if err := json.Unmarshal([]byte(raw), &args); err != nil {
-		return badArgs(err, "Send valid JSON with a `tool` or a `command`.")
+		return badArgs(err, "Send valid JSON with a `skill` or a `command`.")
 	}
-	if strings.TrimSpace(args.Tool) != "" && strings.TrimSpace(args.Command) != "" {
-		return "Give either `tool` or `command`, not both."
+	// `tool` is what this argument was called before skills existed. A model
+	// working from an older prompt still gets what it meant.
+	skill := strings.TrimSpace(args.Skill)
+	if skill == "" {
+		skill = strings.TrimSpace(args.Tool)
 	}
-	if strings.TrimSpace(args.Command) != "" {
-		if refusal := guardTerminalCommand(args.Command, newHarnessRules(e.Settings())); refusal != "" {
-			return refusal
-		}
+	if skill != "" && strings.TrimSpace(args.Command) != "" {
+		return "Give either `skill` or `command`, not both."
 	}
-	return e.openTerminal(ctx, chat, run, args.Tool, args.Command, args.Name, args.Directory)
+	return e.openTerminal(ctx, chat, run, skill, args.Command, args.Name, args.Directory)
 }
 
 func (e *Engine) execTerminalSend(ctx context.Context, chat *store.Chat, raw string) string {
@@ -342,8 +338,8 @@ func (e *Engine) execTerminalWait(ctx context.Context, chat *store.Chat, raw str
 	if problem != "" {
 		return problem
 	}
-	tool := e.toolOfSession(handle)
-	limit := tool.Timeout()
+	skill := e.skillOfSession(handle)
+	limit := skill.Timeout()
 	if args.Seconds > 0 {
 		limit = clampDuration(time.Duration(args.Seconds)*time.Second, time.Second, time.Hour)
 	}
@@ -363,7 +359,7 @@ func (e *Engine) execTerminalWait(ctx context.Context, chat *store.Chat, raw str
 		return e.describeSession(ctx, handle, note, false)
 	}
 
-	quiet := tool.Idle()
+	quiet := skill.Idle()
 	if args.Quiet > 0 {
 		quiet = clampDuration(time.Duration(args.Quiet)*time.Second, time.Second, 2*time.Minute)
 	}
@@ -469,13 +465,13 @@ func (e *Engine) askerName(run *store.Run) string {
 	}
 	settings := e.Settings()
 	// List is newest first, so the newest live session that came from a
-	// configured tool is the one the user is looking at.
+	// configured skill is the one the user is looking at.
 	for _, h := range e.Terminals.List(run.ChatID) {
 		if !h.Alive() {
 			continue
 		}
-		if tool, ok := settings.Tool(h.Meta(metaTool)); ok {
-			return tool.Name
+		if skill, ok := settings.Skill(skillIDOf(h)); ok {
+			return skill.Name
 		}
 	}
 	return ""
@@ -539,581 +535,4 @@ func clampDuration(d, low, high time.Duration) time.Duration {
 		return high
 	}
 	return d
-}
-
-// --- Harness guard -----------------------------------------------------------
-//
-// The coding agents are meant to be watched. The user opens Socrates to look
-// over the shoulder of a real Claude Code, Codex or OpenCode session and to
-// take the keyboard when they want to, which only works if the session is the
-// interactive TUI in a terminal the browser can show. A model that reaches for
-// `claude -p "..."` or `codex exec ...` gets the answer but hides the work, so
-// those invocations are refused here rather than only discouraged in the
-// prompt.
-//
-// This is a guard-rail for a well meaning model, not a security boundary. It
-// reads the command line the way a shell would in the common cases and errs
-// towards refusing, but anything determined to get past it will: an
-// interpreter one liner (`python -c`, `perl -e`), a script file written first
-// and then run, an alias or a copy of the binary under another name, a PATH
-// entry that shadows it, `npx`, `ssh`, `tmux send-keys`, `find -exec`, and the
-// body of a heredoc are all out of scope. The point is that the model never
-// reaches for a headless run by accident, and is told what to do instead when
-// it does.
-
-// knownHarnesses are the agents Socrates ships with. They are guarded by name
-// even when the settings have renamed them or the tool is disabled, because a
-// disabled tool is still installed on the machine.
-var knownHarnesses = []string{"claude", "codex", "opencode"}
-
-// shellSegment is one command of a pipeline or list, plus whether its standard
-// input comes from somewhere other than the terminal.
-type shellSegment struct {
-	words     []string
-	stdinFrom bool
-}
-
-// harnessRules is what the guard needs to know about the configured tools:
-// which commands are coding agents, and which of their flags swallow the word
-// after them.
-type harnessRules struct {
-	// names maps a command to the id of the configured tool that runs it, so
-	// the refusal can name the tool to open.
-	names map[string]string
-	// valueFlags take a separate value, which must not be mistaken for a
-	// subcommand: `codex --model o3 exec x` is still headless.
-	valueFlags map[string]bool
-}
-
-func newHarnessRules(s config.Settings) harnessRules {
-	rules := harnessRules{
-		names:      map[string]string{},
-		valueFlags: map[string]bool{"-m": true, "--model": true},
-	}
-	for _, n := range knownHarnesses {
-		rules.names[n] = ""
-	}
-	for _, t := range s.Tools {
-		if flag := strings.TrimSpace(t.ModelFlag); flag != "" {
-			rules.valueFlags[flag] = true
-		}
-		base := commandBase(t.Command)
-		if base == "" {
-			continue
-		}
-		if id, seen := rules.names[base]; !seen || id == "" {
-			rules.names[base] = t.ID
-		}
-	}
-	// Prefer an enabled tool's id when several tools share a command.
-	for _, t := range s.EnabledTools() {
-		if base := commandBase(t.Command); base != "" {
-			rules.names[base] = t.ID
-		}
-	}
-	return rules
-}
-
-// commandBase reduces `/usr/local/bin/Claude.exe` to `claude`.
-func commandBase(command string) string {
-	command = strings.ToLower(strings.TrimSpace(command))
-	if command == "" {
-		return ""
-	}
-	command = strings.ReplaceAll(command, "\\", "/")
-	if i := strings.LastIndex(command, "/"); i >= 0 {
-		command = command[i+1:]
-	}
-	return strings.TrimSuffix(command, ".exe")
-}
-
-// wrappers are words that stand in front of the command that really runs:
-// launchers, and the shell's own reserved words.
-var wrappers = map[string]bool{
-	"sudo": true, "doas": true, "env": true, "nohup": true, "setsid": true,
-	"exec": true, "time": true, "stdbuf": true, "timeout": true, "nice": true,
-	"ionice": true,
-	// Reserved words, so a loop or a conditional body is still inspected.
-	"do": true, "then": true, "else": true, "elif": true, "if": true,
-	"while": true, "until": true, "!": true,
-}
-
-// numericArgWrappers take a plain number before the command: `timeout 10 ...`.
-var numericArgWrappers = map[string]bool{"timeout": true, "nice": true, "ionice": true}
-
-// shellRunners run a script handed to them as a string, which has to be
-// inspected in its own right.
-var shellRunners = map[string]bool{
-	"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true, "ash": true,
-}
-
-// headlessFlags are the flags that turn a coding agent into a batch program.
-var headlessFlags = map[string]bool{
-	"-p": true, "--print": true, "--non-interactive": true, "--noninteractive": true,
-	"-q": true, "--quiet": true, "--json": true, "--headless": true, "--no-tui": true,
-	"--output-format": true, "--input-format": true,
-}
-
-// headlessPrefixes catch the `--flag=value` spelling of the same thing.
-var headlessPrefixes = []string{"--output-format=", "--input-format=", "--print=", "--json="}
-
-// headlessSubcommands are the first positional argument that means "do it once
-// and exit": `codex exec`, `opencode run`.
-var headlessSubcommands = map[string]bool{"exec": true, "run": true}
-
-// harmlessFlags ask the program a question about itself and exit. They start
-// no session, so there is nothing to watch and nothing to refuse.
-var harmlessFlags = map[string]bool{
-	"--version": true, "-v": true, "-V": true, "--help": true, "-h": true,
-	"version": true, "help": true,
-}
-
-// splitShellSegments breaks a command line into its pipeline and list members
-// with a deliberately small shell parser. It only has to be right about where
-// commands begin; anything it cannot make sense of becomes a separate segment,
-// which is the safe direction.
-func splitShellSegments(command string) []shellSegment {
-	command = flattenSubstitutions(command)
-
-	var (
-		segments []shellSegment
-		cur      shellSegment
-		buf      strings.Builder
-		started  bool
-	)
-	flushWord := func() {
-		if started {
-			cur.words = append(cur.words, buf.String())
-			buf.Reset()
-			started = false
-		}
-	}
-	// A file descriptor in front of a redirection (`2>&1`) is part of the
-	// redirection, not an argument of the command.
-	dropDescriptor := func() {
-		if started && isAllDigits(buf.String()) {
-			buf.Reset()
-			started = false
-			return
-		}
-		flushWord()
-	}
-	flushSegment := func(nextPiped bool) {
-		flushWord()
-		if len(cur.words) > 0 {
-			segments = append(segments, cur)
-		}
-		cur = shellSegment{stdinFrom: nextPiped}
-	}
-
-	runes := []rune(command)
-	// skipTarget swallows the file a redirection writes to, so it is never
-	// read as a command.
-	skipTarget := func(i int) int {
-		for i+1 < len(runes) && (runes[i+1] == ' ' || runes[i+1] == '\t') {
-			i++
-		}
-		for i+1 < len(runes) && !strings.ContainsRune(" \t\n;|&<>", runes[i+1]) {
-			i++
-		}
-		return i
-	}
-	redirectOut := func(i int) int {
-		dropDescriptor()
-		if i+1 < len(runes) && runes[i+1] == '>' {
-			i++
-		}
-		if i+1 < len(runes) && runes[i+1] == '&' {
-			// `>&1`, `>&2`, `>&-`: a descriptor, not a file.
-			i++
-			for i+1 < len(runes) && (isDigit(runes[i+1]) || runes[i+1] == '-') {
-				i++
-			}
-			return i
-		}
-		return skipTarget(i)
-	}
-
-	for i := 0; i < len(runes); i++ {
-		c := runes[i]
-		switch {
-		case c == '\'':
-			started = true
-			for i++; i < len(runes) && runes[i] != '\''; i++ {
-				buf.WriteRune(runes[i])
-			}
-		case c == '"':
-			started = true
-			for i++; i < len(runes) && runes[i] != '"'; i++ {
-				if runes[i] == '\\' && i+1 < len(runes) {
-					i++
-				}
-				buf.WriteRune(runes[i])
-			}
-		case c == '\\' && i+1 < len(runes):
-			i++
-			if runes[i] != '\n' {
-				started = true
-				buf.WriteRune(runes[i])
-			}
-		case c == '|':
-			if i+1 < len(runes) && runes[i+1] == '|' {
-				i++
-				flushSegment(false)
-			} else {
-				flushSegment(true)
-			}
-		case c == '&':
-			switch {
-			case i+1 < len(runes) && runes[i+1] == '>':
-				// `&>file` and `&>>file` redirect, they do not separate.
-				i++
-				i = redirectOut(i)
-			case i+1 < len(runes) && runes[i+1] == '&':
-				i++
-				flushSegment(false)
-			default:
-				flushSegment(false)
-			}
-		case c == ';' || c == '\n':
-			flushSegment(false)
-		case c == '<':
-			dropDescriptor()
-			cur.stdinFrom = true
-			for i+1 < len(runes) && runes[i+1] == '<' {
-				i++
-			}
-			if i+1 < len(runes) && runes[i+1] == '&' {
-				i++
-				for i+1 < len(runes) && (isDigit(runes[i+1]) || runes[i+1] == '-') {
-					i++
-				}
-			}
-		case c == '>':
-			i = redirectOut(i)
-		case c == ' ' || c == '\t' || c == '\r':
-			flushWord()
-		default:
-			started = true
-			buf.WriteRune(c)
-		}
-	}
-	flushSegment(false)
-	return segments
-}
-
-func isDigit(r rune) bool { return r >= '0' && r <= '9' }
-
-func isAllDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if !isDigit(r) {
-			return false
-		}
-	}
-	return true
-}
-
-// flattenSubstitutions turns command substitutions and subshells into plain
-// separators, so `$(claude -p x)` is inspected as a command of its own. A
-// substitution opened inside double quotes closes the quoting first, because
-// what is in it is a command line and not a string. Single quoted text is left
-// alone: nothing in it ever runs.
-func flattenSubstitutions(command string) string {
-	var (
-		b        strings.Builder
-		inDouble bool
-		stack    []bool
-	)
-	open := func() {
-		if inDouble {
-			b.WriteRune('"')
-		}
-		b.WriteRune('\n')
-		stack = append(stack, inDouble)
-		inDouble = false
-	}
-	closeSub := func() {
-		b.WriteRune('\n')
-		if n := len(stack); n > 0 {
-			inDouble = stack[n-1]
-			stack = stack[:n-1]
-			if inDouble {
-				b.WriteRune('"')
-			}
-		}
-	}
-
-	runes := []rune(command)
-	for i := 0; i < len(runes); i++ {
-		c := runes[i]
-		switch {
-		case c == '\'' && !inDouble:
-			b.WriteRune(c)
-			for i++; i < len(runes) && runes[i] != '\''; i++ {
-				b.WriteRune(runes[i])
-			}
-			b.WriteRune('\'')
-		case c == '\\' && i+1 < len(runes):
-			b.WriteRune(c)
-			i++
-			b.WriteRune(runes[i])
-		case c == '"':
-			inDouble = !inDouble
-			b.WriteRune(c)
-		case c == '$' && i+1 < len(runes) && runes[i+1] == '(':
-			i++
-			open()
-		case c == '`':
-			// A backtick both opens and closes; treating it as an opener and
-			// the next one as a closer keeps the quoting balanced.
-			if len(stack) > 0 {
-				closeSub()
-			} else {
-				open()
-			}
-		// Inside double quotes only `$(` and a backtick run anything: a bare
-		// bracket there is ordinary text, as in `-m "add feature (wip)"`.
-		case (c == '(' || c == '{') && !inDouble:
-			open()
-		case (c == ')' || c == '}') && !inDouble:
-			closeSub()
-		default:
-			b.WriteRune(c)
-		}
-	}
-	return b.String()
-}
-
-// harnessUse is what the guard found in one command line.
-type harnessUse struct {
-	name     string // the command as written, for the message
-	toolID   string // the configured tool that runs it, when there is one
-	headless bool   // it was invoked in a batch mode rather than as a TUI
-	reason   string // the part of the command line that gave it away
-}
-
-// findHarnessUse looks for a coding agent being started by a command line. It
-// returns the first one it finds, preferring a headless invocation so the
-// message names the real problem.
-func findHarnessUse(command string, rules harnessRules) *harnessUse {
-	return findHarnessUseDepth(command, rules, 0)
-}
-
-// findHarnessUseDepth carries the recursion budget for `sh -c`, `eval` and
-// `xargs`, which are inspected by looking at the command line inside them.
-func findHarnessUseDepth(command string, rules harnessRules, depth int) *harnessUse {
-	if depth > 4 || strings.TrimSpace(command) == "" {
-		return nil
-	}
-	var first *harnessUse
-	for _, seg := range splitShellSegments(command) {
-		use := inspectSegment(seg, rules, depth)
-		if use == nil {
-			continue
-		}
-		if use.headless {
-			return use
-		}
-		if first == nil {
-			first = use
-		}
-	}
-	return first
-}
-
-func inspectSegment(seg shellSegment, rules harnessRules, depth int) *harnessUse {
-	words := seg.words
-	// Step over environment assignments and wrapper commands.
-	for len(words) > 0 {
-		base := commandBase(words[0])
-		switch {
-		case base == "" || isAssignment(words[0]):
-			words = words[1:]
-		case wrappers[base]:
-			words = stripWrapperArgs(base, words[1:])
-		default:
-			goto resolved
-		}
-	}
-resolved:
-	if len(words) == 0 {
-		return nil
-	}
-	base, rest := commandBase(words[0]), words[1:]
-
-	switch {
-	case shellRunners[base]:
-		if script, ok := shellScriptArg(rest); ok {
-			return findHarnessUseDepth(script, rules, depth+1)
-		}
-		return nil
-	case base == "eval":
-		return findHarnessUseDepth(strings.Join(rest, " "), rules, depth+1)
-	case base == "xargs":
-		return findHarnessUseDepth(strings.Join(stripLeadingFlags(rest), " "), rules, depth+1)
-	}
-
-	toolID, ok := rules.names[base]
-	if !ok {
-		return nil
-	}
-	if len(rest) > 0 && harmlessFlags[rest[0]] {
-		// `claude --version` starts no session, so there is nothing to watch.
-		return nil
-	}
-	use := &harnessUse{name: base, toolID: toolID}
-	if use.toolID == "" {
-		use.toolID = base
-	}
-	if seg.stdinFrom {
-		use.headless, use.reason = true, "a prompt on standard input"
-		return use
-	}
-	positional := 0
-	for i := 0; i < len(rest); i++ {
-		arg := rest[i]
-		if strings.HasPrefix(arg, "-") {
-			if headlessFlags[arg] {
-				use.headless, use.reason = true, fmt.Sprintf("the %s flag", arg)
-				return use
-			}
-			for _, prefix := range headlessPrefixes {
-				if strings.HasPrefix(arg, prefix) {
-					use.headless, use.reason = true, fmt.Sprintf("the %s flag", arg)
-					return use
-				}
-			}
-			if rules.valueFlags[arg] && i+1 < len(rest) {
-				// The value of `--model o3` is not the subcommand.
-				i++
-			}
-			continue
-		}
-		positional++
-		if positional == 1 && headlessSubcommands[arg] {
-			use.headless, use.reason = true, fmt.Sprintf("the %s subcommand", arg)
-			return use
-		}
-	}
-	return use
-}
-
-// stripWrapperArgs drops the options of a wrapper command, and the plain
-// number that `timeout` and `nice` take, leaving the command it will run.
-func stripWrapperArgs(wrapper string, words []string) []string {
-	for len(words) > 0 {
-		switch {
-		case strings.HasPrefix(words[0], "-"):
-			words = words[1:]
-		case numericArgWrappers[wrapper] && isDuration(words[0]):
-			words = words[1:]
-		default:
-			return words
-		}
-	}
-	return words
-}
-
-// stripLeadingFlags drops the options in front of the command xargs will run,
-// including the argument of the few that take one.
-func stripLeadingFlags(words []string) []string {
-	takesValue := map[string]bool{"-I": true, "-i": true, "-n": true, "-P": true, "-L": true,
-		"-s": true, "-d": true, "-E": true, "-a": true, "--replace": true}
-	for len(words) > 0 && strings.HasPrefix(words[0], "-") {
-		flag := words[0]
-		words = words[1:]
-		if takesValue[flag] && len(words) > 0 && !strings.HasPrefix(words[0], "-") {
-			words = words[1:]
-		}
-	}
-	return words
-}
-
-// shellScriptArg returns the script `sh -c` was given.
-func shellScriptArg(words []string) (string, bool) {
-	for i, w := range words {
-		if strings.HasPrefix(w, "-") && !strings.HasPrefix(w, "--") && strings.Contains(w, "c") {
-			if i+1 < len(words) {
-				return words[i+1], true
-			}
-			return "", false
-		}
-	}
-	return "", false
-}
-
-// isDuration recognises the `10`, `1.5` and `30s` that timeout accepts.
-func isDuration(word string) bool {
-	word = strings.TrimRight(word, "smhd")
-	if word == "" {
-		return false
-	}
-	dots := 0
-	for _, r := range word {
-		switch {
-		case isDigit(r):
-		case r == '.':
-			dots++
-			if dots > 1 {
-				return false
-			}
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-// isAssignment recognises the `FOO=bar` prefix of a command.
-func isAssignment(word string) bool {
-	eq := strings.Index(word, "=")
-	if eq <= 0 {
-		return false
-	}
-	for i, r := range word[:eq] {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r == '_':
-		case i > 0 && r >= '0' && r <= '9':
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-// guardShellCommand refuses to run a coding agent from the shell tool at all.
-// Even the bare command is refused: without a PTY the TUI either hangs or
-// degrades, and there is nothing for the user to watch either way.
-func guardShellCommand(command string, rules harnessRules) string {
-	use := findHarnessUse(command, rules)
-	if use == nil {
-		return ""
-	}
-	detail := "shell_run has no terminal for it to draw in"
-	if use.headless {
-		detail = fmt.Sprintf("with %s it is a headless run", use.reason)
-	}
-	return fmt.Sprintf("Refusing to run %s through shell_run: %s. %s is only ever used "+
-		"interactively, the way a person uses it: open it with terminal_open (`tool: %q`), wait for "+
-		"it to finish painting, send the brief with terminal_send and read the screen back with "+
-		"terminal_wait. The user is watching this session and wants to be able to take over, which "+
-		"a print, exec or piped run takes away from them.",
-		use.name, detail, use.name, use.toolID)
-}
-
-// guardTerminalCommand allows a coding agent started as its TUI but refuses a
-// headless one, which would print and exit with nothing to co-drive.
-func guardTerminalCommand(command string, rules harnessRules) string {
-	use := findHarnessUse(command, rules)
-	if use == nil || !use.headless {
-		return ""
-	}
-	return fmt.Sprintf("Refusing to start that command: it runs %s with %s, a headless run. "+
-		"Open the interactive session instead - terminal_open with `tool: %q` - then drive it with "+
-		"terminal_send and terminal_wait. The user is watching this session and wants to be able to "+
-		"take over, which a print, exec or piped run takes away from them.",
-		use.name, use.reason, use.toolID)
 }

@@ -385,22 +385,51 @@ func (e *Engine) systemPrompt(chat *store.Chat, settings config.Settings, run *s
 		"unless you say otherwise, and relative paths are resolved against it.\n", workdir)
 
 	b.WriteString("\n## Programs you can run\n")
-	enabled := settings.EnabledTools()
+	b.WriteString("Each of these is a skill: a program someone has written down how to operate, " +
+		"the way you would brief a new colleague on it. Read the skill before you use it.\n")
+	enabled := settings.EnabledSkills()
 	if len(enabled) == 0 {
-		b.WriteString("No coding agents are configured. You still have a shell, so you can do the work " +
-			"yourself with ordinary commands - and tell the user that no agents are enabled in the " +
+		b.WriteString("No skills are configured. You still have a shell, so you can do the work " +
+			"yourself with ordinary commands - and tell the user that no skills are enabled in the " +
 			"admin dashboard.\n")
 	}
-	for _, t := range enabled {
-		fmt.Fprintf(&b, "\n### %s (`%s`)\n%s\n", t.Name, t.ID, strings.TrimSpace(t.Description))
-		command, args := t.CommandLine()
+	for _, sk := range enabled {
+		fmt.Fprintf(&b, "\n### %s (skill `%s`)\n%s\n", sk.Name, sk.ID, strings.TrimSpace(sk.Description))
+		command, args := sk.CommandLine()
 		fmt.Fprintf(&b, "Started as: `%s`\n", strings.TrimSpace(command+" "+strings.Join(args, " ")))
-		if !t.SkipPermissions {
+		// Only worth saying for a program that has an unattended mode at all:
+		// anything else simply behaves the way it behaves.
+		if !sk.SkipPermissions && (len(sk.AskArgs) > 0 || len(sk.SkipArgs) > 0) {
 			b.WriteString("It will ask before it changes anything, so expect permission prompts on the " +
 				"screen and answer them.\n")
 		}
-		if driving := strings.TrimSpace(t.Driving); driving != "" {
-			fmt.Fprintf(&b, "How to drive it: %s\n", driving)
+		for _, section := range []struct{ title, body string }{
+			{"Starting it", sk.Startup},
+			{"Giving it a task", sk.GivingTasks},
+			{"Reading its state", sk.ReadingState},
+			{"Answering its questions", sk.Answering},
+			{"Interrupting and quitting", sk.Exiting},
+			{"Notes", sk.Notes},
+		} {
+			if body := strings.TrimSpace(section.body); body != "" {
+				fmt.Fprintf(&b, "\n**%s.** %s\n", section.title, body)
+			}
+		}
+		if sk.Interactive() {
+			fmt.Fprintf(&b, "\n**Interactive only.** Use it solely through terminal_open with "+
+				"`skill: \"%s\"`. Never run it through shell_run", sk.ID)
+			// The list is written as a sentence and ends in a full stop, which
+			// would look wrong inside the brackets.
+			if forms := strings.TrimRight(strings.TrimSpace(sk.HeadlessForms), "."); forms != "" {
+				fmt.Fprintf(&b, " and never use its non-interactive forms (%s)", forms)
+			}
+			b.WriteString(". The user is watching the terminal and wants to read along and take " +
+				"over, which only the real interactive session gives them.\n")
+		} else if usage := strings.TrimSpace(sk.HeadlessUsage); usage != "" {
+			fmt.Fprintf(&b, "\n**Also usable non-interactively** via shell_run: %s\n", usage)
+		} else {
+			b.WriteString("\n**Also usable non-interactively** via shell_run when a terminal session " +
+				"would be overkill.\n")
 		}
 	}
 
@@ -408,13 +437,8 @@ func (e *Engine) systemPrompt(chat *store.Chat, settings config.Settings, run *s
 		"Open it with terminal_open, wait for it to finish starting, type the brief and submit it, " +
 		"then wait for it to go idle and read the screen. If it asks something, answer it: a menu is " +
 		"answered with the arrow keys and enter, or by typing the number next to the choice. " +
-		"Never assume a keypress worked - the screen comes back with every call, so look at it.\n" +
-		"A coding agent is only ever used this way: as its interactive interface, in a terminal session, " +
-		"driven key by key. Never run one through shell_run and never start one in a headless mode - no " +
-		"`claude -p`, `--print`, `--output-format`, `codex exec`, `opencode run`, no prompt piped in on " +
-		"stdin or read from a file. Those calls are refused. The reason is not tidiness: the user is " +
-		"watching the session in their browser and wants to read along and take the keyboard when they " +
-		"disagree, and a batch run hides all of it from them.\n")
+		"Never assume a keypress worked - the screen comes back with every call, so look at it. " +
+		"When the skill tells you which keys a dialog takes, use those rather than guessing.\n")
 
 	if sessions := e.sessionSummary(chat); sessions != "" {
 		b.WriteString("\n## Open terminal sessions\n")
@@ -426,14 +450,10 @@ func (e *Engine) systemPrompt(chat *store.Chat, settings config.Settings, run *s
 	// The answer is read out loud by a voice that speaks one language. An
 	// English answer coming out of a German voice is the worst of both, so the
 	// language the user chose for speech is also the language to write in.
-	if name := config.LanguageName(settings.Voice.Language); name != "" {
-		fmt.Fprintf(&b, "\n## Language\nWrite every message to the user in %s, whatever language the "+
-			"terminal output or the code you are reading happens to be in. Only quote a command, a "+
-			"path or an error message in its original wording.\n", name)
-	} else {
-		b.WriteString("\n## Language\nWrite every message to the user in the language they wrote or " +
-			"spoke to you in, and keep to that language for the whole conversation.\n")
-	}
+	fmt.Fprintf(&b, "\n## Language\nWrite every message to the user in %s, whatever language the "+
+		"terminal output or the code you are reading happens to be in. Only quote a command, a "+
+		"path or an error message in its original wording.\n",
+		config.LanguageName(settings.Voice.Language))
 	if run != nil && run.Auto {
 		b.WriteString("\n## Voice mode\nThe user is in hands free voice mode. Your final answer is read out " +
 			"loud: keep it under roughly 120 words, use plain sentences, no markdown, no code blocks, no lists " +
@@ -643,10 +663,12 @@ func (l *liveStep) flushLocked(status string) {
 // sessionMeta keys stored with a session, so a restart does not lose track of
 // what a session is and where it is shown.
 const (
-	metaTool = "tool"
-	metaStep = "step"
-	metaRun  = "run"
-	metaChat = "chat"
+	metaSkill = "skill"
+	// metaLegacySkill is where the same id lived before skills had their name.
+	metaLegacySkill = "tool"
+	metaStep        = "step"
+	metaRun         = "run"
+	metaChat        = "chat"
 )
 
 // session resolves a session id for a chat. Sessions are scoped to their chat
@@ -671,14 +693,24 @@ func (e *Engine) session(chat *store.Chat, id string) (*term.Handle, string) {
 	return handle, ""
 }
 
-// toolOfSession returns the configured tool a session was started from, or a
-// zero tool with usable defaults for an ad hoc command.
-func (e *Engine) toolOfSession(handle *term.Handle) config.Tool {
+// skillOfSession returns the skill a session was started from, or a zero
+// skill with usable defaults for an ad hoc command.
+func (e *Engine) skillOfSession(handle *term.Handle) config.Skill {
 	settings := e.Settings()
-	if tool, ok := settings.Tool(handle.Meta(metaTool)); ok {
-		return tool
+	if skill, ok := settings.Skill(skillIDOf(handle)); ok {
+		return skill
 	}
-	return config.Tool{}
+	return config.Skill{}
+}
+
+// skillIDOf reads which skill a session came from. A session started before
+// skills were called skills stored the id under the old key, and it may well
+// still be running.
+func skillIDOf(handle *term.Handle) string {
+	if id := handle.Meta(metaSkill); id != "" {
+		return id
+	}
+	return handle.Meta(metaLegacySkill)
 }
 
 // resolveDir turns a directory argument into an absolute path. Relative paths
@@ -698,7 +730,7 @@ func (e *Engine) resolveDir(chat *store.Chat, settings config.Settings, dir stri
 
 // openTerminal starts a session, shows it in the process view and returns the
 // first screen for the model.
-func (e *Engine) openTerminal(ctx context.Context, chat *store.Chat, run *store.Run, toolID, command, name, dir string) string {
+func (e *Engine) openTerminal(ctx context.Context, chat *store.Chat, run *store.Run, skillID, command, name, dir string) string {
 	if e.Terminals == nil {
 		return "Terminal sessions are not available in this installation."
 	}
@@ -710,30 +742,30 @@ func (e *Engine) openTerminal(ctx context.Context, chat *store.Chat, run *store.
 
 	spec := term.Spec{Dir: workdir, Meta: map[string]string{metaChat: chat.ID, metaRun: run.ID}}
 	label := strings.TrimSpace(name)
-	var tool config.Tool
+	var skill config.Skill
 
 	switch {
-	case strings.TrimSpace(toolID) != "":
-		found, ok := settings.Tool(strings.TrimSpace(toolID))
+	case strings.TrimSpace(skillID) != "":
+		found, ok := settings.Skill(strings.TrimSpace(skillID))
 		if !ok || !found.Enabled {
 			names := []string{}
-			for _, t := range settings.EnabledTools() {
-				names = append(names, t.ID)
+			for _, sk := range settings.EnabledSkills() {
+				names = append(names, sk.ID)
 			}
 			if len(names) == 0 {
-				return fmt.Sprintf("There is no enabled program called %q, and none are configured. "+
-					"Use `command` to run something directly.", toolID)
+				return fmt.Sprintf("There is no enabled skill called %q, and none are configured. "+
+					"Use `command` to run something directly.", skillID)
 			}
-			return fmt.Sprintf("There is no enabled program called %q. Available: %s.",
-				toolID, strings.Join(names, ", "))
+			return fmt.Sprintf("There is no enabled skill called %q. Available: %s.",
+				skillID, strings.Join(names, ", "))
 		}
-		tool = found
-		spec.Command, spec.Args = tool.CommandLine()
-		spec.Env = tool.Env
-		spec.Cols, spec.Rows = tool.Cols, tool.Rows
-		spec.Meta[metaTool] = tool.ID
+		skill = found
+		spec.Command, spec.Args = skill.CommandLine()
+		spec.Env = skill.Env
+		spec.Cols, spec.Rows = skill.Cols, skill.Rows
+		spec.Meta[metaSkill] = skill.ID
 		if label == "" {
-			label = tool.Name
+			label = skill.Name
 		}
 
 	case strings.TrimSpace(command) != "":
@@ -756,7 +788,7 @@ func (e *Engine) openTerminal(ctx context.Context, chat *store.Chat, run *store.
 
 	step := e.addStep(run, "", store.StepTerminal, label, "", store.StatusRunning, map[string]any{
 		"session":   handle.ID(),
-		"tool":      spec.Meta[metaTool],
+		"skill":     spec.Meta[metaSkill],
 		"command":   term.Describe(term.Spec{Command: spec.Command, Args: spec.Args}),
 		"workspace": workdir,
 	})
@@ -769,15 +801,15 @@ func (e *Engine) openTerminal(ctx context.Context, chat *store.Chat, run *store.
 	// ready pattern when there is one. A full screen program can go quiet a
 	// second before it is actually listening, so waiting for silence alone is
 	// not enough - terminal_send checks that what it types arrives.
-	if pattern := strings.TrimSpace(tool.ReadyPattern); pattern != "" {
+	if pattern := strings.TrimSpace(skill.ReadyPattern); pattern != "" {
 		_, _, _ = handle.WaitFor(ctx, pattern, 45*time.Second)
 	} else {
 		_, _, _ = handle.WaitIdle(ctx, 2500*time.Millisecond, 45*time.Second)
 	}
 
 	note := fmt.Sprintf("Started %s as session `%s` in %s.", label, handle.ID(), workdir)
-	if driving := strings.TrimSpace(tool.Driving); driving != "" {
-		note += "\nHow to drive it: " + driving
+	if startup := strings.TrimSpace(skill.Startup); startup != "" {
+		note += "\nStarting it: " + startup
 	}
 	return e.describeSession(ctx, handle, note, false)
 }
@@ -865,7 +897,7 @@ func (e *Engine) watchSession(handle *term.Handle, step *store.Step) {
 			}
 			step.Detail = mustJSON(map[string]any{
 				"session":   handle.ID(),
-				"tool":      handle.Meta(metaTool),
+				"skill":     handle.Meta(metaSkill),
 				"command":   latest.Command,
 				"workspace": latest.Dir,
 				"running":   latest.Running,

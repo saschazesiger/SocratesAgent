@@ -192,10 +192,21 @@ func TestSettingsRoundTrip(t *testing.T) {
 		t.Fatalf("model was not stored: %#v", updated)
 	}
 
-	// Two tools with the same id would make the orchestrator's choice
+	// The shipped presets come along with the settings, because the dashboard
+	// offers them to an installation that already has its own skills.
+	presets, _ := data["presets"].([]any)
+	if len(presets) != 3 {
+		t.Fatalf("expected the three presets in the response, got %#v", data["presets"])
+	}
+	if presets[0].(map[string]any)["startup"] == "" {
+		t.Fatal("a preset arrived without its manual")
+	}
+
+	// Two skills with the same id would make the orchestrator's choice
 	// ambiguous, so saving has to separate them rather than fail.
-	settings["tools"] = []any{
-		map[string]any{"id": "same", "name": "A", "command": "claude", "enabled": true},
+	settings["skills"] = []any{
+		map[string]any{"id": "same", "name": "A", "command": "claude", "enabled": true,
+			"startup": "press enter", "interactive_only": true},
 		map[string]any{"id": "same", "name": "B", "command": "codex", "enabled": true},
 	}
 	body, _ = json.Marshal(map[string]any{"settings": settings})
@@ -203,14 +214,27 @@ func TestSettingsRoundTrip(t *testing.T) {
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("save failed: %d", res.StatusCode)
 	}
-	tools, _ := saved["settings"].(map[string]any)["tools"].([]any)
-	if len(tools) != 2 {
-		t.Fatalf("expected two tools, got %#v", tools)
+	skills, _ := saved["settings"].(map[string]any)["skills"].([]any)
+	if len(skills) != 2 {
+		t.Fatalf("expected two skills, got %#v", skills)
 	}
-	first := tools[0].(map[string]any)["id"]
-	second := tools[1].(map[string]any)["id"]
-	if first == second {
-		t.Fatalf("duplicate tool ids survived the save: %v and %v", first, second)
+	first := skills[0].(map[string]any)
+	second := skills[1].(map[string]any)
+	if first["id"] == second["id"] {
+		t.Fatalf("duplicate skill ids survived the save: %v and %v", first["id"], second["id"])
+	}
+	if first["startup"] != "press enter" {
+		t.Fatalf("the manual was not stored: %#v", first)
+	}
+	if second["interactive_only"] != true {
+		t.Fatalf("a skill that says nothing has to come back interactive only: %#v", second)
+	}
+
+	// And it survives a reload, which is what the dashboard reads.
+	_, again := env.do(t, env.client, "GET", "/api/settings", "")
+	reloaded := again["settings"].(map[string]any)["skills"].([]any)
+	if len(reloaded) != 2 || reloaded[0].(map[string]any)["startup"] != "press enter" {
+		t.Fatalf("skills did not survive the reload: %#v", reloaded)
 	}
 }
 

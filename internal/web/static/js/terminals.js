@@ -144,7 +144,7 @@ export function mountTerminalDock() {
     if (!id) return;
     const running = detail.running !== false && step.status === 'running';
     const session = note(id, {
-      name: step.title || detail.tool || 'terminal',
+      name: step.title || detail.skill || detail.tool || 'terminal',
       command: detail.command || '',
       cols: detail.cols || 0,
       rows: detail.rows || 0,

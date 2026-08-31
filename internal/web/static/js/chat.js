@@ -6,7 +6,7 @@ import {
 } from './api.js';
 import { renderMarkdown } from './markdown.js';
 import { mountTerminalDock } from './terminals.js';
-import { Recorder, speak, stopSpeaking, isSpeaking, plainSpeech, resolveLanguage } from './voice.js';
+import { Recorder, speak, stopSpeaking, isSpeaking, plainSpeech } from './voice.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -94,7 +94,7 @@ const state = {
   workLabel: '',
   workSince: 0,
   workTimer: null,
-  prefs: { speak_in_auto_mode: true, speak_in_chat_mode: false, tts_rate: 1, language: 'auto' },
+  prefs: { speak_in_auto_mode: true, speak_in_chat_mode: false, tts_rate: 1, language: 'en' },
 };
 
 const ICONS = {
@@ -160,26 +160,18 @@ function restoreDraft() {
 // a blank screen for fifteen seconds is worse than an honest one after two.
 const BOOT = { attempts: 2, timeout: 8000 };
 
-// speechOptions is how every spoken line is configured: the rate the admin
-// chose, and the language setting - which voice.js turns into a concrete
-// language, falling back to the language of the text itself.
+// speechOptions is how every spoken line is configured: the rate and the
+// language the admin chose.
 function speechOptions() {
   return { rate: state.prefs.tts_rate, lang: state.prefs.language };
 }
 
-// spokenLanguage resolves the language of the moment for the few lines the app
-// says in its own words. The last answer is the best evidence there is: on
-// automatic, the app should speak the language the conversation is in.
-function spokenLanguage() {
-  return resolveLanguage(state.prefs.language, state.lastAnswer || '');
-}
-
-// The one sentence Socrates says on its own behalf, in the languages it can be
-// set to. It is spoken when the connection drops, which is exactly when
+// The one sentence Socrates says on its own behalf, in both languages it can
+// be set to. It is spoken when the connection drops, which is exactly when
 // nothing can be fetched to translate it.
 const OFFLINE_NOTICE = {
-  de: 'Die Verbindung ist weg. Ich versuche es weiter.',
   en: 'The connection dropped. I will keep trying.',
+  de: 'Die Verbindung ist weg. Ich versuche es weiter.',
 };
 
 async function init() {
@@ -1069,7 +1061,7 @@ function buildTerminal(step, detail) {
     // restarted by an update that changed nothing about it.
     const cls = 'term-dot' + (running ? ' live' : (next.status === 'failed' ? ' failed' : ' stopped'));
     if (dot.className !== cls) dot.className = cls;
-    const name = next.title || now.tool || 'a program';
+    const name = next.title || now.skill || now.tool || 'a program';
     const text = running
       ? 'Opened ' + name + ' in a terminal'
       : 'Ran ' + name + ' in a terminal — ' + (now.exit_code ? 'exited ' + now.exit_code : 'finished');
@@ -1463,7 +1455,7 @@ function setLive(live) {
     // notice is the only way they learn the answer they are waiting for has
     // stopped coming.
     state.spokeOffline = true;
-    speak(OFFLINE_NOTICE[spokenLanguage()], speechOptions()).catch(() => {});
+    speak(OFFLINE_NOTICE[state.prefs.language] || OFFLINE_NOTICE.en, speechOptions()).catch(() => {});
   }
   document.body.classList.toggle('stale', !live);
   updateLiveUI();

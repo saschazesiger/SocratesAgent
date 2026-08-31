@@ -56,10 +56,14 @@
     </section>
 
     <section class="card">
-      <h2>Tools Socrates can run</h2>
-      <p class="card-sub">Socrates works at a real terminal. These are the programs it knows how to start there, and what you write here is what it reads before deciding which one to use. Anything else can still be run as an ordinary shell command.</p>
-      <div id="agents"></div>
-      <button class="btn sm" id="addAgent" type="button">Add a tool</button>
+      <h2>Skills</h2>
+      <p class="card-sub">A skill teaches Socrates how to operate a program the way a person does: how it is started, what its screens look like, which keys answer its questions. The three that ship with Socrates are written against the versions installed here — add your own for any other program, and anything without a skill can still be run as an ordinary shell command.</p>
+      <div id="skills"></div>
+      <div class="row" style="flex-wrap: wrap">
+        <button class="btn sm" id="addSkill" type="button">Add a skill</button>
+        <select class="input" id="presetPick" aria-label="Preset to add" style="width: auto"></select>
+        <button class="btn sm" id="addPreset" type="button">Add from preset</button>
+      </div>
     </section>
 
     <section class="card">
@@ -68,7 +72,7 @@
       <div class="field">
         <label for="systemPrompt">System prompt</label>
         <textarea class="textarea" id="systemPrompt" rows="10" spellcheck="false"></textarea>
-        <div class="hint">The list of tools, how to drive each of them, the working directory, the open terminal sessions and the voice mode hints are appended automatically.</div>
+        <div class="hint">The list of skills, how to drive each of them, the working directory, the open terminal sessions and the voice mode hints are appended automatically.</div>
       </div>
       <div class="grid-2">
         <div class="field">
@@ -95,11 +99,10 @@
       <div class="field">
         <label for="voiceLanguage">Spoken language</label>
         <select class="select" id="voiceLanguage">
-          <option value="auto">Automatic — follow whatever is spoken</option>
-          <option value="de">Deutsch</option>
           <option value="en">English</option>
+          <option value="de">Deutsch</option>
         </select>
-        <div class="hint">One setting for the whole conversation: how your recording is transcribed, which voice reads the answer out loud, and which language Socrates answers in. Automatic detects it per message, which is the right choice if you switch between languages.</div>
+        <div class="hint">One setting for everything Socrates says: how your recording is transcribed, which voice reads the answer out loud, and which language Socrates answers in.</div>
       </div>
       <div class="grid-2">
         <div class="field">
@@ -215,7 +218,7 @@
 
     <section class="card">
       <h2>Setup check</h2>
-      <p class="card-sub">Verifies the API key, the workspace, the terminal and every enabled tool.</p>
+      <p class="card-sub">Verifies the API key, the workspace, the terminal and every enabled skill.</p>
       <button class="btn sm" id="runChecks" type="button">Run checks</button>
       <div class="checks" id="checks"></div>
     </section>

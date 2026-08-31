@@ -1101,33 +1101,49 @@ body.auto .auto-screen {
 }
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px; }
 .row { display: flex; gap: 10px; align-items: center; }
-.agent {
+.skill {
   border: 1px solid var(--line);
   border-radius: var(--r);
   margin-bottom: 12px;
   overflow: hidden;
   background: var(--bg);
 }
-.agent-head {
+.skill-head {
   display: flex;
   align-items: center;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
   padding: 12px 14px;
   cursor: pointer;
   background: var(--bg-soft);
 }
-.agent-head .nm { font-weight: 550; font-size: 14px; }
-.agent-head .kind {
+.skill-head .nm { font-weight: 550; font-size: 14px; }
+.skill-head .kind {
   font-family: var(--mono);
+  white-space: nowrap;
   font-size: 11.5px;
   color: var(--text-faint);
   background: var(--bg-sunken);
   padding: 2px 7px;
   border-radius: 999px;
 }
-.agent-head .spacer { flex: 1; }
-.agent-body { display: none; padding: 18px 16px 4px; border-top: 1px solid var(--line); }
-.agent.open .agent-body { display: block; }
+.skill-head .spacer { flex: 1; }
+/* On a phone the badges alone fill the row, so the buttons take their own
+   line rather than being pushed off the side of the card. */
+@media (max-width: 560px) {
+  .skill-head .spacer { flex-basis: 100%; height: 0; }
+  .skill-head .btn { flex: 1 1 auto; }
+}
+.skill-body { display: none; padding: 18px 16px 4px; border-top: 1px solid var(--line); }
+.skill.open .skill-body { display: block; }
+.skill-section {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin: 22px 0 10px;
+}
 .checks { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
 .check {
   display: flex;

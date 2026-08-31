@@ -159,45 +159,73 @@ Then open <http://localhost:8080>.
 1. `/setup` asks you for the password you will use from now on. You can paste
    your OpenRouter key right away, and decide whether the instance should be
    published through a Cloudflare tunnel — both can also be changed later.
-2. You land in the admin dashboard. Check the tools, press **Run checks** — it
+2. You land in the admin dashboard. Check the skills, press **Run checks** — it
    verifies your key, the workspace directory, the terminal and every enabled
-   tool.
+   skill.
 3. Go back to the chat and ask for something.
 
 <p align="center">
   <img src="docs/screenshot-admin.png" alt="Admin dashboard" width="900">
 </p>
 
-## Configuring the tools
+## Skills
 
-Each entry in the dashboard answers two questions: *when should Socrates use
-you?* and *how do I drive you?* Both texts go into the model's instructions
-verbatim, so write them the way you would brief a colleague on their first day.
+A skill teaches Socrates how to operate a program the way a person does. It
+answers two questions — *when should I use you?* and *how do I work you?* — and
+both go into the model's instructions verbatim, so they are written the way you
+would brief a colleague on their first day.
 
-| Tool | Ships enabled | Good at |
+| Skill | Ships enabled | Good at |
 | --- | --- | --- |
 | Claude Code | yes | writing, refactoring and debugging code, careful multi step edits |
 | Codex | yes | research, investigation, comparing options, writing up findings |
 | OpenCode | no | an open source alternative implementer |
 
-A tool is: a command, its arguments, its environment, an optional model, a
-permission switch, and the "how to drive it" text. That is the whole extension
-mechanism — point one at `aider`, at a REPL, at a deploy script, at anything with
-a prompt, and describe how it behaves. No `kind` field, no code.
+A skill is: a command, its arguments, its environment, an optional model, a
+permission switch, and a manual in six sections —
+
+- **Starting it** — the screens right after launch and the exact keys that get
+  past them, plus what "ready" looks like.
+- **Giving it a task** — where to type, how to submit, how to write more than
+  one line.
+- **Reading its state** — how to tell working from idle from waiting for an
+  answer.
+- **Answering its questions** — every dialog it can show and the keys that
+  answer it.
+- **Interrupting and quitting** — how to stop it, how to leave cleanly.
+- **Notes** — pitfalls and version quirks.
+
+That is the whole extension mechanism. Point one at `aider`, at a REPL, at a
+deploy script, at anything with a prompt, write down how it behaves, and
+Socrates can drive it. No `kind` field, no code.
 
 Socrates can also just run commands. `git status`, `npm test`, `rg TODO` need no
-configuration at all; the tool list is only for programs it has to hold a
-conversation with.
+skill at all; skills are for programs it has to hold a conversation with.
 
-**Permissions.** Every shipped tool starts in its own unattended mode by
+**Interactive only.** A skill is interactive only by default: Socrates may open
+it in a terminal session and nowhere else. That is the point of the app — you
+are watching that terminal and can take the keyboard at any moment, which a
+batch run would hide from you. The skill also names the program's headless modes
+(`claude -p`, `codex exec`, `opencode run` …) so the orchestrator knows exactly
+what not to reach for. Turn the switch off for a program that is fine as a plain
+command, and write down how to use it that way in **Headless usage**.
+
+**Presets and reset.** The three shipped skills are presets: their manuals were
+written by driving Claude Code 2.1.251, codex-cli 0.146.0 and opencode 1.17.13 in
+a terminal and writing down what they actually did. Edit one freely — **Reset to
+preset** puts it back. A preset is never added to your list behind your back, so
+if an upgrade brings a new one, **Add from preset** offers it.
+
+**Permissions.** Every shipped skill starts in its own unattended mode by
 default — `--dangerously-skip-permissions` for Claude Code,
 `--dangerously-bypass-approvals-and-sandbox` for Codex, `--auto` for OpenCode —
 which is what makes long tasks work without babysitting. Turn the switch off and
-the tool is started with its normal approval flags instead; its questions then
-appear on screen, and Socrates answers them the way you would, after reading
-what is being asked. Both sets of arguments are editable per tool.
+the program is started with its normal approval flags instead
+(`--permission-mode manual`, `--ask-for-approval on-request`); its questions then
+appear on screen, and Socrates answers them the way you would, after reading what
+is being asked. Both sets of arguments are editable per skill.
 
-**Environment.** Each tool has a list of `KEY=VALUE` pairs, put in front of the
+**Environment.** Each skill has a list of `KEY=VALUE` pairs, put in front of the
 command exactly the way you would write them in a shell. Claude Code ships with
 `IS_SANDBOX=1`, because it refuses `--dangerously-skip-permissions` when it runs
 as root — which is the normal case in a container — unless it is told it is
@@ -225,7 +253,7 @@ The model fields are searchable dropdowns over the live OpenRouter catalogue,
 grouped by provider and annotated with context length and price. The list is
 fetched when the dashboard opens — OpenRouter serves it without a key, so it
 works before you have pasted one — and every field still accepts anything you
-type, which is what you need for a tool's own model names such as `sonnet` or
+type, which is what you need for a program's own model names such as `sonnet` or
 `gpt-5-codex`.
 
 ## Voice
@@ -241,18 +269,12 @@ type, which is what you need for a tool's own model names such as `sonnet` or
 - **Text to speech** uses the browser's own speech synthesis by default, which
   needs no key and no network. For a better voice, configure any OpenAI
   compatible `/audio/speech` endpoint in the admin dashboard.
-- **Spoken language** is one setting in the admin dashboard - automatic,
-  Deutsch or English - and it covers the whole conversation: which language
-  the transcript is written in, which installed voice reads the answer out
-  loud, and which language Socrates writes its answers in. Getting this wrong
-  is what makes a German answer come out with an English accent.
-
-  Automatic is the default and the right choice if you switch between
-  languages. Transcription is left to detect the spoken language and is told
-  never to translate; playback works the language out from the answer itself,
-  in the browser, so it still picks the right voice with no signal at all. Pin
-  a language instead if you always speak the same one - it makes transcription
-  a little faster and more accurate, because the model no longer has to guess.
+- **Spoken language** is one setting in the admin dashboard, English or
+  Deutsch, and it covers everything Socrates says: which language your
+  recording is transcribed into, which installed voice reads the answer out
+  loud, and which language the agent writes its answers in. Getting this wrong
+  is what makes a German answer come out with an English accent. English is the
+  default; there is no detection and nothing to configure per chat.
 
 ## Auto mode
 

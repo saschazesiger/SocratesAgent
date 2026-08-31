@@ -122,7 +122,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func newTestEngine(t *testing.T, router *mockRouter, tools []config.Tool) (*Engine, *store.Store) {
+func newTestEngine(t *testing.T, router *mockRouter, skills []config.Skill) (*Engine, *store.Store) {
 	t.Helper()
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
@@ -140,8 +140,8 @@ func newTestEngine(t *testing.T, router *mockRouter, tools []config.Tool) (*Engi
 	settings.OpenRouter.TitleModel = "title-model"
 	settings.Agent.WorkspaceRoot = t.TempDir()
 	settings.Agent.MaxIterations = 6
-	if tools != nil {
-		settings.Tools = tools
+	if skills != nil {
+		settings.Skills = skills
 	}
 	settings.Normalize()
 
@@ -277,12 +277,54 @@ func TestShellRunReportsAFailingCommand(t *testing.T) {
 
 // The whole point of the rework: Socrates opens a program, types into it and
 // reads the screen, rather than running it once with an unattended flag.
+// The prompt is where a skill actually takes effect: the manual, and the one
+// sentence that says whether the program may be used any other way.
+func TestSystemPromptCarriesTheSkillManual(t *testing.T) {
+	router := &mockRouter{responses: []string{sseText("Nothing to do.")}}
+	preset, _ := config.PresetByID("claude")
+	headless := false
+	engine, st := newTestEngine(t, router, []config.Skill{preset, {
+		ID: "jq", Name: "jq", Enabled: true, Command: "jq",
+		Description:     "reshapes JSON",
+		InteractiveOnly: &headless,
+		HeadlessUsage:   "jq '.field' file.json prints one field",
+	}})
+	chat := &store.Chat{ID: "chat-prompt"}
+	if err := st.CreateChat(chat); err != nil {
+		t.Fatal(err)
+	}
+	run, err := engine.Start(Turn{ChatID: chat.ID, Text: "hello", Auto: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForRun(t, st, run.ID, store.RunDone)
+
+	payload := lastPayload(t, router, 0)
+	for _, want := range []string{
+		"### Claude Code (skill `claude`)",
+		"Interactive only",
+		"--dangerously-skip-permissions",
+		"Yes, I trust this folder",
+		"esc to interrupt",
+		"### jq (skill `jq`)",
+		"Also usable non-interactively",
+		"prints one field",
+	} {
+		if !strings.Contains(payload, want) {
+			t.Errorf("the system prompt is missing %q", want)
+		}
+	}
+	if strings.Contains(payload, "Those calls are refused") {
+		t.Error("the old harness guard wording is still in the prompt")
+	}
+}
+
 func TestDrivesAnInteractiveProgram(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("needs a real terminal")
 	}
 	router := &mockRouter{responses: []string{
-		sseToolCall("terminal_open", `{"tool":"fake","name":"fake agent"}`),
+		sseToolCall("terminal_open", `{"skill":"fake","name":"fake agent"}`),
 		sseToolCall("terminal_send", `{"session":"SESSION","text":"hello","submit":true,"settle_seconds":3}`),
 		sseToolCall("terminal_wait", `{"session":"SESSION","until":"text","text":"world","seconds":10}`),
 		sseText("The agent answered."),
@@ -293,14 +335,14 @@ func TestDrivesAnInteractiveProgram(t *testing.T) {
 
 	// A prompt driven program, which is all a coding agent looks like from the
 	// outside: it prints a prompt, waits for a line, answers, prompts again.
-	engine, st := newTestEngine(t, router, []config.Tool{{
+	engine, st := newTestEngine(t, router, []config.Skill{{
 		ID: "fake", Name: "Fake Agent", Enabled: true,
 		Description: "a scripted interactive program",
 		Command:     "sh",
 		Args: []string{"-c", `printf 'ready> '; while IFS= read -r line; do ` +
 			`case "$line" in hello) printf 'world\r\n';; quit) exit 0;; ` +
 			`*) printf 'you said: %s\r\n' "$line";; esac; printf 'ready> '; done`},
-		Driving:     "type and press enter",
+		Startup:     "type and press enter",
 		IdleSeconds: 1, TimeoutSeconds: 60,
 	}})
 
@@ -350,17 +392,17 @@ func TestDrivesAnInteractiveProgram(t *testing.T) {
 	}
 }
 
-// A tool's environment is the declarative form of writing "KEY=VALUE program"
+// A skill's environment is the declarative form of writing "KEY=VALUE program"
 // in a shell, and Claude Code will not skip permissions as root without it.
-func TestToolEnvironmentReachesTheProgram(t *testing.T) {
+func TestSkillEnvironmentReachesTheProgram(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("needs a real terminal")
 	}
 	router := &mockRouter{responses: []string{
-		sseToolCall("terminal_open", `{"tool":"env-probe"}`),
+		sseToolCall("terminal_open", `{"skill":"env-probe"}`),
 		sseText("Checked."),
 	}}
-	engine, st := newTestEngine(t, router, []config.Tool{{
+	engine, st := newTestEngine(t, router, []config.Skill{{
 		ID: "env-probe", Name: "Env Probe", Enabled: true,
 		Description: "prints one environment variable",
 		Command:     "sh",
@@ -381,16 +423,16 @@ func TestToolEnvironmentReachesTheProgram(t *testing.T) {
 
 	opened := lastPayload(t, router, 1)
 	if !strings.Contains(opened, "sandbox=[1]") {
-		t.Errorf("the tool's environment never reached the program: %s", opened)
+		t.Errorf("the skill's environment never reached the program: %s", opened)
 	}
 }
 
-func TestUnknownToolIsReportedToModel(t *testing.T) {
+func TestUnknownSkillIsReportedToModel(t *testing.T) {
 	router := &mockRouter{responses: []string{
-		sseToolCall("terminal_open", `{"tool":"ghost"}`),
+		sseToolCall("terminal_open", `{"skill":"ghost"}`),
 		sseText("Sorry, that program is not available."),
 	}}
-	engine, st := newTestEngine(t, router, []config.Tool{{
+	engine, st := newTestEngine(t, router, []config.Skill{{
 		ID: "echo", Name: "Echo", Enabled: true, Command: "sh", TimeoutSeconds: 10,
 	}})
 	chat := &store.Chat{ID: "chat3"}
@@ -402,8 +444,8 @@ func TestUnknownToolIsReportedToModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForRun(t, st, run.ID, store.RunDone)
-	if payload := lastPayload(t, router, 1); !strings.Contains(payload, "no enabled program called") {
-		t.Errorf("the model was not told about the bad tool id: %s", payload)
+	if payload := lastPayload(t, router, 1); !strings.Contains(payload, "no enabled skill called") {
+		t.Errorf("the model was not told about the bad skill id: %s", payload)
 	}
 }
 
@@ -495,16 +537,13 @@ func TestSystemPromptCarriesTheSpokenLanguage(t *testing.T) {
 	settings.Voice.Language = config.LanguageDE
 	settings.Normalize()
 	prompt := engine.systemPrompt(chat, settings, nil)
-	if !strings.Contains(prompt, "in German") {
+	if !strings.Contains(prompt, "in German") || strings.Contains(prompt, "in English") {
 		t.Fatalf("german was not requested:\n%s", prompt)
 	}
 
-	settings.Voice.Language = config.LanguageAuto
+	settings.Voice.Language = config.LanguageEN
 	prompt = engine.systemPrompt(chat, settings, nil)
-	if strings.Contains(prompt, "in German") {
-		t.Fatalf("automatic pinned a language:\n%s", prompt)
-	}
-	if !strings.Contains(prompt, "language they wrote or spoke to you in") {
-		t.Fatalf("automatic did not follow the user:\n%s", prompt)
+	if !strings.Contains(prompt, "in English") || strings.Contains(prompt, "in German") {
+		t.Fatalf("english was not requested:\n%s", prompt)
 	}
 }

@@ -9,6 +9,7 @@ const $ = (id) => document.getElementById(id);
 
 let settings = null;
 let defaults = null;
+let presets = [];
 
 // The three OpenRouter models are picked with a searchable dropdown rather
 // than a text field, so they are not in FIELDS.
@@ -78,16 +79,17 @@ async function load() {
   const data = await api('/api/settings');
   settings = data.settings;
   defaults = data.defaults;
+  presets = data.presets || [];
   $('versionLabel').textContent = 'Socrates ' + (data.version || '');
   fillForm();
   buildModelPickers();
-  renderAgents();
+  renderSkills();
   bind();
   loadModels();
   if (data.local_url) localURL = data.local_url;
   refreshTunnel();
   if (new URLSearchParams(location.search).get('welcome')) {
-    showNotice('Welcome. Add your OpenRouter key, check the tools below, then head back to the chat.', 'ok');
+    showNotice('Welcome. Add your OpenRouter key, check the skills below, then head back to the chat.', 'ok');
   }
   const tunnelError = sessionStorage.getItem('socrates.tunnel_error');
   if (tunnelError) {
@@ -148,7 +150,7 @@ function syncModelPickers() {
   for (const [id, path] of MODEL_PICKERS) {
     if (pickers[id]) pickers[id].setValue(getPath(settings, path) || '', false);
   }
-  for (const picker of agentModelPickers) {
+  for (const picker of skillModelPickers) {
     picker.refresh();
   }
 }
@@ -169,7 +171,8 @@ async function loadModels() {
 function bind() {
   $('saveTop').addEventListener('click', save);
   $('saveBottom').addEventListener('click', save);
-  $('addAgent').addEventListener('click', addAgent);
+  $('addSkill').addEventListener('click', addSkill);
+  $('addPreset').addEventListener('click', addFromPreset);
   $('runChecks').addEventListener('click', runChecks);
   $('changePw').addEventListener('click', changePassword);
   $('tunnelStart').addEventListener('click', startTunnel);
@@ -186,6 +189,9 @@ function bind() {
     // The sample is read in the language the form currently shows, not the one
     // that was last saved, so the button answers the question you are actually
     // asking: does this setting sound right?
+    //
+    // Only the browser voice follows it before a save - a configured endpoint
+    // renders with the language the server has stored.
     const language = $('voiceLanguage').value;
     const sample = language === 'de'
       ? 'So klingt Socrates, wenn dir eine Antwort im Freisprechmodus vorgelesen wird.'
@@ -206,7 +212,7 @@ function bind() {
 
 async function save() {
   const next = collect();
-  next.tools = settings.tools;
+  next.skills = settings.skills;
   try {
     // Settings are written whole, so the same body sent twice leaves exactly
     // the same result - which makes this safe to repeat over a bad link.
@@ -214,7 +220,7 @@ async function save() {
     settings = data.settings;
     fillForm();
     syncModelPickers();
-    renderAgents();
+    renderSkills();
     refreshTunnel();
     hint('Saved');
     toast('Settings saved');
@@ -238,43 +244,108 @@ function showNotice(text, kind) {
   notice.textContent = text;
 }
 
-/* ----------------------------------------------------------------- tools */
+/* ---------------------------------------------------------------- skills */
 
 function slug(text) {
   return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
 
-// agentModelPickers holds the per tool dropdowns so they can be refreshed when
-// the catalogue finishes loading.
-let agentModelPickers = [];
+// skillModelPickers holds the per skill dropdowns so they can be refreshed
+// when the model catalogue finishes loading.
+let skillModelPickers = [];
 
-function addAgent() {
-  settings.tools.push({
-    id: 'tool-' + (settings.tools.length + 1),
-    name: 'New tool',
+// The manual: the sections that tell Socrates how to work this program. They
+// are ordinary prose, which is what makes a new program usable without any
+// code change.
+const MANUAL = [
+  ['startup', 'Starting it',
+    'The screens right after launch and the exact keys that get past them — trust dialogs, update notices, login — and what "ready" looks like.'],
+  ['giving_tasks', 'Giving it a task',
+    'Where to type, how to submit, how to write more than one line, slash commands worth knowing.'],
+  ['reading_state', 'Reading its state',
+    'How to tell working from idle from waiting for an answer. Name the phrases or patterns to look for.'],
+  ['answering', 'Answering its questions',
+    'Every dialog it can show and the exact keys that answer it.'],
+  ['exiting', 'Interrupting and quitting',
+    'How to stop what it is doing, and how to leave cleanly.'],
+  ['notes', 'Notes',
+    'Pitfalls, version quirks, anything that did not fit above.'],
+];
+
+function blankSkill() {
+  return {
+    id: 'skill-' + (settings.skills.length + 1),
+    name: 'New skill',
     enabled: false,
+    preset: '',
     description: 'Describe when Socrates should reach for this program.',
     command: '',
     args: [],
+    env: [],
     model: '',
     model_flag: '',
     skip_permissions: false,
     skip_permission_args: [],
     ask_permission_args: [],
-    env: [],
-    driving: 'How do you hand it a task, how do you know it has finished, which keys answer its questions?',
+    startup: '',
+    giving_tasks: '',
+    reading_state: '',
+    answering: '',
+    exiting: '',
+    notes: '',
+    interactive_only: true,
+    headless_forms: '',
+    headless_usage: '',
     ready_pattern: '',
     idle_seconds: 5,
     timeout_seconds: 1800,
-  });
-  renderAgents();
+  };
 }
 
-function renderAgents() {
-  const host = $('agents');
+function addSkill() {
+  settings.skills.push(blankSkill());
+  renderSkills();
+}
+
+// missingPresets are the shipped skills this installation does not have. An
+// installation that was set up before a preset existed never receives it
+// silently, so this is how it is offered instead.
+function missingPresets() {
+  const have = new Set(settings.skills.map((skill) => skill.preset || skill.id));
+  return presets.filter((preset) => !have.has(preset.id));
+}
+
+function addFromPreset() {
+  const id = $('presetPick').value;
+  const preset = presets.find((p) => p.id === id);
+  if (!preset) {
+    toast('Every preset is already in the list.');
+    return;
+  }
+  settings.skills.push(JSON.parse(JSON.stringify(preset)));
+  renderSkills();
+  toast(preset.name + ' added. Do not forget to save.');
+}
+
+function renderPresetPicker() {
+  const pick = $('presetPick');
+  const button = $('addPreset');
+  if (!pick || !button) return;
+  const missing = missingPresets();
+  pick.innerHTML = '';
+  for (const preset of missing) {
+    pick.append(el('option', { value: preset.id, text: preset.name }));
+  }
+  pick.hidden = missing.length === 0;
+  button.hidden = missing.length === 0;
+}
+
+function renderSkills() {
+  const host = $('skills');
   host.innerHTML = '';
-  agentModelPickers = [];
-  settings.tools.forEach((tool, index) => host.append(agentCard(tool, index)));
+  skillModelPickers = [];
+  settings.skills.forEach((skill, index) => host.append(skillCard(skill, index)));
+  renderPresetPicker();
 }
 
 function field(label, control, hintText) {
@@ -286,9 +357,16 @@ function field(label, control, hintText) {
 
 function text(value, onInput, attrs = {}) {
   return el('input', Object.assign({
-    class: 'input mono', type: 'text', value: value ?? '',
+    class: 'input mono', type: 'text', value: value || '',
     oninput: (event) => onInput(event.target.value),
   }, attrs));
+}
+
+function area(value, onInput, rows = '4') {
+  return el('textarea', {
+    class: 'textarea', rows, value: value || '',
+    oninput: (event) => onInput(event.target.value),
+  });
 }
 
 function number(value, onInput, attrs = {}) {
@@ -306,51 +384,75 @@ function toggle(checked, onChange, label) {
 }
 
 // modelField is the same searchable dropdown as the OpenRouter models, except
-// that a tool's model name belongs to that program - Claude Code wants
+// that a skill's model name belongs to that program - Claude Code wants
 // "sonnet", Codex wants "gpt-5-codex" - so anything typed is kept as is.
-function modelField(tool) {
+function modelField(skill) {
   const picker = combobox({
-    value: tool.model || '',
+    value: skill.model || '',
     items: () => models.all(),
     placeholder: 'leave empty for the program default',
-    onChange: (value) => { tool.model = value; },
+    onChange: (value) => { skill.model = value; },
   });
-  agentModelPickers.push({ refresh: () => picker.setValue(tool.model || '', false) });
+  skillModelPickers.push({ refresh: () => picker.setValue(skill.model || '', false) });
   return picker.node;
 }
 
-function agentCard(tool, index) {
-  const card = el('div', { class: 'agent' });
-  const titleNode = el('span', { class: 'nm', text: tool.name || tool.id });
+function skillCard(skill, index) {
+  const card = el('div', { class: 'skill' });
+  const titleNode = el('span', { class: 'nm', text: skill.name || skill.id });
   const modeNode = el('span', {
     class: 'kind',
-    text: tool.skip_permissions ? 'skips permissions' : 'asks permission',
+    text: skill.skip_permissions ? 'skips permissions' : 'asks permission',
   });
 
-  const head = el('div', { class: 'agent-head' },
+  const head = el('div', { class: 'skill-head' },
     el('label', { class: 'switch', onclick: (event) => event.stopPropagation() },
       el('input', {
-        type: 'checkbox', checked: tool.enabled,
-        onchange: (event) => { tool.enabled = event.target.checked; },
+        type: 'checkbox', checked: skill.enabled,
+        onchange: (event) => { skill.enabled = event.target.checked; },
       }),
       el('span', { class: 'track' })),
     titleNode,
     modeNode,
+    skill.preset ? el('span', { class: 'kind', text: 'preset · ' + skill.preset }) : null,
     el('span', { class: 'spacer' }),
+    skill.preset ? el('button', {
+      class: 'btn sm', type: 'button', text: 'Reset to preset',
+      onclick: async (event) => {
+        event.stopPropagation();
+        const preset = presets.find((p) => p.id === skill.preset);
+        if (!preset) {
+          toast('This installation does not ship a preset called "' + skill.preset + '".', 'error');
+          return;
+        }
+        const ok = await confirmDialog({
+          title: 'Reset to the shipped preset?',
+          body: 'Everything you changed about "' + (skill.name || skill.id) +
+            '" goes back to what Socrates ships, except whether it is enabled. ' +
+            'Nothing is written until you save.',
+          confirmLabel: 'Reset',
+        });
+        if (!ok) return;
+        const copy = JSON.parse(JSON.stringify(preset));
+        copy.enabled = skill.enabled;
+        settings.skills[index] = copy;
+        renderSkills();
+      },
+    }) : null,
     el('button', {
       class: 'btn sm danger', type: 'button', text: 'Remove',
       onclick: async (event) => {
         event.stopPropagation();
         const ok = await confirmDialog({
-          title: 'Remove this tool?',
-          body: '"' + (tool.name || tool.id) + '" disappears from the list. ' +
+          title: 'Remove this skill?',
+          body: '"' + (skill.name || skill.id) + '" disappears from the list. ' +
             'Nothing is written until you save.',
-          confirmLabel: 'Remove tool',
+          confirmLabel: 'Remove skill',
           danger: true,
         });
         if (!ok) return;
-        settings.tools.splice(index, 1);
-        renderAgents();
+        settings.skills.splice(index, 1);
+        renderSkills();
       },
     }),
   );
@@ -360,51 +462,55 @@ function agentCard(tool, index) {
   });
 
   const skipArgsField = field('Arguments that skip permissions',
-    text((tool.skip_permission_args || []).join(' '),
-      (value) => { tool.skip_permission_args = splitArgs(value); },
+    text((skill.skip_permission_args || []).join(' '),
+      (value) => { skill.skip_permission_args = splitArgs(value); },
       { placeholder: '--dangerously-skip-permissions' }),
     'Added when the switch above is on.');
 
   const askArgsField = field('Arguments that keep permissions on',
-    text((tool.ask_permission_args || []).join(' '),
-      (value) => { tool.ask_permission_args = splitArgs(value); },
+    text((skill.ask_permission_args || []).join(' '),
+      (value) => { skill.ask_permission_args = splitArgs(value); },
       { placeholder: '--ask-for-approval on-request' }),
     'Added when the switch above is off. Socrates then answers the prompts on screen itself.');
 
-  const body = el('div', { class: 'agent-body' },
+  const headlessUsageField = field('Headless usage',
+    area(skill.headless_usage, (value) => { skill.headless_usage = value; }, '3'),
+    'How to use it without a terminal. Only this text reaches Socrates, and only while the switch above is off.');
+
+  const manualFields = MANUAL.map(([key, label, hintText]) =>
+    field(label, area(skill[key], (value) => { skill[key] = value; }), hintText));
+
+  const body = el('div', { class: 'skill-body' },
     el('div', { class: 'grid-2' },
-      field('Display name', text(tool.name, (value) => {
-        tool.name = value;
-        titleNode.textContent = value || tool.id;
+      field('Display name', text(skill.name, (value) => {
+        skill.name = value;
+        titleNode.textContent = value || skill.id;
       }, { class: 'input' })),
-      field('Identifier', text(tool.id, (value) => { tool.id = slug(value); },
-        { placeholder: 'codex' }), 'How Socrates refers to this tool.'),
+      field('Identifier', text(skill.id, (value) => { skill.id = slug(value); },
+        { placeholder: 'codex' }), 'How Socrates refers to this skill.'),
     ),
     field('When should Socrates use it?',
-      el('textarea', {
-        class: 'textarea', rows: '3', value: tool.description,
-        oninput: (event) => { tool.description = event.target.value; },
-      }),
+      area(skill.description, (value) => { skill.description = value; }, '3'),
       'Goes straight into the system prompt, so write it the way you would explain it to a colleague.'),
     el('div', { class: 'grid-2' },
-      field('Command', text(tool.command, (value) => { tool.command = value; },
+      field('Command', text(skill.command, (value) => { skill.command = value; },
         { placeholder: 'claude' }), 'Binary name or absolute path.'),
-      field('Arguments', text((tool.args || []).join(' '),
-        (value) => { tool.args = splitArgs(value); },
+      field('Arguments', text((skill.args || []).join(' '),
+        (value) => { skill.args = splitArgs(value); },
         { placeholder: '--no-alt-screen' }), 'Always passed, before everything else.'),
-      field('Environment', text((tool.env || []).join(' '),
-        (value) => { tool.env = splitArgs(value); },
+      field('Environment', text((skill.env || []).join(' '),
+        (value) => { skill.env = splitArgs(value); },
         { placeholder: 'IS_SANDBOX=1' }),
         'KEY=VALUE pairs put in front of the command, the way you would in a shell. ' +
         'Claude Code needs IS_SANDBOX=1 to skip permissions as root.'),
-      field('Model', modelField(tool),
-        'The program\u2019s own model name. Pick one from the list or type anything, for example "sonnet".'),
-      field('Model argument', text(tool.model_flag, (value) => { tool.model_flag = value; },
+      field('Model', modelField(skill),
+        'The program’s own model name. Pick one from the list or type anything, for example "sonnet".'),
+      field('Model argument', text(skill.model_flag, (value) => { skill.model_flag = value; },
         { placeholder: '--model' }), 'The flag the model name follows. Leave empty to never pass one.'),
     ),
     el('div', { class: 'row', style: 'margin: 4px 0 18px' },
-      toggle(!!tool.skip_permissions, (checked) => {
-        tool.skip_permissions = checked;
+      toggle(!!skill.skip_permissions, (checked) => {
+        skill.skip_permissions = checked;
         modeNode.textContent = checked ? 'skips permissions' : 'asks permission';
         skipArgsField.hidden = !checked;
         askArgsField.hidden = checked;
@@ -414,31 +520,44 @@ function agentCard(tool, index) {
       'Off, it asks before it acts and Socrates answers the prompts on screen the way you would.'),
     skipArgsField,
     askArgsField,
-    field('How to drive it',
-      el('textarea', {
-        class: 'textarea', rows: '4', value: tool.driving || '',
-        oninput: (event) => { tool.driving = event.target.value; },
-      }),
-      'How to hand it a task, how to tell that it has finished, which keys answer its questions. ' +
-      'This is what makes a new program usable without changing any code.'),
+    el('h3', { class: 'skill-section', text: 'The manual' }),
+    el('div', { class: 'hint', style: 'margin: -8px 0 14px' },
+      'What Socrates reads before it touches this program. Write it as you would brief a colleague ' +
+      'who has never seen it; leave a section empty and it is simply not mentioned.'),
+    ...manualFields,
+    el('h3', { class: 'skill-section', text: 'How it may be used' }),
+    el('div', { class: 'row', style: 'margin: 4px 0 18px' },
+      toggle(skill.interactive_only !== false, (checked) => {
+        skill.interactive_only = checked;
+        headlessUsageField.hidden = checked;
+      }, 'Interactive only')),
+    el('div', { class: 'hint', style: 'margin: -14px 0 16px' },
+      'On, Socrates may only drive this program in a terminal session, where you can watch it and ' +
+      'take the keyboard. Off, it may also run it as a plain shell command.'),
+    field('Headless forms',
+      area(skill.headless_forms, (value) => { skill.headless_forms = value; }, '3'),
+      'The program’s non-interactive invocations, named so Socrates knows exactly what to avoid.'),
+    headlessUsageField,
+    el('h3', { class: 'skill-section', text: 'Timing' }),
     el('div', { class: 'grid-2' },
-      field('Ready when the screen matches', text(tool.ready_pattern, (value) => { tool.ready_pattern = value; },
+      field('Ready when the screen matches', text(skill.ready_pattern, (value) => { skill.ready_pattern = value; },
         { placeholder: 'leave empty to wait for it to go quiet' }),
         'Regular expression. Only needed if waiting for silence starts typing too early.'),
       field('Counts as finished after (seconds)',
-        number(tool.idle_seconds, (value) => { tool.idle_seconds = value; }, { min: '1', max: '300' }),
+        number(skill.idle_seconds, (value) => { skill.idle_seconds = value; }, { min: '1', max: '300' }),
         'How long the program must print nothing before its turn is treated as over.'),
       field('Timeout (seconds)',
-        number(tool.timeout_seconds, (value) => { tool.timeout_seconds = value; }, { min: '30' })),
+        number(skill.timeout_seconds, (value) => { skill.timeout_seconds = value; }, { min: '30' })),
       field('Window size', el('div', { class: 'row', style: 'gap:8px' },
-        number(tool.cols || 0, (value) => { tool.cols = value; }, { min: '0', max: '400', placeholder: 'cols' }),
-        number(tool.rows || 0, (value) => { tool.rows = value; }, { min: '0', max: '200', placeholder: 'rows' })),
+        number(skill.cols || 0, (value) => { skill.cols = value; }, { min: '0', max: '400', placeholder: 'cols' }),
+        number(skill.rows || 0, (value) => { skill.rows = value; }, { min: '0', max: '200', placeholder: 'rows' })),
         'Columns and rows the program is given. Zero for the default.'),
     ),
   );
 
-  skipArgsField.hidden = !tool.skip_permissions;
-  askArgsField.hidden = !!tool.skip_permissions;
+  skipArgsField.hidden = !skill.skip_permissions;
+  askArgsField.hidden = !!skill.skip_permissions;
+  headlessUsageField.hidden = skill.interactive_only !== false;
 
   card.append(head, body);
   return card;

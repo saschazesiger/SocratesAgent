@@ -13,237 +13,50 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
 
-// The guard has to be sharp about coding agents and blind to everything else,
-// so the table carries as many innocent command lines as guilty ones.
-func TestHarnessGuardMatcher(t *testing.T) {
-	rules := newHarnessRules(config.Default())
-
-	cases := []struct {
-		name     string
-		command  string
-		found    bool
-		headless bool
-	}{
-		// Headless invocations, which are refused everywhere.
-		{"print flag", `claude -p "fix the tests"`, true, true},
-		{"long print flag", `claude --print "fix the tests"`, true, true},
-		{"output format", `claude --output-format json "hi"`, true, true},
-		{"output format joined", `claude --output-format=stream-json "hi"`, true, true},
-		{"quoted flag", `claude "-p" x`, true, true},
-		{"quoted flag value", `claude --print="x"`, true, true},
-		{"quoted command", `"claude" -p x`, true, true},
-		{"single quoted command", `'claude' -p x`, true, true},
-		{"command quoted in the middle", `cl''aude -p x`, true, true},
-		{"quoted subcommand", `codex "exec" x`, true, true},
-		{"codex exec", `codex exec "explain this repo"`, true, true},
-		{"opencode run", `opencode run "explain this repo"`, true, true},
-		{"non interactive", `claude --non-interactive "hi"`, true, true},
-		{"quiet", `opencode -q "hi"`, true, true},
-		{"json", `codex --json "hi"`, true, true},
-		{"piped prompt", `echo "fix it" | claude`, true, true},
-		{"prompt from a file", `claude < prompt.txt`, true, true},
-		{"here string", `claude <<< "fix it"`, true, true},
-		{"after a successful build", `npm run build && codex exec "review"`, true, true},
-		{"in a list", `cd /srv; claude -p hi`, true, true},
-		{"command substitution", `answer=$(claude -p "hi")`, true, true},
-		{"substitution inside a string", `result="$(claude -p x)"`, true, true},
-		{"substitution in a commit message", `git commit -m "$(claude -p 'msg')"`, true, true},
-		{"backticks", "note=`claude -p x`", true, true},
-		{"behind sudo", `sudo -E claude --print hi`, true, true},
-		{"behind env", `env FOO=1 claude -p hi`, true, true},
-		{"with a leading assignment", `FOO=1 claude -p hi`, true, true},
-		{"absolute path", `/usr/local/bin/claude -p hi`, true, true},
-		{"through bash -c", `bash -c "claude -p x"`, true, true},
-		{"through sh -lc", `sh -lc 'claude -p x'`, true, true},
-		{"through eval", `eval "claude -p x"`, true, true},
-		{"through xargs", `ls | xargs -n 1 claude -p`, true, true},
-		{"behind timeout", `timeout 10 claude -p x`, true, true},
-		{"behind nice", `nice -n 5 claude --print x`, true, true},
-		{"behind a stderr redirect", `claude 2>&1 -p x`, true, true},
-		{"behind a merged redirect", `claude &> log.txt -p x`, true, true},
-		{"in a for loop", `for f in *; do claude -p $f; done`, true, true},
-		{"in a conditional", `if true; then claude -p x; fi`, true, true},
-		{"after a model flag", `codex --model o3 exec x`, true, true},
-		{"after a short model flag", `codex -m o3 exec x`, true, true},
-		{"after a bracket in a message", `git commit -m "add feature (wip"; claude -p x`, true, true},
-
-		// The bare agent: fine in a terminal, refused in the shell tool.
-		{"bare claude", `claude`, true, false},
-		{"claude with a model", `claude --model sonnet`, true, false},
-		{"codex in a subdirectory", `cd api && codex`, true, false},
-
-		// Everything else has to pass untouched.
-		{"grep for the word", `grep claude file.go`, false, false},
-		{"commit message", `git commit -m "run codex"`, false, false},
-		{"npm script called run", `npm run codex`, false, false},
-		{"a file named after it", `cat docs/opencode.md`, false, false},
-		{"print flag on another program", `ls -p`, false, false},
-		{"quoted path", `rg "claude -p" internal/`, false, false},
-		{"single quoted", `echo 'claude -p hi'`, false, false},
-		{"a python module", `python3 -m claude_helper --print`, false, false},
-		{"writing to a file named claude", `echo hi > claude`, false, false},
-		{"an exec subcommand of something else", `docker exec -it box sh`, false, false},
-		{"plain build", `go test ./...`, false, false},
-		{"a bracket in a commit message", `git commit -m "add feature (wip)"`, false, false},
-		{"an unbalanced bracket in a message", `git commit -m "add feature (wip"`, false, false},
-		{"version check", `claude --version`, false, false},
-		{"short version check", `codex -v`, false, false},
-		{"help", `opencode --help`, false, false},
-		{"short help", `claude -h`, false, false},
-		{"looking it up", `command -v claude`, false, false},
-		{"looking it up with type", `type claude`, false, false},
-		{"looking it up with which", `which claude`, false, false},
-
-		// Nonsense must be survived rather than parsed.
-		{"empty", ``, false, false},
-		{"a lone quote", `'`, false, false},
-		{"an unfinished escape", `"\`, false, false},
-		{"an unfinished substitution", `$(`, false, false},
-		{"only separators", `;;;`, false, false},
-		{"unterminated argument", `claude -p x "a`, true, true},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			use := findHarnessUse(tc.command, rules)
-			if (use != nil) != tc.found {
-				t.Fatalf("findHarnessUse(%q) = %+v, wanted found=%v", tc.command, use, tc.found)
-			}
-			shell := guardShellCommand(tc.command, rules)
-			terminal := guardTerminalCommand(tc.command, rules)
-			if use == nil {
-				// Nothing found means both tools have to let it through.
-				if shell != "" {
-					t.Errorf("shell_run refused %q: %s", tc.command, shell)
-				}
-				if terminal != "" {
-					t.Errorf("terminal_open refused %q: %s", tc.command, terminal)
-				}
-				return
-			}
-			if use.headless != tc.headless {
-				t.Fatalf("findHarnessUse(%q) headless = %v, wanted %v (reason %q)",
-					tc.command, use.headless, tc.headless, use.reason)
-			}
-
-			// The shell tool refuses either way; a terminal only refuses the
-			// headless spelling.
-			if shell == "" {
-				t.Errorf("shell_run allowed %q", tc.command)
-			}
-			if tc.headless && terminal == "" {
-				t.Errorf("terminal_open allowed the headless %q", tc.command)
-			}
-			if !tc.headless && terminal != "" {
-				t.Errorf("terminal_open refused the interactive %q: %s", tc.command, terminal)
-			}
-		})
-	}
-
-	// A command that is not an agent must get past both guards.
-	for _, cmd := range []string{`grep claude file.go`, `git commit -m "run codex"`} {
-		if refusal := guardShellCommand(cmd, rules); refusal != "" {
-			t.Errorf("shell_run refused %q: %s", cmd, refusal)
-		}
-	}
-}
-
-// A tool renamed in the admin dashboard is still guarded, because the guard
-// looks at the command it runs rather than at its id.
-func TestHarnessGuardFollowsTheConfiguredCommand(t *testing.T) {
-	settings := config.Default()
-	settings.Tools = []config.Tool{{
-		ID: "implementer", Name: "Implementer", Enabled: true, Command: "/opt/bin/claude",
-	}}
-	rules := newHarnessRules(settings)
-
-	refusal := guardShellCommand(`claude -p hi`, rules)
-	if !strings.Contains(refusal, `tool: "implementer"`) {
-		t.Errorf("the refusal did not point at the configured tool: %s", refusal)
-	}
-}
-
-// The shell tool is the hole the model kept reaching through, so it has to
-// refuse before anything runs and say what to do instead.
-func TestShellRunRefusesAHeadlessCodingAgent(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("needs a POSIX shell")
-	}
-	router := &mockRouter{responses: []string{
-		sseToolCall("shell_run", `{"command":"claude -p hello"}`),
-		sseText("Understood, opening a session instead."),
-	}}
-	engine, st := newTestEngine(t, router, nil)
-
-	chat := &store.Chat{ID: "chat-guard"}
-	if err := st.CreateChat(chat); err != nil {
-		t.Fatal(err)
-	}
-	run, err := engine.Start(Turn{ChatID: chat.ID, Text: "ask claude something", Auto: false})
-	if err != nil {
-		t.Fatal(err)
-	}
-	waitForRun(t, st, run.ID, store.RunDone)
-
-	payload := lastPayload(t, router, 1)
-	for _, want := range []string{"Refusing to run claude", "terminal_open", `tool: \"claude\"`} {
-		if !strings.Contains(payload, want) {
-			t.Errorf("the refusal is missing %q: %s", want, payload)
-		}
-	}
-
-	// Nothing may actually have run.
-	steps, err := st.ListSteps(chat.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, s := range steps {
-		if s.Kind == store.StepShell {
-			t.Fatalf("the command was run anyway: %#v", s)
-		}
-	}
-}
-
-// The interactive path is the whole point, so it must stay open.
-func TestTerminalOpenStillStartsTheCodingAgent(t *testing.T) {
+// The interactive path is the whole point, so it must stay open. `skill` is
+// what the parameter is called now; `tool` is what it used to be called and is
+// still accepted, so a model working from a cached prompt is not stranded.
+func TestTerminalOpenStartsASkill(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("needs a real terminal")
 	}
-	binary := fakeClaude(t)
+	for _, param := range []string{"skill", "tool"} {
+		t.Run(param, func(t *testing.T) {
+			binary := fakeClaude(t)
+			router := &mockRouter{responses: []string{
+				sseToolCall("terminal_open", `{"`+param+`":"claude","name":"claude test"}`),
+				sseText("The session is up."),
+			}}
+			engine, st := newTestEngine(t, router, []config.Skill{{
+				ID: "claude", Name: "Claude Code", Enabled: true,
+				Description: "a stand in for Claude Code",
+				Command:     binary,
+				Startup:     "wait for the ready prompt",
+				IdleSeconds: 1, TimeoutSeconds: 60,
+			}})
 
-	router := &mockRouter{responses: []string{
-		sseToolCall("terminal_open", `{"tool":"claude","name":"claude · guard"}`),
-		sseText("The session is up."),
-	}}
-	engine, st := newTestEngine(t, router, []config.Tool{{
-		ID: "claude", Name: "Claude Code", Enabled: true,
-		Description: "a stand in for Claude Code",
-		Command:     binary,
-		Driving:     "type and press enter",
-		IdleSeconds: 1, TimeoutSeconds: 60,
-	}})
+			chat := &store.Chat{ID: "chat-open-" + param}
+			if err := st.CreateChat(chat); err != nil {
+				t.Fatal(err)
+			}
+			run, err := engine.Start(Turn{ChatID: chat.ID, Text: "open claude", Auto: false})
+			if err != nil {
+				t.Fatal(err)
+			}
+			waitForRun(t, st, run.ID, store.RunDone)
 
-	chat := &store.Chat{ID: "chat-open"}
-	if err := st.CreateChat(chat); err != nil {
-		t.Fatal(err)
-	}
-	run, err := engine.Start(Turn{ChatID: chat.ID, Text: "open claude", Auto: false})
-	if err != nil {
-		t.Fatal(err)
-	}
-	waitForRun(t, st, run.ID, store.RunDone)
-
-	payload := lastPayload(t, router, 1)
-	if strings.Contains(payload, "Refusing") {
-		t.Fatalf("the guard blocked the interactive path: %s", payload)
-	}
-	if !strings.Contains(payload, "ready>") {
-		t.Errorf("the first screen never reached the model: %s", payload)
+			payload := lastPayload(t, router, 1)
+			if !strings.Contains(payload, "ready>") {
+				t.Errorf("the first screen never reached the model: %s", payload)
+			}
+			if !strings.Contains(payload, "wait for the ready prompt") {
+				t.Errorf("the skill's startup section was not handed over: %s", payload)
+			}
+		})
 	}
 }
 
-// fakeClaude writes a stand in for the real binary, named `claude` so the guard
-// sees the same command it would refuse in the shell. It keeps running, the way
+// fakeClaude writes a stand in for the real binary. It keeps running, the way
 // a TUI does, so the session is still alive when a question is asked.
 func fakeClaude(t *testing.T) string {
 	t.Helper()
@@ -261,12 +74,13 @@ func TestAskNamesTheAsker(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("needs a real terminal")
 	}
-	tools := []config.Tool{{
+	skills := []config.Skill{{
 		ID: "claude", Name: "Claude Code", Enabled: true,
-		Description: "a stand in for Claude Code",
-		Command:     fakeClaude(t),
-		Driving:     "type and press enter",
-		IdleSeconds: 1, TimeoutSeconds: 60,
+		Description:  "a stand in for Claude Code",
+		Command:      fakeClaude(t),
+		GivingTasks:  "type and press enter",
+		ReadingState: "it is done when the prompt comes back",
+		IdleSeconds:  1, TimeoutSeconds: 60,
 	}}
 
 	cases := []struct {
@@ -277,7 +91,7 @@ func TestAskNamesTheAsker(t *testing.T) {
 		{
 			name: "agent",
 			replies: []string{
-				sseToolCall("terminal_open", `{"tool":"claude","name":"claude"}`),
+				sseToolCall("terminal_open", `{"skill":"claude","name":"claude"}`),
 				sseToolCall("ask_user", `{"question":"Which one?","options":[{"label":"Left"}]}`),
 				sseText("Going left then."),
 			},
@@ -296,7 +110,7 @@ func TestAskNamesTheAsker(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			router := &mockRouter{responses: tc.replies}
-			engine, st := newTestEngine(t, router, tools)
+			engine, st := newTestEngine(t, router, skills)
 			chat := &store.Chat{ID: "chat-source"}
 			if err := st.CreateChat(chat); err != nil {
 				t.Fatal(err)

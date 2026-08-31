@@ -50,8 +50,8 @@ func (e *testEnv) speak(t *testing.T, body string) *http.Response {
 	return res
 }
 
-// A language chosen in the dashboard is the whole point of the setting, so it
-// beats anything the page believes about the text it is about to hear.
+// The language chosen in the dashboard is the whole point of the setting: it
+// is what the voice model is told to read in.
 func TestSpeakReadsInTheConfiguredLanguage(t *testing.T) {
 	var payload map[string]any
 	env := newEnv(t)
@@ -65,7 +65,7 @@ func TestSpeakReadsInTheConfiguredLanguage(t *testing.T) {
 		"tts_api_key":  "k",
 	})
 
-	res := env.speak(t, `{"text":"Alles erledigt.","lang":"en"}`)
+	res := env.speak(t, `{"text":"Alles erledigt."}`)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("speak failed: %d", res.StatusCode)
 	}
@@ -73,11 +73,21 @@ func TestSpeakReadsInTheConfiguredLanguage(t *testing.T) {
 	if !strings.Contains(instructions, "German") {
 		t.Fatalf("instructions = %q", instructions)
 	}
+
+	// Switching the setting switches the accent, and nothing else has to be
+	// touched for that to happen.
+	env.configureVoice(t, map[string]any{"language": "en"})
+	if res := env.speak(t, `{"text":"All done."}`); res.StatusCode != http.StatusOK {
+		t.Fatalf("speak failed: %d", res.StatusCode)
+	}
+	if instructions, _ := payload["instructions"].(string); !strings.Contains(instructions, "English") {
+		t.Fatalf("instructions = %q", instructions)
+	}
 }
 
-// On automatic the page is the only side that has the text in front of it, so
-// the language it worked out is what gets used.
-func TestSpeakFallsBackToTheLanguageThePageDetected(t *testing.T) {
+// An older settings document says "auto". There is no such language any more,
+// so it has to land on the default rather than leaving the model to guess.
+func TestSpeakFallsBackToTheDefaultLanguage(t *testing.T) {
 	var payload map[string]any
 	env := newEnv(t)
 	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
@@ -90,21 +100,11 @@ func TestSpeakFallsBackToTheLanguageThePageDetected(t *testing.T) {
 		"tts_api_key":  "k",
 	})
 
-	if res := env.speak(t, `{"text":"Alles erledigt.","lang":"de"}`); res.StatusCode != http.StatusOK {
-		t.Fatalf("speak failed: %d", res.StatusCode)
-	}
-	if instructions, _ := payload["instructions"].(string); !strings.Contains(instructions, "German") {
-		t.Fatalf("instructions = %q", instructions)
-	}
-
-	// And with nothing to go on, nothing is claimed: the voice model reads the
-	// text as it finds it rather than being pointed at the wrong language.
-	payload = nil
 	if res := env.speak(t, `{"text":"All done."}`); res.StatusCode != http.StatusOK {
 		t.Fatalf("speak failed: %d", res.StatusCode)
 	}
-	if _, ok := payload["instructions"]; ok {
-		t.Fatalf("instructions were invented: %#v", payload)
+	if instructions, _ := payload["instructions"].(string); !strings.Contains(instructions, "English") {
+		t.Fatalf("instructions = %q", instructions)
 	}
 }
 
@@ -114,7 +114,7 @@ func TestSpeakLeavesTheBrowserToItsOwnVoice(t *testing.T) {
 	env := newEnv(t)
 	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
 	env.configureVoice(t, map[string]any{"language": "de", "tts_provider": "browser"})
-	if res := env.speak(t, `{"text":"Alles erledigt.","lang":"de"}`); res.StatusCode != http.StatusNoContent {
+	if res := env.speak(t, `{"text":"Alles erledigt."}`); res.StatusCode != http.StatusNoContent {
 		t.Fatalf("status = %d", res.StatusCode)
 	}
 }
@@ -162,7 +162,7 @@ func TestPreferencesCarryTheLanguage(t *testing.T) {
 	env := newEnv(t)
 	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
 	_, prefs := env.do(t, env.client, "GET", "/api/preferences", "")
-	if prefs["language"] != config.LanguageAuto {
+	if prefs["language"] != config.DefaultLanguage {
 		t.Fatalf("language = %#v", prefs["language"])
 	}
 	env.configureVoice(t, map[string]any{"language": "de"})
@@ -172,21 +172,22 @@ func TestPreferencesCarryTheLanguage(t *testing.T) {
 	}
 }
 
-// A transcript that translates is not a transcript. The instruction says so
-// whether or not a language was pinned.
-func TestTranscriptionHintAlwaysForbidsTranslating(t *testing.T) {
-	pinned := transcriptionHint(config.LanguageDE)
-	if !strings.Contains(pinned, "German") || !strings.Contains(pinned, "never translate") {
-		t.Fatalf("pinned hint = %q", pinned)
+// A transcript that translates is not a transcript, so the instruction says so
+// in both languages - and both instructions name a language, because there is
+// no setting left that means "work it out yourself".
+func TestTranscriptionHintNamesTheLanguageAndForbidsTranslating(t *testing.T) {
+	german := transcriptionHint(config.LanguageDE)
+	if !strings.Contains(german, "German") || !strings.Contains(german, "never translate") {
+		t.Fatalf("german hint = %q", german)
 	}
-	auto := transcriptionHint(config.LanguageAuto)
-	if strings.Contains(auto, "German") || !strings.Contains(auto, "never translate") {
-		t.Fatalf("automatic hint = %q", auto)
+	english := transcriptionHint(config.LanguageEN)
+	if !strings.Contains(english, "English") || strings.Contains(english, "German") {
+		t.Fatalf("english hint = %q", english)
 	}
-	if speechInstructions(config.LanguageAuto) != "" {
-		t.Fatalf("automatic must not instruct a language")
+	if !strings.Contains(speechInstructions(config.LanguageDE), "German") {
+		t.Fatalf("german speech = %q", speechInstructions(config.LanguageDE))
 	}
 	if !strings.Contains(speechInstructions(config.LanguageEN), "English") {
-		t.Fatalf("english = %q", speechInstructions(config.LanguageEN))
+		t.Fatalf("english speech = %q", speechInstructions(config.LanguageEN))
 	}
 }

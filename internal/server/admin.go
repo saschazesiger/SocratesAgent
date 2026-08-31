@@ -51,6 +51,7 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"settings":  settings,
 		"defaults":  config.Default(),
+		"presets":   config.Presets(),
 		"version":   Version,
 		"local_url": s.LocalURL(),
 	})
@@ -64,7 +65,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next := body.Settings
-	// Normalize gives every tool a unique, usable id, so a half filled form
+	// Normalize gives every skill a unique, usable id, so a half filled form
 	// from the dashboard can never break the orchestrator.
 	next.Normalize()
 	if err := s.saveSettings(next); err != nil {
@@ -153,15 +154,15 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 			Detail: "this build has no pseudo terminal, so full screen programs will not run interactively"})
 	}
 
-	// The programs Socrates can run
-	for _, tool := range settings.Tools {
-		if !tool.Enabled {
+	// The programs Socrates has a skill for
+	for _, skill := range settings.Skills {
+		if !skill.Enabled {
 			continue
 		}
-		path, err := exec.LookPath(tool.Command)
+		path, err := exec.LookPath(skill.Command)
 		if err != nil {
-			results = append(results, checkResult{Name: tool.Name, OK: false,
-				Detail: "command " + tool.Command + " not found in PATH"})
+			results = append(results, checkResult{Name: skill.Name, OK: false,
+				Detail: "command " + skill.Command + " not found in PATH"})
 			continue
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
@@ -169,11 +170,11 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 		cancel()
 		version := strings.TrimSpace(strings.SplitN(stripControl(string(out)), "\n", 2)[0])
 		if err != nil {
-			results = append(results, checkResult{Name: tool.Name, OK: false,
+			results = append(results, checkResult{Name: skill.Name, OK: false,
 				Detail: path + " failed to report a version: " + strings.TrimSpace(err.Error()+" "+version)})
 			continue
 		}
-		results = append(results, checkResult{Name: tool.Name, OK: true, Detail: version})
+		results = append(results, checkResult{Name: skill.Name, OK: true, Detail: version})
 	}
 
 	// Remote access

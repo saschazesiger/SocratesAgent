@@ -170,82 +170,20 @@ function toBase64(bytes) {
 
 /* ------------------------------------------------------------- language */
 
-// Which language a piece of text is in decides which voice reads it, and a
-// German sentence read by an English voice is the one thing about voice mode
-// nobody forgives. The admin setting names a language or says "auto"; auto
-// means: work it out from the text itself, here, without asking anything over
-// the network - the fallback voice has to work with no signal at all.
+// Socrates speaks one language, chosen in the admin dashboard. Which one it is
+// decides which installed voice reads an answer out loud, and a German
+// sentence read by an English voice is the one thing about voice mode nobody
+// forgives.
 
-const LANGUAGE_TAGS = { de: 'de-DE', en: 'en-US' };
-
-// Words that are common in one of the two languages and effectively absent
-// from the other. Anything that exists in both - "in", "so", "war", "was",
-// "will", "also", "hat", "man", "die" - is left out on purpose: a marker that
-// can point either way is worse than no marker.
-const MARKERS = {
-  de: ['der', 'das', 'und', 'ist', 'nicht', 'ich', 'du', 'wir', 'ihr', 'sie', 'es', 'mir', 'mich',
-    'dir', 'dich', 'für', 'mit', 'auf', 'aus', 'bei', 'von', 'zum', 'zur', 'im', 'eine', 'einen',
-    'einem', 'dem', 'den', 'des', 'sich', 'auch', 'noch', 'schon', 'nur', 'mal', 'wieder', 'immer',
-    'etwas', 'nichts', 'alles', 'haben', 'habe', 'wird', 'werden', 'kann', 'können', 'soll',
-    'muss', 'müssen', 'dass', 'weil', 'wenn', 'dann', 'über', 'nach', 'vor', 'sehr', 'mehr',
-    'jetzt', 'heute', 'gerade', 'fertig', 'bitte', 'danke', 'nein', 'wie', 'wer', 'warum',
-    'oder', 'aber', 'hier', 'dort'],
-  en: ['the', 'and', 'is', 'are', 'you', 'not', 'with', 'for', 'this', 'that', 'have', 'has',
-    'can', 'could', 'should', 'would', 'must', 'because', 'about', 'after', 'before', 'very',
-    'here', 'there', 'now', 'today', 'just', 'done', 'please', 'thanks', 'yes', 'what', 'why',
-    'how', 'from', 'your', 'my', 'it', 'its', 'they', 'we', 'of', 'to', 'at', 'on', 'but', 'or',
-    'if', 'then', 'only', 'again', 'always', 'something', 'nothing', 'everything'],
-};
-
-const MARKER_SETS = {
-  de: new Set(MARKERS.de),
-  en: new Set(MARKERS.en),
-};
-
-// detectLanguage returns 'de' or 'en' for text it recognises, and null when
-// the text is too short or too neutral to tell - "Fertig." carries no marker
-// at all, and guessing from one word would be worse than falling back.
-export function detectLanguage(text) {
-  const words = String(text || '').toLowerCase().match(/[a-zäöüß]+/g);
-  if (!words) return null;
-  let de = 0;
-  let en = 0;
-  for (const word of words) {
-    // An umlaut or an eszett is the strongest single hint there is: no English
-    // word carries one.
-    if (/[äöüß]/.test(word)) de += 2;
-    if (MARKER_SETS.de.has(word)) de++;
-    else if (MARKER_SETS.en.has(word)) en++;
-  }
-  if (de === en) return null;
-  return de > en ? 'de' : 'en';
-}
-
-// preferredLanguage is what the device itself says, used when the text gives
-// nothing away. On a German phone that is the right guess far more often than
-// defaulting to English would be.
-function preferredLanguage() {
-  const tags = navigator.languages && navigator.languages.length
-    ? navigator.languages : [navigator.language || ''];
-  for (const tag of tags) {
-    const base = String(tag).toLowerCase().split(/[-_]/)[0];
-    if (LANGUAGE_TAGS[base]) return base;
-  }
-  return 'en';
-}
-
-// resolveLanguage turns the configured setting plus the text about to be read
-// into one concrete language. A configured language always wins; 'auto' asks
-// the text, then the device.
-export function resolveLanguage(setting, text) {
-  const base = String(setting || '').toLowerCase().split(/[-_]/)[0];
-  if (LANGUAGE_TAGS[base]) return base;
-  return detectLanguage(text) || preferredLanguage();
-}
+const LANGUAGE_TAGS = { en: 'en-US', de: 'de-DE' };
+const DEFAULT_LANGUAGE = 'en';
 
 // languageTag is the BCP 47 tag the speech synthesiser matches voices against.
+// Anything it does not recognise - an empty preference, a setting written by an
+// older version - reads as the default rather than as no language at all.
 export function languageTag(language) {
-  return LANGUAGE_TAGS[language] || LANGUAGE_TAGS[preferredLanguage()];
+  const base = String(language || '').toLowerCase().split(/[-_]/)[0];
+  return LANGUAGE_TAGS[base] || LANGUAGE_TAGS[DEFAULT_LANGUAGE];
 }
 
 /* ------------------------------------------------------------- playback */
@@ -277,7 +215,7 @@ export function stopSpeaking() {
 export async function speak(text, options = {}) {
   const content = plainSpeech(text);
   if (!content) return;
-  const language = resolveLanguage(options.lang, content);
+  const tag = languageTag(options.lang);
   stopSpeaking();
   const mine = generation;
   speakingFlag = true;
@@ -294,16 +232,13 @@ export async function speak(text, options = {}) {
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
         signal: controller.signal,
-        // The server decides for itself when a language is configured; this is
-        // what it uses while the setting is on automatic, because only the page
-        // has the text in front of it.
-        body: JSON.stringify({ text: content, lang: language }),
+        body: JSON.stringify({ text: content }),
       });
     } finally {
       clearTimeout(deadline);
     }
     if (mine !== generation) return;
-    if (res.status === 204) return await browserSpeak(content, language, options);
+    if (res.status === 204) return await browserSpeak(content, tag, options);
     if (!res.ok) throw new Error('tts endpoint failed');
     const blob = await res.blob();
     if (mine !== generation) return;
@@ -319,7 +254,7 @@ export async function speak(text, options = {}) {
       audio.play().catch(() => resolve());
     });
   } catch {
-    if (mine === generation) await browserSpeak(content, language, options);
+    if (mine === generation) await browserSpeak(content, tag, options);
   } finally {
     if (mine === generation) speakingFlag = false;
   }
@@ -384,10 +319,9 @@ function pickVoice(installed, tag) {
   return best;
 }
 
-async function browserSpeak(text, language, options = {}) {
+async function browserSpeak(text, tag, options = {}) {
   if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) return;
   const mine = generation;
-  const tag = languageTag(language);
   const installed = await voices();
   if (mine !== generation) return;
   let voice = pickVoice(installed, tag);
