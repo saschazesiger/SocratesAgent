@@ -1,18 +1,21 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/term"
 )
 
@@ -308,5 +311,361 @@ func TestDeletingAChatEndsItsTerminals(t *testing.T) {
 	_, listed := env.do(t, env.client, "GET", "/api/chats/"+chatID+"/terminals", "")
 	if terminals, _ := listed["terminals"].([]any); len(terminals) != 0 {
 		t.Errorf("deleting the chat left %d sessions running", len(terminals))
+	}
+}
+
+// TestTerminalEventsCarryColour is the browser's side of the coloured screen:
+// the fast per session stream has to deliver the styling, not just the text.
+func TestTerminalEventsCarryColour(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a real terminal")
+	}
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	srv, err := New(st, t.TempDir())
+	if err != nil {
+		t.Fatalf("server: %v", err)
+	}
+	t.Cleanup(srv.DetachTerminals)
+
+	handle, err := srv.terminals.Open(t.Context(), "chat1", "colours", term.Spec{
+		Command: "sh",
+		Args:    []string{"-c", `printf '\033[31mred\033[0m plain\n'; sleep 30`},
+		Dir:     t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("open session: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.terminals.Close(ctx, handle.ID(), 2*time.Second)
+	})
+	if ok, state, err := handle.WaitFor(t.Context(), `red plain`, 20*time.Second); err != nil || !ok {
+		t.Fatalf("the coloured line never appeared (ok=%v err=%v)\nscreen:\n%s", ok, err, state.Screen)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/api/terminals/"+handle.ID()+"/events", nil).WithContext(ctx)
+	req.SetPathValue("id", handle.ID())
+	rec := httptest.NewRecorder()
+	srv.handleTerminalEvents(rec, req)
+
+	var event struct {
+		Terminal struct {
+			Screen string `json:"screen"`
+			Styled [][]struct {
+				Text string `json:"t"`
+				FG   string `json:"fg"`
+			} `json:"styled"`
+			Cursor *struct {
+				Row     int  `json:"row"`
+				Col     int  `json:"col"`
+				Visible bool `json:"visible"`
+			} `json:"cursor"`
+		} `json:"terminal"`
+	}
+	found := false
+	for _, line := range strings.Split(rec.Body.String(), "\n") {
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
+			t.Fatalf("event is not JSON: %v (%s)", err, line)
+		}
+		if event.Terminal.Screen != "" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("the stream carried no screen at all:\n%s", rec.Body.String())
+	}
+	if !strings.Contains(event.Terminal.Screen, "red plain") {
+		t.Errorf("plain screen = %q, want it to contain %q", event.Terminal.Screen, "red plain")
+	}
+	if len(event.Terminal.Styled) == 0 {
+		t.Fatalf("the event carried no styled screen:\n%s", rec.Body.String())
+	}
+	first := event.Terminal.Styled[0]
+	if len(first) < 2 || first[0].Text != "red" || first[0].FG != "a1" || first[1].FG != "" {
+		t.Errorf("styled first line = %#v, want a red run followed by a plain one", first)
+	}
+	if event.Terminal.Cursor == nil {
+		t.Error("the event carried no cursor")
+	}
+}
+
+// The list is read on load and carries every session of a chat, so it stays
+// plain text; the colours arrive with each session's own stream.
+func TestTerminalListStaysPlain(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a real terminal")
+	}
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	srv, err := New(st, t.TempDir())
+	if err != nil {
+		t.Fatalf("server: %v", err)
+	}
+	t.Cleanup(srv.DetachTerminals)
+
+	handle, err := srv.terminals.Open(t.Context(), "chat1", "colours", term.Spec{
+		Command: "sh",
+		Args:    []string{"-c", `printf '\033[31mred\033[0m\n'; sleep 30`},
+		Dir:     t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("open session: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.terminals.Close(ctx, handle.ID(), 2*time.Second)
+	})
+	if ok, _, err := handle.WaitFor(t.Context(), `red`, 20*time.Second); err != nil || !ok {
+		t.Fatalf("the coloured line never appeared: %v", err)
+	}
+	for _, state := range srv.terminals.States("chat1") {
+		if state.Plain().Styled != nil {
+			t.Error("Plain left the styled screen behind")
+		}
+	}
+}
+
+// timedWriter records when each chunk of a stream was written, which is the
+// only way to see that the screens were held back rather than merely counted.
+type timedWriter struct {
+	mu     sync.Mutex
+	header http.Header
+	body   strings.Builder
+	at     []time.Time
+	marks  []int // how many bytes had been written by each flush
+}
+
+func newTimedWriter() *timedWriter {
+	return &timedWriter{header: http.Header{}}
+}
+
+func (w *timedWriter) Header() http.Header { return w.header }
+func (w *timedWriter) WriteHeader(int)     {}
+
+func (w *timedWriter) Write(b []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.body.Write(b)
+}
+
+func (w *timedWriter) Flush() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.at = append(w.at, time.Now())
+	w.marks = append(w.marks, w.body.Len())
+}
+
+func (w *timedWriter) text() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.body.String()
+}
+
+// events returns the payloads on the stream, each with the moment it was
+// flushed to the browser.
+func (w *timedWriter) events() []struct {
+	When time.Time
+	Data string
+} {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var out []struct {
+		When time.Time
+		Data string
+	}
+	seen := 0
+	body := w.body.String()
+	for i, mark := range w.marks {
+		chunk := body[seen:mark]
+		seen = mark
+		for _, line := range strings.Split(chunk, "\n") {
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			out = append(out, struct {
+				When time.Time
+				Data string
+			}{w.at[i], strings.TrimPrefix(line, "data: ")})
+		}
+	}
+	return out
+}
+
+// TestTerminalEventsAreCoalesced is the promise the dock makes to a phone on a
+// weak connection: a busy screen is sent at a pace the connection can carry,
+// and the screen the person is left looking at is the latest one.
+func TestTerminalEventsAreCoalesced(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a real terminal")
+	}
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	srv, err := New(st, t.TempDir())
+	if err != nil {
+		t.Fatalf("server: %v", err)
+	}
+	t.Cleanup(srv.DetachTerminals)
+
+	// Twenty changes over about a second and a half - a program writing as fast
+	// as a person could ever want to watch.
+	handle, err := srv.terminals.Open(t.Context(), "chat1", "busy", term.Spec{
+		Command: "sh",
+		Args: []string{"-c",
+			`i=1; while [ $i -le 20 ]; do printf '\033[3%dmline %d\033[0m\n' $((i % 8)) $i; sleep 0.07; i=$((i+1)); done; sleep 30`},
+		Dir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("open session: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.terminals.Close(ctx, handle.ID(), 2*time.Second)
+	})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/api/terminals/"+handle.ID()+"/events", nil).WithContext(ctx)
+	req.SetPathValue("id", handle.ID())
+	rec := newTimedWriter()
+	srv.handleTerminalEvents(rec, req)
+
+	type screen struct {
+		Terminal *struct {
+			Revision int64  `json:"revision"`
+			Screen   string `json:"screen"`
+		} `json:"terminal"`
+	}
+	var (
+		times     []time.Time
+		revisions []int64
+	)
+	for _, event := range rec.events() {
+		var parsed screen
+		if err := json.Unmarshal([]byte(event.Data), &parsed); err != nil {
+			t.Fatalf("event is not JSON: %v (%s)", err, event.Data)
+		}
+		if parsed.Terminal == nil {
+			continue
+		}
+		times = append(times, event.When)
+		revisions = append(revisions, parsed.Terminal.Revision)
+	}
+	if len(revisions) < 2 {
+		t.Fatalf("the stream carried %d screens, expected several:\n%s", len(revisions), rec.text())
+	}
+	// The burst lasts about a second and a half, so a stream that passed every
+	// change straight through would carry a dozen or more screens.
+	if len(revisions) > 12 {
+		t.Errorf("the screens were barely held back at all: %d of them", len(revisions))
+	}
+	// The gap is checked against a written down number rather than the constant,
+	// so that lowering the constant makes this test fail rather than agree.
+	const minGap = 120 * time.Millisecond
+	for i := 1; i < len(times); i++ {
+		if gap := times[i].Sub(times[i-1]); gap < minGap {
+			t.Errorf("screens %d and %d arrived %v apart, closer than the %v minimum",
+				i-1, i, gap, terminalCoalesce)
+		}
+	}
+	// And whatever was dropped, the last screen is the current one.
+	final := handle.State()
+	last := revisions[len(revisions)-1]
+	if last != final.Revision {
+		t.Errorf("the stream stopped at revision %d while the session is at %d", last, final.Revision)
+	}
+	if !strings.Contains(final.Screen, "line 20") {
+		t.Errorf("the burst never finished, so this proves nothing:\n%s", final.Screen)
+	}
+}
+
+// Archiving a chat has to leave nothing of it running. The transcript stays,
+// but the terminal sessions - which deliberately outlive a run - are ended
+// exactly as a deletion would end them.
+func TestArchivingAChatClosesItsTerminals(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a real terminal")
+	}
+	model := &scriptedModel{steps: []string{
+		toolCall("terminal_open", map[string]any{
+			"command": `sh -c 'printf "ready> "; while IFS= read -r l; do echo "$l"; done'`,
+			"name":    "a shell",
+		}),
+		`{"choices":[{"delta":{"content":"The session is open."},"finish_reason":"stop"}]}`,
+	}}
+	modelServer := httptest.NewServer(model)
+	t.Cleanup(modelServer.Close)
+
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+	_, data := env.do(t, env.client, "GET", "/api/settings", "")
+	settings := data["settings"].(map[string]any)
+	openrouter := settings["openrouter"].(map[string]any)
+	openrouter["api_key"] = "test-key"
+	openrouter["base_url"] = modelServer.URL
+	openrouter["title_model"] = titleModel
+	settings["agent"].(map[string]any)["workspace_root"] = t.TempDir()
+	body, _ := json.Marshal(map[string]any{"settings": settings})
+	if res, _ := env.do(t, env.client, "PUT", "/api/settings", string(body)); res.StatusCode != http.StatusOK {
+		t.Fatalf("could not configure the model: %d", res.StatusCode)
+	}
+
+	_, created := env.do(t, env.client, "POST", "/api/chats", `{}`)
+	chatID := created["chat"].(map[string]any)["id"].(string)
+	if res, sent := env.do(t, env.client, "POST", "/api/chats/"+chatID+"/messages", `{"text":"open a shell"}`); res.StatusCode != http.StatusOK {
+		t.Fatalf("sending the message failed: %d %#v", res.StatusCode, sent)
+	}
+
+	sessionID := ""
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		_, listed := env.do(t, env.client, "GET", "/api/chats/"+chatID+"/terminals", "")
+		if terminals, _ := listed["terminals"].([]any); len(terminals) > 0 {
+			sessionID = terminals[0].(map[string]any)["id"].(string)
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if sessionID == "" {
+		dumpSteps(t, env, chatID)
+		t.Fatal("no terminal session was opened for the chat")
+	}
+
+	if res, archived := env.do(t, env.client, "POST", "/api/chats/"+chatID+"/archive", ""); res.StatusCode != http.StatusOK {
+		t.Fatalf("archive = %d %v", res.StatusCode, archived)
+	}
+
+	_, listed := env.do(t, env.client, "GET", "/api/chats/"+chatID+"/terminals", "")
+	if terminals, _ := listed["terminals"].([]any); len(terminals) != 0 {
+		t.Fatalf("the chat still has terminal sessions after archiving: %#v", listed)
+	}
+	if res, _ := env.do(t, env.client, "GET", "/api/terminals/"+sessionID, ""); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("the session is still there after archiving: %d", res.StatusCode)
+	}
+	// What archiving keeps is the conversation itself.
+	_, snapshot := env.do(t, env.client, "GET", "/api/chats/"+chatID, "")
+	if messages, _ := snapshot["messages"].([]any); len(messages) == 0 {
+		t.Fatalf("the transcript was lost: %#v", snapshot)
+	}
+	if snapshot["chat"].(map[string]any)["archived"] != true {
+		t.Fatalf("the chat does not report itself as archived: %#v", snapshot["chat"])
 	}
 }

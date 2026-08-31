@@ -121,6 +121,12 @@ a { color: inherit; }
   margin-top: 6px;
   line-height: 1.5;
 }
+/* A path is long and has no spaces to wrap at, so it is allowed to break
+   anywhere rather than pushing the dialog wider than the screen. */
+.field .hint.mono {
+  font-size: 12px;
+  word-break: break-all;
+}
 .input, .select, .textarea {
   width: 100%;
   min-height: 40px;
@@ -263,6 +269,34 @@ a { color: inherit; }
   box-shadow: var(--shadow-sm);
 }
 
+/* Active or all: two words, one tap, and it stays where it was put. */
+.scope {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--bg-hover);
+}
+.scope .seg {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  border-radius: 7px;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text-soft);
+  cursor: pointer;
+  transition: background .12s ease, color .12s ease;
+}
+.scope .seg:hover { color: var(--text); }
+.scope .seg.on {
+  background: var(--bg);
+  color: var(--text);
+  font-weight: 550;
+  box-shadow: var(--shadow-sm);
+}
+
 .chat-list {
   flex: 1;
   min-height: 0;
@@ -298,15 +332,33 @@ a { color: inherit; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.chat-item .del {
+.chat-item .act {
   opacity: 0;
   width: 24px;
   height: 24px;
   flex: none;
   border-radius: 6px;
 }
-.chat-item:hover .del, .chat-item.active .del { opacity: .55; }
-.chat-item .del:hover { opacity: 1; background: #e4e5e8; }
+.chat-item:hover .act, .chat-item.active .act { opacity: .55; }
+.chat-item .act:hover { opacity: 1; background: #e4e5e8; }
+/* On a phone there is no hover to reveal anything, so the row shows what it
+   can do. */
+@media (hover: none) {
+  .chat-item .act { opacity: .45; }
+}
+/* An archived chat reads as put away: still legible, plainly not in use. */
+.chat-item.archived .label { color: var(--text-faint); }
+.tag {
+  flex: none;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 2px 5px;
+}
 .chat-item .dot {
   width: 6px; height: 6px; border-radius: 50%;
   background: var(--green); flex: none;
@@ -725,8 +777,13 @@ a { color: inherit; }
 
 .auto-screen { display: none; }
 body.auto .thread, body.auto .composer-wrap { display: none; }
-/* Auto mode is a focused, hands free surface: only the top bar stays. */
-body.auto .app { grid-template-columns: 1fr; }
+/* Auto mode is a focused, hands free surface: only the top bar stays - and
+   the terminal dock, which keeps the same right hand column it has in chat
+   mode. The sidebar is out of the flow, so two tracks are left: the hands
+   free screen, and the dock, which is `auto` and therefore takes no room at
+   all while it is hidden. On a phone the dock is fixed and covers the screen,
+   exactly as it does in chat mode. */
+body.auto .app { grid-template-columns: minmax(0, 1fr) auto; }
 body.auto .sidebar { display: none; }
 body.auto .menu-btn { display: none; }
 body.auto .auto-screen {
@@ -1249,15 +1306,61 @@ body.auto .auto-screen {
 .term-dot.failed { background: var(--red); }
 
 .term-screen {
+  /* The sixteen ANSI colours, which the server names rather than resolves, so
+     the palette is decided here. The terminal panel is dark whichever theme
+     the rest of the page is in - a shell is a dark room - so there is one set,
+     tuned for legibility on this background rather than copied from a hardware
+     terminal nobody has to live with any more. */
+  --t0: #6b7280;
+  --t1: #e06c75;
+  --t2: #98c379;
+  --t3: #e5c07b;
+  --t4: #61afef;
+  --t5: #c678dd;
+  --t6: #56b6c2;
+  --t7: #cdd0d6;
+  --t8: #5c6370;
+  --t9: #ff8189;
+  --t10: #b5e08c;
+  --t11: #f0d399;
+  --t12: #82c5ff;
+  --t13: #e3a7f2;
+  --t14: #79dbe6;
+  --t15: #ffffff;
+  /* What "reverse video" swaps in: the screen's own two colours. */
+  --term-fg: #e4e5e9;
+  --term-bg: #16171a;
   margin: 0;
   padding: 10px 12px;
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1.35;
-  color: #e4e5e9;
+  color: var(--term-fg);
   white-space: pre;
   overflow-x: auto;
   overflow-y: auto;
+}
+
+/* One class per attribute, so a run costs a class name rather than a handful
+   of inline properties. Colours stay inline: there are sixteen million. */
+.term-screen .tb { font-weight: 700; }
+.term-screen .td { opacity: .58; }
+.term-screen .ti { font-style: italic; }
+.term-screen .tu { text-decoration: underline; }
+.term-screen .ts { text-decoration: line-through; }
+.term-screen .tu.ts { text-decoration: underline line-through; }
+
+/* The caret, drawn the way a terminal draws it when the window has focus, and
+   left as a quiet outline when it does not. */
+.term-screen .tcur {
+  background: var(--term-fg);
+  color: var(--term-bg);
+  border-radius: 1px;
+}
+.term-screen:not(:focus) .tcur {
+  background: none;
+  color: inherit;
+  box-shadow: inset 0 0 0 1px rgba(228, 229, 233, .55);
 }
 
 .term-key {

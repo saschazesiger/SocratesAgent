@@ -16,7 +16,11 @@ import (
 )
 
 func (s *Server) handleListChats(w http.ResponseWriter, r *http.Request) {
-	chats, err := s.store.ListChats()
+	// The sidebar shows the active chats and can be switched to showing every
+	// one of them. Anything but "all" means the active ones, so a client that
+	// asks for nothing in particular is never handed the archive.
+	includeArchived := r.URL.Query().Get("scope") == "all"
+	chats, err := s.store.ListChats(includeArchived)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -83,9 +87,14 @@ func (s *Server) handleGetChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	settings := s.Settings()
+	// The chat's own folder under the workspace root is where it works unless
+	// it was pointed somewhere else. Both are sent: the effective directory is
+	// what the page shows, and the default is what it falls back to when the
+	// directory is later cleared, without another round trip.
+	defaultWorkspace := filepath.Join(settings.Agent.WorkspaceRoot, chat.ID)
 	workspace := chat.Workspace
 	if workspace == "" {
-		workspace = filepath.Join(settings.Agent.WorkspaceRoot, chat.ID)
+		workspace = defaultWorkspace
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"chat":                chat,
@@ -95,6 +104,7 @@ func (s *Server) handleGetChat(w http.ResponseWriter, r *http.Request) {
 		"rev":                 s.store.Rev(),
 		"busy":                s.engine.Busy(id),
 		"effective_workspace": workspace,
+		"default_workspace":   defaultWorkspace,
 	})
 }
 
@@ -124,6 +134,45 @@ func (s *Server) handleUpdateChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	chat.Title, chat.Workspace = title, workspace
+	s.bus.Publish(id, agent.Event{Type: "chat", Chat: chat})
+	writeJSON(w, http.StatusOK, map[string]any{"chat": chat})
+}
+
+// handleArchiveChat and handleUnarchiveChat put a chat away and bring it back.
+// Archiving is the gentler half of deleting: the transcript stays, but nothing
+// of the chat is left running.
+func (s *Server) handleArchiveChat(w http.ResponseWriter, r *http.Request) {
+	s.setChatArchived(w, r, true)
+}
+
+func (s *Server) handleUnarchiveChat(w http.ResponseWriter, r *http.Request) {
+	s.setChatArchived(w, r, false)
+}
+
+func (s *Server) setChatArchived(w http.ResponseWriter, r *http.Request, archived bool) {
+	id := r.PathValue("id")
+	if _, err := s.store.GetChat(id); err != nil {
+		s.notFound(w, err)
+		return
+	}
+	if archived {
+		// An archived chat owns nothing that is still running: the turn in
+		// flight is cancelled and the terminal sessions - which outlive a run
+		// on purpose - are ended here, exactly as a deletion would end them.
+		s.engine.Stop(id)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		s.terminals.CloseChat(ctx, id)
+	}
+	if err := s.store.SetChatArchived(id, archived); err != nil {
+		s.notFound(w, err)
+		return
+	}
+	chat, err := s.store.GetChat(id)
+	if err != nil {
+		s.notFound(w, err)
+		return
+	}
 	s.bus.Publish(id, agent.Event{Type: "chat", Chat: chat})
 	writeJSON(w, http.StatusOK, map[string]any{"chat": chat})
 }

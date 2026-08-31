@@ -205,6 +205,8 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/chats/{id}", s.auth(s.handleGetChat))
 	mux.HandleFunc("PATCH /api/chats/{id}", s.auth(s.handleUpdateChat))
 	mux.HandleFunc("DELETE /api/chats/{id}", s.auth(s.handleDeleteChat))
+	mux.HandleFunc("POST /api/chats/{id}/archive", s.auth(s.handleArchiveChat))
+	mux.HandleFunc("POST /api/chats/{id}/unarchive", s.auth(s.handleUnarchiveChat))
 	mux.HandleFunc("POST /api/chats/{id}/messages", s.auth(s.handleSendMessage))
 	mux.HandleFunc("POST /api/chats/{id}/stop", s.auth(s.handleStopRun))
 	mux.HandleFunc("GET /api/chats/{id}/events", s.auth(s.handleEvents))

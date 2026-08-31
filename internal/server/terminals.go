@@ -15,9 +15,14 @@ import (
 // whatever either of them sends goes to the same program.
 
 func (s *Server) handleListTerminals(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"terminals": s.terminals.States(r.PathValue("id")),
-	})
+	// The list is what the dock reads on load, and it can hold a dozen
+	// screens. The colours come with the live stream a moment later, so they
+	// are left out of the list rather than sent a dozen times over.
+	states := s.terminals.States(r.PathValue("id"))
+	for i, state := range states {
+		states[i] = state.Plain()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"terminals": states})
 }
 
 // terminal resolves the session in the URL.
@@ -107,6 +112,14 @@ func (s *Server) handleTerminalClose(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// terminalCoalesce is the shortest gap between two screens on a session
+// stream. A screen changes far more often than anyone can read it, and a
+// coloured screen is several times the size a plain one was; on a phone on a
+// weak connection that difference is the whole experience. So the screens are
+// coalesced - and the last one is never among the ones dropped, because a dock
+// left showing an old screen is the one fault it cannot afford.
+const terminalCoalesce = 150 * time.Millisecond
+
 // handleTerminalEvents streams the screen of one session. The chat stream
 // carries the same screens, but only once a second; this one is quick enough
 // to type into.
@@ -152,9 +165,18 @@ func (s *Server) handleTerminalEvents(w http.ResponseWriter, r *http.Request) {
 	if !sendState(handle.State()) {
 		return
 	}
+	last := time.Now()
 
 	ping := time.NewTicker(heartbeatInterval)
 	defer ping.Stop()
+	// The timer only runs while a screen is being held back.
+	flush := time.NewTimer(time.Hour)
+	if !flush.Stop() {
+		<-flush.C
+	}
+	defer flush.Stop()
+	var pending term.State
+	held, armed := false, false
 	for {
 		select {
 		case <-r.Context().Done():
@@ -164,13 +186,37 @@ func (s *Server) handleTerminalEvents(w http.ResponseWriter, r *http.Request) {
 				send(map[string]any{"type": "closed"})
 				return
 			}
+			if !state.Running {
+				// The program is gone. Its last screen goes out whatever the
+				// interval says, and then the goodbye, which ends the stream on
+				// purpose - something quite different from losing it.
+				if !sendState(state) {
+					return
+				}
+				send(map[string]any{"type": "closed"})
+				return
+			}
+			if wait := terminalCoalesce - time.Since(last); wait > 0 {
+				pending, held = state, true
+				if !armed {
+					flush.Reset(wait)
+					armed = true
+				}
+				continue
+			}
+			last = time.Now()
+			held = false
 			if !sendState(state) {
 				return
 			}
-			if !state.Running {
-				// The program is gone. Saying so ends the stream on purpose,
-				// which is different from losing it.
-				send(map[string]any{"type": "closed"})
+		case <-flush.C:
+			armed = false
+			if !held {
+				continue
+			}
+			last = time.Now()
+			held = false
+			if !sendState(pending) {
 				return
 			}
 		case <-ping.C:

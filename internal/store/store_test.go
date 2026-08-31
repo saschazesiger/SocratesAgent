@@ -34,7 +34,7 @@ func TestChatLifecycle(t *testing.T) {
 	if err := st.UpdateChat("c1", "Renamed", "/tmp/work"); err != nil {
 		t.Fatal(err)
 	}
-	list, err := st.ListChats()
+	list, err := st.ListChats(false)
 	if err != nil || len(list) != 1 || list[0].Title != "Renamed" || list[0].Workspace != "/tmp/work" {
 		t.Fatalf("list = %#v (%v)", list, err)
 	}
@@ -341,5 +341,54 @@ INSERT INTO messages VALUES ('m1', 'c1', '', 'user', 'from before', 1, 1);
 	}
 	if found, err := st.MessageByClientID("c1", "k"); err != nil || found.ID != "m2" {
 		t.Fatalf("lookup after migration = %#v (%v)", found, err)
+	}
+}
+
+// Archiving is the half way house between keeping a chat and deleting it: the
+// transcript survives, and the sidebar stops showing it until it is asked for.
+func TestArchiveChat(t *testing.T) {
+	st := openTest(t)
+	if err := st.CreateChat(&Chat{ID: "c1", Title: "Kept"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateChat(&Chat{ID: "c2", Title: "Put away"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddMessage(&Message{ID: "m1", ChatID: "c2", Role: "user", Content: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetChatArchived("c2", true); err != nil {
+		t.Fatal(err)
+	}
+
+	active, err := st.ListChats(false)
+	if err != nil || len(active) != 1 || active[0].ID != "c1" {
+		t.Fatalf("active list = %#v (%v)", active, err)
+	}
+	all, err := st.ListChats(true)
+	if err != nil || len(all) != 2 {
+		t.Fatalf("full list = %#v (%v)", all, err)
+	}
+	got, err := st.GetChat("c2")
+	if err != nil || !got.Archived || got.ArchivedAt == 0 {
+		t.Fatalf("archived chat = %#v (%v)", got, err)
+	}
+	// The conversation is the whole point of archiving rather than deleting.
+	if messages, err := st.ListMessages("c2"); err != nil || len(messages) != 1 {
+		t.Fatalf("messages = %#v (%v)", messages, err)
+	}
+
+	if err := st.SetChatArchived("c2", false); err != nil {
+		t.Fatal(err)
+	}
+	got, err = st.GetChat("c2")
+	if err != nil || got.Archived || got.ArchivedAt != 0 {
+		t.Fatalf("restored chat = %#v (%v)", got, err)
+	}
+	if active, err := st.ListChats(false); err != nil || len(active) != 2 {
+		t.Fatalf("restored chat missing from the active list: %#v (%v)", active, err)
+	}
+	if err := st.SetChatArchived("missing", true); err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }

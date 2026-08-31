@@ -29,6 +29,10 @@ answers you in one place: by text or by voice.
 
 - **A chat that feels familiar.** Sidebar with past conversations, streaming
   answers, markdown, mobile friendly. Light, quiet, minimal.
+- **Archive instead of delete.** A conversation you are done with can be put
+  away rather than thrown away: the transcript stays, everything it had running
+  is closed, and the sidebar hides it until you switch it from **Active** to
+  **All**. Writing to an archived chat makes it active again by itself.
 - **A real terminal, not a wrapper.** Socrates opens interactive sessions and
   drives them like a person: typing, reading the screen, pressing keys. That is
   how it runs Claude Code, and equally how it runs anything else.
@@ -48,6 +52,10 @@ answers you in one place: by text or by voice.
   at all, and picks up where it left off.
 - **It asks you back.** When something is ambiguous the agent asks in its reply
   and stops, instead of guessing. You answer with the next message.
+- **The web, when you want it.** Switch on internet access and Socrates can
+  search and read pages instead of guessing at a version or a price — every
+  request visible as its own step, and the page fetcher locked to the public
+  internet so a link can never reach your own network.
 - **Voice in and out.** Record in the browser, transcribe through OpenRouter,
   have the answer read back to you.
 - **Auto mode.** One big microphone button, a timer, and the answer shown as
@@ -241,7 +249,7 @@ you started while asking one thing is still there for the next thing, and a long
 build keeps running while you talk. Sessions live in their own host processes,
 so they survive a restart of Socrates and are reconnected on the way back up.
 They end when you close them, when the program exits, or when the chat is
-deleted.
+archived or deleted.
 
 **Taking over.** Every session shown in the chat has an input box and a row of
 key buttons. Whatever you type goes to the same program Socrates is driving, so
@@ -255,6 +263,66 @@ fetched when the dashboard opens — OpenRouter serves it without a key, so it
 works before you have pasted one — and every field still accepts anything you
 type, which is what you need for a program's own model names such as `sonnet` or
 `gpt-5-codex`.
+
+## Internet
+
+Socrates has no internet access until you give it some. Turn it on under
+**Internet** in the admin dashboard and it gains two tools:
+
+- **`web_search`** — a query in, a numbered list of pages with short excerpts
+  out. It is what stops the agent guessing at a version number, a price or an
+  API that has changed since its training data.
+- **`web_fetch`** — one URL in, the readable text of that page out. Search
+  gives snippets; this gives the page.
+
+Every call shows up in the process view as its own step — *Searched: …*,
+*Read: …* — with the full result folded away underneath, so you can see exactly
+what Socrates asked the outside world and what came back.
+
+### Search providers
+
+| Provider | Account | Cost |
+| --- | --- | --- |
+| **OpenRouter** (default) | none, it uses the key you already have | OpenRouter bills each search on top of the tokens |
+| **Tavily** | key from [app.tavily.com](https://app.tavily.com) | free tier, then per search |
+| **Jina** | optional key from [jina.ai](https://jina.ai/reader) | free without a key at a low rate limit |
+
+The OpenRouter provider runs one extra completion with OpenRouter's `web`
+plugin attached and returns the summary together with the pages it cited. You
+can point it at a cheaper model than your answering model with the optional
+**Search model** field.
+
+### Reading pages
+
+The page reader is either **Local** or **Jina Reader**. Local fetches the page
+here, runs it through a readability extraction and hands the model markdown —
+nothing leaves this machine except the request to the page itself. Jina Reader
+sends the URL to jina.ai, which renders it for you; it is the one to pick for
+PDFs and for pages that only exist after JavaScript has run.
+
+Results are capped at 12 000 characters by default (40 000 at most) and the
+response body at 5 MB.
+
+### What it will not fetch
+
+`web_fetch` reads the public internet and nothing else. The model picks the
+URL, so the fetch is guarded rather than trusted:
+
+- Only `http` and `https`. No `file:`, no `gopher:`, no anything else.
+- Every hostname is resolved here and the resulting address is checked before
+  a single packet leaves — loopback, RFC1918 (`10/8`, `172.16/12`,
+  `192.168/16`), CGNAT (`100.64/10`), link local including the cloud metadata
+  address `169.254.169.254`, IPv6 loopback, unique local and link local, plus
+  multicast and reserved space. IPv4 addresses wearing an IPv6 hat
+  (`::ffff:127.0.0.1`) are unwrapped first.
+- The connection is made to the address that was checked, so a name that
+  answers differently on the second lookup gains nothing.
+- Redirects are re-checked on every hop, and there are at most five of them.
+- No proxy, a 20 second timeout, and a 5 MB body cap.
+
+In short: a link cannot be used to make Socrates read your router's admin page,
+your instance credentials or its own API. Anything on this machine is what
+`shell_run` is for, and that is behind your password already.
 
 ## Voice
 
@@ -360,6 +428,11 @@ Socrates is built for a single trusted operator.
   through the Cloudflare tunnel.
 - Requests through a tunnel are rate limited per `CF-Connecting-IP`, and the
   session cookie is marked `Secure` as soon as the request arrives over HTTPS.
+- Internet access is off until you turn it on. When it is on, the page fetcher
+  resolves every hostname itself and refuses loopback, private, CGNAT and link
+  local addresses — the cloud metadata address included — re-checking on every
+  redirect, so a URL the model chose cannot be turned into a request against
+  your own services. See [Internet](#internet).
 - Terminal sessions are reachable only through the authenticated API, are scoped
   to the chat that opened them, and talk to their host process over a unix
   socket inside the data directory.

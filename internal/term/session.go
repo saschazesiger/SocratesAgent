@@ -66,6 +66,20 @@ type State struct {
 	Revision int64  `json:"revision"`
 	Screen   string `json:"screen"`
 	Detached bool   `json:"detached"`
+	// Styled is the same screen with its colours, for the browser to paint. It
+	// is nil when nothing on the screen is coloured or emphasised, which is
+	// most sessions, and it is never what the agent reads: that is Screen.
+	Styled [][]StyledRun `json:"styled,omitempty"`
+	Cursor *ScreenCursor `json:"cursor,omitempty"`
+}
+
+// Plain drops the styled screen. The lists and the once a second chat stream
+// carry many screens at once and none of them are painted in colour, so they
+// send the text alone.
+func (s State) Plain() State {
+	s.Styled = nil
+	s.Cursor = nil
+	return s
 }
 
 // Session is one running command behind a pseudo terminal.
@@ -84,6 +98,7 @@ type Session struct {
 	rows     int
 	raw      []byte   // recent bytes exactly as the program wrote them
 	journal  *Journal // the same output as readable plain text
+	dim      dimmer   // keeps faint text alive on the way into the emulator
 	revision int64
 	lastOut  time.Time
 	running  bool
@@ -195,7 +210,7 @@ func (s *Session) pump(cmd *exec.Cmd) {
 func (s *Session) consume(chunk []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.vt.Write(chunk)
+	s.vt.Write(s.dim.filter(chunk))
 	s.raw = appendCapped(s.raw, chunk, maxRawBytes)
 	s.journal.Write(chunk)
 	s.revision++
@@ -268,6 +283,7 @@ func (s *Session) State() State {
 		Cols: s.cols, Rows: s.rows, Running: s.running, ExitCode: s.exitCode,
 		Revision: s.revision, Screen: trimScreen(s.vt.String()),
 	}
+	st.Styled, st.Cursor = styledScreen(s.vt)
 	if !s.started.IsZero() {
 		st.Started = s.started.UnixMilli()
 	}

@@ -3,10 +3,11 @@
 import {
   api, el, toast, confirmDialog, fmtDuration, fmtClock, isOffline, errorMessage,
   setClass, LiveStream, Outbox, clientKey, onWake, HttpError, RetryLater,
+  CONNECTION_GRACE,
 } from './api.js';
 import { renderMarkdown } from './markdown.js';
 import { mountTerminalDock } from './terminals.js';
-import { Recorder, speak, stopSpeaking, isSpeaking, plainSpeech } from './voice.js';
+import { Recorder, describeMicError, speak, stopSpeaking, isSpeaking, plainSpeech } from './voice.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -17,9 +18,11 @@ const dock = mountTerminalDock();
 const dom = {
   sidebar: $('sidebar'),
   chatList: $('chatList'),
+  chatScope: $('chatScope'),
   thread: $('thread'),
   threadInner: $('threadInner'),
   title: $('chatTitle'),
+  archivedTag: $('chatArchived'),
   composer: $('composer'),
   composerNote: $('composerNote'),
   input: $('input'),
@@ -42,12 +45,17 @@ const dom = {
   chatPanel: $('chatPanel'),
   panelTitle: $('panelTitle'),
   panelWorkspace: $('panelWorkspace'),
+  panelWorkspaceNow: $('panelWorkspaceNow'),
   autoReplay: $('autoReplay'),
   autoDetails: $('autoDetails'),
 };
 
 const state = {
   chats: [],
+  // Which chats the sidebar shows: the active ones, or every one of them.
+  // The choice is remembered, because it is a way of working rather than a
+  // one off question.
+  chatScope: readValue('socrates.chatScope') === 'all' ? 'all' : 'active',
   chatId: null,
   chat: null,
   rev: 0,
@@ -58,6 +66,12 @@ const state = {
   // on screen is only as true as this flag.
   stream: null,
   live: false,
+  // When the stream stopped delivering, and whether the page has already acted
+  // on it. Switching chats closes one stream and opens another, so "not live"
+  // only becomes "stale" once it has lasted longer than a reconnect does.
+  liveLostAt: 0,
+  staleShown: false,
+  staleTimer: null,
   lastSync: 0,
   // Queues that survive a reload: nothing the person did is lost because the
   // connection went away between tapping and landing.
@@ -67,6 +81,7 @@ const state = {
   stepEls: new Map(),
   stepData: new Map(),
   chatEls: new Map(),
+  groupEls: new Map(),
   turnEls: new Map(),
   expanded: new Set(),
   touched: new Set(),
@@ -80,6 +95,11 @@ const state = {
   workLabel: '',
   workSince: 0,
   workTimer: null,
+  // Where this chat actually works: what it was pointed at, and the folder it
+  // falls back to. Both are needed to keep the settings dialog truthful while
+  // the directory changes under it.
+  effectiveWorkspace: '',
+  defaultWorkspace: '',
   prefs: { speak_in_auto_mode: true, speak_in_chat_mode: false, tts_rate: 1, language: 'en' },
 };
 
@@ -90,6 +110,8 @@ const ICONS = {
   chev: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="13" height="13"><path d="m9 6 6 6-6 6"/></svg>',
   dot: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="3.5"/></svg>',
   trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7h16M9 7V5h6v2M7 7l1 12h8l1-12"/></svg>',
+  archive: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8M10 12h4"/></svg>',
+  restore: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8M12 17v-6M9 14l3-3 3 3"/></svg>',
   mic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>',
   stop: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="2.5"/></svg>',
   send: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
@@ -177,7 +199,7 @@ async function init() {
   // there would lose both the place and the draft that belongs to it.
   const fromHash = location.hash.replace(/^#/, '');
   if (fromHash) await openChat(fromHash);
-  else if (state.chats.length) await openChat(state.chats[0].id);
+  else if (firstChatId()) await openChat(firstChatId());
   else {
     showEmptyState();
     restoreDraft();
@@ -243,6 +265,7 @@ function adoptCreatedChat(chat, item) {
   state.chatId = chat.id;
   if (dock) dock.setChat(chat.id);
   state.chat = chat;
+  updateArchivedMark();
   state.effectiveWorkspace = '';
   state.rev = 0;
   dom.chatSettings.hidden = false;
@@ -275,6 +298,13 @@ function bindUI() {
     }
   });
   $('newChat').addEventListener('click', () => startNewChat());
+  dom.chatScope.addEventListener('click', (event) => {
+    const button = event.target.closest('.seg');
+    if (button) setChatScope(button.dataset.scope);
+  });
+  // The remembered choice has to be on the buttons before the first list
+  // arrives, or the sidebar would say "Active" while showing everything.
+  setChatScope(state.chatScope);
   $('menuBtn').addEventListener('click', () => document.body.classList.toggle('nav-open'));
   $('logout').addEventListener('click', async () => {
     // Signing out locally is the part that matters; if the server could not be
@@ -333,16 +363,43 @@ function autosize() {
 
 /* ----------------------------------------------------------------- chats */
 
+// chatsPath asks for exactly what the sidebar is currently showing. The scope
+// is always named, so the request says what it wants rather than relying on
+// what the server happens to default to.
+function chatsPath() {
+  return '/api/chats?scope=' + state.chatScope;
+}
+
 // refreshChats never empties the sidebar because of a bad moment: a list that
 // could not be fetched leaves the previous one alone.
 async function refreshChats(options = {}) {
   try {
-    const data = await api('/api/chats', options);
+    const data = await api(chatsPath(), options);
     state.chats = data.chats || [];
     renderChatList();
   } catch (err) {
     if (!isOffline(err)) throw err;
   }
+}
+
+// setChatScope switches between the active chats and all of them. The sidebar
+// is repainted from what is already here first, so the switch answers at once
+// and the fetch only fills in what this scope has not seen yet.
+function setChatScope(scope) {
+  const next = scope === 'all' ? 'all' : 'active';
+  for (const button of dom.chatScope.querySelectorAll('.seg')) {
+    const on = button.dataset.scope === next;
+    setClass(button, 'on', on);
+    button.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+  if (state.chatScope === next) return;
+  state.chatScope = next;
+  writeValue('socrates.chatScope', next);
+  if (next === 'active') {
+    state.chats = state.chats.filter((chat) => !chat.archived);
+    renderChatList();
+  }
+  refreshChats().catch(() => { /* the sidebar keeps what it has */ });
 }
 
 // The sidebar is patched rather than rebuilt. Its rows carry the running dot,
@@ -353,69 +410,182 @@ function renderChatList() {
   if (!state.chats.length) {
     dom.chatList.innerHTML = '';
     state.chatEls.clear();
-    dom.chatList.append(el('div', { class: 'group-label', text: 'No chats yet' }));
+    state.groupEls.clear();
+    const empty = state.chatScope === 'all' ? 'No chats yet' : 'No active chats';
+    dom.chatList.append(el('div', { class: 'group-label', text: empty }));
     return;
   }
 
-  let label = dom.chatList.querySelector(':scope > .group-label');
-  if (!label || label.textContent !== 'Chats') {
-    dom.chatList.innerHTML = '';
-    state.chatEls.clear();
-    label = el('div', { class: 'group-label', text: 'Chats' });
-    dom.chatList.append(label);
-  }
-
-  const live = new Set(state.chats.map((chat) => chat.id));
+  const groups = chatGroups();
+  const liveChats = new Set();
+  for (const group of groups) for (const chat of group.chats) liveChats.add(chat.id);
   for (const [id, node] of state.chatEls) {
-    if (live.has(id)) continue;
+    if (liveChats.has(id)) continue;
     node.remove();
     state.chatEls.delete(id);
   }
-
-  let previous = label;
-  for (const chat of state.chats) {
-    let item = state.chatEls.get(chat.id);
-    if (!item) {
-      item = buildChatItem(chat);
-      state.chatEls.set(chat.id, item);
-    }
-    item.update(chat);
-    if (previous.nextElementSibling !== item) previous.after(item);
-    previous = item;
+  const liveGroups = new Set(groups.map((group) => group.label));
+  for (const [label, node] of state.groupEls) {
+    if (liveGroups.has(label)) continue;
+    node.remove();
+    state.groupEls.delete(label);
   }
+  // A label left over from the empty state belongs to no group and would
+  // otherwise sit above the list saying there is nothing here.
+  const kept = new Set(state.groupEls.values());
+  for (const node of dom.chatList.querySelectorAll(':scope > .group-label')) {
+    if (!kept.has(node)) node.remove();
+  }
+
+  // Nodes are moved only when they are actually out of place: moving one
+  // restarts its CSS animation, which is what made the running dot flicker.
+  let previous = null;
+  const place = (node) => {
+    const inPlace = previous ? previous.nextElementSibling === node : dom.chatList.firstElementChild === node;
+    if (!inPlace) {
+      if (previous) previous.after(node);
+      else dom.chatList.prepend(node);
+    }
+    previous = node;
+  };
+  for (const group of groups) {
+    let label = state.groupEls.get(group.label);
+    if (!label) {
+      label = el('div', { class: 'group-label', text: group.label });
+      state.groupEls.set(group.label, label);
+    }
+    place(label);
+    for (const chat of group.chats) {
+      let item = state.chatEls.get(chat.id);
+      if (!item) {
+        item = buildChatItem(chat);
+        state.chatEls.set(chat.id, item);
+      }
+      item.update(chat);
+      place(item);
+    }
+  }
+}
+
+// chatGroups splits the sidebar into the headings it should have. Showing
+// everything means the archive comes after the active chats under its own
+// label, so "all" never hides which of the two a row belongs to.
+function chatGroups() {
+  const active = state.chats.filter((chat) => !chat.archived);
+  const archived = state.chats.filter((chat) => chat.archived);
+  if (!archived.length) return [{ label: 'Chats', chats: active }];
+  if (!active.length) return [{ label: 'Archived', chats: archived }];
+  return [{ label: 'Chats', chats: active }, { label: 'Archived', chats: archived }];
+}
+
+// patchChatListItem writes a changed chat into the list this page already has,
+// so the sidebar follows a rename immediately instead of a round trip later.
+function patchChatListItem(chat) {
+  const known = state.chats.find((c) => c.id === chat.id);
+  if (!known) return;
+  known.title = chat.title;
+  known.workspace = chat.workspace;
+  known.archived = !!chat.archived;
+  renderChatList();
+}
+
+// updateArchivedMark keeps the marker beside the chat title honest. The
+// sidebar can be filtered to hide this chat entirely, so this is the one place
+// that always says whether what is on screen has been put away.
+function updateArchivedMark() {
+  dom.archivedTag.hidden = !(state.chat && state.chat.archived);
 }
 
 function buildChatItem(chat) {
   const item = el('div', {
     class: 'chat-item',
     onclick: (event) => {
-      if (event.target.closest('.del')) return;
+      if (event.target.closest('.act')) return;
       openChat(item.dataset.chat);
       document.body.classList.remove('nav-open');
     },
   });
+  // Both actions work on the chat as it is right now, not on the one this row
+  // was built from: a row outlives several refreshes of the list.
+  const current = () => state.chats.find((c) => c.id === item.dataset.chat);
   const dot = el('span', { class: 'dot', hidden: true, title: 'Working' });
   const label = el('span', { class: 'label' });
+  const archive = el('button', {
+    class: 'icon-btn act arch',
+    onclick: (event) => {
+      event.stopPropagation();
+      const chatNow = current();
+      if (chatNow) setArchived(chatNow, !chatNow.archived);
+    },
+  });
   const remove = el('button', {
-    class: 'icon-btn del',
+    class: 'icon-btn act del',
     title: 'Delete chat',
+    'aria-label': 'Delete chat',
     html: ICONS.trash,
     onclick: (event) => {
       event.stopPropagation();
-      const current = state.chats.find((c) => c.id === item.dataset.chat);
-      if (current) deleteChat(current);
+      const chatNow = current();
+      if (chatNow) deleteChat(chatNow);
     },
   });
-  item.append(dot, label, remove);
+  item.append(dot, label, archive, remove);
   item.update = (next) => {
     item.dataset.chat = next.id;
     const active = next.id === state.chatId;
     setClass(item, 'active', active);
+    setClass(item, 'archived', !!next.archived);
     const title = next.title || 'New chat';
     if (label.textContent !== title) label.textContent = title;
+    const mode = next.archived ? 'restore' : 'archive';
+    if (archive.dataset.mode !== mode) {
+      archive.dataset.mode = mode;
+      archive.innerHTML = next.archived ? ICONS.restore : ICONS.archive;
+      const action = next.archived ? 'Restore chat' : 'Archive chat';
+      archive.title = action;
+      archive.setAttribute('aria-label', action);
+    }
     dot.hidden = !(active && state.busy);
   };
   return item;
+}
+
+// setArchived puts a chat away or brings it back. Archiving is the honest
+// middle ground between keeping a chat and deleting it: the conversation
+// stays, everything it had running does not.
+async function setArchived(chat, archived) {
+  if (archived) {
+    const ok = await confirmDialog({
+      title: 'Archive this chat?',
+      body: '"' + (chat.title || 'New chat') + '" keeps its conversation, but the run in progress '
+        + 'is stopped and its terminal sessions are closed. Sending a message makes it active again.',
+      confirmLabel: 'Archive chat',
+    });
+    if (!ok) return;
+  }
+  try {
+    await api('/api/chats/' + chat.id + (archived ? '/archive' : '/unarchive'), {
+      method: 'POST', attempts: 3,
+    });
+  } catch (err) {
+    toast(isOffline(err) ? 'No connection — nothing was changed.' : errorMessage(err), 'error');
+    return;
+  }
+  const known = state.chats.find((c) => c.id === chat.id);
+  if (known) known.archived = archived;
+  if (state.chat && state.chat.id === chat.id) {
+    state.chat.archived = archived;
+    updateArchivedMark();
+    // The sessions of this chat have just been ended, so the dock is reloaded
+    // rather than left showing tabs for programs that are gone.
+    if (dock && archived) {
+      dock.setChat(null);
+      dock.setChat(chat.id);
+    }
+  }
+  renderChatList();
+  await refreshChats();
+  toast(archived ? 'Chat archived' : 'Chat restored');
 }
 
 // markChatBusy only touches the running dots, so switching between busy and
@@ -448,10 +618,18 @@ async function deleteChat(chat) {
     state.chatId = null;
     if (dock) dock.setChat(null);
     state.chat = null;
+    updateArchivedMark();
     showEmptyState();
   }
   await refreshChats();
-  if (!state.chatId && state.chats.length) openChat(state.chats[0].id);
+  if (!state.chatId && firstChatId()) openChat(firstChatId());
+}
+
+// firstChatId is what "the chat to fall back to" means: the most recent one
+// that is still in use, and only an archived one if there is nothing else.
+function firstChatId() {
+  const chat = state.chats.find((c) => !c.archived) || state.chats[0];
+  return chat ? chat.id : '';
 }
 
 function startNewChat() {
@@ -460,6 +638,7 @@ function startNewChat() {
   state.chatId = null;
   if (dock) dock.setChat(null);
   state.chat = null;
+  updateArchivedMark();
   state.rev = 0;
   state.lastAnswer = '';
   state.loadFailed = false;
@@ -510,11 +689,14 @@ async function openChat(id, options = {}) {
   }
 
   state.chat = data.chat;
+  updateArchivedMark();
+  state.defaultWorkspace = data.default_workspace || '';
   state.effectiveWorkspace = data.effective_workspace || '';
   state.rev = data.rev || 0;
   dom.title.textContent = data.chat.title || 'New chat';
   writeValue(titleKey(id), data.chat.title || '');
   dom.chatSettings.hidden = false;
+  fillChatPanel();
   renderSnapshot(data);
   renderChatList();
   setBusy(!!data.busy);
@@ -698,7 +880,7 @@ function updateWorkRow() {
 function tickWorkRow() {
   if (!workRow.isConnected) return;
   const queued = queuedHere();
-  const lost = !!state.chatId && !state.live;
+  const lost = isStale();
   let label;
   if (lost && queued) label = 'Saved — it will send itself when there is signal';
   else if (lost) label = 'Reconnecting — this is the last update that got through';
@@ -1028,27 +1210,69 @@ function buildShell(step) {
   return node;
 }
 
+// effectiveWorkspace is the directory this chat is working in right now: what
+// it was pointed at, or the folder it gets by default.
+function effectiveWorkspace() {
+  const set = state.chat && (state.chat.workspace || '').trim();
+  if (set) return set;
+  return state.defaultWorkspace || state.effectiveWorkspace || '';
+}
+
+// panelFill remembers what this page last wrote into the settings dialog, so a
+// live update can tell its own prefill from something the person typed. Their
+// half-finished edit is never overwritten; an untouched field is.
+const panelFill = { title: '', workspace: '' };
+
+// fillChatPanel keeps the dialog showing the truth. The directory field is
+// always prefilled with the directory the chat is actually working in - never
+// blank, so there is nothing to guess at - and it follows the chat when the
+// directory changes elsewhere, unless the field is being edited.
+function fillChatPanel(options = {}) {
+  if (!state.chat) return;
+  const title = state.chat.title || '';
+  const workspace = effectiveWorkspace();
+  if (options.force || dom.panelTitle.value === panelFill.title) {
+    dom.panelTitle.value = title;
+    panelFill.title = title;
+  }
+  if (options.force || dom.panelWorkspace.value === panelFill.workspace) {
+    dom.panelWorkspace.value = workspace;
+    panelFill.workspace = workspace;
+  }
+  dom.panelWorkspace.placeholder = workspace;
+  if (dom.panelWorkspaceNow) {
+    dom.panelWorkspaceNow.textContent = workspace ? 'Currently running in ' + workspace : '';
+    dom.panelWorkspaceNow.hidden = !workspace;
+  }
+}
+
 function toggleChatPanel() {
   if (!state.chat) return;
   const opening = dom.chatPanel.hidden;
   dom.chatPanel.hidden = !opening;
   if (!opening) return;
-  dom.panelTitle.value = state.chat.title || '';
-  dom.panelWorkspace.value = state.chat.workspace || '';
-  dom.panelWorkspace.placeholder = state.effectiveWorkspace || '';
+  fillChatPanel({ force: true });
   dom.panelTitle.focus();
 }
 
 async function saveChatSettings() {
   if (!state.chat) return;
   try {
+    // The field is prefilled with the directory the chat is actually using,
+    // which for most chats is the folder they get by default. Saving that back
+    // unchanged would pin them to a path that was never chosen, so it is sent
+    // as "no directory of my own" - which is what it means.
+    const typed = dom.panelWorkspace.value.trim();
+    const workspace = typed === state.defaultWorkspace ? '' : typed;
     const data = await api('/api/chats/' + state.chat.id, {
       method: 'PATCH',
-      body: { title: dom.panelTitle.value.trim(), workspace: dom.panelWorkspace.value.trim() },
+      body: { title: dom.panelTitle.value.trim(), workspace },
     });
     state.chat = data.chat;
+    updateArchivedMark();
     dom.title.textContent = data.chat.title || 'New chat';
     writeValue(titleKey(data.chat.id), data.chat.title || '');
+    fillChatPanel({ force: true });
     dom.chatPanel.hidden = true;
     await refreshChats();
     toast('Chat updated');
@@ -1083,9 +1307,12 @@ function connect() {
       state.lastSync = Date.now();
       handleEvent(payload);
     },
-    onStatus: (status) => {
+    // The status carries how it was reached: an attempt that failed is not a
+    // stream being swapped, and the page has to say so at the same moment the
+    // status bar does rather than a grace period later.
+    onStatus: (status, extra) => {
       if (state.chatId !== chatId) return;
-      setLive(status === 'live');
+      setLive(status === 'live', extra);
     },
     // A stream that keeps failing looks the same whether the network is gone
     // or the session expired. One ordinary request settles it: a 401 sends the
@@ -1093,7 +1320,7 @@ function connect() {
     // that will never come back.
     onFail: (attempt) => {
       if (attempt !== 3) return;
-      api('/api/chats', { attempts: 1 }).then((data) => {
+      api(chatsPath(), { attempts: 1 }).then((data) => {
         if (!data) return;
         state.chats = data.chats || [];
         renderChatList();
@@ -1109,35 +1336,71 @@ function disconnect() {
     state.stream = null;
   }
   state.live = false;
-  setClass(document.body, 'stale', false);
+  state.liveLostAt = Date.now();
+  updateLiveUI();
 }
 
 // setLive is the single switch between "what you see is happening now" and
 // "what you see is the last thing that got through".
-function setLive(live) {
-  if (state.live === live) return;
+//
+// extra is what the stream knows about how it got here. immediate means the
+// attempt failed rather than ended, which is the same thing the status bar
+// treats as an outage worth showing at once - the two must never disagree.
+function setLive(live, extra = {}) {
+  const changed = state.live !== live;
   state.live = live;
   if (live) {
+    if (!changed) return;
     state.lastSync = Date.now();
     state.spokeOffline = false;
-  } else if (state.auto && state.busy && state.prefs.speak_in_auto_mode !== false && !state.spokeOffline) {
-    // In hands free mode the person is looking at the road. A single spoken
-    // notice is the only way they learn the answer they are waiting for has
-    // stopped coming.
-    state.spokeOffline = true;
-    speak(OFFLINE_NOTICE[state.prefs.language] || OFFLINE_NOTICE.en, speechOptions()).catch(() => {});
+    state.liveLostAt = 0;
+    clearTimeout(state.staleTimer);
+  } else {
+    if (extra.immediate || navigator.onLine === false) {
+      // Nothing left to wait for: backdate the loss so it is already past the
+      // grace period, and the marks go up with the bar.
+      state.liveLostAt = Date.now() - CONNECTION_GRACE;
+    } else if (changed || !state.liveLostAt) {
+      state.liveLostAt = Date.now();
+    }
+    // The stale marks appear on the same schedule as the status bar, so the
+    // page never contradicts itself: nothing at all while a stream is being
+    // swapped, everything the moment the loss is real.
+    clearTimeout(state.staleTimer);
+    state.staleTimer = setTimeout(() => { updateLiveUI(); updateWorkRow(); }, CONNECTION_GRACE + 60);
   }
-  setClass(document.body, 'stale', !live);
   updateLiveUI();
   updateWorkRow();
   updateAutoBusy();
 }
 
+// isStale answers the only question the live marks are about: is what is on
+// screen still current? A stream between connections is not an outage - a chat
+// switch closes one and opens another - so a short gap says nothing, while no
+// network at all says it immediately.
+function isStale() {
+  if (!state.chatId || state.live) return false;
+  if (navigator.onLine === false) return true;
+  return Date.now() - (state.liveLostAt || Date.now()) >= CONNECTION_GRACE;
+}
+
 // updateLiveUI keeps every "this may be out of date" marker honest, once a
 // second, whether or not anything arrived.
 function updateLiveUI() {
-  const stale = !!state.chatId && !state.live;
+  const stale = isStale();
   setClass(document.body, 'stale', stale);
+  if (stale && !state.staleShown) {
+    state.staleShown = true;
+    if (state.auto && state.busy && state.prefs.speak_in_auto_mode !== false && !state.spokeOffline) {
+      // In hands free mode the person is looking at the road. A single spoken
+      // notice is the only way they learn the answer they are waiting for has
+      // stopped coming.
+      state.spokeOffline = true;
+      speak(OFFLINE_NOTICE[state.prefs.language] || OFFLINE_NOTICE.en, speechOptions()).catch(() => {});
+    }
+  } else if (!stale) {
+    state.staleShown = false;
+  }
   if (dock) dock.tick();
   if (state.busy || stale) tickWorkRow();
   updateAutoOffline(stale);
@@ -1179,12 +1442,18 @@ function handleEvent(event) {
       break;
     }
     case 'chat':
+      // The chat record changed - renamed, or pointed at another directory,
+      // from this page, another tab or the agent itself. Everything that shows
+      // it follows at once rather than after the next reload.
       state.chat = event.chat;
+      updateArchivedMark();
       dom.chatSettings.hidden = false;
       dom.title.textContent = event.chat.title || 'New chat';
       // Titles are written after the first message, so this is usually where a
       // chat gets the name an offline reload will show.
       writeValue(titleKey(event.chat.id), event.chat.title || '');
+      fillChatPanel();
+      patchChatListItem(event.chat);
       refreshChats();
       break;
     case 'ready':
@@ -1395,7 +1664,14 @@ async function toggleRecording(origin) {
   try {
     await state.recorder.start();
   } catch (err) {
-    toast(err.message, 'error');
+    // The microphone failing is the one error the hands free screen has to
+    // carry itself: a toast behind the big screen is a silent failure.
+    const message = describeMicError(err);
+    toast(message, 'error');
+    if (origin === 'auto') {
+      resetRecordingUI();
+      setAutoStatus(message);
+    }
     return;
   }
   if (origin === 'auto') {
@@ -1511,7 +1787,7 @@ function resetAutoScreen(status) {
   dom.autoTranscript.hidden = true;
   dom.autoLive.textContent = '';
   updateAutoBusy();
-  updateAutoOffline(!!state.chatId && !state.live);
+  updateAutoOffline(isStale());
 }
 
 // updateAutoBusy shows the same three dots on the hands free screen, so it too

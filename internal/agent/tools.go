@@ -125,10 +125,13 @@ func buildTools(s config.Settings) []openrouter.Tool {
 
 		fn(toolTerminalWait,
 			"Wait for a terminal session and return its screen. With `until` set to \"idle\" (the default) "+
-				"it returns once the program has stopped printing for a while, which is how you tell that a "+
-				"coding agent has finished its turn. With `until` set to \"text\" it returns as soon as the "+
-				"screen matches `text`, which is a regular expression - useful for catching a specific "+
-				"question. Trailing spaces are trimmed from every line, so do not match on them.",
+				"it returns once the program has really finished its turn: the screen has stopped changing "+
+				"(a spinner or a ticking timer does not count as a change) and nothing on it says the "+
+				"program is still working. The result starts with a status line: \"idle\" means it is your "+
+				"turn, \"still working\" means it is not - call this again, never report a result off a "+
+				"still working screen. With `until` set to \"text\" it returns as soon as the screen matches "+
+				"`text`, which is a regular expression - useful for catching a specific question. Trailing "+
+				"spaces are trimmed from every line, so do not match on them.",
 			`{
   "type": "object",
   "properties": {
@@ -357,6 +360,8 @@ func (e *Engine) execTerminalWait(ctx context.Context, chat *store.Chat, raw str
 		limit = clampDuration(time.Duration(args.Seconds)*time.Second, time.Second, time.Hour)
 	}
 
+	busy := skill.Busy()
+
 	if strings.EqualFold(args.Until, "text") {
 		if strings.TrimSpace(args.Text) == "" {
 			return "Waiting for text needs the `text` argument, a regular expression to look for."
@@ -365,9 +370,14 @@ func (e *Engine) execTerminalWait(ctx context.Context, chat *store.Chat, raw str
 		if err != nil {
 			return e.waitError(ctx, handle, args.Session, err)
 		}
-		note := fmt.Sprintf("The screen matched %q.", args.Text)
+		note := fmt.Sprintf("Status: matched %q.", args.Text)
 		if !matched {
-			note = fmt.Sprintf("Gave up after %s without the screen ever matching %q.", limit, args.Text)
+			note = fmt.Sprintf("Status: no match. Gave up after %s without the screen ever matching %q.",
+				limit, args.Text)
+			if busyNow(handle.State().Screen, busy) {
+				note += fmt.Sprintf(" The program is still working (the screen matches %q), so wait again "+
+					"instead of reporting anything.", busy.String())
+			}
 		}
 		return e.describeSession(ctx, handle, note, false)
 	}
@@ -376,17 +386,48 @@ func (e *Engine) execTerminalWait(ctx context.Context, chat *store.Chat, raw str
 	if args.Quiet > 0 {
 		quiet = clampDuration(time.Duration(args.Quiet)*time.Second, time.Second, 2*time.Minute)
 	}
-	idle, _, err := handle.WaitIdle(ctx, quiet, limit)
-	if err != nil {
-		return e.waitError(ctx, handle, args.Session, err)
+	// A quiet window longer than the wait itself could only ever time out, so
+	// a short wait gets a correspondingly short definition of quiet rather
+	// than a guaranteed "still working".
+	if quiet > limit {
+		quiet = limit
 	}
-	note := fmt.Sprintf("The program has printed nothing for %s, so it is waiting for you.", quiet)
-	if !idle {
-		note = fmt.Sprintf("Still working after %s - it has not been quiet for %s yet. "+
-			"Wait again if the screen shows it is making progress.", limit, quiet)
+	result := waitQuiet(ctx, handle, busy, quiet, limit)
+	if ctx.Err() != nil {
+		return "The run was stopped by the user."
 	}
+	// What this wait saw is remembered, so that the guard on the final answer
+	// knows how long this screen has been standing still.
+	e.markScreen(handle.ID(), normaliseScreen(handle.State().Screen), result.Changed)
+	var note string
+	switch result.Label {
+	case waitExited:
+		note = "Status: exited. The program is no longer running."
+	case waitIdle:
+		note = fmt.Sprintf("Status: idle. Nothing on the screen has changed for %s "+
+			"(a ticking spinner or timer does not count) and nothing says it is still working, "+
+			"so it is finished with the last thing you gave it.", quiet)
+	case waitBusy:
+		note = fmt.Sprintf("Status: still working after %s - the screen still matches %q, "+
+			"which is this program's way of saying it has not finished. "+
+			"Do not read a result off this screen and do not answer the user yet: "+
+			"call terminal_wait again.", roundSeconds(result.Elapsed), result.Pattern)
+		if result.Frozen > 0 {
+			note = fmt.Sprintf("Status: still working after %s - the screen matches %q but nothing on it "+
+				"has changed for %s. Check whether it is a dialog waiting for an answer, or a question "+
+				"only the user can answer, rather than waiting again.",
+				roundSeconds(result.Elapsed), result.Pattern, roundSeconds(result.Frozen))
+		}
+	default:
+		note = fmt.Sprintf("Status: still working after %s - it has not gone quiet for %s yet. "+
+			"Call terminal_wait again rather than answering.", roundSeconds(result.Elapsed), quiet)
+	}
+	note += "\nIf the screen shows a question or a menu, answer it instead of waiting."
 	return e.describeSession(ctx, handle, note, false)
 }
+
+// roundSeconds prints a duration the way a person would say it.
+func roundSeconds(d time.Duration) time.Duration { return d.Round(time.Second) }
 
 func (e *Engine) waitError(ctx context.Context, handle *term.Handle, id string, err error) string {
 	if ctx.Err() != nil {
@@ -425,6 +466,7 @@ func (e *Engine) execTerminalClose(ctx context.Context, chat *store.Chat, raw st
 		return problem
 	}
 	name := handle.Name()
+	e.forgetScreen(handle.ID())
 	if err := e.closeTerminal(handle); err != nil {
 		return fmt.Sprintf("Could not close %s: %v", args.Session, err)
 	}

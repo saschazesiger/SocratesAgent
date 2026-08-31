@@ -112,11 +112,27 @@ function streamsHealthy() {
   return true;
 }
 
+// OFFLINE_GRACE is how long a stream may be between connections before the
+// page says anything about it.
+//
+// Every chat switch closes one stream and opens another, and so does arriving
+// from another page: for a few hundred milliseconds there is genuinely no live
+// stream, and saying "connection lost" then is a lie that flashes on screen
+// several times a minute. A real loss is still announced - it just has to last
+// longer than a reconnect does. The two cases that need no waiting at all skip
+// the grace period: the device saying it has no network, and an attempt that
+// actually failed.
+const OFFLINE_GRACE = 1800;
+
 const connection = {
   status: LIVE,
+  // degraded is what the page renders. It follows status, but only after the
+  // grace period above, so an intentional stream swap never shows as an outage.
+  degraded: false,
   lastContact: Date.now(),
   retryAt: 0,
   retryNow: null,
+  graceTimer: null,
   listeners: new Set(),
 };
 
@@ -129,10 +145,15 @@ function onConnectionChange(handler) {
 function connectionState() {
   return {
     status: connection.status,
+    degraded: connection.degraded,
     lastContact: connection.lastContact,
     retryAt: connection.retryAt,
     online: navigator.onLine !== false,
   };
+}
+
+function clearGrace() {
+  if (connection.graceTimer) { clearTimeout(connection.graceTimer); connection.graceTimer = null; }
 }
 
 function emitConnection() {
@@ -143,17 +164,39 @@ function emitConnection() {
 }
 
 // setConnection is how a stream or a request reports what it just saw.
+//
+// What it saw and what the page shows are deliberately two different things:
+// anything short of the grace period above is a reconnect, not an outage.
+// options.immediate is how a caller says it already knows better - the attempt
+// failed, there is nothing left to wait for.
 function setConnection(status, options = {}) {
   connection.status = navigator.onLine === false && status !== LIVE ? OFFLINE : status;
   if (connection.status === LIVE) {
     connection.lastContact = Date.now();
     connection.retryAt = 0;
-  } else if (options.retryAt !== undefined) {
-    connection.retryAt = options.retryAt;
+    clearGrace();
+    connection.degraded = false;
+  } else {
+    if (options.retryAt !== undefined) connection.retryAt = options.retryAt;
+    if (options.immediate || navigator.onLine === false) {
+      clearGrace();
+      connection.degraded = true;
+    } else if (!connection.degraded && !connection.graceTimer) {
+      connection.graceTimer = setTimeout(() => {
+        connection.graceTimer = null;
+        if (connection.status === LIVE) return;
+        connection.degraded = true;
+        emitConnection();
+      }, OFFLINE_GRACE);
+    }
   }
   if (options.retryNow) connection.retryNow = options.retryNow;
   emitConnection();
 }
+
+// The chat view keeps its own "this is stale" visuals in step with the bar, so
+// the wait before either of them appears is defined in one place.
+export const CONNECTION_GRACE = OFFLINE_GRACE;
 
 // noteContact records that the server answered something. That proves the
 // connection works, but not that the live view is current - a stream that is
@@ -211,7 +254,9 @@ export function mountConnectionBar() {
   const render = () => {
     const state = connectionState();
     const offline = state.status === OFFLINE || !state.online;
-    const live = state.status === LIVE;
+    // Only a loss that outlived the grace period is worth a bar; a stream
+    // being swapped for another one is not something anyone needs to read.
+    const live = !state.degraded;
     bar.hidden = live;
     setClass(document.body, 'conn-lost', !live);
     if (live) {
@@ -376,7 +421,9 @@ export async function request(path, options = {}) {
     } catch (err) {
       if (signal && signal.aborted) throw err;
       if (err instanceof NetworkError) {
-        setConnection(navigator.onLine === false ? OFFLINE : CONNECTING);
+        // The request never reached the server. That is a failure, not a gap
+        // between two streams, so there is nothing to wait for before saying so.
+        setConnection(navigator.onLine === false ? OFFLINE : CONNECTING, { immediate: true });
       }
       if (attempt < limit && shouldRetry(err)) {
         lastErr = err;
@@ -490,6 +537,7 @@ export class LiveStream {
     else if (status !== 'idle') {
       setConnection(navigator.onLine === false ? OFFLINE : CONNECTING, {
         retryAt: extra.retryAt || 0,
+        immediate: !!extra.immediate,
         retryNow: () => this.reconnect(0),
       });
     }
@@ -578,8 +626,10 @@ export class LiveStream {
     if (this.stopped) return;
     this.attempt += 1;
     const delay = backoffDelay(this.attempt, { base: 700, max: 15000 });
+    // This attempt did not just end, it failed. There is nothing to wait for.
     this.setStatus(navigator.onLine === false ? 'offline' : 'connecting', {
       retryAt: Date.now() + delay,
+      immediate: true,
       force: true,
     });
     this.retryTimer = setTimeout(() => this.open(), delay);

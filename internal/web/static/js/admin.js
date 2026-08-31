@@ -328,6 +328,7 @@ function blankSkill() {
     headless_forms: '',
     headless_usage: '',
     ready_pattern: '',
+    busy_pattern: '',
     idle_seconds: 5,
     timeout_seconds: 1800,
   };
@@ -574,6 +575,9 @@ function skillCard(skill, index) {
       field('Ready when the screen matches', text(skill.ready_pattern, (value) => { skill.ready_pattern = value; },
         { placeholder: 'leave empty to wait for it to go quiet' }),
         'Regular expression. Only needed if waiting for silence starts typing too early.'),
+      field('Busy pattern', text(skill.busy_pattern, (value) => { skill.busy_pattern = value; },
+        { placeholder: 'for example: esc to interrupt' }),
+        'Regular expression that means the program is still working. While it matches, Socrates keeps waiting instead of answering.'),
       field('Counts as finished after (seconds)',
         number(skill.idle_seconds, (value) => { skill.idle_seconds = value; }, { min: '1', max: '300' }),
         'How long the program must print nothing before its turn is treated as over.'),

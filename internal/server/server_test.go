@@ -424,7 +424,7 @@ func TestRepeatedSendWithTheSameKeyIsOneMessage(t *testing.T) {
 	if again["chat"].(map[string]any)["id"] != id {
 		t.Fatalf("a repeated create made a second chat: %v", again)
 	}
-	if chats, err := env.store.ListChats(); err != nil || len(chats) != 1 {
+	if chats, err := env.store.ListChats(true); err != nil || len(chats) != 1 {
 		t.Fatalf("expected exactly one chat, got %#v (%v)", chats, err)
 	}
 
@@ -637,4 +637,56 @@ func (e *testEnv) readEvents(t *testing.T, path string) []map[string]any {
 		}
 	}
 	return out
+}
+
+// An archived chat keeps its transcript but drops out of the sidebar, and
+// talking to it again is what brings it back.
+func TestArchiveAndRestoreChat(t *testing.T) {
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+
+	_, created := env.do(t, env.client, "POST", "/api/chats", `{"title":"Old work"}`)
+	id := created["chat"].(map[string]any)["id"].(string)
+
+	res, archived := env.do(t, env.client, "POST", "/api/chats/"+id+"/archive", "")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("archive = %d %v", res.StatusCode, archived)
+	}
+	if archived["chat"].(map[string]any)["archived"] != true {
+		t.Fatalf("archive did not report the new state: %v", archived)
+	}
+
+	_, list := env.do(t, env.client, "GET", "/api/chats", "")
+	if chats, _ := list["chats"].([]any); len(chats) != 0 {
+		t.Fatalf("an archived chat is still in the default list: %v", list)
+	}
+	_, all := env.do(t, env.client, "GET", "/api/chats?scope=all", "")
+	if chats, _ := all["chats"].([]any); len(chats) != 1 {
+		t.Fatalf("scope=all did not return the archive: %v", all)
+	}
+	_, snapshot := env.do(t, env.client, "GET", "/api/chats/"+id, "")
+	if snapshot["chat"].(map[string]any)["archived"] != true {
+		t.Fatalf("the chat itself does not say it is archived: %v", snapshot)
+	}
+
+	// Sending a message is enough to make it active again - no separate step.
+	res, sent := env.do(t, env.client, "POST", "/api/chats/"+id+"/messages", `{"text":"carry on"}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("send = %d %v", res.StatusCode, sent)
+	}
+	chat, err := env.store.GetChat(id)
+	if err != nil || chat.Archived {
+		t.Fatalf("chatting did not restore the chat: %#v (%v)", chat, err)
+	}
+
+	// And it can be put away and taken back by hand as well.
+	env.do(t, env.client, "POST", "/api/chats/"+id+"/archive", "")
+	res, restored := env.do(t, env.client, "POST", "/api/chats/"+id+"/unarchive", "")
+	if res.StatusCode != http.StatusOK || restored["chat"].(map[string]any)["archived"] != false {
+		t.Fatalf("unarchive = %d %v", res.StatusCode, restored)
+	}
+	res, _ = env.do(t, env.client, "POST", "/api/chats/nope/archive", "")
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("archiving an unknown chat = %d", res.StatusCode)
+	}
 }

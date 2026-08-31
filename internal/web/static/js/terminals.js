@@ -39,6 +39,101 @@ const QUICK_KEYS = ['enter', 'escape', 'tab', 'up', 'down', 'ctrl+c', 'ctrl+d'];
 // ctrl is refused there, so it is never sent from here.
 const CTRL_CHARS = /^[a-z\[\]\\@ ]$/;
 
+// The server sends the screen twice: as text, and - when anything on it is
+// coloured - as lines of runs that share one appearance. The sixteen ANSI
+// colours arrive as names the page resolves itself, so the palette is the
+// dock's to choose; the 256 colour cube and 24 bit colours arrive ready made.
+const COLOR_TOKEN = /^(?:a(?:[0-9]|1[0-5])|fg|bg|#[0-9a-f]{6})$/i;
+
+function cssColor(token) {
+  if (typeof token !== 'string' || !COLOR_TOKEN.test(token)) return '';
+  if (token[0] === '#') return token;
+  if (token === 'fg') return 'var(--term-fg)';
+  if (token === 'bg') return 'var(--term-bg)';
+  return 'var(--t' + token.slice(1) + ')';
+}
+
+function runClass(run) {
+  let cls = '';
+  if (run.b) cls += ' tb';
+  if (run.d) cls += ' td';
+  if (run.i) cls += ' ti';
+  if (run.u) cls += ' tu';
+  if (run.s) cls += ' ts';
+  return cls.slice(1);
+}
+
+// Text is never handed to the browser as markup: a span is built and the
+// characters go in as text, whatever the program painted.
+function runNode(text, run) {
+  const fg = cssColor(run.fg);
+  const bg = cssColor(run.bg);
+  const cls = runClass(run);
+  if (!fg && !bg && !cls) return document.createTextNode(text);
+  const span = document.createElement('span');
+  if (cls) span.className = cls;
+  if (fg) span.style.color = fg;
+  if (bg) span.style.background = bg;
+  span.textContent = text;
+  return span;
+}
+
+function caretNode(text) {
+  const span = document.createElement('span');
+  span.className = 'tcur';
+  span.textContent = text || ' ';
+  return span;
+}
+
+// The screen is replaced in one go, from a fragment built off the page: the
+// stream fires on every change, and touching the live document run by run is
+// what makes a busy terminal stutter.
+function styledFragment(styled, caret) {
+  const frag = document.createDocumentFragment();
+  for (let y = 0; y < styled.length; y += 1) {
+    const line = styled[y] || [];
+    let col = 0;
+    for (const run of line) {
+      const text = typeof run.t === 'string' ? run.t : '';
+      const at = caret && caret.row === y ? caret.col - col : -1;
+      if (at >= 0 && at < text.length) {
+        if (at > 0) frag.append(runNode(text.slice(0, at), run));
+        frag.append(caretNode(text.charAt(at)));
+        if (at + 1 < text.length) frag.append(runNode(text.slice(at + 1), run));
+      } else if (text) {
+        frag.append(runNode(text, run));
+      }
+      col += text.length;
+    }
+    // A caret past the end of the line is where the next character will go,
+    // which on a fresh prompt is the only place it ever is.
+    if (caret && caret.row === y && caret.col >= col) {
+      if (caret.col > col) frag.append(document.createTextNode(' '.repeat(caret.col - col)));
+      frag.append(caretNode(' '));
+    }
+    if (y < styled.length - 1) frag.append(document.createTextNode('\n'));
+  }
+  return frag;
+}
+
+// A repaint throws away the selection and the scroll position, so it only
+// happens when the screen really looks different. The text is compared as
+// text; this covers everything else about it in a few hundred characters.
+function styleSignature(styled, caret) {
+  if (!styled) return '';
+  let sig = caret ? caret.row + ',' + caret.col : '';
+  for (const line of styled) {
+    for (const run of (line || [])) {
+      sig += '|' + (typeof run.t === 'string' ? run.t.length : 0)
+        + (run.fg || '') + ':' + (run.bg || '')
+        + (run.b ? 'b' : '') + (run.d ? 'd' : '') + (run.i ? 'i' : '')
+        + (run.u ? 'u' : '') + (run.s ? 's' : '');
+    }
+    sig += ';';
+  }
+  return sig;
+}
+
 // Local storage throws in private windows and with site data blocked, and
 // neither is a reason for the dock to stop working.
 function readValue(key) {
@@ -105,6 +200,9 @@ export function mountTerminalDock() {
       running: true,
       exitCode: 0,
       screen: '',
+      // The coloured screen and the caret, both from the session's own stream.
+      styled: null,
+      cursor: null,
       cols: 0,
       rows: 0,
       stream: null,
@@ -233,6 +331,10 @@ export function mountTerminalDock() {
         const term = payload && payload.terminal;
         if (!term) return;
         session.screen = term.screen || '';
+        // Assigned rather than folded in: a screen that stopped being coloured
+        // has to lose its colours, not keep the last ones it had.
+        session.styled = Array.isArray(term.styled) ? term.styled : null;
+        session.cursor = term.cursor || null;
         session.running = !!term.running;
         session.exitCode = term.exit_code || 0;
         session.cols = term.cols || session.cols;
@@ -426,13 +528,21 @@ export function mountTerminalDock() {
 
     dom.empty.hidden = !!session.screen;
     const text = session.screen || '';
-    if (state.painted !== text) {
+    const styled = session.styled;
+    // The caret belongs to a program that is still running; a finished session
+    // is a picture of what happened, not a place to type.
+    const caret = session.running && session.cursor && session.cursor.visible ? session.cursor : null;
+    const signature = text + '\u0000' + styleSignature(styled, caret);
+    if (state.painted !== signature) {
       // Auto scroll only while the person is already at the bottom: someone
       // reading back through what happened must not be yanked to the end by
       // the next redraw.
       const atBottom = dom.screen.scrollHeight - dom.screen.scrollTop - dom.screen.clientHeight < 24;
-      dom.screen.textContent = text;
-      state.painted = text;
+      // Colours when the server sent them, plain text when it did not, which
+      // is what an old server and an uncoloured program both look like.
+      if (styled) dom.screen.replaceChildren(styledFragment(styled, caret));
+      else dom.screen.textContent = text;
+      state.painted = signature;
       if (atBottom) dom.screen.scrollTop = dom.screen.scrollHeight;
     }
 

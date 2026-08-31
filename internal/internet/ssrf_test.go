@@ -63,6 +63,12 @@ func TestBlockedIPCoversEveryPrivateRange(t *testing.T) {
 		{"fe80::1", true},
 		{"::ffff:127.0.0.1", true}, // IPv4 loopback wearing an IPv6 hat
 		{"::ffff:169.254.169.254", true},
+		{"::127.0.0.1", true},      // IPv4-compatible IPv6, the deprecated spelling
+		{"::8.8.8.8", true},        // same range, so blocked whatever it points at
+		{"64:ff9b::7f00:1", true},  // NAT64 carrying 127.0.0.1
+		{"64:ff9b::a00:1", true},   // NAT64 carrying 10.0.0.1
+		{"64:ff9b::808:808", true}, // NAT64 at all: the range is not routed publicly
+		{"2001:db8::1", true},      // documentation
 		{"8.8.8.8", false},
 		{"1.1.1.1", false},
 		{"93.184.216.34", false},

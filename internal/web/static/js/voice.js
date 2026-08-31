@@ -20,25 +20,135 @@ registerProcessor('pcm-capture', PCMCapture);
 const TARGET_RATE = 16000;
 let workletURL = null;
 
+/* ---------------------------------------------------------- microphone */
+
+// The microphone is the one piece of hardware this app cannot do without, and
+// the browser reports every way it can go wrong through the same rejected
+// promise. Its message ("Requested device not found") means nothing to someone
+// holding a phone that plainly has a microphone, so every failure is
+// translated into one sentence that says what to do next.
+
+// Constraints are a wish, not a demand: everything below is asked for as an
+// ideal. A phone that cannot deliver mono at the requested processing must
+// still hand over its microphone rather than refuse the recording - some
+// mobile browsers answer an unsatisfiable audio constraint with
+// NotFoundError, which is exactly the "no device" that isn't one.
+const TUNED_AUDIO = { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+
+// micError carries a message that is meant to be read by a person, so the
+// callers can show it as is instead of guessing at a DOMException.
+function micError(message) {
+  const err = new Error(message);
+  err.userMessage = message;
+  return err;
+}
+
+// describeMicError maps a getUserMedia rejection to that sentence.
+export function describeMicError(err) {
+  if (err && err.userMessage) return err.userMessage;
+  const name = String((err && (err.name || err.code)) || '');
+  switch (name) {
+    case 'NotAllowedError':
+    case 'PermissionDeniedError':
+      return "Microphone access was denied — allow it in the browser's site settings.";
+    case 'NotFoundError':
+    case 'DevicesNotFoundError':
+      return 'No microphone was found on this device.';
+    case 'NotReadableError':
+    case 'TrackStartError':
+      return 'The microphone is in use by another app.';
+    case 'OverconstrainedError':
+    case 'ConstraintNotSatisfiedError':
+      return 'This microphone could not be started with the settings it was asked for.';
+    case 'SecurityError':
+      return 'Microphone needs a secure (https) connection — open Socrates over https or on localhost.';
+    default: {
+      const detail = name || (err && err.message) || 'unknown error';
+      return 'The microphone could not be started (' + detail + ').';
+    }
+  }
+}
+
+// micDenied reports a standing "no" without asking again. The query itself
+// never opens a prompt, so it can run before the request and turn a silent
+// second refusal into the one hint that helps: where the switch is. Safari
+// does not implement it, which reads as "unknown" rather than as denied.
+async function micDenied() {
+  try {
+    if (!navigator.permissions || !navigator.permissions.query) return false;
+    const status = await navigator.permissions.query({ name: 'microphone' });
+    return !!status && status.state === 'denied';
+  } catch {
+    return false;
+  }
+}
+
+// openMicrophone asks for the stream, then asks for less. A constraint this
+// phone cannot meet must cost one retry rather than the whole recording.
+async function openMicrophone() {
+  const attempts = [{ audio: TUNED_AUDIO }, { audio: true }];
+  let last = null;
+  for (const constraints of attempts) {
+    try {
+      return await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (err) {
+      last = err;
+      const name = String((err && err.name) || '');
+      // A refusal, a security block or a cancelled prompt is an answer about
+      // the browser, not about the constraints: retrying only asks twice.
+      if (name === 'NotAllowedError' || name === 'PermissionDeniedError' ||
+        name === 'SecurityError' || name === 'AbortError') break;
+    }
+  }
+  throw last;
+}
+
+function releaseStream(stream) {
+  if (!stream) return;
+  try { stream.getTracks().forEach((track) => track.stop()); } catch { /* ignore */ }
+}
+
 export class Recorder {
   constructor() {
     this.recording = false;
     this.startedAt = 0;
   }
 
-  static get supported() {
-    return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia &&
-      (window.AudioContext || window.webkitAudioContext));
-  }
-
+  // start opens the microphone. It is only ever called from a click, because a
+  // permission prompt a mobile browser did not ask for is a permission prompt
+  // it silently denies.
   async start() {
     if (this.recording) return;
-    if (!Recorder.supported) {
-      throw new Error('This browser blocks microphone access here. Open Socrates on localhost or over https.');
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw micError('Microphone needs a secure (https) connection — open Socrates over https or on localhost.');
     }
-    this.stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
+    if (!(window.AudioContext || window.webkitAudioContext)) {
+      throw micError('This browser cannot record audio.');
+    }
+    if (await micDenied()) {
+      throw micError("Microphone access was denied — allow it in the browser's site settings.");
+    }
+    try {
+      this.stream = await openMicrophone();
+    } catch (err) {
+      throw micError(describeMicError(err));
+    }
+    try {
+      await this.attach();
+    } catch (err) {
+      // The stream is live at this point: dropping it without stopping the
+      // tracks would leave the recording indicator on for a recording that
+      // never started.
+      this.recording = false;
+      releaseStream(this.stream);
+      this.stream = null;
+      if (this.ctx && this.ctx.state !== 'closed') { try { await this.ctx.close(); } catch { /* ignore */ } }
+      this.ctx = null;
+      throw micError(describeMicError(err));
+    }
+  }
+
+  async attach() {
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     this.ctx = new AudioCtx();
     if (this.ctx.state === 'suspended') await this.ctx.resume();

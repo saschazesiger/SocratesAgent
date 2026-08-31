@@ -63,6 +63,10 @@ type Engine struct {
 
 	mu     sync.Mutex
 	active map[string]*runHandle
+	// screens remembers, per session, the last meaningful screen a wait saw
+	// and when it last changed. It is what lets the answer guard tell a
+	// program that is thinking from a dialog that has been sitting there.
+	screens map[string]screenMark
 	// watching tracks which sessions already have a goroutine mirroring their
 	// screen into the process view.
 	watching map[string]bool
@@ -77,7 +81,45 @@ func New(st *store.Store, bus *Bus, settings func() config.Settings, terminals *
 		Terminals: terminals,
 		active:    map[string]*runHandle{},
 		watching:  map[string]bool{},
+		screens:   map[string]screenMark{},
 	}
+}
+
+// screenMark is one session's screen as a wait last saw it.
+type screenMark struct {
+	norm    string
+	changed time.Time
+}
+
+// markScreen records what a wait saw, so a later look can tell how long the
+// screen has been standing still.
+func (e *Engine) markScreen(id, norm string, changed time.Time) {
+	if id == "" || changed.IsZero() {
+		return
+	}
+	e.mu.Lock()
+	e.screens[id] = screenMark{norm: norm, changed: changed}
+	e.mu.Unlock()
+}
+
+// changedAt returns when this session's screen last changed, as far as this
+// process knows, or the zero time when the screen has moved since - or was
+// never watched at all.
+func (e *Engine) changedAt(id, norm string) time.Time {
+	e.mu.Lock()
+	mark, ok := e.screens[id]
+	e.mu.Unlock()
+	if !ok || mark.norm != norm {
+		return time.Time{}
+	}
+	return mark.changed
+}
+
+// forgetScreen drops what was remembered about a session that is going away.
+func (e *Engine) forgetScreen(id string) {
+	e.mu.Lock()
+	delete(e.screens, id)
+	e.mu.Unlock()
 }
 
 func newID(prefix string) string {
@@ -202,6 +244,15 @@ func (e *Engine) Start(turn Turn) (*store.Run, error) {
 		return fail(err)
 	}
 	_ = e.Store.TouchChat(chatID)
+	// Talking to an archived chat is what brings it back. Nothing else has to
+	// be restored: archiving only ended what was running, and this turn starts
+	// whatever it needs itself.
+	if chat.Archived {
+		if err := e.Store.SetChatArchived(chatID, false); err == nil {
+			chat.Archived, chat.ArchivedAt = false, 0
+			e.publish(chatID, Event{Type: "chat", Chat: chat})
+		}
+	}
 
 	e.publish(chatID, Event{Type: "run", Run: run})
 
@@ -241,6 +292,9 @@ func (e *Engine) loop(ctx context.Context, chat *store.Chat, run *store.Run, h *
 	temperature := settings.Agent.Temperature
 
 	finalText := ""
+	// holds counts how many times in a row the model was sent back to the
+	// terminal instead of being allowed to answer.
+	holds := 0
 	for iter := 0; iter < settings.Agent.MaxIterations; iter++ {
 		if ctx.Err() != nil {
 			e.finish(run, chat, store.RunCancelled, "", "")
@@ -289,6 +343,28 @@ func (e *Engine) loop(ctx context.Context, chat *store.Chat, run *store.Run, h *
 		}
 
 		if len(res.ToolCalls) == 0 {
+			// An answer given while the program is still generating is the
+			// one failure a user cannot check: it reads plausible and it is
+			// out of date. So the run does not end here until the terminals
+			// it opened are quiet.
+			note := e.busyHold(run, holds)
+			if ctx.Err() != nil {
+				e.finish(run, chat, store.RunCancelled, "", "")
+				return
+			}
+			if note != "" {
+				holds++
+				answer.Finish(store.StatusDone)
+				// The note goes in as a user turn: a provider is free to
+				// hoist a system message to the top of the conversation,
+				// where this one would read as a standing instruction rather
+				// than as what it is, an interruption at this exact point.
+				if err := e.Store.AppendLLMMessage(chat.ID,
+					mustJSON(openrouter.Message{Role: "user", Content: note})); err != nil {
+					log.Printf("agent: persist busy note: %v", err)
+				}
+				continue
+			}
 			// The streamed text becomes the visible answer, so it does not
 			// need to stay in the process view as well.
 			answer.Discard()
@@ -301,6 +377,11 @@ func (e *Engine) loop(ctx context.Context, chat *store.Chat, run *store.Run, h *
 		}
 
 		answer.Finish(store.StatusDone)
+		// The count is about consecutive attempts to answer too early, so
+		// doing real work in between clears it - but a terminal_wait that
+		// came back "still working" is not progress, it is the same standoff
+		// continuing, and it must not buy three more holds.
+		progress := false
 
 		for _, call := range res.ToolCalls {
 			if ctx.Err() != nil {
@@ -312,10 +393,16 @@ func (e *Engine) loop(ctx context.Context, chat *store.Chat, run *store.Run, h *
 				e.finish(run, chat, store.RunCancelled, "", "")
 				return
 			}
+			if call.Function.Name != toolTerminalWait || !strings.Contains(out, "Status: "+waitBusy) {
+				progress = true
+			}
 			toolMsg := openrouter.Message{Role: "tool", ToolCallID: call.ID, Name: call.Function.Name, Content: out}
 			if err := e.Store.AppendLLMMessage(chat.ID, mustJSON(toolMsg)); err != nil {
 				log.Printf("agent: persist tool message: %v", err)
 			}
+		}
+		if progress {
+			holds = 0
 		}
 	}
 
@@ -327,6 +414,65 @@ func (e *Engine) loop(ctx context.Context, chat *store.Chat, run *store.Run, h *
 		finalText = "I ran out of steps before finishing this task. You can raise the step limit in the admin dashboard or ask me for a smaller piece of the job."
 	}
 	e.finish(run, chat, store.RunFailed, "iteration limit reached", finalText)
+}
+
+// maxBusyHolds is how often one answer may be held back. Each hold costs a
+// model call, and a model that has been sent back to the terminal three times
+// running is not going to be talked round by a fourth note - at that point the
+// user is better served by the answer plus a warning than by a run that never
+// ends. The count only resets when the model does something other than ask a
+// still working session whether it is done yet.
+const maxBusyHolds = 3
+
+// busyHold looks at the terminals this run opened and returns the note to send
+// the model instead of letting it answer, or an empty string when it may
+// speak. Only a skill with a busy pattern can hold anything back: a program
+// with no way of saying "still working" is never guessed at, which is why an
+// ad hoc shell session never delays an answer.
+func (e *Engine) busyHold(run *store.Run, holds int) string {
+	if e.Terminals == nil {
+		return ""
+	}
+	var busy []string
+	for _, handle := range e.Terminals.List(run.ChatID) {
+		if handle.Meta(metaRun) != run.ID || !handle.Alive() {
+			continue
+		}
+		skill := e.skillOfSession(handle)
+		if !skill.HoldsReply() {
+			continue
+		}
+		pattern := skill.Busy()
+		if pattern == nil {
+			continue
+		}
+		norm := normaliseScreen(handle.State().Screen)
+		working, matched := stillWorking(handle, pattern, e.changedAt(handle.ID(), norm), skill.Idle())
+		if !working {
+			continue
+		}
+		busy = append(busy, fmt.Sprintf("`%s` (%s): the screen matches %q",
+			handle.ID(), handle.Name(), matched))
+	}
+	if len(busy) == 0 {
+		return ""
+	}
+	if holds >= maxBusyHolds {
+		// Held three times already. Rather than leaving the user with nothing,
+		// the answer goes out - and the process view says what it is worth.
+		e.addStep(run, "", store.StepText, "Answered while a program was still working",
+			fmt.Sprintf("Socrates was sent back to the terminal %d times and still wanted to answer, "+
+				"so the answer was allowed through. Still working:\n%s", holds, strings.Join(busy, "\n")),
+			store.StatusInterrupted, nil)
+		return ""
+	}
+	e.addStep(run, "", store.StepText, "Waiting for the program",
+		"The answer was held back because a terminal session is still working:\n"+strings.Join(busy, "\n"),
+		store.StatusDone, nil)
+	return "[orchestrator] The program in " + strings.Join(busy, "; ") + " is still working, so the " +
+		"screen you just read is not its result. Do not answer the user yet: call terminal_wait on that " +
+		"session until it reports `idle`, or answer the question on its screen. If the screen shows a " +
+		"question only the user can answer, say so and stop."
 }
 
 // finish closes a run, optionally writing the visible answer.
@@ -444,7 +590,13 @@ func (e *Engine) systemPrompt(chat *store.Chat, settings config.Settings, run *s
 		"then wait for it to go idle and read the screen. If it asks something, answer it: a menu is " +
 		"answered with the arrow keys and enter, or by typing the number next to the choice. " +
 		"Never assume a keypress worked - the screen comes back with every call, so look at it. " +
-		"When the skill tells you which keys a dialog takes, use those rather than guessing.\n")
+		"When the skill tells you which keys a dialog takes, use those rather than guessing.\n" +
+		"Never report a result while the program is still working. terminal_wait answers with a status: " +
+		"`idle` means it has finished its turn and the screen is worth reading; `still working` means it " +
+		"has not, however finished the screen looks - call terminal_wait again, as often as it takes, and " +
+		"say nothing to the user in the meantime. A spinner, a ticking timer or a line like \"esc to " +
+		"interrupt\" is the program telling you it is mid-thought. The only two reasons to stop waiting " +
+		"are an `idle` status and a question or menu on the screen that is waiting for your answer.\n")
 
 	if sessions := e.sessionSummary(chat); sessions != "" {
 		b.WriteString("\n## Open terminal sessions\n")
@@ -924,6 +1076,9 @@ func (e *Engine) watchSession(handle *term.Handle, step *store.Step) {
 				latest = state
 				dirty = true
 				if !state.Running {
+					// The program is gone; what its screen looked like, and
+					// when it last moved, is of no further use to anyone.
+					e.forgetScreen(handle.ID())
 					write()
 					return
 				}

@@ -47,8 +47,10 @@ var blockedCIDRs = mustCIDRs(
 	"224.0.0.0/4",        // multicast
 	"240.0.0.0/4",        // reserved
 	"255.255.255.255/32", // broadcast
+	"::/96",              // IPv4-compatible IPv6, an old route to 127.0.0.1
 	"::/128",             // unspecified
 	"::1/128",            // loopback
+	"64:ff9b::/96",       // NAT64, which carries any IPv4 address including private ones
 	"fc00::/7",           // unique local
 	"fe80::/10",          // link local
 	"ff00::/8",           // multicast

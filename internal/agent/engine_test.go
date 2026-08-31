@@ -124,6 +124,14 @@ func TestMain(m *testing.M) {
 
 func newTestEngine(t *testing.T, router *mockRouter, skills []config.Skill) (*Engine, *store.Store) {
 	t.Helper()
+	return newTestEngineWith(t, router, skills, nil)
+}
+
+// newTestEngineWith is newTestEngine with a hook for tests that need to change
+// a setting - switching internet access on, for instance - before the engine
+// reads it.
+func newTestEngineWith(t *testing.T, router *mockRouter, skills []config.Skill, tweak func(*config.Settings)) (*Engine, *store.Store) {
+	t.Helper()
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
 
@@ -142,6 +150,9 @@ func newTestEngine(t *testing.T, router *mockRouter, skills []config.Skill) (*En
 	settings.Agent.MaxIterations = 6
 	if skills != nil {
 		settings.Skills = skills
+	}
+	if tweak != nil {
+		tweak(&settings)
 	}
 	settings.Normalize()
 
@@ -523,16 +534,14 @@ func TestStartRejectsSecondRun(t *testing.T) {
 	if err := st.CreateChat(chat); err != nil {
 		t.Fatal(err)
 	}
-	run, err := engine.Start(Turn{ChatID: chat.ID, Text: "first", Auto: false})
-	if err != nil {
+	if _, err := engine.Start(Turn{ChatID: chat.ID, Text: "first", Auto: false}); err != nil {
 		t.Fatal(err)
 	}
-	_ = run
+	t.Cleanup(func() { engine.Stop(chat.ID) })
 	waitForBusy(t, engine, chat.ID)
 	if _, err := engine.Start(Turn{ChatID: chat.ID, Text: "second", Auto: false}); err == nil {
 		t.Fatal("a second run should be rejected while one is in flight")
 	}
-	engine.Stop(chat.ID)
 }
 
 // The answer is read out loud by a voice that speaks one language. An English

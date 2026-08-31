@@ -524,3 +524,171 @@ func TestNormalizeLanguage(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeInternetDefaults(t *testing.T) {
+	s := Settings{}
+	s.Normalize()
+	if s.Internet.Enabled {
+		t.Error("internet access is on for a fresh settings document")
+	}
+	if s.Internet.SearchProvider != SearchOpenRouter {
+		t.Errorf("search provider = %q", s.Internet.SearchProvider)
+	}
+	if s.Internet.FetchEngine != FetchLocal {
+		t.Errorf("fetch engine = %q", s.Internet.FetchEngine)
+	}
+	if s.Internet.MaxResults != DefaultSearchResults {
+		t.Errorf("max results = %d", s.Internet.MaxResults)
+	}
+}
+
+func TestNormalizeInternetClampsAndFallsBack(t *testing.T) {
+	s := Settings{}
+	s.Internet = InternetSettings{
+		SearchProvider: "bing",
+		FetchEngine:    "wget",
+		MaxResults:     99,
+		TavilyAPIKey:   "  tvly-key  ",
+		SearchBaseURL:  " https://mirror.example/ ",
+	}
+	s.Normalize()
+	if s.Internet.SearchProvider != SearchOpenRouter {
+		t.Errorf("an unknown provider became %q", s.Internet.SearchProvider)
+	}
+	if s.Internet.FetchEngine != FetchLocal {
+		t.Errorf("an unknown engine became %q", s.Internet.FetchEngine)
+	}
+	if s.Internet.MaxResults != 10 {
+		t.Errorf("max results = %d, wanted the cap of 10", s.Internet.MaxResults)
+	}
+	if s.Internet.TavilyAPIKey != "tvly-key" {
+		t.Errorf("the key was not trimmed: %q", s.Internet.TavilyAPIKey)
+	}
+	if s.Internet.SearchBaseURL != "https://mirror.example" {
+		t.Errorf("the base URL was not tidied: %q", s.Internet.SearchBaseURL)
+	}
+
+	s.Internet.MaxResults = 0
+	s.Internet.SearchProvider = SearchJina
+	s.Internet.FetchEngine = FetchJina
+	s.Normalize()
+	if s.Internet.MaxResults != DefaultSearchResults {
+		t.Errorf("zero results became %d", s.Internet.MaxResults)
+	}
+	if s.Internet.SearchProvider != SearchJina || s.Internet.FetchEngine != FetchJina {
+		t.Errorf("a valid choice was overwritten: %q / %q", s.Internet.SearchProvider, s.Internet.FetchEngine)
+	}
+}
+
+func TestSearchAndFetchEndpointsFallBackToTheProviders(t *testing.T) {
+	tavily := InternetSettings{SearchProvider: SearchTavily}
+	if tavily.SearchEndpoint() != DefaultTavilyBaseURL {
+		t.Errorf("tavily endpoint = %q", tavily.SearchEndpoint())
+	}
+	jina := InternetSettings{SearchProvider: SearchJina}
+	if jina.SearchEndpoint() != DefaultJinaSearchBaseURL {
+		t.Errorf("jina endpoint = %q", jina.SearchEndpoint())
+	}
+	if jina.FetchEndpoint() != DefaultJinaReaderBaseURL {
+		t.Errorf("reader endpoint = %q", jina.FetchEndpoint())
+	}
+	override := InternetSettings{SearchProvider: SearchTavily, SearchBaseURL: "http://127.0.0.1:9999"}
+	if override.SearchEndpoint() != "http://127.0.0.1:9999" {
+		t.Errorf("the override was ignored: %q", override.SearchEndpoint())
+	}
+}
+
+// An installation that has been running a while stores a copy of whatever the
+// default prompt said the day it first opened the dashboard. Those copies name
+// tools that no longer exist, and a model told about a tool it does not have
+// spends its turn trying to call it. Each one is matched whole, against the
+// real text this project shipped.
+func TestNormalizeReplacesAStaleShippedPrompt(t *testing.T) {
+	if len(retiredDefaultPrompts) < 3 {
+		t.Fatalf("only %d retired prompts are listed", len(retiredDefaultPrompts))
+	}
+	for i, retired := range retiredDefaultPrompts {
+		s := Settings{}
+		s.Agent.SystemPrompt = retired
+		s.Normalize()
+		if s.Agent.SystemPrompt != DefaultSystemPrompt {
+			t.Errorf("retired prompt %d survived:\n%s", i+1, s.Agent.SystemPrompt)
+		}
+	}
+
+	// The same text after a round trip through a textarea: CRLF line endings
+	// and a trailing newline. It is still the same document.
+	roughed := strings.ReplaceAll(retiredDefaultPrompts[0], "\n", "\r\n") + "\r\n"
+	s := Settings{}
+	s.Agent.SystemPrompt = roughed
+	s.Normalize()
+	if s.Agent.SystemPrompt != DefaultSystemPrompt {
+		t.Error("a retired prompt with CRLF line endings was not recognised")
+	}
+}
+
+// The retired prompts have to be the real historical text, or the migration
+// silently matches nothing on the installations it exists for.
+func TestRetiredPromptsAreTheOnesThatShipped(t *testing.T) {
+	if !strings.Contains(retiredDefaultPrompts[0], "delegate_to_agent") {
+		t.Error("the first retired prompt is not the delegate_to_agent era one")
+	}
+	if !strings.Contains(retiredDefaultPrompts[1], "ask_user") ||
+		strings.Contains(retiredDefaultPrompts[1], "delegate_to_agent") {
+		t.Error("the second retired prompt is not the terminal driven, ask_user era one")
+	}
+	if !strings.Contains(retiredDefaultPrompts[2], "skills listed below") {
+		t.Error("the third retired prompt is not the one written after skills arrived")
+	}
+	// The whole point of the list is prompts that describe tools that are
+	// gone. One that does not is either a mistake or a prompt still in use,
+	// and either way it would take away something a user might have meant.
+	for i, retired := range retiredDefaultPrompts {
+		if !strings.Contains(retired, "ask_user") && !strings.Contains(retired, "delegate_to_agent") {
+			t.Errorf("retired prompt %d names no retired tool, so it does not belong on this list", i+1)
+		}
+	}
+	for i, retired := range retiredDefaultPrompts {
+		if retired == DefaultSystemPrompt {
+			t.Errorf("retired prompt %d is the current default", i+1)
+		}
+	}
+}
+
+// A prompt somebody wrote themselves is theirs, however much it differs from
+// the default - and mentioning a dead tool is not enough to take it away. This
+// is the case the old substring match got wrong.
+func TestNormalizeKeepsAHandWrittenPrompt(t *testing.T) {
+	mine := []string{
+		"You are Socrates. Answer in haiku and never open a terminal.",
+		// Someone documenting their own history, or warning the model off:
+		"You are Socrates. Never call ask_user or delegate_to_agent - they are gone.",
+		// The retired prompt with one line of their own added is an edit, and
+		// edits are kept.
+		retiredDefaultPrompts[0] + "\n- Always answer in German.",
+	}
+	for _, prompt := range mine {
+		s := Settings{}
+		s.Agent.SystemPrompt = prompt
+		s.Normalize()
+		if s.Agent.SystemPrompt != prompt {
+			t.Errorf("a hand written prompt was replaced:\nwanted %q\ngot    %q", prompt, s.Agent.SystemPrompt)
+		}
+	}
+}
+
+// The current default itself must survive being normalized, however often.
+func TestNormalizeLeavesTheCurrentDefaultAlone(t *testing.T) {
+	s := Default()
+	for i := 0; i < 3; i++ {
+		s.Normalize()
+	}
+	if s.Agent.SystemPrompt != DefaultSystemPrompt {
+		t.Error("the current default prompt was rewritten")
+	}
+	for i, retired := range retiredDefaultPrompts {
+		if samePrompt(DefaultSystemPrompt, retired) {
+			t.Errorf("the current default equals retired prompt %d, which the migration would loop on", i+1)
+		}
+	}
+}

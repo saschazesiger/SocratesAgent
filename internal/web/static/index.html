@@ -20,6 +20,11 @@
         <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
         New chat
       </button>
+      <!-- Archived chats stay out of the way until they are asked for. -->
+      <div class="scope" id="chatScope" role="group" aria-label="Which chats to show">
+        <button class="seg on" type="button" data-scope="active" aria-pressed="true">Active</button>
+        <button class="seg" type="button" data-scope="all" aria-pressed="false">All</button>
+      </div>
     </div>
     <nav class="chat-list" id="chatList"></nav>
     <div class="side-foot">
@@ -40,6 +45,9 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
       </button>
       <div class="title" id="chatTitle">New chat</div>
+      <!-- The sidebar may not be showing this chat at all, so the one place
+           that always says whether it is archived is the chat itself. -->
+      <span class="tag" id="chatArchived" hidden>Archived</span>
       <button class="icon-btn term-btn" id="termBtn" title="Terminal sessions" aria-expanded="false" hidden>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></svg>
         <span class="term-live-dot" aria-hidden="true"></span>
@@ -66,7 +74,10 @@
       <div class="field">
         <label for="panelWorkspace">Working directory</label>
         <input class="input mono" type="text" id="panelWorkspace" spellcheck="false">
-        <div class="hint">Where this chat's commands and terminal sessions run. Leave empty to use the chat's own folder, or point it at a project on this machine.</div>
+        <!-- The field is prefilled with the directory this chat is working in
+             right now, and follows it when it changes elsewhere. -->
+        <div class="hint mono" id="panelWorkspaceNow" hidden></div>
+        <div class="hint">Where this chat's commands and terminal sessions run. Leave it empty to fall back to the chat's own folder, or point it at a project on this machine.</div>
       </div>
       <div class="row" style="justify-content:flex-end">
         <button class="btn sm" type="button" id="panelCancel">Cancel</button>

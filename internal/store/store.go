@@ -33,12 +33,13 @@ CREATE TABLE IF NOT EXISTS kv (
   value TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS chats (
-  id         TEXT PRIMARY KEY,
-  title      TEXT NOT NULL DEFAULT '',
-  workspace  TEXT NOT NULL DEFAULT '',
-  client_id  TEXT NOT NULL DEFAULT '',
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  id          TEXT PRIMARY KEY,
+  title       TEXT NOT NULL DEFAULT '',
+  workspace   TEXT NOT NULL DEFAULT '',
+  client_id   TEXT NOT NULL DEFAULT '',
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  archived_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS messages (
   id         TEXT PRIMARY KEY,
@@ -134,6 +135,7 @@ func Open(path string) (*Store, error) {
 func migrate(db *sql.DB) error {
 	for _, add := range []struct{ table, column, definition string }{
 		{"chats", "client_id", "TEXT NOT NULL DEFAULT ''"},
+		{"chats", "archived_at", "INTEGER NOT NULL DEFAULT 0"},
 		{"messages", "rev", "INTEGER NOT NULL DEFAULT 0"},
 		{"messages", "client_id", "TEXT NOT NULL DEFAULT ''"},
 	} {
@@ -245,16 +247,23 @@ type Chat struct {
 	ClientID  string `json:"client_id,omitempty"`
 	CreatedAt int64  `json:"created_at"`
 	UpdatedAt int64  `json:"updated_at"`
+	// Archived is a chat that has been put away: it keeps its transcript but
+	// owns nothing that is still running, and it is hidden from the sidebar
+	// until the list is switched to showing everything. ArchivedAt is when
+	// that happened, and zero for a chat that is active.
+	Archived   bool  `json:"archived"`
+	ArchivedAt int64 `json:"archived_at,omitempty"`
 }
 
-const chatCols = `id, title, workspace, client_id, created_at, updated_at`
+const chatCols = `id, title, workspace, client_id, created_at, updated_at, archived_at`
 
 func scanChat(row interface{ Scan(...any) error }) (*Chat, error) {
 	c := &Chat{}
-	err := row.Scan(&c.ID, &c.Title, &c.Workspace, &c.ClientID, &c.CreatedAt, &c.UpdatedAt)
+	err := row.Scan(&c.ID, &c.Title, &c.Workspace, &c.ClientID, &c.CreatedAt, &c.UpdatedAt, &c.ArchivedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
+	c.Archived = c.ArchivedAt > 0
 	return c, err
 }
 
@@ -266,6 +275,7 @@ func (s *Store) CreateChat(c *Chat) error {
 		c.CreatedAt = now()
 	}
 	c.UpdatedAt = c.CreatedAt
+	c.Archived, c.ArchivedAt = false, 0
 	_, err := s.db.Exec(`INSERT INTO chats(id, title, workspace, client_id, created_at, updated_at)
 		VALUES(?, ?, ?, ?, ?, ?)`, c.ID, c.Title, c.Workspace, c.ClientID, c.CreatedAt, c.UpdatedAt)
 	return err
@@ -285,22 +295,48 @@ func (s *Store) ChatByClientID(clientID string) (*Chat, error) {
 	return scanChat(s.db.QueryRow(`SELECT `+chatCols+` FROM chats WHERE client_id = ?`, clientID))
 }
 
-// ListChats returns all chats, newest activity first.
-func (s *Store) ListChats() ([]Chat, error) {
-	rows, err := s.db.Query(`SELECT ` + chatCols + ` FROM chats ORDER BY updated_at DESC`)
+// ListChats returns chats, newest activity first. Archived ones are left out
+// unless they are asked for, which is what the sidebar's own switch decides.
+func (s *Store) ListChats(includeArchived bool) ([]Chat, error) {
+	where := ` WHERE archived_at = 0`
+	if includeArchived {
+		where = ``
+	}
+	rows, err := s.db.Query(`SELECT ` + chatCols + ` FROM chats` + where + ` ORDER BY updated_at DESC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := []Chat{}
 	for rows.Next() {
-		var c Chat
-		if err := rows.Scan(&c.ID, &c.Title, &c.Workspace, &c.ClientID, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		c, err := scanChat(rows)
+		if err != nil {
 			return nil, err
 		}
-		out = append(out, c)
+		out = append(out, *c)
 	}
 	return out, rows.Err()
+}
+
+// SetChatArchived puts a chat away or brings it back. The timestamp doubles as
+// the flag, so a restored chat is indistinguishable from one that was never
+// archived. updated_at is deliberately left alone: archiving is not activity,
+// and reordering the sidebar because of it would only be confusing.
+func (s *Store) SetChatArchived(id string, archived bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ts := int64(0)
+	if archived {
+		ts = now()
+	}
+	res, err := s.db.Exec(`UPDATE chats SET archived_at = ? WHERE id = ?`, ts, id)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // UpdateChat writes title and workspace.
