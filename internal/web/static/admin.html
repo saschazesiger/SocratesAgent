@@ -33,10 +33,6 @@
       </div>
       <div class="grid-2">
         <div class="field">
-          <label for="orBase">API base URL</label>
-          <input class="input mono" type="text" id="orBase" spellcheck="false">
-        </div>
-        <div class="field">
           <label>Answering model</label>
           <div id="orChat"></div>
           <div class="hint">Needs tool calling. Claude, GPT and Gemini models all work.</div>
@@ -90,7 +86,7 @@
 
     <section class="card">
       <h2>Voice</h2>
-      <p class="card-sub">Speech input always runs through a model; speech output uses your browser unless you point it at an endpoint.</p>
+      <p class="card-sub">Both sides of voice mode run on OpenRouter models, picked from the same catalogue as everything else. Speech output can also stay in the browser, which costs nothing and needs no signal.</p>
       <div class="field">
         <label for="voiceLanguage">Spoken language</label>
         <select class="select" id="voiceLanguage">
@@ -99,31 +95,10 @@
         </select>
         <div class="hint">One setting for everything Socrates says: how your recording is transcribed, which voice reads the answer out loud, and which language Socrates answers in.</div>
       </div>
-      <div class="grid-2">
-        <div class="field">
-          <label for="sttProvider">Speech to text</label>
-          <select class="select" id="sttProvider">
-            <option value="openrouter">OpenRouter audio model</option>
-            <option value="endpoint">OpenAI compatible endpoint</option>
-          </select>
-        </div>
-        <div class="field">
-          <label for="sttModel">Transcription model (endpoint)</label>
-          <input class="input mono" type="text" id="sttModel" placeholder="whisper-1" spellcheck="false">
-        </div>
-        <div class="field">
-          <label for="sttBase">Endpoint base URL</label>
-          <input class="input mono" type="text" id="sttBase" placeholder="https://api.openai.com/v1" spellcheck="false">
-        </div>
-        <div class="field">
-          <label for="sttKey">Endpoint API key</label>
-          <input class="input mono" type="password" id="sttKey" autocomplete="off" placeholder="leave empty to reuse the OpenRouter key">
-        </div>
-      </div>
       <div class="field">
         <label for="sttPrompt">Transcription instruction</label>
         <input class="input" type="text" id="sttPrompt">
-        <div class="hint">Sent with the audio when a chat model does the transcribing. A dedicated transcription model is given the language instead.</div>
+        <div class="hint">Sent with the recording when a chat model does the transcribing. A dedicated transcription model is given the language instead. Which model it is, is the transcription model above.</div>
       </div>
       <div class="divider" style="border-top:1px solid var(--line);margin:6px 0 20px"></div>
       <div class="grid-2">
@@ -131,28 +106,26 @@
           <label for="ttsProvider">Text to speech</label>
           <select class="select" id="ttsProvider">
             <option value="browser">Browser speech synthesis</option>
-            <option value="endpoint">OpenAI compatible endpoint</option>
+            <option value="openrouter">OpenRouter voice model</option>
           </select>
-        </div>
-        <div class="field">
-          <label for="ttsModel">Voice model</label>
-          <input class="input mono" type="text" id="ttsModel" placeholder="gpt-4o-mini-tts" spellcheck="false">
-        </div>
-        <div class="field">
-          <label for="ttsBase">Endpoint base URL</label>
-          <input class="input mono" type="text" id="ttsBase" placeholder="https://api.openai.com/v1" spellcheck="false">
-        </div>
-        <div class="field">
-          <label for="ttsKey">Endpoint API key</label>
-          <input class="input mono" type="password" id="ttsKey" autocomplete="off" placeholder="leave empty to reuse the OpenRouter key">
-        </div>
-        <div class="field">
-          <label for="ttsVoice">Voice</label>
-          <input class="input" type="text" id="ttsVoice" placeholder="alloy">
+          <div class="hint" id="ttsProviderHint"></div>
         </div>
         <div class="field">
           <label for="ttsRate">Speaking rate</label>
           <input class="input" type="number" id="ttsRate" min="0.5" max="2" step="0.1">
+          <div class="hint">Applies to the browser voice. A voice model reads at its own pace.</div>
+        </div>
+      </div>
+      <div class="grid-2" id="ttsModelFields">
+        <div class="field">
+          <label>Voice model</label>
+          <div id="ttsModel"></div>
+          <div class="hint">The text to speech models OpenRouter serves. deepgram/aura-2 has named voices in both languages Socrates speaks.</div>
+        </div>
+        <div class="field">
+          <label>Voice</label>
+          <div id="ttsVoice"></div>
+          <div class="hint" id="ttsVoiceHint">Every voice model refuses a voice it does not have, so pick one from its own list.</div>
         </div>
       </div>
       <div class="row" style="gap:22px;flex-wrap:wrap">

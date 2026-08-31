@@ -55,7 +55,8 @@ text or by voice.
 - **It asks you back.** When something is ambiguous the agent asks in its reply
   and stops, instead of guessing. You answer with the next message.
 - **Voice in and out.** Record in the browser, transcribe through OpenRouter,
-  have the answer read back to you.
+  have the answer read back to you — by the browser's own voice, or by an
+  OpenRouter voice model picked from the catalogue.
 - **Audio mode.** One big microphone button, a timer, and the answer shown as
   large as it fits and read out loud. When it ends on a question you hear it and
   simply speak your reply.
@@ -265,12 +266,15 @@ you can answer a prompt yourself, correct a wrong turn, or just watch.
 ## Choosing models
 
 Two different kinds of model live in the dashboard, and they are not
-interchangeable. The three at the top — the orchestrator, transcription, titles
-— are OpenRouter models, picked with searchable dropdowns over the live
-OpenRouter catalogue, grouped by provider and annotated with context length and
-price. The list is fetched when the dashboard opens; OpenRouter serves it
-without a key, so it works before you have pasted one, and every field still
-accepts anything you type.
+interchangeable. Everything Socrates itself asks a model for — answering,
+transcription, titles, and the voice that reads the answer out loud — is an
+OpenRouter model, and there is no second source to choose from: no base URL, no
+endpoint of your own, no key besides the one at the top. Each is picked with a
+searchable dropdown over the live OpenRouter catalogue, grouped by provider and
+annotated with context length and price, filtered down to the models that can
+do that particular job. The list is fetched when the dashboard opens;
+OpenRouter serves it without a key, so it works before you have pasted one, and
+every field still accepts anything you type.
 
 The models on a skill card are the coding agent's own, and they never go through
 OpenRouter: Claude Code, Codex and OpenCode each talk to their own provider with
@@ -284,13 +288,19 @@ above.
   `localhost` or over HTTPS. If you run Socrates on a server, put it behind a
   TLS reverse proxy, otherwise the microphone button will report that it is
   blocked.
-- **Speech to text** goes through an audio capable OpenRouter chat model
-  (`google/gemini-2.5-flash` by default). The browser records raw PCM and sends
-  a 16 kHz WAV, so no ffmpeg is involved. You can also point Socrates at any
-  OpenAI compatible `/audio/transcriptions` endpoint.
+- **Speech to text** goes through the transcription model chosen in the
+  dashboard — an audio capable chat model such as `google/gemini-2.5-flash`, or
+  a dedicated transcriber such as `openai/whisper-1`. Socrates works out which
+  of the two endpoints a model lives at and remembers it. The browser records
+  raw PCM and sends a 16 kHz WAV, so no ffmpeg is involved.
 - **Text to speech** uses the browser's own speech synthesis by default, which
-  needs no key and no network. For a better voice, configure any OpenAI
-  compatible `/audio/speech` endpoint in the admin dashboard.
+  needs no key and no network. For a better voice, switch it to an OpenRouter
+  voice model: the dashboard lists the text to speech models in the catalogue
+  and, next to it, the voices that model actually answers to —
+  `deepgram/aura-2` with `aura-2-lara-de`, say. Nothing is typed by hand, and
+  nothing is billed anywhere but your OpenRouter key. If the model cannot be
+  reached, the browser voice reads the answer instead, so a bad connection
+  costs the better voice and not the answer.
 - **Spoken language** is one setting in the admin dashboard, English or
   Deutsch, and it covers everything Socrates says: which language your
   recording is transcribed into, which installed voice reads the answer out

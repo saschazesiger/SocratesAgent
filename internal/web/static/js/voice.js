@@ -1,10 +1,11 @@
 // Voice input and output.
 //
 // Recording captures raw PCM through the Web Audio API and encodes a 16 kHz
-// mono WAV in the browser, because that is the one format both OpenRouter's
-// audio capable chat models and OpenAI compatible transcription endpoints
-// accept. Playback prefers a configured TTS endpoint and falls back to the
-// speech synthesis built into the browser.
+// mono WAV in the browser, because that is the one format both kinds of model
+// OpenRouter serves - an audio capable chat model and a dedicated transcriber
+// - accept. Playback prefers the voice model configured in the dashboard and
+// falls back to the speech synthesis built into the browser, which is what
+// still works with no signal.
 
 const WORKLET_SOURCE = `
 class PCMCapture extends AudioWorkletProcessor {
@@ -300,6 +301,36 @@ export function languageTag(language) {
 
 let currentAudio = null;
 let speakingFlag = false;
+
+// What to say when the voice model did not read the answer and the browser's
+// own voice stepped in instead. The fallback itself stays - an answer nobody
+// hears is worse than an answer read in the wrong voice, and the whole point
+// of the browser voice is that it works with no signal. But it must never be
+// silent: a model that is misconfigured would otherwise look exactly like a
+// model that is working, for as long as it takes to notice the accent.
+let fallbackListener = null;
+
+/** onSpeechFallback registers that notice. One per page. */
+export function onSpeechFallback(fn) { fallbackListener = fn; }
+
+// said keeps a reason from being repeated on every single answer. A new reason
+// is a new thing to know and is said again.
+const said = new Set();
+
+function reportFallback(reason) {
+  if (!fallbackListener || !reason || said.has(reason)) return;
+  said.add(reason);
+  try { fallbackListener(reason); } catch { /* a notice must not break playback */ }
+}
+
+// speakError pulls the sentence the server wrote out of a failed response.
+async function speakError(res) {
+  try {
+    const body = await res.json();
+    if (body && body.error) return String(body.error);
+  } catch { /* not json */ }
+  return 'the voice model answered ' + res.status;
+}
 // Every utterance belongs to a generation. Stopping bumps it, so the callbacks
 // of the speech that was interrupted quietly stop instead of queueing the rest
 // of a cancelled answer on top of the new one.
@@ -348,8 +379,15 @@ export async function speak(text, options = {}) {
       clearTimeout(deadline);
     }
     if (mine !== generation) return;
+    // 204 is not a failure: it is the browser voice being the configured
+    // choice, which is the one case where reading it here is the whole plan.
     if (res.status === 204) return await browserSpeak(content, tag, options);
-    if (!res.ok) throw new Error('tts endpoint failed');
+    if (!res.ok) {
+      // The server reached the model and came back with a reason. That reason
+      // will not fix itself on the next answer, so it is said out loud once.
+      reportFallback('Read by the browser voice: ' + await speakError(res));
+      return await browserSpeak(content, tag, options);
+    }
     const blob = await res.blob();
     if (mine !== generation) return;
     const url = URL.createObjectURL(blob);
@@ -364,6 +402,9 @@ export async function speak(text, options = {}) {
       audio.play().catch(() => resolve());
     });
   } catch {
+    // The server was never reached at all. That is the case the browser voice
+    // exists for and the connection bar already says so, so it passes without
+    // a second notice on top.
     if (mine === generation) await browserSpeak(content, tag, options);
   } finally {
     if (mine === generation) speakingFlag = false;

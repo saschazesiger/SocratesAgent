@@ -19,8 +19,11 @@ func TestNormalizeFillsDefaults(t *testing.T) {
 	if len(s.Skills) != len(Presets()) {
 		t.Errorf("expected one entry per shipped skill, got %d", len(s.Skills))
 	}
-	if s.Voice.TTSProvider != "browser" || s.Voice.STTProvider != "openrouter" {
+	if s.Voice.TTSProvider != SpeechBrowser {
 		t.Errorf("voice defaults = %#v", s.Voice)
+	}
+	if s.Voice.TTSModel != DefaultSpeechModel || s.Voice.TTSVoice != DefaultSpeechVoice {
+		t.Errorf("voice model = %q / %q", s.Voice.TTSModel, s.Voice.TTSVoice)
 	}
 }
 
@@ -257,6 +260,58 @@ func TestNormalizeMigratesTheOldPlaybackLanguage(t *testing.T) {
 	}
 	if LanguageName(s.Voice.Language) != "German" || LanguageTag(s.Voice.Language) != "de-DE" {
 		t.Fatalf("german = %q / %q", LanguageName(s.Voice.Language), LanguageTag(s.Voice.Language))
+	}
+}
+
+// Voice used to be pointable at an OpenAI compatible endpoint of your own.
+// That is gone: the choice survives as OpenRouter, and the model it named -
+// an id in the endpoint's naming, which OpenRouter has never heard of - is
+// replaced by one that exists, together with a voice it actually has.
+func TestNormalizeMigratesTheOldSpeechEndpoint(t *testing.T) {
+	s := Settings{}
+	s.Voice.TTSProvider = "endpoint"
+	s.Voice.TTSBaseURL = "https://api.openai.com/v1"
+	s.Voice.TTSAPIKey = "sk-openai"
+	s.Voice.TTSModel = "gpt-4o-mini-tts"
+	s.Voice.TTSVoice = "alloy"
+	s.Voice.STTProvider = "endpoint"
+	s.Voice.STTBaseURL = "https://api.openai.com/v1"
+	s.Voice.STTAPIKey = "sk-openai"
+	s.Voice.STTModel = "whisper-1"
+	s.Normalize()
+
+	if s.Voice.TTSProvider != SpeechOpenRouter {
+		t.Fatalf("provider = %q", s.Voice.TTSProvider)
+	}
+	if s.Voice.TTSModel != DefaultSpeechModel || s.Voice.TTSVoice != DefaultSpeechVoice {
+		t.Fatalf("model = %q / voice = %q", s.Voice.TTSModel, s.Voice.TTSVoice)
+	}
+	if s.Voice.TTSBaseURL != "" || s.Voice.TTSAPIKey != "" ||
+		s.Voice.STTProvider != "" || s.Voice.STTBaseURL != "" ||
+		s.Voice.STTAPIKey != "" || s.Voice.STTModel != "" {
+		t.Fatalf("an endpoint of its own survived: %#v", s.Voice)
+	}
+	// Nothing of the old shape may reach the dashboard again.
+	encoded, err := json.Marshal(s.Voice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, gone := range []string{"stt_provider", "stt_base_url", "stt_api_key", "stt_model", "tts_base_url", "tts_api_key"} {
+		if strings.Contains(string(encoded), gone) {
+			t.Fatalf("%s is still written: %s", gone, encoded)
+		}
+	}
+}
+
+// A voice model chosen from the catalogue is left exactly as it was picked.
+func TestNormalizeKeepsAnOpenRouterVoiceModel(t *testing.T) {
+	s := Settings{}
+	s.Voice.TTSProvider = SpeechOpenRouter
+	s.Voice.TTSModel = "google/gemini-3.1-flash-tts-preview"
+	s.Voice.TTSVoice = "Zephyr"
+	s.Normalize()
+	if s.Voice.TTSModel != "google/gemini-3.1-flash-tts-preview" || s.Voice.TTSVoice != "Zephyr" {
+		t.Fatalf("model = %q / voice = %q", s.Voice.TTSModel, s.Voice.TTSVoice)
 	}
 }
 

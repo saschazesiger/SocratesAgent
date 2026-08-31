@@ -43,11 +43,12 @@ func upstreamStatus(err error) int {
 	return http.StatusBadGateway
 }
 
-// handleTranscribe converts recorded audio into text.
+// handleTranscribe converts recorded audio into text with the transcription
+// model chosen in the dashboard.
 //
-// The browser records raw PCM and sends a 16 kHz mono WAV, which both
-// OpenRouter's audio capable chat models and every OpenAI compatible
-// transcription endpoint accept.
+// The browser records raw PCM and sends a 16 kHz mono WAV, which both kinds of
+// model OpenRouter serves - a dedicated transcriber and an audio capable chat
+// model - accept.
 func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Audio  string `json:"audio"`  // base64, no data: prefix
@@ -67,8 +68,8 @@ func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	if format == "" {
 		format = "wav"
 	}
-	raw, err := base64.StdEncoding.DecodeString(body.Audio)
-	if err != nil {
+	raw, decodeErr := base64.StdEncoding.DecodeString(body.Audio)
+	if decodeErr != nil {
 		writeError(w, http.StatusBadRequest, "the audio is not valid base64")
 		return
 	}
@@ -79,28 +80,14 @@ func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 
 	settings := s.Settings()
 	language := config.NormalizeLanguage(settings.Voice.Language)
-	var text string
-	if settings.Voice.STTProvider == "endpoint" {
-		if settings.Voice.STTBaseURL == "" {
-			writeError(w, http.StatusBadRequest, "no transcription endpoint is configured")
-			return
-		}
-		key := settings.Voice.STTAPIKey
-		if key == "" {
-			key = settings.OpenRouter.APIKey
-		}
-		client := openrouter.New(settings.Voice.STTBaseURL, key)
-		text, err = client.TranscribeEndpoint(r.Context(), settings.Voice.STTModel, raw, "audio."+format, language)
-	} else {
-		if strings.TrimSpace(settings.OpenRouter.APIKey) == "" {
-			writeError(w, http.StatusBadRequest, "no OpenRouter API key is configured")
-			return
-		}
-		client := openrouter.New(settings.OpenRouter.BaseURL, settings.OpenRouter.APIKey)
-		prompt := strings.TrimSpace(settings.Voice.STTPrompt) + transcriptionHint(language)
-		text, err = client.Transcribe(r.Context(), settings.OpenRouter.TranscribeModel,
-			prompt, raw, format, language)
+	if strings.TrimSpace(settings.OpenRouter.APIKey) == "" {
+		writeError(w, http.StatusBadRequest, "no OpenRouter API key is configured")
+		return
 	}
+	client := openrouter.New(settings.OpenRouter.BaseURL, settings.OpenRouter.APIKey)
+	prompt := strings.TrimSpace(settings.Voice.STTPrompt) + transcriptionHint(language)
+	text, err := client.Transcribe(r.Context(), settings.OpenRouter.TranscribeModel,
+		prompt, raw, format, language)
 	if err != nil {
 		code := upstreamStatus(err)
 		message := err.Error()
@@ -113,9 +100,11 @@ func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"text": strings.TrimSpace(text)})
 }
 
-// handleSpeak renders text to audio when an external TTS endpoint is
-// configured. With the default browser provider it answers 204 and the page
-// uses the built in speech synthesis instead.
+// handleSpeak renders text to audio with an OpenRouter voice model. With the
+// default browser provider it answers 204 and the page uses the speech
+// synthesis built into the browser instead - which is also where the page
+// lands on its own when this fails, so a voice model that is misconfigured or
+// out of reach costs the better voice and not the answer.
 func (s *Server) handleSpeak(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Text string `json:"text"`
@@ -132,20 +121,25 @@ func (s *Server) handleSpeak(w http.ResponseWriter, r *http.Request) {
 		text = string([]rune(text)[:6000])
 	}
 	settings := s.Settings()
-	if settings.Voice.TTSProvider != "endpoint" {
+	if settings.Voice.TTSProvider != config.SpeechOpenRouter {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	language := config.NormalizeLanguage(settings.Voice.Language)
-	key := settings.Voice.TTSAPIKey
-	if key == "" {
-		key = settings.OpenRouter.APIKey
+	if strings.TrimSpace(settings.OpenRouter.APIKey) == "" {
+		writeError(w, http.StatusBadRequest, "no OpenRouter API key is configured")
+		return
 	}
-	client := openrouter.New(settings.Voice.TTSBaseURL, key)
+	language := config.NormalizeLanguage(settings.Voice.Language)
+	client := openrouter.New(settings.OpenRouter.BaseURL, settings.OpenRouter.APIKey)
 	audio, contentType, err := client.Speech(r.Context(), settings.Voice.TTSModel, settings.Voice.TTSVoice,
 		text, speechInstructions(language))
 	if err != nil {
-		writeError(w, upstreamStatus(err), err.Error())
+		message := err.Error()
+		code := upstreamStatus(err)
+		if code == http.StatusBadRequest {
+			message += " - open /admin and check the voice model and its voice"
+		}
+		writeError(w, code, message)
 		return
 	}
 	w.Header().Set("Content-Type", contentType)

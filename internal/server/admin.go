@@ -207,27 +207,25 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Voice
-	switch settings.Voice.STTProvider {
-	case "endpoint":
-		if settings.Voice.STTBaseURL == "" {
-			results = append(results, checkResult{Name: "Speech to text", OK: false, Detail: "no endpoint URL set"})
-		} else {
-			results = append(results, checkResult{Name: "Speech to text", OK: true,
-				Detail: settings.Voice.STTBaseURL + " · " + settings.Voice.STTModel})
-		}
-	default:
-		results = append(results, checkResult{Name: "Speech to text", OK: true,
-			Detail: "OpenRouter · " + settings.OpenRouter.TranscribeModel})
-	}
-	if settings.Voice.TTSProvider == "endpoint" {
-		if settings.Voice.TTSBaseURL == "" || settings.Voice.TTSModel == "" {
-			results = append(results, checkResult{Name: "Text to speech", OK: false, Detail: "endpoint or model missing"})
-		} else {
-			results = append(results, checkResult{Name: "Text to speech", OK: true,
-				Detail: settings.Voice.TTSBaseURL + " · " + settings.Voice.TTSModel})
-		}
-	} else {
+	results = append(results, checkResult{Name: "Speech to text", OK: true,
+		Detail: "OpenRouter · " + settings.OpenRouter.TranscribeModel})
+	switch {
+	case settings.Voice.TTSProvider != config.SpeechOpenRouter:
 		results = append(results, checkResult{Name: "Text to speech", OK: true, Detail: "browser speech synthesis"})
+	case settings.Voice.TTSModel == "":
+		results = append(results, checkResult{Name: "Text to speech", OK: false,
+			Detail: "no voice model chosen"})
+	default:
+		// A voice is the model's business: most require one, the fish-audio
+		// family reads without any. So an empty one is reported rather than
+		// judged - the model itself says whether it minds.
+		detail := "OpenRouter · " + settings.Voice.TTSModel
+		if settings.Voice.TTSVoice != "" {
+			detail += " · " + settings.Voice.TTSVoice
+		} else {
+			detail += " · no voice named"
+		}
+		results = append(results, checkResult{Name: "Text to speech", OK: true, Detail: detail})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"checks": results})

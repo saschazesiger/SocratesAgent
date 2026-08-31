@@ -7,7 +7,7 @@ import {
 } from './api.js';
 import { renderMarkdown } from './markdown.js';
 import { mountTerminalDock } from './terminals.js';
-import { Recorder, describeMicError, speak, stopSpeaking, isSpeaking, plainSpeech } from './voice.js';
+import { Recorder, describeMicError, speak, stopSpeaking, isSpeaking, plainSpeech, onSpeechFallback } from './voice.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -201,6 +201,10 @@ async function init() {
   setView(storedView(null), { silent: true });
   buildQueues();
   bindUI();
+  // A voice model that cannot read the answer must say so. It is said once per
+  // reason, so a broken setting is reported the first time it costs you the
+  // voice you chose and not on every answer after it.
+  onSpeechFallback((reason) => toast(reason, 'error'));
   // Preferences are a nicety and the defaults are sensible, so the page is
   // never held up waiting for them. Everything on the boot path is deliberately
   // impatient: on a bad connection what matters is that the app appears and

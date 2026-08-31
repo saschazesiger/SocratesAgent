@@ -1,7 +1,7 @@
 // The admin dashboard: everything about Socrates is configurable here.
 
 import { api, el, toast, isOffline, errorMessage, setClass, onWake } from './api.js';
-import { speak } from './voice.js';
+import { speak, onSpeechFallback } from './voice.js';
 import { combobox } from './combobox.js';
 import * as models from './models.js';
 
@@ -26,32 +26,28 @@ function busyButton(button, on, label) {
 let settings = null;
 let defaults = null;
 
-// The three OpenRouter models are picked with a searchable dropdown rather
-// than a text field, so they are not in FIELDS.
+// Everything that names a model is picked from the OpenRouter catalogue with a
+// searchable dropdown rather than typed into a text field, so none of them are
+// in FIELDS. The voice belongs here too: it is not a model, but it is just as
+// much a name out of the catalogue, and a voice model refuses every name that
+// is not one of its own.
 const MODEL_PICKERS = [
   ['orChat', 'openrouter.chat_model', () => models.chat()],
   ['orTranscribe', 'openrouter.transcribe_model', () => models.audio()],
   ['orTitle', 'openrouter.title_model', () => models.chat()],
+  ['ttsModel', 'voice.tts_model', () => models.speech(), onSpeechModelChange],
+  ['ttsVoice', 'voice.tts_voice', () => voiceItems()],
 ];
 
 const FIELDS = [
   ['orKey', 'openrouter.api_key'],
-  ['orBase', 'openrouter.base_url'],
   ['systemPrompt', 'agent.system_prompt'],
   ['maxIterations', 'agent.max_iterations', 'number'],
   ['temperature', 'agent.temperature', 'number'],
   ['workspaceRoot', 'agent.workspace_root'],
   ['voiceLanguage', 'voice.language'],
-  ['sttProvider', 'voice.stt_provider'],
-  ['sttBase', 'voice.stt_base_url'],
-  ['sttKey', 'voice.stt_api_key'],
-  ['sttModel', 'voice.stt_model'],
   ['sttPrompt', 'voice.stt_prompt'],
   ['ttsProvider', 'voice.tts_provider'],
-  ['ttsBase', 'voice.tts_base_url'],
-  ['ttsKey', 'voice.tts_api_key'],
-  ['ttsModel', 'voice.tts_model'],
-  ['ttsVoice', 'voice.tts_voice'],
   ['ttsRate', 'voice.tts_rate', 'number'],
   ['speakAuto', 'voice.speak_in_auto_mode', 'bool'],
   ['speakChat', 'voice.speak_in_chat_mode', 'bool'],
@@ -98,6 +94,7 @@ async function load() {
   $('versionLabel').textContent = 'Socrates ' + (data.version || '');
   fillForm();
   buildModelPickers();
+  renderTTSMode();
   renderSkills();
   bind();
   loadModels();
@@ -141,19 +138,22 @@ function collect() {
 
 const pickers = {};
 
-// buildModelPickers replaces the three model text fields with dropdowns. They
-// are built before the catalogue arrives, so the dashboard is usable straight
-// away and simply gains its list a moment later.
+// buildModelPickers replaces the model text fields with dropdowns. They are
+// built before the catalogue arrives, so the dashboard is usable straight away
+// and simply gains its list a moment later.
 function buildModelPickers() {
-  for (const [id, path, items] of MODEL_PICKERS) {
+  for (const [id, path, items, after] of MODEL_PICKERS) {
     const host = $(id);
     if (!host) continue;
     host.innerHTML = '';
     const picker = combobox({
       value: getPath(settings, path) || '',
       items,
-      placeholder: 'anthropic/claude-sonnet-4.5',
-      onChange: (value) => { setPath(settings, path, value); },
+      placeholder: id === 'ttsVoice' ? 'voice name' : 'anthropic/claude-sonnet-4.5',
+      onChange: (value) => {
+        setPath(settings, path, value);
+        if (after) after(value);
+      },
     });
     pickers[id] = picker;
     host.append(picker.node);
@@ -167,6 +167,105 @@ function syncModelPickers() {
   }
 }
 
+// LANGUAGE_NAMES is only used to say, next to a voice, which language it reads
+// in. That is worth having because Socrates speaks two languages and picking
+// the wrong voice is the one mistake voice mode never survives.
+const LANGUAGE_NAMES = {
+  ar: 'Arabic', cs: 'Czech', da: 'Danish', de: 'German', el: 'Greek', en: 'English',
+  es: 'Spanish', fi: 'Finnish', fr: 'French', he: 'Hebrew', hi: 'Hindi', hu: 'Hungarian',
+  id: 'Indonesian', it: 'Italian', ja: 'Japanese', ko: 'Korean', nl: 'Dutch', no: 'Norwegian',
+  pl: 'Polish', pt: 'Portuguese', ro: 'Romanian', ru: 'Russian', sv: 'Swedish', th: 'Thai',
+  tr: 'Turkish', uk: 'Ukrainian', vi: 'Vietnamese', zh: 'Chinese',
+};
+
+// voiceLanguage reads the language out of a voice name, and only where the
+// name really carries one: a trailing code the way Deepgram writes it
+// ("aura-2-lara-de"), or a BCP 47 locale in front the way Microsoft does
+// ("en-US-Harper:MAI-Voice-2"). Every other scheme is left alone on purpose -
+// Kokoro's "af_bella" is an American voice, not an Afrikaans one, and a label
+// that guesses wrong is worse than no label.
+function voiceLanguage(name) {
+  const id = String(name || '');
+  const trailing = /[-](\w\w)$/.exec(id);
+  if (trailing) return LANGUAGE_NAMES[trailing[1].toLowerCase()] || '';
+  const locale = /^([a-z]{2})-[A-Z]{2}[-_]/.exec(id);
+  if (locale) return LANGUAGE_NAMES[locale[1]] || '';
+  return '';
+}
+
+// voiceItems is the list of voices the chosen model answers to. It is read
+// fresh every time the dropdown opens, so changing the model changes the list
+// without anything being rebuilt.
+function voiceItems() {
+  const model = getPath(settings, 'voice.tts_model') || '';
+  return models.voicesOf(model).map((voice) => ({
+    value: voice,
+    label: voice,
+    hint: voiceLanguage(voice),
+  }));
+}
+
+// onSpeechModelChange follows the model with a voice it actually has. Keeping
+// the old one would leave a pair that renders nothing at all, and the failure
+// only shows up the next time an answer is read out loud.
+function onSpeechModelChange(model) {
+  const voices = models.voicesOf(model);
+  const current = getPath(settings, 'voice.tts_voice') || '';
+  if (voices.length && !voices.includes(current)) {
+    setPath(settings, 'voice.tts_voice', voices[0]);
+    if (pickers.ttsVoice) pickers.ttsVoice.setValue(voices[0], false);
+  }
+  renderVoiceHint();
+}
+
+function renderVoiceHint(note) {
+  const hint = $('ttsVoiceHint');
+  if (!hint) return;
+  const model = getPath(settings, 'voice.tts_model') || '';
+  const voices = models.voicesOf(model);
+  if (note) {
+    hint.textContent = note;
+  } else if (!models.count()) {
+    hint.textContent = 'Loading the voices of this model…';
+  } else if (voices.length) {
+    hint.textContent = voices.length + ' voices. Every voice model refuses a name that is not one of its own.';
+  } else {
+    hint.textContent = 'OpenRouter publishes no voice list for this model. Leave it empty — it reads without one, ' +
+      'and says so itself if it turns out to need one.';
+  }
+}
+
+// reconcileVoice runs once, when the catalogue finally says which voices the
+// stored model has. A pair that does not go together renders nothing at all
+// and only says so the next time an answer is read out loud - and a settings
+// document written before voices came from OpenRouter is very likely to be
+// exactly that. So the form is repaired and the repair is named; nothing is
+// stored until it is saved, which keeps the decision the reader's.
+function reconcileVoice() {
+  const model = getPath(settings, 'voice.tts_model') || '';
+  const voices = models.voicesOf(model);
+  const current = getPath(settings, 'voice.tts_voice') || '';
+  if (!voices.length || voices.includes(current)) {
+    renderVoiceHint();
+    return;
+  }
+  setPath(settings, 'voice.tts_voice', voices[0]);
+  if (pickers.ttsVoice) pickers.ttsVoice.setValue(voices[0], false);
+  renderVoiceHint(current
+    ? '“' + current + '” is not a voice of ' + model + '. Switched to “' + voices[0] + '” — save to keep it.'
+    : voices.length + ' voices. Every voice model refuses a name that is not one of its own.');
+}
+
+// renderTTSMode shows the two OpenRouter fields only when they are what reads
+// the answer. The browser voice has nothing to configure beyond the rate.
+function renderTTSMode() {
+  const openrouter = $('ttsProvider').value === 'openrouter';
+  $('ttsModelFields').hidden = !openrouter;
+  $('ttsProviderHint').textContent = openrouter
+    ? 'Rendered through OpenRouter with the key above, and billed to it. The browser voice still steps in whenever the model cannot be reached.'
+    : 'Reads with a voice installed on the device. Free, instant, and the only one that works with no signal at all.';
+}
+
 async function loadModels() {
   const hint = $('modelsHint');
   try {
@@ -178,6 +277,7 @@ async function loadModels() {
         '). The fields still accept a model id typed by hand.';
     }
   }
+  reconcileVoice();
 }
 
 function bind() {
@@ -188,6 +288,10 @@ function bind() {
   $('tunnelStart').addEventListener('click', startTunnel);
   $('tunnelStop').addEventListener('click', stopTunnel);
   $('tunnelMode').addEventListener('change', renderTunnelMode);
+  $('ttsProvider').addEventListener('change', renderTTSMode);
+  // The test button is where a wrong voice model should be found out, so the
+  // reason the browser voice took over is shown rather than swallowed.
+  onSpeechFallback((reason) => toast(reason, 'error'));
   $('tunnelInstall').addEventListener('click', installCloudflared);
   $('tunnelLogToggle').addEventListener('click', () => {
     const log = $('tunnelLog');
@@ -200,8 +304,8 @@ function bind() {
     // that was last saved, so the button answers the question you are actually
     // asking: does this setting sound right?
     //
-    // Only the browser voice follows it before a save - a configured endpoint
-    // renders with the language the server has stored.
+    // Only the browser voice follows it before a save - a voice model renders
+    // with the language the server has stored.
     const language = $('voiceLanguage').value;
     const sample = language === 'de'
       ? 'So klingt Socrates, wenn dir eine Antwort im Freisprechmodus vorgelesen wird.'
@@ -232,6 +336,8 @@ async function save() {
     settings = data.settings;
     fillForm();
     syncModelPickers();
+    renderTTSMode();
+    renderVoiceHint();
     renderSkills();
     refreshTunnel();
     hint('Saved');

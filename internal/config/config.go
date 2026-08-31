@@ -21,6 +21,23 @@ const (
 	DefaultTranscribeModel   = "google/gemini-2.5-flash"
 	DefaultTitleModel        = "google/gemini-2.5-flash-lite"
 	DefaultMaxIterations     = 24
+
+	// DefaultSpeechModel and DefaultSpeechVoice are what reads an answer out
+	// loud once the browser's own voice is turned off. Socrates speaks two
+	// languages, so the model has to as well: aura-2 carries named voices for
+	// both, and it is billed per character of text rather than per second of
+	// audio, which is the cheaper half of a long answer.
+	DefaultSpeechModel = "deepgram/aura-2"
+	DefaultSpeechVoice = "aura-2-thalia-en"
+)
+
+// Where an answer is read out loud. There is no third option and in
+// particular no endpoint of your own: everything Socrates asks a model for
+// goes through OpenRouter, and the browser's own synthesiser is not a model at
+// all - it is what still works with no signal and no key.
+const (
+	SpeechBrowser    = "browser"
+	SpeechOpenRouter = "openrouter"
 )
 
 // DefaultSystemPrompt is the instruction set of the top level agent. It is
@@ -117,10 +134,15 @@ type TunnelSettings struct {
 	ExtraArgs []string `json:"extra_args"`
 }
 
-// OpenRouterSettings configures access to the OpenRouter API, which powers the
-// top level agent and (by default) speech to text.
+// OpenRouterSettings configures access to the OpenRouter API, which is the
+// only place Socrates gets a model from: it answers, it transcribes and it
+// reads out loud, and there is nothing to choose between.
 type OpenRouterSettings struct {
-	APIKey          string `json:"api_key"`
+	APIKey string `json:"api_key"`
+	// BaseURL is not a choice the dashboard offers. It exists so that the app
+	// can be pointed at a stand in for OpenRouter in its own tests, and it is
+	// filled with the real address on every settings document that does not
+	// carry one.
 	BaseURL         string `json:"base_url"`
 	ChatModel       string `json:"chat_model"`
 	TranscribeModel string `json:"transcribe_model"`
@@ -175,12 +197,10 @@ func NormalizeLanguage(code string) string {
 	return DefaultLanguage
 }
 
-// VoiceSettings configures speech to text and text to speech.
-//
-// OpenRouter itself only exposes chat completions, so transcription happens by
-// sending the recorded audio to a multimodal chat model. Speech synthesis is
-// done in the browser by default and can optionally be routed to any
-// OpenAI compatible /audio/speech endpoint.
+// VoiceSettings configures speech to text and text to speech. Both run on
+// OpenRouter models, chosen from its catalogue like every other model in the
+// app: the recording goes to the transcription model in OpenRouterSettings,
+// and the answer is read by TTSModel unless the browser is doing the reading.
 type VoiceSettings struct {
 	// Language is the language Socrates speaks: "en" or "de". One setting
 	// drives all three sides of it - which language the transcript is written
@@ -189,24 +209,32 @@ type VoiceSettings struct {
 	// disagree is worse than any of them being wrong alone.
 	Language string `json:"language"`
 
-	STTProvider string `json:"stt_provider"` // "openrouter" | "endpoint"
-	STTBaseURL  string `json:"stt_base_url"`
-	STTAPIKey   string `json:"stt_api_key"`
-	STTModel    string `json:"stt_model"`
-	STTPrompt   string `json:"stt_prompt"`
+	// STTPrompt is sent with the recording when an audio capable chat model
+	// does the transcribing. A dedicated transcription model is given the
+	// language instead, which is what it understands.
+	STTPrompt string `json:"stt_prompt"`
 
-	TTSProvider string  `json:"tts_provider"` // "browser" | "endpoint"
-	TTSBaseURL  string  `json:"tts_base_url"`
-	TTSAPIKey   string  `json:"tts_api_key"`
+	// TTSProvider is SpeechBrowser or SpeechOpenRouter. TTSModel and TTSVoice
+	// are both ids out of the OpenRouter catalogue - every voice model refuses
+	// a request that does not name a voice it knows.
+	TTSProvider string  `json:"tts_provider"`
 	TTSModel    string  `json:"tts_model"`
 	TTSVoice    string  `json:"tts_voice"`
 	TTSRate     float64 `json:"tts_rate"`
-	// TTSLanguage is where the language used to live, back when it only
-	// applied to playback. It is read once, folded into Language and dropped.
-	TTSLanguage string `json:"tts_language,omitempty"`
 
 	SpeakInAutoMode bool `json:"speak_in_auto_mode"`
 	SpeakInChatMode bool `json:"speak_in_chat_mode"`
+
+	// What older settings documents carried, back when voice could be pointed
+	// at an OpenAI compatible endpoint of your own and the language applied to
+	// playback alone. Each is read once by Normalize and then dropped.
+	TTSLanguage string `json:"tts_language,omitempty"`
+	STTProvider string `json:"stt_provider,omitempty"`
+	STTBaseURL  string `json:"stt_base_url,omitempty"`
+	STTAPIKey   string `json:"stt_api_key,omitempty"`
+	STTModel    string `json:"stt_model,omitempty"`
+	TTSBaseURL  string `json:"tts_base_url,omitempty"`
+	TTSAPIKey   string `json:"tts_api_key,omitempty"`
 }
 
 // AgentSettings configures the orchestration loop.
@@ -1078,12 +1106,10 @@ func Default() Settings {
 		},
 		Voice: VoiceSettings{
 			Language:        DefaultLanguage,
-			STTProvider:     "openrouter",
 			STTPrompt:       "Transcribe the spoken audio verbatim. Reply with the transcript only, no commentary, no quotes.",
-			TTSProvider:     "browser",
-			TTSBaseURL:      "https://api.openai.com/v1",
-			TTSModel:        "gpt-4o-mini-tts",
-			TTSVoice:        "alloy",
+			TTSProvider:     SpeechBrowser,
+			TTSModel:        DefaultSpeechModel,
+			TTSVoice:        DefaultSpeechVoice,
 			TTSRate:         1,
 			SpeakInAutoMode: true,
 		},
@@ -1128,20 +1154,35 @@ func (s *Settings) Normalize() {
 	}
 	s.Voice.Language = NormalizeLanguage(s.Voice.Language)
 	s.Voice.TTSLanguage = ""
-	if s.Voice.STTProvider != "endpoint" {
-		s.Voice.STTProvider = "openrouter"
-	}
 	if strings.TrimSpace(s.Voice.STTPrompt) == "" {
 		s.Voice.STTPrompt = d.Voice.STTPrompt
 	}
-	if s.Voice.TTSProvider != "endpoint" {
-		s.Voice.TTSProvider = "browser"
+	// "endpoint" is what the provider was called while an OpenAI compatible
+	// URL of your own was an option. There is no such thing any more, and the
+	// answer to "read this out loud with a model" is now the one place a model
+	// ever comes from, so the choice survives as OpenRouter.
+	if s.Voice.TTSProvider == "endpoint" {
+		s.Voice.TTSProvider = SpeechOpenRouter
 	}
-	s.Voice.TTSBaseURL = strings.TrimRight(strings.TrimSpace(s.Voice.TTSBaseURL), "/")
-	s.Voice.STTBaseURL = strings.TrimRight(strings.TrimSpace(s.Voice.STTBaseURL), "/")
+	if s.Voice.TTSProvider != SpeechOpenRouter {
+		s.Voice.TTSProvider = SpeechBrowser
+	}
+	// A model that endpoint era named - "gpt-4o-mini-tts", "tts-1" - is not an
+	// id OpenRouter knows, and asking for it is a 400 on the first answer read
+	// out loud. Anything without a provider in front of it is therefore
+	// replaced by a model that does exist, together with a voice it has.
+	if !strings.Contains(s.Voice.TTSModel, "/") {
+		s.Voice.TTSModel = d.Voice.TTSModel
+		s.Voice.TTSVoice = d.Voice.TTSVoice
+	}
+	s.Voice.TTSModel = strings.TrimSpace(s.Voice.TTSModel)
+	s.Voice.TTSVoice = strings.TrimSpace(s.Voice.TTSVoice)
 	if s.Voice.TTSRate <= 0 {
 		s.Voice.TTSRate = 1
 	}
+	s.Voice.STTProvider, s.Voice.STTModel = "", ""
+	s.Voice.STTBaseURL, s.Voice.STTAPIKey = "", ""
+	s.Voice.TTSBaseURL, s.Voice.TTSAPIKey = "", ""
 	if strings.TrimSpace(s.Agent.SystemPrompt) == "" {
 		s.Agent.SystemPrompt = d.Agent.SystemPrompt
 	}

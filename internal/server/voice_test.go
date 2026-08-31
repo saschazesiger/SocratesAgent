@@ -29,11 +29,17 @@ func (e *testEnv) configureVoice(t *testing.T, voice map[string]any) {
 	}
 }
 
-// fakeSpeech stands in for an OpenAI compatible /audio/speech endpoint and
-// records the payload it was sent.
+// fakeSpeech stands in for OpenRouter's /audio/speech and records the payload
+// it was sent.
 func fakeSpeech(t *testing.T, seen *map[string]any) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/audio/speech" {
+			t.Errorf("speech was posted to %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer or-key" {
+			t.Errorf("the OpenRouter key was not used: %q", r.Header.Get("Authorization"))
+		}
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		*seen = body
@@ -42,6 +48,22 @@ func fakeSpeech(t *testing.T, seen *map[string]any) *httptest.Server {
 	}))
 	t.Cleanup(server.Close)
 	return server
+}
+
+// speakThrough points the whole app at one stand in for OpenRouter and turns
+// the voice model on, which is the only way an answer is read server side now.
+func (e *testEnv) speakThrough(t *testing.T, tts *httptest.Server, voice map[string]any) {
+	t.Helper()
+	e.configureOpenRouter(t, map[string]any{"base_url": tts.URL, "api_key": "or-key"})
+	settings := map[string]any{
+		"tts_provider": "openrouter",
+		"tts_model":    "deepgram/aura-2",
+		"tts_voice":    "aura-2-thalia-en",
+	}
+	for key, value := range voice {
+		settings[key] = value
+	}
+	e.configureVoice(t, settings)
 }
 
 func (e *testEnv) speak(t *testing.T, body string) *http.Response {
@@ -57,13 +79,7 @@ func TestSpeakReadsInTheConfiguredLanguage(t *testing.T) {
 	env := newEnv(t)
 	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
 	tts := fakeSpeech(t, &payload)
-	env.configureVoice(t, map[string]any{
-		"language":     "de",
-		"tts_provider": "endpoint",
-		"tts_base_url": tts.URL,
-		"tts_model":    "gpt-4o-mini-tts",
-		"tts_api_key":  "k",
-	})
+	env.speakThrough(t, tts, map[string]any{"language": "de"})
 
 	res := env.speak(t, `{"text":"Alles erledigt."}`)
 	if res.StatusCode != http.StatusOK {
@@ -72,6 +88,12 @@ func TestSpeakReadsInTheConfiguredLanguage(t *testing.T) {
 	instructions, _ := payload["instructions"].(string)
 	if !strings.Contains(instructions, "German") {
 		t.Fatalf("instructions = %q", instructions)
+	}
+	// The model and the voice are both what the dashboard chose. A voice model
+	// refuses every name that is not one of its own, so sending the pair on
+	// unchanged is the whole job.
+	if payload["model"] != "deepgram/aura-2" || payload["voice"] != "aura-2-thalia-en" {
+		t.Fatalf("request = %#v", payload)
 	}
 
 	// Switching the setting switches the accent, and nothing else has to be
@@ -92,13 +114,7 @@ func TestSpeakFallsBackToTheDefaultLanguage(t *testing.T) {
 	env := newEnv(t)
 	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
 	tts := fakeSpeech(t, &payload)
-	env.configureVoice(t, map[string]any{
-		"language":     "auto",
-		"tts_provider": "endpoint",
-		"tts_base_url": tts.URL,
-		"tts_model":    "gpt-4o-mini-tts",
-		"tts_api_key":  "k",
-	})
+	env.speakThrough(t, tts, map[string]any{"language": "auto"})
 
 	if res := env.speak(t, `{"text":"All done."}`); res.StatusCode != http.StatusOK {
 		t.Fatalf("speak failed: %d", res.StatusCode)
@@ -119,7 +135,9 @@ func TestSpeakLeavesTheBrowserToItsOwnVoice(t *testing.T) {
 	}
 }
 
-func TestTranscribeNamesTheLanguageForTheEndpoint(t *testing.T) {
+// A dedicated transcription model is told the language up front, which is both
+// faster and more accurate than letting it guess from the first second.
+func TestTranscribeNamesTheLanguageForATranscriptionModel(t *testing.T) {
 	var fields map[string]string
 	stt := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
@@ -135,12 +153,9 @@ func TestTranscribeNamesTheLanguageForTheEndpoint(t *testing.T) {
 
 	env := newEnv(t)
 	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
-	env.configureVoice(t, map[string]any{
-		"language":     "de",
-		"stt_provider": "endpoint",
-		"stt_base_url": stt.URL,
-		"stt_model":    "whisper-1",
-		"stt_api_key":  "k",
+	env.configureVoice(t, map[string]any{"language": "de"})
+	env.configureOpenRouter(t, map[string]any{
+		"base_url": stt.URL, "api_key": "k", "transcribe_model": "openai/whisper-1",
 	})
 
 	audio := base64.StdEncoding.EncodeToString(make([]byte, 4000))
@@ -154,6 +169,46 @@ func TestTranscribeNamesTheLanguageForTheEndpoint(t *testing.T) {
 	}
 	if fields["language"] != "de" {
 		t.Fatalf("language = %#v", fields)
+	}
+}
+
+// A model that reads without a voice must actually be reachable. Refusing the
+// pair here is what made a chosen model look like it had never been chosen:
+// the answer came back in the browser's voice and nothing said why.
+func TestSpeakUsesAModelThatNeedsNoVoice(t *testing.T) {
+	var payload map[string]any
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+	tts := fakeSpeech(t, &payload)
+	env.speakThrough(t, tts, map[string]any{
+		"language":  "de",
+		"tts_model": "fish-audio/s1",
+		"tts_voice": "",
+	})
+	if res := env.speak(t, `{"text":"Alles erledigt."}`); res.StatusCode != http.StatusOK {
+		t.Fatalf("speak failed: %d", res.StatusCode)
+	}
+	if payload["model"] != "fish-audio/s1" {
+		t.Fatalf("the chosen model was not used: %#v", payload)
+	}
+	if _, sent := payload["voice"]; sent {
+		t.Fatalf("an empty voice was sent: %#v", payload)
+	}
+}
+
+// Nothing is rendered server side without a key: the answer is not lost, the
+// page simply reads it with the browser's own voice.
+func TestSpeakNeedsAKeyForAVoiceModel(t *testing.T) {
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+	env.configureVoice(t, map[string]any{
+		"tts_provider": "openrouter",
+		"tts_model":    "deepgram/aura-2",
+		"tts_voice":    "aura-2-thalia-en",
+	})
+	res := env.speak(t, `{"text":"All done."}`)
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d", res.StatusCode)
 	}
 }
 
@@ -234,7 +289,7 @@ func TestTranscribeThroughOpenRouterUsesTheTranscriptionEndpoint(t *testing.T) {
 
 	env := newEnv(t)
 	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
-	env.configureVoice(t, map[string]any{"language": "de", "stt_provider": "openrouter"})
+	env.configureVoice(t, map[string]any{"language": "de"})
 	env.configureOpenRouter(t, map[string]any{
 		"base_url": gateway.URL, "api_key": "k", "transcribe_model": "openai/gpt-transcribe",
 	})
@@ -267,7 +322,7 @@ func TestTranscribeReportsAConfigurationRefusalWithoutRetries(t *testing.T) {
 
 	env := newEnv(t)
 	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
-	env.configureVoice(t, map[string]any{"language": "de", "stt_provider": "openrouter"})
+	env.configureVoice(t, map[string]any{"language": "de"})
 	env.configureOpenRouter(t, map[string]any{
 		"base_url": gateway.URL, "api_key": "k", "transcribe_model": "vendor/nope",
 	})
