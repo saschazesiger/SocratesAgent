@@ -11,8 +11,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -447,6 +449,9 @@ func TestClaudeTextToolTextYieldsTwoMessagesWithIndexZero(t *testing.T) {
 			case "message_start":
 				msgs = append(msgs, str(m, "event", "message", "id"))
 			case "content_block_start":
+				if str(m, "event", "content_block", "type") != "text" {
+					continue
+				}
 				starts = append(starts, block{
 					msg:   msgs[len(msgs)-1],
 					index: num(m, "event", "index"),
@@ -503,7 +508,7 @@ func TestClaudeToolCallShape(t *testing.T) {
 			eq(t, "tool name", str(a, "message", "content", 0, "name"), "Bash")
 			eq(t, "tool input", str(a, "message", "content", 0, "input", "command"), "go test ./...")
 
-			u := p.next()
+			u := p.until(func(m map[string]any) bool { return str(m, "type") == "user" })
 			rawUser := mustJSON(t, u)
 			eq(t, "type", str(u, "type"), "user")
 			eq(t, "result type", str(u, "message", "content", 0, "type"), "tool_result")
@@ -522,6 +527,50 @@ func TestClaudeToolCallShape(t *testing.T) {
 	}
 }
 
+func TestClaudeToolUseHasTheSameStreamCadenceAsText(t *testing.T) {
+	// A tool_use block streams like any other block, and the message it ends
+	// is closed with message_delta + message_stop before the tool result.
+	p := startClaude(t, `[{"do":"text","text":"one"},
+		{"do":"tool","name":"Bash","input":"echo hi","output":"hi\n","exit":0},
+		{"do":"end","outcome":"ok"}]`)
+	p.next()
+	p.send(userLine("hi"))
+
+	var seq []string
+	var toolStart map[string]any
+	for {
+		m := p.next()
+		if str(m, "type") == "stream_event" {
+			seq = append(seq, str(m, "event", "type"))
+			if str(m, "event", "type") == "content_block_start" &&
+				str(m, "event", "content_block", "type") == "tool_use" {
+				toolStart = m
+			}
+		}
+		if str(m, "type") == "result" {
+			break
+		}
+	}
+	want := []string{
+		"message_start", "content_block_start", "content_block_delta",
+		"content_block_delta", "content_block_delta", "content_block_stop",
+		"content_block_start", "content_block_delta", "content_block_stop",
+		"message_delta", "message_stop",
+	}
+	if strings.Join(seq, ",") != strings.Join(want, ",") {
+		t.Errorf("stream_event cadence:\n got %v\nwant %v", seq, want)
+	}
+	if toolStart == nil {
+		t.Fatal("no content_block_start for the tool_use block")
+	}
+	// The tool_use block is index 1 of the same message, and its input starts
+	// empty and arrives as input_json_delta.
+	eq(t, "tool block index", num(toolStart, "event", "index"), 1)
+	if in, ok := dig(toolStart, "event", "content_block", "input").(map[string]any); !ok || len(in) != 0 {
+		t.Errorf("content_block_start must carry an empty input: %v", toolStart)
+	}
+}
+
 func TestClaudeSubagentUsesTheTaskTool(t *testing.T) {
 	p := startClaude(t, `[{"do":"subagent","input":"find the caller","output":"found it"},{"do":"end","outcome":"ok"}]`)
 	p.next()
@@ -530,8 +579,8 @@ func TestClaudeSubagentUsesTheTaskTool(t *testing.T) {
 	eq(t, "name", str(a, "message", "content", 0, "name"), "Task")
 	eq(t, "subagent_type", str(a, "message", "content", 0, "input", "subagent_type"), "general-purpose")
 	eq(t, "description", str(a, "message", "content", 0, "input", "description"), "find the caller")
-	p.next() // tool_result
-	r := p.next()
+	p.until(func(m map[string]any) bool { return str(m, "type") == "user" })
+	r := p.until(func(m map[string]any) bool { return str(m, "type") == "result" })
 	eq(t, "spawned", num(r, "subagent_stats", "spawned"), 1)
 }
 
@@ -747,6 +796,17 @@ func codexStartTurn(t *testing.T, p *proc, thread string, id int) string {
 	return turnID
 }
 
+// codexSkipUserMessage consumes the userMessage item every turn opens with.
+func codexSkipUserMessage(t *testing.T, p *proc) {
+	t.Helper()
+	for i := 0; i < 2; i++ {
+		m := p.next()
+		if str(m, "params", "item", "type") != "userMessage" {
+			t.Fatalf("expected the opening userMessage item, got %v", m)
+		}
+	}
+}
+
 func TestCodexHasNoGenerateJSONSchemaMode(t *testing.T) {
 	// FK-15.
 	p := start(t, "codex", scriptEnv(`[{"do":"end","outcome":"ok"}]`), "generate-json-schema")
@@ -841,6 +901,7 @@ func TestCodexCommandExecutionKeepsAggregatedOutputNull(t *testing.T) {
 	codexInit(t, p)
 	thread := codexStartThread(t, p)
 	turnID := codexStartTurn(t, p, thread, 3)
+	codexSkipUserMessage(t, p)
 
 	started := p.until(func(m map[string]any) bool { return str(m, "method") == "item/started" })
 	eq(t, "item type", str(started, "params", "item", "type"), "commandExecution")
@@ -919,12 +980,79 @@ func TestCodexReasoningItem(t *testing.T) {
 	codexInit(t, p)
 	thread := codexStartThread(t, p)
 	codexStartTurn(t, p, thread, 3)
+	codexSkipUserMessage(t, p)
 	started := p.next()
 	eq(t, "method", str(started, "method"), "item/started")
 	eq(t, "type", str(started, "params", "item", "type"), "reasoning")
 	done := p.next()
 	eq(t, "method", str(done, "method"), "item/completed")
 	eq(t, "summary text", str(done, "params", "item", "summary", 0, "text"), "pondering")
+	// ReasoningItemReasoningSummary's only variant is summary_text; an adapter
+	// switching on the tag must see the schema's spelling.
+	eq(t, "summary type", str(done, "params", "item", "summary", 0, "type"), "summary_text")
+	if c, ok := dig(done, "params", "item", "content").([]any); !ok || len(c) != 0 {
+		t.Errorf("content must be an empty array, got %#v", dig(done, "params", "item", "content"))
+	}
+}
+
+func TestCodexSubagentItemsMatchTheSchema(t *testing.T) {
+	// SubAgentActivityThreadItem requires agentPath, agentThreadId, id, kind
+	// and type — and carries nothing else.
+	p := startCodex(t, `[{"do":"subagent","input":"general-purpose: find the caller","output":"found"},{"do":"end","outcome":"ok"}]`)
+	codexInit(t, p)
+	thread := codexStartThread(t, p)
+	codexStartTurn(t, p, thread, 3)
+	codexSkipUserMessage(t, p)
+
+	started := p.next()
+	eq(t, "method", str(started, "method"), "item/started")
+	eq(t, "type", str(started, "params", "item", "type"), "subAgentActivity")
+	eq(t, "kind", str(started, "params", "item", "kind"), "started")
+	eq(t, "agentPath", str(started, "params", "item", "agentPath"), "general-purpose: find the caller")
+	id := str(started, "params", "item", "id")
+	agentThread := str(started, "params", "item", "agentThreadId")
+	if id == "" || agentThread == "" {
+		t.Fatalf("id/agentThreadId missing: %v", started)
+	}
+	item, _ := dig(started, "params", "item").(map[string]any)
+	for k := range item {
+		switch k {
+		case "type", "id", "kind", "agentPath", "agentThreadId":
+		default:
+			t.Errorf("subAgentActivity must carry no %q field", k)
+		}
+	}
+
+	done := p.next()
+	eq(t, "method", str(done, "method"), "item/completed")
+	eq(t, "kind", str(done, "params", "item", "kind"), "completed")
+	eq(t, "id", str(done, "params", "item", "id"), id)
+	eq(t, "agentThreadId", str(done, "params", "item", "agentThreadId"), agentThread)
+}
+
+func TestCodexEveryTurnOpensWithAUserMessageItem(t *testing.T) {
+	// Research codex.md 3: item/started + item/completed of a userMessage
+	// echoing the turn's input precede everything else.
+	p := startCodex(t, `[{"do":"text","text":"hi"},{"do":"end","outcome":"ok"}]`)
+	codexInit(t, p)
+	thread := codexStartThread(t, p)
+	p.sendJSON(map[string]any{"jsonrpc": "2.0", "id": 3, "method": "turn/start",
+		"params": map[string]any{"threadId": thread,
+			"input":  []any{map[string]any{"type": "text", "text": "count to three"}},
+			"model":  "gpt-5.4-mini",
+			"effort": "medium"}})
+	p.next() // the RPC result
+	p.next() // turn/started
+
+	started := p.next()
+	eq(t, "method", str(started, "method"), "item/started")
+	eq(t, "type", str(started, "params", "item", "type"), "userMessage")
+	eq(t, "content", str(started, "params", "item", "content", 0, "text"), "count to three")
+	eq(t, "content type", str(started, "params", "item", "content", 0, "type"), "text")
+	done := p.next()
+	eq(t, "method", str(done, "method"), "item/completed")
+	eq(t, "type", str(done, "params", "item", "type"), "userMessage")
+	eq(t, "id", str(done, "params", "item", "id"), str(started, "params", "item", "id"))
 }
 
 func TestCodexTurnEndsAndTheirTraps(t *testing.T) {
@@ -953,7 +1081,10 @@ func TestCodexTurnEndsAndTheirTraps(t *testing.T) {
 		codexInit(t, p)
 		thread := codexStartThread(t, p)
 		codexStartTurn(t, p, thread, 3)
-		p.until(func(m map[string]any) bool { return str(m, "method") == "warning" })
+		w := p.until(func(m map[string]any) bool { return str(m, "method") == "warning" })
+		eq(t, "warning message", str(w, "params", "message"),
+			"Model metadata for `gpt-5.4-mini` not found. Defaulting to fallback "+
+				"metadata; this can degrade performance and cause issues.")
 		st := p.next()
 		eq(t, "method", str(st, "method"), "thread/status/changed")
 		eq(t, "status type", str(st, "params", "status", "type"), "systemError")
@@ -961,6 +1092,13 @@ func TestCodexTurnEndsAndTheirTraps(t *testing.T) {
 		eq(t, "method", str(e, "method"), "error")
 		eq(t, "willRetry", boolean(e, "params", "willRetry"), false)
 		eq(t, "message", str(e, "params", "error", "message"), "the model is not supported")
+
+		// FK-13: the turn is closed, so a cancel arriving inside the
+		// adapter's 30 s post-error window cannot resurrect it.
+		p.sendJSON(map[string]any{"jsonrpc": "2.0", "id": 9, "method": "turn/interrupt",
+			"params": map[string]any{"threadId": thread, "turnId": "turn_1"}})
+		reply := p.until(func(m map[string]any) bool { return str(m, "method") == "" })
+		eq(t, "interrupt reply id", num(reply, "id"), 9)
 		p.closeStdin()
 		for _, m := range p.rest() {
 			if str(m, "method") == "turn/completed" {
@@ -1001,6 +1139,7 @@ func TestCodexApprovalRequestAcceptsAResultOrAnError(t *testing.T) {
 			codexInit(t, p)
 			thread := codexStartThread(t, p)
 			codexStartTurn(t, p, thread, 3)
+			codexSkipUserMessage(t, p)
 
 			req := p.next()
 			eq(t, "method", str(req, "method"), "item/commandExecution/requestApproval")
@@ -1027,7 +1166,11 @@ func TestCodexInterrupt(t *testing.T) {
 	codexInit(t, p)
 	thread := codexStartThread(t, p)
 	turnID := codexStartTurn(t, p, thread, 3)
-	p.until(func(m map[string]any) bool { return str(m, "method") == "item/completed" })
+	codexSkipUserMessage(t, p)
+	p.until(func(m map[string]any) bool {
+		return str(m, "method") == "item/completed" &&
+			str(m, "params", "item", "type") == "agentMessage"
+	})
 
 	p.sendJSON(map[string]any{"jsonrpc": "2.0", "id": 9, "method": "turn/interrupt",
 		"params": map[string]any{"threadId": thread, "turnId": turnID}})
@@ -1043,6 +1186,69 @@ func TestCodexInterrupt(t *testing.T) {
 	eq(t, "method", str(done, "method"), "turn/completed")
 	eq(t, "status", str(done, "params", "turn", "status"), "interrupted")
 	eq(t, "turn id", str(done, "params", "turn", "id"), turnID)
+}
+
+func TestCodexEmitsNoTurnContentAfterTheTerminalFrame(t *testing.T) {
+	// SHOULD FIX 4: the write lock is the arbiter, so an interrupt landing
+	// mid-item cannot be overtaken by the frames already in flight.
+	for i := 0; i < 5; i++ {
+		p := startCodex(t, `[{"do":"text","text":"one"},{"do":"tool","input":"seq 3","output":"a\nb\nc\n","exit":0},
+			{"do":"text","text":"two"},{"do":"hang"}]`)
+		codexInit(t, p)
+		thread := codexStartThread(t, p)
+		turnID := codexStartTurn(t, p, thread, 3)
+		p.sendJSON(map[string]any{"jsonrpc": "2.0", "id": 9, "method": "turn/interrupt",
+			"params": map[string]any{"threadId": thread, "turnId": turnID}})
+		p.closeStdin()
+
+		seenEnd := false
+		for _, m := range p.rest() {
+			method := str(m, "method")
+			if seenEnd && method != "" && method != "account/rateLimits/updated" {
+				t.Fatalf("%s arrived after turn/completed", method)
+			}
+			if method == "turn/completed" {
+				seenEnd = true
+			}
+		}
+		if !seenEnd {
+			t.Fatal("the interrupt produced no turn/completed")
+		}
+	}
+}
+
+func TestClaudeEmitsNoBlockAfterTheResultLine(t *testing.T) {
+	// SHOULD FIX 4, the claude half.
+	for i := 0; i < 5; i++ {
+		p := startClaude(t, `[{"do":"text","text":"one"},
+			{"do":"tool","name":"Bash","input":"seq 3","output":"a\nb\nc\n","exit":0},
+			{"do":"text","text":"two"},{"do":"hang"}]`)
+		p.next()
+		p.send(userLine("hi"))
+		p.send(`{"type":"control_request","request_id":"x1","request":{"subtype":"interrupt"}}`)
+		p.closeStdin()
+
+		seenResult := false
+		for _, m := range p.rest() {
+			if seenResult {
+				t.Fatalf("%s arrived after the result line", str(m, "type"))
+			}
+			if str(m, "type") == "result" {
+				seenResult = true
+			}
+		}
+		if !seenResult {
+			t.Fatal("the interrupt produced no result")
+		}
+	}
+}
+
+func TestClaudeAskStepEmitsNothing(t *testing.T) {
+	// There is no approval path under --permission-mode bypassPermissions.
+	p := startClaude(t, `[{"do":"ask","input":"whoami"},{"do":"end","outcome":"ok"}]`)
+	p.next()
+	p.send(userLine("hi"))
+	eq(t, "next line", str(p.next(), "type"), "result")
 }
 
 func TestCodexUnknownMethodGetsAJSONRPCError(t *testing.T) {
@@ -1312,9 +1518,11 @@ func TestOpenCodeModelListHasAVariantsMapAndAModelWithout(t *testing.T) {
 			t.Errorf("variants map missing %q", k)
 		}
 	}
-	none, ok := dig(data[1], "variants").(map[string]any)
+	// F-13: "no variants" is an empty array on GET /api/model, not an empty
+	// map. A decoder that only accepts the map shape must fail here.
+	none, ok := dig(data[1], "variants").([]any)
 	if !ok || len(none) != 0 {
-		t.Errorf("the second model must have no variants, got %#v", dig(data[1], "variants"))
+		t.Errorf("the second model must report variants as [], got %#v", dig(data[1], "variants"))
 	}
 }
 
@@ -1347,6 +1555,17 @@ func TestOpenCodeSetModelIsAlways204AndRecordsTheBody(t *testing.T) {
 	}
 }
 
+func TestOpenCodePromptDeliveryDefaultsToSteer(t *testing.T) {
+	o := startOpenCode(t, `[{"do":"text","text":"hi"},{"do":"end","outcome":"ok"}]`)
+	id := o.newSession(t.TempDir())
+	frames, _ := o.sse(id)
+	untilFrame(t, frames, "server.connected")
+	res := o.json("POST", "/api/session/"+id+"/prompt", `{"prompt":{"text":"hi"}}`)
+	eq(t, "echoed delivery", str(res, "data", "delivery"), "steer")
+	adm := untilFrame(t, frames, "session.next.prompt.admitted")
+	eq(t, "event delivery", str(adm, "data", "delivery"), "steer")
+}
+
 func TestOpenCodeWaitIsA503Stub(t *testing.T) {
 	o := startOpenCode(t, `[{"do":"end","outcome":"ok"}]`)
 	id := o.newSession(t.TempDir())
@@ -1376,6 +1595,7 @@ func TestOpenCodeSSEFramingAndAdmittedSeq(t *testing.T) {
 	adm := untilFrame(t, frames, "session.next.prompt.admitted")
 	eq(t, "aggregateID", str(adm, "durable", "aggregateID"), id)
 	eq(t, "version", num(adm, "durable", "version"), 1)
+	versions := map[string]float64{}
 	// F-9: admittedSeq is exactly the prompt.admitted event's durable.seq.
 	eq(t, "admittedSeq == durable.seq", num(adm, "durable", "seq"), admitted)
 
@@ -1385,6 +1605,7 @@ func TestOpenCodeSSEFramingAndAdmittedSeq(t *testing.T) {
 		m := nextFrame(t, frames)
 		if d := dig(m, "durable"); d != nil {
 			seqs = append(seqs, num(m, "durable", "seq"))
+			versions[str(m, "type")] = num(m, "durable", "version")
 		} else if strings.HasSuffix(str(m, "type"), ".delta") {
 			sawDelta = true
 		}
@@ -1400,6 +1621,10 @@ func TestOpenCodeSSEFramingAndAdmittedSeq(t *testing.T) {
 			t.Fatalf("durable seq must count up per session: %v (admittedSeq %v)", seqs, admitted)
 		}
 	}
+	// The research observed version 2 on step.ended and 1 everywhere else.
+	eq(t, "step.ended version", versions["session.next.step.ended"], 2)
+	eq(t, "text.ended version", versions["session.next.text.ended"], 1)
+	eq(t, "step.started version", versions["session.next.step.started"], 1)
 
 	// The heartbeat comment lines.
 	deadline := time.After(3 * heartbeatWait)
@@ -1484,20 +1709,107 @@ func untilAny(t *testing.T, ch <-chan map[string]any) map[string]any {
 	return nextFrame(t, ch)
 }
 
-func TestOpenCodeToolErrorShape(t *testing.T) {
-	// FK-20's design-chosen failure shape.
+func TestOpenCodeToolFailedShape(t *testing.T) {
+	// FK-20's failure event, per EventSessionNextToolFailed in the OpenAPI
+	// document: the name is session.next.tool.failed and error is a
+	// SessionErrorUnknown object.
 	o := startOpenCode(t, `[{"do":"tool","name":"bash","input":"false","output":"boom","exit":2},{"do":"end","outcome":"ok"}]`)
 	id := o.newSession(t.TempDir())
 	frames, _ := o.sse(id)
 	untilFrame(t, frames, "server.connected")
 	o.json("POST", "/api/session/"+id+"/prompt", `{"prompt":{"text":"hi"},"delivery":"queue"}`)
 
-	e := untilFrame(t, frames, "session.next.tool.error")
-	eq(t, "sessionID", str(e, "data", "sessionID"), id)
-	eq(t, "error", str(e, "data", "error"), "boom")
-	if str(e, "data", "assistantMessageID") == "" || str(e, "data", "callID") == "" {
-		t.Errorf("tool.error must carry assistantMessageID and callID: %v", e)
+	var e map[string]any
+	for e == nil {
+		m := nextFrame(t, frames)
+		if str(m, "type") == "session.next.tool.success" {
+			t.Fatal("a failing tool call must not report tool.success")
+		}
+		if str(m, "type") == "session.next.tool.failed" {
+			e = m
+		}
 	}
+	eq(t, "sessionID", str(e, "data", "sessionID"), id)
+	eq(t, "error type", str(e, "data", "error", "type"), "unknown")
+	eq(t, "error message", str(e, "data", "error", "message"), "boom")
+	eq(t, "provider.executed", boolean(e, "data", "provider", "executed"), false)
+	if str(e, "data", "assistantMessageID") == "" || str(e, "data", "callID") == "" {
+		t.Errorf("tool.failed must carry assistantMessageID and callID: %v", e)
+	}
+	if dig(e, "durable") == nil {
+		t.Errorf("tool.failed is durable")
+	}
+}
+
+func TestOpenCodePermissionAskBlocksUntilItIsAnswered(t *testing.T) {
+	// The permission.v2.asked / .replied shapes are observed verbatim in the
+	// research; an unanswered ask blocks the turn forever.
+	path, read := argvFile(t)
+	o := startOpenCode(t, `[{"do":"ask","input":"echo permcheck > perm.txt"},
+		{"do":"text","text":"done"},{"do":"end","outcome":"ok"}]`, "FAKE_ARGV_FILE="+path)
+	id := o.newSession(t.TempDir())
+	frames, _ := o.sse(id)
+	untilFrame(t, frames, "server.connected")
+	o.json("POST", "/api/session/"+id+"/prompt", `{"prompt":{"text":"hi"},"delivery":"queue"}`)
+
+	asked := untilFrame(t, frames, "permission.v2.asked")
+	if dig(asked, "durable") != nil {
+		t.Errorf("permission.v2.asked is ephemeral and must carry no durable key")
+	}
+	reqID := str(asked, "data", "id")
+	if !strings.HasPrefix(reqID, "per_") {
+		t.Fatalf("permission id = %q", reqID)
+	}
+	eq(t, "sessionID", str(asked, "data", "sessionID"), id)
+	eq(t, "action", str(asked, "data", "action"), "bash")
+	eq(t, "resources[0]", str(asked, "data", "resources", 0), "echo permcheck > perm.txt")
+	eq(t, "save[0]", str(asked, "data", "save", 0), "echo permcheck > perm.txt")
+	eq(t, "source.type", str(asked, "data", "source", "type"), "tool")
+	if str(asked, "data", "source", "messageID") == "" || str(asked, "data", "source", "callID") == "" {
+		t.Errorf("source must carry messageID and callID: %v", asked)
+	}
+
+	// The turn is blocked until the reply route is hit.
+	select {
+	case m := <-frames:
+		t.Fatalf("the script continued before the ask was answered: %v", m)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	code, _ := o.do("POST", "/api/session/"+id+"/permission/"+reqID+"/reply", `{"reply":"always"}`, true)
+	eq(t, "reply status", code, 204)
+	replied := untilFrame(t, frames, "permission.v2.replied")
+	eq(t, "requestID", str(replied, "data", "requestID"), reqID)
+	eq(t, "reply", str(replied, "data", "reply"), "always")
+	untilFrame(t, frames, "session.next.text.ended")
+
+	var found bool
+	for _, rec := range read() {
+		if len(rec) == 2 && strings.Contains(rec[0], "/permission/"+reqID+"/reply") {
+			eq(t, "recorded reply body", rec[1], `{"reply":"always"}`)
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the permission reply was not recorded: %v", read())
+	}
+
+	// An unknown request id is a 404, not a silent success.
+	code, _ = o.do("POST", "/api/session/"+id+"/permission/per_nope/reply", `{"reply":"always"}`, true)
+	eq(t, "unknown request status", code, 404)
+}
+
+func TestOpenCodeSubagentStepIsAPlainTaskToolCall(t *testing.T) {
+	// OpenCode reports no subagents on its stream, so the fake never invents
+	// one.
+	o := startOpenCode(t, `[{"do":"subagent","input":"find the caller","output":"found"},{"do":"end","outcome":"ok"}]`)
+	id := o.newSession(t.TempDir())
+	frames, _ := o.sse(id)
+	untilFrame(t, frames, "server.connected")
+	o.json("POST", "/api/session/"+id+"/prompt", `{"prompt":{"text":"hi"},"delivery":"queue"}`)
+	called := untilFrame(t, frames, "session.next.tool.called")
+	eq(t, "tool", str(called, "data", "tool"), "task")
+	eq(t, "input", str(called, "data", "input", "command"), "find the caller")
 }
 
 func TestOpenCodeSessionErrorEndsTheTurnWithoutAStepEnded(t *testing.T) {
@@ -1567,10 +1879,16 @@ func TestOpenCodeDoubleEndArrivesAfterActiveHasEmptied(t *testing.T) {
 
 	// active empties before either step.ended lands.
 	o.waitIdle()
-	first := untilFrame(t, frames, "session.next.step.ended")
+	first := nextFrame(t, frames)
+	eq(t, "first late frame", str(first, "type"), "session.next.step.ended")
 	eq(t, "finish", str(first, "data", "finish"), "stop")
-	second := untilFrame(t, frames, "session.next.step.ended")
+	second := nextFrame(t, frames)
+	// No third step is started between the two ends: both name the one step
+	// that was open.
+	eq(t, "second late frame", str(second, "type"), "session.next.step.ended")
 	eq(t, "finish", str(second, "data", "finish"), "stop")
+	eq(t, "same step", str(second, "data", "assistantMessageID"),
+		str(first, "data", "assistantMessageID"))
 }
 
 func TestOpenCodeUnknownSessionIsAnExistingEmptySession(t *testing.T) {
@@ -1671,8 +1989,11 @@ func TestOpenCodeRunsTheScriptOnEveryTurn(t *testing.T) {
 }
 
 func TestOpenCodeSigtermExitsImmediately(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no SIGTERM on windows")
+	}
 	o := startOpenCode(t, `[{"do":"end","outcome":"ok"}]`)
-	if err := o.p.cmd.Process.Signal(os.Interrupt); err != nil {
+	if err := o.p.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
 	code, err := o.p.wait()

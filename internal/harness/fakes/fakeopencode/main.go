@@ -41,6 +41,8 @@ type server struct {
 	msgN    atomic.Int64
 	callN   atomic.Int64
 	stepMsg map[string]string // session -> open step's assistantMessageID
+	permN   atomic.Int64
+	perms   map[string]chan string // pending permission request -> reply
 
 	runMu  sync.Mutex
 	turnMu sync.Mutex
@@ -81,6 +83,7 @@ func main() {
 		active:  map[string]bool{},
 		dirs:    map[string]string{},
 		stepMsg: map[string]string{},
+		perms:   map[string]chan string{},
 		cur:     map[string]*turnState{},
 	}
 
@@ -124,9 +127,7 @@ func (s *server) routes() http.Handler {
 			"service": "session.wait",
 		})
 	})
-	mux.HandleFunc("POST /api/session/{id}/permission/{req}/reply", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(204)
-	})
+	mux.HandleFunc("POST /api/session/{id}/permission/{req}/reply", s.permissionReply)
 	mux.HandleFunc("GET /api/session/{id}/event", s.events)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, map[string]any{"_tag": "NotFoundError", "message": r.URL.Path})
@@ -207,6 +208,9 @@ func (s *server) prompt(w http.ResponseWriter, r *http.Request) {
 	raw, _ := io.ReadAll(r.Body)
 	_ = json.Unmarshal(raw, &body)
 
+	if body.Delivery == "" {
+		body.Delivery = "steer" // the server's own default
+	}
 	msgID := fmt.Sprintf("msg_fake%04d", s.msgN.Add(1))
 
 	// F-9: admittedSeq is exactly the prompt.admitted event's durable.seq, so
@@ -246,6 +250,35 @@ func (s *server) interrupt(w http.ResponseWriter, r *http.Request) {
 	s.active[id] = false
 	delete(s.stepMsg, id)
 	s.mu.Unlock()
+}
+
+// permissionReply answers a permission.v2.asked and unblocks the script.
+func (s *server) permissionReply(w http.ResponseWriter, r *http.Request) {
+	reqID := r.PathValue("req")
+	raw, _ := io.ReadAll(r.Body)
+	script.Record([]string{"POST /api/session/" + r.PathValue("id") +
+		"/permission/" + reqID + "/reply", string(raw)})
+
+	var body struct {
+		Reply string `json:"reply"`
+	}
+	_ = json.Unmarshal(raw, &body)
+	if body.Reply == "" {
+		body.Reply = "once"
+	}
+
+	s.mu.Lock()
+	ch, ok := s.perms[reqID]
+	delete(s.perms, reqID)
+	s.mu.Unlock()
+	if !ok {
+		writeJSON(w, 404, map[string]any{
+			"_tag": "PermissionNotFoundError", "message": reqID,
+		})
+		return
+	}
+	ch <- body.Reply
+	w.WriteHeader(204)
 }
 
 func (s *server) events(w http.ResponseWriter, r *http.Request) {
@@ -352,17 +385,17 @@ func (s *server) runTurn(id, msgID string) {
 			// step is a plain tool call.
 			s.tool(id, "task", st.Input, st.Output, 0)
 		case script.DoAsk:
-			// Approvals are an OpenCode permission event; with
-			// OPENCODE_PERMISSION="allow" they never fire, so nothing is
-			// emitted here.
+			if !s.ask(id, st.Input, done) {
+				return
+			}
 		case script.DoSleep:
 			if !sleep(done, st.MS) {
 				return
 			}
 		case script.DoDie:
-			// FK-2: flush before exiting. For an HTTP fake that means giving
-			// the SSE writers a moment to put the pending frames on the wire.
-			time.Sleep(100 * time.Millisecond)
+			// FK-2: flush before exiting. For an HTTP fake that means waiting
+			// until every SSE subscriber has drained what it was handed.
+			s.drain()
 			os.Stdout.Sync()
 			os.Exit(st.Code)
 		case script.DoHang:
@@ -392,18 +425,19 @@ func (s *server) end(id string, st script.Step) {
 		s.mu.Unlock()
 	default:
 		if st.Twice {
-			// FK-22: active empties first, then step.ended arrives twice, so
-			// closeTurn's sync.Once has two late triggers to swallow.
+			// FK-22: active empties first, then the same step's step.ended
+			// arrives twice, so closeTurn's sync.Once has two late triggers
+			// to swallow. Both frames name the one open step — no third step
+			// is started between them.
+			msg := s.step(id)
 			s.mu.Lock()
 			s.active[id] = false
-			s.mu.Unlock()
-			time.Sleep(200 * time.Millisecond)
-			s.stepEnded(id, "stop")
-			time.Sleep(200 * time.Millisecond)
-			s.stepEnded(id, "stop")
-			s.mu.Lock()
 			delete(s.stepMsg, id)
 			s.mu.Unlock()
+			time.Sleep(200 * time.Millisecond)
+			s.emitStepEnded(id, msg, "stop")
+			time.Sleep(200 * time.Millisecond)
+			s.emitStepEnded(id, msg, "stop")
 			return
 		}
 		s.stepEnded(id, "stop")
@@ -411,6 +445,41 @@ func (s *server) end(id string, st script.Step) {
 		s.active[id] = false
 		delete(s.stepMsg, id)
 		s.mu.Unlock()
+	}
+}
+
+// ask emits permission.v2.asked and blocks until the reply route is hit or the
+// turn is cancelled, then emits permission.v2.replied. With
+// OPENCODE_PERMISSION="allow" this never fires against the real server, but an
+// ask left unanswered blocks a turn forever, so the adapter's auto-reply path
+// needs a fixture.
+func (s *server) ask(id, resource string, done <-chan struct{}) bool {
+	msg := s.step(id)
+	call := fmt.Sprintf("toolu_fake%04d", s.callN.Add(1))
+	reqID := fmt.Sprintf("per_fake%04d", s.permN.Add(1))
+
+	reply := make(chan string, 1)
+	s.mu.Lock()
+	s.perms[reqID] = reply
+	s.mu.Unlock()
+
+	// Ephemeral: the observed permission events carry no durable key.
+	s.emit(id, "permission.v2.asked", map[string]any{
+		"id": reqID, "sessionID": id, "action": "bash",
+		"resources": []any{resource}, "save": []any{resource},
+		"source": map[string]any{
+			"type": "tool", "messageID": msg, "callID": call,
+		},
+	}, false)
+
+	select {
+	case r := <-reply:
+		s.emit(id, "permission.v2.replied", map[string]any{
+			"sessionID": id, "requestID": reqID, "reply": r,
+		}, false)
+		return true
+	case <-done:
+		return false
 	}
 }
 
@@ -437,6 +506,13 @@ func (s *server) step(id string) string {
 
 func (s *server) stepEnded(id, finish string) {
 	msg := s.step(id)
+	s.mu.Lock()
+	delete(s.stepMsg, id)
+	s.mu.Unlock()
+	s.emitStepEnded(id, msg, finish)
+}
+
+func (s *server) emitStepEnded(id, msg, finish string) {
 	s.emit(id, "session.next.step.ended", map[string]any{
 		"timestamp": nowMS(), "sessionID": id, "assistantMessageID": msg,
 		"finish": finish, "cost": 0.002,
@@ -445,9 +521,6 @@ func (s *server) stepEnded(id, finish string) {
 			"cache": map[string]any{"read": 0, "write": 0},
 		},
 	}, true)
-	s.mu.Lock()
-	delete(s.stepMsg, id)
-	s.mu.Unlock()
 }
 
 func (s *server) text(id, text string) {
@@ -529,10 +602,14 @@ func (s *server) tool(id, name, input, output string, exit int) {
 			"provider":    map[string]any{"executed": false},
 		}, true)
 	} else {
-		// FK-20: design-chosen error shape, verified by WP4's first live run.
-		s.emit(id, "session.next.tool.error", map[string]any{
+		// FK-20's failure event, corrected against EventSessionNextToolFailed
+		// in oc-openapi.json: the name is tool.failed and error is a
+		// SessionErrorUnknown object, not a bare string.
+		s.emit(id, "session.next.tool.failed", map[string]any{
 			"timestamp": nowMS(), "sessionID": id, "assistantMessageID": msg,
-			"callID": call, "error": output,
+			"callID":   call,
+			"error":    map[string]any{"type": "unknown", "message": output},
+			"provider": map[string]any{"executed": false},
 		}, true)
 	}
 	s.stepEnded(id, "tool-calls")
@@ -558,7 +635,7 @@ func (s *server) emitLocked(session, typ string, data any, durable bool) int64 {
 		s.seq[session]++
 		seq = s.seq[session]
 		ev["durable"] = map[string]any{
-			"aggregateID": session, "seq": seq, "version": 1,
+			"aggregateID": session, "seq": seq, "version": durableVersion(typ),
 		}
 	}
 	raw, err := json.Marshal(ev)
@@ -575,6 +652,40 @@ func (s *server) emitLocked(session, typ string, data any, durable bool) int64 {
 		}
 	}
 	return seq
+}
+
+// durableVersion is the durable schema version an event carries. The research
+// observed 2 on step.ended and 1 everywhere else; no adapter rule reads it, so
+// it is opaque — the fake emits what the real server does so an adapter that
+// hard-codes 1 fails here rather than in production.
+func durableVersion(typ string) int {
+	if typ == "session.next.step.ended" {
+		return 2
+	}
+	return 1
+}
+
+// drain waits until no subscriber has an undelivered frame queued, so a die
+// step does not lose what the script already wrote.
+func (s *server) drain() {
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		pending := 0
+		s.mu.Lock()
+		for _, chans := range s.subs {
+			for _, ch := range chans {
+				pending += len(ch)
+			}
+		}
+		s.mu.Unlock()
+		if pending == 0 {
+			// One scheduling slice for the writer that has just taken the
+			// last frame off its channel.
+			time.Sleep(20 * time.Millisecond)
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func (s *server) eventID() string {
@@ -600,7 +711,10 @@ func models() []any {
 			"id": "fake-plain", "providerID": "opencode", "family": "fake",
 			"name":         "Fake Plain",
 			"capabilities": map[string]any{"tools": true},
-			"variants":     map[string]any{},
+			// F-13: GET /api/model reports "no variants" as an empty array,
+			// not as an empty map — a decoder that only accepts the map shape
+			// fails on every real install.
+			"variants": []any{},
 		},
 	}
 }

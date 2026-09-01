@@ -39,8 +39,16 @@
 //	{"do":"tool","name":…,"input":…,
 //	 "output":…,"exit":N}                        one tool call: started -> output -> finished
 //	{"do":"subagent","name":…,"input":…,
-//	 "output":…}                                 one subagent call (claude/codex only)
-//	{"do":"ask"}                                 provoke the approval path (codex only, FK-14)
+//	 "output":…}                                 one subagent call: claude's Task tool, codex's
+//	                                             subAgentActivity item. OpenCode reports no
+//	                                             subagents on its stream, so fakeopencode emits a
+//	                                             plain `task` tool call instead.
+//	{"do":"ask"}                                 provoke the approval path: codex's
+//	                                             item/commandExecution/requestApproval ServerRequest
+//	                                             (FK-14) and opencode's permission.v2.asked, both of
+//	                                             which block the script until the client answers.
+//	                                             fakeclaude emits nothing — there is no approval
+//	                                             path under --permission-mode bypassPermissions.
 //	{"do":"sleep","ms":N}                        wait, emitting nothing
 //	{"do":"end","outcome":"ok"|"error"|"retry",
 //	 "error":…,"twice":…,"subagents":N}          end the turn
@@ -54,9 +62,9 @@
 // "outcome":"retry" is codex-only: it emits an error notification with
 // willRetry:true followed by a normal turn/completed, so an adapter's
 // "remember, do not end" rule is testable. "twice":true makes codex emit
-// turn/completed twice and opencode emit step.ended{finish:"stop"} after the
-// session has already left /api/session/active, so closeTurn's sync.Once has
-// something to swallow. "subagents":N overrides the subagent count claude
+// turn/completed twice and opencode emit step.ended{finish:"stop"} twice, 200
+// ms apart, after the session has already left /api/session/active — two late
+// triggers for closeTurn's sync.Once to swallow. "subagents":N overrides the subagent count claude
 // reports in result.subagent_stats.spawned (it defaults to the number of
 // subagent steps the turn ran).
 //
@@ -71,6 +79,7 @@
 //	              ["turn/start","model=gpt-5.4","effort=medium"]     (once per turn, F-5)
 //	fakeopencode  ["opencode","serve",…,"OPENCODE_PERMISSION=\"allow\""]  (F-10)
 //	              ["POST /api/session/ses_x/model","{…the body verbatim…}"] (FK-23)
+//	              ["POST /api/session/ses_x/permission/per_y/reply","{…}"]  (the ask reply)
 package fakes
 
 import (

@@ -112,8 +112,12 @@ func main() {
 				env["uuid"] = f.uuid()
 				f.emit(env)
 			}
+			// The turn is registered here, on the reader, so an interrupt
+			// that arrives before the turn goroutine is scheduled still
+			// finds it.
+			t := f.openTurn()
 			wg.Add(1)
-			go func() { defer wg.Done(); f.runTurn() }()
+			go func() { defer wg.Done(); f.runTurn(t) }()
 		}
 	}
 	wg.Wait()
@@ -123,16 +127,21 @@ func main() {
 
 // ---------------------------------------------------------------- the turn
 
-func (f *fake) runTurn() {
-	f.runMu.Lock()
-	defer f.runMu.Unlock()
-
+// openTurn registers a turn as open before its goroutine runs.
+func (f *fake) openTurn() *turn {
 	ctx, cancel := context.WithCancel(context.Background())
 	t := &turn{ctx: ctx, cancel: cancel}
 	f.turnMu.Lock()
 	f.cur = t
 	f.turnMu.Unlock()
+	return t
+}
 
+func (f *fake) runTurn(t *turn) {
+	f.runMu.Lock()
+	defer f.runMu.Unlock()
+
+	ctx := t.ctx
 	for _, s := range f.steps {
 		if ctx.Err() != nil {
 			return
@@ -151,7 +160,8 @@ func (f *fake) runTurn() {
 				"description":   s.Input,
 			}, s.Output, 0)
 		case script.DoAsk:
-			// Claude has no approval path under bypassPermissions; ignored.
+			// Claude has no approval path under --permission-mode
+			// bypassPermissions, so an ask step emits nothing at all.
 		case script.DoSleep:
 			script.Sleep(ctx, s.MS)
 		case script.DoDie:
@@ -169,6 +179,7 @@ func (f *fake) runTurn() {
 }
 
 func (f *fake) end(t *turn, s script.Step) {
+	f.closeMsg(t, "end_turn")
 	spawned := t.subagents
 	if s.Subagents != nil {
 		spawned = *s.Subagents
@@ -207,7 +218,18 @@ func (f *fake) finish(t *turn, r resultLine) {
 			f.cur = nil
 		}
 		f.turnMu.Unlock()
-		f.emit(r)
+
+		b, err := json.Marshal(r)
+		if err != nil {
+			return
+		}
+		// The write lock is the arbiter: the turn is cancelled while it is
+		// held, so a block already on its way to emitTurn is dropped instead
+		// of landing after the result line.
+		f.wmu.Lock()
+		defer f.wmu.Unlock()
+		t.cancel()
+		f.write(b)
 	})
 }
 
@@ -230,7 +252,6 @@ func (f *fake) control(env map[string]any) {
 		// Idle: nothing further is emitted.
 		return
 	}
-	t.cancel()
 	r := resultLine{
 		Type:           "result",
 		Subtype:        "error_during_execution",
@@ -257,7 +278,7 @@ func (f *fake) openMsg(t *turn) {
 	}
 	t.curMsg = fmt.Sprintf("msg_%d", f.msgN.Add(1))
 	t.curIdx = 0
-	f.emit(streamEvent{
+	f.emitTurn(t, streamEvent{
 		Type: "stream_event",
 		Event: map[string]any{
 			"type": "message_start",
@@ -272,18 +293,40 @@ func (f *fake) openMsg(t *turn) {
 	})
 }
 
+// closeMsg ends the open API message the way the real CLI does, with a
+// message_delta carrying the stop reason and a message_stop.
+func (f *fake) closeMsg(t *turn, stopReason string) {
+	if t.curMsg == "" {
+		return
+	}
+	f.emitTurn(t, streamEvent{
+		Type: "stream_event",
+		Event: map[string]any{
+			"type":  "message_delta",
+			"delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nil},
+			"usage": map[string]any{"output_tokens": 60},
+		},
+		SessionID: f.session,
+		UUID:      f.uuid(),
+	})
+	f.emitTurn(t, streamEvent{
+		Type:      "stream_event",
+		Event:     map[string]any{"type": "message_stop"},
+		SessionID: f.session,
+		UUID:      f.uuid(),
+	})
+	t.curMsg = ""
+}
+
 func (f *fake) text(t *turn, text string) {
 	f.openMsg(t)
 	i := t.curIdx
 	t.curIdx++
-	f.blockStart(i, map[string]any{"type": "text", "text": ""})
+	f.blockStart(t, i, map[string]any{"type": "text", "text": ""})
 	for _, c := range script.Chunks(text, 3) {
-		if t.ctx.Err() != nil {
-			return
-		}
-		f.blockDelta(i, map[string]any{"type": "text_delta", "text": c})
+		f.blockDelta(t, i, map[string]any{"type": "text_delta", "text": c})
 	}
-	f.blockStop(i)
+	f.blockStop(t, i)
 	f.assistant(t, map[string]any{"type": "text", "text": text})
 	t.lastText = text
 }
@@ -292,14 +335,11 @@ func (f *fake) reason(t *turn, text string) {
 	f.openMsg(t)
 	i := t.curIdx
 	t.curIdx++
-	f.blockStart(i, map[string]any{"type": "thinking", "thinking": ""})
+	f.blockStart(t, i, map[string]any{"type": "thinking", "thinking": ""})
 	for _, c := range script.Chunks(text, 3) {
-		if t.ctx.Err() != nil {
-			return
-		}
-		f.blockDelta(i, map[string]any{"type": "thinking_delta", "thinking": c})
+		f.blockDelta(t, i, map[string]any{"type": "thinking_delta", "thinking": c})
 	}
-	f.blockStop(i)
+	f.blockStop(t, i)
 	f.assistant(t, map[string]any{"type": "thinking", "thinking": text, "signature": "sig_fake"})
 }
 
@@ -310,15 +350,26 @@ func (f *fake) tool(t *turn, name string, input map[string]any, output string, e
 		name = "Bash"
 	}
 	f.openMsg(t)
+	i := t.curIdx
 	t.curIdx++
 	id := fmt.Sprintf("toolu_%d", f.toolN.Add(1))
+	args, _ := json.Marshal(input)
+	f.blockStart(t, i, map[string]any{
+		"type": "tool_use", "id": id, "name": name, "input": map[string]any{},
+	})
+	f.blockDelta(t, i, map[string]any{
+		"type": "input_json_delta", "partial_json": string(args),
+	})
+	f.blockStop(t, i)
 	f.assistant(t, map[string]any{
 		"type":  "tool_use",
 		"id":    id,
 		"name":  name,
 		"input": input,
 	})
-	f.emit(userLine{
+	// The message ends with the tool call; the tool result opens the next one.
+	f.closeMsg(t, "tool_use")
+	f.emitTurn(t, userLine{
 		Type: "user",
 		Message: map[string]any{
 			"role": "user",
@@ -339,13 +390,12 @@ func (f *fake) tool(t *turn, name string, input map[string]any, output string, e
 			"noOutputExpected": false,
 		},
 	})
-	t.curMsg = ""
 }
 
 // assistant emits one assistant line holding exactly one completed content
 // block. It deliberately carries no index field (FK-5).
 func (f *fake) assistant(t *turn, block map[string]any) {
-	f.emit(assistantLine{
+	f.emitTurn(t, assistantLine{
 		Type: "assistant",
 		Message: map[string]any{
 			"model":       f.model,
@@ -365,8 +415,8 @@ func (f *fake) assistant(t *turn, block map[string]any) {
 	})
 }
 
-func (f *fake) blockStart(i int, block map[string]any) {
-	f.emit(streamEvent{
+func (f *fake) blockStart(t *turn, i int, block map[string]any) {
+	f.emitTurn(t, streamEvent{
 		Type:      "stream_event",
 		Event:     map[string]any{"type": "content_block_start", "index": i, "content_block": block},
 		SessionID: f.session,
@@ -374,8 +424,8 @@ func (f *fake) blockStart(i int, block map[string]any) {
 	})
 }
 
-func (f *fake) blockDelta(i int, delta map[string]any) {
-	f.emit(streamEvent{
+func (f *fake) blockDelta(t *turn, i int, delta map[string]any) {
+	f.emitTurn(t, streamEvent{
 		Type:      "stream_event",
 		Event:     map[string]any{"type": "content_block_delta", "index": i, "delta": delta},
 		SessionID: f.session,
@@ -383,8 +433,8 @@ func (f *fake) blockDelta(i int, delta map[string]any) {
 	})
 }
 
-func (f *fake) blockStop(i int) {
-	f.emit(streamEvent{
+func (f *fake) blockStop(t *turn, i int) {
+	f.emitTurn(t, streamEvent{
 		Type:      "stream_event",
 		Event:     map[string]any{"type": "content_block_stop", "index": i},
 		SessionID: f.session,
@@ -472,6 +522,27 @@ func (f *fake) emit(v any) {
 	}
 	f.wmu.Lock()
 	defer f.wmu.Unlock()
+	f.write(b)
+}
+
+// emitTurn writes a frame that belongs to a turn. It checks the turn under the
+// write lock, so nothing can be written once finish has decided on the
+// terminal result line.
+func (f *fake) emitTurn(t *turn, v any) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	f.wmu.Lock()
+	defer f.wmu.Unlock()
+	if t.ctx.Err() != nil {
+		return
+	}
+	f.write(b)
+}
+
+// write appends one line. The write lock must be held.
+func (f *fake) write(b []byte) {
 	f.out.Write(b)
 	f.out.WriteByte('\n')
 	f.out.Flush()

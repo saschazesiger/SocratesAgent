@@ -36,6 +36,7 @@ type fake struct {
 
 	mu       sync.Mutex
 	threadID string
+	model    string
 	pending  map[string]chan struct{} // our ServerRequest id -> answered
 
 	runMu sync.Mutex
@@ -46,6 +47,7 @@ type fake struct {
 
 type turnState struct {
 	id     string
+	input  string // the user's text, echoed back as the userMessage item
 	once   sync.Once
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -176,8 +178,19 @@ func (f *fake) request(wg *sync.WaitGroup, fr frame) {
 			ThreadID string `json:"threadId"`
 			Model    string `json:"model"`
 			Effort   string `json:"effort"`
+			Input    []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"input"`
 		}
 		_ = json.Unmarshal(fr.Params, &p)
+		input := ""
+		if len(p.Input) > 0 {
+			input = p.Input[0].Text
+		}
+		f.mu.Lock()
+		f.model = p.Model
+		f.mu.Unlock()
 		// F-5: model and effort must arrive on every turn.
 		script.Record([]string{"turn/start", "model=" + p.Model, "effort=" + p.Effort})
 
@@ -190,8 +203,11 @@ func (f *fake) request(wg *sync.WaitGroup, fr frame) {
 			"threadId": f.thread(),
 			"turn":     map[string]any{"id": turnID, "status": "inProgress", "items": []any{}},
 		})
+		// The turn is registered here, on the reader, so a turn/interrupt
+		// that arrives before the turn goroutine is scheduled still finds it.
+		t := f.openTurn(turnID, input)
 		wg.Add(1)
-		go func() { defer wg.Done(); f.runTurn(turnID) }()
+		go func() { defer wg.Done(); f.runTurn(t) }()
 
 	case "turn/interrupt":
 		f.reply(fr.ID, map[string]any{})
@@ -201,13 +217,12 @@ func (f *fake) request(wg *sync.WaitGroup, fr frame) {
 		if t == nil {
 			return
 		}
-		t.cancel()
-		f.finish(t, func() {
-			f.notify("thread/status/changed", map[string]any{
+		f.finish(t,
+			notification("thread/status/changed", map[string]any{
 				"threadId": f.thread(), "status": map[string]any{"type": "idle"},
-			})
-			f.turnCompleted(t.id, "interrupted")
-		})
+			}),
+			notification("turn/completed", turnFrame(f.thread(), t.id, "interrupted")),
+		)
 
 	default:
 		f.replyError(fr.ID, -32601, "method not found: "+fr.Method)
@@ -216,18 +231,26 @@ func (f *fake) request(wg *sync.WaitGroup, fr frame) {
 
 // ---------------------------------------------------------------- the turn
 
-func (f *fake) runTurn(turnID string) {
-	f.runMu.Lock()
-	defer f.runMu.Unlock()
-
+// openTurn registers a turn as open before its goroutine runs.
+func (f *fake) openTurn(turnID, input string) *turnState {
 	ctx, cancel := context.WithCancel(context.Background())
-	t := &turnState{id: turnID, ctx: ctx, cancel: cancel}
+	t := &turnState{id: turnID, input: input, ctx: ctx, cancel: cancel}
 	f.turnMu.Lock()
 	f.cur = t
 	f.turnMu.Unlock()
+	return t
+}
+
+func (f *fake) runTurn(t *turnState) {
+	f.runMu.Lock()
+	defer f.runMu.Unlock()
+
+	// Every real turn starts by echoing the user's own message back as a
+	// userMessage item (research codex.md 3).
+	f.userMessage(t)
 
 	for i, s := range f.steps {
-		if ctx.Err() != nil {
+		if t.ctx.Err() != nil {
 			return
 		}
 		switch s.Do {
@@ -242,11 +265,11 @@ func (f *fake) runTurn(turnID string) {
 		case script.DoTool:
 			f.command(t, s.Input, s.Output, s.Exit)
 		case script.DoSubagent:
-			f.subagent(t, s.Input, s.Output)
+			f.subagent(t, s.Input)
 		case script.DoAsk:
 			f.ask(t, s.Input)
 		case script.DoSleep:
-			script.Sleep(ctx, s.MS)
+			script.Sleep(t.ctx, s.MS)
 		case script.DoDie:
 			f.flush()
 			os.Exit(s.Code)
@@ -264,39 +287,98 @@ func (f *fake) end(t *turnState, s script.Step) {
 	f.tokenUsage(t)
 	switch s.Outcome {
 	case script.OutcomeError:
-		// warning → systemError → error, and no turn/completed ever.
-		f.notify("warning", map[string]any{
-			"threadId": f.thread(),
-			"message":  "Model metadata not found. Defaulting to fallback metadata; this can degrade performance and cause issues.",
-		})
-		f.notify("thread/status/changed", map[string]any{
-			"threadId": f.thread(), "status": map[string]any{"type": "systemError"},
-		})
-		f.errorNotification(s.Error, false)
+		// warning -> systemError -> error, and no turn/completed ever. The
+		// turn is closed all the same, so a later turn/interrupt cannot
+		// resurrect it into a turn/completed.
+		f.finish(t,
+			notification("warning", map[string]any{
+				"threadId": f.thread(),
+				"message": fmt.Sprintf("Model metadata for `%s` not found. Defaulting to "+
+					"fallback metadata; this can degrade performance and cause issues.", f.currentModel()),
+			}),
+			notification("thread/status/changed", map[string]any{
+				"threadId": f.thread(), "status": map[string]any{"type": "systemError"},
+			}),
+			notification("error", errorParams(f.thread(), s.Error, false)),
+		)
 	case script.OutcomeRetry:
 		// willRetry:true must be remembered but must not end the turn.
-		f.errorNotification(s.Error, true)
-		f.finish(t, func() { f.turnCompleted(t.id, "completed") })
+		f.emitTurn(t, notification("error", errorParams(f.thread(), s.Error, true)))
+		f.finish(t, notification("turn/completed", turnFrame(f.thread(), t.id, "completed")))
 	default:
+		done := notification("turn/completed", turnFrame(f.thread(), t.id, "completed"))
 		if s.Twice {
 			// C-4: two turn/completed frames for one turn.
-			f.turnCompleted(t.id, "completed")
-			f.turnCompleted(t.id, "completed")
-			f.clear(t)
+			f.finish(t, done, done)
 		} else {
-			f.finish(t, func() { f.turnCompleted(t.id, "completed") })
+			f.finish(t, done)
 		}
 	}
 	f.rateLimits()
 }
 
-func (f *fake) finish(t *turnState, emit func()) {
+// finish writes the turn's terminal frames. Every trigger goes through it and
+// only the first one gets through; the turn is cancelled while the write lock
+// is held, so no per-turn frame can land after them.
+func (f *fake) finish(t *turnState, frames ...map[string]any) {
 	t.once.Do(func() {
 		// Clear before emitting, so an interrupt that races the turn end
 		// finds an idle process rather than a half-closed turn.
 		f.clear(t)
-		emit()
+		var lines [][]byte
+		for _, fr := range frames {
+			b, err := json.Marshal(fr)
+			if err != nil {
+				return
+			}
+			lines = append(lines, b)
+		}
+		f.wmu.Lock()
+		defer f.wmu.Unlock()
+		t.cancel()
+		for _, b := range lines {
+			f.write(b)
+		}
 	})
+}
+
+func notification(method string, params any) map[string]any {
+	return map[string]any{"jsonrpc": "2.0", "method": method, "params": params}
+}
+
+func turnFrame(thread, turnID, status string) map[string]any {
+	return map[string]any{
+		"threadId": thread,
+		"turn": map[string]any{
+			"id":        turnID,
+			"items":     []any{},
+			"itemsView": "summary",
+			"status":    status,
+			"error":     nil,
+		},
+	}
+}
+
+func errorParams(thread, msg string, willRetry bool) map[string]any {
+	return map[string]any{
+		"threadId":  thread,
+		"willRetry": willRetry,
+		"error": map[string]any{
+			"message":           msg,
+			"codexErrorInfo":    "other",
+			"additionalDetails": nil,
+			"misalignment":      nil,
+		},
+	}
+}
+
+func (f *fake) currentModel() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.model == "" {
+		return "gpt-5.4-mini"
+	}
+	return f.model
 }
 
 func (f *fake) clear(t *turnState) {
@@ -307,33 +389,19 @@ func (f *fake) clear(t *turnState) {
 	f.turnMu.Unlock()
 }
 
-func (f *fake) turnCompleted(turnID, status string) {
-	f.notify("turn/completed", map[string]any{
-		"threadId": f.thread(),
-		"turn": map[string]any{
-			"id":        turnID,
-			"items":     []any{},
-			"itemsView": "summary",
-			"status":    status,
-			"error":     nil,
-		},
-	})
-}
-
-func (f *fake) errorNotification(msg string, willRetry bool) {
-	f.notify("error", map[string]any{
-		"threadId":  f.thread(),
-		"willRetry": willRetry,
-		"error": map[string]any{
-			"message":           msg,
-			"codexErrorInfo":    "other",
-			"additionalDetails": nil,
-			"misalignment":      nil,
-		},
-	})
-}
-
 // ------------------------------------------------------------------- items
+
+// userMessage echoes the turn's input back, which is what a real turn opens
+// with. 2.5.2's catch-all row would otherwise turn it into a tool card.
+func (f *fake) userMessage(t *turnState) {
+	id := f.item("usr")
+	item := map[string]any{
+		"type": "userMessage", "id": id,
+		"content": []any{map[string]any{"type": "text", "text": t.input}},
+	}
+	f.itemStarted(t, item)
+	f.itemCompleted(t, item)
+}
 
 func (f *fake) agentMessage(t *turnState, text, phase string) {
 	id := f.item("msg")
@@ -341,12 +409,9 @@ func (f *fake) agentMessage(t *turnState, text, phase string) {
 		"type": "agentMessage", "id": id, "text": "", "phase": phase,
 	})
 	for _, c := range script.Chunks(text, 3) {
-		if t.ctx.Err() != nil {
-			return
-		}
-		f.notify("item/agentMessage/delta", map[string]any{
+		f.emitTurn(t, notification("item/agentMessage/delta", map[string]any{
 			"threadId": f.thread(), "turnId": t.id, "itemId": id, "delta": c,
-		})
+		}))
 	}
 	f.itemCompleted(t, map[string]any{
 		"type": "agentMessage", "id": id, "text": text, "phase": phase,
@@ -360,7 +425,7 @@ func (f *fake) reasoning(t *turnState, text string) {
 	})
 	f.itemCompleted(t, map[string]any{
 		"type": "reasoning", "id": id,
-		"summary": []any{map[string]any{"type": "summaryText", "text": text}},
+		"summary": []any{map[string]any{"type": "summary_text", "text": text}},
 		"content": []any{},
 	})
 }
@@ -383,12 +448,9 @@ func (f *fake) command(t *turnState, cmd, output string, exit int) {
 		"durationMs":       nil,
 	})
 	for _, line := range splitLines(output) {
-		if t.ctx.Err() != nil {
-			return
-		}
-		f.notify("item/commandExecution/outputDelta", map[string]any{
+		f.emitTurn(t, notification("item/commandExecution/outputDelta", map[string]any{
 			"threadId": f.thread(), "turnId": t.id, "itemId": id, "delta": line,
-		})
+		}))
 	}
 	f.itemCompleted(t, map[string]any{
 		"type":             "commandExecution",
@@ -403,15 +465,19 @@ func (f *fake) command(t *turnState, cmd, output string, exit int) {
 	})
 }
 
-func (f *fake) subagent(t *turnState, input, output string) {
+// subagent emits a SubAgentActivityThreadItem. The schema's required fields
+// are agentPath, agentThreadId, id, kind and type, and it carries nothing
+// else — no source and no text.
+func (f *fake) subagent(t *turnState, input string) {
 	id := f.item("sub")
+	thread := fmt.Sprintf("01a05d4f-0000-7101-b75a-%012d", f.itemN.Add(1))
 	f.itemStarted(t, map[string]any{
 		"type": "subAgentActivity", "id": id, "kind": "started",
-		"source": map[string]any{"other": input},
+		"agentPath": input, "agentThreadId": thread,
 	})
 	f.itemCompleted(t, map[string]any{
 		"type": "subAgentActivity", "id": id, "kind": "completed",
-		"source": map[string]any{"other": input}, "text": output,
+		"agentPath": input, "agentThreadId": thread,
 	})
 }
 
@@ -426,7 +492,7 @@ func (f *fake) ask(t *turnState, cmd string) {
 	f.mu.Unlock()
 
 	cwd, _ := os.Getwd()
-	f.emit(map[string]any{
+	f.emitTurn(t, map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,
 		"method":  "item/commandExecution/requestApproval",
@@ -457,15 +523,15 @@ func (f *fake) answer(id string) {
 }
 
 func (f *fake) itemStarted(t *turnState, item map[string]any) {
-	f.notify("item/started", map[string]any{
+	f.emitTurn(t, notification("item/started", map[string]any{
 		"item": item, "threadId": f.thread(), "turnId": t.id,
-	})
+	}))
 }
 
 func (f *fake) itemCompleted(t *turnState, item map[string]any) {
-	f.notify("item/completed", map[string]any{
+	f.emitTurn(t, notification("item/completed", map[string]any{
 		"item": item, "threadId": f.thread(), "turnId": t.id,
-	})
+	}))
 }
 
 func (f *fake) tokenUsage(t *turnState) {
@@ -473,12 +539,12 @@ func (f *fake) tokenUsage(t *turnState) {
 		"totalTokens": 11341, "inputTokens": 11143, "cachedInputTokens": 4352,
 		"cacheWriteInputTokens": 0, "outputTokens": 198, "reasoningOutputTokens": 21,
 	}
-	f.notify("thread/tokenUsage/updated", map[string]any{
+	f.emitTurn(t, notification("thread/tokenUsage/updated", map[string]any{
 		"threadId": f.thread(), "turnId": t.id,
 		"tokenUsage": map[string]any{
 			"total": usage, "last": usage, "modelContextWindow": 258400,
 		},
-	})
+	}))
 }
 
 func (f *fake) rateLimits() {
@@ -577,6 +643,27 @@ func (f *fake) emit(v any) {
 	}
 	f.wmu.Lock()
 	defer f.wmu.Unlock()
+	f.write(b)
+}
+
+// emitTurn writes a frame that belongs to a turn. The turn is checked under
+// the write lock, so nothing can be written once finish has decided on the
+// terminal frames.
+func (f *fake) emitTurn(t *turnState, v any) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	f.wmu.Lock()
+	defer f.wmu.Unlock()
+	if t.ctx.Err() != nil {
+		return
+	}
+	f.write(b)
+}
+
+// write appends one line. The write lock must be held.
+func (f *fake) write(b []byte) {
 	f.out.Write(b)
 	f.out.WriteByte('\n')
 	f.out.Flush()
