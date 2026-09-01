@@ -157,6 +157,10 @@ func main() {
 		}
 		switch env["type"] {
 		case "control_request":
+			// init describes the process, so it is written before anything
+			// else on stdout even when the first thing to arrive is an
+			// interrupt rather than a user line.
+			f.sayInit()
 			f.control(env)
 		case "user":
 			// In deferred mode init is the first thing the turn produces,
@@ -201,8 +205,14 @@ func ghostArmed(id string) bool {
 	if _, err := os.Stat(marker); err == nil {
 		return false
 	}
-	_ = os.MkdirAll(dir, 0o700)
-	_ = os.WriteFile(marker, []byte(id+"\n"), 0o600)
+	// A marker that cannot be written means the flag is never consumed and
+	// every relaunch dies again, so say so rather than looking like a CLI
+	// that simply refuses to resume.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		fmt.Fprintln(os.Stderr, "fakeclaude: cannot write the ghost marker:", err)
+	} else if err := os.WriteFile(marker, []byte(id+"\n"), 0o600); err != nil {
+		fmt.Fprintln(os.Stderr, "fakeclaude: cannot write the ghost marker:", err)
+	}
 	return true
 }
 

@@ -899,6 +899,51 @@ func TestClaudeInitOpensTheFirstTurnAndOnlyTheFirst(t *testing.T) {
 	p.until(func(m map[string]any) bool { return str(m, "type") == "result" })
 }
 
+func TestClaudeInitPrecedesAnInterruptThatArrivesFirst(t *testing.T) {
+	// Even in deferred mode init is the first line on stdout: a
+	// control_response never arrives without the process having introduced
+	// itself.
+	p := startClaude(t, `[{"do":"end","outcome":"ok"}]`, "--session-id", "sess-3")
+	p.send(`{"type":"control_request","request_id":"x0","request":{"subtype":"interrupt"}}`)
+	m := p.next()
+	eq(t, "subtype", str(m, "subtype"), "init")
+	eq(t, "session_id", str(m, "session_id"), "sess-3")
+	resp := p.next()
+	eq(t, "type", str(resp, "type"), "control_response")
+	eq(t, "request_id", str(resp, "response", "request_id"), "x0")
+
+	// Idle, so nothing follows, and the turn that comes later does not repeat
+	// init.
+	p.send(userLine("hi"))
+	eq(t, "the turn", str(p.next(), "type"), "result")
+}
+
+func TestClaudeGhostMarkerFailureIsLoud(t *testing.T) {
+	// An unwritable $FAKE_STATE_DIR means the flag is never consumed and every
+	// relaunch dies again; that has to be visible rather than looking like a
+	// CLI that simply refuses to resume.
+	dir := t.TempDir()
+	notADir := filepath.Join(dir, "occupied")
+	if err := os.WriteFile(notADir, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"FAKE_GHOST_RESUME=1", "FAKE_STATE_DIR=" + filepath.Join(notADir, "state")}
+
+	p := startClaudeEnv(t, `[{"do":"end","outcome":"ok"}]`, env, "--resume", "gh-1")
+	eq(t, "subtype", str(p.next(), "subtype"), "error_during_execution")
+	code, err := p.wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, "exit code", code, 1)
+	if !strings.Contains(p.stderr.String(), "cannot write the ghost marker") {
+		t.Errorf("stderr does not explain the unusable state dir: %q", p.stderr.String())
+	}
+	if !strings.Contains(p.stderr.String(), "No conversation found with session ID: gh-1") {
+		t.Errorf("stderr lost the CLI's own message: %q", p.stderr.String())
+	}
+}
+
 func TestClaudeInitAtStartIsTheOptIn(t *testing.T) {
 	// The opt-in exists so a test can prove an adapter tolerates both orders.
 	p := startClaudeEnv(t, `[{"do":"end","outcome":"ok"}]`,
@@ -1862,16 +1907,16 @@ done:
 		t.Errorf("event order:\n got %v\nwant %v", types, want)
 	}
 
-	// The chunks the session stream did not carry are all on /api/event, and
-	// so is traffic for the server's own internal session.
+	// /api/event carries the same turn again — every durable frame plus the
+	// chunks that appear nowhere else plus the internal session's traffic.
 	var globalTypes []string
 	var text string
 	sawInternal := false
-	for len(globalTypes) < 5 {
+	for len(globalTypes) < 17 {
 		m := nextFrame(t, globals)
 		globalTypes = append(globalTypes, strings.TrimPrefix(str(m, "type"), "session.next."))
-		if dig(m, "durable") != nil {
-			t.Errorf("the global stream carries the ephemeral chunks, not durables: %v", m)
+		if strings.HasSuffix(str(m, "type"), ".delta") && dig(m, "durable") != nil {
+			t.Errorf("a chunk must carry no durable key: %v", m)
 		}
 		switch str(m, "data", "sessionID") {
 		case id:
@@ -1884,13 +1929,21 @@ done:
 			t.Errorf("unexpected sessionID on the global stream: %v", m)
 		}
 	}
-	wantGlobal := []string{"text.delta", "tool.input.delta", "text.delta", "text.delta", "text.delta"}
+	wantGlobal := []string{
+		"prompt.admitted", "prompted", "text.delta", // the internal session's chunk
+		"step.started", "tool.input.started", "tool.input.delta", "tool.input.ended",
+		"tool.called", "tool.success", "step.ended",
+		"step.started", "text.started", "text.delta", "text.delta", "text.delta",
+		"text.ended", "step.ended",
+	}
 	if strings.Join(globalTypes, ",") != strings.Join(wantGlobal, ",") {
 		t.Errorf("global stream order:\n got %v\nwant %v", globalTypes, wantGlobal)
 	}
 	if !sawInternal {
 		t.Error("the global stream must also carry the server's internal session")
 	}
+	// The internal session's chunk is indistinguishable from the turn's own
+	// unless the client filters on data.sessionID.
 	eq(t, "the assembled text deltas", text, "done")
 	if len(stepMsgs) != 2 || stepMsgs[0] == stepMsgs[1] {
 		t.Errorf("each step needs its own assistantMessageID: %v", stepMsgs)
@@ -2171,6 +2224,87 @@ func TestOpenCodeReasoningEvents(t *testing.T) {
 	eq(t, "reasoning delta sessionID", str(delta, "data", "sessionID"), id)
 	ended := untilFrame(t, frames, "session.next.reasoning.ended")
 	eq(t, "text", str(ended, "data", "text"), "pondering")
+}
+
+func TestOpenCodeGlobalStreamMirrorsEveryDurableFrame(t *testing.T) {
+	// FK-18: /api/event carries every durable frame a second time, so an
+	// adapter that reads both streams and forgets to filter on `durable`
+	// there sees every text, tool result and step usage twice.
+	o := startOpenCode(t, `[{"do":"tool","name":"bash","input":"echo hi","output":"hi\n","exit":0},
+		{"do":"text","text":"done"},{"do":"end","outcome":"ok"}]`)
+	id := o.newSession(t.TempDir())
+	frames, _ := o.sse(id)
+	untilFrame(t, frames, "server.connected")
+	globals, _ := o.globalSSE()
+	untilFrame(t, globals, "server.connected")
+	o.json("POST", "/api/session/"+id+"/prompt", `{"prompt":{"text":"hi"},"delivery":"queue"}`)
+
+	// Everything the session stream delivered, keyed by event id.
+	scoped := map[string]map[string]any{}
+	var scopedOrder []string
+	for {
+		m := nextFrame(t, frames)
+		scoped[str(m, "id")] = m
+		scopedOrder = append(scopedOrder, str(m, "id"))
+		if str(m, "type") == "session.next.step.ended" && str(m, "data", "finish") == "stop" {
+			break
+		}
+	}
+	if len(scopedOrder) == 0 {
+		t.Fatal("the session stream delivered nothing")
+	}
+
+	// An unfiltered client on /api/event receives each of them again, with
+	// the same event id and the same durable.seq.
+	seen := map[string]bool{}
+	var duplicates int
+	for len(seen) < len(scoped) {
+		m := nextFrame(t, globals)
+		want, ok := scoped[str(m, "id")]
+		if !ok {
+			continue // a chunk or the internal session, neither is durable
+		}
+		if seen[str(m, "id")] {
+			t.Fatalf("the global stream repeated %s", str(m, "id"))
+		}
+		seen[str(m, "id")] = true
+		duplicates++
+		eq(t, "type", str(m, "type"), str(want, "type"))
+		eq(t, "durable.seq", num(m, "durable", "seq"), num(want, "durable", "seq"))
+		eq(t, "durable.aggregateID", str(m, "durable", "aggregateID"), id)
+	}
+	eq(t, "durable frames seen twice", duplicates, len(scopedOrder))
+}
+
+func TestOpenCodeServerBookkeepingIsGlobalOnly(t *testing.T) {
+	// session.created and session.next.model.switched were measured on the
+	// global stream and on no session stream.
+	o := startOpenCode(t, `[{"do":"end","outcome":"ok"}]`)
+	globals, _ := o.globalSSE()
+	untilFrame(t, globals, "server.connected")
+
+	dir := t.TempDir()
+	id := o.newSession(dir)
+	created := untilFrame(t, globals, "session.created")
+	eq(t, "sessionID", str(created, "data", "sessionID"), id)
+	eq(t, "directory", str(created, "data", "location", "directory"), dir)
+	if dig(created, "durable") != nil {
+		t.Errorf("session.created carries no durable key: %v", created)
+	}
+
+	frames, _ := o.sse(id)
+	untilFrame(t, frames, "server.connected")
+	code, _ := o.do("POST", "/api/session/"+id+"/model",
+		`{"model":{"id":"fake-thinker","providerID":"opencode","variant":"high"}}`, true)
+	eq(t, "status", code, 204)
+	switched := untilFrame(t, globals, "session.next.model.switched")
+	eq(t, "model id", str(switched, "data", "model", "id"), "fake-thinker")
+	eq(t, "variant", str(switched, "data", "model", "variant"), "high")
+
+	// Neither reached the session stream: the next thing there is the turn.
+	o.json("POST", "/api/session/"+id+"/prompt", `{"prompt":{"text":"hi"},"delivery":"queue"}`)
+	first := nextFrame(t, frames)
+	eq(t, "the session stream's first frame", str(first, "type"), "session.next.prompt.admitted")
 }
 
 func TestOpenCodeGlobalStreamIsBehindAuthAndNeverReplays(t *testing.T) {

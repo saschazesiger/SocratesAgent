@@ -181,6 +181,12 @@ func (s *server) createSession(w http.ResponseWriter, r *http.Request) {
 	s.dirs[id] = body.Location.Directory
 	s.mu.Unlock()
 
+	// Global-stream only, as measured.
+	s.emit(id, "session.created", map[string]any{
+		"timestamp": nowMS(), "sessionID": id,
+		"location": map[string]any{"directory": body.Location.Directory},
+	}, false)
+
 	writeJSON(w, 200, map[string]any{"data": map[string]any{
 		"id":       id,
 		"location": map[string]any{"directory": body.Location.Directory},
@@ -193,7 +199,17 @@ func (s *server) createSession(w http.ResponseWriter, r *http.Request) {
 // setModel is FK-23: 204 always, and the body is recorded verbatim.
 func (s *server) setModel(w http.ResponseWriter, r *http.Request) {
 	raw, _ := io.ReadAll(r.Body)
-	script.Record([]string{"POST /api/session/" + r.PathValue("id") + "/model", string(raw)})
+	id := r.PathValue("id")
+	script.Record([]string{"POST /api/session/" + id + "/model", string(raw)})
+
+	var body struct {
+		Model map[string]any `json:"model"`
+	}
+	_ = json.Unmarshal(raw, &body)
+	// Global-stream only, as measured.
+	s.emit(id, "session.next.model.switched", map[string]any{
+		"timestamp": nowMS(), "sessionID": id, "model": body.Model,
+	}, false)
 	w.WriteHeader(204)
 }
 
@@ -711,24 +727,36 @@ func (s *server) emitLocked(session, typ string, data any, durable bool) int64 {
 	if durable {
 		s.log[session] = append(s.log[session], raw)
 	}
-	// The real server publishes *.delta frames on the global stream only; a
-	// session stream never sees one.
-	targets := s.subs[session]
-	if isDelta(typ) {
-		targets = s.global
+	// FK-18: the global stream carries *every* frame the server emits, for
+	// every session — the durable ones as well as the chunks — while a
+	// session stream never sees a *.delta and never sees the server's own
+	// bookkeeping. A client on /api/event that forgets to filter on `durable`
+	// therefore receives each durable event a second time.
+	if !isDelta(typ) && !isGlobalOnly(typ) {
+		fanOut(s.subs[session], raw)
 	}
-	for _, ch := range targets {
+	fanOut(s.global, raw)
+	return seq
+}
+
+func fanOut(chans []chan json.RawMessage, raw json.RawMessage) {
+	for _, ch := range chans {
 		select {
 		case ch <- raw:
 		default:
 		}
 	}
-	return seq
 }
 
-// isDelta reports whether typ is one of the streaming chunk events that only
-// the global stream carries.
+// isDelta reports whether typ is one of the streaming chunk events. They are
+// published on the global stream only.
 func isDelta(typ string) bool { return strings.HasSuffix(typ, ".delta") }
+
+// isGlobalOnly reports whether typ is one of the server's own bookkeeping
+// frames, which were measured on the global stream and on no session stream.
+func isGlobalOnly(typ string) bool {
+	return typ == "session.created" || typ == "session.next.model.switched"
+}
 
 // durableVersion is the durable schema version an event carries. The research
 // observed 2 on step.ended and 1 everywhere else; no adapter rule reads it, so

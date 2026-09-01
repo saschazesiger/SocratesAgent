@@ -83,13 +83,18 @@
 //	GET /api/session/{id}/event   the session's durable events, replayed in
 //	                              full on every connect. It NEVER carries a
 //	                              *.delta frame.
-//	GET /api/event                every session on the server, no replay.
-//	                              This is where text.delta, reasoning.delta
-//	                              and tool.input.delta are published, and it
-//	                              also carries traffic for the server's own
-//	                              internal title session (ses_internal0001),
-//	                              so a client has to filter on
-//	                              data.sessionID.
+//	GET /api/event                EVERY frame the server emits, for every
+//	                              session, with no replay: each durable event
+//	                              a second time, the text.delta /
+//	                              reasoning.delta / tool.input.delta chunks
+//	                              that appear nowhere else, the server's own
+//	                              session.created and
+//	                              session.next.model.switched, and traffic for
+//	                              its internal title session
+//	                              (ses_internal0001). A client here has to
+//	                              filter on both `durable` and
+//	                              data.sessionID, or it double-counts every
+//	                              turn.
 //
 // Both are behind the same Basic auth and use the same framing.
 //
