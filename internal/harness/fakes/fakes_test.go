@@ -274,6 +274,35 @@ func TestBuildCompilesTheThreeFakesOncePerTestBinary(t *testing.T) {
 	}
 }
 
+func TestEveryFakeAnswersVersion(t *testing.T) {
+	// The catalogue probes `<binary> --version`; a usage error there pollutes
+	// the new-chat sheet hint and the admin diagnostics row.
+	for _, tc := range []struct {
+		binary string
+		want   string
+	}{
+		{"claude", "2.1.252-fake (Claude Code)"},
+		{"codex", "codex-cli 0.152.0-fake"},
+		{"opencode", "1.17.13-fake"},
+	} {
+		for _, flag := range []string{"--version", "-v", "-V"} {
+			t.Run(tc.binary+" "+flag, func(t *testing.T) {
+				p := start(t, tc.binary, nil, flag)
+				eq(t, "version line", p.nextRaw(), tc.want)
+				if extra := p.rest(); len(extra) != 0 {
+					t.Errorf("nothing may follow the version line, got %v", extra)
+				}
+				code, err := p.wait()
+				if err != nil {
+					t.Fatal(err)
+				}
+				eq(t, "exit code", code, 0)
+				eq(t, "stderr", p.stderr.String(), "")
+			})
+		}
+	}
+}
+
 // --------------------------------------------------------------- fakeclaude
 
 const claudeArgs = "-p --output-format stream-json --input-format stream-json --verbose --include-partial-messages"

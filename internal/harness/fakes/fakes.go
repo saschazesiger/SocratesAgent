@@ -68,6 +68,14 @@
 // reports in result.subagent_stats.spawned (it defaults to the number of
 // subagent steps the turn ran).
 //
+// Each fake answers `--version` (and the `-v` / `-V` aliases) with a fixed
+// line in its CLI's real format and exits 0, so the agent catalogue's
+// discovery probe and the admin diagnostics row read sensibly:
+//
+//	claude    2.1.252-fake (Claude Code)
+//	codex     codex-cli 0.152.0-fake
+//	opencode  1.17.13-fake
+//
 // # fakeopencode's two event streams
 //
 // The real server splits its SSE traffic, and so does the fake:

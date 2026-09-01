@@ -45,6 +45,10 @@ const (
 // asynchronous shape of the failure is preserved.
 const ghostResumeDelay = 200 * time.Millisecond
 
+// claudeVersion is what `claude --version` prints, in the real format
+// ("2.1.252 (Claude Code)"), carrying the same version init reports.
+const claudeVersion = "2.1.252-fake (Claude Code)"
+
 // noConversation is the real CLI's message for an unknown --resume id. It goes
 // on stderr and, per the design, into the ghost result's result field.
 const noConversation = "No conversation found with session ID: "
@@ -88,6 +92,13 @@ type turn struct {
 func main() {
 	args := os.Args[1:]
 	script.Record(os.Args)
+
+	// The catalogue runs `claude --version` to find out whether the binary is
+	// there; it must not look like a usage error.
+	if script.VersionAsked(args) {
+		fmt.Println(claudeVersion)
+		os.Exit(0)
+	}
 
 	if !hasFlag(args, "-p") ||
 		value(args, "--output-format") != "stream-json" ||

@@ -24,6 +24,10 @@ import (
 
 const heartbeatInterval = 2 * time.Second
 
+// openCodeVersion is what `opencode --version` prints: the bare version, in
+// the real format ("1.17.13").
+const openCodeVersion = "1.17.13-fake"
+
 type server struct {
 	steps []script.Step
 
@@ -59,6 +63,12 @@ type turnState struct {
 func main() {
 	script.Record(append(append([]string{}, os.Args...),
 		"OPENCODE_PERMISSION="+os.Getenv("OPENCODE_PERMISSION")))
+
+	// The catalogue runs `opencode --version` before anything else.
+	if script.VersionAsked(os.Args[1:]) {
+		fmt.Println(openCodeVersion)
+		os.Exit(0)
+	}
 
 	if len(os.Args) < 2 || os.Args[1] != "serve" {
 		fmt.Fprintln(os.Stderr, "fakeopencode: expected `serve`")

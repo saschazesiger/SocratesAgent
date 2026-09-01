@@ -171,6 +171,20 @@ func Sleep(ctx context.Context, ms int) bool {
 	}
 }
 
+// VersionAsked reports whether argv asks for the version. The three CLIs
+// differ in which short alias they accept; the fakes take all of them, since
+// the catalogue only ever passes --version and a fake that answered fewer
+// aliases could only ever produce a false failure.
+func VersionAsked(args []string) bool {
+	for _, a := range args {
+		switch a {
+		case "--version", "-v", "-V":
+			return true
+		}
+	}
+	return false
+}
+
 // Record appends one JSON array of strings to $FAKE_ARGV_FILE. It is a no-op
 // when the variable is unset. Every fake uses the same one-JSON-array-per-line
 // format: fakeclaude and fakeopencode record their argv, and both fakecodex
