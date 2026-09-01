@@ -49,44 +49,15 @@ func New(baseURL, apiKey string) *Client {
 // Message is one chat message in OpenAI format. Content is either a plain
 // string or a slice of content parts (used for audio input).
 type Message struct {
-	Role       string     `json:"role"`
-	Content    any        `json:"content,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	Name       string     `json:"name,omitempty"`
-}
-
-// ToolCall is a function call requested by the model.
-type ToolCall struct {
-	ID       string       `json:"id"`
-	Type     string       `json:"type"`
-	Function FunctionCall `json:"function"`
-}
-
-// FunctionCall carries the name and the raw JSON arguments.
-type FunctionCall struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
-}
-
-// Tool describes a callable function.
-type Tool struct {
-	Type     string       `json:"type"`
-	Function ToolFunction `json:"function"`
-}
-
-// ToolFunction is the schema of a tool.
-type ToolFunction struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	Parameters  json.RawMessage `json:"parameters"`
+	Role    string `json:"role"`
+	Content any    `json:"content,omitempty"`
+	Name    string `json:"name,omitempty"`
 }
 
 // ChatRequest is the payload of a chat completion.
 type ChatRequest struct {
 	Model       string    `json:"model"`
 	Messages    []Message `json:"messages"`
-	Tools       []Tool    `json:"tools,omitempty"`
 	Temperature *float64  `json:"temperature,omitempty"`
 	MaxTokens   int       `json:"max_tokens,omitempty"`
 	Stream      bool      `json:"stream,omitempty"`
@@ -96,7 +67,6 @@ type ChatRequest struct {
 type Result struct {
 	Content      string
 	Reasoning    string
-	ToolCalls    []ToolCall
 	FinishReason string
 }
 
@@ -104,7 +74,6 @@ type Result struct {
 type StreamHandler struct {
 	OnContent   func(delta string)
 	OnReasoning func(delta string)
-	OnToolCall  func(name string)
 }
 
 func (c *Client) newRequest(ctx context.Context, method, path string, body io.Reader, contentType string) (*http.Request, error) {
@@ -311,12 +280,6 @@ func (c *Client) chatOnce(ctx context.Context, body []byte, stream bool, h *Stre
 				h.OnReasoning(delta)
 			}
 		}
-		guarded.OnToolCall = func(name string) {
-			emitted = true
-			if h.OnToolCall != nil {
-				h.OnToolCall(name)
-			}
-		}
 	}
 	res, err := parseStream(resp.Body, guarded)
 	return res, emitted, err
@@ -326,9 +289,8 @@ type completionResponse struct {
 	Choices []struct {
 		FinishReason string `json:"finish_reason"`
 		Message      struct {
-			Content   string     `json:"content"`
-			Reasoning string     `json:"reasoning"`
-			ToolCalls []ToolCall `json:"tool_calls"`
+			Content   string `json:"content"`
+			Reasoning string `json:"reasoning"`
 		} `json:"message"`
 	} `json:"choices"`
 	Error *struct {
@@ -351,7 +313,6 @@ func parseCompletion(r io.Reader) (*Result, error) {
 	return &Result{
 		Content:      ch.Message.Content,
 		Reasoning:    ch.Message.Reasoning,
-		ToolCalls:    ch.Message.ToolCalls,
 		FinishReason: ch.FinishReason,
 	}, nil
 }
@@ -362,15 +323,6 @@ type streamChunk struct {
 		Delta        struct {
 			Content   string `json:"content"`
 			Reasoning string `json:"reasoning"`
-			ToolCalls []struct {
-				Index    int    `json:"index"`
-				ID       string `json:"id"`
-				Type     string `json:"type"`
-				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				} `json:"function"`
-			} `json:"tool_calls"`
 		} `json:"delta"`
 	} `json:"choices"`
 	Error *struct {
@@ -380,14 +332,6 @@ type streamChunk struct {
 
 func parseStream(r io.Reader, h *StreamHandler) (*Result, error) {
 	res := &Result{}
-	type partialCall struct {
-		id, name  string
-		args      strings.Builder
-		announced bool
-	}
-	calls := map[int]*partialCall{}
-	order := []int{}
-
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 8<<20)
 	for sc.Scan() {
@@ -428,45 +372,9 @@ func parseStream(r io.Reader, h *StreamHandler) (*Result, error) {
 				h.OnReasoning(ch.Delta.Reasoning)
 			}
 		}
-		for _, tc := range ch.Delta.ToolCalls {
-			pc, ok := calls[tc.Index]
-			if !ok {
-				pc = &partialCall{}
-				calls[tc.Index] = pc
-				order = append(order, tc.Index)
-			}
-			if tc.ID != "" {
-				pc.id = tc.ID
-			}
-			if tc.Function.Name != "" {
-				pc.name = tc.Function.Name
-			}
-			if tc.Function.Arguments != "" {
-				pc.args.WriteString(tc.Function.Arguments)
-			}
-			if !pc.announced && pc.name != "" && h != nil && h.OnToolCall != nil {
-				pc.announced = true
-				h.OnToolCall(pc.name)
-			}
-		}
 	}
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("read stream: %w", err)
-	}
-	for _, idx := range order {
-		pc := calls[idx]
-		if pc.name == "" {
-			continue
-		}
-		id := pc.id
-		if id == "" {
-			id = fmt.Sprintf("call_%d_%d", idx, time.Now().UnixNano())
-		}
-		res.ToolCalls = append(res.ToolCalls, ToolCall{
-			ID:       id,
-			Type:     "function",
-			Function: FunctionCall{Name: pc.name, Arguments: pc.args.String()},
-		})
 	}
 	return res, nil
 }

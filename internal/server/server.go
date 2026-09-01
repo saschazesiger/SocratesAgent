@@ -233,15 +233,10 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/chats/{id}/messages", s.auth(s.handleSendMessage))
 	mux.HandleFunc("POST /api/chats/{id}/stop", s.auth(s.handleStopRun))
 	mux.HandleFunc("GET /api/chats/{id}/events", s.auth(s.handleEvents))
-	mux.HandleFunc("GET /api/chats/{id}/terminals", s.auth(s.handleListTerminals))
-	mux.HandleFunc("POST /api/chats/{id}/terminals", s.auth(s.handleOpenTerminal))
 
-	// Terminal sessions: watch one live, or take the keyboard yourself.
-	mux.HandleFunc("GET /api/terminals/{id}", s.auth(s.handleGetTerminal))
-	mux.HandleFunc("GET /api/terminals/{id}/events", s.auth(s.handleTerminalEvents))
-	mux.HandleFunc("POST /api/terminals/{id}/input", s.auth(s.handleTerminalInput))
-	mux.HandleFunc("POST /api/terminals/{id}/resize", s.auth(s.handleTerminalResize))
-	mux.HandleFunc("POST /api/terminals/{id}/close", s.auth(s.handleTerminalClose))
+	// Agents: what is installed, and which models each one offers.
+	mux.HandleFunc("GET /api/agents", s.auth(s.handleAgents))
+	mux.HandleFunc("POST /api/agents/refresh", s.auth(s.handleAgentsRefresh))
 
 	// Admin
 	mux.HandleFunc("GET /api/settings", s.auth(s.handleGetSettings))

@@ -6,7 +6,6 @@ import {
   CONNECTION_GRACE,
 } from './api.js';
 import { renderMarkdown } from './markdown.js';
-import { mountTerminalDock } from './terminals.js';
 import {
   Recorder, describeMicError, speak, stopSpeaking, isSpeaking,
   onSpeechError, fetchSpeech, playSpeech,
@@ -14,19 +13,10 @@ import {
 
 const $ = (id) => document.getElementById(id);
 
-// The terminal sessions of this chat live beside the conversation, not inside
-// it. The transcript keeps one line per session; the dock keeps the screen.
-//
-// The slider in the top bar is the one place that says what the pane is
-// doing, so the dock reports the times it opens or closes itself - a line in
-// the transcript asking for a session, its own corner, escape on a phone -
-// and the slider follows rather than contradicting it.
-const dock = mountTerminalDock({
-  onOpenChange: (open) => {
-    if (open === (state.view === 'split')) return;
-    setView(open ? 'split' : 'chat');
-  },
-});
+// The terminal dock is gone with the pseudo terminal it drew. Tool activity
+// is rendered as cards in the transcript now; the remaining `dock` guards are
+// WP5's to remove along with the two views that used it.
+const dock = null;
 
 const dom = {
   navScrim: $('navScrim'),
@@ -1366,7 +1356,7 @@ function buildTerminal(step, detail) {
     setClass(dot, 'live', running);
     setClass(dot, 'failed', !running && next.status === 'failed');
     setClass(dot, 'stopped', !running && next.status !== 'failed');
-    const name = next.title || now.skill || 'a program';
+    const name = next.title || 'a program';
     const text = running
       ? 'Opened ' + name + ' in a terminal'
       : 'Ran ' + name + ' in a terminal — ' + (now.exit_code ? 'exited ' + now.exit_code : 'finished');

@@ -12,3 +12,6 @@
 # editors and tooling
 .DS_Store
 node_modules/
+
+# Claude Code scratch: agent worktrees and local session state
+.claude/

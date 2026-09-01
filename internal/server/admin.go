@@ -16,7 +16,6 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/openrouter"
 	"github.com/saschazesiger/SocratesAgent/internal/piper"
-	"github.com/saschazesiger/SocratesAgent/internal/term"
 	"github.com/saschazesiger/SocratesAgent/internal/tunnel"
 )
 
@@ -48,13 +47,8 @@ func (s *Server) handlePreferences(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	settings := s.Settings()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"settings": settings,
-		"defaults": config.Default(),
-		// The skills the app ships, so the dashboard can show what each one is
-		// called and what it runs, and use the shipped wording as the
-		// placeholder of the one field it lets the user rewrite. Read only:
-		// the settings document decides nothing else about a skill.
-		"skills":    config.Presets(),
+		"settings":  settings,
+		"defaults":  config.Default(),
 		"version":   Version,
 		"local_url": s.LocalURL(),
 	})
@@ -68,8 +62,6 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next := body.Settings
-	// Normalize folds the skill list back onto the skills this app ships, so a
-	// half filled form from the dashboard can never break the orchestrator.
 	next.Normalize()
 	if err := s.saveSettings(next); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -151,34 +143,8 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// A real terminal is what makes driving the coding agents possible.
-	if term.HasPTY {
-		results = append(results, checkResult{Name: "Terminal", OK: true,
-			Detail: fmt.Sprintf("interactive, %d session(s) open", len(s.terminals.States("")))})
-	} else {
-		results = append(results, checkResult{Name: "Terminal", OK: false,
-			Detail: "this build has no pseudo terminal, so full screen programs will not run interactively"})
-	}
-
-	// The programs Socrates has a skill for
-	for _, skill := range settings.EnabledSkills() {
-		path, err := exec.LookPath(skill.Command)
-		if err != nil {
-			results = append(results, checkResult{Name: skill.Name, OK: false,
-				Detail: "command " + skill.Command + " not found in PATH"})
-			continue
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-		out, err := exec.CommandContext(ctx, path, "--version").CombinedOutput()
-		cancel()
-		version := strings.TrimSpace(strings.SplitN(stripControl(string(out)), "\n", 2)[0])
-		if err != nil {
-			results = append(results, checkResult{Name: skill.Name, OK: false,
-				Detail: path + " failed to report a version: " + strings.TrimSpace(err.Error()+" "+version)})
-			continue
-		}
-		results = append(results, checkResult{Name: skill.Name, OK: true, Detail: version})
-	}
+	results = append(results, s.agentHostCheck())
+	results = append(results, s.agentChecks(r.Context(), settings)...)
 
 	// Remote access
 	installed, version, _ := s.tunnel.Probe()
@@ -259,5 +225,81 @@ func stripControl(s string) string {
 			return -1
 		}
 		return r
-	}, term.StripANSI(s))
+	}, StripANSI(s))
+}
+
+// escape sequence parser states.
+const (
+	stText = iota
+	stEsc
+	stCSI
+	stOSC
+	stOSCEsc
+	stCharset
+)
+
+// stripper removes terminal escape sequences from a byte stream that arrives
+// in arbitrary chunks, which is why it has to remember where it stopped. The
+// pseudo terminal it was written for is gone; a coding agent that prints its
+// version with a colour in it is what is left, and that is enough to keep it.
+type stripper struct {
+	state int
+}
+
+func (s *stripper) filter(in string) string {
+	var out strings.Builder
+	out.Grow(len(in))
+	for _, r := range in {
+		switch s.state {
+		case stText:
+			switch r {
+			case 0x1b:
+				s.state = stEsc
+			case 0x00, 0x07:
+				// NUL and BEL carry no text.
+			default:
+				out.WriteRune(r)
+			}
+		case stEsc:
+			switch r {
+			case '[':
+				s.state = stCSI
+			case ']':
+				s.state = stOSC
+			case 'P', '^', '_': // DCS, PM, APC all end like an OSC string
+				s.state = stOSC
+			case '(', ')', '*', '+': // character set selection, one more byte
+				s.state = stCharset
+			default:
+				s.state = stText
+			}
+		case stCSI:
+			// Parameter and intermediate bytes, then a final byte.
+			if r >= 0x40 && r <= 0x7e {
+				s.state = stText
+			}
+		case stOSC:
+			switch r {
+			case 0x07:
+				s.state = stText
+			case 0x1b:
+				s.state = stOSCEsc
+			}
+		case stOSCEsc:
+			// ESC \ terminates the string; anything else was part of it.
+			s.state = stText
+			if r != '\\' {
+				s.state = stOSC
+			}
+		case stCharset:
+			s.state = stText
+		}
+	}
+	return out.String()
+}
+
+// StripANSI removes escape sequences from a complete string.
+func StripANSI(s string) string {
+	var st stripper
+	return st.filter(s)
 }

@@ -1,4 +1,4 @@
-// Command socrates is a top level agent for Claude Code, Codex and OpenCode
+// Command socrates is a web harness for Claude Code, Codex and OpenCode
 // with a web interface, voice mode and an admin dashboard.
 package main
 
@@ -19,8 +19,14 @@ import (
 
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/server"
+	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
-	"github.com/saschazesiger/SocratesAgent/internal/term"
+
+	// The adapters register themselves, and both roles - the web server and an
+	// agent host - need the registry filled before they look anything up.
+	_ "github.com/saschazesiger/SocratesAgent/internal/harness/claude"
+	_ "github.com/saschazesiger/SocratesAgent/internal/harness/codex"
+	_ "github.com/saschazesiger/SocratesAgent/internal/harness/opencode"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".
@@ -29,17 +35,17 @@ var version = "dev"
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime)
 
-	// "socrates term-host" owns a single terminal session. Socrates starts it
-	// detached, so the program inside the session - a coding agent, a build, a
-	// shell - keeps running even while the web server is restarted.
-	if len(os.Args) > 2 && os.Args[1] == "term-host" {
-		hostFlags := flag.NewFlagSet("term-host", flag.ExitOnError)
-		dir := hostFlags.String("dir", "", "session directory")
+	// "socrates agent-host" owns a single agent session. Socrates starts it
+	// detached, so a turn in flight - the agent and everything it spawned -
+	// keeps running even while the web server is restarted.
+	if len(os.Args) > 1 && os.Args[1] == "agent-host" {
+		hostFlags := flag.NewFlagSet("agent-host", flag.ExitOnError)
+		dir := hostFlags.String("dir", "", "host directory")
 		if err := hostFlags.Parse(os.Args[2:]); err != nil {
 			os.Exit(2)
 		}
-		if err := term.RunHost(*dir); err != nil {
-			log.Printf("terminal host: %v", err)
+		if err := agenthost.RunHost(*dir); err != nil {
+			log.Printf("agent host: %v", err)
 			os.Exit(1)
 		}
 		return
@@ -55,8 +61,8 @@ func main() {
 	dataDir := fs.String("data", config.DataDir(), "directory for the database and workspaces")
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Socrates %s - a top level agent for Claude Code, Codex and OpenCode\n\n", version)
-		fmt.Fprintf(os.Stderr, "Usage:\n  socrates [flags]        start the web server\n  socrates term-host      internal: hosts one terminal session\n\nFlags:\n")
+		fmt.Fprintf(os.Stderr, "Socrates %s - a web harness for Claude Code, Codex and OpenCode\n\n", version)
+		fmt.Fprintf(os.Stderr, "Usage:\n  socrates [flags]        start the web server\n  socrates agent-host     internal: hosts one agent session\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -78,9 +84,6 @@ func main() {
 		log.Fatalf("could not open the database: %v", err)
 	}
 	defer st.Close()
-	if err := st.RecoverRuns(); err != nil {
-		log.Printf("warning: could not clean up unfinished runs: %v", err)
-	}
 
 	srv, err := server.New(st, *dataDir)
 	if err != nil {
@@ -116,15 +119,25 @@ func main() {
 	}()
 
 	srv.StartTunnelIfEnabled()
-	srv.ResumeTerminals()
+	// A user who upgrades in place still has term-host processes from the
+	// previous version running interactive agent TUIs. Nothing in the new
+	// Manager ever visits that directory, so they would keep running forever;
+	// this sweeps them once and then the directory is gone.
+	agenthost.SweepLegacyTerminals(*dataDir)
+	// Agent hosts come back before the runs are recovered, so a turn that is
+	// genuinely still running is adopted rather than marked interrupted.
+	adopted := srv.ResumeAgents()
+	if err := st.RecoverRuns(adopted...); err != nil {
+		log.Printf("warning: could not clean up unfinished runs: %v", err)
+	}
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
 	log.Print("shutting down")
-	// The terminal sessions keep running: whatever an agent is in the middle
-	// of is still there when Socrates comes back.
-	srv.DetachTerminals()
+	// The agent hosts keep running: whatever an agent is in the middle of is
+	// still there when Socrates comes back.
+	srv.DetachAgents()
 	srv.StopTunnel()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

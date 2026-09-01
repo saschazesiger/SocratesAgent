@@ -53,12 +53,6 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, seq);
-CREATE TABLE IF NOT EXISTS llm_messages (
-  id      INTEGER PRIMARY KEY AUTOINCREMENT,
-  chat_id TEXT NOT NULL,
-  payload TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_llm_chat ON llm_messages(chat_id, id);
 CREATE TABLE IF NOT EXISTS runs (
   id         TEXT PRIMARY KEY,
   chat_id    TEXT NOT NULL,
@@ -363,7 +357,6 @@ func (s *Store) DeleteChat(id string) error {
 	defer tx.Rollback()
 	for _, q := range []string{
 		`DELETE FROM messages WHERE chat_id = ?`,
-		`DELETE FROM llm_messages WHERE chat_id = ?`,
 		`DELETE FROM steps WHERE chat_id = ?`,
 		`DELETE FROM runs WHERE chat_id = ?`,
 		`DELETE FROM chats WHERE id = ?`,
@@ -467,35 +460,6 @@ func (s *Store) MessageByClientID(chatID, clientID string) (*Message, error) {
 		return nil, ErrNotFound
 	}
 	return &msgs[0], nil
-}
-
-// ------------------------------------------------------------ llm messages
-
-// AppendLLMMessage stores one raw provider message (the exact JSON that is sent
-// back to the model), so a chat can be continued with full tool call context.
-func (s *Store) AppendLLMMessage(chatID string, payload []byte) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, err := s.db.Exec(`INSERT INTO llm_messages(chat_id, payload) VALUES(?, ?)`, chatID, string(payload))
-	return err
-}
-
-// LLMMessages returns the raw provider messages of a chat in order.
-func (s *Store) LLMMessages(chatID string) ([]json.RawMessage, error) {
-	rows, err := s.db.Query(`SELECT payload FROM llm_messages WHERE chat_id = ? ORDER BY id`, chatID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []json.RawMessage{}
-	for rows.Next() {
-		var p string
-		if err := rows.Scan(&p); err != nil {
-			return nil, err
-		}
-		out = append(out, json.RawMessage(p))
-	}
-	return out, rows.Err()
 }
 
 // -------------------------------------------------------------------- runs
