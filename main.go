@@ -17,9 +17,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/server"
-	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 
 	// The adapters register themselves, and both roles - the web server and an

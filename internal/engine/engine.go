@@ -170,6 +170,11 @@ func (e *Engine) Detach() {
 	e.Hosts.Detach()
 }
 
+// IsShuttingDown is the same answer isDetaching gives the run loop, for the
+// HTTP layer: a model change that lands in the drain window has to wait for
+// the restart, exactly as a message does.
+func (e *Engine) IsShuttingDown() bool { return e.isDetaching() }
+
 func (e *Engine) isDetaching() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -482,8 +487,7 @@ func (e *Engine) workspace(chat *store.Chat) string {
 }
 
 // CloseChat stops the run and ends the chat's agent session. One call for
-// archive, delete and a model change, replacing the two-step dance the
-// orchestrator needed.
+// archive, delete and a model change.
 func (e *Engine) CloseChat(ctx context.Context, chatID string) {
 	e.Stop(chatID)
 	e.Hosts.CloseChat(ctx, chatID)

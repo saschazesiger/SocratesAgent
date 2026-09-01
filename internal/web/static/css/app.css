@@ -1075,42 +1075,10 @@ body.auto .auto-screen {
 }
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px; }
 .row { display: flex; gap: 10px; align-items: center; }
-.skill {
-  border: 1px solid var(--line);
-  border-radius: var(--r);
-  margin-bottom: 12px;
-  overflow: hidden;
-  background: var(--bg);
-}
-.skill-head {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-  padding: 12px 14px;
-  background: var(--bg-soft);
-}
-.skill-head .nm { font-weight: 550; font-size: 14px; }
-.skill-head .kind {
-  font-family: var(--mono);
-  /* The command line stays on one line, but a long one is cut rather than
-     allowed to push the card past the edge of a phone. */
-  white-space: nowrap;
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-size: 11.5px;
-  color: var(--text-faint);
-  background: var(--bg-sunken);
-  padding: 2px 7px;
-  border-radius: 999px;
-}
-.skill-body { padding: 16px 16px 2px; border-top: 1px solid var(--line); }
-/* One row per model a skill may run on: the id, the effort, what it is for,
-   and the button that removes it. The columns wrap rather than shrink, so on a
-   narrow screen the row becomes three stacked full width controls instead of
-   three fields too small to type in. */
+/* One row per model an agent may be run on: the id, the effort, what it is
+   for, and the button that removes it. The columns wrap rather than shrink, so
+   on a narrow screen the row becomes three stacked full width controls instead
+   of three fields too small to type in. */
 .models { display: flex; flex-direction: column; gap: 8px; }
 .model-row {
   display: flex;
@@ -1316,7 +1284,6 @@ body.auto .auto-screen {
   .admin-top { padding: 0 14px; gap: 8px; }
   .admin-wrap { padding: 18px 14px calc(48px + env(safe-area-inset-bottom, 0px)); }
   .card { padding: 18px 16px; border-radius: var(--r); }
-  .skill-body { padding: 14px 12px 2px; }
   .check .nm { min-width: 0; }
   /* One control per line, each one wide enough to actually type in, with the
      row's own hairline so two of them cannot be read as one. */

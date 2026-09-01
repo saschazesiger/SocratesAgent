@@ -568,7 +568,8 @@ const (
 	RunInterrupted = "interrupted"
 )
 
-// Run is one turn of the orchestrator.
+// Run is one turn: a user message, everything the agent did about it, and the
+// answer at the end.
 type Run struct {
 	ID        string `json:"id"`
 	ChatID    string `json:"chat_id"`

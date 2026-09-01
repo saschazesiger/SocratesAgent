@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/saschazesiger/SocratesAgent/internal/agent"
+	"github.com/saschazesiger/SocratesAgent/internal/engine"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
 
@@ -33,16 +33,29 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 		Title     string `json:"title"`
 		Workspace string `json:"workspace"`
 		ClientID  string `json:"client_id"`
+		Agent     string `json:"agent"`
+		Model     string `json:"model"`
+		Effort    string `json:"effort"`
 	}
 	if !readJSON(w, r, &body) {
 		return
 	}
 	// A browser on a flaky connection cannot tell a lost reply from a lost
 	// request, so it repeats the call. The key it sends makes that safe: the
-	// second attempt gets back the chat the first one already created.
+	// second attempt gets back the chat the first one already created, and it
+	// does so before any validation runs - a chat that exists is an answer,
+	// whatever the settings have since become.
 	clientID := strings.TrimSpace(body.ClientID)
 	if existing, err := s.store.ChatByClientID(clientID); err == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"chat": existing})
+		return
+	}
+	agent, model, effort, err := s.resolveBinding(r.Context(),
+		strings.TrimSpace(body.Agent), strings.TrimSpace(body.Model), strings.TrimSpace(body.Effort))
+	if err != nil {
+		// Never 409: the browser retries that one until it succeeds, and a
+		// permanent refusal retried forever is a message the person loses.
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
 	chat := &store.Chat{
@@ -50,6 +63,9 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 		Title:     strings.TrimSpace(body.Title),
 		Workspace: strings.TrimSpace(body.Workspace),
 		ClientID:  clientID,
+		Agent:     agent,
+		Model:     model,
+		Effort:    effort,
 	}
 	if err := s.store.CreateChat(chat); err != nil {
 		// Two attempts that raced each other: the unique key kept the second
@@ -91,6 +107,7 @@ func (s *Server) handleGetChat(w http.ResponseWriter, r *http.Request) {
 	if workspace == "" {
 		workspace = defaultWorkspace
 	}
+	agentLabel, modelLabel, agentOK := s.describeBinding(chat)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"chat":                chat,
 		"messages":            messages,
@@ -99,6 +116,13 @@ func (s *Server) handleGetChat(w http.ResponseWriter, r *http.Request) {
 		"busy":                s.engine.Busy(id),
 		"effective_workspace": workspace,
 		"default_workspace":   defaultWorkspace,
+		"agent_label":         agentLabel,
+		"model_label":         modelLabel,
+		"agent_ok":            agentOK,
+		// A chat from before Socrates talked to agents directly is a
+		// transcript, not a conversation: there is no CLI that saw the half of
+		// it a different mechanism produced.
+		"legacy": chat.Agent == "",
 	})
 }
 
@@ -112,8 +136,16 @@ func (s *Server) handleUpdateChat(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Title     *string `json:"title"`
 		Workspace *string `json:"workspace"`
+		Model     *string `json:"model"`
+		Effort    *string `json:"effort"`
+		Agent     *string `json:"agent"`
 	}
 	if !readJSON(w, r, &body) {
+		return
+	}
+	if body.Agent != nil {
+		// A different agent is a different conversation.
+		writeError(w, http.StatusBadRequest, "the agent of a chat cannot be changed - start a new chat instead")
 		return
 	}
 	title, workspace := chat.Title, chat.Workspace
@@ -123,12 +155,17 @@ func (s *Server) handleUpdateChat(w http.ResponseWriter, r *http.Request) {
 	if body.Workspace != nil {
 		workspace = strings.TrimSpace(*body.Workspace)
 	}
+	if body.Model != nil || body.Effort != nil {
+		if !s.changeModel(w, r, chat, body.Model, body.Effort) {
+			return
+		}
+	}
 	if err := s.store.UpdateChat(id, title, workspace); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	chat.Title, chat.Workspace = title, workspace
-	s.bus.Publish(id, agent.Event{Type: "chat", Chat: chat})
+	s.bus.Publish(id, engine.Event{Type: "chat", Chat: chat})
 	writeJSON(w, http.StatusOK, map[string]any{"chat": chat})
 }
 
@@ -151,12 +188,11 @@ func (s *Server) setChatArchived(w http.ResponseWriter, r *http.Request, archive
 	}
 	if archived {
 		// An archived chat owns nothing that is still running: the turn in
-		// flight is cancelled and the terminal sessions - which outlive a run
-		// on purpose - are ended here, exactly as a deletion would end them.
-		s.engine.Stop(id)
+		// flight is cancelled and the agent session - which outlives a run on
+		// purpose - is ended here, exactly as a deletion would end it.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		s.terminals.CloseChat(ctx, id)
+		s.engine.CloseChat(ctx, id)
 	}
 	if err := s.store.SetChatArchived(id, archived); err != nil {
 		s.notFound(w, err)
@@ -167,18 +203,17 @@ func (s *Server) setChatArchived(w http.ResponseWriter, r *http.Request, archive
 		s.notFound(w, err)
 		return
 	}
-	s.bus.Publish(id, agent.Event{Type: "chat", Chat: chat})
+	s.bus.Publish(id, engine.Event{Type: "chat", Chat: chat})
 	writeJSON(w, http.StatusOK, map[string]any{"chat": chat})
 }
 
 func (s *Server) handleDeleteChat(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	s.engine.Stop(id)
-	// Terminal sessions outlive a run on purpose, so deleting the chat they
-	// belong to is what actually ends them.
+	// An agent session outlives a run on purpose, so deleting the chat it
+	// belongs to is what actually ends it.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	s.terminals.CloseChat(ctx, id)
+	s.engine.CloseChat(ctx, id)
 	if err := s.store.DeleteChat(id); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -201,7 +236,19 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "the message is empty")
 		return
 	}
-	run, err := s.engine.Start(agent.Turn{
+	// The status code matters more here than anywhere else in the API: the
+	// browser turns a 409 on this endpoint into a retry with backoff that runs
+	// until it succeeds. That is right for ErrBusy - the message waits behind
+	// the running turn and client_id delivers it exactly once - and
+	// catastrophic for a permanent refusal, which would retry forever behind
+	// the false message that Socrates is still finishing the previous one. So
+	// 409 is reserved for refusals that pass on their own; every permanent one
+	// uses 422, which the Outbox marks failed and offers a retry for.
+	if reason, ok := s.agentUnavailable(id); !ok {
+		writeError(w, http.StatusUnprocessableEntity, reason)
+		return
+	}
+	run, err := s.engine.Start(engine.Turn{
 		ChatID:   id,
 		Text:     text,
 		Auto:     body.Auto,
@@ -209,8 +256,14 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		switch {
-		case errors.Is(err, agent.ErrBusy):
+		case errors.Is(err, engine.ErrBusy):
 			writeError(w, http.StatusConflict, err.Error())
+		case errors.Is(err, engine.ErrShuttingDown):
+			writeError(w, http.StatusServiceUnavailable,
+				"Socrates is restarting - your message will be sent in a moment")
+		case errors.Is(err, engine.ErrNoAgent):
+			writeError(w, http.StatusUnprocessableEntity,
+				"this chat was made before Socrates talked to agents directly - start a new chat")
 		case errors.Is(err, store.ErrNotFound):
 			writeError(w, http.StatusNotFound, "chat not found")
 		default:
@@ -284,13 +337,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// Replay everything that changed while the client was away.
 	if steps, err := s.store.StepsSince(id, rev); err == nil {
 		for i := range steps {
-			if !send(agent.Event{Type: "step", Step: &steps[i]}) {
+			if !send(engine.Event{Type: "step", Step: &steps[i]}) {
 				return
 			}
 		}
 	}
 	if run, err := s.store.ActiveRun(id); err == nil {
-		send(agent.Event{Type: "run", Run: run})
+		send(engine.Event{Type: "run", Run: run})
 	}
 
 	// A reconnect gets exactly the messages it missed, however long it was

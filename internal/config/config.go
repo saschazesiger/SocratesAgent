@@ -114,8 +114,8 @@ type VoiceSettings struct {
 	SpeakInChatMode bool `json:"speak_in_chat_mode"`
 }
 
-// AgentSettings is what is left of the orchestrator's own configuration: where
-// a chat works when it was not pointed anywhere else.
+// AgentSettings is where a chat works when it was not pointed anywhere else.
+// It is all that is left of a section that used to configure a loop.
 type AgentSettings struct {
 	WorkspaceRoot string `json:"workspace_root"`
 }
