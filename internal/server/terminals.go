@@ -45,7 +45,7 @@ func (s *Server) handleGetTerminal(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		state = handle.State()
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"terminal": state, "running": handle.Alive()})
+	writeJSON(w, http.StatusOK, map[string]any{"terminal": state})
 }
 
 // handleTerminalInput is the user taking over the keyboard.
@@ -55,9 +55,8 @@ func (s *Server) handleTerminalInput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Text   string   `json:"text"`
-		Keys   []string `json:"keys"`
-		Submit bool     `json:"submit"`
+		Text string   `json:"text"`
+		Keys []string `json:"keys"`
 	}
 	if !readJSON(w, r, &body) {
 		return
@@ -67,9 +66,6 @@ func (s *Server) handleTerminalInput(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadGateway, err.Error())
 			return
 		}
-	}
-	if body.Submit {
-		body.Keys = append(body.Keys, "enter")
 	}
 	if len(body.Keys) > 0 {
 		if err := handle.SendKeys(r.Context(), body.Keys); err != nil {
@@ -131,12 +127,12 @@ func (s *Server) handleOpenTerminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// One terminal per chat, so an existing one is not an error to puzzle over:
-	// the browser is told which session it already has and shows that instead.
+	// the refusal says plainly what happened and the browser fetches the list,
+	// which is where the session it already has is described in full.
 	for _, h := range s.terminals.List(chat.ID) {
 		if h.Alive() {
 			writeJSON(w, http.StatusConflict, map[string]any{
-				"error":       "this chat already has a terminal session running",
-				"terminal_id": h.ID(),
+				"error": "this chat already has a terminal session running",
 			})
 			return
 		}
@@ -268,7 +264,7 @@ func (s *Server) handleTerminalEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-ping.C:
-			if !send(map[string]any{"type": "ping", "now": time.Now().UnixMilli()}) {
+			if !send(map[string]any{"type": "ping"}) {
 				return
 			}
 		}

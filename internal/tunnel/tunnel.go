@@ -45,11 +45,9 @@ const readyAfter = 4 * time.Second
 // Status is the snapshot the admin dashboard renders.
 type Status struct {
 	State      string   `json:"state"`
-	Mode       string   `json:"mode"`
 	URL        string   `json:"url"`
 	LocalURL   string   `json:"local_url"`
 	Error      string   `json:"error"`
-	Since      int64    `json:"since"`
 	Restarts   int      `json:"restarts"`
 	Installed  bool     `json:"installed"`
 	Version    string   `json:"version"`
@@ -71,7 +69,6 @@ type Manager struct {
 	installing bool
 	url        string
 	errMsg     string
-	since      time.Time
 	restarts   int
 	logs       *ring
 	cancel     context.CancelFunc
@@ -113,7 +110,6 @@ func (m *Manager) Start() error {
 	m.errMsg = ""
 	m.url = cfg.PublicURL()
 	m.restarts = 0
-	m.since = time.Now()
 	m.logs.add("starting " + cfg.Command)
 	m.mu.Unlock()
 
@@ -157,15 +153,11 @@ func (m *Manager) Status() Status {
 	}
 	status := Status{
 		State:    state,
-		Mode:     cfg.Mode,
 		URL:      m.url,
 		Error:    m.errMsg,
 		Restarts: m.restarts,
 		Command:  cfg.Command,
 		Logs:     m.logs.snapshot(),
-	}
-	if !m.since.IsZero() {
-		status.Since = m.since.UnixMilli()
 	}
 	m.mu.Unlock()
 	if status.URL == "" {
@@ -359,7 +351,6 @@ func (m *Manager) runOnce(ctx context.Context, gen int) error {
 
 	m.mu.Lock()
 	m.state = StateStarting
-	m.since = time.Now()
 	m.logs.add(binary + " " + strings.Join(redact(args), " "))
 	m.mu.Unlock()
 
@@ -458,9 +449,6 @@ func probe(command string) (bool, string) {
 	probeCache.Store(command, result)
 	return result.installed, result.version
 }
-
-// Probe is the exported form used by the setup wizard and diagnostics.
-func Probe(command string) (bool, string) { return probe(command) }
 
 // redact keeps secrets out of the log tail shown in the browser.
 func redact(args []string) []string {

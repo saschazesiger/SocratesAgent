@@ -34,7 +34,7 @@
       <div class="field">
         <label for="tunnelMode">Reach it from outside <span style="font-weight:400;color:var(--text-faint)">· optional</span></label>
         <select class="select" id="tunnelMode">
-          <option value="off">Local only — http://localhost:8080</option>
+          <option value="off" id="localOnly">Local only — http://localhost:8080</option>
           <option value="quick">Cloudflare quick tunnel — instant public URL</option>
           <option value="token">Cloudflare named tunnel — your own hostname</option>
         </select>
@@ -44,7 +44,7 @@
         <div class="field">
           <label for="tunnelToken">Tunnel token</label>
           <input class="input mono" type="password" id="tunnelToken" autocomplete="off" placeholder="eyJhIjoi…">
-          <div class="hint">Cloudflare Zero Trust → Networks → Tunnels → Install connector. Point the tunnel's public hostname at <code class="local-url">http://localhost:8080</code>.</div>
+          <div class="hint">Cloudflare Zero Trust → Networks → Tunnels → Create a tunnel → Cloudflared. Name it and save; the token is in the install command Cloudflare shows next. Point the tunnel's public hostname at <code class="local-url">http://localhost:8080</code>.</div>
         </div>
         <div class="field">
           <label for="tunnelHostname">Public hostname</label>
@@ -64,15 +64,23 @@ const submit = document.getElementById('submit');
 const mode = document.getElementById('tunnelMode');
 const named = document.getElementById('tunnelNamed');
 const hint = document.getElementById('tunnelHint');
+const localOnly = document.getElementById('localOnly');
 
-let cloudflared = { installed: false, version: '' };
+let cloudflared = { installed: false };
 let localURL = 'http://localhost:8080';
 api('/api/state').then((state) => {
   cloudflared = (state && state.cloudflared) || cloudflared;
   if (state && state.local_url) localURL = state.local_url;
-  document.querySelectorAll('.local-url').forEach((node) => { node.textContent = localURL; });
+  showLocalURL();
   renderTunnel();
 }).catch(() => {});
+
+// The address this instance really serves on: -addr can move it off 8080,
+// and a setup page that names the wrong port sends the first visit nowhere.
+function showLocalURL() {
+  document.querySelectorAll('.local-url').forEach((node) => { node.textContent = localURL; });
+  localOnly.textContent = 'Local only — ' + localURL;
+}
 
 mode.addEventListener('change', renderTunnel);
 

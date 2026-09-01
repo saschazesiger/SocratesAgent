@@ -34,7 +34,7 @@ jobs:
           out="socrates"
           if [ "$GOOS" = "windows" ]; then out="socrates.exe"; fi
           go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o "$out" .
-          tar czf "${name}.tar.gz" "$out" README.md LICENSE
+          tar czf "${name}.tar.gz" "$out" README.md LICENSE THIRD_PARTY_LICENSES.md
 
       - name: Upload to the release
         uses: softprops/action-gh-release@v2

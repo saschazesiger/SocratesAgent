@@ -220,13 +220,11 @@ type ScreenCursor struct {
 }
 
 // vt10x keeps the appearance of a cell in a bitmask whose constants it does
-// not export, so they are repeated here. The SGR tests fail loudly if a future
-// version renumbers them.
+// not export, so the bits this file reads are repeated here. Their numbering
+// is vt10x's; the SGR tests fail loudly if a future version changes it.
 const (
-	attrReverse   = 1 << 0
 	attrUnderline = 1 << 1
 	attrBold      = 1 << 2
-	attrGfx       = 1 << 3
 	attrItalic    = 1 << 4
 	attrBlink     = 1 << 5
 )

@@ -66,11 +66,12 @@ const (
 	sourceManaged = "managed"
 )
 
-// maxTextRunes is a backstop rather than the real limit: the caller trims an
-// answer to something a listener will sit through long before it arrives here.
-// It exists so a runaway answer cannot turn into ten minutes of rendering that
-// nobody asked for.
-const maxTextRunes = 6000
+// MaxTextRunes is the longest text this engine will read out loud. Anything
+// past it is cut rather than rendered, so a runaway answer cannot turn into
+// ten minutes of speech nobody asked for. It is exported because the HTTP
+// handler in front of the engine trims to the same length before the audio is
+// ever started, and two numbers that have to agree should be one number.
+const MaxTextRunes = 6000
 
 // renderTimeout is generous on purpose. Six thousand characters take a couple
 // of seconds on a laptop and the better part of a minute on the kind of ARM
@@ -87,7 +88,6 @@ type Status struct {
 	Ready  bool     `json:"ready"`
 	State  string   `json:"state"`
 	Detail string   `json:"detail"`
-	Path   string   `json:"path"`
 	Voices []string `json:"voices"`
 	Err    string   `json:"error,omitempty"`
 }
@@ -124,14 +124,14 @@ func New(dir string) *Engine {
 	}
 }
 
-// Ready reports whether the engine can speak right now.
+// canSpeak reports whether the engine can speak right now.
 //
 // It looks at the filesystem every time rather than remembering an answer,
 // because an installation can appear or disappear underneath a running server
 // - an image that mounts the voices late, a piper someone just brew installed,
 // a disk that got cleaned up - and none of those should need a restart to be
 // noticed.
-func (e *Engine) Ready() bool { return e.resolve().ready() }
+func (e *Engine) canSpeak() bool { return e.resolve().ready() }
 
 // ErrInstalling says the engine cannot speak yet because the 150 MB it needs
 // are already on their way. It is a distinct error because the caller that
@@ -149,7 +149,7 @@ var ErrInstalling = errors.New("piper is still being installed")
 // context either way, so a caller that leaves - a cancelled context, a
 // goroutine that gave up - leaves the download running.
 func (e *Engine) Ensure(ctx context.Context) error {
-	if e.Ready() {
+	if e.canSpeak() {
 		return nil
 	}
 	select {
@@ -210,17 +210,17 @@ func (e *Engine) Speak(ctx context.Context, text, language string, rate float64)
 		// caller hears about this instead of being handed silence.
 		return nil, "", errors.New("there is no text to read out loud")
 	}
-	if runes := []rune(text); len(runes) > maxTextRunes {
+	if runes := []rune(text); len(runes) > MaxTextRunes {
 		// Cut on a rune so the text ends in a word rather than in half of a
 		// UTF-8 sequence, which piper would read out as a stray character.
-		text = string(runes[:maxTextRunes])
+		text = string(runes[:MaxTextRunes])
 	}
 	// A render never installs anything itself. When the engine is not ready it
 	// starts the download on the engine's own context and bows out at once: the
 	// listener is waiting now, 150 MB will not be here now, and an install this
 	// request owned would be cancelled by the very browser that is waiting for
 	// it.
-	if !e.Ready() {
+	if !e.canSpeak() {
 		e.startInstall()
 		return nil, "", ErrInstalling
 	}
@@ -286,10 +286,7 @@ func (e *Engine) Speak(ctx context.Context, text, language string, rate float64)
 // has got.
 func (e *Engine) Status() Status {
 	inst := e.resolve()
-	status := Status{Path: inst.binary, Voices: installedVoices(inst.voices)}
-	if status.Path == "" {
-		status.Path = binaryPath(e.Dir)
-	}
+	status := Status{Voices: installedVoices(inst.voices)}
 
 	e.mu.Lock()
 	installing, progress, lastErr := e.installing, e.progress, e.lastErr

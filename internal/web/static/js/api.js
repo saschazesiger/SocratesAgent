@@ -1,6 +1,6 @@
 // Small helpers shared by every page: JSON fetch, DOM building and toasts.
 
-import { request, HttpError, NetworkError, mountConnectionBar } from './net.js';
+import { request, NetworkError, mountConnectionBar } from './net.js';
 
 export { clientKey, onWake, LiveStream, Outbox, HttpError, NetworkError, RetryLater, setClass, CONNECTION_GRACE } from './net.js';
 
@@ -63,14 +63,6 @@ export function el(tag, attrs = {}, ...children) {
   return node;
 }
 
-export function escapeHtml(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
 // confirmDialog is the app's own version of window.confirm: same promise in,
 // same yes or no out, but it looks like the rest of Socrates, can say what the
 // button actually does, and does not freeze the page while it is open.
@@ -79,13 +71,12 @@ export function confirmDialog(options = {}) {
     title,
     body = '',
     confirmLabel = 'Confirm',
-    cancelLabel = 'Cancel',
     danger = false,
   } = options;
 
   return new Promise((resolve) => {
     const dialog = el('dialog', { class: 'modal' });
-    const cancel = el('button', { class: 'btn sm', type: 'button', text: cancelLabel });
+    const cancel = el('button', { class: 'btn sm', type: 'button', text: 'Cancel' });
     const accept = el('button', {
       class: 'btn sm ' + (danger ? 'danger' : 'primary'), type: 'button', text: confirmLabel,
     });
@@ -140,14 +131,6 @@ export function toast(message, kind = '') {
     node.style.opacity = '0';
     setTimeout(() => node.remove(), 260);
   }, kind === 'error' ? 6000 : 3200);
-}
-
-export function fmtDuration(ms) {
-  if (!ms || ms < 0) return '';
-  const s = Math.round(ms / 1000);
-  if (s < 60) return s + 's';
-  const m = Math.floor(s / 60);
-  return m + 'm ' + String(s % 60).padStart(2, '0') + 's';
 }
 
 export function fmtClock(seconds) {

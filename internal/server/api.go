@@ -81,11 +81,6 @@ func (s *Server) handleGetChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	runs, err := s.store.ListRuns(id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
 	settings := s.Settings()
 	// The chat's own folder under the workspace root is where it works unless
 	// it was pointed somewhere else. Both are sent: the effective directory is
@@ -100,7 +95,6 @@ func (s *Server) handleGetChat(w http.ResponseWriter, r *http.Request) {
 		"chat":                chat,
 		"messages":            messages,
 		"steps":               steps,
-		"runs":                runs,
 		"rev":                 s.store.Rev(),
 		"busy":                s.engine.Busy(id),
 		"effective_workspace": workspace,
@@ -253,11 +247,6 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rev, _ := strconv.ParseInt(r.URL.Query().Get("rev"), 10, 64)
-	// Last-Event-ID is what the browser resends on its own automatic retry, so
-	// it is honoured as an equal alternative to the explicit query parameter.
-	if resume, err := strconv.ParseInt(strings.TrimSpace(r.Header.Get("Last-Event-ID")), 10, 64); err == nil && resume > rev {
-		rev = resume
-	}
 
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
@@ -329,7 +318,6 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		"rev":      snapshotRev,
 		"busy":     s.engine.Busy(id),
 		"messages": missed,
-		"now":      time.Now().UnixMilli(),
 	}
 	// Only a reconnect needs the reconciliation set; a fresh page already has
 	// the authoritative list and sending it again would be noise.
@@ -358,7 +346,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			}
 			flusher.Flush()
 		case <-ticker.C:
-			if !send(map[string]any{"type": "ping", "now": time.Now().UnixMilli()}) {
+			if !send(map[string]any{"type": "ping"}) {
 				return
 			}
 		}

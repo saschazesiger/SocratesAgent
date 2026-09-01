@@ -1,5 +1,19 @@
+# Everything here is swept into the build context by `COPY . .`, and every one
+# of them busts the layer cache on a rebuild without ever reaching the image.
 .git
 .github
-dist
+
+# build output
+/socrates
+*.exe
+
+# local data
 *.db
+*.db-shm
+*.db-wal
+/data/
+.env
+
+# not needed to build anything
+docs
 node_modules

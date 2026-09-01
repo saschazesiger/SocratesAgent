@@ -60,7 +60,6 @@ function runClass(run) {
   if (run.d) cls += ' td';
   if (run.i) cls += ' ti';
   if (run.u) cls += ' tu';
-  if (run.s) cls += ' ts';
   return cls.slice(1);
 }
 
@@ -128,7 +127,7 @@ function styleSignature(styled, caret) {
       sig += '|' + (typeof run.t === 'string' ? run.t.length : 0)
         + (run.fg || '') + ':' + (run.bg || '')
         + (run.b ? 'b' : '') + (run.d ? 'd' : '') + (run.i ? 'i' : '')
-        + (run.u ? 'u' : '') + (run.s ? 's' : '');
+        + (run.u ? 'u' : '');
     }
     sig += ';';
   }
@@ -228,7 +227,6 @@ export function mountTerminalDock(options = {}) {
       // The coloured screen and the caret, both from the session's own stream.
       styled: null,
       cursor: null,
-      cols: 0,
       rows: 0,
       stream: null,
       gone: false,
@@ -265,9 +263,8 @@ export function mountTerminalDock(options = {}) {
     if (!id) return;
     const running = detail.running !== false && step.status === 'running';
     const session = note(id, {
-      name: step.title || detail.skill || detail.tool || 'terminal',
+      name: step.title || detail.skill || 'terminal',
       command: detail.command || '',
-      cols: detail.cols || 0,
       rows: detail.rows || 0,
     });
     if (!session) return;
@@ -301,7 +298,6 @@ export function mountTerminalDock(options = {}) {
         name: term.name || 'terminal',
         command: term.command || '',
         screen: term.screen || '',
-        cols: term.cols || 0,
         rows: term.rows || 0,
         running: term.running,
         exitCode: term.exit_code || 0,
@@ -347,7 +343,6 @@ export function mountTerminalDock(options = {}) {
           name: term.name || 'terminal',
           command: term.command || '',
           screen: term.screen || '',
-          cols: term.cols || 0,
           rows: term.rows || 0,
           running: term.running !== false,
           exitCode: term.exit_code || 0,
@@ -404,7 +399,6 @@ export function mountTerminalDock(options = {}) {
         session.cursor = term.cursor || null;
         session.running = !!term.running;
         session.exitCode = term.exit_code || 0;
-        session.cols = term.cols || session.cols;
         session.rows = term.rows || session.rows;
         if (term.name) session.name = term.name;
         if (term.command) session.command = term.command;
@@ -592,9 +586,9 @@ export function mountTerminalDock(options = {}) {
       state.paintedIn = frame;
     }
     if (!session) {
-      if (state.painted !== ' none') {
+      if (state.painted !== '\0none') {
         frame.screen.textContent = '';
-        state.painted = ' none';
+        state.painted = '\0none';
       }
       frame.empty.hidden = false;
       frame.empty.textContent = 'Starting a shell…';
@@ -613,14 +607,14 @@ export function mountTerminalDock(options = {}) {
     // The caret belongs to a program that is still running; a finished session
     // is a picture of what happened, not a place to type.
     const caret = session.running && session.cursor && session.cursor.visible ? session.cursor : null;
-    const signature = text + ' ' + styleSignature(styled, caret);
+    const signature = text + '\0' + styleSignature(styled, caret);
     if (state.painted !== signature) {
       // Auto scroll only while the person is already at the bottom: someone
       // reading back through what happened must not be yanked to the end by
       // the next redraw.
       const atBottom = frame.screen.scrollHeight - frame.screen.scrollTop - frame.screen.clientHeight < 24;
       // Colours when the server sent them, plain text when it did not, which
-      // is what an old server and an uncoloured program both look like.
+      // is what an uncoloured program looks like.
       if (styled) frame.screen.replaceChildren(styledFragment(styled, caret));
       else frame.screen.textContent = text;
       state.painted = signature;
@@ -814,7 +808,7 @@ export function mountTerminalDock(options = {}) {
       name = 'shift+enter';
     } else if (KEY_NAMES[event.key]) {
       name = event.key === 'Tab' && event.shiftKey ? 'shift+tab' : KEY_NAMES[event.key];
-    } else if (/^F\d{1,2}$/.test(event.key)) {
+    } else if (/^F([1-9]|1[0-2])$/.test(event.key)) {
       name = event.key.toLowerCase();
     }
     if (name) {
@@ -940,7 +934,6 @@ export function mountTerminalDock(options = {}) {
     // The top bar deciding what the pane shows. It is not news to it, so it is
     // not reported back.
     setOpen: (open) => setOpen(open, true, false),
-    hasSession: () => state.sessions.size > 0,
     // Whether a program is running at this chat's terminal, which is what the
     // dot on the slider says from the other three stops.
     isLive: () => !!liveSession(),

@@ -106,9 +106,17 @@ func stamp(name string, data []byte) []byte {
 // asset returns a file as it is served, or nil when there is no such file.
 func asset(name string) []byte { return assets[path.Clean(strings.TrimPrefix(name, "/"))] }
 
-// Static serves the css/js assets.
+// Static serves the css, js and image assets. The documents are deliberately
+// not among them: a page is served by ServePage, behind whatever gate its own
+// route puts in front of it, and a second address that hands out the same
+// document without that gate - and without the headers ServePage sets - is one
+// document behaving two ways depending on how it was asked for.
 func Static() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.EqualFold(path.Ext(path.Clean(r.URL.Path)), ".html") {
+			http.NotFound(w, r)
+			return
+		}
 		data := asset(r.URL.Path)
 		if data == nil {
 			http.NotFound(w, r)

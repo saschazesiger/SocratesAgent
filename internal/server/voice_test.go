@@ -468,26 +468,25 @@ func TestTranscribeNamesTheLanguageForATranscriptionModel(t *testing.T) {
 	}
 }
 
-// The page reads the language and the speaking rate out of the preferences,
-// and nothing else about the voice: there is no provider left to tell it
-// about, and a page that still asked for one would be waiting for a key that
-// is never coming.
-func TestPreferencesCarryTheLanguageAndTheRate(t *testing.T) {
+// The page reads the language out of the preferences, and nothing else about
+// the voice. There is no provider left to tell it about, and the speaking rate
+// is not its business either: the server hands the rate to piper itself, so a
+// page given one would only be carrying a number it cannot use.
+func TestPreferencesCarryTheLanguage(t *testing.T) {
 	env := newEnv(t)
 	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
 	_, prefs := env.do(t, env.client, "GET", "/api/preferences", "")
 	if prefs["language"] != config.DefaultLanguage {
 		t.Fatalf("language = %#v", prefs["language"])
 	}
-	if prefs["tts_rate"] != float64(1) {
-		t.Fatalf("tts_rate = %#v", prefs["tts_rate"])
+	for _, gone := range []string{"tts_provider", "tts_rate"} {
+		if _, present := prefs[gone]; present {
+			t.Fatalf("%s is still offered to the page: %#v", gone, prefs)
+		}
 	}
-	if _, present := prefs["tts_provider"]; present {
-		t.Fatalf("the provider is still offered to the page: %#v", prefs)
-	}
-	env.configureVoice(t, map[string]any{"language": "de", "tts_rate": 1.5})
+	env.configureVoice(t, map[string]any{"language": "de"})
 	_, prefs = env.do(t, env.client, "GET", "/api/preferences", "")
-	if prefs["language"] != "de" || prefs["tts_rate"] != 1.5 {
+	if prefs["language"] != "de" {
 		t.Fatalf("preferences = %#v", prefs)
 	}
 }

@@ -134,7 +134,7 @@ function collect() {
 
 const pickers = {};
 
-// buildModelPickers replaces the model text fields with dropdowns. They are
+// buildModelPickers fills the empty slots the page leaves for them. They are
 // built before the catalogue arrives, so the dashboard is usable straight away
 // and simply gains its list a moment later.
 function buildModelPickers() {

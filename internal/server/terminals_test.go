@@ -180,7 +180,11 @@ func TestTerminalIsLiveAndTakesInputFromTheUser(t *testing.T) {
 		t.Fatalf("sending the message failed: %d %#v", res.StatusCode, sent)
 	}
 
-	// Wait for the session to show up in the chat's list.
+	// Wait for the session to show up in the chat's list with its first screen
+	// on it. A session is listed the moment it exists, which is a moment before
+	// the program inside it has printed anything, so what this waits for is the
+	// screen rather than the row - otherwise the assertion below is a race with
+	// a shell's first prompt and loses it on a loaded machine.
 	var session map[string]any
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
@@ -188,7 +192,9 @@ func TestTerminalIsLiveAndTakesInputFromTheUser(t *testing.T) {
 		terminals, _ := listed["terminals"].([]any)
 		if len(terminals) > 0 {
 			session = terminals[0].(map[string]any)
-			break
+			if screen, _ := session["screen"].(string); strings.Contains(screen, "ready>") {
+				break
+			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -215,7 +221,7 @@ func TestTerminalIsLiveAndTakesInputFromTheUser(t *testing.T) {
 
 	// The user takes the keyboard.
 	res, _ = env.do(t, env.client, "POST", "/api/terminals/"+id+"/input",
-		`{"text":"typed by the user","submit":true}`)
+		`{"text":"typed by the user","keys":["enter"]}`)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("typing into the session failed: %d", res.StatusCode)
 	}
@@ -729,14 +735,11 @@ func TestUserOpensATerminal(t *testing.T) {
 		t.Fatalf("the chat should list exactly the new session: %#v", terminals)
 	}
 
-	// A second one is refused, with the id of the session that already exists
-	// so the browser can simply show it.
+	// A second one is refused, and told so plainly: the browser fetches the
+	// list from here, which is where the session it already has is described.
 	res, again := env.do(t, env.client, "POST", "/api/chats/"+chatID+"/terminals", `{}`)
 	if res.StatusCode != http.StatusConflict {
 		t.Fatalf("a second terminal should be refused, got %d %#v", res.StatusCode, again)
-	}
-	if again["terminal_id"] != id {
-		t.Errorf("terminal_id = %v, want the running session %q", again["terminal_id"], id)
 	}
 	if s, _ := again["error"].(string); strings.TrimSpace(s) == "" {
 		t.Error("the refusal came without an explanation")

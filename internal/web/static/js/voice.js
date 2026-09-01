@@ -223,7 +223,6 @@ export class Recorder {
       base64: toBase64(new Uint8Array(wav)),
       format: 'wav',
       seconds: total / sampleRate,
-      bytes: wav.byteLength,
     };
   }
 }
@@ -291,9 +290,12 @@ let speakingFlag = false;
 let errorListener = null;
 
 /**
- * onSpeechError registers that notice. One per page. It is called with the
- * sentence and the toast kind it should be shown as - '' for an install that
- * is simply not finished yet, 'error' for everything that actually went wrong.
+ * onSpeechError registers that notice - one slot, so the last caller wins.
+ * The chat page is the one that takes it, because an answer it reads out by
+ * itself has nowhere else to report from; the dashboard reads on a button
+ * press and shows the failure at the button. It is called with the sentence
+ * and the toast kind it should be shown as - '' for an install that is simply
+ * not finished yet, 'error' for everything that actually went wrong.
  */
 export function onSpeechError(fn) { errorListener = fn; }
 
@@ -317,17 +319,6 @@ function speechError(message, kind) {
   return err;
 }
 
-// failureReason pulls the sentence the server wrote out of a failed response.
-// While the voice is still installing itself that sentence carries how far it
-// has got, which is the one answer worth repeating word for word.
-async function failureReason(res) {
-  try {
-    const body = await res.json();
-    if (body && body.error) return String(body.error);
-  } catch { /* not json */ }
-  return 'The voice answered ' + res.status + '.';
-}
-
 // Every utterance belongs to a generation. Stopping bumps it, so the callbacks
 // of the speech that was interrupted quietly stop instead of queueing the rest
 // of a cancelled answer on top of the new one.
@@ -346,32 +337,22 @@ export function stopSpeaking() {
   }
 }
 
-// The deadline for one render, in milliseconds, from how much text it is.
-//
-// It used to be a flat twenty seconds, which was right while the audio came
-// from a provider over the network: twenty seconds of silence there meant a
-// connection that had died. The voice runs on this machine now, and a long
-// answer honestly takes longer than a short one, so the flat deadline cut off
-// every answer past roughly 4,700 characters - the server rendered it
-// perfectly and the browser hung up on it, telling the listener the voice had
-// not answered.
+// The deadline for one render, in milliseconds, from how much text it is. The
+// voice runs on this machine, so a long answer honestly takes longer than a
+// short one and a flat deadline hangs up on exactly the answers the server
+// rendered perfectly.
 //
 // The slope comes from measuring rather than from taste: German at rate 1.0 on
 // an x86 laptop renders 2,000 characters in 7.9 s, 4,000 in 16.0 s and 6,000
 // in 25.8 s, so a little over 4 ms per character. Four times that leaves room
-// for the ARM board this also runs on. The floor keeps the old protection
-// against a request that never gets anywhere at all, which is the failure a
-// short answer really has.
+// for the ARM board this also runs on. The floor is the protection against a
+// request that never gets anywhere at all, which is the failure a short answer
+// really has.
 //
-// The ceiling is not a limit on rendering and must not become one. It sat at
-// 90 s, which the slope reaches at about 5,600 characters, so at full length
-// the headroom was gone again: an ARM board reading 6,000 characters at rate
-// 0.7 takes longer than that, the server renders the answer perfectly and the
-// browser hangs up on it - the same defect as the flat deadline, for a smaller
-// audience. What bounds a render is the server's own five minute timeout,
-// which fails with a sentence saying so. The ceiling now sits just above it,
-// so that timeout always fires first and the listener is told the truth
-// instead of being told the voice did not answer.
+// The ceiling is not a limit on rendering and must not become one: it sits
+// just above the five minutes the server allows one render, so that timeout
+// always fires first and fails with a sentence saying what happened, instead
+// of the browser hanging up and telling the listener the voice did not answer.
 const SPEECH_MS_PER_CHAR = 16;
 const SPEECH_FLOOR_MS = 20000;
 const SPEECH_CEILING_MS = 330000;
@@ -382,6 +363,22 @@ export function speechDeadline(length) {
   return Math.min(SPEECH_CEILING_MS, Math.max(SPEECH_FLOOR_MS, scaled));
 }
 
+// network is the shared request layer, pulled in when it is first needed
+// rather than at the top of the file. net.js registers its window listeners
+// the moment it loads, and this module is also loaded in a bare Node - by
+// internal/web/voice_test.go, to check the deadline arithmetic against the
+// file that is really served - where there is no window to register them on.
+//
+// The build stamp is carried over from this module's own address. A specifier
+// does not inherit it and the server only stamps static imports, so without
+// this the browser would fetch an unstamped second copy of net.js with its own
+// connection state, and the offline worker - which keeps the stamped address -
+// would have nothing to answer with.
+function network() {
+  const here = new URL(import.meta.url);
+  return import(new URL('./net.js' + here.search, here).href);
+}
+
 /**
  * fetchSpeech renders one line and hands back the audio without playing it,
  * for the caller that needs the sound before the moment it is needed.
@@ -390,31 +387,40 @@ export function speechDeadline(length) {
 export async function fetchSpeech(text) {
   const content = plainSpeech(text);
   if (!content) return null;
+  const { request, HttpError } = await network();
   // A stalled connection must not leave the answer unsaid for ever. The
   // request gets a deadline of its own, long enough for this much text, and
-  // gives up out loud instead.
+  // gives up out loud instead. It is passed as the signal rather than as the
+  // timeout, because the timeout is per attempt and this one is the whole
+  // wait; the per attempt timer is turned off so only this deadline decides.
   const controller = new AbortController();
   const limit = speechDeadline(content.length);
   const deadline = setTimeout(() => controller.abort(), limit);
   let res;
   try {
-    res = await fetch('/api/voice/speak', {
+    // raw hands back the response itself, because what comes back is audio
+    // rather than JSON. One attempt only: a render that failed halfway is not
+    // worth the minutes a retry would spend before the listener hears
+    // anything, and the reason is more useful than another wait.
+    res = await request('/api/voice/speak', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
+      body: { text: content },
+      raw: true,
+      attempts: 1,
       signal: controller.signal,
-      body: JSON.stringify({ text: content }),
+      timeout: 0,
     });
   } catch (err) {
+    // 503 is the voice saying it is still installing itself, which is progress
+    // rather than a failure and is shown as such. The sentence is the server's
+    // own: while the voice is installing it carries how far it has got.
+    if (err instanceof HttpError) throw speechError(err.message, err.status === 503 ? '' : 'error');
     throw speechError(err && err.name === 'AbortError'
       ? 'The voice did not answer within ' + Math.round(limit / 1000) + ' seconds.'
       : 'The server could not be reached, so nothing was read out loud.', 'error');
   } finally {
     clearTimeout(deadline);
   }
-  // 503 is the voice saying it is still installing itself, which is progress
-  // rather than a failure and is shown as such.
-  if (!res.ok) throw speechError(await failureReason(res), res.status === 503 ? '' : 'error');
   return await res.blob();
 }
 

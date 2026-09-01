@@ -18,7 +18,6 @@ type Request struct {
 	Pattern string   `json:"pattern,omitempty"`
 	QuietMS int      `json:"quiet_ms,omitempty"`
 	LimitMS int      `json:"limit_ms,omitempty"`
-	Signal  string   `json:"signal,omitempty"`
 }
 
 // Response is the reply to a Request, or - with ID 0 - a pushed update.
@@ -45,7 +44,10 @@ const (
 	OpClose  = "close"  // end the session
 )
 
-// Response types.
+// Response types. The client only ever discriminates on TypeError - it matches
+// a reply to its request by id, so it already knows what it asked for - but the
+// host still names every reply, because the wire is the place where the two
+// processes agree on what they are saying to each other.
 const (
 	TypeOK     = "ok"
 	TypeError  = "error"

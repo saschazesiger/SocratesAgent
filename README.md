@@ -127,11 +127,14 @@ Socrates reads the rendered screen exactly as a person would see it.
 
 ## Requirements
 
-- **Go 1.24+** — only to build the binary.
+- **Go 1.25+** — only to build the binary.
 - **An OpenRouter API key** — <https://openrouter.ai/keys>.
 - **A Unix-like system** for the full experience — macOS, Linux, WSL. Socrates
   builds and runs on Windows, but without a pseudo terminal there, full screen
   CLIs fall back to their non interactive behaviour.
+- **`piper`** — only on macOS, and only for the voice that reads answers out
+  loud: it is the one thing Socrates cannot install for you there. One
+  `brew install piper`. See [Voice](#voice).
 - **At least one agent CLI** in your `PATH`, signed in:
   [`claude`](https://claude.com/claude-code),
   [`codex`](https://github.com/openai/codex),
@@ -155,12 +158,25 @@ go install github.com/saschazesiger/SocratesAgent@latest
 SocratesAgent            # the binary takes the name of the repository
 ```
 
-Or with Docker (the image also brings the three agent CLIs and the voice):
+Or with Docker (the image also brings the three agent CLIs, `cloudflared` and
+the voice):
 
 ```bash
 docker build -t socrates .
 docker run -p 8080:8080 -v socrates-data:/data socrates
 ```
+
+Each of them is a build argument, so you can leave out whatever you would
+rather mount yourself or simply not carry:
+
+```bash
+docker build -t socrates --build-arg INSTALL_AGENTS=0 --build-arg INSTALL_VOICE=0 .
+```
+
+`INSTALL_AGENTS`, `INSTALL_CLOUDFLARED` and `INSTALL_VOICE` all default to `1`,
+and `VERSION` — what `socrates -version` prints — defaults to `docker`. Nothing
+is lost by leaving one out: Socrates downloads `cloudflared` and the voice into
+its data directory the first time it needs them.
 
 Then open <http://localhost:8080>.
 
@@ -170,8 +186,9 @@ Then open <http://localhost:8080>.
    your OpenRouter key right away, and decide whether the instance should be
    published through a Cloudflare tunnel — both can also be changed later.
 2. You land in the admin dashboard. Check the skills, press **Run checks** — it
-   verifies your key, the workspace directory, the terminal and every enabled
-   skill.
+   verifies your key, the workspace directory, the terminal, every enabled
+   skill, remote access, and both halves of voice: the transcription model it
+   would send a recording to, and the local voice that reads the answer back.
 3. Go back to the chat and ask for something.
 
 <p align="center">
@@ -295,17 +312,26 @@ above.
   blocked.
 - **Speech to text** goes through the transcription model chosen in the
   dashboard — an audio capable chat model such as `google/gemini-2.5-flash`, or
-  a dedicated transcriber such as `openai/whisper-1`. Socrates works out which
-  of the two endpoints a model lives at and remembers it. The browser records
-  raw PCM and sends a 16 kHz WAV, so no ffmpeg is involved.
+  a dedicated transcriber such as `openai/gpt-transcribe` or `deepgram/nova-3`.
+  Socrates works out which of the two endpoints a model lives at and remembers
+  it. The browser records raw PCM and sends a 16 kHz WAV, so no ffmpeg is
+  involved.
 - **Text to speech** is one voice, running on the server, and there is nothing
   to configure: no provider, no model, no voice name, no API key and no
-  account. Socrates installs [Piper](https://github.com/rhasspy/piper) and the
-  voice for your language by itself the first time it starts — the Voice card
-  in the dashboard shows the download while it runs — and the Docker image
-  already has both baked in, so a container reads the first answer it is given.
-  German is `de_DE-thorsten-medium`, English is `en_US-ljspeech-medium`, and
-  the spoken language below is what picks between them.
+  account. Socrates installs [Piper](https://github.com/rhasspy/piper) and
+  both voices by itself the first time it starts — the Voice card in the
+  dashboard shows the download while it runs — and the Docker image already has
+  all of it baked in, so a container reads the first answer it is given. German
+  is `de_DE-thorsten-medium`, English is `en_US-ljspeech-medium`, and the spoken
+  language below is what picks between them. Both are installed whichever
+  language you speak, on purpose: the language is a setting you flip, and a flip
+  that starts a 60 MB download is a broken experience.
+  - **macOS is the exception.** There Socrates installs nothing and says so:
+    the published macOS builds of this Piper release ship without the libraries
+    their own binary loads, so an installation would look finished and then
+    abort inside the loader. Run `brew install piper` once and Socrates picks it
+    up from your `PATH`; the two voices are still downloaded and managed for
+    you. Linux (x86_64, aarch64, armv7l) and Windows x86_64 install themselves.
   - **It sounds synthetic**, clearly so, and it is completely intelligible.
     That is the trade: a small neural model on your own CPU instead of a voice
     that is indistinguishable from a person and belongs to somebody else.
@@ -314,7 +340,8 @@ above.
     the answer starts almost as soon as it is written.
   - **It costs nothing**, per character or otherwise, and it needs no
     connection to a third party at any point. What it needs is one download of
-    about 150 MB — the engine and both voices — and only the first time.
+    about 150 MB — the engine and both voices — and only the first time; it
+    unpacks to about 180 MB under `<data>/voice`.
   - The bundled engine ships GPL-3.0 and MIT components; what they are and
     where their source lives is in
     [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
@@ -366,9 +393,10 @@ reaches your login page, so treat it as a temporary demo door.
 
 **Named tunnel** — your own hostname, your own Cloudflare account:
 
-1. Zero Trust → Networks → Tunnels → **Create a tunnel** → *Cloudflared*.
-2. Copy the token out of the install command it shows you and paste it into
-   Socrates.
+1. Zero Trust → Networks → Tunnels → **Create a tunnel** → *Cloudflared*, name
+   it and save it.
+2. Cloudflare then shows **Install and run connector**. Copy the token out of
+   the install command on that screen and paste it into Socrates.
 3. Add a public hostname for the tunnel and point it at the local address that
    the admin dashboard displays (`http://localhost:8080` by default). This is
    exactly why Socrates keeps serving locally.
@@ -387,10 +415,16 @@ process list, and it is redacted from the log tail in the dashboard.
 | `-addr` | `SOCRATES_ADDR` | `:8080` | listen address; use `127.0.0.1:8080` to accept local connections only |
 | `-data` | `SOCRATES_DATA_DIR` | `~/.socrates` | database and workspaces |
 | `-version` | | | print the version |
-| | `SOCRATES_SHELL` | `$SHELL` | the shell a bare terminal session starts |
+| | `SOCRATES_SHELL` | `$SHELL`, `%COMSPEC%` on Windows | the shell a bare terminal session starts |
 | | `OPENROUTER_API_KEY` | | seeds the key on first start |
 | | `SOCRATES_PIPER_DIR` | | a Piper installation to use instead of the managed one; the Docker image sets it |
 | | `SOCRATES_WORKSPACE_ROOT` | `<data>/workspaces` | default workspace root |
+
+There are two subcommands. `socrates serve` is the same thing as plain
+`socrates` and takes the same flags, for anyone who prefers to say it out loud.
+`socrates term-host` is internal: it hosts one terminal session and Socrates
+starts it itself — that is the box in the diagram above, and not something to
+run by hand.
 
 Everything else lives in the admin dashboard and is stored in
 `<data>/socrates.db` — a single SQLite file that holds settings, chats,
@@ -419,7 +453,9 @@ Socrates is built for a single trusted operator.
 ## Development
 
 ```bash
-make check       # gofmt, go vet, go test, go build
+make check       # exactly what CI runs: gofmt, go vet, go test -race,
+                 # go build, go mod tidy
+make fmt         # the one target that rewrites your files
 go test ./...    # unit tests, a scripted interactive CLI driven through a real
                  # pseudo terminal, and an end to end agent loop against a mock
 ```
@@ -430,7 +466,7 @@ Layout:
 main.go                  flags, startup, graceful shutdown
 internal/config          settings document and defaults
 internal/store           SQLite persistence (chats, runs, steps, messages)
-internal/openrouter      streaming chat completions, models, audio
+internal/openrouter      streaming chat completions, models, transcription
 internal/piper           the local voice: its installer and the renderer
 internal/term            pseudo terminals, screen rendering, session hosts
 internal/agent           the orchestration loop, tools, event bus

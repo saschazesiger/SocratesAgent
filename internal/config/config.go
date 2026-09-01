@@ -12,11 +12,16 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/saschazesiger/SocratesAgent/internal/openrouter"
 )
 
 // Defaults that are used on a fresh installation.
 const (
-	DefaultOpenRouterBaseURL = "https://openrouter.ai/api/v1"
+	// Where OpenRouter lives. The address belongs to the client that talks to
+	// it, so it is named there and only borrowed here - two copies of a URL
+	// are two things to keep in step.
+	DefaultOpenRouterBaseURL = openrouter.DefaultBaseURL
 	DefaultChatModel         = "anthropic/claude-sonnet-4.5"
 	DefaultTranscribeModel   = "google/gemini-2.5-flash"
 	DefaultTitleModel        = "google/gemini-2.5-flash-lite"
@@ -148,22 +153,16 @@ type spokenLanguage struct {
 	// Name is the English name of the language, which is what goes into an
 	// instruction to a model.
 	Name string
-	// Tag is the BCP 47 tag, which is how a language is named everywhere
-	// outside this app.
-	Tag string
 }
 
 var spokenLanguages = map[string]spokenLanguage{
-	LanguageEN: {Name: "English", Tag: "en-US"},
-	LanguageDE: {Name: "German", Tag: "de-DE"},
+	LanguageEN: {Name: "English"},
+	LanguageDE: {Name: "German"},
 }
 
 // LanguageName is the English name of a language, which is the form a model
 // understands in an instruction: "English" or "German".
 func LanguageName(code string) string { return spokenLanguages[NormalizeLanguage(code)].Name }
-
-// LanguageTag is the BCP 47 tag of a language: "en-US" or "de-DE".
-func LanguageTag(code string) string { return spokenLanguages[NormalizeLanguage(code)].Tag }
 
 // NormalizeLanguage maps whatever is in the settings document onto one of the
 // two languages. A regional tag such as "de-CH" counts as its base language,
@@ -206,28 +205,6 @@ type VoiceSettings struct {
 
 	SpeakInAutoMode bool `json:"speak_in_auto_mode"`
 	SpeakInChatMode bool `json:"speak_in_chat_mode"`
-
-	// What older settings documents carried, from the years when reading an
-	// answer out loud was a thing you configured: an OpenAI compatible
-	// endpoint of your own, then a choice between the browser's synthesiser,
-	// an OpenRouter voice model and Google Cloud, each with its own model,
-	// voice and key. None of that is left - Piper reads every answer here, and
-	// picks its voice from the language above - so Normalize reads the one of
-	// them that still means something, the language playback used to be in,
-	// and clears them all. That is what takes them out of an existing
-	// installation's settings document rather than leaving them sitting in it,
-	// ignored, for ever.
-	TTSLanguage string `json:"tts_language,omitempty"`
-	TTSProvider string `json:"tts_provider,omitempty"`
-	TTSModel    string `json:"tts_model,omitempty"`
-	TTSVoice    string `json:"tts_voice,omitempty"`
-	GoogleVoice string `json:"google_voice,omitempty"`
-	STTProvider string `json:"stt_provider,omitempty"`
-	STTBaseURL  string `json:"stt_base_url,omitempty"`
-	STTAPIKey   string `json:"stt_api_key,omitempty"`
-	STTModel    string `json:"stt_model,omitempty"`
-	TTSBaseURL  string `json:"tts_base_url,omitempty"`
-	TTSAPIKey   string `json:"tts_api_key,omitempty"`
 }
 
 // AgentSettings configures the orchestration loop.
@@ -1136,14 +1113,7 @@ func (s *Settings) Normalize() {
 	if strings.TrimSpace(s.OpenRouter.TitleModel) == "" {
 		s.OpenRouter.TitleModel = s.OpenRouter.ChatModel
 	}
-	// An older settings document carried the language on the playback side
-	// only. Reading it here is what keeps an existing installation's choice
-	// alive now that one setting covers the whole conversation.
-	if strings.TrimSpace(s.Voice.Language) == "" {
-		s.Voice.Language = s.Voice.TTSLanguage
-	}
 	s.Voice.Language = NormalizeLanguage(s.Voice.Language)
-	s.Voice.TTSLanguage = ""
 	if strings.TrimSpace(s.Voice.STTPrompt) == "" {
 		s.Voice.STTPrompt = d.Voice.STTPrompt
 	}
@@ -1152,16 +1122,6 @@ func (s *Settings) Normalize() {
 	if s.Voice.TTSRate <= 0 {
 		s.Voice.TTSRate = 1
 	}
-	// Everything an answer used to be read out loud by leaves the document
-	// here. An installation that is upgraded still has a provider, a model, a
-	// voice and possibly a Google service account in its settings; none of it
-	// decides anything any more, and a key nobody uses is better gone than
-	// kept.
-	s.Voice.TTSProvider, s.Voice.TTSModel, s.Voice.TTSVoice = "", "", ""
-	s.Voice.GoogleVoice = ""
-	s.Voice.STTProvider, s.Voice.STTModel = "", ""
-	s.Voice.STTBaseURL, s.Voice.STTAPIKey = "", ""
-	s.Voice.TTSBaseURL, s.Voice.TTSAPIKey = "", ""
 	if strings.TrimSpace(s.Agent.SystemPrompt) == "" {
 		s.Agent.SystemPrompt = d.Agent.SystemPrompt
 	}

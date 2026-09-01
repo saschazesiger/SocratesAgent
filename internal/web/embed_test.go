@@ -96,6 +96,23 @@ func TestStampedAssetsAreKeptUnstampedOnesRevalidated(t *testing.T) {
 	}
 }
 
+// The documents have their own routes, and those routes are where signing in
+// is decided. Serving them from here as well would be a way around it.
+func TestPagesAreNotServedAsAssets(t *testing.T) {
+	for _, page := range []string{"/index.html", "/admin.html", "/login.html", "/setup.html"} {
+		if code := do(t, page).Code; code != http.StatusNotFound {
+			t.Errorf("GET /static%s = %d, want 404: a page has to come from its own route", page, code)
+		}
+	}
+	// The assets the login and setup pages need are public, or nobody could
+	// ever get as far as signing in.
+	for _, file := range []string{"/css/app.css", "/js/net.js", "/img/logo.png"} {
+		if code := do(t, file).Code; code != http.StatusOK {
+			t.Errorf("GET /static%s = %d, want 200", file, code)
+		}
+	}
+}
+
 func TestMissingAssetIsNotFound(t *testing.T) {
 	if code := do(t, "/js/nothing.js").Code; code != http.StatusNotFound {
 		t.Fatalf("want 404 for a file that is not there, got %d", code)

@@ -227,7 +227,6 @@ window.addEventListener('online', () => {
 export function mountConnectionBar() {
   const bar = document.createElement('div');
   bar.className = 'conn-bar';
-  bar.id = 'connBar';
   bar.hidden = true;
   bar.setAttribute('role', 'status');
   bar.setAttribute('aria-live', 'polite');
@@ -377,7 +376,6 @@ export async function request(path, options = {}) {
     signal,
     timeout = 25000,
     attempts,
-    onRetry,
   } = options;
 
   const headers = {};
@@ -392,11 +390,7 @@ export async function request(path, options = {}) {
 
   let lastErr = null;
   for (let attempt = 1; attempt <= limit; attempt++) {
-    if (attempt > 1) {
-      const delay = backoffDelay(attempt - 1);
-      if (onRetry) onRetry(attempt, delay);
-      await sleep(delay, signal);
-    }
+    if (attempt > 1) await sleep(backoffDelay(attempt - 1), signal);
     try {
       const res = await fetchOnce(path, { method, body: payload, headers, signal, timeout });
       // Anything that came back at all proves the connection is up, even a 500.
@@ -473,9 +467,6 @@ export class LiveStream {
     this.url = options.url;                        // () => string, read fresh on every attempt
     this.onMessage = options.onMessage || (() => {});
     this.onStatus = options.onStatus || (() => {});
-    // The server heartbeats every 10s; two and a half missed beats is a dead
-    // stream, whatever the socket claims.
-    this.staleAfter = options.staleAfter || 25000;
     this.reportsGlobal = options.reportsGlobal !== false;
     this.source = null;
     this.attempt = 0;
@@ -609,7 +600,8 @@ export class LiveStream {
       return;
     }
     if (!this.source || this.status !== 'live') return;
-    if (Date.now() - this.lastData > this.staleAfter) this.reconnect(0);
+    // Two and a half missed beats of the server's ten second heartbeat.
+    if (Date.now() - this.lastData > 25000) this.reconnect(0);
   }
 
   reconnect(delay) {

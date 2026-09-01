@@ -22,7 +22,6 @@ type Handle struct {
 	id     string
 	name   string
 	chatID string
-	dir    string
 	meta   map[string]string
 
 	conn net.Conn
@@ -41,12 +40,12 @@ type Handle struct {
 	readyOnce sync.Once
 }
 
-func newHandle(id, name, chatID, dir string, meta map[string]string, conn net.Conn) *Handle {
+func newHandle(id, name, chatID string, meta map[string]string, conn net.Conn) *Handle {
 	if meta == nil {
 		meta = map[string]string{}
 	}
 	h := &Handle{
-		id: id, name: name, chatID: chatID, dir: dir, meta: meta,
+		id: id, name: name, chatID: chatID, meta: meta,
 		conn: conn, enc: json.NewEncoder(conn),
 		pending:  map[int64]chan Response{},
 		watchers: map[chan State]struct{}{},
@@ -178,7 +177,6 @@ func (h *Handle) call(ctx context.Context, req Request, timeout time.Duration) (
 func (h *Handle) ID() string     { return h.id }
 func (h *Handle) Name() string   { return h.name }
 func (h *Handle) ChatID() string { return h.chatID }
-func (h *Handle) Dir() string    { return h.dir }
 
 // Meta returns what the caller attached to the session when it was opened.
 func (h *Handle) Meta(key string) string {
@@ -337,7 +335,7 @@ func (h *Handle) WaitChange(ctx context.Context, since int64, limit time.Duratio
 
 // Interrupt presses Ctrl+C.
 func (h *Handle) Interrupt(ctx context.Context) error {
-	_, err := h.call(ctx, Request{Op: OpSignal, Signal: "int"}, 10*time.Second)
+	_, err := h.call(ctx, Request{Op: OpSignal}, 10*time.Second)
 	return err
 }
 

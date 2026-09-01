@@ -1,6 +1,7 @@
 // Package openrouter is a small client for the OpenRouter API: streaming chat
-// completions with tool calling, the model catalogue, plus the audio helpers
-// Socrates needs for voice mode.
+// completions with tool calling, the model catalogue, and the transcription
+// half of voice mode. Reading an answer out loud is not here - that is Piper,
+// on this machine.
 package openrouter
 
 import (
@@ -19,6 +20,11 @@ import (
 	"time"
 )
 
+// DefaultBaseURL is where OpenRouter lives. It is named here, in the client
+// that talks to it, and config.DefaultOpenRouterBaseURL is this same constant
+// so that the address exists once.
+const DefaultBaseURL = "https://openrouter.ai/api/v1"
+
 // Client talks to OpenRouter, which speaks the OpenAI API.
 type Client struct {
 	BaseURL string
@@ -31,7 +37,7 @@ type Client struct {
 // put a stand in where OpenRouter would be.
 func New(baseURL, apiKey string) *Client {
 	if strings.TrimSpace(baseURL) == "" {
-		baseURL = "https://openrouter.ai/api/v1"
+		baseURL = DefaultBaseURL
 	}
 	return &Client{
 		BaseURL: strings.TrimRight(baseURL, "/"),
@@ -81,21 +87,9 @@ type ChatRequest struct {
 	Model       string    `json:"model"`
 	Messages    []Message `json:"messages"`
 	Tools       []Tool    `json:"tools,omitempty"`
-	ToolChoice  any       `json:"tool_choice,omitempty"`
 	Temperature *float64  `json:"temperature,omitempty"`
 	MaxTokens   int       `json:"max_tokens,omitempty"`
 	Stream      bool      `json:"stream,omitempty"`
-	Usage       *struct {
-		Include bool `json:"include"`
-	} `json:"usage,omitempty"`
-}
-
-// Usage reports token consumption.
-type Usage struct {
-	PromptTokens     int     `json:"prompt_tokens"`
-	CompletionTokens int     `json:"completion_tokens"`
-	TotalTokens      int     `json:"total_tokens"`
-	Cost             float64 `json:"cost"`
 }
 
 // Result is the outcome of a (streamed) completion.
@@ -104,8 +98,6 @@ type Result struct {
 	Reasoning    string
 	ToolCalls    []ToolCall
 	FinishReason string
-	Usage        Usage
-	Model        string
 }
 
 // StreamHandler receives incremental output while a completion is running.
@@ -250,11 +242,6 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest, h *StreamHandler) (*
 		return nil, fmt.Errorf("no API key configured - open /admin and add your OpenRouter key")
 	}
 	req.Stream = h != nil
-	if req.Stream {
-		req.Usage = &struct {
-			Include bool `json:"include"`
-		}{Include: true}
-	}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
@@ -336,7 +323,6 @@ func (c *Client) chatOnce(ctx context.Context, body []byte, stream bool, h *Stre
 }
 
 type completionResponse struct {
-	Model   string `json:"model"`
 	Choices []struct {
 		FinishReason string `json:"finish_reason"`
 		Message      struct {
@@ -345,7 +331,6 @@ type completionResponse struct {
 			ToolCalls []ToolCall `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
-	Usage Usage `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error"`
@@ -368,13 +353,10 @@ func parseCompletion(r io.Reader) (*Result, error) {
 		Reasoning:    ch.Message.Reasoning,
 		ToolCalls:    ch.Message.ToolCalls,
 		FinishReason: ch.FinishReason,
-		Usage:        cr.Usage,
-		Model:        cr.Model,
 	}, nil
 }
 
 type streamChunk struct {
-	Model   string `json:"model"`
 	Choices []struct {
 		FinishReason string `json:"finish_reason"`
 		Delta        struct {
@@ -391,7 +373,6 @@ type streamChunk struct {
 			} `json:"tool_calls"`
 		} `json:"delta"`
 	} `json:"choices"`
-	Usage *Usage `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error"`
@@ -427,12 +408,6 @@ func parseStream(r io.Reader, h *StreamHandler) (*Result, error) {
 		}
 		if chunk.Error != nil && chunk.Error.Message != "" {
 			return nil, fmt.Errorf("%s", chunk.Error.Message)
-		}
-		if chunk.Model != "" {
-			res.Model = chunk.Model
-		}
-		if chunk.Usage != nil {
-			res.Usage = *chunk.Usage
 		}
 		if len(chunk.Choices) == 0 {
 			continue
@@ -537,13 +512,13 @@ func (m *Model) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Hears reports whether the model accepts audio at all.
-func (m Model) Hears() bool { return hasModality(m.Modalities, "audio") }
+// hears reports whether the model accepts audio at all.
+func (m Model) hears() bool { return hasModality(m.Modalities, "audio") }
 
-// Transcribes reports whether this is a dedicated transcription model. Those
+// transcribes reports whether this is a dedicated transcription model. Those
 // answer on /audio/transcriptions and refuse /chat/completions outright, so
 // telling the two apart is what decides where a recording is sent.
-func (m Model) Transcribes() bool { return hasModality(m.Produces, "transcription") }
+func (m Model) transcribes() bool { return hasModality(m.Produces, "transcription") }
 
 func hasModality(list []string, want string) bool {
 	for _, item := range list {
@@ -609,11 +584,10 @@ func (c *Client) catalogue(ctx context.Context, path string) ([]Model, error) {
 }
 
 // KeyInfo is the response of the /key endpoint, used by the "test" button.
+// Only the label is kept: what the button has to answer is whether the key
+// works, and the label is what tells one key from another.
 type KeyInfo struct {
-	Label      string   `json:"label"`
-	Usage      float64  `json:"usage"`
-	Limit      *float64 `json:"limit"`
-	IsFreeTier bool     `json:"is_free_tier"`
+	Label string `json:"label"`
 }
 
 // CheckKey verifies the configured API key.
@@ -655,8 +629,8 @@ func (c *Client) routeKey(model string) string { return c.BaseURL + "\n" + model
 // a visit to the dashboard already goes to the right place.
 func (c *Client) rememberRoutes(models []Model) {
 	for _, m := range models {
-		if m.Hears() {
-			transcribeRoutes.Store(c.routeKey(m.ID), m.Transcribes())
+		if m.hears() {
+			transcribeRoutes.Store(c.routeKey(m.ID), m.transcribes())
 		}
 	}
 }
@@ -737,14 +711,14 @@ func (c *Client) Transcribe(ctx context.Context, model, prompt string, audio []b
 
 func (c *Client) transcribeVia(ctx context.Context, dedicated bool, model, prompt string, audio []byte, format, language string) (string, error) {
 	if dedicated {
-		return c.TranscribeEndpoint(ctx, model, audio, "audio."+format, language)
+		return c.transcribeEndpoint(ctx, model, audio, "audio."+format, language)
 	}
-	return c.TranscribeChat(ctx, model, prompt, base64.StdEncoding.EncodeToString(audio), format)
+	return c.transcribeChat(ctx, model, prompt, base64.StdEncoding.EncodeToString(audio), format)
 }
 
-// TranscribeChat converts speech to text by handing the audio to a multimodal
+// transcribeChat converts speech to text by handing the audio to a multimodal
 // chat model, which accepts it as an input_audio content part.
-func (c *Client) TranscribeChat(ctx context.Context, model, prompt, audioB64, format string) (string, error) {
+func (c *Client) transcribeChat(ctx context.Context, model, prompt, audioB64, format string) (string, error) {
 	msg := Message{
 		Role: "user",
 		Content: []any{
@@ -763,12 +737,12 @@ func (c *Client) TranscribeChat(ctx context.Context, model, prompt, audioB64, fo
 	return strings.TrimSpace(res.Content), nil
 }
 
-// TranscribeEndpoint posts the audio to /audio/transcriptions, which is where
+// transcribeEndpoint posts the audio to /audio/transcriptions, which is where
 // a dedicated transcription model lives (Whisper and friends). language is an
 // ISO 639-1 code, or empty to let the endpoint detect it - naming it up front
 // is both faster and more accurate, because the model no longer has to guess
 // from the first second of audio.
-func (c *Client) TranscribeEndpoint(ctx context.Context, model string, audio []byte, filename, language string) (string, error) {
+func (c *Client) transcribeEndpoint(ctx context.Context, model string, audio []byte, filename, language string) (string, error) {
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 	fw, err := mw.CreateFormFile("file", filename)

@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/saschazesiger/SocratesAgent/internal/piper"
 )
 
 // The deadline a browser puts on one render decides which answers can be heard
@@ -33,11 +35,11 @@ func TestTheSpeechDeadlineGrowsWithTheText(t *testing.T) {
 		// four times what a render measures at.
 		{"a long paragraph", 2000, 32000},
 		{"a long answer", 4000, 64000},
-		// The longest text the server accepts is 6,000 characters, and the
-		// slope still applies there: the ceiling must not clip the answers
+		// The longest text the server accepts is what Piper will read, and
+		// the slope still applies there: the ceiling must not clip the answers
 		// this app really produces, or a slow board renders them and the page
 		// hangs up anyway.
-		{"the longest answer accepted", 6000, 96000},
+		{"the longest answer accepted", piper.MaxTextRunes, piper.MaxTextRunes * 16},
 		// The ceiling only catches a request that has gone nowhere at all. It
 		// sits above the five minutes the server allows one render, so the
 		// server's own timeout is what fires - and that one says what

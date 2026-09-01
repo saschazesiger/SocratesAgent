@@ -1,14 +1,14 @@
 // The chat page: sidebar, live process view, composer, voice and audio mode.
 
 import {
-  api, el, toast, confirmDialog, fmtDuration, fmtClock, isOffline, errorMessage,
+  api, el, toast, confirmDialog, fmtClock, isOffline, errorMessage,
   setClass, LiveStream, Outbox, clientKey, onWake, HttpError, RetryLater,
   CONNECTION_GRACE,
 } from './api.js';
 import { renderMarkdown } from './markdown.js';
 import { mountTerminalDock } from './terminals.js';
 import {
-  Recorder, describeMicError, speak, stopSpeaking, isSpeaking, plainSpeech,
+  Recorder, describeMicError, speak, stopSpeaking, isSpeaking,
   onSpeechError, fetchSpeech, playSpeech,
 } from './voice.js';
 
@@ -29,7 +29,6 @@ const dock = mountTerminalDock({
 });
 
 const dom = {
-  sidebar: $('sidebar'),
   navScrim: $('navScrim'),
   chatList: $('chatList'),
   chatScope: $('chatScope'),
@@ -39,7 +38,6 @@ const dom = {
   title: $('chatTitle'),
   archivedTag: $('chatArchived'),
   composer: $('composer'),
-  composerNote: $('composerNote'),
   input: $('input'),
   sendBtn: $('sendBtn'),
   micBtn: $('micBtn'),
@@ -102,10 +100,8 @@ const state = {
   groupEls: new Map(),
   turnEls: new Map(),
   expanded: new Set(),
-  touched: new Set(),
   spokeOffline: false,
   lastAnswer: '',
-  autoPhase: 'idle',
   recorder: new Recorder(),
   recTimer: null,
   // The always on "something is happening" row: what it says, when it started
@@ -118,7 +114,7 @@ const state = {
   // the directory changes under it.
   effectiveWorkspace: '',
   defaultWorkspace: '',
-  prefs: { speak_in_auto_mode: true, speak_in_chat_mode: false, tts_rate: 1, language: 'en' },
+  prefs: { speak_in_auto_mode: true, speak_in_chat_mode: false, language: 'en' },
 };
 
 const ICONS = {
@@ -278,7 +274,7 @@ async function sendQueuedMessage(payload, item) {
     adoptCreatedChat(created.chat, item);
   }
   try {
-    await api('/api/chats/' + payload.chatId + '/messages', {
+    await api('/api/chats/' + encodeURIComponent(payload.chatId) + '/messages', {
       method: 'POST',
       body: { text: payload.text, auto: payload.auto, client_id: payload.key },
     });
@@ -490,10 +486,6 @@ const VIEWS = ['chat', 'split', 'terminal', 'auto'];
 // next time it is opened, whatever was done in between.
 function viewKey(id) { return 'socrates.view.' + id; }
 
-// What chats used to be told in before the slider: one key for the mode, one
-// flag for hands free.
-function modeKey(id) { return 'socrates.mode.' + id; }
-
 // storedView is where a chat starts. Hands free is the one choice that follows
 // the person rather than the chat - it says how the app is being used right
 // now, in a car say - so it carries over to whatever is opened next, while a
@@ -501,7 +493,6 @@ function modeKey(id) { return 'socrates.mode.' + id; }
 function storedView(id) {
   const saved = id ? readValue(viewKey(id)) : '';
   if (VIEWS.includes(saved)) return saved;
-  if (id && readValue(modeKey(id)) === 'terminal') return 'terminal';
   return readFlag('socrates.auto') ? 'auto' : 'chat';
 }
 
@@ -735,7 +726,7 @@ function buildChatItem(chat) {
   const dot = el('span', { class: 'dot', hidden: true, title: 'Working' });
   const label = el('span', { class: 'label' });
   const archive = el('button', {
-    class: 'icon-btn act arch',
+    class: 'icon-btn act',
     onclick: (event) => {
       event.stopPropagation();
       const chatNow = current();
@@ -743,7 +734,7 @@ function buildChatItem(chat) {
     },
   });
   const remove = el('button', {
-    class: 'icon-btn act del',
+    class: 'icon-btn act',
     title: 'Delete chat',
     'aria-label': 'Delete chat',
     html: ICONS.trash,
@@ -808,7 +799,7 @@ async function setArchived(chat, archived) {
     }
   }
   renderChatList();
-  api('/api/chats/' + chat.id + (archived ? '/archive' : '/unarchive'), {
+  api('/api/chats/' + encodeURIComponent(chat.id) + (archived ? '/archive' : '/unarchive'), {
     method: 'POST', attempts: 3,
   }).then(() => {
     refreshChats().catch(() => { /* the sidebar keeps what it has */ });
@@ -851,7 +842,6 @@ async function deleteChat(chat) {
   writeValue(titleKey(chat.id), '');
   writeValue('socrates.draft.' + chat.id, '');
   writeValue(viewKey(chat.id), '');
-  writeValue(modeKey(chat.id), '');
   if (state.chatId === chat.id) {
     disconnect();
     state.chatId = null;
@@ -866,7 +856,7 @@ async function deleteChat(chat) {
     const next = firstChatId();
     if (next) openChat(next).catch(() => {});
   }
-  api('/api/chats/' + chat.id, { method: 'DELETE', attempts: 3 })
+  api('/api/chats/' + encodeURIComponent(chat.id), { method: 'DELETE', attempts: 3 })
     .then(() => refreshChats().catch(() => {}))
     .catch((err) => {
       // Still there after all: it goes back where it was rather than leaving
@@ -946,7 +936,7 @@ async function openChat(id, options = {}) {
 
   let data;
   try {
-    data = await api('/api/chats/' + id, { attempts: 2, timeout: 12000 });
+    data = await api('/api/chats/' + encodeURIComponent(id), { attempts: 2, timeout: 12000 });
   } catch (err) {
     // A chat that could not be loaded must not look like an empty one. It says
     // what happened, offers a retry, and takes one by itself when the network
@@ -1188,8 +1178,6 @@ function workLabelFor(step) {
     case 'thinking': return 'Thinking…';
     case 'text': return 'Writing the answer…';
     case 'error': return '';
-    case 'sub_thinking': return 'Reasoning…';
-    case 'sub_tool': return (step.title || 'tool') + ': ' + ((step.body || '').split('\n')[0] || '');
     default: return '';
   }
 }
@@ -1211,10 +1199,6 @@ function insertBySeq(container, node, seq) {
 // - which is why the spinners looked like they were flickering rather than
 // turning, and why finished rows kept fading back in.
 function upsertStep(step, animate = true) {
-  // Databases written before the question tool was removed still hold
-  // 'question' steps. There is no card for them any more, so they are simply
-  // not drawn - the conversation itself already carries what was asked.
-  if (step.kind === 'question') return;
   state.stepData.set(step.id, step);
   const existing = state.stepEls.get(step.id);
   if (existing && existing.dataset.kind === step.kind && typeof existing.update === 'function') {
@@ -1238,12 +1222,7 @@ function upsertStep(step, animate = true) {
 
   if (!animate) node.style.animation = 'none';
   const turn = ensureTurn(step.run_id);
-  let container = turn.querySelector(':scope > .process');
-  if (step.parent_id) {
-    const parentNode = state.stepEls.get(step.parent_id);
-    const children = parentNode && parentNode.querySelector(':scope > .children');
-    if (children) container = children;
-  }
+  const container = turn.querySelector(':scope > .process');
   insertBySeq(container, node, step.seq);
   state.stepEls.set(step.id, node);
   scrollToEnd();
@@ -1256,7 +1235,7 @@ function detailOf(step) {
 }
 
 function isRunning(status) {
-  return status === 'running' || status === 'pending';
+  return status === 'running';
 }
 
 // statusIcon holds one spinner and one glyph and shows whichever the status
@@ -1275,7 +1254,7 @@ function statusIcon(restIcon = ICONS.check) {
     spinner.hidden = !running;
     glyph.hidden = running;
     const failed = status === 'failed';
-    const stopped = failed || status === 'interrupted' || status === 'cancelled';
+    const stopped = failed || status === 'interrupted';
     setClass(slot, 'tick', !running && !stopped && restIcon === ICONS.check);
     setClass(slot, 'cross', failed);
     const icon = stopped ? ICONS.cross : restIcon;
@@ -1289,7 +1268,6 @@ function statusIcon(restIcon = ICONS.check) {
 
 function toggleStep(node, id) {
   node.classList.toggle('open');
-  state.touched.add(id);
   if (node.classList.contains('open')) state.expanded.add(id);
   else state.expanded.delete(id);
 }
@@ -1304,8 +1282,10 @@ function buildStep(step) {
     case 'shell': return buildShell(step);
     case 'error': return buildError(step);
     case 'thinking': return buildCollapsible(step, 'Reasoning', ICONS.spark);
-    case 'text': return buildText(step);
-    default: return buildSubLine(step);
+    // The engine writes five kinds and this page ships in the same binary that
+    // writes them, so text is the last of the five rather than a fallback for
+    // a kind that could arrive.
+    default: return buildText(step);
   }
 }
 
@@ -1358,60 +1338,6 @@ function buildCollapsible(step, label, iconHtml) {
   return node;
 }
 
-function subTag(step) {
-  switch (step.kind) {
-    case 'sub_thinking': return 'thinking';
-    case 'sub_text': return 'message';
-    case 'sub_tool': return step.title || 'tool';
-    case 'sub_error': return 'error';
-    case 'sub_log': return 'log';
-    default: return step.title || 'status';
-  }
-}
-
-function subExtra(step, detail) {
-  const value = (step.body || step.title || '').split('\n')[0] || '';
-  const parts = [];
-  if (detail.input) parts.push(typeof detail.input === 'string' ? detail.input : JSON.stringify(detail.input, null, 2));
-  if (step.body && step.body.includes('\n')) parts.push(step.body);
-  if (detail.result) parts.push(String(detail.result));
-  if (detail.command && detail.command !== value) parts.push(detail.command);
-  return parts.join('\n\n');
-}
-
-function buildSubLine(step) {
-  const node = el('div', { class: 'step collapsible', 'data-step': step.id });
-  const classes = ['sub-line'];
-  if (step.kind === 'sub_log') classes.push('log');
-  if (step.kind === 'sub_error') classes.push('err');
-
-  const spinner = el('span', { class: 'spinner', hidden: true });
-  const tag = el('span', { class: 'tag' });
-  const val = el('span', { class: 'val' });
-  const head = el('div', { class: classes.join(' ') }, spinner, tag, val);
-  const body = el('div', { class: 'body code', hidden: true });
-  node.append(head, body);
-  head.addEventListener('click', () => {
-    if (body.hidden) return;
-    toggleStep(node, step.id);
-  });
-
-  node.update = (next) => {
-    const detail = detailOf(next);
-    spinner.hidden = !isRunning(next.status);
-    tag.textContent = subTag(next);
-    val.textContent = (next.body || next.title || '').split('\n')[0] || '';
-    const extra = subExtra(next, detail);
-    body.hidden = !extra.trim();
-    head.style.cursor = body.hidden ? '' : 'pointer';
-    if (!body.hidden && body.textContent !== extra) body.textContent = extra;
-    if (body.hidden) node.classList.remove('open');
-  };
-  node.update(step);
-  if (state.expanded.has(step.id)) node.classList.add('open');
-  return node;
-}
-
 // A terminal keeps one line in the transcript, and no more. The screen itself
 // is in the dock beside the conversation: a program painting a full screen
 // several times a second is something you look at, not something you scroll
@@ -1440,7 +1366,7 @@ function buildTerminal(step, detail) {
     setClass(dot, 'live', running);
     setClass(dot, 'failed', !running && next.status === 'failed');
     setClass(dot, 'stopped', !running && next.status !== 'failed');
-    const name = next.title || now.skill || now.tool || 'a program';
+    const name = next.title || now.skill || 'a program';
     const text = running
       ? 'Opened ' + name + ' in a terminal'
       : 'Ran ' + name + ' in a terminal — ' + (now.exit_code ? 'exited ' + now.exit_code : 'finished');
@@ -1551,7 +1477,7 @@ function saveChatSettings() {
   patchChatListItem(chat);
   fillChatPanel({ force: true });
   dom.chatPanel.hidden = true;
-  api('/api/chats/' + chat.id, {
+  api('/api/chats/' + encodeURIComponent(chat.id), {
     method: 'PATCH',
     attempts: 2,
     body: { title, workspace },
@@ -1600,7 +1526,7 @@ function connect() {
   state.stream = new LiveStream({
     // Read fresh on every attempt: the revision moves while the stream is up,
     // and a reconnect must ask for what this client is actually missing.
-    url: () => '/api/chats/' + chatId + '/events?rev=' + state.rev,
+    url: () => '/api/chats/' + encodeURIComponent(chatId) + '/events?rev=' + state.rev,
     onMessage: (payload) => {
       if (state.chatId !== chatId) return;
       state.lastSync = Date.now();
@@ -1846,7 +1772,7 @@ async function stopRun() {
   const queued = state.outbox.items.filter((item) => sameChat(item.payload.chatId));
   for (const item of queued) state.outbox.drop(item.id);
   try {
-    await api('/api/chats/' + state.chatId + '/stop', { method: 'POST', attempts: 3 });
+    await api('/api/chats/' + encodeURIComponent(state.chatId) + '/stop', { method: 'POST', attempts: 3 });
     setAutoStatus('Stopped');
   } catch (err) {
     toast(isOffline(err) ? 'No connection — could not stop the run yet.' : errorMessage(err), 'error');
@@ -2112,8 +2038,6 @@ function updateAutoLive(step) {
     case 'shell': label = 'Running ' + (detail.command || 'a command') + '…'; break;
     case 'thinking': label = 'Thinking…'; break;
     case 'text': label = 'Writing the answer…'; break;
-    case 'sub_tool': label = (step.title || 'tool') + ': ' + (step.body || '').split('\n')[0]; break;
-    case 'sub_thinking': label = 'Reasoning…'; break;
     case 'error': label = step.title || 'Something went wrong'; break;
     default: return;
   }

@@ -181,11 +181,13 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		"version":        Version,
 	}
 	if setupRequired || s.authenticated(r) {
-		installed, version, path := s.tunnel.Probe()
+		// The setup wizard asks two things about cloudflared: is it here, and
+		// could it be fetched if it is not. Which binary it is and what version
+		// it reports is a dashboard question, and the dashboard has
+		// /api/tunnel for it.
+		installed, _, _ := s.tunnel.Probe()
 		payload["cloudflared"] = map[string]any{
 			"installed":   installed,
-			"version":     version,
-			"path":        path,
 			"can_install": tunnel.Supported(),
 		}
 		payload["local_url"] = s.LocalURL()
@@ -205,7 +207,6 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Password      string                 `json:"password"`
 		OpenRouterKey string                 `json:"openrouter_key"`
-		ChatModel     string                 `json:"chat_model"`
 		Tunnel        *config.TunnelSettings `json:"tunnel"`
 	}
 	if !readJSON(w, r, &body) {
@@ -228,10 +229,6 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	changed := false
 	if v := strings.TrimSpace(body.OpenRouterKey); v != "" {
 		settings.OpenRouter.APIKey = v
-		changed = true
-	}
-	if v := strings.TrimSpace(body.ChatModel); v != "" {
-		settings.OpenRouter.ChatModel = v
 		changed = true
 	}
 	if body.Tunnel != nil {
@@ -300,6 +297,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	// Signing out is a state change like every other one, and it is the single
+	// endpoint that sits outside the wrapper which normally says so.
+	if !sameOrigin(r) {
+		writeError(w, http.StatusForbidden, "cross origin request rejected")
+		return
+	}
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		_ = s.store.DeleteSession(c.Value)
 	}

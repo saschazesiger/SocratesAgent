@@ -206,8 +206,8 @@ func (s *Server) routes() {
 	mux := http.NewServeMux()
 
 	// Pages
-	mux.HandleFunc("GET /{$}", s.page("index.html", true))
-	mux.HandleFunc("GET /admin", s.page("admin.html", true))
+	mux.HandleFunc("GET /{$}", s.page("index.html"))
+	mux.HandleFunc("GET /admin", s.page("admin.html"))
 	mux.HandleFunc("GET /login", s.pageLogin)
 	mux.HandleFunc("GET /setup", s.pageSetup)
 	mux.Handle("GET /static/", http.StripPrefix("/static/", web.Static()))
@@ -262,6 +262,9 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/voice/speak", s.auth(s.handleSpeak))
 	mux.HandleFunc("GET /api/voice/status", s.auth(s.handleVoiceStatus))
 
+	// Liveness, and the one endpoint nothing in the browser calls: the
+	// container's HEALTHCHECK is what asks for it, because a process that is
+	// running is not the same thing as a server that answers.
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": Version})
 	})
@@ -271,13 +274,16 @@ func (s *Server) routes() {
 
 // ------------------------------------------------------------------- pages
 
-func (s *Server) page(name string, requireAuth bool) http.HandlerFunc {
+// page serves one of the signed in documents. Both of them are behind the
+// password: login and setup have their own handlers, because they are the two
+// pages you reach without one.
+func (s *Server) page(name string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.hasPassword() {
 			http.Redirect(w, r, "/setup", http.StatusFound)
 			return
 		}
-		if requireAuth && !s.authenticated(r) {
+		if !s.authenticated(r) {
 			http.Redirect(w, r, "/login", http.StatusFound)
 			return
 		}

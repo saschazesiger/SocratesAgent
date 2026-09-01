@@ -281,7 +281,7 @@ func (e *Engine) loop(ctx context.Context, chat *store.Chat, run *store.Run, h *
 
 	settings := e.Settings()
 	if strings.TrimSpace(settings.OpenRouter.APIKey) == "" {
-		e.addStep(run, "", store.StepError, "Not configured",
+		e.addStep(run, store.StepError, "Not configured",
 			"No OpenRouter API key is set. Open the admin dashboard and add your key.", store.StatusFailed, nil)
 		e.finish(run, chat, store.RunFailed, "missing OpenRouter API key", "")
 		return
@@ -302,13 +302,13 @@ func (e *Engine) loop(ctx context.Context, chat *store.Chat, run *store.Run, h *
 		}
 		history, err := e.buildMessages(chat, settings, run)
 		if err != nil {
-			e.addStep(run, "", store.StepError, "Storage error", err.Error(), store.StatusFailed, nil)
+			e.addStep(run, store.StepError, "Storage error", err.Error(), store.StatusFailed, nil)
 			e.finish(run, chat, store.RunFailed, err.Error(), "")
 			return
 		}
 
-		reasoning := e.liveStep(run, "", store.StepThinking, "Reasoning")
-		answer := e.liveStep(run, "", store.StepText, "")
+		reasoning := e.liveStep(run, store.StepThinking, "Reasoning")
+		answer := e.liveStep(run, store.StepText, "")
 
 		res, err := client.Chat(ctx, openrouter.ChatRequest{
 			Model:       settings.OpenRouter.ChatModel,
@@ -327,7 +327,7 @@ func (e *Engine) loop(ctx context.Context, chat *store.Chat, run *store.Run, h *
 				e.finish(run, chat, store.RunCancelled, "", "")
 				return
 			}
-			e.addStep(run, "", store.StepError, "Model request failed", err.Error(), store.StatusFailed, nil)
+			e.addStep(run, store.StepError, "Model request failed", err.Error(), store.StatusFailed, nil)
 			e.finish(run, chat, store.RunFailed, err.Error(), "")
 			return
 		}
@@ -407,7 +407,7 @@ func (e *Engine) loop(ctx context.Context, chat *store.Chat, run *store.Run, h *
 	}
 
 	// Iteration budget exhausted.
-	e.addStep(run, "", store.StepError, "Iteration limit reached",
+	e.addStep(run, store.StepError, "Iteration limit reached",
 		fmt.Sprintf("The agent used all %d steps without finishing. Raise the limit in the admin dashboard or split the task.",
 			settings.Agent.MaxIterations), store.StatusFailed, nil)
 	if finalText == "" {
@@ -460,13 +460,13 @@ func (e *Engine) busyHold(run *store.Run, holds int) string {
 	if holds >= maxBusyHolds {
 		// Held three times already. Rather than leaving the user with nothing,
 		// the answer goes out - and the process view says what it is worth.
-		e.addStep(run, "", store.StepText, "Answered while a program was still working",
+		e.addStep(run, store.StepText, "Answered while a program was still working",
 			fmt.Sprintf("Socrates was sent back to the terminal %d times and still wanted to answer, "+
 				"so the answer was allowed through. Still working:\n%s", holds, strings.Join(busy, "\n")),
 			store.StatusInterrupted, nil)
 		return ""
 	}
-	e.addStep(run, "", store.StepText, "Waiting for the program",
+	e.addStep(run, store.StepText, "Waiting for the program",
 		"The answer was held back because a terminal session is still working:\n"+strings.Join(busy, "\n"),
 		store.StatusDone, nil)
 	return "[orchestrator] The program in " + strings.Join(busy, "; ") + " is still working, so the " +
@@ -523,7 +523,7 @@ func (e *Engine) systemPrompt(chat *store.Chat, settings config.Settings, run *s
 	var b strings.Builder
 	b.WriteString(settings.Agent.SystemPrompt)
 
-	workdir := e.workspaceFor(chat, settings)
+	workdir := Workspace(chat, settings)
 	fmt.Fprintf(&b, "\n\n## Working directory\n`%s`. Commands and new terminal sessions start here "+
 		"unless you say otherwise, and relative paths are resolved against it.\n", workdir)
 
@@ -673,11 +673,6 @@ func Workspace(chat *store.Chat, settings config.Settings) string {
 	return filepath.Join(settings.Agent.WorkspaceRoot, chat.ID)
 }
 
-// workspaceFor returns the directory a chat works in.
-func (e *Engine) workspaceFor(chat *store.Chat, settings config.Settings) string {
-	return Workspace(chat, settings)
-}
-
 func (e *Engine) generateTitle(chatID, text string) {
 	settings := e.Settings()
 	if strings.TrimSpace(settings.OpenRouter.APIKey) == "" {
@@ -736,17 +731,16 @@ func (e *Engine) nextSeq(run *store.Run) int64 {
 }
 
 // addStep writes a one shot step and pushes it to the browser.
-func (e *Engine) addStep(run *store.Run, parent, kind, title, body, status string, detail any) *store.Step {
+func (e *Engine) addStep(run *store.Run, kind, title, body, status string, detail any) *store.Step {
 	st := &store.Step{
-		ID:       newID("step"),
-		RunID:    run.ID,
-		ChatID:   run.ChatID,
-		ParentID: parent,
-		Seq:      e.nextSeq(run),
-		Kind:     kind,
-		Title:    title,
-		Body:     body,
-		Status:   status,
+		ID:     newID("step"),
+		RunID:  run.ID,
+		ChatID: run.ChatID,
+		Seq:    e.nextSeq(run),
+		Kind:   kind,
+		Title:  title,
+		Body:   body,
+		Status: status,
 	}
 	if detail != nil {
 		st.Detail = mustJSON(detail)
@@ -784,12 +778,12 @@ type liveStep struct {
 	mu      sync.Mutex
 }
 
-func (e *Engine) liveStep(run *store.Run, parent, kind, title string) *liveStep {
+func (e *Engine) liveStep(run *store.Run, kind, title string) *liveStep {
 	return &liveStep{
 		engine: e,
 		run:    run,
 		step: &store.Step{
-			ID: newID("step"), RunID: run.ID, ChatID: run.ChatID, ParentID: parent,
+			ID: newID("step"), RunID: run.ID, ChatID: run.ChatID,
 			Kind: kind, Title: title, Status: store.StatusRunning,
 		},
 	}
@@ -849,8 +843,6 @@ func (l *liveStep) flushLocked(status string) {
 // what a session is and where it is shown.
 const (
 	metaSkill = "skill"
-	// metaLegacySkill is where the same id lived before skills had their name.
-	metaLegacySkill = "tool"
 	// metaModel and metaEffort remember which of a skill's models this session
 	// was started on. The process view redraws itself from the session rather
 	// than from the call that opened it, and a session outlives a restart of
@@ -888,27 +880,17 @@ func (e *Engine) session(chat *store.Chat, id string) (*term.Handle, string) {
 // skill with usable defaults for an ad hoc command.
 func (e *Engine) skillOfSession(handle *term.Handle) config.Skill {
 	settings := e.Settings()
-	if skill, ok := settings.Skill(skillIDOf(handle)); ok {
+	if skill, ok := settings.Skill(handle.Meta(metaSkill)); ok {
 		return skill
 	}
 	return config.Skill{}
-}
-
-// skillIDOf reads which skill a session came from. A session started before
-// skills were called skills stored the id under the old key, and it may well
-// still be running.
-func skillIDOf(handle *term.Handle) string {
-	if id := handle.Meta(metaSkill); id != "" {
-		return id
-	}
-	return handle.Meta(metaLegacySkill)
 }
 
 // resolveDir turns a directory argument into an absolute path. Relative paths
 // belong to the chat's workspace; an absolute path is taken as given, because
 // Socrates is meant to be able to work anywhere on the machine.
 func (e *Engine) resolveDir(chat *store.Chat, settings config.Settings, dir string) string {
-	workdir := e.workspaceFor(chat, settings)
+	workdir := Workspace(chat, settings)
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
 		return workdir
@@ -1003,7 +985,7 @@ func (e *Engine) openTerminal(ctx context.Context, chat *store.Chat, run *store.
 		return fmt.Sprintf("Could not start the session: %v", err)
 	}
 
-	step := e.addStep(run, "", store.StepTerminal, label, "", store.StatusRunning, map[string]any{
+	step := e.addStep(run, store.StepTerminal, label, "", store.StatusRunning, map[string]any{
 		"session":   handle.ID(),
 		"skill":     spec.Meta[metaSkill],
 		"model":     strings.TrimSpace(model.ID),
@@ -1193,7 +1175,7 @@ func (e *Engine) runShellCommand(ctx context.Context, chat *store.Chat, run *sto
 	}
 
 	shell, args := shellCommand(command)
-	step := e.addStep(run, "", store.StepShell, firstLine(command, 90), "", store.StatusRunning, map[string]any{
+	step := e.addStep(run, store.StepShell, firstLine(command, 90), "", store.StatusRunning, map[string]any{
 		"command":   command,
 		"workspace": workdir,
 	})

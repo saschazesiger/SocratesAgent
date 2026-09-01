@@ -6,7 +6,6 @@ import { api } from './api.js';
 
 let entries = [];
 let loading = null;
-const listeners = new Set();
 
 // price renders a per million token price the way OpenRouter quotes it.
 function price(raw) {
@@ -56,7 +55,6 @@ export function load() {
     .then((data) => {
       entries = (data.models || []).map(shape);
       entries.sort((a, b) => a.group.localeCompare(b.group) || a.label.localeCompare(b.label));
-      listeners.forEach((fn) => fn(entries));
       return entries;
     })
     .catch((err) => {
@@ -67,9 +65,6 @@ export function load() {
     });
   return loading;
 }
-
-/** all returns the catalogue loaded so far. */
-export function all() { return entries; }
 
 /**
  * chat returns the models that can hold a conversation. A transcription model
@@ -90,13 +85,6 @@ export function chat() {
 export function audio() {
   const heard = entries.filter((entry) => entry.modalities.includes('audio'));
   return heard.length ? heard : entries;
-}
-
-/** onLoad registers a callback for when the catalogue arrives. */
-export function onLoad(fn) {
-  listeners.add(fn);
-  if (entries.length) fn(entries);
-  return () => listeners.delete(fn);
 }
 
 /** count is how many models are known. */

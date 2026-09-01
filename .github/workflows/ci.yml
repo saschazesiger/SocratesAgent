@@ -32,11 +32,34 @@ jobs:
             exit 1
           fi
 
+      - name: Check go.mod is tidy
+        if: matrix.os == 'ubuntu-latest'
+        run: go mod tidy -diff
+
       - name: Vet
         run: go vet ./...
 
       - name: Test
         run: go test -race ./...
+
+      - name: Build
+        run: go build ./...
+
+  # Every release ships a windows/amd64 binary, and internal/term and
+  # internal/proc each have a Windows only file, so both have to compile and
+  # vet on every change. The test suite is not run here: parts of it script
+  # /bin/sh and send signals a Windows box does not have.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Vet
+        run: go vet ./...
 
       - name: Build
         run: go build ./...

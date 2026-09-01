@@ -1,6 +1,5 @@
 # build output
 /socrates
-/dist/
 *.exe
 
 # local data

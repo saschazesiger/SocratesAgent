@@ -112,7 +112,6 @@ func buildTools(s config.Settings) []openrouter.Tool {
   "type": "object",
   "properties": {
     `+skillProperty+`
-    "tool": {"type": "string", "description": "Deprecated alias for `+"`skill`"+`, still accepted."},
     "model": {"type": "string", "description": "Which of that skill's configured models to start it with, by its id from the list above. Only meaningful together with a skill. Leave it out for the skill's first model."},
     "command": {"type": "string", "description": "Any command line to start instead of a configured skill."},
     "name": {"type": "string", "description": "Short label shown to the user, for example \"claude · refactor auth\"."},
@@ -249,7 +248,6 @@ func (e *Engine) execShellRun(ctx context.Context, chat *store.Chat, run *store.
 func (e *Engine) execTerminalOpen(ctx context.Context, chat *store.Chat, run *store.Run, raw string) string {
 	var args struct {
 		Skill     string `json:"skill"`
-		Tool      string `json:"tool"`
 		Model     string `json:"model"`
 		Command   string `json:"command"`
 		Name      string `json:"name"`
@@ -258,12 +256,7 @@ func (e *Engine) execTerminalOpen(ctx context.Context, chat *store.Chat, run *st
 	if err := json.Unmarshal([]byte(raw), &args); err != nil {
 		return badArgs(err, "Send valid JSON with a `skill` or a `command`.")
 	}
-	// `tool` is what this argument was called before skills existed. A model
-	// working from an older prompt still gets what it meant.
 	skill := strings.TrimSpace(args.Skill)
-	if skill == "" {
-		skill = strings.TrimSpace(args.Tool)
-	}
 	if skill != "" && strings.TrimSpace(args.Command) != "" {
 		return "Give either `skill` or `command`, not both."
 	}

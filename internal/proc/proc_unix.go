@@ -25,14 +25,3 @@ func Terminate(cmd *exec.Cmd) error {
 	}
 	return nil
 }
-
-// Kill stops the process group immediately.
-func Kill(cmd *exec.Cmd) error {
-	if cmd.Process == nil {
-		return nil
-	}
-	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
-		return cmd.Process.Kill()
-	}
-	return nil
-}

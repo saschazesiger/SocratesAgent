@@ -52,7 +52,15 @@ RUN apt-get update \
            -o /opt/piper/voices/en_US-ljspeech-medium.onnx \
       && curl -fsSL "${VOICES}/en/en_US/ljspeech/medium/en_US-ljspeech-medium.onnx.json" \
            -o /opt/piper/voices/en_US-ljspeech-medium.onnx.json \
-      || echo "warning: could not install the local voice, Socrates downloads it on first use"; \
+      || { echo; \
+           echo "################################################################"; \
+           echo "## WARNING: the local voice is NOT in this image.             ##"; \
+           echo "## /opt/piper is missing or incomplete, so the image built    ##"; \
+           echo "## as if INSTALL_VOICE=0 had been passed. Nothing is broken:  ##"; \
+           echo "## Socrates reads an incomplete directory as \"not installed\"  ##"; \
+           echo "## and downloads engine and voices into /data on first use.   ##"; \
+           echo "################################################################"; \
+           echo; }; \
     fi
 
 COPY --from=build /out/socrates /usr/local/bin/socrates
@@ -66,7 +74,12 @@ ENV SOCRATES_DATA_DIR=/data \
 VOLUME ["/data"]
 EXPOSE 8080
 
+# GET /api/health is the only check that says anything: `socrates -version`
+# prints a string and exits without ever touching the server, so a wedged HTTP
+# server would report healthy. curl is already in the image, and the port comes
+# out of SOCRATES_ADDR so that overriding it does not leave the check behind.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s \
-  CMD ["/usr/local/bin/socrates", "-version"]
+  CMD ADDR="${SOCRATES_ADDR:-:8080}"; \
+      curl -fsS -o /dev/null "http://127.0.0.1:${ADDR##*:}/api/health" || exit 1
 
 ENTRYPOINT ["/usr/local/bin/socrates"]

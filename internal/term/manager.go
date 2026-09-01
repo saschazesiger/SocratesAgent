@@ -134,7 +134,7 @@ func (m *Manager) connect(ctx context.Context, dir string, spec hostSpec, wait t
 	for {
 		conn, err := net.Dial("unix", sockPath)
 		if err == nil {
-			handle := newHandle(spec.ID, spec.Name, spec.ChatID, spec.Dir, spec.Meta, conn)
+			handle := newHandle(spec.ID, spec.Name, spec.ChatID, spec.Meta, conn)
 			if err := handle.waitReady(ctx, 10*time.Second); err != nil {
 				handle.Detach()
 				return nil, err

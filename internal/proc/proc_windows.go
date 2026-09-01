@@ -14,11 +14,3 @@ func Terminate(cmd *exec.Cmd) error {
 	}
 	return cmd.Process.Kill()
 }
-
-// Kill stops the process.
-func Kill(cmd *exec.Cmd) error {
-	if cmd.Process == nil {
-		return nil
-	}
-	return cmd.Process.Kill()
-}

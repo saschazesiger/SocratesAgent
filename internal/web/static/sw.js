@@ -22,7 +22,11 @@ const VERSION = '__VERSION__';
 const CACHE = 'socrates-shell-' + VERSION;
 
 // The shell is small and entirely local, so it is worth having in full before
-// the first bad connection rather than only what happened to load.
+// the first bad connection rather than only what happened to load. It is the
+// chat page and what it imports, and nothing else: the dashboard's own
+// modules can never be reached from a page this worker serves offline, and a
+// file that has to arrive before anything can be served offline at all is a
+// file worth not having in the list.
 const SHELL = [
   '/',
   '/static/css/app.css',
@@ -31,8 +35,6 @@ const SHELL = [
   '/static/js/chat.js',
   '/static/js/terminals.js',
   '/static/js/markdown.js',
-  '/static/js/models.js',
-  '/static/js/combobox.js',
   '/static/js/voice.js',
   '/favicon.png',
   '/static/img/logo.png',

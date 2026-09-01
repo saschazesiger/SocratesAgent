@@ -658,40 +658,6 @@ func TestFirstConnectionGetsTheRecentMessages(t *testing.T) {
 	t.Fatal("the stream never said it was ready")
 }
 
-// The question tool is gone. Its endpoint must be gone with it, and the
-// snapshot the browser opens on must not offer a question to answer - a
-// leftover field would put the old panel back on screen.
-func TestTheQuestionEndpointIsGone(t *testing.T) {
-	env := newEnv(t)
-	env.do(t, env.client, "POST", "/api/setup", `{"password":"correct horse"}`)
-	_, created := env.do(t, env.client, "POST", "/api/chats", `{}`)
-	id := created["chat"].(map[string]any)["id"].(string)
-
-	res, _ := env.do(t, env.client, "POST", "/api/questions/q1/answer", `{"value":"Left"}`)
-	if res.StatusCode != http.StatusNotFound {
-		t.Errorf("answering a question = %d, wanted 404", res.StatusCode)
-	}
-
-	_, chat := env.do(t, env.client, "GET", "/api/chats/"+id, "")
-	if _, ok := chat["questions"]; ok {
-		t.Errorf("the chat snapshot still carries questions: %#v", chat)
-	}
-
-	for _, ev := range env.readEvents(t, "/api/chats/"+id+"/events") {
-		if ev["type"] == "question" {
-			t.Fatalf("the stream still publishes questions: %#v", ev)
-		}
-		if ev["type"] != "ready" {
-			continue
-		}
-		if _, ok := ev["pending_question"]; ok {
-			t.Fatalf("the ready snapshot still carries a pending question: %#v", ev)
-		}
-		return
-	}
-	t.Fatal("the stream never said it was ready")
-}
-
 // readEvents opens an SSE stream and collects what it sends up to and including
 // the ready event, then hangs up.
 func (e *testEnv) readEvents(t *testing.T, path string) []map[string]any {

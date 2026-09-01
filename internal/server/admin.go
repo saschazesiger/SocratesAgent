@@ -41,7 +41,6 @@ func (s *Server) handlePreferences(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"speak_in_auto_mode": settings.Voice.SpeakInAutoMode,
 		"speak_in_chat_mode": settings.Voice.SpeakInChatMode,
-		"tts_rate":           settings.Voice.TTSRate,
 		"language":           settings.Voice.Language,
 	})
 }
@@ -119,7 +118,9 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	settings := s.Settings()
 	results := []checkResult{}
 
-	// OpenRouter
+	// OpenRouter. Whether the key works decides more than its own row: speech
+	// to text further down is the very same key.
+	openrouterOK := false
 	if strings.TrimSpace(settings.OpenRouter.APIKey) == "" {
 		results = append(results, checkResult{Name: "OpenRouter", OK: false, Detail: "no API key set"})
 	} else {
@@ -131,6 +132,7 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 			if info.Label != "" {
 				detail += " · " + info.Label
 			}
+			openrouterOK = true
 			results = append(results, checkResult{Name: "OpenRouter", OK: true, Detail: detail})
 		}
 	}
@@ -206,9 +208,23 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Voice
-	results = append(results, checkResult{Name: "Speech to text", OK: true,
-		Detail: "OpenRouter · " + settings.OpenRouter.TranscribeModel})
+	// Voice. Listening happens at OpenRouter and speaking happens here, so the
+	// two halves are checked quite differently. Speech to text has nothing of
+	// its own to try: it is the key that was just tested and a model to spend
+	// it on, and saying it is fine regardless is how a green dot ends up next
+	// to a red one about the very same key.
+	transcribe := strings.TrimSpace(settings.OpenRouter.TranscribeModel)
+	switch {
+	case !openrouterOK:
+		results = append(results, checkResult{Name: "Speech to text", OK: false,
+			Detail: "it listens through OpenRouter, so that check has to pass first"})
+	case transcribe == "":
+		results = append(results, checkResult{Name: "Speech to text", OK: false,
+			Detail: "no transcription model is picked"})
+	default:
+		results = append(results, checkResult{Name: "Speech to text", OK: true,
+			Detail: "OpenRouter · " + transcribe})
+	}
 	results = append(results, voiceCheck(s.voice.Status()))
 
 	writeJSON(w, http.StatusOK, map[string]any{"checks": results})

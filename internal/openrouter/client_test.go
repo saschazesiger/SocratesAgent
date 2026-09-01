@@ -20,7 +20,7 @@ func TestChatStreamingAccumulatesText(t *testing.T) {
 		io.WriteString(w, ": OPENROUTER PROCESSING\n\n")
 		io.WriteString(w, `data: {"choices":[{"delta":{"reasoning":"hmm "}}]}`+"\n\n")
 		io.WriteString(w, `data: {"choices":[{"delta":{"content":"Hello "}}]}`+"\n\n")
-		io.WriteString(w, `data: {"choices":[{"delta":{"content":"world"},"finish_reason":"stop"}],"usage":{"total_tokens":7}}`+"\n\n")
+		io.WriteString(w, `data: {"choices":[{"delta":{"content":"world"},"finish_reason":"stop"}]}`+"\n\n")
 		io.WriteString(w, "data: [DONE]\n\n")
 	}))
 	defer server.Close()
@@ -38,16 +38,16 @@ func TestChatStreamingAccumulatesText(t *testing.T) {
 	if res.Reasoning != "hmm " {
 		t.Errorf("reasoning = %q", res.Reasoning)
 	}
-	if res.FinishReason != "stop" || res.Usage.TotalTokens != 7 {
-		t.Errorf("finish/usage = %q %#v", res.FinishReason, res.Usage)
+	if res.FinishReason != "stop" {
+		t.Errorf("finish reason = %q", res.FinishReason)
 	}
 }
 
 func TestChatStreamingAssemblesSplitToolCalls(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		io.WriteString(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"delegate_to_agent","arguments":"{\"agent\":"}}]}}]}`+"\n\n")
-		io.WriteString(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"codex\"}"}}]}}]}`+"\n\n")
+		io.WriteString(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"terminal_open","arguments":"{\"skill\":"}}]}}]}`+"\n\n")
+		io.WriteString(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"claude\"}"}}]}}]}`+"\n\n")
 		io.WriteString(w, `data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`+"\n\n")
 		io.WriteString(w, "data: [DONE]\n\n")
 	}))
@@ -64,17 +64,17 @@ func TestChatStreamingAssemblesSplitToolCalls(t *testing.T) {
 		t.Fatalf("tool calls = %#v", res.ToolCalls)
 	}
 	call := res.ToolCalls[0]
-	if call.ID != "call_a" || call.Function.Name != "delegate_to_agent" {
+	if call.ID != "call_a" || call.Function.Name != "terminal_open" {
 		t.Errorf("call = %#v", call)
 	}
 	var args map[string]any
 	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
 		t.Fatalf("arguments not reassembled: %q", call.Function.Arguments)
 	}
-	if args["agent"] != "codex" {
+	if args["skill"] != "claude" {
 		t.Errorf("args = %#v", args)
 	}
-	if len(announced) != 1 || announced[0] != "delegate_to_agent" {
+	if len(announced) != 1 || announced[0] != "terminal_open" {
 		t.Errorf("announced = %#v", announced)
 	}
 }
@@ -109,7 +109,7 @@ func TestTranscribeChatSendsAudioPart(t *testing.T) {
 	defer server.Close()
 
 	client := New(server.URL, "key")
-	text, err := client.TranscribeChat(context.Background(), "m", "transcribe", "QUJD", "wav")
+	text, err := client.transcribeChat(context.Background(), "m", "transcribe", "QUJD", "wav")
 	if err != nil {
 		t.Fatalf("transcribe: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestTranscribeEndpointSendsTheLanguage(t *testing.T) {
 	defer server.Close()
 
 	client := New(server.URL, "key")
-	text, err := client.TranscribeEndpoint(context.Background(), "whisper-1", []byte("audio"), "audio.wav", "de")
+	text, err := client.transcribeEndpoint(context.Background(), "whisper-1", []byte("audio"), "audio.wav", "de")
 	if err != nil {
 		t.Fatalf("transcribe: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestTranscribeEndpointSendsTheLanguage(t *testing.T) {
 	}
 
 	// Automatic sends no language at all, so the endpoint detects it itself.
-	if _, err := client.TranscribeEndpoint(context.Background(), "whisper-1", []byte("audio"), "audio.wav", ""); err != nil {
+	if _, err := client.transcribeEndpoint(context.Background(), "whisper-1", []byte("audio"), "audio.wav", ""); err != nil {
 		t.Fatalf("transcribe: %v", err)
 	}
 	if _, ok := fields["language"]; ok {
@@ -394,13 +394,13 @@ func TestModelsMergeTheListeningCatalogue(t *testing.T) {
 	for _, m := range models {
 		byID[m.ID] = m
 	}
-	if !byID["vendor/listen-1"].Hears() || !byID["vendor/listen-1"].Transcribes() {
+	if !byID["vendor/listen-1"].hears() || !byID["vendor/listen-1"].transcribes() {
 		t.Errorf("listen-1 = %#v", byID["vendor/listen-1"])
 	}
-	if !byID["vendor/chat-1"].Hears() || byID["vendor/chat-1"].Transcribes() {
+	if !byID["vendor/chat-1"].hears() || byID["vendor/chat-1"].transcribes() {
 		t.Errorf("chat-1 = %#v", byID["vendor/chat-1"])
 	}
-	if byID["vendor/text-1"].Hears() {
+	if byID["vendor/text-1"].hears() {
 		t.Errorf("text-1 = %#v", byID["vendor/text-1"])
 	}
 	// Nothing asks for the speech catalogue any more: an answer is read out

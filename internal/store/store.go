@@ -73,7 +73,6 @@ CREATE TABLE IF NOT EXISTS steps (
   id         TEXT PRIMARY KEY,
   run_id     TEXT NOT NULL,
   chat_id    TEXT NOT NULL,
-  parent_id  TEXT NOT NULL DEFAULT '',
   seq        INTEGER NOT NULL,
   rev        INTEGER NOT NULL,
   kind       TEXT NOT NULL,
@@ -187,10 +186,6 @@ func hasColumn(db *sql.DB, table, column string) (bool, error) {
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
 
-// NextRev hands out the next global revision number. Every step write carries
-// one so that a reconnecting client can ask for "everything newer than X".
-func (s *Store) NextRev() int64 { return s.rev.Add(1) }
-
 // Rev returns the current revision.
 func (s *Store) Rev() int64 { return s.rev.Load() }
 
@@ -250,9 +245,10 @@ type Chat struct {
 	// Archived is a chat that has been put away: it keeps its transcript but
 	// owns nothing that is still running, and it is hidden from the sidebar
 	// until the list is switched to showing everything. ArchivedAt is when
-	// that happened, and zero for a chat that is active.
+	// that happened, and zero for a chat that is active; it is what the list
+	// query filters on, and the client only ever needs the boolean.
 	Archived   bool  `json:"archived"`
-	ArchivedAt int64 `json:"archived_at,omitempty"`
+	ArchivedAt int64 `json:"-"`
 }
 
 const chatCols = `id, title, workspace, client_id, created_at, updated_at, archived_at`
@@ -563,27 +559,6 @@ func (s *Store) GetRun(id string) (*Run, error) {
 	return r, err
 }
 
-// ListRuns returns all runs of a chat, oldest first.
-func (s *Store) ListRuns(chatID string) ([]Run, error) {
-	rows, err := s.db.Query(`SELECT id, chat_id, status, error, auto, created_at, updated_at
-		FROM runs WHERE chat_id = ? ORDER BY created_at`, chatID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []Run{}
-	for rows.Next() {
-		var r Run
-		var auto int
-		if err := rows.Scan(&r.ID, &r.ChatID, &r.Status, &r.Error, &auto, &r.CreatedAt, &r.UpdatedAt); err != nil {
-			return nil, err
-		}
-		r.Auto = auto == 1
-		out = append(out, r)
-	}
-	return out, rows.Err()
-}
-
 // ActiveRun returns the run of a chat that is still in flight, if any.
 func (s *Store) ActiveRun(chatID string) (*Run, error) {
 	r := &Run{}
@@ -607,11 +582,12 @@ func (s *Store) RecoverRuns() error {
 	// 'waiting_input' is gone as a state, but databases written by older
 	// versions still hold runs that were parked in it. They are recovered here
 	// like any other run that never finished.
-	if _, err := s.db.Exec(`UPDATE runs SET status = 'interrupted', error = 'Server restarted while this run was in progress.', updated_at = ?
-		WHERE status IN ('running','waiting_input')`, ts); err != nil {
+	if _, err := s.db.Exec(`UPDATE runs SET status = ?, error = 'Server restarted while this run was in progress.', updated_at = ?
+		WHERE status IN ('running','waiting_input')`, RunInterrupted, ts); err != nil {
 		return err
 	}
-	_, err := s.db.Exec(`UPDATE steps SET status = 'interrupted', updated_at = ? WHERE status = 'running'`, ts)
+	_, err := s.db.Exec(`UPDATE steps SET status = ?, updated_at = ? WHERE status = ?`,
+		StatusInterrupted, ts, StatusRunning)
 	return err
 }
 
@@ -624,9 +600,6 @@ const (
 	StepTerminal = "terminal"
 	StepShell    = "shell"
 	StepError    = "error"
-	// StepSubTool is the generic "a tool ran" line: a tag, one line of what it
-	// was asked, and the answer folded away underneath.
-	StepSubTool = "sub_tool"
 )
 
 // Step statuses.
@@ -642,7 +615,6 @@ type Step struct {
 	ID        string          `json:"id"`
 	RunID     string          `json:"run_id"`
 	ChatID    string          `json:"chat_id"`
-	ParentID  string          `json:"parent_id"`
 	Seq       int64           `json:"seq"`
 	Rev       int64           `json:"rev"`
 	Kind      string          `json:"kind"`
@@ -668,12 +640,11 @@ func (s *Store) PutStep(st *Step) error {
 	if len(st.Detail) > 0 {
 		detail = string(st.Detail)
 	}
-	_, err := s.db.Exec(`INSERT INTO steps(id, run_id, chat_id, parent_id, seq, rev, kind, title, body, detail, status, created_at, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	_, err := s.db.Exec(`INSERT INTO steps(id, run_id, chat_id, seq, rev, kind, title, body, detail, status, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET rev = excluded.rev, title = excluded.title, body = excluded.body,
-			detail = excluded.detail, status = excluded.status, updated_at = excluded.updated_at,
-			parent_id = excluded.parent_id`,
-		st.ID, st.RunID, st.ChatID, st.ParentID, st.Seq, st.Rev, st.Kind, st.Title, st.Body, detail,
+			detail = excluded.detail, status = excluded.status, updated_at = excluded.updated_at`,
+		st.ID, st.RunID, st.ChatID, st.Seq, st.Rev, st.Kind, st.Title, st.Body, detail,
 		st.Status, st.CreatedAt, st.UpdatedAt)
 	return err
 }
@@ -702,7 +673,7 @@ func scanSteps(rows *sql.Rows) ([]Step, error) {
 	for rows.Next() {
 		var st Step
 		var detail string
-		if err := rows.Scan(&st.ID, &st.RunID, &st.ChatID, &st.ParentID, &st.Seq, &st.Rev, &st.Kind,
+		if err := rows.Scan(&st.ID, &st.RunID, &st.ChatID, &st.Seq, &st.Rev, &st.Kind,
 			&st.Title, &st.Body, &detail, &st.Status, &st.CreatedAt, &st.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -714,11 +685,11 @@ func scanSteps(rows *sql.Rows) ([]Step, error) {
 	return out, rows.Err()
 }
 
-const stepCols = `id, run_id, chat_id, parent_id, seq, rev, kind, title, body, detail, status, created_at, updated_at`
+const stepCols = `id, run_id, chat_id, seq, rev, kind, title, body, detail, status, created_at, updated_at`
 
 // GetStep loads one step by id.
 func (s *Store) GetStep(id string) (*Step, error) {
-	rows, err := s.db.Query(`SELECT id, run_id, chat_id, parent_id, seq, rev, kind, title, body,
+	rows, err := s.db.Query(`SELECT id, run_id, chat_id, seq, rev, kind, title, body,
 		detail, status, created_at, updated_at FROM steps WHERE id = ?`, id)
 	if err != nil {
 		return nil, err

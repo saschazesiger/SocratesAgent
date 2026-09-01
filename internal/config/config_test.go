@@ -239,36 +239,18 @@ func TestNormalizeDefaultsTheLanguage(t *testing.T) {
 	if s.Voice.Language != DefaultLanguage {
 		t.Fatalf("language = %q", s.Voice.Language)
 	}
-	if LanguageName(s.Voice.Language) != "English" || LanguageTag(s.Voice.Language) != "en-US" {
-		t.Fatalf("default = %q / %q", LanguageName(s.Voice.Language), LanguageTag(s.Voice.Language))
-	}
-}
-
-// The language used to live on the playback side only. An installation that
-// set it there keeps its choice now that one setting covers the whole
-// conversation.
-func TestNormalizeMigratesTheOldPlaybackLanguage(t *testing.T) {
-	s := Settings{}
-	s.Voice.TTSLanguage = "de-DE"
-	s.Normalize()
-	if s.Voice.Language != LanguageDE {
-		t.Fatalf("language = %q", s.Voice.Language)
-	}
-	if s.Voice.TTSLanguage != "" {
-		t.Fatalf("the old field was kept: %q", s.Voice.TTSLanguage)
-	}
-	if LanguageName(s.Voice.Language) != "German" || LanguageTag(s.Voice.Language) != "de-DE" {
-		t.Fatalf("german = %q / %q", LanguageName(s.Voice.Language), LanguageTag(s.Voice.Language))
+	if LanguageName(s.Voice.Language) != "English" {
+		t.Fatalf("default = %q", LanguageName(s.Voice.Language))
 	}
 }
 
 // The settings document of an installation that is upgraded carries every
 // provider Socrates ever read an answer out loud with: an endpoint of its own,
 // an OpenRouter voice model with its voice, and a whole Google section with a
-// service account key in it. None of that decides anything any more, so it has
-// to load without complaint, keep the two settings that survived - the spoken
-// language and the speaking rate - and come back with the rest gone rather
-// than sitting in the database being ignored.
+// service account key in it. Not one of those keys has a field left to land
+// in, and that is the point: encoding/json drops what it does not recognise,
+// so the document loads, keeps the two settings that survived - the spoken
+// language and the speaking rate - and is written back without the rest.
 //
 // This is the upgrade path, and it is the test that matters most here: a
 // document that fails to load is an installation that will not start.
@@ -348,40 +330,11 @@ func TestNormalizeLanguage(t *testing.T) {
 		if got := NormalizeLanguage(in); got != want {
 			t.Errorf("NormalizeLanguage(%q) = %q, want %q", in, got, want)
 		}
-		// Every language a settings document can hold has a name and a voice
-		// tag, because both go out to a model or a synthesiser unchecked.
-		if LanguageName(in) == "" || LanguageTag(in) == "" {
-			t.Errorf("%q has no name or tag", in)
+		// Every language a settings document can hold has a name, because it
+		// goes out to a model unchecked.
+		if LanguageName(in) == "" {
+			t.Errorf("%q has no name", in)
 		}
-	}
-}
-
-// Socrates used to have a web search and a page reader of its own, and every
-// installation from that era has an "internet" object sitting in its settings
-// document. Those keys mean nothing now, and a settings document must load
-// around them rather than fail on them.
-func TestSettingsFromTheInternetEraStillLoad(t *testing.T) {
-	stored := []byte(`{
-		"openrouter": {"chat_model": "some/model"},
-		"internet": {
-			"enabled": true,
-			"search_provider": "tavily",
-			"tavily_api_key": "tvly-key",
-			"fetch_engine": "jina",
-			"max_results": 7
-		},
-		"agent": {"max_iterations": 12}
-	}`)
-	var s Settings
-	if err := json.Unmarshal(stored, &s); err != nil {
-		t.Fatalf("a settings document with an internet key no longer loads: %v", err)
-	}
-	s.Normalize()
-	if s.OpenRouter.ChatModel != "some/model" {
-		t.Errorf("chat model = %q", s.OpenRouter.ChatModel)
-	}
-	if s.Agent.MaxIterations != 12 {
-		t.Errorf("max iterations = %d", s.Agent.MaxIterations)
 	}
 }
 

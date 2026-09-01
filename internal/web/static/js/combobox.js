@@ -28,8 +28,6 @@ let comboCount = 0;
  * options.onChange     called with the new value
  * options.items        () => [{value, label, hint, group}]
  * options.placeholder  shown while empty
- * options.freeText     allow a value that is not in the list (default true)
- * options.emptyText    shown when nothing matches
  */
 export function combobox(options = {}) {
   const {
@@ -37,8 +35,6 @@ export function combobox(options = {}) {
     onChange = () => {},
     items = () => [],
     placeholder = '',
-    freeText = true,
-    emptyText = 'No model matches',
   } = options;
 
   const id = 'combo' + (++comboCount);
@@ -68,7 +64,7 @@ export function combobox(options = {}) {
 
   const root = el('div', { class: 'combo' }, input, toggle, list);
 
-  const instance = { root, close, setValue };
+  const instance = { root, close };
 
   function setValue(next, notify = true) {
     current = next ?? '';
@@ -100,7 +96,7 @@ export function combobox(options = {}) {
   function render() {
     list.innerHTML = '';
     if (!filtered.length) {
-      list.append(el('div', { class: 'combo-empty', text: emptyText }));
+      list.append(el('div', { class: 'combo-empty', text: 'No model matches' }));
       return;
     }
     let group = null;
@@ -174,12 +170,10 @@ export function combobox(options = {}) {
 
   input.addEventListener('focus', () => open(''));
   input.addEventListener('input', () => {
-    if (freeText) {
-      // The typed text is the value straight away, so a model that is not in
-      // the catalogue still saves.
-      current = input.value;
-      onChange(current);
-    }
+    // The typed text is the value straight away, so a model that is not in
+    // the catalogue still saves.
+    current = input.value;
+    onChange(current);
     open(input.value);
   });
 
@@ -225,7 +219,6 @@ export function combobox(options = {}) {
   });
 
   input.addEventListener('blur', () => {
-    if (!freeText && input.value !== current) input.value = current;
     // A click on an option runs on mousedown, so closing here is safe.
     setTimeout(() => { if (openInstance === instance) close(); }, 0);
   });
@@ -239,5 +232,5 @@ export function combobox(options = {}) {
     open('');
   });
 
-  return { node: root, setValue, get value() { return current; } };
+  return { node: root, setValue };
 }

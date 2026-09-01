@@ -111,8 +111,11 @@ func (s *Server) handleSpeak(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "no text was sent")
 		return
 	}
-	if len([]rune(text)) > 6000 {
-		text = string([]rune(text)[:6000])
+	if runes := []rune(text); len(runes) > piper.MaxTextRunes {
+		// The engine trims to the same length itself. Doing it here as well is
+		// what keeps the browser's deadline, which grows with the length of
+		// the text it sent, honest about what it is waiting for.
+		text = string(runes[:piper.MaxTextRunes])
 	}
 	settings := s.Settings()
 	audio, contentType, err := s.voice.Speak(r.Context(), text,

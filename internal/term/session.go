@@ -65,7 +65,6 @@ type State struct {
 	// happened without comparing the whole screen.
 	Revision int64  `json:"revision"`
 	Screen   string `json:"screen"`
-	Detached bool   `json:"detached"`
 	// Styled is the same screen with its colours, for the browser to paint. It
 	// is nil when nothing on the screen is coloured or emphasised, which is
 	// most sessions, and it is never what the agent reads: that is Screen.
@@ -241,11 +240,6 @@ func (s *Session) unsubscribe(ch chan struct{}) {
 	delete(s.waiters, ch)
 	s.mu.Unlock()
 }
-
-// ID, Name and ChatID identify the session.
-func (s *Session) ID() string     { return s.id }
-func (s *Session) Name() string   { return s.name }
-func (s *Session) ChatID() string { return s.chatID }
 
 // Done is closed when the program has exited.
 func (s *Session) Done() <-chan struct{} { return s.done }

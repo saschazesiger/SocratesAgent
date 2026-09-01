@@ -20,11 +20,11 @@ import (
 
 // Outcomes of a wait, as they are labelled for the model.
 const (
-	waitIdle    = "idle"          // quiet, and nothing says it is working
-	waitBusy    = "still working" // the busy pattern still matches
-	waitNoisy   = "still working" // it kept printing right up to the timeout
-	waitExited  = "exited"        // the program is gone
-	waitStopped = "stopped"       // the run was cancelled
+	waitIdle    = "idle"           // quiet, and nothing says it is working
+	waitBusy    = "still working"  // the busy pattern still matches
+	waitNoisy   = "still printing" // it kept printing right up to the timeout
+	waitExited  = "exited"         // the program is gone
+	waitStopped = "stopped"        // the run was cancelled
 )
 
 // spinnerRune reports whether a rune is part of some program's animation

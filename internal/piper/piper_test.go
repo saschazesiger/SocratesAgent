@@ -301,13 +301,13 @@ func TestEnsureInstallsPiperAndBothVoices(t *testing.T) {
 	s := newStand(t, fakePiper(record))
 	e := engineOn(t, s)
 
-	if e.Ready() {
+	if e.canSpeak() {
 		t.Fatal("an empty directory cannot be ready")
 	}
 	if err := e.Ensure(context.Background()); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
-	if !e.Ready() {
+	if !e.canSpeak() {
 		t.Fatal("the engine should be ready after a successful install")
 	}
 
@@ -416,7 +416,7 @@ func TestATruncatedArchiveLeavesNothingThatLooksInstalled(t *testing.T) {
 	if err := e.Ensure(context.Background()); err == nil {
 		t.Fatal("a truncated archive must be refused")
 	}
-	if e.Ready() {
+	if e.canSpeak() {
 		t.Error("the engine reports ready after a failed install")
 	}
 	if _, err := os.Stat(binaryPath(e.Dir)); err == nil {
@@ -435,7 +435,7 @@ func TestATruncatedArchiveLeavesNothingThatLooksInstalled(t *testing.T) {
 	if err := e.Ensure(context.Background()); err != nil {
 		t.Fatalf("retry after a failure: %v", err)
 	}
-	if !e.Ready() {
+	if !e.canSpeak() {
 		t.Error("the retry should have installed everything")
 	}
 }
@@ -925,13 +925,13 @@ func TestSpeakTrimsTextThatIsFarTooLong(t *testing.T) {
 	e := offline(t, New(t.TempDir()))
 	installTree(t, e.Dir, fakePiper(record))
 
-	long := strings.Repeat("ä", maxTextRunes*3)
+	long := strings.Repeat("ä", MaxTextRunes*3)
 	if _, _, err := e.Speak(context.Background(), long, "de", 1); err != nil {
 		t.Fatalf("speak: %v", err)
 	}
 	given := recorded(t, record, "stdin")
-	if utf8.RuneCountInString(given) != maxTextRunes {
-		t.Errorf("piper was given %d runes, want %d", utf8.RuneCountInString(given), maxTextRunes)
+	if utf8.RuneCountInString(given) != MaxTextRunes {
+		t.Errorf("piper was given %d runes, want %d", utf8.RuneCountInString(given), MaxTextRunes)
 	}
 	if !utf8.ValidString(given) {
 		t.Error("the text was cut in the middle of a character")
@@ -958,7 +958,7 @@ func TestABakedInInstallationIsUsedWithoutDownloading(t *testing.T) {
 	}
 	e := engineOn(t, s)
 
-	if !e.Ready() {
+	if !e.canSpeak() {
 		t.Fatal("the baked in installation should be enough")
 	}
 	if err := e.Ensure(context.Background()); err != nil {
@@ -1000,8 +1000,8 @@ func TestAnIncompleteBakedInInstallationFallsBackToTheManagedCopy(t *testing.T) 
 	if s.hits("/release/") != 1 {
 		t.Error("the managed copy should have been downloaded")
 	}
-	if binary := e.Status().Path; binary != binaryPath(e.Dir) {
-		t.Errorf("status points at %q, want the managed copy", binary)
+	if detail := e.Status().Detail; !strings.Contains(detail, binaryPath(e.Dir)) {
+		t.Errorf("status says %q, want the managed copy named", detail)
 	}
 }
 
@@ -1093,9 +1093,6 @@ func TestStatusReportsWhatTheEngineCanDo(t *testing.T) {
 	if len(status.Voices) != 0 {
 		t.Errorf("voices = %v, want none", status.Voices)
 	}
-	if status.Path != binaryPath(e.Dir) {
-		t.Errorf("path = %q, want where the binary will live", status.Path)
-	}
 	if status.Err != "" {
 		t.Errorf("nothing has failed yet: %q", status.Err)
 	}
@@ -1126,7 +1123,7 @@ func TestStatusReportsWhatTheEngineCanDo(t *testing.T) {
 	if len(status.Voices) != len(allVoices) {
 		t.Errorf("voices = %v, want both of them", status.Voices)
 	}
-	if !strings.Contains(status.Detail, status.Path) {
+	if !strings.Contains(status.Detail, binaryPath(e.Dir)) {
 		t.Errorf("the sentence should name the piper in use: %q", status.Detail)
 	}
 }
@@ -1364,7 +1361,7 @@ func speakSoon(t *testing.T, e *Engine, ctx context.Context) (time.Duration, err
 func waitReady(t *testing.T, e *Engine) {
 	t.Helper()
 	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); {
-		if e.Ready() {
+		if e.canSpeak() {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)

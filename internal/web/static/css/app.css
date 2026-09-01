@@ -704,7 +704,6 @@ body.stale .view-slider.live .live-dot { background: var(--amber); }
 
 .step.text-step > .body, .step.text-step.open > .body { display: block; padding: 4px 0 8px; color: var(--text-soft); }
 
-.children .step > .head { padding: 4px 0; }
 
 .sub-line {
   display: flex;
@@ -738,8 +737,6 @@ body.stale .view-slider.live .live-dot { background: var(--amber); }
   opacity: .6;
 }
 .step.collapsible.open > .sub-line::after { transform: rotate(45deg); }
-.sub-line.log .val { font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); }
-.sub-line.err .val { color: var(--red); }
 
 .step.error-step {
   border: 1px solid #f1dada;
@@ -1198,17 +1195,6 @@ body.auto .auto-screen {
   margin: 14px 0 0;
 }
 
-.warning-box {
-  border: 1px solid #f0e0c2;
-  background: #fdf9f0;
-  color: #85601a;
-  border-radius: var(--r);
-  padding: 12px 14px;
-  font-size: 13.5px;
-  line-height: 1.55;
-  margin-bottom: 18px;
-}
-
 .admin-foot {
   border-top: 1px solid var(--line);
   padding: 18px 0 0;
@@ -1582,8 +1568,6 @@ body.auto .auto-screen {
 .term-screen .td { opacity: .58; }
 .term-screen .ti { font-style: italic; }
 .term-screen .tu { text-decoration: underline; }
-.term-screen .ts { text-decoration: line-through; }
-.term-screen .tu.ts { text-decoration: underline line-through; }
 
 /* The caret, drawn the way a terminal draws it when the window has focus, and
    left as a quiet outline when it does not. */
