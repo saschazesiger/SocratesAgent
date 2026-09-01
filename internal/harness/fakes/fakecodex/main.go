@@ -18,6 +18,10 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/harness/fakes/script"
 )
 
+// codexVersion is what `codex --version` prints, in the real format
+// ("codex-cli 0.152.0").
+const codexVersion = "codex-cli 0.152.0-fake"
+
 // defaultThreadID is what thread/start reports. FK-9's rule applies here too:
 // the fake remembers nothing across processes, so thread/resume simply echoes
 // back the id it was given.
@@ -64,6 +68,12 @@ type frame struct {
 
 func main() {
 	script.Record(os.Args)
+
+	// The catalogue runs `codex --version` before anything else.
+	if script.VersionAsked(os.Args[1:]) {
+		fmt.Println(codexVersion)
+		os.Exit(0)
+	}
 
 	// FK-15: there is no `generate-json-schema` mode. Discovery goes through
 	// model/list, so anything but `app-server` is refused.

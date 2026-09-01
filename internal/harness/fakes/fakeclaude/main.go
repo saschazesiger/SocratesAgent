@@ -11,9 +11,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/harness/fakes/script"
 )
@@ -21,6 +23,35 @@ import (
 // defaultSessionID is what init reports when neither --session-id nor
 // --resume was passed (FK-9: the fake remembers nothing across processes).
 const defaultSessionID = "11111111-1111-4111-8111-111111111111"
+
+// Two env vars reproduce behaviour of the real CLI that the fake would
+// otherwise have to guess at (DESIGN rev 10, E-1 and E-2).
+const (
+	// envGhostResume=1 makes a --resume launch reproduce the measured failure
+	// of resuming a session that does not exist. It is consumed on first use,
+	// so the adapter's one-shot relaunch without --resume succeeds.
+	envGhostResume = "FAKE_GHOST_RESUME"
+	// envStateDir is where the consumed-ghost marker is written. With it
+	// unset the flag is never consumed and every --resume dies.
+	envStateDir = "FAKE_STATE_DIR"
+	// envInitAtStart=1 restores writing system/init at process start. By
+	// default init is the first line of the first turn, which is what the
+	// real CLI does under --input-format stream-json.
+	envInitAtStart = "FAKE_INIT_AT_START"
+)
+
+// ghostResumeDelay is how long the ghost death takes. The real CLI takes
+// 1.3-1.5 s; the design pins ~200 ms so a hermetic test stays quick while the
+// asynchronous shape of the failure is preserved.
+const ghostResumeDelay = 200 * time.Millisecond
+
+// claudeVersion is what `claude --version` prints, in the real format
+// ("2.1.252 (Claude Code)"), carrying the same version init reports.
+const claudeVersion = "2.1.252-fake (Claude Code)"
+
+// noConversation is the real CLI's message for an unknown --resume id. It goes
+// on stderr and, per the design, into the ghost result's result field.
+const noConversation = "No conversation found with session ID: "
 
 type fake struct {
 	wmu sync.Mutex
@@ -31,6 +62,11 @@ type fake struct {
 	replay  bool
 
 	steps []script.Step
+
+	initOnce sync.Once
+	initial  initLine
+	deferred bool
+
 	uuidN atomic.Int64
 	msgN  atomic.Int64
 	toolN atomic.Int64
@@ -57,6 +93,13 @@ func main() {
 	args := os.Args[1:]
 	script.Record(os.Args)
 
+	// The catalogue runs `claude --version` to find out whether the binary is
+	// there; it must not look like a usage error.
+	if script.VersionAsked(args) {
+		fmt.Println(claudeVersion)
+		os.Exit(0)
+	}
+
 	if !hasFlag(args, "-p") ||
 		value(args, "--output-format") != "stream-json" ||
 		value(args, "--input-format") != "stream-json" {
@@ -76,8 +119,13 @@ func main() {
 		f.session = defaultSessionID
 	}
 
+	// A --resume that the CLI cannot satisfy never reaches init.
+	if resume := value(args, "--resume"); resume != "" && ghostArmed(resume) {
+		f.ghostDeath(resume)
+	}
+
 	cwd, _ := os.Getwd()
-	f.emit(initLine{
+	f.initial = initLine{
 		Type:           "system",
 		Subtype:        "init",
 		Cwd:            cwd,
@@ -88,7 +136,12 @@ func main() {
 		Version:        "2.1.252-fake",
 		Capabilities:   []string{"interrupt_receipt_v1", "interrupt_cancel_queued_v1", "msg_lifecycle_v1"},
 		UUID:           f.uuid(),
-	})
+	}
+	// E-1: by default nothing at all is written until the first user line.
+	f.deferred = os.Getenv(envInitAtStart) != "1"
+	if !f.deferred {
+		f.sayInit()
+	}
 
 	sc := bufio.NewScanner(os.Stdin)
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
@@ -104,8 +157,15 @@ func main() {
 		}
 		switch env["type"] {
 		case "control_request":
+			// init describes the process, so it is written before anything
+			// else on stdout even when the first thing to arrive is an
+			// interrupt rather than a user line.
+			f.sayInit()
 			f.control(env)
 		case "user":
+			// In deferred mode init is the first thing the turn produces,
+			// ahead of the replay echo, exactly as observed live.
+			f.sayInit()
 			if f.replay {
 				env["isReplay"] = true
 				env["session_id"] = f.session
@@ -123,6 +183,73 @@ func main() {
 	wg.Wait()
 	f.flush()
 	os.Exit(0)
+}
+
+// sayInit writes the system/init line, once.
+func (f *fake) sayInit() {
+	f.initOnce.Do(func() { f.emit(f.initial) })
+}
+
+// ghostArmed reports whether this --resume should die, and consumes the flag
+// so the next launch for the same session succeeds. The marker lives in
+// $FAKE_STATE_DIR; with that unset the flag is never consumed.
+func ghostArmed(id string) bool {
+	if os.Getenv(envGhostResume) != "1" {
+		return false
+	}
+	dir := os.Getenv(envStateDir)
+	if dir == "" {
+		return true
+	}
+	marker := filepath.Join(dir, "ghost-resume-"+markerName(id))
+	if _, err := os.Stat(marker); err == nil {
+		return false
+	}
+	// A marker that cannot be written means the flag is never consumed and
+	// every relaunch dies again, so say so rather than looking like a CLI
+	// that simply refuses to resume.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		fmt.Fprintln(os.Stderr, "fakeclaude: cannot write the ghost marker:", err)
+	} else if err := os.WriteFile(marker, []byte(id+"\n"), 0o600); err != nil {
+		fmt.Fprintln(os.Stderr, "fakeclaude: cannot write the ghost marker:", err)
+	}
+	return true
+}
+
+// markerName keeps a session id usable as a file name.
+func markerName(id string) string {
+	var b strings.Builder
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
+// ghostDeath reproduces `claude --resume <uuid>` for a session that does not
+// exist: silence, then one unprompted result carrying num_turns:0 with no
+// system/init before it, then exit 1 with the CLI's own message on stderr. The
+// missing init plus num_turns:0 is the discriminator — a real turn always has
+// init ahead of it and num_turns >= 1.
+func (f *fake) ghostDeath(id string) {
+	time.Sleep(ghostResumeDelay)
+	f.emit(ghostResult{
+		Type:           "result",
+		Subtype:        "error_during_execution",
+		IsError:        true,
+		NumTurns:       0,
+		TerminalReason: "api_error",
+		Result:         noConversation + id,
+		SessionID:      id,
+		UUID:           f.uuid(),
+	})
+	f.flush()
+	fmt.Fprintln(os.Stderr, noConversation+id)
+	os.Exit(1)
 }
 
 // ---------------------------------------------------------------- the turn
@@ -496,6 +623,18 @@ func defaultUsage() usageBlock {
 		CacheReadInputTokens: 13615,
 		OutputTokensDetails:  map[string]int{"thinking_tokens": 32},
 	}
+}
+
+// ghostResult is the result line a --resume of an unknown session writes.
+type ghostResult struct {
+	Type           string `json:"type"`
+	Subtype        string `json:"subtype"`
+	IsError        bool   `json:"is_error"`
+	NumTurns       int    `json:"num_turns"`
+	TerminalReason string `json:"terminal_reason"`
+	Result         string `json:"result"`
+	SessionID      string `json:"session_id"`
+	UUID           string `json:"uuid"`
 }
 
 type resultLine struct {
