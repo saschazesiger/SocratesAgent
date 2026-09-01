@@ -415,8 +415,11 @@ a { color: inherit; }
   z-index: 3;
 }
 .topbar .title {
-  flex: 1;
-  min-width: 0;
+  flex: 1 1 auto;
+  /* Enough for a word and an ellipsis. Below the width where even this fits,
+     the rule further down hides the title outright rather than showing one
+     letter, which reads as a glitch rather than as a name. */
+  min-width: 5.5em;
   font-size: 14.5px;
   font-weight: 550;
   letter-spacing: -.01em;
@@ -429,17 +432,24 @@ a { color: inherit; }
    order. It is not a control - the binding is changed in the chat's own
    settings - so it is the quietest thing in the bar that is still legible. */
 .agent-badge {
-  flex: none;
-  max-width: 40%;
+  /* It shrinks before the chat's own name does, and the name keeps a floor of
+     its own below - the binding is a caption, the title is what you are
+     looking for in a list of open tabs. */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 46%;
+  display: flex;
+  align-items: baseline;
   font-size: 11.5px;
   color: var(--text-faint);
   background: var(--bg-sunken);
   border-radius: 999px;
   padding: 3px 9px;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
+.agent-badge > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.agent-badge > .b-sep { flex: none; opacity: .7; }
 /* The agent this chat needs is gone or switched off. Saying so here is the
    only warning there is before the composer refuses the next message. */
 .agent-badge.warn {
@@ -1482,6 +1492,12 @@ body.auto .auto-screen {
              calc(10px + env(safe-area-inset-left, 0px));
   }
   .view-slider .stop { padding: 6px 8px; }
+  /* Mobile first: the chat's name comes before the caption under it. The agent
+     is fixed for the life of the chat and is named in the settings popover, so
+     it is the part that goes; the model is the part that can change. */
+  .agent-badge { max-width: 34%; }
+  .agent-badge > .b-agent,
+  .agent-badge > .b-agent + .b-sep { display: none; }
 }
 /* Narrower than this the title has room for one letter and an ellipsis that
    does not fit, which reads as a glitch rather than as a name. It keeps its
@@ -1491,6 +1507,10 @@ body.auto .auto-screen {
   .topbar .title { visibility: hidden; }
 }
 @container (max-width: 380px) {
+  /* Narrower still: only the model is left, so the separator before it goes
+     too. */
+  .agent-badge > .b-effort,
+  .agent-badge > .b-model + .b-sep { display: none; }
   .topbar {
     gap: 5px;
     padding: 0

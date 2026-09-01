@@ -24,7 +24,6 @@ const EFFORTS = [
 ];
 
 let cached = null;      // the agents array, whatever its provenance
-let cachedAt = 0;       // when the server last answered, 0 for a stored copy
 let fromStorage = false; // whether what we have is last visit's copy
 let loading = null;
 
@@ -60,15 +59,13 @@ export async function load(force = false) {
         ? await api('/api/agents/refresh', { method: 'POST', attempts: 1, timeout: 60000 })
         : await api('/api/agents', { attempts: 2, timeout: 12000 });
       cached = data.agents || [];
-      cachedAt = data.refreshed_at || Date.now();
       fromStorage = false;
-      writeCache(cached, cachedAt);
+      writeCache(cached, data.refreshed_at || Date.now());
       return cached;
     } catch (err) {
       const stored = readCache();
       if (!stored) throw err;
       cached = stored.agents;
-      cachedAt = stored.at || 0;
       fromStorage = true;
       return cached;
     } finally {
@@ -86,7 +83,6 @@ export function list() {
   const stored = readCache();
   if (!stored) return [];
   cached = stored.agents;
-  cachedAt = stored.at || 0;
   fromStorage = true;
   return cached;
 }
@@ -99,10 +95,6 @@ export function agent(id) {
 // answer right now. The sheet says so out loud.
 export function stale() {
   return fromStorage;
-}
-
-export function refreshedAt() {
-  return cachedAt;
 }
 
 // modelItems is the combobox's view of one agent's models: the id is the

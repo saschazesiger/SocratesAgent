@@ -242,8 +242,11 @@ async function init() {
   // signal cannot fetch the chat list, and falling back to a blank new chat
   // there would lose both the place and the draft that belongs to it.
   const fromHash = location.hash.replace(/^#/, '');
+  // A chat that was started and typed into but never delivered has no id to
+  // open, and opening another chat over it would put the bubble the person is
+  // waiting on to land on no screen at all. It wins the boot.
   if (fromHash) await openChat(fromHash);
-  else if (firstChatId()) await openChat(firstChatId());
+  else if (firstChatId() && !state.pendingBinding) await openChat(firstChatId());
   else {
     showEmptyState();
     restoreDraft();
@@ -346,7 +349,14 @@ function adoptCreatedChat(chat, item) {
   refreshChats();
 }
 
+// boot retries init on a bad connection, so this guards against binding every
+// handler a second time - which is what made one tap on the menu button toggle
+// the drawer twice.
+let bound = false;
+
 function bindUI() {
+  if (bound) return;
+  bound = true;
   dom.composer.addEventListener('submit', (event) => {
     event.preventDefault();
     submitText(dom.input.value);
@@ -903,7 +913,7 @@ function paintAgentBadge() {
   if (state.legacy) {
     badge.hidden = false;
     badge.className = 'agent-badge warn';
-    badge.textContent = 'No agent';
+    badge.replaceChildren(el('span', { class: 'b-model', text: 'No agent' }));
     badge.title = 'This chat was made before Socrates talked to agents directly.';
     return;
   }
@@ -912,7 +922,7 @@ function paintAgentBadge() {
     : state.pendingBinding;
   if (!binding || !binding.agent) {
     badge.hidden = true;
-    badge.textContent = '';
+    badge.replaceChildren();
     return;
   }
   // The labels the server sent are the truthful ones; before there is a chat
@@ -921,20 +931,45 @@ function paintAgentBadge() {
   const agentLabel = state.agentLabel || (known ? known.label : binding.agent);
   const modelEntry = agents.modelOf(binding.agent, binding.model);
   const modelLabel = state.modelLabel || (modelEntry ? modelEntry.label : binding.model);
-  const parts = [agentLabel, modelLabel].filter(Boolean);
-  if (binding.effort) parts.push(binding.effort);
+  // The three parts are separate elements so a narrow top bar can drop the
+  // agent's name - which is fixed for the life of the chat and is in the
+  // settings popover - rather than eat the chat's own name. The whole binding
+  // stays in the title attribute either way.
+  const parts = [];
+  const push = (cls, text) => {
+    if (!text) return;
+    // The separator is a node of its own so that hiding a part takes its
+    // separator with it, rather than leaving a dot hanging off the front.
+    if (parts.length) parts.push(el('span', { class: 'b-sep', text: ' · ' }));
+    parts.push(el('span', { class: cls, text }));
+  };
+  push('b-agent', agentLabel);
+  push('b-model', modelLabel);
+  push('b-effort', binding.effort);
   badge.hidden = false;
   badge.className = 'agent-badge' + (state.agentOK ? '' : ' warn');
-  badge.textContent = parts.join(' · ');
-  badge.title = state.agentOK ? '' : agentLabel + ' is not available on this machine any more.';
+  badge.replaceChildren(...parts);
+  const full = [agentLabel, modelLabel, binding.effort].filter(Boolean).join(' · ');
+  badge.title = state.agentOK
+    ? full
+    : full + ' — ' + agentLabel + ' is not available on this machine any more.';
 }
 
 // updateComposerMode swaps the composer for one sentence on a chat that can
 // never be answered again. Nothing is queued from there, so the outbox never
 // sees a message that can only ever fail.
+//
+// Hands free goes with it. Audio mode is a microphone and nothing else, so on
+// a chat that cannot be answered it is a button that would record, spend a
+// transcription and then be told no - which is a worse way of saying no than
+// not offering it.
 function updateComposerMode() {
   setClass(document.body, 'legacy-chat', state.legacy);
   if (dom.composerLegacy) dom.composerLegacy.hidden = !state.legacy;
+  const auto = dom.viewSlider.querySelector('.stop[data-view="auto"]');
+  if (auto) auto.setAttribute('aria-disabled', state.legacy ? 'true' : 'false');
+  if (state.legacy && state.view === 'auto') setView('chat', { silent: true });
+  updateMicState();
 }
 
 async function openChat(id, options = {}) {
@@ -1213,7 +1248,7 @@ function workLabelFor(step) {
     case 'draft': return 'Writing the answer…';
     case 'usage': return '';
     case 'notice': return '';
-    case 'error': return '';
+    case 'error': return step.title || '';
     default: return '';
   }
 }
@@ -1319,10 +1354,12 @@ function buildStep(step) {
     case 'usage': return buildUsage(step);
     case 'notice': return buildNotice(step);
     case 'error': return buildError(step);
-    // The engine writes seven kinds and this page ships in the same binary
-    // that writes them, so the draft is the last of the seven rather than a
-    // fallback for a kind that could arrive.
-    default: return buildText(step);
+    case 'draft': return buildText(step);
+    // The seven above are a closed set (§4.4) and this page ships in the same
+    // binary that writes them, so nothing should ever land here. If something
+    // does, it is shown as a note rather than as the answer: a kind we do not
+    // understand must not be able to look like what the agent said.
+    default: return buildNotice(step);
   }
 }
 
@@ -1755,9 +1792,16 @@ function setLive(live, extra = {}) {
 // screen still current? A stream between connections is not an outage - a chat
 // switch closes one and opens another - so a short gap says nothing, while no
 // network at all says it immediately.
+//
+// The device saying it has no network is checked before the chat id, because a
+// chat that does not exist yet is exactly where the offline story starts: a
+// message typed into a blank page is queued, and a working row that says
+// "Sending…" over it while there is no signal is the one thing this app must
+// never do.
 function isStale() {
-  if (!state.chatId || state.live) return false;
+  if (state.live) return false;
   if (navigator.onLine === false) return true;
+  if (!state.chatId) return false;
   return Date.now() - (state.liveLostAt || Date.now()) >= CONNECTION_GRACE;
 }
 
@@ -1908,7 +1952,7 @@ function updateSendButton() {
 // The microphone follows the run: there is nothing to say into it while
 // Socrates is still working.
 function updateMicState() {
-  const blocked = state.busy;
+  const blocked = state.busy || state.legacy;
   setClass(dom.autoMic, 'busy', blocked);
   dom.autoMic.disabled = blocked;
   dom.micBtn.disabled = blocked;
