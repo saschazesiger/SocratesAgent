@@ -64,26 +64,22 @@ SOCRATES_LIVE_AGENTS=1 node e2e/run.mjs liveclaude
 — and skipped, loudly, otherwise. It costs money and needs a logged-in account,
 so it never runs in CI.
 
-**It currently fails, and what it found is worth the whole scenario.** Every
-chat's working directory is `engine.Workspace()` = `<workspace_root>/<chat id>`,
-and **nothing creates that directory**. `internal/server/admin.go` creates the
-*root*; the per-chat directory underneath it is only ever read. So the adapter
-starts the CLI with a `cmd.Dir` that does not exist, and Go reports that as
+**What it caught, and why it is worth its cost.** Every chat's working directory
+is `engine.Workspace()` = `<workspace_root>/<chat id>`, and nothing used to
+create it. The adapter started the CLI with a `cmd.Dir` that did not exist, and
+Go reports that as
 
 ```
 claude: starting claude: fork/exec /root/.local/bin/claude: no such file or directory
 ```
 
-— which reads as a missing binary and is not one. Every real chat dies at its
-first message. The hermetic Go tests cannot see it (they set `spec.Cwd` to a
-`t.TempDir()` themselves) and neither can the rest of this suite (the scripted
-adapter execs nothing). Creating that one directory by hand and sending the
-message again gets a normal turn back: a `Bash` tool card and the answer.
-
-The fix is an `os.MkdirAll` on `spec.Cwd` before the adapter is started.
-`internal/engine` and `internal/agenthost` belong to WP1, so this suite reports
-it rather than patching around it — the scenario names the cause in its own
-output when it sees that error text.
+— which reads as a missing binary and is not one. Every real chat died at its
+first message. Nothing else could have seen it: the hermetic Go tests set
+`spec.Cwd` to a `t.TempDir()` themselves, and the scripted adapter the rest of
+this suite uses never execs anything. `engine.specFor` now creates the directory
+and the host refuses a spec whose `Cwd` is missing, so a regression surfaces as
+that sentence rather than as a phantom missing binary — and the scenario still
+names the cause in its own output if it ever sees that error text again.
 
 ## Every scenario leaves nothing behind
 
@@ -124,30 +120,34 @@ Scenarios that switch the browser offline also tolerate the browser's own
 reports of the requests that then failed (`ERR_INTERNET_DISCONNECTED` and
 friends) — those are the point of those scenarios, not a defect in the page.
 
-## One quarantined scenario
+## Picking a model with the mouse
 
-`modelpick` is quarantined: it runs, it prints every verdict, and its failures
-do **not** fail the run. `SOCRATES_E2E_STRICT=1` takes that exemption away.
-
-It is quarantined because it reproduces a defect in files this work package does
-not own. **Tapping a model in the new-chat sheet cancels the sheet**, so a person
-who picks a model with the mouse gets no chat at all. The mechanism is exact, and
-each half is reasonable on its own:
+`modelpick` is an ordinary scenario now, and it is here because tapping a model
+in the new-chat sheet used to throw the chat away. The mechanism was exact, and
+each half was reasonable on its own:
 
 * `combobox.js` chooses an option on **mousedown** ("the input must not lose
   focus first") and hides the list in the same handler;
-* `agents.js` treats a click whose `event.target` is the `<dialog>` itself as a
-  tap on the backdrop, and answers it with `finish(null)`.
+* `agents.js` treated a click whose `event.target` is the `<dialog>` itself as a
+  tap on the backdrop, and answered it with `finish(null)`.
 
-By the time the browser dispatches the `click` that follows that mousedown, the
-option it started on has been hidden, so the event retargets to the nearest
-element still under the pointer — the dialog — and the sheet cancels itself.
-Keyboard selection is unaffected, which is why the rest of the suite picks models
-with ArrowDown+Enter (`pickModel()`), and why nothing else caught it.
+By the time the browser dispatched the `click` that followed that mousedown, the
+option it started on had been hidden, so the event retargeted to the nearest
+element still under the pointer — the dialog — and the sheet cancelled itself.
+Keyboard selection never produced the retarget, which is why nothing caught it
+until a scenario tapped a model with a real pointer.
 
-A quarantined scenario is a placeholder for a fix, not a decision. When
-`agents.js` stops reading a retargeted click as a backdrop tap, delete the
-`quarantine` field from its row in `ALL` and it becomes an ordinary scenario.
+`agents.js` now measures such a click against the sheet's own rectangle and
+treats it as the backdrop only when the pointer really was outside. `modelpick`
+holds both halves of that: a tapped model keeps the sheet and reaches the chat,
+and a click genuinely beside the sheet still closes it — a rule that kept the
+sheet open by never closing it at all would be worse than the bug.
+
+The suite still has the machinery for a quarantined scenario, and nothing uses
+it. `scenario(name, title, fn, { quarantine: 'why' })` lets a scenario print
+every verdict without failing the run, for a defect that is understood and
+reproduced but lives in a file the work package does not own.
+`SOCRATES_E2E_STRICT=1` takes that exemption away.
 
 ## Artefacts
 
@@ -179,7 +179,7 @@ scenario. Deleting `e2e/out/` is always safe.
 | `sheetphone` | the sheet at 390x500 with the keyboard up, combobox and focus trap included |
 | `admin` | the Agents card, refresh, save and the diagnostics rows |
 | `pages` | every page is clean, at a phone and at a desk |
-| `modelpick` | a model tapped in the new-chat sheet is the model the chat gets (quarantined — see above) |
+| `modelpick` | a model tapped with the mouse keeps the sheet and reaches the chat; a tap beside it still closes it |
 | `liveclaude` | one real turn against the real Claude Code CLI (gated) |
 
 ## Screenshots for the README
