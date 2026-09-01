@@ -297,8 +297,24 @@ export async function openNewChatSheet() {
       event.preventDefault();
       finish(null);
     }, on);
+    // A tap beside the sheet means no. Deciding that from the event's target
+    // alone is wrong, and expensively so: combobox.js takes an option on
+    // mousedown and hides its list in the same breath, so by the time the
+    // click arrives the option under the pointer is gone and the click is
+    // retargeted to the dialog - which used to read as a tap on the backdrop
+    // and threw away the model the person had just picked. Where the pointer
+    // was is the honest answer, so the click is measured against the sheet's
+    // own rectangle instead.
     sheet.addEventListener('click', (event) => {
-      if (event.target === sheet) finish(null);
+      if (event.target !== sheet) return;
+      // A click with no pointer behind it - a keyboard activation, or one
+      // dispatched by a script - has no coordinates to judge, and is never a
+      // tap on the backdrop.
+      if (!event.detail) return;
+      const box = sheet.getBoundingClientRect();
+      const outside = event.clientX < box.left || event.clientX > box.right
+        || event.clientY < box.top || event.clientY > box.bottom;
+      if (outside) finish(null);
     }, on);
     sheet.addEventListener('close', () => finish(null), on);
     sheet.showModal();
