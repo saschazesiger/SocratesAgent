@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -66,7 +68,27 @@ func newEnv(t *testing.T) *env {
 		t.Fatalf("store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	return newEnvOn(t, st, filepath.Join(data, "agents"))
+	root := filepath.Join(data, "agents")
+	// Detach is what a shutdown does - it leaves the hosts running on purpose -
+	// so a test that ends on one would leave a process behind. Every root
+	// belongs to exactly one test, so reaping by root is exact.
+	t.Cleanup(func() { reapHosts(t, root) })
+	return newEnvOn(t, st, root)
+}
+
+// reapHosts ends every agent-host process serving a directory under root.
+func reapHosts(t *testing.T, root string) {
+	t.Helper()
+	for _, pid := range hostProcesses(t, root) {
+		_ = exec.Command("kill", "-TERM", pid).Run()
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && len(hostProcesses(t, root)) > 0 {
+		time.Sleep(50 * time.Millisecond)
+	}
+	for _, pid := range hostProcesses(t, root) {
+		_ = exec.Command("kill", "-9", pid).Run()
+	}
 }
 
 // newEnvOn builds an engine over an existing database and host root, which is
@@ -290,6 +312,13 @@ func TestAdoptReplaysAWholeTurnWithoutDuplicates(t *testing.T) {
 	}
 	waitFor(t, 30*time.Second, "the run to finish", func() bool {
 		return env.runStatus(t, run.ID) != store.RunRunning
+	})
+
+	// The run row is written before the run goroutine has finished letting go
+	// of the chat, and Adopt skips a chat that is still active - as it should,
+	// since a real Adopt runs at startup with nothing running at all.
+	waitFor(t, 30*time.Second, "the engine to let go of the chat", func() bool {
+		return !env.engine.Busy(chat.ID)
 	})
 
 	// Put the run back the way a restart would find it and adopt it again,
@@ -571,6 +600,546 @@ func drain(ch <-chan []byte, wait time.Duration) []Event {
 			}
 		case <-deadline:
 			return out
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The cases the WP1 verification reproduced, kept as regression tests.
+
+func hostProcesses(t *testing.T, root string) []string {
+	t.Helper()
+	out, _ := exec.Command("pgrep", "-f", "agent-host --dir "+root).CombinedOutput()
+	var pids []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			pids = append(pids, line)
+		}
+	}
+	return pids
+}
+
+func hostDirs(t *testing.T, root string) []string {
+	t.Helper()
+	entries, _ := os.ReadDir(root)
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() {
+			out = append(out, e.Name())
+		}
+	}
+	return out
+}
+
+// The adapter dies mid-turn; the next message must restart it with resume
+// inside the SAME host. A host whose CLI died is still this chat's host - it
+// holds the session - and treating it as gone opens a second host beside it
+// and leaks the first, with nothing left that can ever close it.
+func TestSecondSendAfterACrashStaysInTheSameHost(t *testing.T) {
+	env := newEnv(t)
+	chat := env.chat(t, "c_die", hosttest.Step{Do: "die"})
+
+	first, err := env.engine.Start(Turn{ChatID: chat.ID, Text: "one", ClientID: "k1"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	waitFor(t, 30*time.Second, "the first run to end", func() bool {
+		return env.runStatus(t, first.ID) != store.RunRunning
+	})
+
+	second, err := env.engine.Start(Turn{ChatID: chat.ID, Text: "two", ClientID: "k2"})
+	if err != nil {
+		t.Fatalf("second start: %v", err)
+	}
+	waitFor(t, 30*time.Second, "the second run to end", func() bool {
+		return env.runStatus(t, second.ID) != store.RunRunning
+	})
+	time.Sleep(300 * time.Millisecond)
+
+	if procs := hostProcesses(t, env.root); len(procs) != 1 {
+		for _, pid := range procs {
+			_ = exec.Command("kill", "-9", pid).Run()
+		}
+		t.Fatalf("one chat ended up with %d host processes", len(procs))
+	}
+	if dirs := hostDirs(t, env.root); len(dirs) != 1 {
+		t.Fatalf("one chat ended up with %d host directories: %v", len(dirs), dirs)
+	}
+	if hosts := env.hosts.List(chat.ID); len(hosts) != 1 {
+		t.Fatalf("the manager tracks %d hosts for the chat", len(hosts))
+	}
+	// The second turn really ran: the restart is announced in its transcript.
+	steps, _ := env.store.ListSteps(chat.ID)
+	notice := false
+	for _, st := range steps {
+		if st.Kind == store.StepNotice && strings.Contains(st.Body, "restarted") {
+			notice = true
+		}
+	}
+	if !notice {
+		for _, st := range steps {
+			t.Logf("step %s kind=%s status=%s title=%q body=%q", st.ID, st.Kind, st.Status, st.Title, st.Body)
+		}
+		for _, h := range env.hosts.List(chat.ID) {
+			raw, _ := os.ReadFile(filepath.Join(h.Dir(), "events.jsonl"))
+			t.Logf("journal:\n%s", raw)
+		}
+		t.Error("the restart was not announced in the transcript")
+	}
+}
+
+// A subscribe below the point rotation trimmed to cannot be answered. The run
+// has to end with the sentence that says so - not spin redialling a host that
+// is perfectly healthy and will refuse in exactly the same way every time.
+//
+// The rotated journal is written by hand rather than grown to 64 MiB: a host
+// recovers its trim point from the first seq in the file, so a file that
+// starts at seq 1000 is a rotated one as far as everything downstream is
+// concerned, and the test costs milliseconds instead of a minute.
+func TestAdoptOfARotatedJournalEndsWithTheReplayWindowSentence(t *testing.T) {
+	env := newEnv(t)
+	chat := env.chat(t, "c_rot", hosttest.Step{Do: "hang"})
+
+	id := "host_rotated0001"
+	dir := filepath.Join(env.root, id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sock, err := agenthost.SocketPath(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := agenthost.HostSpec{ID: id, Socket: sock, Created: time.Now().UnixMilli(), Spec: harness.Spec{
+		Agent: "test", Model: "scripted", Cwd: t.TempDir(), ChatID: chat.ID, Dir: dir,
+		Env: []string{hosttest.ScriptEnv + "=" + script(t, hosttest.Step{Do: "hang"})},
+	}}
+	raw, _ := json.Marshal(spec)
+	if err := os.WriteFile(filepath.Join(dir, "spec.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var journal []byte
+	for seq := 1000; seq < 1010; seq++ {
+		journal = append(journal, []byte(fmt.Sprintf(
+			`{"kind":"text_delta","seq":%d,"ts":1,"turn_id":"run_old","id":"t","text":"x"}`+"\n", seq))...)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "events.jsonl"), journal, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(os.Args[0], "agent-host", "--dir", dir)
+	logf, _ := os.Create(filepath.Join(dir, "host.log"))
+	cmd.Stdout, cmd.Stderr = logf, logf
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	waitFor(t, 30*time.Second, "the host to answer", func() bool {
+		return env.hosts.Restore(ctx) == 1 || len(env.hosts.List(chat.ID)) == 1
+	})
+	if err := env.store.SetChatHost(chat.ID, dir); err != nil {
+		t.Fatal(err)
+	}
+	// A turn that began below the point the journal was cut at.
+	if err := env.store.SetChatHostSeq(chat.ID, 5); err != nil {
+		t.Fatal(err)
+	}
+	run := &store.Run{ID: "run_rot", ChatID: chat.ID, Status: store.RunRunning}
+	if err := env.store.CreateRun(run); err != nil {
+		t.Fatal(err)
+	}
+
+	if claimed := env.engine.Adopt(ctx); len(claimed) != 1 {
+		t.Fatalf("Adopt claimed %#v", claimed)
+	}
+	waitFor(t, 30*time.Second, "the adopted run to end", func() bool {
+		return env.runStatus(t, run.ID) != store.RunRunning
+	})
+	got, _ := env.store.GetRun(run.ID)
+	if got.Status != store.RunInterrupted {
+		t.Fatalf("run status = %q, want interrupted", got.Status)
+	}
+	if !strings.Contains(got.Error, "too long to replay") {
+		t.Errorf("the run does not say what happened: %q", got.Error)
+	}
+	if st, err := env.store.GetStep(run.ID + ":error"); err != nil {
+		t.Errorf("no error step: %v", err)
+	} else if !strings.Contains(st.Body, "too long to replay") {
+		t.Errorf("error step = %q", st.Body)
+	}
+}
+
+// The watcher that turns Stop into an interrupt has to end with its turn. The
+// run context is deliberately never cancelled on a normal end - cancelling it
+// would fire an Interrupt round trip on every finished turn - so a watcher
+// without an exit of its own is one goroutine per turn, forever.
+func TestNoGoroutineIsLeftBehindPerTurn(t *testing.T) {
+	env := newEnv(t)
+	chat := env.chat(t, "c_leak", hosttest.Step{Do: "text", Text: "hi"}, hosttest.Step{Do: "end"})
+	warm, err := env.engine.Start(Turn{ChatID: chat.ID, Text: "warm", ClientID: "k0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 30*time.Second, "the warm-up turn", func() bool {
+		return env.runStatus(t, warm.ID) != store.RunRunning
+	})
+	time.Sleep(500 * time.Millisecond)
+
+	const turns = 8
+	before := runtime.NumGoroutine()
+	for i := 0; i < turns; i++ {
+		run, err := env.engine.Start(Turn{ChatID: chat.ID, Text: "go", ClientID: fmt.Sprintf("k%d", i+1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, 30*time.Second, "a turn", func() bool {
+			return env.runStatus(t, run.ID) != store.RunRunning
+		})
+	}
+	time.Sleep(time.Second)
+	if after := runtime.NumGoroutine(); after-before >= turns {
+		buf := make([]byte, 1<<20)
+		n := runtime.Stack(buf, true)
+		t.Fatalf("%d goroutines left over %d turns\n%s", after-before, turns, buf[:n])
+	}
+}
+
+// A graceful restart in the middle of a turn: the answer is committed once,
+// and the steps written after the adopt sort after the ones written before it.
+// A counter that restarted at 1 would interleave them, and chat.js renders by
+// seq - faithfully, out of order.
+func TestGracefulRestartMidTurnKeepsTheTranscriptInOrder(t *testing.T) {
+	env := newEnv(t)
+	chat := env.chat(t, "c_restart",
+		hosttest.Step{Do: "tool", Name: "Bash", Input: "first", Output: "1\n"},
+		hosttest.Step{Do: "sleep", MS: 2500},
+		hosttest.Step{Do: "tool", Name: "Bash", Input: "second", Output: "2\n"},
+		hosttest.Step{Do: "text", Text: "Done."},
+		hosttest.Step{Do: "end"})
+
+	run, err := env.engine.Start(Turn{ChatID: chat.ID, Text: "go", ClientID: "k1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 30*time.Second, "the first tool step", func() bool {
+		_, err := env.store.GetStep(run.ID + ":tool:tool-0-0")
+		return err == nil
+	})
+	env.engine.Detach()
+
+	restarted := newEnvOn(t, env.store, env.root)
+	ctx := context.Background()
+	restarted.hosts.Restore(ctx)
+	claimed := restarted.engine.Adopt(ctx)
+	if len(claimed) != 1 {
+		t.Fatalf("Adopt claimed %#v", claimed)
+	}
+	if err := env.store.RecoverRuns(claimed...); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 30*time.Second, "the adopted run to end", func() bool {
+		return env.runStatus(t, run.ID) != store.RunRunning
+	})
+	if got := env.runStatus(t, run.ID); got != store.RunDone {
+		t.Fatalf("run status = %q", got)
+	}
+
+	msgs, _ := env.store.ListMessages(chat.ID)
+	answers := 0
+	for _, m := range msgs {
+		if m.Role == "assistant" {
+			answers++
+		}
+	}
+	if answers != 1 {
+		t.Fatalf("%d assistant messages after a graceful restart", answers)
+	}
+
+	steps, _ := env.store.ListSteps(chat.ID)
+	var before, after *store.Step
+	for i := range steps {
+		switch steps[i].ID {
+		case run.ID + ":tool:tool-0-0":
+			before = &steps[i]
+		case run.ID + ":tool:tool-2-0":
+			after = &steps[i]
+		}
+	}
+	if before == nil || after == nil {
+		t.Fatalf("missing tool steps: %#v", steps)
+	}
+	if after.Seq <= before.Seq {
+		t.Fatalf("a step created after the adopt has seq %d, not after %d - the transcript is reordered",
+			after.Seq, before.Seq)
+	}
+	if before.Status != store.StatusDone {
+		t.Errorf("the pre-restart step ended as %q", before.Status)
+	}
+}
+
+// A turn that finished while Socrates was down has its whole answer sitting in
+// the journal, and adopting it is the only thing that will ever commit it.
+func TestATurnThatFinishedWhileDownIsStillCommitted(t *testing.T) {
+	env := newEnv(t)
+	chat := env.chat(t, "c_down",
+		hosttest.Step{Do: "sleep", MS: 600},
+		hosttest.Step{Do: "text", Text: "Alpha."},
+		hosttest.Step{Do: "tool", Name: "Bash", Input: "x", Output: "y\n"},
+		hosttest.Step{Do: "text", Text: "Omega."},
+		hosttest.Step{Do: "end"})
+	run, err := env.engine.Start(Turn{ChatID: chat.ID, Text: "go", ClientID: "k1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The host having been recorded is not the same as the message having been
+	// handed over: the chat row learns its host before the send. Wait for the
+	// host itself to say it is working on this run.
+	waitFor(t, 30*time.Second, "the turn to reach the agent", func() bool {
+		for _, h := range env.hosts.List(chat.ID) {
+			if h.Status().TurnID == run.ID {
+				return true
+			}
+		}
+		return false
+	})
+	env.engine.Detach()
+	time.Sleep(2 * time.Second) // the turn finishes while we are "down"
+	if got := env.runStatus(t, run.ID); got != store.RunRunning {
+		t.Fatalf("the run should still say running while we are down, got %q", got)
+	}
+
+	restarted := newEnvOn(t, env.store, env.root)
+	ctx := context.Background()
+	restarted.hosts.Restore(ctx)
+	claimed := restarted.engine.Adopt(ctx)
+	_ = env.store.RecoverRuns(claimed...)
+	waitFor(t, 30*time.Second, "the adopted run to end", func() bool {
+		return env.runStatus(t, run.ID) != store.RunRunning
+	})
+	got, _ := env.store.GetRun(run.ID)
+	if got.Status != store.RunDone {
+		t.Fatalf("a turn that finished while Socrates was down ended as %q (%s)", got.Status, got.Error)
+	}
+	msgs, _ := env.store.ListMessages(chat.ID)
+	answers := 0
+	for _, m := range msgs {
+		if m.Role == "assistant" {
+			answers++
+			if !strings.Contains(m.Content, "Alpha.") || !strings.Contains(m.Content, "Omega.") {
+				t.Errorf("the answer lost a block: %q", m.Content)
+			}
+		}
+	}
+	if answers != 1 {
+		t.Fatalf("%d assistant messages", answers)
+	}
+	steps, _ := env.store.ListSteps(chat.ID)
+	for _, st := range steps {
+		if st.Kind == store.StepDraft {
+			t.Error("a draft step was left behind")
+		}
+	}
+	if c, _ := env.store.GetChat(chat.ID); c.AgentSession == "" {
+		t.Error("the session id was not recorded")
+	}
+}
+
+// Stop while the host is still being opened is the user's own cancel, not a
+// failure of theirs to see. "failed: context canceled" is neither true nor
+// useful.
+func TestStopBeforeTheTurnReachedTheAgentIsInterrupted(t *testing.T) {
+	env := newEnv(t)
+	chat := env.chat(t, "c_stop", hosttest.Step{Do: "hang"})
+	run, err := env.engine.Start(Turn{ChatID: chat.ID, Text: "go", ClientID: "k1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.engine.Stop(chat.ID)
+	waitFor(t, 30*time.Second, "the run to end", func() bool {
+		return env.runStatus(t, run.ID) != store.RunRunning
+	})
+	got, _ := env.store.GetRun(run.ID)
+	if got.Status != store.RunInterrupted {
+		t.Fatalf("Stop ended the run as %q with %q", got.Status, got.Error)
+	}
+	if strings.Contains(got.Error, "context canceled") {
+		t.Errorf("the run row carries a Go error: %q", got.Error)
+	}
+}
+
+// A turn that ends badly must not leave a card spinning. An agent interrupted
+// in the middle of a command sends no completion for the item it was running -
+// Codex sends nothing at all for anything in flight after turn/interrupt - so
+// the pump settles them itself, with the outcome of the turn they belonged to.
+func TestAnInterruptedTurnSettlesItsOpenCards(t *testing.T) {
+	env := newEnv(t)
+	chat := env.chat(t, "c_open",
+		hosttest.Step{Do: "tool", Name: "Bash", Input: "sleep 600", Open: true},
+		hosttest.Step{Do: "hang"})
+
+	run, err := env.engine.Start(Turn{ChatID: chat.ID, Text: "go", ClientID: "k1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepID := run.ID + ":tool:tool-0-0"
+	waitFor(t, 30*time.Second, "the tool card to open", func() bool {
+		st, err := env.store.GetStep(stepID)
+		return err == nil && st.Status == store.StatusRunning
+	})
+
+	if !env.engine.Stop(chat.ID) {
+		t.Fatal("Stop found nothing to stop")
+	}
+	waitFor(t, 30*time.Second, "the run to end", func() bool {
+		return env.runStatus(t, run.ID) != store.RunRunning
+	})
+	if got := env.runStatus(t, run.ID); got != store.RunInterrupted {
+		t.Fatalf("run status = %q, want interrupted", got)
+	}
+	st, err := env.store.GetStep(stepID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Status != store.StatusInterrupted {
+		t.Fatalf("the tool card is still %q after the turn was interrupted", st.Status)
+	}
+}
+
+// The same, for a turn that ends in an error: the cards settle as failed.
+func TestAFailedTurnSettlesItsOpenCards(t *testing.T) {
+	env := newEnv(t)
+	chat := env.chat(t, "c_open_err",
+		hosttest.Step{Do: "tool", Name: "Bash", Input: "build", Open: true},
+		hosttest.Step{Do: "end", Outcome: "error", Error: "the model refused"})
+
+	run, err := env.engine.Start(Turn{ChatID: chat.ID, Text: "go", ClientID: "k1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 30*time.Second, "the run to end", func() bool {
+		return env.runStatus(t, run.ID) != store.RunRunning
+	})
+	if got := env.runStatus(t, run.ID); got != store.RunFailed {
+		t.Fatalf("run status = %q, want failed", got)
+	}
+	st, err := env.store.GetStep(run.ID + ":tool:tool-0-0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Status != store.StatusFailed {
+		t.Fatalf("the tool card is %q after the turn failed", st.Status)
+	}
+}
+
+// And a turn that ends well leaves the cards exactly as the agent reported
+// them - the settling must not overwrite a finished card.
+func TestAGoodTurnLeavesItsCardsAlone(t *testing.T) {
+	env := newEnv(t)
+	chat := env.chat(t, "c_good",
+		hosttest.Step{Do: "tool", Name: "Bash", Input: "go test", Output: "ok\n", Exit: 0},
+		hosttest.Step{Do: "end", Outcome: "ok"})
+
+	run, err := env.engine.Start(Turn{ChatID: chat.ID, Text: "go", ClientID: "k1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 30*time.Second, "the run to end", func() bool {
+		return env.runStatus(t, run.ID) != store.RunRunning
+	})
+	st, err := env.store.GetStep(run.ID + ":tool:tool-0-0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Status != store.StatusDone {
+		t.Fatalf("a finished card ended as %q", st.Status)
+	}
+}
+
+// A tool_finished is a patch, not a replacement. An adapter that does not
+// repeat the name and the title it already sent must not blank the card: a row
+// that loses its command the moment it completes is worse than one that never
+// had it.
+func TestATerseFinishKeepsWhatTheCardAlreadySaid(t *testing.T) {
+	env := newEnv(t)
+	chat := env.chat(t, "c_terse",
+		hosttest.Step{Do: "tool", Name: "Bash", Input: "go build ./...", Output: "ok\n", Terse: true},
+		hosttest.Step{Do: "end", Outcome: "ok"})
+
+	run, err := env.engine.Start(Turn{ChatID: chat.ID, Text: "go", ClientID: "k1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 30*time.Second, "the run to end", func() bool {
+		return env.runStatus(t, run.ID) != store.RunRunning
+	})
+	st, err := env.store.GetStep(run.ID + ":tool:tool-0-0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Title != "Ran a command" {
+		t.Errorf("the card lost its title: %q", st.Title)
+	}
+	if st.Status != store.StatusDone {
+		t.Errorf("status = %q", st.Status)
+	}
+	detail := map[string]any{}
+	if err := json.Unmarshal(st.Detail, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail["name"] != "Bash" {
+		t.Errorf("the card lost the tool's name: %#v", detail)
+	}
+	if detail["input"] != "go build ./..." {
+		t.Errorf("the card lost the command: %#v", detail)
+	}
+	if st.Body != "ok\n" {
+		t.Errorf("body = %q", st.Body)
+	}
+}
+
+// The browser sends the next message the moment it sees the run turn done. A
+// chat that is still registered as active at that instant answers ErrBusy for
+// a turn that is already over, and the person is told to wait for something
+// that has finished.
+func TestASendTheInstantTheRunIsDoneIsAccepted(t *testing.T) {
+	env := newEnv(t)
+	chat := env.chat(t, "c_immediate",
+		hosttest.Step{Do: "text", Text: "done."},
+		hosttest.Step{Do: "end", Outcome: "ok"})
+
+	_, ch := env.bus.Subscribe(chat.ID)
+	first, err := env.engine.Start(Turn{ChatID: chat.ID, Text: "one", ClientID: "k1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the run event that says the turn is over - the same signal the
+	// browser acts on - and send again straight away.
+	deadline := time.After(30 * time.Second)
+	for {
+		select {
+		case raw, open := <-ch:
+			if !open {
+				t.Fatal("the bus closed")
+			}
+			var ev Event
+			if err := json.Unmarshal(raw, &ev); err != nil {
+				continue
+			}
+			if ev.Type != "run" || ev.Run == nil || ev.Run.ID != first.ID {
+				continue
+			}
+			if ev.Run.Status == store.RunRunning {
+				continue
+			}
+			if _, err := env.engine.Start(Turn{ChatID: chat.ID, Text: "two", ClientID: "k2"}); err != nil {
+				t.Fatalf("a send on the heels of %q was refused: %v", ev.Run.Status, err)
+			}
+			return
+		case <-deadline:
+			t.Fatal("the run never reported that it was done")
 		}
 	}
 }

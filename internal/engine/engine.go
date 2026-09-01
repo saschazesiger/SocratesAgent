@@ -83,6 +83,19 @@ func New(st *store.Store, bus *Bus, settings func() config.Settings, hosts *agen
 	}
 }
 
+// seedSeq starts a run's step counter above everything already in the chat's
+// transcript. Keeping a re-applied step's own seq is only half of ordering:
+// steps created after an adopt need numbers above what came before them, or
+// the rest of the turn interleaves with the steps written before the restart
+// and chat.js renders the transcript faithfully out of order.
+func (e *Engine) seedSeq(h *runHandle, chatID string) {
+	next, err := e.Store.NextStepSeq(chatID)
+	if err != nil {
+		return
+	}
+	h.seq.Store(next - 1)
+}
+
 func newID(prefix string) string {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
@@ -215,6 +228,7 @@ func (e *Engine) Start(turn Turn) (*store.Run, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	run := &store.Run{ID: newID("run"), ChatID: chatID, Status: store.RunRunning, Auto: turn.Auto}
 	h := &runHandle{id: run.ID, cancel: cancel}
+	e.seedSeq(h, chatID)
 	e.active[chatID] = h
 	e.mu.Unlock()
 
@@ -256,25 +270,23 @@ func (e *Engine) Start(turn Turn) (*store.Run, error) {
 // run is one turn, from opening a host to the assistant message at the end.
 func (e *Engine) run(ctx context.Context, chat *store.Chat, run *store.Run, h *runHandle, text string) {
 	// The defer that removes the chat from active on every return path is what
-	// makes Busy, Stop and idempotency safe even on a panic.
-	defer func() {
-		e.mu.Lock()
-		if cur, ok := e.active[chat.ID]; ok && cur == h {
-			delete(e.active, chat.ID)
-		}
-		e.mu.Unlock()
-	}()
+	// makes Busy, Stop and idempotency safe even on a panic. The pump calls
+	// the same function a moment earlier, just before it publishes the run's
+	// last event; both are safe to run, and only the first one does anything.
+	release := e.releaser(chat.ID, h)
+	defer release()
 
 	p := newPump(e, chat, run, h)
+	p.release = release
 
 	handle, err := e.ensureHost(ctx, chat)
 	if err != nil {
-		p.fatal(err.Error())
+		e.failedToStart(p, ctx, err)
 		return
 	}
 	seq, err := handle.Send(ctx, run.ID, text)
 	if err != nil {
-		p.fatal(err.Error())
+		e.failedToStart(p, ctx, err)
 		return
 	}
 	// Written once per turn, before a single event of it is consumed: this is
@@ -286,31 +298,90 @@ func (e *Engine) run(ctx context.Context, chat *store.Chat, run *store.Run, h *r
 
 	frames, unsubscribe := handle.Subscribe(seq)
 	defer unsubscribe()
-	go func() {
-		<-ctx.Done()
-		// Stop and archive both land here. On shutdown the run contexts are
-		// simply abandoned with the process - Detach never cancels them - so
-		// this cannot fire on the way out and cancel a turn that should have
-		// survived it.
-		ictx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = handle.Interrupt(ictx, 10*time.Second)
-	}()
+	stopWatching := e.watchForStop(ctx, handle)
+	defer stopWatching()
 
-	e.consume(frames, p, run, seq, false)
+	e.consume(frames, p, run, seq, false, false)
 	e.recordSession(handle, p)
 }
 
-// recordSession copies the agent's own session id onto the chat row once the
-// turn is over.
+// releaser hands back the function that lets go of a chat. It is idempotent,
+// and it only ever removes the run it was made for - a turn that has already
+// been replaced must not take the new one's place in the table with it.
+func (e *Engine) releaser(chatID string, h *runHandle) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			e.mu.Lock()
+			if cur, ok := e.active[chatID]; ok && cur == h {
+				delete(e.active, chatID)
+			}
+			e.mu.Unlock()
+		})
+	}
+}
+
+// failedToStart ends a turn that never reached the agent, and it distinguishes
+// the three ways that happens.
 //
-// It is not read off the event stream, and that is not an oversight: the
-// adapter emits session_id before the first turn_started, so on a first turn
-// it sits below the journal position this turn began at and the subscription
-// never replays it. The status frame that closes a replay carries it, and
-// picks it up for a long turn - but a turn that finished before the engine
-// subscribed ends at turn_finished before that frame is read. Asking once,
-// afterwards, is the one moment where the answer is always there.
+// Letting go of the hosts is the one that has to be silent: Start refuses a
+// new turn once we are detaching, but a turn already between opening its host
+// and handing over its message will see the socket close under it, and failing
+// the run there is B-1 through a side door - on restart there would be nothing
+// active for Adopt to claim. Leaving it running is right either way: if the
+// message did reach the agent, Adopt picks the turn back up; if it did not,
+// Adopt ends it with the sentence that says to send it again.
+func (e *Engine) failedToStart(p *pump, ctx context.Context, err error) {
+	if e.isDetaching() {
+		return
+	}
+	// Stop pressed while the host was still being opened cancels the context,
+	// and every error under it reads "context canceled". That is the user's
+	// own cancel, not a failure of theirs to see.
+	if ctx.Err() != nil {
+		p.finish(harness.OutcomeInterrupted, "")
+		return
+	}
+	p.fatal(err.Error())
+}
+
+// watchForStop turns a cancelled run context into an interrupt for the agent.
+// The returned function ends the watcher, and it has to be called on every
+// path out of a turn: the run context is never cancelled on a normal end - it
+// must not be, or a finished turn would send an Interrupt round trip on its
+// way out - so a watcher without one is a goroutine per turn, forever.
+func (e *Engine) watchForStop(ctx context.Context, handle *agenthost.Handle) func() {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			// Stop and archive both land here. On shutdown the run contexts
+			// are simply abandoned with the process - Detach never cancels
+			// them - so this cannot fire on the way out and cancel a turn that
+			// should have survived it.
+			ictx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_ = handle.Interrupt(ictx, 10*time.Second)
+		case <-done:
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { close(done) }) }
+}
+
+// recordSession copies the agent's own session id onto the chat row once the
+// turn is over. It is the second of the two places that do this, and both are
+// needed.
+//
+// The session id is not read off the event stream, and that is not an
+// oversight: the adapter emits session_id before the first turn_started, so on
+// a first turn it sits below the journal position this turn began at and the
+// subscription never replays it. The carrier is the host's Status, which
+// reaches the engine as the CaughtUp frame that closes every replay - that
+// covers a long turn and every adopt - and again here, because a turn that
+// finished before the engine subscribed returns at turn_finished before that
+// frame is ever read. Both writes are the same comparison, and neither can be
+// missed by a filter.
 func (e *Engine) recordSession(handle *agenthost.Handle, p *pump) {
 	if handle == nil {
 		return
@@ -331,9 +402,18 @@ func (e *Engine) recordSession(handle *agenthost.Handle, p *pump) {
 // consume applies one subscription's frames to the pump.
 //
 // floor is where this turn began in the journal; adopting is true when this is
-// a turn that was already running before the process started.
-func (e *Engine) consume(frames <-chan agenthost.Frame, p *pump, run *store.Run, floor int64, adopting bool) {
+// a turn that was already running before the process started; retried says a
+// redial has already been spent, and it is threaded into the recursive call so
+// a stream that dies twice ends the run instead of redialling forever.
+func (e *Engine) consume(frames <-chan agenthost.Frame, p *pump, run *store.Run, floor int64, adopting, retried bool) {
+	var lastErr error
 	for f := range frames {
+		if f.Err != nil {
+			// The host said why it is ending this subscription. It is always
+			// the last frame, so remember it and let the loop fall out.
+			lastErr = f.Err
+			continue
+		}
 		if f.CaughtUp != nil {
 			// The journal has run out. Everything it held has been applied
 			// above - reaching this frame is the proof of that, which is why
@@ -359,6 +439,9 @@ func (e *Engine) consume(frames <-chan agenthost.Frame, p *pump, run *store.Run,
 		if ev.TurnID != "" && ev.TurnID != run.ID {
 			continue // some other turn
 		}
+		if p.seen(ev.Seq) {
+			continue // already applied, from a live push or an earlier replay
+		}
 		p.apply(ev)
 		if ev.Kind == harness.KindTurnFinished {
 			p.finish(ev.Outcome, ev.Error)
@@ -373,13 +456,36 @@ func (e *Engine) consume(frames <-chan agenthost.Frame, p *pump, run *store.Run,
 	if e.isDetaching() {
 		return // leave the run running; the next process adopts it
 	}
+	// This turn is already over - it ended above, or something else ended it -
+	// so there is nothing left to read. Redialling here would do worse than
+	// waste a round trip: a Handle serves one subscription at a time, so a
+	// finished turn resubscribing takes the stream away from whatever is
+	// reading the host now.
+	if p.finished() {
+		return
+	}
+	// The host told us why. Both reasons it can give are permanent for this
+	// run - the journal was rotated past our floor, or the subscribe was
+	// refused - so there is nothing to retry.
+	if lastErr != nil {
+		p.replayFailed(lastErr)
+		return
+	}
 	// A connection can be dropped by the host's write deadline while the turn
 	// behind it is perfectly healthy, so a close is a hiccup before it is a
 	// lost turn. Replay is idempotent - deterministic ids, upserts - so
 	// re-applying the turn so far patches the same rows and changes nothing
 	// the browser has not already seen.
-	if again, ok := e.resubscribe(p, run, floor); ok {
-		e.consume(again, p, run, floor, adopting)
+	//
+	// Exactly one redial, ever: `retried` goes into the call below, because
+	// "try once" read as "try once per call" is an infinite recursion that
+	// pins a core and eventually takes Socrates down with a stack overflow.
+	if !retried {
+		if again, ok := e.resubscribe(p, run, floor); ok {
+			e.consume(again, p, run, floor, adopting, true)
+			return
+		}
+		p.replayFailed(agenthost.ErrGone)
 		return
 	}
 	p.finish(harness.OutcomeInterrupted, "")
@@ -554,6 +660,7 @@ func (e *Engine) Adopt(ctx context.Context) []string {
 
 		ctxRun, cancel := context.WithCancel(context.Background())
 		h := &runHandle{id: run.ID, cancel: cancel}
+		e.seedSeq(h, chat.ID)
 		e.mu.Lock()
 		if _, busy := e.active[chat.ID]; busy {
 			e.mu.Unlock()
@@ -574,23 +681,15 @@ func (e *Engine) Adopt(ctx context.Context) []string {
 }
 
 func (e *Engine) adopt(ctx context.Context, chat store.Chat, run *store.Run, h *runHandle, handle *agenthost.Handle) {
-	defer func() {
-		e.mu.Lock()
-		if cur, ok := e.active[chat.ID]; ok && cur == h {
-			delete(e.active, chat.ID)
-		}
-		e.mu.Unlock()
-	}()
+	release := e.releaser(chat.ID, h)
+	defer release()
 	p := newPump(e, &chat, run, h)
+	p.release = release
 	frames, unsubscribe := handle.Subscribe(chat.HostSeq)
 	defer unsubscribe()
-	go func() {
-		<-ctx.Done()
-		ictx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = handle.Interrupt(ictx, 10*time.Second)
-	}()
-	e.consume(frames, p, run, chat.HostSeq, true)
+	stopWatching := e.watchForStop(ctx, handle)
+	defer stopWatching()
+	e.consume(frames, p, run, chat.HostSeq, true, false)
 	e.recordSession(handle, p)
 }
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/harness"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
@@ -49,6 +50,18 @@ type pump struct {
 	partial   map[string]string
 	currentID string
 
+	// release lets the chat go before the run's last event is published. The
+	// browser sends the next message the moment it sees a run turn done, and a
+	// chat still registered as active at that instant answers ErrBusy for a
+	// turn that is over.
+	release func()
+	// lastSeq is the highest journal position this pump has applied. The same
+	// event can reach it twice - a live push and the replay that follows it on
+	// a reconnect, or the redial after a dropped connection - and every kind
+	// but one is idempotent. tool_output is the exception: it carries a delta
+	// with no identity, so two deliveries append the same bytes twice. This is
+	// what makes that impossible rather than merely unlikely.
+	lastSeq   int64
 	draftAt   time.Time
 	draftLive bool
 	toolAt    map[string]time.Time
@@ -71,18 +84,11 @@ func (p *pump) addCleanup(fn func()) { p.cleanup = append(p.cleanup, fn) }
 
 func (p *pump) stepID(kind, id string) string { return p.run.ID + ":" + kind + ":" + id }
 
-// nextSeq orders the steps of a run. During a live turn it comes from the run
-// handle's counter; on a replay the row already exists and keeps its own.
-func (p *pump) nextSeq() int64 {
-	if p.handle != nil {
-		return p.handle.seq.Add(1)
-	}
-	seq, err := p.engine.Store.NextStepSeq(p.run.ID)
-	if err != nil {
-		return time.Now().UnixMilli()
-	}
-	return seq
-}
+// nextSeq orders the steps of a run. The counter belongs to the run handle and
+// was seeded from the chat's transcript when the run started or was adopted,
+// so a step written after a restart still sorts after everything before it. A
+// step that already exists keeps its own seq; that is done in put.
+func (p *pump) nextSeq() int64 { return p.handle.seq.Add(1) }
 
 // put writes a step, keeping the sequence number a previous version of it had
 // so that a replay does not reorder the transcript.
@@ -117,6 +123,18 @@ func (p *pump) noteSession(session string) {
 		return
 	}
 	p.chat.AgentSession = session
+}
+
+// seen reports whether this journal position has already been applied, and
+// records it when it has not.
+func (p *pump) seen(seq int64) bool {
+	if seq != 0 && seq <= p.lastSeq {
+		return true
+	}
+	if seq > p.lastSeq {
+		p.lastSeq = seq
+	}
+	return false
 }
 
 // apply is one harness event.
@@ -188,9 +206,17 @@ func (p *pump) apply(ev harness.Event) {
 		}
 		id := p.stepID(prefix, ev.ID)
 		body := tool.Output
+		title := tool.Title
 		name, input, inputJSON := tool.Name, tool.Input, tool.InputJSON
+		// A finish event is a patch, not a replacement. Not every adapter
+		// repeats what it already said when a tool call ends, and a card whose
+		// title, command or name disappears the moment it completes is worse
+		// than one that never showed them.
 		if existing, err := p.engine.Store.GetStep(id); err == nil {
 			was := decodeDetail(existing.Detail)
+			if title == "" {
+				title = existing.Title
+			}
 			if name == "" {
 				name = was["name"]
 			}
@@ -205,7 +231,7 @@ func (p *pump) apply(ev harness.Event) {
 			}
 		}
 		p.put(&store.Step{
-			ID: id, Kind: kind, Title: tool.Title, Body: harness.TruncateOutput(body),
+			ID: id, Kind: kind, Title: title, Body: harness.TruncateOutput(body),
 			Detail: detail(map[string]any{
 				"name": name, "input": input, "input_json": inputJSON,
 				"exit_code": tool.ExitCode, "ok": tool.OK,
@@ -354,6 +380,13 @@ func (p *pump) finish(outcome, errText string) {
 			log.Printf("engine: commit answer: %v", err)
 		}
 	}
+	// A turn that did not end well leaves cards behind: an agent that is
+	// interrupted mid-command sends no completion for the item it was running,
+	// and Codex in particular sends nothing at all for anything in flight
+	// after turn/interrupt. Without this the card spins for good.
+	if outcome != harness.OutcomeOK {
+		p.closeOpenSteps(outcome)
+	}
 	if p.draftLive {
 		if err := p.engine.commitStepRemoval(p.chat.ID, p.run.ID+":draft"); err != nil {
 			log.Printf("engine: remove draft: %v", err)
@@ -375,7 +408,64 @@ func (p *pump) finish(outcome, errText string) {
 		log.Printf("engine: set run status: %v", err)
 	}
 	p.run.Status, p.run.Error = status, errText
+	// Let go of the chat first, then say the turn is over. The other order is
+	// a race the user loses: they see the answer, they type, and the send is
+	// refused for a turn that has already finished.
+	if p.release != nil {
+		p.release()
+	}
 	p.engine.publish(p.chat.ID, Event{Type: "run", Run: p.run})
+}
+
+// finished reports whether this turn has already been ended.
+func (p *pump) finished() bool { return p.done }
+
+// closeOpenSteps settles every tool or subagent card of this run that is still
+// running, with the outcome of the turn they belonged to. The store is asked
+// rather than an in-memory set, because a turn adopted after a restart has
+// cards this pump did not open.
+func (p *pump) closeOpenSteps(outcome string) {
+	status := store.StatusInterrupted
+	if outcome == harness.OutcomeError {
+		status = store.StatusFailed
+	}
+	steps, err := p.engine.Store.ListSteps(p.chat.ID)
+	if err != nil {
+		log.Printf("engine: could not settle the open steps of %s: %v", p.run.ID, err)
+		return
+	}
+	for i := range steps {
+		st := steps[i]
+		if st.RunID != p.run.ID || st.Status != store.StatusRunning {
+			continue
+		}
+		if st.Kind != store.StepTool && st.Kind != store.StepSubagent {
+			continue
+		}
+		st.Status = status
+		if err := p.engine.commitStep(&st); err != nil {
+			log.Printf("engine: settle step %s: %v", st.ID, err)
+		}
+	}
+}
+
+// replayFailed ends a turn whose event stream could not be read to the end.
+// It is not a failure of the agent - the turn may well have finished inside
+// the host - so the run is interrupted rather than failed, and the sentence
+// says which of the two things happened.
+func (p *pump) replayFailed(err error) {
+	body := "the agent host could not be reached"
+	if err != nil && strings.Contains(err.Error(), agenthost.ErrReplayWindow.Error()) {
+		body = "the transcript of this turn was too long to replay after a restart"
+	}
+	if p.done {
+		return
+	}
+	p.put(&store.Step{
+		ID: p.run.ID + ":error", Kind: store.StepError,
+		Title: "This turn could not be followed to the end", Body: body, Status: store.StatusFailed,
+	})
+	p.finish(harness.OutcomeInterrupted, body)
 }
 
 // fatal writes an error step and ends the turn with it. It is what the user

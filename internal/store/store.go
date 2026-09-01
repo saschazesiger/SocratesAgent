@@ -745,10 +745,16 @@ func (s *Store) DeleteStep(id string) error {
 	return err
 }
 
-// NextStepSeq returns the next ordering number inside a run.
-func (s *Store) NextStepSeq(runID string) (int64, error) {
+// NextStepSeq returns the next ordering number for a chat's transcript.
+//
+// The scope is the chat and not the run on purpose: ListSteps orders a whole
+// chat by seq, so a run whose counter restarted at 1 would have its steps sort
+// in among the previous run's. It is what the engine seeds a run's counter
+// with, at the start of a run and again when a turn is adopted after a
+// restart.
+func (s *Store) NextStepSeq(chatID string) (int64, error) {
 	var maxSeq sql.NullInt64
-	if err := s.db.QueryRow(`SELECT MAX(seq) FROM steps WHERE run_id = ?`, runID).Scan(&maxSeq); err != nil {
+	if err := s.db.QueryRow(`SELECT MAX(seq) FROM steps WHERE chat_id = ?`, chatID).Scan(&maxSeq); err != nil {
 		return 0, err
 	}
 	return maxSeq.Int64 + 1, nil
