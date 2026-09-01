@@ -15,6 +15,7 @@ import (
 
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/openrouter"
+	"github.com/saschazesiger/SocratesAgent/internal/piper"
 	"github.com/saschazesiger/SocratesAgent/internal/term"
 	"github.com/saschazesiger/SocratesAgent/internal/tunnel"
 )
@@ -41,7 +42,6 @@ func (s *Server) handlePreferences(w http.ResponseWriter, r *http.Request) {
 		"speak_in_auto_mode": settings.Voice.SpeakInAutoMode,
 		"speak_in_chat_mode": settings.Voice.SpeakInChatMode,
 		"tts_rate":           settings.Voice.TTSRate,
-		"tts_provider":       settings.Voice.TTSProvider,
 		"language":           settings.Voice.Language,
 	})
 }
@@ -209,26 +209,28 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	// Voice
 	results = append(results, checkResult{Name: "Speech to text", OK: true,
 		Detail: "OpenRouter · " + settings.OpenRouter.TranscribeModel})
-	switch {
-	case settings.Voice.TTSProvider != config.SpeechOpenRouter:
-		results = append(results, checkResult{Name: "Text to speech", OK: true, Detail: "browser speech synthesis"})
-	case settings.Voice.TTSModel == "":
-		results = append(results, checkResult{Name: "Text to speech", OK: false,
-			Detail: "no voice model chosen"})
-	default:
-		// A voice is the model's business: most require one, the fish-audio
-		// family reads without any. So an empty one is reported rather than
-		// judged - the model itself says whether it minds.
-		detail := "OpenRouter · " + settings.Voice.TTSModel
-		if settings.Voice.TTSVoice != "" {
-			detail += " · " + settings.Voice.TTSVoice
-		} else {
-			detail += " · no voice named"
-		}
-		results = append(results, checkResult{Name: "Text to speech", OK: true, Detail: detail})
-	}
+	results = append(results, voiceCheck(s.voice.Status()))
 
 	writeJSON(w, http.StatusOK, map[string]any{"checks": results})
+}
+
+// voiceCheck says what the local voice can do right now. An install that is
+// still running is the interesting case: it is neither working nor broken, and
+// reporting it as either is what would send someone looking for a setting to
+// fix when the honest answer is that 150 MB are on their way.
+func voiceCheck(voice piper.Status) checkResult {
+	switch {
+	case voice.Ready:
+		detail := voice.Detail
+		if len(voice.Voices) > 0 {
+			detail += " · " + strings.Join(voice.Voices, ", ")
+		}
+		return checkResult{Name: "Text to speech", OK: true, Detail: detail}
+	case voice.Err != "":
+		return checkResult{Name: "Text to speech", OK: false, Detail: voice.Detail + " · " + voice.Err}
+	default:
+		return checkResult{Name: "Text to speech", OK: false, Detail: voice.Detail}
+	}
 }
 
 // stripControl keeps a version banner on one readable line.

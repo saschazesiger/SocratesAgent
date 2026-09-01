@@ -16,6 +16,7 @@ import (
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
+	"github.com/saschazesiger/SocratesAgent/internal/piper"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/term"
 	"github.com/saschazesiger/SocratesAgent/internal/tunnel"
@@ -34,6 +35,7 @@ type Server struct {
 	engine    *agent.Engine
 	tunnel    *tunnel.Manager
 	terminals *term.Manager
+	voice     *piper.Engine
 
 	localURL string
 
@@ -83,9 +85,30 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 
 	s.engine = agent.New(st, s.bus, s.Settings, s.terminals)
 	s.tunnel = tunnel.New(s.Settings, s.LocalURL, filepath.Join(dataDir, "bin"))
+	s.voice = piper.New(filepath.Join(dataDir, "voice"))
+	s.installVoice()
 
 	s.routes()
 	return s, nil
+}
+
+// installVoice puts Piper on the machine while nobody is waiting for it. A
+// fresh installation downloads about 150 MB, and the worst moment to discover
+// that is the first answer somebody asks to have read out loud.
+//
+// The download itself belongs to the engine, on a context and a ceiling of its
+// own, and is the same one a render starts when it finds the voice missing -
+// one mechanism, so a render cannot end up racing the installer at startup.
+// This goroutine only waits for the outcome to log it, and a failure is all it
+// does: the server has to come up either way, and the install is tried again
+// the next time an answer is read out loud.
+func (s *Server) installVoice() {
+	engine := s.voice
+	go func() {
+		if err := engine.Ensure(context.Background()); err != nil {
+			log.Printf("voice: %v", err)
+		}
+	}()
 }
 
 // Settings returns a copy of the live configuration.
@@ -237,6 +260,7 @@ func (s *Server) routes() {
 	// Voice
 	mux.HandleFunc("POST /api/voice/transcribe", s.auth(s.handleTranscribe))
 	mux.HandleFunc("POST /api/voice/speak", s.auth(s.handleSpeak))
+	mux.HandleFunc("GET /api/voice/status", s.auth(s.handleVoiceStatus))
 
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": Version})

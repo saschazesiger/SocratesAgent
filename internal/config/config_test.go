@@ -19,11 +19,10 @@ func TestNormalizeFillsDefaults(t *testing.T) {
 	if len(s.Skills) != len(Presets()) {
 		t.Errorf("expected one entry per shipped skill, got %d", len(s.Skills))
 	}
-	if s.Voice.TTSProvider != SpeechBrowser {
+	// Reading an answer out loud takes no configuration at all now, so the
+	// voice section is a language and a pace and nothing else.
+	if s.Voice.Language != DefaultLanguage || s.Voice.TTSRate != 1 {
 		t.Errorf("voice defaults = %#v", s.Voice)
-	}
-	if s.Voice.TTSModel != DefaultSpeechModel || s.Voice.TTSVoice != DefaultSpeechVoice {
-		t.Errorf("voice model = %q / %q", s.Voice.TTSModel, s.Voice.TTSVoice)
 	}
 }
 
@@ -263,55 +262,68 @@ func TestNormalizeMigratesTheOldPlaybackLanguage(t *testing.T) {
 	}
 }
 
-// Voice used to be pointable at an OpenAI compatible endpoint of your own.
-// That is gone: the choice survives as OpenRouter, and the model it named -
-// an id in the endpoint's naming, which OpenRouter has never heard of - is
-// replaced by one that exists, together with a voice it actually has.
-func TestNormalizeMigratesTheOldSpeechEndpoint(t *testing.T) {
-	s := Settings{}
-	s.Voice.TTSProvider = "endpoint"
-	s.Voice.TTSBaseURL = "https://api.openai.com/v1"
-	s.Voice.TTSAPIKey = "sk-openai"
-	s.Voice.TTSModel = "gpt-4o-mini-tts"
-	s.Voice.TTSVoice = "alloy"
-	s.Voice.STTProvider = "endpoint"
-	s.Voice.STTBaseURL = "https://api.openai.com/v1"
-	s.Voice.STTAPIKey = "sk-openai"
-	s.Voice.STTModel = "whisper-1"
+// The settings document of an installation that is upgraded carries every
+// provider Socrates ever read an answer out loud with: an endpoint of its own,
+// an OpenRouter voice model with its voice, and a whole Google section with a
+// service account key in it. None of that decides anything any more, so it has
+// to load without complaint, keep the two settings that survived - the spoken
+// language and the speaking rate - and come back with the rest gone rather
+// than sitting in the database being ignored.
+//
+// This is the upgrade path, and it is the test that matters most here: a
+// document that fails to load is an installation that will not start.
+func TestNormalizeDropsEverythingTheOldProvidersNeeded(t *testing.T) {
+	document := []byte(`{
+		"openrouter": {"api_key": "sk-or", "chat_model": "anthropic/claude-sonnet-4.5"},
+		"google": {"credentials": "{\"type\":\"service_account\"}", "base_url": "https://texttospeech.googleapis.com"},
+		"voice": {
+			"language": "de",
+			"stt_prompt": "Transcribe it.",
+			"tts_rate": 1.25,
+			"speak_in_auto_mode": true,
+			"tts_provider": "google",
+			"tts_model": "deepgram/aura-2",
+			"tts_voice": "aura-2-thalia-en",
+			"google_voice": "de-DE-Chirp3-HD-Charon",
+			"tts_base_url": "https://api.openai.com/v1",
+			"tts_api_key": "sk-openai",
+			"stt_provider": "endpoint",
+			"stt_base_url": "https://api.openai.com/v1",
+			"stt_api_key": "sk-openai",
+			"stt_model": "whisper-1"
+		}
+	}`)
+	var s Settings
+	if err := json.Unmarshal(document, &s); err != nil {
+		t.Fatalf("a settings document from the previous version does not load: %v", err)
+	}
 	s.Normalize()
 
-	if s.Voice.TTSProvider != SpeechOpenRouter {
-		t.Fatalf("provider = %q", s.Voice.TTSProvider)
+	if s.Voice.Language != LanguageDE {
+		t.Fatalf("language = %q", s.Voice.Language)
 	}
-	if s.Voice.TTSModel != DefaultSpeechModel || s.Voice.TTSVoice != DefaultSpeechVoice {
-		t.Fatalf("model = %q / voice = %q", s.Voice.TTSModel, s.Voice.TTSVoice)
+	if s.Voice.TTSRate != 1.25 {
+		t.Fatalf("rate = %v", s.Voice.TTSRate)
 	}
-	if s.Voice.TTSBaseURL != "" || s.Voice.TTSAPIKey != "" ||
-		s.Voice.STTProvider != "" || s.Voice.STTBaseURL != "" ||
-		s.Voice.STTAPIKey != "" || s.Voice.STTModel != "" {
-		t.Fatalf("an endpoint of its own survived: %#v", s.Voice)
+	if s.Voice.STTPrompt != "Transcribe it." || s.OpenRouter.APIKey != "sk-or" {
+		t.Fatalf("the rest of the document was not kept: %#v", s)
 	}
-	// Nothing of the old shape may reach the dashboard again.
-	encoded, err := json.Marshal(s.Voice)
+
+	// Nothing of the old shape may reach the dashboard, or the database, again
+	// - including the Google credentials, which are a private key nobody has a
+	// use for any more.
+	encoded, err := json.Marshal(s)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, gone := range []string{"stt_provider", "stt_base_url", "stt_api_key", "stt_model", "tts_base_url", "tts_api_key"} {
+	for _, gone := range []string{
+		"tts_provider", "tts_model", "tts_voice", "google_voice", `"google":`,
+		"tts_base_url", "tts_api_key", "stt_provider", "stt_base_url", "stt_api_key", "stt_model",
+		"service_account", "sk-openai",
+	} {
 		if strings.Contains(string(encoded), gone) {
 			t.Fatalf("%s is still written: %s", gone, encoded)
 		}
-	}
-}
-
-// A voice model chosen from the catalogue is left exactly as it was picked.
-func TestNormalizeKeepsAnOpenRouterVoiceModel(t *testing.T) {
-	s := Settings{}
-	s.Voice.TTSProvider = SpeechOpenRouter
-	s.Voice.TTSModel = "google/gemini-3.1-flash-tts-preview"
-	s.Voice.TTSVoice = "Zephyr"
-	s.Normalize()
-	if s.Voice.TTSModel != "google/gemini-3.1-flash-tts-preview" || s.Voice.TTSVoice != "Zephyr" {
-		t.Fatalf("model = %q / voice = %q", s.Voice.TTSModel, s.Voice.TTSVoice)
 	}
 }
 

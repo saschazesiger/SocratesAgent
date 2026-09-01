@@ -2,7 +2,7 @@
 
 **A top level agent for Claude Code, Codex and OpenCode.**
 One Go binary with a ChatGPT style web interface, a live view of what the coding
-agents are doing, and a hands free voice mode. It runs entirely on
+agents are doing, and a hands free voice mode. It thinks on
 [OpenRouter](https://openrouter.ai) and does none of the work itself: it hands
 every job to one of the agent CLIs you already have, at a real terminal on your
 machine.
@@ -55,8 +55,9 @@ text or by voice.
 - **It asks you back.** When something is ambiguous the agent asks in its reply
   and stops, instead of guessing. You answer with the next message.
 - **Voice in and out.** Record in the browser, transcribe through OpenRouter,
-  have the answer read back to you — by the browser's own voice, or by an
-  OpenRouter voice model picked from the catalogue.
+  have the answer read back by a voice that runs on the same machine as
+  Socrates — no key, no account, no provider and nothing to choose. It
+  installs itself on first start and is already in the Docker image.
 - **Audio mode.** One big microphone button, a timer, and the answer shown as
   large as it fits and read out loud. When it ends on a question you hear it and
   simply speak your reply.
@@ -154,7 +155,7 @@ go install github.com/saschazesiger/SocratesAgent@latest
 SocratesAgent            # the binary takes the name of the repository
 ```
 
-Or with Docker (the image also installs the three agent CLIs):
+Or with Docker (the image also brings the three agent CLIs and the voice):
 
 ```bash
 docker build -t socrates .
@@ -267,14 +268,18 @@ you can answer a prompt yourself, correct a wrong turn, or just watch.
 
 Two different kinds of model live in the dashboard, and they are not
 interchangeable. Everything Socrates itself asks a model for — answering,
-transcription, titles, and the voice that reads the answer out loud — is an
-OpenRouter model, and there is no second source to choose from: no base URL, no
-endpoint of your own, no key besides the one at the top. Each is picked with a
-searchable dropdown over the live OpenRouter catalogue, grouped by provider and
-annotated with context length and price, filtered down to the models that can
-do that particular job. The list is fetched when the dashboard opens;
-OpenRouter serves it without a key, so it works before you have pasted one, and
-every field still accepts anything you type.
+transcription and titles — is an OpenRouter model, and there is no second
+source to choose from: no base URL, no endpoint of your own, no key besides the
+one at the top. Each is picked with a searchable dropdown over the live
+OpenRouter catalogue, grouped by provider and annotated with context length and
+price, filtered down to the models that can do that particular job. The list is
+fetched when the dashboard opens; OpenRouter serves it without a key, so it
+works before you have pasted one, and every field still accepts anything you
+type.
+
+The voice that reads an answer out loud is not on that list at all. It is not
+a model, it is not on OpenRouter, and there is nothing to pick: it runs on your
+own machine — see **Voice** below.
 
 The models on a skill card are the coding agent's own, and they never go through
 OpenRouter: Claude Code, Codex and OpenCode each talk to their own provider with
@@ -293,14 +298,26 @@ above.
   a dedicated transcriber such as `openai/whisper-1`. Socrates works out which
   of the two endpoints a model lives at and remembers it. The browser records
   raw PCM and sends a 16 kHz WAV, so no ffmpeg is involved.
-- **Text to speech** uses the browser's own speech synthesis by default, which
-  needs no key and no network. For a better voice, switch it to an OpenRouter
-  voice model: the dashboard lists the text to speech models in the catalogue
-  and, next to it, the voices that model actually answers to —
-  `deepgram/aura-2` with `aura-2-lara-de`, say. Nothing is typed by hand, and
-  nothing is billed anywhere but your OpenRouter key. If the model cannot be
-  reached, the browser voice reads the answer instead, so a bad connection
-  costs the better voice and not the answer.
+- **Text to speech** is one voice, running on the server, and there is nothing
+  to configure: no provider, no model, no voice name, no API key and no
+  account. Socrates installs [Piper](https://github.com/rhasspy/piper) and the
+  voice for your language by itself the first time it starts — the Voice card
+  in the dashboard shows the download while it runs — and the Docker image
+  already has both baked in, so a container reads the first answer it is given.
+  German is `de_DE-thorsten-medium`, English is `en_US-ljspeech-medium`, and
+  the spoken language below is what picks between them.
+  - **It sounds synthetic**, clearly so, and it is completely intelligible.
+    That is the trade: a small neural model on your own CPU instead of a voice
+    that is indistinguishable from a person and belongs to somebody else.
+  - **It is fast.** Roughly ten times faster than real time on an ordinary CPU
+    — 445 characters of German became 24 seconds of audio in 1.5 seconds — so
+    the answer starts almost as soon as it is written.
+  - **It costs nothing**, per character or otherwise, and it needs no
+    connection to a third party at any point. What it needs is one download of
+    about 150 MB — the engine and both voices — and only the first time.
+  - The bundled engine ships GPL-3.0 and MIT components; what they are and
+    where their source lives is in
+    [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 - **Spoken language** is one setting in the admin dashboard, English or
   Deutsch, and it covers everything Socrates says: which language your
   recording is transcribed into, which installed voice reads the answer out
@@ -372,6 +389,7 @@ process list, and it is redacted from the log tail in the dashboard.
 | `-version` | | | print the version |
 | | `SOCRATES_SHELL` | `$SHELL` | the shell a bare terminal session starts |
 | | `OPENROUTER_API_KEY` | | seeds the key on first start |
+| | `SOCRATES_PIPER_DIR` | | a Piper installation to use instead of the managed one; the Docker image sets it |
 | | `SOCRATES_WORKSPACE_ROOT` | `<data>/workspaces` | default workspace root |
 
 Everything else lives in the admin dashboard and is stored in
@@ -413,6 +431,7 @@ main.go                  flags, startup, graceful shutdown
 internal/config          settings document and defaults
 internal/store           SQLite persistence (chats, runs, steps, messages)
 internal/openrouter      streaming chat completions, models, audio
+internal/piper           the local voice: its installer and the renderer
 internal/term            pseudo terminals, screen rendering, session hosts
 internal/agent           the orchestration loop, tools, event bus
 internal/server          HTTP API, auth, SSE, admin, voice, terminals
@@ -427,3 +446,8 @@ rebuild the binary — that is all.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+The local voice is not part of that: Piper, the libraries it ships with and the
+two voice models carry their own licences, one of them GPL-3.0. They are named
+in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md), which matters to anyone
+publishing the Docker image.

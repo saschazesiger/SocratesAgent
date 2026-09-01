@@ -1143,7 +1143,11 @@ body.auto .auto-screen {
 .check .st.bad { background: var(--red); }
 .check .nm { font-weight: 550; min-width: 130px; }
 .check .dt { color: var(--text-soft); overflow-wrap: anywhere; }
-.tunnel-status {
+/* The voice engine reports itself the way the tunnel does - a dot, a label and
+   a line of detail that moves while something is downloading - so it is the
+   same line. */
+.tunnel-status,
+.voice-status {
   display: flex;
   align-items: center;
   gap: 10px 14px;
@@ -1162,19 +1166,22 @@ body.auto .auto-screen {
   background: var(--text-faint);
   flex: none;
 }
-.state-dot.running { background: var(--green); }
+.state-dot.running, .state-dot.ready { background: var(--green); }
 .state-dot.starting, .state-dot.installing {
   background: var(--amber);
   animation: pulse 1.8s cubic-bezier(.45, 0, .55, 1) infinite;
 }
 .state-dot.failed { background: var(--red); }
-.tunnel-status .state-label { font-weight: 550; }
-.tunnel-status .sep { color: var(--line-strong); }
+.tunnel-status .state-label, .voice-status .state-label { font-weight: 550; }
+.tunnel-status .sep, .voice-status .sep { color: var(--line-strong); }
 /* A tunnel hostname is one long word with nothing to wrap at, so it is allowed
    to break mid token rather than widen the card. */
 .tunnel-status a { font-family: var(--mono); font-size: 13px; color: var(--blue); text-decoration: none; min-width: 0; overflow-wrap: anywhere; }
 .tunnel-status a:hover { text-decoration: underline; }
 .tunnel-status .muted { color: var(--text-faint); font-family: var(--mono); font-size: 12.5px; min-width: 0; overflow-wrap: anywhere; }
+/* What the voice engine reports is a sentence, not an address, so it is not
+   set in the monospace the tunnel uses for its hostname and version. */
+.voice-status .detail { color: var(--text-faint); min-width: 0; overflow-wrap: anywhere; }
 
 .log {
   font-family: var(--mono);

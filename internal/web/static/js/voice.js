@@ -3,9 +3,10 @@
 // Recording captures raw PCM through the Web Audio API and encodes a 16 kHz
 // mono WAV in the browser, because that is the one format both kinds of model
 // OpenRouter serves - an audio capable chat model and a dedicated transcriber
-// - accept. Playback prefers the voice model configured in the dashboard and
-// falls back to the speech synthesis built into the browser, which is what
-// still works with no signal.
+// - accept. Playback is not the browser's at all: the server renders the
+// answer with the voice installed next to it and sends back a WAV, so every
+// device reads with the same voice instead of with whatever it happens to
+// ship, and a browser with no voices at all - a car's, typically - reads too.
 
 const WORKLET_SOURCE = `
 class PCMCapture extends AudioWorkletProcessor {
@@ -279,65 +280,61 @@ function toBase64(bytes) {
   return btoa(binary);
 }
 
-/* ------------------------------------------------------------- language */
-
-// Socrates speaks one language, chosen in the admin dashboard. Which one it is
-// decides which installed voice reads an answer out loud, and a German
-// sentence read by an English voice is the one thing about voice mode nobody
-// forgives.
-
-const LANGUAGE_TAGS = { en: 'en-US', de: 'de-DE' };
-const DEFAULT_LANGUAGE = 'en';
-
-// languageTag is the BCP 47 tag the speech synthesiser matches voices against.
-// Anything it does not recognise - an empty preference, a setting written by an
-// older version - reads as the default rather than as no language at all.
-export function languageTag(language) {
-  const base = String(language || '').toLowerCase().split(/[-_]/)[0];
-  return LANGUAGE_TAGS[base] || LANGUAGE_TAGS[DEFAULT_LANGUAGE];
-}
-
 /* ------------------------------------------------------------- playback */
 
 let currentAudio = null;
 let speakingFlag = false;
 
-// What to say when the voice model did not read the answer and the browser's
-// own voice stepped in instead. The fallback itself stays - an answer nobody
-// hears is worse than an answer read in the wrong voice, and the whole point
-// of the browser voice is that it works with no signal. But it must never be
-// silent: a model that is misconfigured would otherwise look exactly like a
-// model that is working, for as long as it takes to notice the accent.
-let fallbackListener = null;
+// Socrates has one voice and it lives on the server, so a request that fails
+// leaves silence - and silence is indistinguishable from an answer that had
+// nothing to say. Whoever is waiting to be read to is told why instead.
+let errorListener = null;
 
-/** onSpeechFallback registers that notice. One per page. */
-export function onSpeechFallback(fn) { fallbackListener = fn; }
+/**
+ * onSpeechError registers that notice. One per page. It is called with the
+ * sentence and the toast kind it should be shown as - '' for an install that
+ * is simply not finished yet, 'error' for everything that actually went wrong.
+ */
+export function onSpeechError(fn) { errorListener = fn; }
 
 // said keeps a reason from being repeated on every single answer. A new reason
 // is a new thing to know and is said again.
 const said = new Set();
 
-function reportFallback(reason) {
-  if (!fallbackListener || !reason || said.has(reason)) return;
+function reportError(reason, kind) {
+  if (!errorListener || !reason || said.has(reason)) return;
   said.add(reason);
-  try { fallbackListener(reason); } catch { /* a notice must not break playback */ }
+  try { errorListener(reason, kind); } catch { /* a notice must not break playback */ }
 }
 
-// speakError pulls the sentence the server wrote out of a failed response.
-async function speakError(res) {
+// speechError carries the sentence and how the page should show it. A voice
+// that is still downloading itself is ordinary first run progress, and telling
+// somebody in red that something failed, when nothing has, is how a first
+// start reads as a broken app.
+function speechError(message, kind) {
+  const err = new Error(message);
+  err.kind = kind;
+  return err;
+}
+
+// failureReason pulls the sentence the server wrote out of a failed response.
+// While the voice is still installing itself that sentence carries how far it
+// has got, which is the one answer worth repeating word for word.
+async function failureReason(res) {
   try {
     const body = await res.json();
     if (body && body.error) return String(body.error);
   } catch { /* not json */ }
-  return 'the voice model answered ' + res.status;
+  return 'The voice answered ' + res.status + '.';
 }
+
 // Every utterance belongs to a generation. Stopping bumps it, so the callbacks
 // of the speech that was interrupted quietly stop instead of queueing the rest
 // of a cancelled answer on top of the new one.
 let generation = 0;
 
 export function isSpeaking() {
-  return speakingFlag || (window.speechSynthesis && window.speechSynthesis.speaking);
+  return speakingFlag;
 }
 
 export function stopSpeaking() {
@@ -347,202 +344,145 @@ export function stopSpeaking() {
     try { currentAudio.pause(); } catch { /* ignore */ }
     currentAudio = null;
   }
-  if (window.speechSynthesis) {
-    try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
-  }
 }
 
-// speak reads text out loud and resolves when playback finished.
-export async function speak(text, options = {}) {
+// The deadline for one render, in milliseconds, from how much text it is.
+//
+// It used to be a flat twenty seconds, which was right while the audio came
+// from a provider over the network: twenty seconds of silence there meant a
+// connection that had died. The voice runs on this machine now, and a long
+// answer honestly takes longer than a short one, so the flat deadline cut off
+// every answer past roughly 4,700 characters - the server rendered it
+// perfectly and the browser hung up on it, telling the listener the voice had
+// not answered.
+//
+// The slope comes from measuring rather than from taste: German at rate 1.0 on
+// an x86 laptop renders 2,000 characters in 7.9 s, 4,000 in 16.0 s and 6,000
+// in 25.8 s, so a little over 4 ms per character. Four times that leaves room
+// for the ARM board this also runs on. The floor keeps the old protection
+// against a request that never gets anywhere at all, which is the failure a
+// short answer really has.
+//
+// The ceiling is not a limit on rendering and must not become one. It sat at
+// 90 s, which the slope reaches at about 5,600 characters, so at full length
+// the headroom was gone again: an ARM board reading 6,000 characters at rate
+// 0.7 takes longer than that, the server renders the answer perfectly and the
+// browser hangs up on it - the same defect as the flat deadline, for a smaller
+// audience. What bounds a render is the server's own five minute timeout,
+// which fails with a sentence saying so. The ceiling now sits just above it,
+// so that timeout always fires first and the listener is told the truth
+// instead of being told the voice did not answer.
+const SPEECH_MS_PER_CHAR = 16;
+const SPEECH_FLOOR_MS = 20000;
+const SPEECH_CEILING_MS = 330000;
+
+/** speechDeadline is how long to wait for a render of `length` characters. */
+export function speechDeadline(length) {
+  const scaled = Math.max(0, Number(length) || 0) * SPEECH_MS_PER_CHAR;
+  return Math.min(SPEECH_CEILING_MS, Math.max(SPEECH_FLOOR_MS, scaled));
+}
+
+/**
+ * fetchSpeech renders one line and hands back the audio without playing it,
+ * for the caller that needs the sound before the moment it is needed.
+ * It throws one sentence a person can read.
+ */
+export async function fetchSpeech(text) {
   const content = plainSpeech(text);
-  if (!content) return;
-  const tag = languageTag(options.lang);
+  if (!content) return null;
+  // A stalled connection must not leave the answer unsaid for ever. The
+  // request gets a deadline of its own, long enough for this much text, and
+  // gives up out loud instead.
+  const controller = new AbortController();
+  const limit = speechDeadline(content.length);
+  const deadline = setTimeout(() => controller.abort(), limit);
+  let res;
+  try {
+    res = await fetch('/api/voice/speak', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      signal: controller.signal,
+      body: JSON.stringify({ text: content }),
+    });
+  } catch (err) {
+    throw speechError(err && err.name === 'AbortError'
+      ? 'The voice did not answer within ' + Math.round(limit / 1000) + ' seconds.'
+      : 'The server could not be reached, so nothing was read out loud.', 'error');
+  } finally {
+    clearTimeout(deadline);
+  }
+  // 503 is the voice saying it is still installing itself, which is progress
+  // rather than a failure and is shown as such.
+  if (!res.ok) throw speechError(await failureReason(res), res.status === 503 ? '' : 'error');
+  return await res.blob();
+}
+
+// play resolves when the audio has finished. The object URL is released on the
+// way out: a page that reads every answer out loud would otherwise hold on to
+// every answer it ever read.
+function play(blob) {
+  const url = URL.createObjectURL(blob);
+  return new Promise((resolve) => {
+    const audio = new Audio(url);
+    currentAudio = audio;
+    audio.onended = audio.onerror = () => {
+      URL.revokeObjectURL(url);
+      if (currentAudio === audio) currentAudio = null;
+      resolve();
+    };
+    audio.play().catch(() => resolve());
+  });
+}
+
+/**
+ * speak reads text out loud and resolves when playback finished. Which voice
+ * that is and how fast it reads are the server's business - it renders with
+ * what the dashboard has stored - so there is nothing to pass here.
+ */
+export async function speak(text) {
+  if (!plainSpeech(text)) return;
   stopSpeaking();
   const mine = generation;
   speakingFlag = true;
   try {
-    // A stalled connection must not leave the answer unsaid. The request gets a
-    // deadline of its own, and missing it falls through to the voice built into
-    // the browser, which needs no network at all.
-    const controller = new AbortController();
-    const deadline = setTimeout(() => controller.abort(), 20000);
-    let res;
-    try {
-      res = await fetch('/api/voice/speak', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        signal: controller.signal,
-        body: JSON.stringify({ text: content }),
-      });
-    } finally {
-      clearTimeout(deadline);
-    }
+    const blob = await fetchSpeech(text);
     if (mine !== generation) return;
-    // 204 is not a failure: it is the browser voice being the configured
-    // choice, which is the one case where reading it here is the whole plan.
-    if (res.status === 204) return await browserSpeak(content, tag, options);
-    if (!res.ok) {
-      // The server reached the model and came back with a reason. That reason
-      // will not fix itself on the next answer, so it is said out loud once.
-      reportFallback('Read by the browser voice: ' + await speakError(res));
-      return await browserSpeak(content, tag, options);
-    }
-    const blob = await res.blob();
-    if (mine !== generation) return;
-    const url = URL.createObjectURL(blob);
-    await new Promise((resolve) => {
-      const audio = new Audio(url);
-      currentAudio = audio;
-      audio.onended = audio.onerror = () => {
-        URL.revokeObjectURL(url);
-        if (currentAudio === audio) currentAudio = null;
-        resolve();
-      };
-      audio.play().catch(() => resolve());
-    });
-  } catch {
-    // The server was never reached at all. That is the case the browser voice
-    // exists for and the connection bar already says so, so it passes without
-    // a second notice on top.
-    if (mine === generation) await browserSpeak(content, tag, options);
+    await play(blob);
+  } catch (err) {
+    // The reason is both told to the page, once per distinct reason, and
+    // handed back to the caller: an answer that reads silently is a bug the
+    // listener has to hear about, and the test button has to fail out loud
+    // every time it is pressed.
+    if (mine === generation) reportError(err.message, speechKind(err));
+    throw err;
   } finally {
     if (mine === generation) speakingFlag = false;
   }
 }
 
-// voices resolves the installed voices. Chrome fills the list asynchronously,
-// so asking for it too early hands back an empty array - and an empty array is
-// how German text ends up being read by whatever default voice the browser
-// happens to have, which is the accent problem in the first place.
-function voices() {
-  if (!window.speechSynthesis) return Promise.resolve([]);
-  const ready = window.speechSynthesis.getVoices() || [];
-  if (ready.length) return Promise.resolve(ready);
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      resolve(window.speechSynthesis.getVoices() || []);
-    };
-    try {
-      window.speechSynthesis.addEventListener('voiceschanged', finish, { once: true });
-    } catch { /* older browsers fire nothing; the timer below covers them */ }
-    // Safari never fires the event when there is nothing left to load, so the
-    // wait is capped rather than open ended.
-    setTimeout(finish, 1200);
-  });
+/**
+ * speechKind is the toast kind a failed render should be shown as. Anything
+ * that did not come back from the server with a reason of its own is an error.
+ */
+export function speechKind(err) {
+  return err && typeof err.kind === 'string' ? err.kind : 'error';
 }
 
-function normalizedTag(voice) {
-  return String(voice.lang || '').toLowerCase().replace('_', '-');
-}
-
-// rankVoice scores one candidate for a language. Exactness comes first, then
-// whether the voice lives on the device: a remote voice sounds better but goes
-// silent the moment the signal does, and voice mode is used in a moving car.
-function rankVoice(voice, tag) {
-  let score = 0;
-  if (normalizedTag(voice) === tag.toLowerCase()) score += 4;
-  if (voice.localService) score += 3;
-  if (/google|natural|neural|premium|enhanced|siri/i.test(voice.name || '')) score += 2;
-  if (voice.default) score += 1;
-  return score;
-}
-
-// pickVoice returns the best installed voice for a language, or null when the
-// device has none - in which case the utterance still carries the language tag
-// and the browser gets to make its own choice.
-function pickVoice(installed, tag) {
-  const base = tag.toLowerCase().split('-')[0];
-  const candidates = installed.filter((voice) => normalizedTag(voice).split('-')[0] === base);
-  if (!candidates.length) return null;
-  let best = candidates[0];
-  let bestScore = rankVoice(best, tag);
-  for (const voice of candidates.slice(1)) {
-    const score = rankVoice(voice, tag);
-    if (score > bestScore) {
-      best = voice;
-      bestScore = score;
-    }
-  }
-  return best;
-}
-
-async function browserSpeak(text, tag, options = {}) {
-  if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) return;
+/** playSpeech plays audio that fetchSpeech returned earlier. */
+export async function playSpeech(blob) {
+  if (!blob) return;
+  stopSpeaking();
   const mine = generation;
-  const installed = await voices();
-  if (mine !== generation) return;
-  let voice = pickVoice(installed, tag);
-  // Kept aside for the one failure a browser voice actually has: a voice that
-  // is synthesised on a server needs the network, and losing it mid answer
-  // would otherwise swallow the sentence.
-  const offlineVoice = pickVoice(installed.filter((v) => v.localService), tag);
-
-  return new Promise((resolve) => {
-    // Chrome truncates long utterances, so read sentence by sentence.
-    const parts = chunkSentences(text, 220);
-    let index = 0;
-    const done = () => {
-      if (mine === generation) speakingFlag = false;
-      resolve();
-    };
-    const next = () => {
-      index++;
-      say();
-    };
-    const say = () => {
-      if (mine !== generation || index >= parts.length) {
-        done();
-        return;
-      }
-      const utterance = new SpeechSynthesisUtterance(parts[index]);
-      // The tag is set whether or not a matching voice was found: without a
-      // voice it is the only thing telling the engine which language this is.
-      utterance.lang = voice ? voice.lang : tag;
-      if (voice) utterance.voice = voice;
-      utterance.rate = options.rate || 1;
-      utterance.onend = next;
-      utterance.onerror = (event) => {
-        const reason = event && event.error;
-        if (reason === 'canceled' || reason === 'interrupted') {
-          done();
-          return;
-        }
-        if (reason === 'network' && voice && !voice.localService && offlineVoice && offlineVoice !== voice) {
-          // No signal: swap to a voice that lives on the device and read the
-          // same sentence again rather than skipping it.
-          voice = offlineVoice;
-          say();
-          return;
-        }
-        next();
-      };
-      window.speechSynthesis.speak(utterance);
-    };
-    say();
-  });
-}
-
-function chunkSentences(text, max) {
-  const sentences = text.split(/(?<=[.!?…])\s+/);
-  const chunks = [];
-  let current = '';
-  for (const sentence of sentences) {
-    if ((current + ' ' + sentence).trim().length > max && current) {
-      chunks.push(current.trim());
-      current = sentence;
-    } else {
-      current = (current + ' ' + sentence).trim();
-    }
+  speakingFlag = true;
+  try {
+    await play(blob);
+  } finally {
+    if (mine === generation) speakingFlag = false;
   }
-  if (current.trim()) chunks.push(current.trim());
-  return chunks.length ? chunks : [text];
 }
 
-// plainSpeech strips markdown so the synthesiser does not read punctuation.
+// plainSpeech strips markdown so the voice does not read punctuation out loud.
 export function plainSpeech(text) {
   return String(text || '')
     .replace(/```[\s\S]*?```/g, ' code block ')

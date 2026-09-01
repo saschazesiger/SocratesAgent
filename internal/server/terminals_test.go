@@ -325,6 +325,7 @@ func TestTerminalEventsCarryColour(t *testing.T) {
 		t.Fatalf("store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
+	installedVoice(t)
 	srv, err := New(st, t.TempDir())
 	if err != nil {
 		t.Fatalf("server: %v", err)
@@ -411,6 +412,7 @@ func TestTerminalListStaysPlain(t *testing.T) {
 		t.Fatalf("store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
+	installedVoice(t)
 	srv, err := New(st, t.TempDir())
 	if err != nil {
 		t.Fatalf("server: %v", err)
@@ -518,6 +520,7 @@ func TestTerminalEventsAreCoalesced(t *testing.T) {
 		t.Fatalf("store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
+	installedVoice(t)
 	srv, err := New(st, t.TempDir())
 	if err != nil {
 		t.Fatalf("server: %v", err)

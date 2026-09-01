@@ -21,23 +21,6 @@ const (
 	DefaultTranscribeModel   = "google/gemini-2.5-flash"
 	DefaultTitleModel        = "google/gemini-2.5-flash-lite"
 	DefaultMaxIterations     = 24
-
-	// DefaultSpeechModel and DefaultSpeechVoice are what reads an answer out
-	// loud once the browser's own voice is turned off. Socrates speaks two
-	// languages, so the model has to as well: aura-2 carries named voices for
-	// both, and it is billed per character of text rather than per second of
-	// audio, which is the cheaper half of a long answer.
-	DefaultSpeechModel = "deepgram/aura-2"
-	DefaultSpeechVoice = "aura-2-thalia-en"
-)
-
-// Where an answer is read out loud. There is no third option and in
-// particular no endpoint of your own: everything Socrates asks a model for
-// goes through OpenRouter, and the browser's own synthesiser is not a model at
-// all - it is what still works with no signal and no key.
-const (
-	SpeechBrowser    = "browser"
-	SpeechOpenRouter = "openrouter"
 )
 
 // DefaultSystemPrompt is the instruction set of the top level agent. It is
@@ -135,8 +118,8 @@ type TunnelSettings struct {
 }
 
 // OpenRouterSettings configures access to the OpenRouter API, which is the
-// only place Socrates gets a model from: it answers, it transcribes and it
-// reads out loud, and there is nothing to choose between.
+// only place Socrates gets a model from: it answers and it transcribes, and
+// there is nothing to choose between.
 type OpenRouterSettings struct {
 	APIKey string `json:"api_key"`
 	// BaseURL is not a choice the dashboard offers. It exists so that the app
@@ -165,8 +148,8 @@ type spokenLanguage struct {
 	// Name is the English name of the language, which is what goes into an
 	// instruction to a model.
 	Name string
-	// Tag is the BCP 47 tag the browser's speech synthesiser matches voices
-	// against.
+	// Tag is the BCP 47 tag, which is how a language is named everywhere
+	// outside this app.
 	Tag string
 }
 
@@ -179,7 +162,7 @@ var spokenLanguages = map[string]spokenLanguage{
 // understands in an instruction: "English" or "German".
 func LanguageName(code string) string { return spokenLanguages[NormalizeLanguage(code)].Name }
 
-// LanguageTag is the BCP 47 tag the browser matches voices against.
+// LanguageTag is the BCP 47 tag of a language: "en-US" or "de-DE".
 func LanguageTag(code string) string { return spokenLanguages[NormalizeLanguage(code)].Tag }
 
 // NormalizeLanguage maps whatever is in the settings document onto one of the
@@ -197,10 +180,12 @@ func NormalizeLanguage(code string) string {
 	return DefaultLanguage
 }
 
-// VoiceSettings configures speech to text and text to speech. Both run on
-// OpenRouter models, chosen from its catalogue like every other model in the
-// app: the recording goes to the transcription model in OpenRouterSettings,
-// and the answer is read by TTSModel unless the browser is doing the reading.
+// VoiceSettings configures speech to text and text to speech. The recording
+// always goes to the transcription model in OpenRouterSettings, chosen from
+// the catalogue like every other model in the app. Who reads the answer back
+// is no longer a decision at all: Piper does, on this machine, with the voice
+// of the language below - which is why there is no provider here, no model, no
+// voice name and no key.
 type VoiceSettings struct {
 	// Language is the language Socrates speaks: "en" or "de". One setting
 	// drives all three sides of it - which language the transcript is written
@@ -214,21 +199,29 @@ type VoiceSettings struct {
 	// language instead, which is what it understands.
 	STTPrompt string `json:"stt_prompt"`
 
-	// TTSProvider is SpeechBrowser or SpeechOpenRouter. TTSModel and TTSVoice
-	// are both ids out of the OpenRouter catalogue - every voice model refuses
-	// a request that does not name a voice it knows.
-	TTSProvider string  `json:"tts_provider"`
-	TTSModel    string  `json:"tts_model"`
-	TTSVoice    string  `json:"tts_voice"`
-	TTSRate     float64 `json:"tts_rate"`
+	// TTSRate is how fast the answer is read, where 1 is the pace the voice
+	// was trained at. It reaches Piper as the length of every phoneme, so half
+	// the rate is a sentence that takes twice as long.
+	TTSRate float64 `json:"tts_rate"`
 
 	SpeakInAutoMode bool `json:"speak_in_auto_mode"`
 	SpeakInChatMode bool `json:"speak_in_chat_mode"`
 
-	// What older settings documents carried, back when voice could be pointed
-	// at an OpenAI compatible endpoint of your own and the language applied to
-	// playback alone. Each is read once by Normalize and then dropped.
+	// What older settings documents carried, from the years when reading an
+	// answer out loud was a thing you configured: an OpenAI compatible
+	// endpoint of your own, then a choice between the browser's synthesiser,
+	// an OpenRouter voice model and Google Cloud, each with its own model,
+	// voice and key. None of that is left - Piper reads every answer here, and
+	// picks its voice from the language above - so Normalize reads the one of
+	// them that still means something, the language playback used to be in,
+	// and clears them all. That is what takes them out of an existing
+	// installation's settings document rather than leaving them sitting in it,
+	// ignored, for ever.
 	TTSLanguage string `json:"tts_language,omitempty"`
+	TTSProvider string `json:"tts_provider,omitempty"`
+	TTSModel    string `json:"tts_model,omitempty"`
+	TTSVoice    string `json:"tts_voice,omitempty"`
+	GoogleVoice string `json:"google_voice,omitempty"`
 	STTProvider string `json:"stt_provider,omitempty"`
 	STTBaseURL  string `json:"stt_base_url,omitempty"`
 	STTAPIKey   string `json:"stt_api_key,omitempty"`
@@ -1107,9 +1100,6 @@ func Default() Settings {
 		Voice: VoiceSettings{
 			Language:        DefaultLanguage,
 			STTPrompt:       "Transcribe the spoken audio verbatim. Reply with the transcript only, no commentary, no quotes.",
-			TTSProvider:     SpeechBrowser,
-			TTSModel:        DefaultSpeechModel,
-			TTSVoice:        DefaultSpeechVoice,
 			TTSRate:         1,
 			SpeakInAutoMode: true,
 		},
@@ -1157,29 +1147,18 @@ func (s *Settings) Normalize() {
 	if strings.TrimSpace(s.Voice.STTPrompt) == "" {
 		s.Voice.STTPrompt = d.Voice.STTPrompt
 	}
-	// "endpoint" is what the provider was called while an OpenAI compatible
-	// URL of your own was an option. There is no such thing any more, and the
-	// answer to "read this out loud with a model" is now the one place a model
-	// ever comes from, so the choice survives as OpenRouter.
-	if s.Voice.TTSProvider == "endpoint" {
-		s.Voice.TTSProvider = SpeechOpenRouter
-	}
-	if s.Voice.TTSProvider != SpeechOpenRouter {
-		s.Voice.TTSProvider = SpeechBrowser
-	}
-	// A model that endpoint era named - "gpt-4o-mini-tts", "tts-1" - is not an
-	// id OpenRouter knows, and asking for it is a 400 on the first answer read
-	// out loud. Anything without a provider in front of it is therefore
-	// replaced by a model that does exist, together with a voice it has.
-	if !strings.Contains(s.Voice.TTSModel, "/") {
-		s.Voice.TTSModel = d.Voice.TTSModel
-		s.Voice.TTSVoice = d.Voice.TTSVoice
-	}
-	s.Voice.TTSModel = strings.TrimSpace(s.Voice.TTSModel)
-	s.Voice.TTSVoice = strings.TrimSpace(s.Voice.TTSVoice)
+	// A rate of zero is what an older document that never had the setting
+	// carries, and a negative one is nothing at all.
 	if s.Voice.TTSRate <= 0 {
 		s.Voice.TTSRate = 1
 	}
+	// Everything an answer used to be read out loud by leaves the document
+	// here. An installation that is upgraded still has a provider, a model, a
+	// voice and possibly a Google service account in its settings; none of it
+	// decides anything any more, and a key nobody uses is better gone than
+	// kept.
+	s.Voice.TTSProvider, s.Voice.TTSModel, s.Voice.TTSVoice = "", "", ""
+	s.Voice.GoogleVoice = ""
 	s.Voice.STTProvider, s.Voice.STTModel = "", ""
 	s.Voice.STTBaseURL, s.Voice.STTAPIKey = "", ""
 	s.Voice.TTSBaseURL, s.Voice.TTSAPIKey = "", ""

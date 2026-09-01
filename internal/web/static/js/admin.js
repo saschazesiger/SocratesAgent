@@ -1,7 +1,7 @@
 // The admin dashboard: everything about Socrates is configurable here.
 
 import { api, el, toast, isOffline, errorMessage, setClass, onWake } from './api.js';
-import { speak, onSpeechFallback } from './voice.js';
+import { speak, speechKind } from './voice.js';
 import { combobox } from './combobox.js';
 import * as models from './models.js';
 
@@ -28,15 +28,11 @@ let defaults = null;
 
 // Everything that names a model is picked from the OpenRouter catalogue with a
 // searchable dropdown rather than typed into a text field, so none of them are
-// in FIELDS. The voice belongs here too: it is not a model, but it is just as
-// much a name out of the catalogue, and a voice model refuses every name that
-// is not one of its own.
+// in FIELDS.
 const MODEL_PICKERS = [
   ['orChat', 'openrouter.chat_model', () => models.chat()],
   ['orTranscribe', 'openrouter.transcribe_model', () => models.audio()],
   ['orTitle', 'openrouter.title_model', () => models.chat()],
-  ['ttsModel', 'voice.tts_model', () => models.speech(), onSpeechModelChange],
-  ['ttsVoice', 'voice.tts_voice', () => voiceItems()],
 ];
 
 const FIELDS = [
@@ -47,7 +43,6 @@ const FIELDS = [
   ['workspaceRoot', 'agent.workspace_root'],
   ['voiceLanguage', 'voice.language'],
   ['sttPrompt', 'voice.stt_prompt'],
-  ['ttsProvider', 'voice.tts_provider'],
   ['ttsRate', 'voice.tts_rate', 'number'],
   ['speakAuto', 'voice.speak_in_auto_mode', 'bool'],
   ['speakChat', 'voice.speak_in_chat_mode', 'bool'],
@@ -59,6 +54,7 @@ const FIELDS = [
 ];
 
 let tunnelTimer = null;
+let voiceTimer = null;
 let installHints = {};
 let localURL = '';
 
@@ -94,12 +90,12 @@ async function load() {
   $('versionLabel').textContent = 'Socrates ' + (data.version || '');
   fillForm();
   buildModelPickers();
-  renderTTSMode();
   renderSkills();
   bind();
   loadModels();
   if (data.local_url) localURL = data.local_url;
   refreshTunnel();
+  refreshVoice();
   if (new URLSearchParams(location.search).get('welcome')) {
     showNotice('Welcome. Add your OpenRouter key, check the skills below, then head back to the chat.', 'ok');
   }
@@ -142,18 +138,15 @@ const pickers = {};
 // built before the catalogue arrives, so the dashboard is usable straight away
 // and simply gains its list a moment later.
 function buildModelPickers() {
-  for (const [id, path, items, after] of MODEL_PICKERS) {
+  for (const [id, path, items] of MODEL_PICKERS) {
     const host = $(id);
     if (!host) continue;
     host.innerHTML = '';
     const picker = combobox({
       value: getPath(settings, path) || '',
       items,
-      placeholder: id === 'ttsVoice' ? 'voice name' : 'anthropic/claude-sonnet-4.5',
-      onChange: (value) => {
-        setPath(settings, path, value);
-        if (after) after(value);
-      },
+      placeholder: 'anthropic/claude-sonnet-4.5',
+      onChange: (value) => setPath(settings, path, value),
     });
     pickers[id] = picker;
     host.append(picker.node);
@@ -167,105 +160,6 @@ function syncModelPickers() {
   }
 }
 
-// LANGUAGE_NAMES is only used to say, next to a voice, which language it reads
-// in. That is worth having because Socrates speaks two languages and picking
-// the wrong voice is the one mistake voice mode never survives.
-const LANGUAGE_NAMES = {
-  ar: 'Arabic', cs: 'Czech', da: 'Danish', de: 'German', el: 'Greek', en: 'English',
-  es: 'Spanish', fi: 'Finnish', fr: 'French', he: 'Hebrew', hi: 'Hindi', hu: 'Hungarian',
-  id: 'Indonesian', it: 'Italian', ja: 'Japanese', ko: 'Korean', nl: 'Dutch', no: 'Norwegian',
-  pl: 'Polish', pt: 'Portuguese', ro: 'Romanian', ru: 'Russian', sv: 'Swedish', th: 'Thai',
-  tr: 'Turkish', uk: 'Ukrainian', vi: 'Vietnamese', zh: 'Chinese',
-};
-
-// voiceLanguage reads the language out of a voice name, and only where the
-// name really carries one: a trailing code the way Deepgram writes it
-// ("aura-2-lara-de"), or a BCP 47 locale in front the way Microsoft does
-// ("en-US-Harper:MAI-Voice-2"). Every other scheme is left alone on purpose -
-// Kokoro's "af_bella" is an American voice, not an Afrikaans one, and a label
-// that guesses wrong is worse than no label.
-function voiceLanguage(name) {
-  const id = String(name || '');
-  const trailing = /[-](\w\w)$/.exec(id);
-  if (trailing) return LANGUAGE_NAMES[trailing[1].toLowerCase()] || '';
-  const locale = /^([a-z]{2})-[A-Z]{2}[-_]/.exec(id);
-  if (locale) return LANGUAGE_NAMES[locale[1]] || '';
-  return '';
-}
-
-// voiceItems is the list of voices the chosen model answers to. It is read
-// fresh every time the dropdown opens, so changing the model changes the list
-// without anything being rebuilt.
-function voiceItems() {
-  const model = getPath(settings, 'voice.tts_model') || '';
-  return models.voicesOf(model).map((voice) => ({
-    value: voice,
-    label: voice,
-    hint: voiceLanguage(voice),
-  }));
-}
-
-// onSpeechModelChange follows the model with a voice it actually has. Keeping
-// the old one would leave a pair that renders nothing at all, and the failure
-// only shows up the next time an answer is read out loud.
-function onSpeechModelChange(model) {
-  const voices = models.voicesOf(model);
-  const current = getPath(settings, 'voice.tts_voice') || '';
-  if (voices.length && !voices.includes(current)) {
-    setPath(settings, 'voice.tts_voice', voices[0]);
-    if (pickers.ttsVoice) pickers.ttsVoice.setValue(voices[0], false);
-  }
-  renderVoiceHint();
-}
-
-function renderVoiceHint(note) {
-  const hint = $('ttsVoiceHint');
-  if (!hint) return;
-  const model = getPath(settings, 'voice.tts_model') || '';
-  const voices = models.voicesOf(model);
-  if (note) {
-    hint.textContent = note;
-  } else if (!models.count()) {
-    hint.textContent = 'Loading the voices of this model…';
-  } else if (voices.length) {
-    hint.textContent = voices.length + ' voices. Every voice model refuses a name that is not one of its own.';
-  } else {
-    hint.textContent = 'OpenRouter publishes no voice list for this model. Leave it empty — it reads without one, ' +
-      'and says so itself if it turns out to need one.';
-  }
-}
-
-// reconcileVoice runs once, when the catalogue finally says which voices the
-// stored model has. A pair that does not go together renders nothing at all
-// and only says so the next time an answer is read out loud - and a settings
-// document written before voices came from OpenRouter is very likely to be
-// exactly that. So the form is repaired and the repair is named; nothing is
-// stored until it is saved, which keeps the decision the reader's.
-function reconcileVoice() {
-  const model = getPath(settings, 'voice.tts_model') || '';
-  const voices = models.voicesOf(model);
-  const current = getPath(settings, 'voice.tts_voice') || '';
-  if (!voices.length || voices.includes(current)) {
-    renderVoiceHint();
-    return;
-  }
-  setPath(settings, 'voice.tts_voice', voices[0]);
-  if (pickers.ttsVoice) pickers.ttsVoice.setValue(voices[0], false);
-  renderVoiceHint(current
-    ? '“' + current + '” is not a voice of ' + model + '. Switched to “' + voices[0] + '” — save to keep it.'
-    : voices.length + ' voices. Every voice model refuses a name that is not one of its own.');
-}
-
-// renderTTSMode shows the two OpenRouter fields only when they are what reads
-// the answer. The browser voice has nothing to configure beyond the rate.
-function renderTTSMode() {
-  const openrouter = $('ttsProvider').value === 'openrouter';
-  $('ttsModelFields').hidden = !openrouter;
-  $('ttsProviderHint').textContent = openrouter
-    ? 'Rendered through OpenRouter with the key above, and billed to it. The browser voice still steps in whenever the model cannot be reached.'
-    : 'Reads with a voice installed on the device. Free, instant, and the only one that works with no signal at all.';
-}
-
 async function loadModels() {
   const hint = $('modelsHint');
   try {
@@ -277,7 +171,6 @@ async function loadModels() {
         '). The fields still accept a model id typed by hand.';
     }
   }
-  reconcileVoice();
 }
 
 function bind() {
@@ -288,10 +181,6 @@ function bind() {
   $('tunnelStart').addEventListener('click', startTunnel);
   $('tunnelStop').addEventListener('click', stopTunnel);
   $('tunnelMode').addEventListener('change', renderTunnelMode);
-  $('ttsProvider').addEventListener('change', renderTTSMode);
-  // The test button is where a wrong voice model should be found out, so the
-  // reason the browser voice took over is shown rather than swallowed.
-  onSpeechFallback((reason) => toast(reason, 'error'));
   $('tunnelInstall').addEventListener('click', installCloudflared);
   $('tunnelLogToggle').addEventListener('click', () => {
     const log = $('tunnelLog');
@@ -299,18 +188,31 @@ function bind() {
     $('tunnelLogToggle').textContent = log.hidden ? 'Show log' : 'Hide log';
     if (!log.hidden) refreshTunnel();
   });
-  $('testVoice').addEventListener('click', () => {
-    // The sample is read in the language the form currently shows, not the one
-    // that was last saved, so the button answers the question you are actually
-    // asking: does this setting sound right?
-    //
-    // Only the browser voice follows it before a save - a voice model renders
-    // with the language the server has stored.
-    const language = $('voiceLanguage').value;
-    const sample = language === 'de'
+  $('testVoice').addEventListener('click', async () => {
+    // The server picks the voice from the language it has stored, so a
+    // language switched here and not saved yet would be read by the old voice.
+    // Saying so is better than sounding wrong.
+    const saved = getPath(settings, 'voice.language') || 'en';
+    if ($('voiceLanguage').value !== saved) {
+      toast('Save first — the voice follows the language the server has stored.');
+      return;
+    }
+    const sample = saved === 'de'
       ? 'So klingt Socrates, wenn dir eine Antwort im Freisprechmodus vorgelesen wird.'
       : 'This is how Socrates will read answers to you in audio mode.';
-    speak(sample, { lang: language }).catch((err) => toast(err.message, 'error'));
+    const button = $('testVoice');
+    busyButton(button, true, 'Reading…');
+    try {
+      await speak(sample);
+    } catch (err) {
+      // Every press answers, whether or not this reason has been seen before:
+      // a button that stays silent the second time reads as a button that did
+      // nothing at all. A voice that is still downloading itself is not one of
+      // the failures, so it is not shown as one.
+      toast(errorMessage(err), speechKind(err));
+    } finally {
+      busyButton(button, false, 'Reading…');
+    }
   });
   $('resetPrompt').addEventListener('click', () => {
     $('systemPrompt').value = defaults.agent.system_prompt;
@@ -336,8 +238,6 @@ async function save() {
     settings = data.settings;
     fillForm();
     syncModelPickers();
-    renderTTSMode();
-    renderVoiceHint();
     renderSkills();
     refreshTunnel();
     hint('Saved');
@@ -533,6 +433,66 @@ function splitArgs(value) {
   return out;
 }
 
+/* ------------------------------------------------------------- the voice */
+
+const VOICE_LABEL = {
+  ready: 'Voice ready',
+  installing: 'Installing the voice…',
+  missing: 'Voice not installed',
+  failed: 'Voice failed',
+};
+
+// The same line as the tunnel below, down to the dot, because it is the same
+// kind of thing: something that downloads itself once and then simply works.
+// Everything after the dot is redrawn on every poll and the dot itself stays
+// put - one that is taken out of the page and put back every two seconds never
+// gets far enough into its animation to look like it is pulsing.
+function renderVoiceStatus(voice) {
+  const host = $('voiceStatus');
+  let dot = host.querySelector(':scope > .state-dot');
+  if (!dot) {
+    dot = el('span', { class: 'state-dot' });
+    host.prepend(dot);
+  }
+  const state = voice.state || 'missing';
+  for (const name of Object.keys(VOICE_LABEL)) setClass(dot, name, state === name);
+  while (dot.nextSibling) dot.nextSibling.remove();
+
+  const parts = [el('span', { class: 'state-label', text: VOICE_LABEL[state] || state })];
+  // The detail is where the download says how far it has got, so it is the
+  // part that has to change between two polls for the card to look alive.
+  if (voice.detail) {
+    parts.push(el('span', { class: 'sep', text: '·' }));
+    parts.push(el('span', { class: 'detail', text: voice.detail }));
+  }
+  if (voice.error) {
+    parts.push(el('span', { class: 'sep', text: '·' }));
+    parts.push(el('span', { style: 'color:var(--red)', text: voice.error }));
+  }
+  host.append(...parts);
+
+  clearTimeout(voiceTimer);
+  // A voice that is ready stays ready, and one whose install failed will not
+  // repair itself while the page is open. Anything in between is still moving.
+  if (state !== 'ready' && state !== 'failed') voiceTimer = setTimeout(refreshVoice, 2000);
+}
+
+async function refreshVoice() {
+  try {
+    const data = await api('/api/voice/status');
+    renderVoiceStatus((data && data.voice) || {});
+  } catch (err) {
+    clearTimeout(voiceTimer);
+    // Like the tunnel: a poll that never arrived is the connection bar's
+    // business rather than a toast, but it must not stop the polling either.
+    if (isOffline(err)) {
+      voiceTimer = setTimeout(refreshVoice, 5000);
+      return;
+    }
+    toast(errorMessage(err), 'error');
+  }
+}
+
 /* ------------------------------------------------------------ the tunnel */
 
 function tunnelForm() {
@@ -638,6 +598,7 @@ function renderTunnelStatus(status) {
 onWake(() => {
   if (document.visibilityState === 'hidden' || !settings) return;
   refreshTunnel();
+  refreshVoice();
 });
 
 async function refreshTunnel() {

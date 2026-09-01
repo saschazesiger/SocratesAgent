@@ -7,7 +7,10 @@ import {
 } from './api.js';
 import { renderMarkdown } from './markdown.js';
 import { mountTerminalDock } from './terminals.js';
-import { Recorder, describeMicError, speak, stopSpeaking, isSpeaking, plainSpeech, onSpeechFallback } from './voice.js';
+import {
+  Recorder, describeMicError, speak, stopSpeaking, isSpeaking, plainSpeech,
+  onSpeechError, fetchSpeech, playSpeech,
+} from './voice.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -183,35 +186,50 @@ function restoreDraft() {
 // a blank screen for fifteen seconds is worse than an honest one after two.
 const BOOT = { attempts: 2, timeout: 8000 };
 
-// speechOptions is how every spoken line is configured: the rate and the
-// language the admin chose.
-function speechOptions() {
-  return { rate: state.prefs.tts_rate, lang: state.prefs.language };
-}
-
 // The one sentence Socrates says on its own behalf, in both languages it can
-// be set to. It is spoken when the connection drops, which is exactly when
-// nothing can be fetched to translate it.
+// be set to. It is spoken when the connection drops.
 const OFFLINE_NOTICE = {
   en: 'The connection dropped. I will keep trying.',
   de: 'Die Verbindung ist weg. Ich versuche es weiter.',
 };
 
+// The voice that reads it lives on the server, and this is the one sentence
+// that is due exactly when the server cannot be reached - so the audio is
+// fetched long before it is needed and kept in memory. Losing it would cost
+// the one thing that tells someone who is driving that the answer they are
+// waiting for has stopped coming.
+let offlineClip = { language: '', blob: null, fetching: false };
+
+// primeOfflineNotice is called wherever the connection has just proved itself:
+// on the way in, on the way back from a locked phone, and every time the
+// stream reports itself ready. It is a nicety, so a fetch that fails is simply
+// dropped and tried again at the next of those moments.
+function primeOfflineNotice() {
+  const language = state.prefs.language || 'en';
+  if (offlineClip.fetching || (offlineClip.blob && offlineClip.language === language)) return;
+  offlineClip.fetching = true;
+  fetchSpeech(OFFLINE_NOTICE[language] || OFFLINE_NOTICE.en)
+    .then((blob) => { offlineClip = { language, blob, fetching: false }; })
+    .catch(() => { offlineClip.fetching = false; });
+}
+
 async function init() {
   setView(storedView(null), { silent: true });
   buildQueues();
   bindUI();
-  // A voice model that cannot read the answer must say so. It is said once per
-  // reason, so a broken setting is reported the first time it costs you the
-  // voice you chose and not on every answer after it.
-  onSpeechFallback((reason) => toast(reason, 'error'));
+  // An answer that is not read out loud sounds exactly like an answer that was
+  // never given, so the reason is shown. It is said once per reason, so a
+  // voice that is still installing itself is reported the first time it costs
+  // you an answer and not on every answer after it.
+  onSpeechError((reason, kind) => toast(reason, kind));
   // Preferences are a nicety and the defaults are sensible, so the page is
   // never held up waiting for them. Everything on the boot path is deliberately
   // impatient: on a bad connection what matters is that the app appears and
   // says what is wrong, not that it eventually loads everything.
   api('/api/preferences', BOOT)
     .then((prefs) => { if (prefs) state.prefs = prefs; })
-    .catch(() => { /* defaults are fine */ });
+    .catch(() => { /* defaults are fine */ })
+    .finally(primeOfflineNotice);
   await refreshChats(BOOT);
   // The address bar is the more reliable of the two: reopening the app with no
   // signal cannot fetch the chat list, and falling back to a blank new chat
@@ -384,7 +402,7 @@ function bindUI() {
   dom.autoMic.addEventListener('click', () => toggleRecording('auto'));
   dom.autoReplay.addEventListener('click', () => {
     if (isSpeaking()) stopSpeaking();
-    else if (state.lastAnswer) speak(state.lastAnswer, speechOptions());
+    else if (state.lastAnswer) speak(state.lastAnswer).catch(() => { /* reported once */ });
   });
   dom.autoDetails.addEventListener('click', () => setView('chat'));
   window.addEventListener('beforeunload', () => {
@@ -406,6 +424,7 @@ function bindUI() {
   onWake(() => {
     if (document.visibilityState === 'hidden') return;
     refreshChats();
+    primeOfflineNotice();
     if (state.loadFailed && state.chatId) openChat(state.chatId, { force: true }).catch(() => {});
   });
   // The clock in the working row and the "how old is this" line have to keep
@@ -1674,9 +1693,10 @@ function updateLiveUI() {
     if (state.view === 'auto' && state.busy && state.prefs.speak_in_auto_mode !== false && !state.spokeOffline) {
       // In hands free mode the person is looking at the road. A single spoken
       // notice is the only way they learn the answer they are waiting for has
-      // stopped coming.
+      // stopped coming - which is why it was rendered while there still was a
+      // connection to render it with.
       state.spokeOffline = true;
-      speak(OFFLINE_NOTICE[state.prefs.language] || OFFLINE_NOTICE.en, speechOptions()).catch(() => {});
+      playSpeech(offlineClip.blob).catch(() => {});
     }
   } else if (!stale) {
     state.staleShown = false;
@@ -1711,7 +1731,7 @@ function handleEvent(event) {
         if (state.view === 'auto') {
           showAutoAnswer(event.message.content, state.prefs.speak_in_auto_mode !== false);
         } else if (state.prefs.speak_in_chat_mode) {
-          speak(event.message.content, speechOptions()).catch(() => {});
+          speak(event.message.content).catch(() => { /* reported once */ });
         }
       }
       break;
@@ -1747,6 +1767,7 @@ function handleEvent(event) {
       state.rev = Math.max(state.rev, event.rev || 0);
       setBusy(!!event.busy);
       setLive(true);
+      primeOfflineNotice();
       break;
     case 'resync':
       // The server could not keep up with this client and gave up on the
@@ -2124,7 +2145,7 @@ function showAutoAnswer(text, doSpeak) {
   setClass(dom.autoScreen, 'answering', true);
   updateAutoBusy();
   fitAnswer();
-  if (doSpeak) speak(text, speechOptions()).catch(() => {});
+  if (doSpeak) speak(text).catch(() => { /* reported once */ });
 }
 
 function fitAnswer() {

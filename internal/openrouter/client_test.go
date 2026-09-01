@@ -1,9 +1,7 @@
 package openrouter
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -122,160 +120,6 @@ func TestTranscribeChatSendsAudioPart(t *testing.T) {
 	audio := parts[1].(map[string]any)["input_audio"].(map[string]any)
 	if audio["data"] != "QUJD" || audio["format"] != "wav" {
 		t.Fatalf("audio part = %#v", audio)
-	}
-}
-
-func TestSpeechReturnsAudio(t *testing.T) {
-	var body map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		w.Header().Set("Content-Type", "audio/mpeg")
-		_, _ = w.Write([]byte{0xff, 0xfb, 0x00})
-	}))
-	defer server.Close()
-	client := New(server.URL, "key")
-	audio, contentType, err := client.Speech(context.Background(), "deepgram/aura-2", "aura-2-thalia-en", "hi", "Read it in German.")
-	if err != nil {
-		t.Fatalf("speech: %v", err)
-	}
-	if len(audio) != 3 || contentType != "audio/mpeg" {
-		t.Fatalf("audio = %v %q", audio, contentType)
-	}
-	if body["instructions"] != "Read it in German." {
-		t.Fatalf("instructions = %#v", body["instructions"])
-	}
-	if body["voice"] != "aura-2-thalia-en" || body["response_format"] != "mp3" {
-		t.Fatalf("request = %#v", body)
-	}
-}
-
-// Without a model there is nothing to ask, and saying so here costs nothing.
-func TestSpeechNeedsAModel(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("the provider was called with no model at all")
-	}))
-	defer server.Close()
-	client := New(server.URL, "key")
-	if _, _, err := client.Speech(context.Background(), "", "alloy", "hi", ""); err == nil {
-		t.Fatal("a missing model was accepted")
-	}
-}
-
-// Whether a voice is needed is the model's business. The fish-audio family
-// reads without one, and refusing on its behalf is how a model that works ends
-// up never being asked - so the field is left out and the model decides. An
-// empty string is not the same thing: every model rejects that outright.
-func TestSpeechLeavesAnEmptyVoiceOutOfTheRequest(t *testing.T) {
-	var body map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		w.Header().Set("Content-Type", "audio/mpeg")
-		_, _ = w.Write([]byte{0xff, 0xfb, 0x00})
-	}))
-	defer server.Close()
-	client := New(server.URL, "key")
-	if _, _, err := client.Speech(context.Background(), "fish-audio/s1", "  ", "hi", ""); err != nil {
-		t.Fatalf("a model that needs no voice was refused: %v", err)
-	}
-	if _, sent := body["voice"]; sent {
-		t.Fatalf("an empty voice was sent anyway: %#v", body)
-	}
-	if body["model"] != "fish-audio/s1" {
-		t.Fatalf("request = %#v", body)
-	}
-}
-
-// A model that does want a voice says so itself, and that sentence is what the
-// dashboard needs to show. It must arrive whole rather than as a generic
-// failure, because it is the only thing that says what to fix.
-func TestSpeechPassesOnTheProvidersOwnComplaint(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = io.WriteString(w, `{"error":{"message":"An explicit voice is required for this TTS provider."}}`)
-	}))
-	defer server.Close()
-	client := New(server.URL, "key")
-	_, _, err := client.Speech(context.Background(), "hexgrad/kokoro-82m", "", "hi", "")
-	if err == nil {
-		t.Fatal("the refusal was swallowed")
-	}
-	if !strings.Contains(err.Error(), "explicit voice is required") {
-		t.Fatalf("error = %q", err)
-	}
-}
-
-// Gemini's TTS renders PCM and nothing else, and says so instead of rendering
-// an mp3. The refusal is worth exactly one more attempt - and the samples that
-// come back are worth the forty four bytes that let a browser play them.
-func TestSpeechFallsBackToPCMAndWrapsItInWAV(t *testing.T) {
-	formats := []string{}
-	samples := []byte{0x01, 0x00, 0xff, 0x7f}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		format, _ := body["response_format"].(string)
-		formats = append(formats, format)
-		if format != "pcm" {
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = io.WriteString(w, `{"error":{"message":"Gemini TTS only supports response_format=\"pcm\". Got \"mp3\"."}}`)
-			return
-		}
-		w.Header().Set("Content-Type", "audio/pcm;rate=24000;channels=1")
-		_, _ = w.Write(samples)
-	}))
-	defer server.Close()
-	client := New(server.URL, "key")
-
-	audio, contentType, err := client.Speech(context.Background(), "google/gemini-3.1-flash-tts-preview", "Zephyr", "hi", "")
-	if err != nil {
-		t.Fatalf("speech: %v", err)
-	}
-	if contentType != "audio/wav" {
-		t.Fatalf("content type = %q", contentType)
-	}
-	if len(audio) != 44+len(samples) || string(audio[:4]) != "RIFF" || string(audio[8:12]) != "WAVE" {
-		t.Fatalf("not a wav: %v", audio)
-	}
-	if !bytes.Equal(audio[44:], samples) {
-		t.Fatalf("samples were changed: %v", audio[44:])
-	}
-	if got := binary.LittleEndian.Uint32(audio[24:28]); got != 24000 {
-		t.Fatalf("sample rate = %d", got)
-	}
-	if got := binary.LittleEndian.Uint16(audio[22:24]); got != 1 {
-		t.Fatalf("channels = %d", got)
-	}
-	if want := []string{"mp3", "pcm"}; !slices.Equal(formats, want) {
-		t.Fatalf("formats = %v", formats)
-	}
-
-	// The refusal is remembered, so the second answer is rendered once.
-	formats = formats[:0]
-	if _, _, err := client.Speech(context.Background(), "google/gemini-3.1-flash-tts-preview", "Zephyr", "again", ""); err != nil {
-		t.Fatalf("speech: %v", err)
-	}
-	if want := []string{"pcm"}; !slices.Equal(formats, want) {
-		t.Fatalf("the model was asked for mp3 again: %v", formats)
-	}
-}
-
-// A refusal that is not about the format is the answer, not a reason to pay
-// for a second rendering of the same sentence.
-func TestSpeechReportsARealRefusalOnce(t *testing.T) {
-	calls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = io.WriteString(w, `{"error":{"message":"No endpoints found for vendor/nope."}}`)
-	}))
-	defer server.Close()
-	client := New(server.URL, "key")
-	if _, _, err := client.Speech(context.Background(), "vendor/nope", "alloy", "hi", ""); err == nil {
-		t.Fatal("the refusal was swallowed")
-	}
-	if calls != 1 {
-		t.Fatalf("the request was sent %d times", calls)
 	}
 }
 
@@ -515,25 +359,21 @@ func TestTranscribeDoesNotRetryARealRefusal(t *testing.T) {
 	}
 }
 
-// The catalogue is what the dashboard filters on. OpenRouter nests the
-// modalities under "architecture" and keeps the transcription models out of
-// the main list, so both have to be read - otherwise every picker offers every
-// model and a model that cannot listen ends up transcribing.
-// The models that only listen and the models that only speak are kept out of
-// OpenRouter's main list, so a catalogue that is not merged leaves both the
-// transcription and the voice picker with nothing to offer.
-func TestModelsMergeTheListeningAndSpeakingCatalogues(t *testing.T) {
+// The catalogue is what the transcription picker filters on. OpenRouter nests
+// the modalities under "architecture" and keeps the models that only listen
+// out of its main list, so both lists have to be read - otherwise the picker
+// offers every chat model there is and a model that cannot listen ends up
+// transcribing.
+func TestModelsMergeTheListeningCatalogue(t *testing.T) {
+	var asked []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Query().Get("output_modalities") {
+		modality := r.URL.Query().Get("output_modalities")
+		asked = append(asked, modality)
+		switch modality {
 		case "transcription":
 			io.WriteString(w, `{"data":[{"id":"vendor/listen-1","name":"Listen",
 				"architecture":{"input_modalities":["audio"],"output_modalities":["transcription"]}}]}`)
-		case "speech":
-			io.WriteString(w, `{"data":[
-				{"id":"vendor/speak-1","name":"Speak","supported_voices":["lara-de","thalia-en"],
-				 "architecture":{"input_modalities":["text"],"output_modalities":["speech"]}},
-				{"id":"vendor/chat-1","name":"Chat","architecture":{"input_modalities":["text"],"output_modalities":["text"]}}]}`)
 		default:
 			io.WriteString(w, `{"data":[
 				{"id":"vendor/chat-1","name":"Chat","architecture":{"input_modalities":["text","audio"],"output_modalities":["text"]}},
@@ -547,9 +387,7 @@ func TestModelsMergeTheListeningAndSpeakingCatalogues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("models: %v", err)
 	}
-	// Four entries, not five: chat-1 comes back from two of the three lists
-	// and must not be offered twice.
-	if len(models) != 4 {
+	if len(models) != 3 {
 		t.Fatalf("models = %#v", models)
 	}
 	byID := map[string]Model{}
@@ -559,19 +397,16 @@ func TestModelsMergeTheListeningAndSpeakingCatalogues(t *testing.T) {
 	if !byID["vendor/listen-1"].Hears() || !byID["vendor/listen-1"].Transcribes() {
 		t.Errorf("listen-1 = %#v", byID["vendor/listen-1"])
 	}
-	if !byID["vendor/chat-1"].Hears() || byID["vendor/chat-1"].Transcribes() || byID["vendor/chat-1"].Speaks() {
+	if !byID["vendor/chat-1"].Hears() || byID["vendor/chat-1"].Transcribes() {
 		t.Errorf("chat-1 = %#v", byID["vendor/chat-1"])
 	}
 	if byID["vendor/text-1"].Hears() {
 		t.Errorf("text-1 = %#v", byID["vendor/text-1"])
 	}
-	speaker := byID["vendor/speak-1"]
-	if !speaker.Speaks() || speaker.Hears() {
-		t.Errorf("speak-1 = %#v", speaker)
-	}
-	// The voices travel with the model: they are what the dashboard offers
-	// next, and no other request lists them.
-	if !slices.Equal(speaker.Voices, []string{"lara-de", "thalia-en"}) {
-		t.Errorf("voices = %#v", speaker.Voices)
+	// Nothing asks for the speech catalogue any more: an answer is read out
+	// loud on this machine, and a request for models nobody can choose is a
+	// second round trip for nothing.
+	if !slices.Equal(asked, []string{"", "transcription"}) {
+		t.Errorf("the catalogue was asked for %v", asked)
 	}
 }

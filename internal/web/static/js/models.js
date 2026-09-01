@@ -32,19 +32,13 @@ function context(length) {
 // A transcription model is billed by the second by one provider and by the
 // token by the next, and the catalogue does not say which - so it is labelled
 // for what it does instead of with a price that would be off by a thousand.
-// A voice model is labelled with how many voices it has, because that is the
-// next thing to be picked and the number is what says whether the list is
-// worth opening.
 function shape(model) {
   const id = model.id || '';
   const [provider] = id.split('/');
   const produces = model.output_modalities || [];
-  const voices = model.supported_voices || [];
-  let bits;
-  if (produces.includes('transcription')) bits = ['transcribes'];
-  else if (produces.includes('speech')) {
-    bits = [voices.length ? voices.length + ' voices' : '', price(model.pricing && model.pricing.prompt)];
-  } else bits = [context(model.context_length), price(model.pricing && model.pricing.prompt)];
+  const bits = produces.includes('transcription')
+    ? ['transcribes']
+    : [context(model.context_length), price(model.pricing && model.pricing.prompt)];
   return {
     value: id,
     label: model.name || id,
@@ -52,7 +46,6 @@ function shape(model) {
     group: provider || 'other',
     modalities: model.input_modalities || [],
     produces,
-    voices,
   };
 }
 
@@ -97,29 +90,6 @@ export function chat() {
 export function audio() {
   const heard = entries.filter((entry) => entry.modalities.includes('audio'));
   return heard.length ? heard : entries;
-}
-
-/**
- * speech returns the models that read text out loud. There is no fallback to
- * the whole catalogue here: a chat model handed to /audio/speech is a 400, and
- * an empty list is the honest answer while the catalogue is still on its way.
- */
-export function speech() {
-  return entries.filter((entry) => entry.produces.includes('speech'));
-}
-
-/**
- * voicesOf lists the voices one speech model answers to. Every one of them
- * refuses a request that names a voice it does not have, and the names have
- * nothing in common between models - "aura-2-lara-de", "Zephyr",
- * "en_paul_neutral" - so this list is the only safe thing to offer.
- *
- * A model the catalogue publishes no voices for gets an empty list, and the
- * picker falls back to letting the name be typed.
- */
-export function voicesOf(id) {
-  const found = entries.find((entry) => entry.value === id);
-  return found ? found.voices : [];
 }
 
 /** onLoad registers a callback for when the catalogue arrives. */

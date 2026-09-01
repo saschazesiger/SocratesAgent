@@ -11,9 +11,18 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}"
 # The delegate agents (claude, codex, opencode) are Node CLIs. They are
 # installed here so a container can actually delegate work; set INSTALL_AGENTS=0
 # to build a slim image and mount your own binaries instead.
+#
+# The voice that reads answers out loud is Piper, running on this machine: the
+# engine and the two voices Socrates speaks are baked in, so a container needs
+# no download and no configuration on its first run. That is the 150 MB the app
+# would otherwise fetch itself, and about 180 MB unpacked in the image. Set
+# INSTALL_VOICE=0 to leave it out - Socrates then downloads the same files into
+# its data directory the first time an answer has to be read out loud.
+# See THIRD_PARTY_LICENSES.md for what is bundled and under which licence.
 FROM node:22-bookworm-slim
 ARG INSTALL_AGENTS=1
 ARG INSTALL_CLOUDFLARED=1
+ARG INSTALL_VOICE=1
 ARG TARGETARCH
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl git ripgrep \
@@ -26,12 +35,34 @@ RUN apt-get update \
       curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${TARGETARCH:-amd64}" \
         -o /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared || \
       echo "warning: could not install cloudflared, remote access stays off"; \
+    fi \
+ && if [ "$INSTALL_VOICE" = "1" ]; then \
+      case "${TARGETARCH:-amd64}" in arm64) PIPER_ARCH=aarch64 ;; *) PIPER_ARCH=x86_64 ;; esac \
+      && VOICES="https://huggingface.co/rhasspy/piper-voices/resolve/main" \
+      && mkdir -p /opt/piper/voices \
+      && curl -fsSL "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_${PIPER_ARCH}.tar.gz" \
+           -o /tmp/piper.tar.gz \
+      && tar -xzf /tmp/piper.tar.gz -C /opt/piper \
+      && rm /tmp/piper.tar.gz \
+      && curl -fsSL "${VOICES}/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx" \
+           -o /opt/piper/voices/de_DE-thorsten-medium.onnx \
+      && curl -fsSL "${VOICES}/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx.json" \
+           -o /opt/piper/voices/de_DE-thorsten-medium.onnx.json \
+      && curl -fsSL "${VOICES}/en/en_US/ljspeech/medium/en_US-ljspeech-medium.onnx" \
+           -o /opt/piper/voices/en_US-ljspeech-medium.onnx \
+      && curl -fsSL "${VOICES}/en/en_US/ljspeech/medium/en_US-ljspeech-medium.onnx.json" \
+           -o /opt/piper/voices/en_US-ljspeech-medium.onnx.json \
+      || echo "warning: could not install the local voice, Socrates downloads it on first use"; \
     fi
 
 COPY --from=build /out/socrates /usr/local/bin/socrates
 
+# SOCRATES_PIPER_DIR is what makes the app use the copy above instead of
+# downloading its own. A slim build leaves the directory empty, which reads as
+# "not installed" and puts the download back.
 ENV SOCRATES_DATA_DIR=/data \
-    SOCRATES_ADDR=:8080
+    SOCRATES_ADDR=:8080 \
+    SOCRATES_PIPER_DIR=/opt/piper
 VOLUME ["/data"]
 EXPOSE 8080
 

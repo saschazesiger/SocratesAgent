@@ -8,15 +8,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"mime/multipart"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -510,11 +507,6 @@ type Model struct {
 		Prompt     string `json:"prompt"`
 		Completion string `json:"completion"`
 	} `json:"pricing"`
-	// Voices are the names a speech model answers to. Every one of them
-	// refuses a request that does not name a voice, and each has its own
-	// vocabulary - "aura-2-lara-de", "Zephyr", "en_paul_neutral" - so the list
-	// the catalogue publishes is the only way to offer a voice that exists.
-	Voices []string `json:"supported_voices"`
 }
 
 // UnmarshalJSON reads both shapes of the catalogue: OpenRouter nests the
@@ -548,9 +540,6 @@ func (m *Model) UnmarshalJSON(data []byte) error {
 // Hears reports whether the model accepts audio at all.
 func (m Model) Hears() bool { return hasModality(m.Modalities, "audio") }
 
-// Speaks reports whether this is a text to speech model.
-func (m Model) Speaks() bool { return hasModality(m.Produces, "speech") }
-
 // Transcribes reports whether this is a dedicated transcription model. Those
 // answer on /audio/transcriptions and refuse /chat/completions outright, so
 // telling the two apart is what decides where a recording is sent.
@@ -567,11 +556,10 @@ func hasModality(list []string, want string) bool {
 
 // Models fetches the catalogue for the admin model pickers.
 //
-// OpenRouter keeps the models that only listen and the models that only speak
-// out of its main list, so each modality is asked for separately and merged
-// in. Without that, the transcription picker cannot offer whisper and friends
-// at all and the voice picker is empty, which leaves a chat model as the only
-// thing to pick for a job it may not do.
+// OpenRouter keeps the models that only listen out of its main list, so that
+// modality is asked for separately and merged in. Without it the transcription
+// picker cannot offer whisper and friends at all, which leaves a chat model as
+// the only thing to pick for a job it may not do.
 func (c *Client) Models(ctx context.Context) ([]Model, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -582,14 +570,7 @@ func (c *Client) Models(ctx context.Context) ([]Model, error) {
 	// Best effort. A gateway that does not know the filter answers with its
 	// whole list, which the merge drops as duplicates, or with an error, which
 	// is no reason to leave the dashboard without any models at all.
-	for _, path := range []string{
-		"/models?output_modalities=transcription",
-		"/models?output_modalities=speech",
-	} {
-		extra, err := c.catalogue(ctx, path)
-		if err != nil {
-			continue
-		}
+	if extra, err := c.catalogue(ctx, "/models?output_modalities=transcription"); err == nil {
 		models = mergeModels(models, extra)
 	}
 	c.rememberRoutes(models)
@@ -821,138 +802,4 @@ func (c *Client) TranscribeEndpoint(ctx context.Context, model string, audio []b
 		return "", err
 	}
 	return strings.TrimSpace(out.Text), nil
-}
-
-// A voice model renders an mp3 or raw PCM, and not every one of them renders
-// both: Gemini's TTS refuses the request outright when mp3 is asked for. mp3
-// is what a browser plays without help, so it is what is asked for first, and
-// the refusal is read as "this one is PCM only" and remembered - so a single
-// answer is rendered twice at most once per model.
-var pcmOnlyModels sync.Map // baseURL + "\n" + model -> bool
-
-// rejectsMP3 reports whether a refusal was about the format rather than about
-// the request. OpenRouter says so in words - Gemini TTS only supports
-// response_format="pcm" - and its own validator lists the values it accepts.
-// Reading either one wrong costs one more attempt and nothing else.
-func rejectsMP3(err error) bool {
-	var status *StatusError
-	if !errors.As(err, &status) || status.Status != http.StatusBadRequest {
-		return false
-	}
-	msg := strings.ToLower(status.Message)
-	return strings.Contains(msg, "response_format") || strings.Contains(msg, "pcm")
-}
-
-// Speech reads text out loud with an OpenRouter voice model and returns the
-// audio bytes together with a content type the browser can play.
-//
-// instructions steer the delivery - which language to read in, and with which
-// accent - and every voice model on OpenRouter accepts them. Whether a voice
-// has to be named is the model's business, not this function's: most require
-// one and say so in a sentence worth passing on, the fish-audio family needs
-// none at all, and guessing on their behalf is how a model that works ends up
-// refused before the request is ever sent.
-func (c *Client) Speech(ctx context.Context, model, voice, text, instructions string) ([]byte, string, error) {
-	if strings.TrimSpace(model) == "" {
-		return nil, "", fmt.Errorf("no voice model configured - open /admin and pick one")
-	}
-	key := c.routeKey(model)
-	if known, ok := pcmOnlyModels.Load(key); ok && known.(bool) {
-		return c.speechAs(ctx, "pcm", model, voice, text, instructions)
-	}
-	audio, ct, err := c.speechAs(ctx, "mp3", model, voice, text, instructions)
-	if err == nil {
-		pcmOnlyModels.Store(key, false)
-		return audio, ct, nil
-	}
-	if !rejectsMP3(err) {
-		return nil, "", err
-	}
-	audio, ct, err = c.speechAs(ctx, "pcm", model, voice, text, instructions)
-	if err != nil {
-		return nil, "", err
-	}
-	pcmOnlyModels.Store(key, true)
-	return audio, ct, nil
-}
-
-func (c *Client) speechAs(ctx context.Context, format, model, voice, text, instructions string) ([]byte, string, error) {
-	payload := map[string]any{
-		"model":           model,
-		"input":           text,
-		"response_format": format,
-	}
-	// The field is left out rather than sent blank. An empty string is a
-	// validation error at every model there is - including the ones that are
-	// perfectly happy to be given no voice at all.
-	if voice = strings.TrimSpace(voice); voice != "" {
-		payload["voice"] = voice
-	}
-	if instructions = strings.TrimSpace(instructions); instructions != "" {
-		payload["instructions"] = instructions
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, "", err
-	}
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
-	defer cancel()
-	resp, err := c.send(ctx, http.MethodPost, "/audio/speech", body, "application/json", nil)
-	if err != nil {
-		return nil, "", err
-	}
-	defer resp.Body.Close()
-	audio, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
-	if err != nil {
-		return nil, "", err
-	}
-	ct := resp.Header.Get("Content-Type")
-	// Raw PCM is a stream of samples and nothing else: no browser plays it as
-	// it stands. The forty four bytes that say how fast to play it are added
-	// here, where the sample rate the answer was rendered at is still known.
-	if rate, channels, ok := pcmLayout(ct); ok {
-		return wrapPCM(audio, rate, channels), "audio/wav", nil
-	}
-	if ct == "" {
-		ct = "audio/mpeg"
-	}
-	return audio, ct, nil
-}
-
-// pcmLayout reads "audio/pcm;rate=24000;channels=1", the content type
-// OpenRouter answers a PCM request with. A missing parameter falls back to
-// what every voice model on OpenRouter renders today: 24 kHz mono.
-func pcmLayout(contentType string) (rate, channels int, ok bool) {
-	media, params, err := mime.ParseMediaType(contentType)
-	if err != nil || (media != "audio/pcm" && media != "audio/l16" && media != "audio/x-pcm") {
-		return 0, 0, false
-	}
-	rate, channels = 24000, 1
-	if value, err := strconv.Atoi(params["rate"]); err == nil && value > 0 {
-		rate = value
-	}
-	if value, err := strconv.Atoi(params["channels"]); err == nil && value > 0 {
-		channels = value
-	}
-	return rate, channels, true
-}
-
-// wrapPCM puts a WAV header in front of signed 16 bit little endian samples.
-func wrapPCM(samples []byte, rate, channels int) []byte {
-	const bits = 16
-	blockAlign := channels * bits / 8
-	out := make([]byte, 0, 44+len(samples))
-	out = append(out, "RIFF"...)
-	out = binary.LittleEndian.AppendUint32(out, uint32(36+len(samples)))
-	out = append(out, "WAVEfmt "...)
-	out = binary.LittleEndian.AppendUint32(out, 16)                      // PCM header size
-	out = binary.LittleEndian.AppendUint16(out, 1)                       // PCM, uncompressed
-	out = binary.LittleEndian.AppendUint16(out, uint16(channels))        //
-	out = binary.LittleEndian.AppendUint32(out, uint32(rate))            //
-	out = binary.LittleEndian.AppendUint32(out, uint32(rate*blockAlign)) // bytes per second
-	out = binary.LittleEndian.AppendUint16(out, uint16(blockAlign))      //
-	out = binary.LittleEndian.AppendUint16(out, bits)                    //
-	out = append(out, "data"...)                                         //
-	out = binary.LittleEndian.AppendUint32(out, uint32(len(samples)))    //
-	return append(out, samples...)
 }

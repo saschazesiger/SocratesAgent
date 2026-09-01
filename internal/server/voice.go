@@ -8,6 +8,7 @@ import (
 
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/openrouter"
+	"github.com/saschazesiger/SocratesAgent/internal/piper"
 )
 
 // transcriptionHint is appended to the transcription instruction. A
@@ -19,25 +20,19 @@ func transcriptionHint(language string) string {
 	return " The audio is spoken in " + name + ". Write the transcript in " + name + ", never translate it."
 }
 
-// speechInstructions tell a voice model which language it is reading. Without
-// them a model handed German text reads it with an English accent, which is
-// the exact complaint this setting exists to answer.
-func speechInstructions(language string) string {
-	name := config.LanguageName(language)
-	return "Read the text aloud in " + name + ", as a native speaker of " + name +
-		" would, with natural pronunciation and no foreign accent."
-}
-
-// upstreamStatus turns a provider failure into the status the page should see.
-// The page retries a 502 three times before it says anything, which is right
-// for a gateway that hiccuped and wrong for a model that does not exist: the
-// same refusal would come back three times, after three uploads of the same
-// recording on a connection that has better things to do. So a refusal the
-// provider blames on the request is reported as one.
+// upstreamStatus turns an OpenRouter failure into the status the page should
+// see. The page retries a 502 three times before it says anything, which is
+// right for a gateway that hiccuped and wrong for a model that does not exist:
+// the same refusal would come back three times, after three uploads of the
+// same recording on a connection that has better things to do. So a refusal
+// OpenRouter blames on the request is reported as one.
 func upstreamStatus(err error) int {
-	var status *openrouter.StatusError
-	if errors.As(err, &status) && status.Status >= 400 && status.Status < 500 &&
-		status.Status != http.StatusRequestTimeout && status.Status != http.StatusTooManyRequests {
+	var routed *openrouter.StatusError
+	if !errors.As(err, &routed) {
+		return http.StatusBadGateway
+	}
+	if routed.Status >= 400 && routed.Status < 500 &&
+		routed.Status != http.StatusRequestTimeout && routed.Status != http.StatusTooManyRequests {
 		return http.StatusBadRequest
 	}
 	return http.StatusBadGateway
@@ -100,11 +95,10 @@ func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"text": strings.TrimSpace(text)})
 }
 
-// handleSpeak renders text to audio with an OpenRouter voice model. With the
-// default browser provider it answers 204 and the page uses the speech
-// synthesis built into the browser instead - which is also where the page
-// lands on its own when this fails, so a voice model that is misconfigured or
-// out of reach costs the better voice and not the answer.
+// handleSpeak reads an answer out loud with the Piper engine on this machine.
+// There is no provider to pick, no key to get wrong and nothing for the page
+// to fall back on, so a failure here is reported rather than swallowed: either
+// the audio comes back or the page is told why not.
 func (s *Server) handleSpeak(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Text string `json:"text"`
@@ -121,29 +115,45 @@ func (s *Server) handleSpeak(w http.ResponseWriter, r *http.Request) {
 		text = string([]rune(text)[:6000])
 	}
 	settings := s.Settings()
-	if settings.Voice.TTSProvider != config.SpeechOpenRouter {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	if strings.TrimSpace(settings.OpenRouter.APIKey) == "" {
-		writeError(w, http.StatusBadRequest, "no OpenRouter API key is configured")
-		return
-	}
-	language := config.NormalizeLanguage(settings.Voice.Language)
-	client := openrouter.New(settings.OpenRouter.BaseURL, settings.OpenRouter.APIKey)
-	audio, contentType, err := client.Speech(r.Context(), settings.Voice.TTSModel, settings.Voice.TTSVoice,
-		text, speechInstructions(language))
+	audio, contentType, err := s.voice.Speak(r.Context(), text,
+		config.NormalizeLanguage(settings.Voice.Language), settings.Voice.TTSRate)
 	if err != nil {
-		message := err.Error()
-		code := upstreamStatus(err)
-		if code == http.StatusBadRequest {
-			message += " - open /admin and check the voice model and its voice"
+		if errors.Is(err, piper.ErrInstalling) {
+			// The first answer of a fresh installation lands here, and it is
+			// not a failure: 150 MB are on their way, this request started or
+			// joined them and the page retries. So this says how far they have
+			// got rather than what went wrong.
+			message := "The voice is still being installed, so this answer cannot be read out loud yet."
+			status := s.voice.Status()
+			switch {
+			case status.Err != "":
+				// An earlier attempt gave up and this one is the retry. Saying
+				// only "still being installed" would hide a reason that comes
+				// back every single time - no published build for this
+				// platform, say - behind a sentence that reads like patience
+				// will fix it.
+				message = "The voice is being installed again after the last attempt failed, " +
+					"so this answer cannot be read out loud yet. The last attempt said: " + status.Err
+			case status.State == piper.StateInstalling && status.Detail != "":
+				message += " " + status.Detail
+			}
+			writeError(w, http.StatusServiceUnavailable, message)
+			return
 		}
-		writeError(w, code, message)
+		writeError(w, http.StatusInternalServerError,
+			"The answer could not be read out loud: "+err.Error())
 		return
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(audio)
+}
+
+// handleVoiceStatus reports what the voice is doing. It exists for the setup
+// check in the dashboard, which polls it while Piper installs itself: without
+// it an installation in progress is indistinguishable from a voice that is
+// simply broken, and the difference is the whole answer.
+func (s *Server) handleVoiceStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"voice": s.voice.Status()})
 }
