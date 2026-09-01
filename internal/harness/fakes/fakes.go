@@ -68,6 +68,53 @@
 // reports in result.subagent_stats.spawned (it defaults to the number of
 // subagent steps the turn ran).
 //
+// # fakeopencode's two event streams
+//
+// The real server splits its SSE traffic, and so does the fake:
+//
+//	GET /api/session/{id}/event   the session's durable events, replayed in
+//	                              full on every connect. It NEVER carries a
+//	                              *.delta frame.
+//	GET /api/event                every session on the server, no replay.
+//	                              This is where text.delta, reasoning.delta
+//	                              and tool.input.delta are published, and it
+//	                              also carries traffic for the server's own
+//	                              internal title session (ses_internal0001),
+//	                              so a client has to filter on
+//	                              data.sessionID.
+//
+// Both are behind the same Basic auth and use the same framing.
+//
+// # fakeclaude's own env vars
+//
+// Two behaviours of the real CLI cannot be scripted, because they happen
+// before or instead of a turn. Both are pinned by DESIGN.md rev 10 §10.1:
+//
+//	FAKE_INIT_AT_START=1   write system/init at process start. By DEFAULT the
+//	                       fake writes nothing at all until the first user
+//	                       line and init is the first line of the first turn,
+//	                       which is what the real CLI does under
+//	                       --input-format stream-json (E-1). The opt-in exists
+//	                       so a test can prove an adapter tolerates both
+//	                       orders rather than depending on either.
+//	FAKE_GHOST_RESUME=1    make a --resume launch reproduce the measured
+//	                       failure of resuming a session that does not exist
+//	                       (E-2): no system/init, then after ~200 ms one
+//	                       unprompted
+//	                       result{subtype:"error_during_execution",
+//	                       is_error:true, num_turns:0,
+//	                       terminal_reason:"api_error"} whose result field and
+//	                       whose stderr line are both "No conversation found
+//	                       with session ID: <uuid>", then exit 1. num_turns:0
+//	                       with no init before it is the discriminator.
+//	FAKE_STATE_DIR=<dir>   where the consumed-ghost marker is written. The
+//	                       ghost flag is consumed on first use per session id,
+//	                       so the adapter's one-shot relaunch succeeds and the
+//	                       whole R-3 path — relaunch, notice, replayed turn
+//	                       with no second turn_started — is testable. With
+//	                       this unset the flag is never consumed and every
+//	                       --resume dies.
+//
 // # FAKE_ARGV_FILE
 //
 // When FAKE_ARGV_FILE names a file, every fake appends one JSON array of
