@@ -10,6 +10,7 @@ package catalog
 
 import (
 	"context"
+	"log"
 	"os/exec"
 	"strings"
 	"sync"
@@ -189,8 +190,9 @@ func (c *Catalog) Refresh(ctx context.Context) Snapshot {
 	c.loaded = true
 	c.mu.Unlock()
 	if err := c.store.SetJSON(cacheKey, snap); err != nil {
-		// A catalogue that cannot be cached is still a catalogue.
-		_ = err
+		// A catalogue that cannot be cached is still a catalogue; it just
+		// costs three subprocess spawns again after a restart.
+		log.Printf("catalog: could not cache the agent list: %v", err)
 	}
 	return c.withSettings(snap)
 }

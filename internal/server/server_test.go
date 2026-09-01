@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -14,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
+	"github.com/saschazesiger/SocratesAgent/internal/piper"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 
 	// The adapters register themselves in init, exactly as they do for the
@@ -23,6 +26,88 @@ import (
 	_ "github.com/saschazesiger/SocratesAgent/internal/harness/codex"
 	_ "github.com/saschazesiger/SocratesAgent/internal/harness/opencode"
 )
+
+// TestMain puts a stand-in piper where every server built in this package will
+// find one, for the whole test binary rather than per test.
+//
+// It has to be process-wide. server.New starts the voice install on a
+// goroutine of its own - that is what stops a first answer from waiting on a
+// 150 MB download - and that goroutine outlives the test that started it. With
+// the environment set per test and restored by its cleanup, a goroutine
+// scheduled a moment late finds no installation, decides one is needed, and
+// downloads 145 MB into a data directory the test has already removed. A few
+// hundred of those fill a tmpfs and every build on the machine starts failing
+// for want of space.
+func TestMain(m *testing.M) {
+	// A chat that sends a message re-executes this binary as an agent host,
+	// because that is what Manager.Open does with os.Executable(). Without
+	// this branch the child runs the whole test suite again - every host spawn
+	// forking a fresh copy of every test in this package, each with its own
+	// temp directories and its own voice install. That is how a few hundred
+	// megabytes of /tmp per run became thirteen gigabytes.
+	if len(os.Args) > 1 && os.Args[1] == "agent-host" {
+		dir := ""
+		for i := 2; i < len(os.Args)-1; i++ {
+			if os.Args[i] == "--dir" || os.Args[i] == "-dir" {
+				dir = os.Args[i+1]
+			}
+		}
+		if err := agenthost.RunHost(dir); err != nil {
+			fmt.Fprintln(os.Stderr, "host:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	root, err := os.MkdirTemp("", "socrates-piper")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "test setup:", err)
+		os.Exit(1)
+	}
+	if err := bakePiper(root); err != nil {
+		fmt.Fprintln(os.Stderr, "test setup:", err)
+		os.RemoveAll(root)
+		os.Exit(1)
+	}
+	os.Setenv(piper.EnvDir, root)
+	code := m.Run()
+	os.RemoveAll(root)
+	os.Exit(code)
+}
+
+// bakePiper writes the smallest tree the voice engine accepts as installed: a
+// binary that exits at once, the espeak data it names on every command line,
+// and both voices at a size that is not mistaken for a truncated download.
+func bakePiper(root string) error {
+	binary := filepath.Join(root, "piper", "piper")
+	if runtime.GOOS == "windows" {
+		binary += ".exe"
+	}
+	if err := os.MkdirAll(filepath.Join(root, "piper", "espeak-ng-data"), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		return err
+	}
+	voices := filepath.Join(root, "voices")
+	if err := os.MkdirAll(voices, 0o755); err != nil {
+		return err
+	}
+	for _, voice := range []string{piper.VoiceEnglish, piper.VoiceGerman} {
+		model := filepath.Join(voices, voice+".onnx")
+		if err := os.WriteFile(model, nil, 0o644); err != nil {
+			return err
+		}
+		if err := os.Truncate(model, 2<<20); err != nil {
+			return err
+		}
+		config := `{"audio":{"sample_rate":22050},"espeak":{"voice":"` + voice + `"},"padding":"` +
+			strings.Repeat("x", 200) + `"}`
+		if err := os.WriteFile(model+".json", []byte(config), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 type testEnv struct {
 	server *httptest.Server
@@ -34,18 +119,28 @@ type testEnv struct {
 func newEnv(t *testing.T) *testEnv {
 	t.Helper()
 	installedVoice(t)
-	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	// One root for the whole environment, taken first so that its removal is
+	// the last cleanup to run. Everything the server keeps on disk lives under
+	// it, and the cleanup registered below - which stops the server, the
+	// tunnel and the database - runs before it: a directory removed while a
+	// goroutine of the server is still writing into it comes straight back,
+	// and that is how a test leaves a tree behind.
+	root := t.TempDir()
+	st, err := store.Open(filepath.Join(root, "db", "test.db"))
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
-	t.Cleanup(func() { st.Close() })
-
-	srv, err := New(st, t.TempDir())
+	srv, err := New(st, filepath.Join(root, "data"))
 	if err != nil {
 		t.Fatalf("server: %v", err)
 	}
 	ts := httptest.NewServer(srv.Handler())
-	t.Cleanup(ts.Close)
+	t.Cleanup(func() {
+		ts.Close()
+		srv.StopTunnel()
+		srv.DetachAgents()
+		st.Close()
+	})
 
 	jar, _ := cookiejar.New(nil)
 	noRedirect := func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }
@@ -854,5 +949,44 @@ func (e *testEnv) saveSettings(t *testing.T, settings map[string]any) {
 	res, _ := e.do(t, e.client, "PUT", "/api/settings", string(body))
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("saving settings = %d", res.StatusCode)
+	}
+}
+
+// A send that already landed is answered with the run it produced, whatever
+// the settings have become since. Refusing the retry of a message that is
+// already in the transcript would be a permanent error the person did nothing
+// to earn - and the browser would show it as one.
+func TestARetriedSendSurvivesTheAgentBeingSwitchedOff(t *testing.T) {
+	noAgentsOnPATH(t)
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+	_, created := env.do(t, env.client, "POST", "/api/chats", `{"agent":"claude"}`)
+	id := created["chat"].(map[string]any)["id"].(string)
+
+	res, first := env.do(t, env.client, "POST", "/api/chats/"+id+"/messages",
+		`{"text":"hello","client_id":"send-key"}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("the first send = %d: %#v", res.StatusCode, first)
+	}
+	runID := first["run"].(map[string]any)["id"].(string)
+
+	settings := env.settings(t)
+	settings["agents"].(map[string]any)["claude"].(map[string]any)["enabled"] = false
+	env.saveSettings(t, settings)
+
+	// A fresh send is refused, permanently and by name.
+	res, _ = env.do(t, env.client, "POST", "/api/chats/"+id+"/messages",
+		`{"text":"another","client_id":"other-key"}`)
+	if res.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("a send to a switched-off agent = %d, want 422", res.StatusCode)
+	}
+	// The retry of the one that landed is not.
+	res, again := env.do(t, env.client, "POST", "/api/chats/"+id+"/messages",
+		`{"text":"hello","client_id":"send-key"}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("the retried send = %d: %#v", res.StatusCode, again)
+	}
+	if again["run"].(map[string]any)["id"] != runID {
+		t.Fatalf("the retry produced a second run: %#v", again)
 	}
 }

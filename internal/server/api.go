@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -102,7 +101,7 @@ func (s *Server) handleGetChat(w http.ResponseWriter, r *http.Request) {
 	// it was pointed somewhere else. Both are sent: the effective directory is
 	// what the page shows, and the default is what it falls back to when the
 	// directory is later cleared, without another round trip.
-	defaultWorkspace := filepath.Join(settings.Agent.WorkspaceRoot, chat.ID)
+	defaultWorkspace := engine.Workspace(settings, chat)
 	workspace := chat.Workspace
 	if workspace == "" {
 		workspace = defaultWorkspace
@@ -236,6 +235,24 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "the message is empty")
 		return
 	}
+	// The idempotency key is looked at first, as it is in the engine: a send
+	// that already landed is answered with the run it produced, even if the
+	// agent has been switched off since. Refusing a retry of a message that is
+	// already in the transcript would be a permanent error the person did
+	// nothing to earn.
+	clientID := strings.TrimSpace(body.ClientID)
+	if _, err := s.store.MessageByClientID(id, clientID); err != nil {
+		if reason, ok := s.agentUnavailable(id); !ok {
+			writeError(w, http.StatusUnprocessableEntity, reason)
+			return
+		}
+	}
+	run, err := s.engine.Start(engine.Turn{
+		ChatID:   id,
+		Text:     text,
+		Auto:     body.Auto,
+		ClientID: clientID,
+	})
 	// The status code matters more here than anywhere else in the API: the
 	// browser turns a 409 on this endpoint into a retry with backoff that runs
 	// until it succeeds. That is right for ErrBusy - the message waits behind
@@ -244,16 +261,6 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	// the false message that Socrates is still finishing the previous one. So
 	// 409 is reserved for refusals that pass on their own; every permanent one
 	// uses 422, which the Outbox marks failed and offers a retry for.
-	if reason, ok := s.agentUnavailable(id); !ok {
-		writeError(w, http.StatusUnprocessableEntity, reason)
-		return
-	}
-	run, err := s.engine.Start(engine.Turn{
-		ChatID:   id,
-		Text:     text,
-		Auto:     body.Auto,
-		ClientID: strings.TrimSpace(body.ClientID),
-	})
 	if err != nil {
 		switch {
 		case errors.Is(err, engine.ErrBusy):

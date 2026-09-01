@@ -50,9 +50,9 @@ func TestAgentsDefaultToEnabled(t *testing.T) {
 	if _, ok := s.Agents.Entry("invented"); ok {
 		t.Error("an agent nobody ships was reported as known")
 	}
-	// An empty document normalizes to the same three switches being off, which
-	// is what a settings file written before this section existed carries; the
-	// dashboard is what turns them back on.
+	// Normalize only tidies this section - it does not fill it in. An upgraded
+	// installation keeps all three enabled anyway, because the server decodes
+	// its stored document into config.Default() rather than into a zero value.
 	var blank Settings
 	blank.Normalize()
 	blank.Agents.Claude.Binary = "  /usr/local/bin/claude  "
