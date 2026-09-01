@@ -91,6 +91,21 @@ func (r *rec) waitClosed(t *testing.T) {
 	t.Fatalf("Events was never closed; got %s", kinds(r.all()))
 }
 
+// waitTurn blocks until this turn's end has been seen.
+func waitTurn(t *testing.T, r *rec, turnID string) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, ev := range r.all() {
+			if ev.Kind == harness.KindTurnFinished && ev.TurnID == turnID {
+				return
+			}
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("turn %s never ended; got %s", turnID, kinds(r.all()))
+}
+
 func kinds(events []harness.Event) string {
 	out := make([]string, 0, len(events))
 	for _, ev := range events {
@@ -565,19 +580,7 @@ func TestTwoTurnsInOneProcess(t *testing.T) {
 		if err := s.a.Send(t.Context(), id, "go"); err != nil {
 			t.Fatalf("Send %s: %v", id, err)
 		}
-		deadline := time.Now().Add(15 * time.Second)
-		for {
-			done := false
-			for _, ev := range s.r.all() {
-				if ev.Kind == harness.KindTurnFinished && ev.TurnID == id {
-					done = true
-				}
-			}
-			if done || time.Now().After(deadline) {
-				break
-			}
-			time.Sleep(2 * time.Millisecond)
-		}
+		waitTurn(t, s.r, id)
 	}
 	events := s.r.all()
 	checkInvariants(t, events)
@@ -759,10 +762,167 @@ func TestReasoningPartsDecodeInBothShapes(t *testing.T) {
 	}
 }
 
-func TestOutputIsTruncated(t *testing.T) {
-	long := strings.Repeat("x", harness.ToolOutputLimit+100)
-	if got := harness.TruncateOutput(long); len(got) <= harness.ToolOutputLimit ||
-		!strings.HasSuffix(got, "truncated]") {
-		t.Errorf("TruncateOutput kept %d bytes", len(got))
+// A build log longer than a card can show is truncated on the way out, and
+// the tool_output stream stops once the limit is reached (N2).
+func TestALongToolOutputIsTruncated(t *testing.T) {
+	long := strings.Repeat("x", harness.ToolOutputLimit+4096)
+	script := `[{"do":"tool","name":"Bash","input":"cat big","output":"` + long + `","exit":0},
+	  {"do":"end","outcome":"ok"}]`
+	s := start(t, script, harness.Spec{})
+	s.r.wait(t, harness.KindSessionID)
+	if err := s.a.Send(t.Context(), "run_1", "go"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	s.r.wait(t, harness.KindTurnFinished)
+	fin := of(s.r.all(), harness.KindToolFinished)
+	if len(fin) != 1 {
+		t.Fatalf("tool_finished = %+v", fin)
+	}
+	out := fin[0].Tool.Output
+	if len(out) <= harness.ToolOutputLimit || !strings.HasSuffix(out, "truncated]") {
+		t.Fatalf("the output kept %d bytes and ends %q", len(out), out[len(out)-20:])
+	}
+}
+
+// F1: a session closed mid-turn must still end its turn, because a Send has
+// exactly two outcomes and a host stopped mid-turn must not leave the journal
+// open.
+func TestCloseDuringATurnEndsItAsInterrupted(t *testing.T) {
+	s := start(t, `[{"do":"text","text":"working on it"},{"do":"hang"}]`, harness.Spec{})
+	s.r.wait(t, harness.KindSessionID)
+	if err := s.a.Send(t.Context(), "run_1", "go"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	s.r.wait(t, harness.KindText)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := s.a.Close(ctx, 2*time.Second); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	s.r.waitClosed(t)
+	events := s.r.all()
+	checkInvariants(t, events)
+	ends := of(events, harness.KindTurnFinished)
+	if len(ends) != 1 || ends[0].Outcome != harness.OutcomeInterrupted || ends[0].TurnID != "run_1" {
+		t.Fatalf("turn ends = %+v", ends)
+	}
+	if n := count(events, harness.KindFatal); n != 0 {
+		t.Errorf("a requested Close produced %d fatal events", n)
+	}
+}
+
+// F3: tokenUsage.total counts the whole thread, so a second turn must report
+// what it added, not what the conversation has cost so far. The fake reports
+// the same thread total on every turn, so turn two adds nothing at all.
+func TestUsageIsTurnRelative(t *testing.T) {
+	s := start(t, `[{"do":"text","text":"hi"},{"do":"end","outcome":"ok"}]`, harness.Spec{})
+	s.r.wait(t, harness.KindSessionID)
+	for _, id := range []string{"run_1", "run_2"} {
+		if err := s.a.Send(t.Context(), id, "go"); err != nil {
+			t.Fatalf("Send %s: %v", id, err)
+		}
+		waitTurn(t, s.r, id)
+	}
+	events := s.r.all()
+	checkInvariants(t, events)
+	var first, second []harness.Event
+	for _, ev := range of(events, harness.KindUsage) {
+		if ev.TurnID == "run_1" {
+			first = append(first, ev)
+		} else {
+			second = append(second, ev)
+		}
+	}
+	if len(first) != 1 || first[0].Usage.Total != 11341 || first[0].Usage.Input != 11143 {
+		t.Fatalf("the first turn reported %+v", first)
+	}
+	if first[0].Usage.Context != 258400 {
+		t.Errorf("the context window belongs to the model and stays absolute: %+v", first[0].Usage)
+	}
+	for _, ev := range second {
+		if ev.Usage.Total == 11341 {
+			t.Fatalf("the second turn repeated the thread total: %+v", ev.Usage)
+		}
+	}
+	if len(second) != 0 {
+		t.Errorf("the second turn added no tokens, so it should report none: %+v", second)
+	}
+}
+
+// F4: a binary that dies during the handshake must say why, and must not also
+// leave a fatal behind - Start's error is the whole story.
+func TestAStartAgainstADyingBinaryReportsWhy(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "codex")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho 'boom: not logged in' >&2\nexit 7\n"), 0o755); err != nil {
+		t.Fatalf("writing the failing binary: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	a := newAdapter()
+	r := record(a)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	err := a.Start(ctx, harness.Spec{Agent: "codex", Model: "gpt-5.4-mini", Cwd: dir, ChatID: "c"})
+	if err == nil {
+		t.Fatalf("Start against a dying binary returned no error")
+	}
+	if !strings.Contains(err.Error(), "boom: not logged in") || !strings.Contains(err.Error(), "7") {
+		t.Fatalf("Start error = %v, want the stderr tail and the exit status", err)
+	}
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_ = a.Close(closeCtx, time.Second)
+	closeCancel()
+	r.waitClosed(t)
+	if n := count(r.all(), harness.KindFatal); n != 0 {
+		t.Fatalf("a failed Start also emitted %d fatal events: %s", n, kinds(r.all()))
+	}
+}
+
+// F5: the engine fires Interrupt exactly once, so one that arrives before the
+// turn id is known is remembered rather than dropped.
+func TestAnEarlyInterruptIsRemembered(t *testing.T) {
+	early := newTurn("run_1")
+	if !early.deferInterrupt() {
+		t.Fatalf("an interrupt with no turn id yet should be remembered")
+	}
+	early.setNative("turn_1")
+	if early.deferInterrupt() {
+		t.Errorf("an interrupt with a known turn id should be sent, not remembered")
+	}
+	if !early.takeInterrupt() {
+		t.Fatalf("the remembered interrupt was lost")
+	}
+	if early.takeInterrupt() {
+		t.Errorf("the remembered interrupt was taken twice")
+	}
+}
+
+// F6: a frame the scanner cannot hold kills the process and fails the turn,
+// instead of leaving it to the 60 minute watchdog.
+func TestAnOversizedFrameFailsTheTurn(t *testing.T) {
+	old := maxFrame
+	maxFrame = 4096
+	t.Cleanup(func() { maxFrame = old })
+
+	s := start(t, `[{"do":"text","text":"`+strings.Repeat("y", 8192)+`"},{"do":"end","outcome":"ok"}]`,
+		harness.Spec{})
+	s.r.wait(t, harness.KindSessionID)
+	if err := s.a.Send(t.Context(), "run_1", "go"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	end := s.r.wait(t, harness.KindTurnFinished)
+	if end.Outcome != harness.OutcomeError || !strings.Contains(end.Error, "cannot read") {
+		t.Fatalf("turn_finished = %+v", end)
+	}
+	fatal := s.r.wait(t, harness.KindFatal)
+	if !strings.Contains(fatal.Error, "cannot read") {
+		t.Errorf("fatal = %+v", fatal)
+	}
+	s.r.waitClosed(t)
+	select {
+	case <-s.a.exited:
+	case <-time.After(5 * time.Second):
+		t.Errorf("the process outlived the unreadable frame")
 	}
 }

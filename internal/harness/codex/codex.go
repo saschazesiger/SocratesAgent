@@ -87,7 +87,15 @@ type adapter struct {
 	threadID string
 	turn     *turn
 	closing  bool // Close was asked for, so EOF is not a death
+	started  bool // the handshake got through, so EOF is a death worth reporting
 	dead     bool
+	// lastTotal is the thread's cumulative token usage as last reported.
+	// tokenUsage.total counts the whole thread, not the turn, so a turn's
+	// usage is what it added on top of this (F3).
+	lastTotal usage
+	// scanErr is a frame this adapter could not read, which is fatal for the
+	// session: the stream is out of sync from that point on.
+	scanErr error
 
 	closeOnce sync.Once
 	finished  chan struct{}
@@ -118,6 +126,14 @@ type turn struct {
 	lastErr  string
 	notices  int
 	errTimer *time.Timer
+	// base is the thread's cumulative usage when this turn started, so the
+	// usage events can report what this turn cost rather than what the whole
+	// conversation has cost so far.
+	base usage
+	// wantInterrupt remembers an Interrupt that arrived before the native
+	// turn id was known. The engine fires Interrupt exactly once, so it must
+	// not be dropped: it is sent the moment the id arrives.
+	wantInterrupt bool
 
 	startOnce sync.Once
 	endOnce   sync.Once
@@ -141,10 +157,61 @@ func newTurn(id string) *turn {
 	}
 }
 
+// usage is one token breakdown, in codex's own field names.
+type usage struct {
+	Total     int64
+	Input     int64
+	Cached    int64
+	Output    int64
+	Reasoning int64
+}
+
+// since is what this breakdown adds on top of an earlier one. Codex only ever
+// counts up, but a resumed or compacted thread could report less, so nothing
+// is allowed to go negative.
+func (u usage) since(base usage) usage {
+	out := usage{
+		Total: u.Total - base.Total, Input: u.Input - base.Input,
+		Cached: u.Cached - base.Cached, Output: u.Output - base.Output,
+		Reasoning: u.Reasoning - base.Reasoning,
+	}
+	for _, f := range []*int64{&out.Total, &out.Input, &out.Cached, &out.Output, &out.Reasoning} {
+		if *f < 0 {
+			*f = 0
+		}
+	}
+	return out
+}
+
+func (u usage) empty() bool {
+	return u.Total == 0 && u.Input == 0 && u.Cached == 0 && u.Output == 0 && u.Reasoning == 0
+}
+
 func (t *turn) nativeID() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.native
+}
+
+// deferInterrupt records an Interrupt that cannot be sent yet, and reports
+// whether it took it on (which it does only while the turn id is unknown).
+func (t *turn) deferInterrupt() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.native != "" {
+		return false
+	}
+	t.wantInterrupt = true
+	return true
+}
+
+// takeInterrupt reports, once, whether an Interrupt is owed.
+func (t *turn) takeInterrupt() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	want := t.wantInterrupt
+	t.wantInterrupt = false
+	return want
 }
 
 func (t *turn) setNative(id string) {
@@ -203,6 +270,7 @@ func (a *adapter) Start(ctx context.Context, spec harness.Spec) error {
 	go a.read(stdout)
 
 	if err := a.handshake(ctx); err != nil {
+		err = a.startupError(err)
 		// A half-started process must not be left behind for the host to
 		// wonder about.
 		a.mu.Lock()
@@ -241,9 +309,11 @@ func (a *adapter) handshake(ctx context.Context) error {
 	if a.spec.SessionID == "" {
 		params := map[string]any{
 			"cwd":            a.spec.Cwd,
-			"model":          a.spec.Model,
 			"approvalPolicy": "never",
 			"sandbox":        "danger-full-access",
+		}
+		if a.spec.Model != "" {
+			params["model"] = a.spec.Model
 		}
 		if a.spec.Effort != "" {
 			params["config"] = map[string]any{"model_reasoning_effort": a.spec.Effort}
@@ -279,6 +349,10 @@ func (a *adapter) handshake(ctx context.Context) error {
 	}
 	a.mu.Lock()
 	a.threadID = id
+	// From here on the session is up, so the death of the process is a death
+	// worth reporting. Before it, Start's own error is the whole story and a
+	// second fatal would only confuse the journal (F4).
+	a.started = true
 	a.mu.Unlock()
 	// Invariant 1: session_id before the first turn_started, including when it
 	// is the id that was passed in. It comes from the RPC result only - the
@@ -286,6 +360,26 @@ func (a *adapter) handshake(ctx context.Context) error {
 	// host does not rewrite spec.json twice (F-7).
 	a.emit(harness.Event{Kind: harness.KindSessionID, Session: id})
 	return nil
+}
+
+// startupError explains a handshake that failed because the process died.
+// "the codex app-server is not running" is true and useless; the exit status
+// and the last line of stderr are what a person needs.
+func (a *adapter) startupError(err error) error {
+	select {
+	case <-a.exited:
+	default:
+		return err
+	}
+	// a.exited is closed after cmd.Wait, so ProcessState is set and safe here.
+	what := "codex exited during the handshake"
+	if st := a.cmd.ProcessState; st != nil {
+		what += " (" + st.String() + ")"
+	}
+	if tail := a.stderr.String(); tail != "" {
+		return fmt.Errorf("%s: %s", what, lastLine(tail))
+	}
+	return fmt.Errorf("%s: %w", what, err)
 }
 
 // ------------------------------------------------------------------- Send
@@ -306,6 +400,7 @@ func (a *adapter) Send(ctx context.Context, turnID, text string) error {
 		return errors.New("the codex session has not been started")
 	}
 	t := newTurn(turnID)
+	t.base = a.lastTotal
 	a.turn = t
 	a.mu.Unlock()
 
@@ -315,7 +410,11 @@ func (a *adapter) Send(ctx context.Context, turnID, text string) error {
 	params := map[string]any{
 		"threadId": thread,
 		"input":    []any{map[string]any{"type": "text", "text": text}},
-		"model":    a.spec.Model,
+	}
+	// An empty model would be asked for literally, so it is left out and the
+	// thread's own model stands.
+	if a.spec.Model != "" {
+		params["model"] = a.spec.Model
 	}
 	if a.spec.Effort != "" {
 		params["effort"] = a.spec.Effort
@@ -340,6 +439,14 @@ func (a *adapter) Send(ctx context.Context, turnID, text string) error {
 	a.startTurn(t)
 	a.watchers.Add(1)
 	go a.watch(t)
+	// An Interrupt that arrived during the turn/start round trip had no id to
+	// name. The engine fires Interrupt exactly once, so it is sent now rather
+	// than dropped (F5).
+	if t.takeInterrupt() {
+		ictx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_ = a.interrupt(ictx, t)
+		cancel()
+	}
 	return nil
 }
 
@@ -389,11 +496,20 @@ func (a *adapter) Interrupt(ctx context.Context) error {
 	if t == nil {
 		return nil
 	}
+	if t.deferInterrupt() {
+		// turn/start has not answered yet, so there is no turn id to name.
+		// Send will send this the moment it has one.
+		return nil
+	}
+	return a.interrupt(ctx, t)
+}
+
+// interrupt is the RPC itself. The turn ends on the
+// turn/completed{interrupted} that follows; nothing is closed here, so a turn
+// that was finishing anyway keeps the outcome it had.
+func (a *adapter) interrupt(ctx context.Context, t *turn) error {
 	native := t.nativeID()
 	if native == "" {
-		// Nothing to name in turn/interrupt yet. The turn is a few
-		// milliseconds old at most and the engine's stop button will be
-		// pressed again if it is still running.
 		return nil
 	}
 	a.mu.Lock()
@@ -402,12 +518,7 @@ func (a *adapter) Interrupt(ctx context.Context) error {
 	_, err := a.rpc.call(ctx, "turn/interrupt", map[string]any{
 		"threadId": thread, "turnId": native,
 	})
-	if err != nil {
-		return err
-	}
-	// The turn ends on the turn/completed{interrupted} that follows; nothing
-	// is closed here, so a turn that was finishing anyway keeps its outcome.
-	return nil
+	return err
 }
 
 // ------------------------------------------------------------------ Events
@@ -447,6 +558,12 @@ func (a *adapter) Close(ctx context.Context, grace time.Duration) error {
 	case <-ctx.Done():
 		_ = proc.Terminate(cmd)
 	}
+	// A turn that was still running when the session was closed ends as
+	// interrupted: §2.1 allows a Send exactly two outcomes, one turn_finished
+	// or a fatal, and a host stopped mid-turn must not leave the journal open
+	// (F1). The process is already gone by here, so the order stays
+	// "process gone -> turn ended -> channel closed".
+	a.closeTurn(a.current(), harness.OutcomeInterrupted, "")
 	a.finish()
 	a.joinWatchers()
 	return nil
@@ -553,7 +670,7 @@ func (a *adapter) watch(t *turn) {
 			}
 			hard.Reset(silenceAfter)
 		case <-quiet.C:
-			a.notice(t, "the agent has been quiet for 10 minutes")
+			a.notice(t, "the agent has been quiet for "+humanDuration(quietAfter))
 		case <-hard.C:
 			a.closeTurn(t, harness.OutcomeError, "the agent stopped reporting")
 			a.mu.Lock()
@@ -596,6 +713,14 @@ func (a *adapter) armErrorGrace(t *turn) {
 		a.closeTurn(t, harness.OutcomeError, msg)
 	})
 	t.mu.Unlock()
+}
+
+// humanDuration is only ever used on the watchdog's own round numbers.
+func humanDuration(d time.Duration) string {
+	if d >= time.Minute {
+		return fmt.Sprintf("%d minutes", int(d.Minutes()))
+	}
+	return d.String()
 }
 
 func (a *adapter) markDead() {

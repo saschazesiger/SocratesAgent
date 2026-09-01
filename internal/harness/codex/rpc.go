@@ -180,11 +180,22 @@ func (r *rpc) shutdown(err error) {
 	}
 }
 
-// scanLines returns a scanner sized for codex's frames: one turn's item can
-// carry a whole diff, so the 64 KiB default is far too small.
+// maxFrame is how long one line of the protocol may be: one turn's item can
+// carry a whole diff, so the scanner's 64 KiB default is far too small. A
+// frame over this ends the stream with an error rather than silently
+// truncating it, which the reader turns into a fatal (F6). It is a variable
+// so a test can provoke that without a 16 MiB fixture.
+var maxFrame = 16 * 1024 * 1024
+
 func scanLines(rd io.Reader) *bufio.Scanner {
 	sc := bufio.NewScanner(rd)
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	// The starting buffer must not exceed the cap, or a scanner would happily
+	// read a token larger than maxFrame simply because it never had to grow.
+	start := 64 * 1024
+	if maxFrame < start {
+		start = maxFrame
+	}
+	sc.Buffer(make([]byte, 0, start), maxFrame)
 	return sc
 }
 

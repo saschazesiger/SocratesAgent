@@ -38,6 +38,16 @@ func (a *adapter) read(stdout io.Reader) {
 			a.rpc.deliver(&fr)
 		}
 	}
+	if err := sc.Err(); err != nil {
+		// The scan stopped on a frame this adapter cannot hold (or a broken
+		// pipe read). The process is very likely alive and blocked writing
+		// the rest of that frame, so waiting on it would hang until the
+		// silence watchdog fired an hour later: kill it and say why (F6).
+		a.mu.Lock()
+		a.scanErr = err
+		a.mu.Unlock()
+		a.kill()
+	}
 	a.eof()
 }
 
@@ -49,17 +59,26 @@ func (a *adapter) eof() {
 	a.markDead()
 
 	a.mu.Lock()
-	closing := a.closing
+	closing, started, scanErr := a.closing, a.started, a.scanErr
 	a.mu.Unlock()
 	if closing {
 		// A shutdown we asked for. Close is waiting on a.exited and closes
 		// Events itself.
 		return
 	}
+	if !started {
+		// The handshake never got through, so Start is about to return the
+		// whole story. A fatal here would only be a second, vaguer copy of
+		// it in the journal (F4).
+		return
+	}
 
 	what := "codex exited"
 	if err != nil {
 		what = "codex exited: " + err.Error()
+	}
+	if scanErr != nil {
+		what = "codex sent a frame this adapter cannot read: " + scanErr.Error()
 	}
 	if tail := a.stderr.String(); tail != "" {
 		what += ": " + lastLine(tail)
@@ -139,9 +158,12 @@ func (a *adapter) notification(fr frame) {
 			buf = &strings.Builder{}
 			t.output[p.ItemID] = buf
 		}
-		if buf.Len() < harness.ToolOutputLimit {
-			buf.WriteString(p.Delta)
+		if buf.Len() >= harness.ToolOutputLimit {
+			// The card cannot show more than this and the journal should not
+			// carry more, so a chatty build stops here.
+			return
 		}
+		buf.WriteString(p.Delta)
 		a.emit(harness.Event{Kind: harness.KindToolOutput, TurnID: t.id, ID: p.ItemID,
 			Tool: &harness.Tool{Name: "shell", Output: p.Delta}})
 
@@ -182,16 +204,30 @@ func (a *adapter) notification(fr frame) {
 		if err := json.Unmarshal(fr.Params, &p); err != nil {
 			return
 		}
-		u := p.TokenUsage.Total
-		// Each notification carries the running total, not a delta
-		// (invariant 5), so it is emitted as it arrives.
+		total := usage{
+			Total: p.TokenUsage.Total.TotalTokens, Input: p.TokenUsage.Total.InputTokens,
+			Cached: p.TokenUsage.Total.CachedInputTokens, Output: p.TokenUsage.Total.OutputTokens,
+			Reasoning: p.TokenUsage.Total.ReasoningOutputTokens,
+		}
+		// tokenUsage.total counts the whole thread, not this turn, so turn two
+		// would otherwise open by reporting turn one's tokens. What is emitted
+		// is what this turn added on top of the thread total it started from -
+		// still a running total of the turn, as invariant 5 requires (F3).
+		a.mu.Lock()
+		a.lastTotal = total
+		a.mu.Unlock()
+		u := total.since(t.base)
+		if u.empty() {
+			return
+		}
 		a.emit(harness.Event{Kind: harness.KindUsage, TurnID: t.id, Usage: &harness.Usage{
-			Input:     u.InputTokens,
-			Output:    u.OutputTokens,
-			Cached:    u.CachedInputTokens,
-			Reasoning: u.ReasoningOutputTokens,
-			Total:     u.TotalTokens,
-			Context:   p.TokenUsage.ModelContextWindow,
+			Input:     u.Input,
+			Output:    u.Output,
+			Cached:    u.Cached,
+			Reasoning: u.Reasoning,
+			Total:     u.Total,
+			// The context window is a property of the model, not of the turn.
+			Context: p.TokenUsage.ModelContextWindow,
 		}})
 
 	case "turn/completed":
@@ -258,6 +294,10 @@ func (a *adapter) notification(fr frame) {
 		}
 		_ = json.Unmarshal(fr.Params, &p)
 		if t == nil {
+			// Nothing to end, but a silent error is worse than a dim line.
+			if p.Error.Message != "" {
+				a.notice(nil, p.Error.Message)
+			}
 			return
 		}
 		if p.Error.Message != "" {

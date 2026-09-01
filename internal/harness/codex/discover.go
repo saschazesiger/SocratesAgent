@@ -41,6 +41,8 @@ func Discover(ctx context.Context, bin string) (harness.Catalog, error) {
 	if err := cmd.Start(); err != nil {
 		return harness.Catalog{}, fmt.Errorf("starting codex: %w", err)
 	}
+	// done is closed by the reader below; the deferred cleanup waits for it.
+	done := make(chan struct{})
 	defer func() {
 		_ = stdin.Close()
 		_ = proc.Terminate(cmd)
@@ -48,10 +50,10 @@ func Discover(ctx context.Context, bin string) (harness.Catalog, error) {
 			_ = cmd.Process.Kill()
 		}
 		_ = cmd.Wait()
+		<-done // the reader is finished with the pipe Wait has just closed
 	}()
 
 	r := newRPC(stdin)
-	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		sc := scanLines(stdout)
