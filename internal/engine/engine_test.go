@@ -47,16 +47,26 @@ type env struct {
 	root   string
 }
 
-// shortDir is a temp directory whose name does not carry the test's own name:
-// a descriptive test name plus a socket file is enough to blow sun_path.
+// shortDir is a temp directory whose path is short enough to leave room for a
+// unix socket underneath it.
+//
+// t.TempDir() is not: it carries the test's own name, and it sits under
+// TMPDIR, which on a build machine is often already most of the ~104 bytes
+// sun_path allows. So this asks for the shortest base that works rather than
+// whatever the environment happens to offer, and the tests below are then the
+// same length whoever runs them.
 func shortDir(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "sox")
-	if err != nil {
-		t.Fatal(err)
+	for _, base := range []string{"/tmp", ""} {
+		dir, err := os.MkdirTemp(base, "s")
+		if err != nil {
+			continue
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(dir) })
+		return dir
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	return dir
+	t.Skip("no temp directory short enough to hold a unix socket")
+	return ""
 }
 
 func newEnv(t *testing.T) *env {

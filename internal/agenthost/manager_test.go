@@ -521,28 +521,50 @@ func TestSocketPathRefusesWhatWillNotFit(t *testing.T) {
 		t.Errorf("the error should say what to do about it, got: %v", err)
 	}
 
-	short := t.TempDir()
+	// The other half needs a runtime directory that genuinely leaves room, and
+	// it must not depend on how long TMPDIR happens to be on this machine: a
+	// t.TempDir() under TMPDIR=/tmp/tmp.XXXXXXXXXX carries the test's own name
+	// and lands one byte over the limit, which fails the assertion below for a
+	// reason that has nothing to do with the code.
+	short := shortDir(t)
+	const id = "host_0123456789ab"
+	if room := len(short) + len("/socrates/"+id+".sock"); room > maxSocketPath {
+		t.Skipf("this machine has no directory short enough to test the accepting half: "+
+			"%s would need %d bytes and the limit is %d", short, room, maxSocketPath)
+	}
 	t.Setenv("XDG_RUNTIME_DIR", short)
-	path, err := SocketPath("host_0123456789ab")
+	path, err := SocketPath(id)
 	if err != nil {
 		t.Fatalf("a short path was refused: %v", err)
 	}
 	if !strings.HasPrefix(path, short) || !strings.HasSuffix(path, ".sock") {
 		t.Errorf("socket path = %q", path)
 	}
+	if len(path) > maxSocketPath {
+		t.Errorf("the accepted path is %d bytes, over the %d byte limit: %q", len(path), maxSocketPath, path)
+	}
 }
 
-// shortDir is a temp directory whose name does not carry the test's own name.
-// t.TempDir() does, and a descriptive test name plus a socket file is enough
-// to blow the sun_path limit the code under test is here to respect.
+// shortDir is a temp directory whose path is short enough to leave room for a
+// unix socket underneath it.
+//
+// t.TempDir() is not: it carries the test's own name, and it sits under
+// TMPDIR, which on a build machine is often already most of the ~104 bytes
+// sun_path allows. So this asks for the shortest base that works rather than
+// whatever the environment happens to offer, and the tests below are then the
+// same length whoever runs them.
 func shortDir(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "sox")
-	if err != nil {
-		t.Fatal(err)
+	for _, base := range []string{"/tmp", ""} {
+		dir, err := os.MkdirTemp(base, "s")
+		if err != nil {
+			continue
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(dir) })
+		return dir
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	return dir
+	t.Skip("no temp directory short enough to hold a unix socket")
+	return ""
 }
 
 func waitFor(t *testing.T, limit time.Duration, cond func() bool) {
