@@ -39,6 +39,15 @@ const (
 	restartWindow = 5 * time.Minute
 )
 
+// The two budgets one `send` may spend. Their sum has to stay comfortably
+// under the client's own wait for a send reply (client.go's sendTimeout), or a
+// slow resume fails the run on the engine's side while the host goes on to
+// open the turn anyway.
+const (
+	adapterRestartBudget = 90 * time.Second
+	adapterSendBudget    = 60 * time.Second
+)
+
 // File names inside a host directory.
 const (
 	fileSpec   = "spec.json"
@@ -56,6 +65,15 @@ func RunHost(dir string) error {
 	spec, ok := readSpec(dir)
 	if !ok {
 		return fmt.Errorf("read the host spec in %s", dir)
+	}
+	// A host restarted by hand, or one whose spec.json was written before the
+	// session id was known, can still resume: final.json carries the last
+	// status this directory ever reported, and its session id is the one thing
+	// in it that is worth acting on.
+	if spec.Spec.SessionID == "" {
+		if final, ok := readFinal(dir); ok && final.Status.SessionID != "" {
+			spec.Spec.SessionID = final.Status.SessionID
+		}
 	}
 	desc, known := harness.Get(spec.Spec.Agent)
 	if !known {
@@ -118,7 +136,13 @@ func RunHost(dir string) error {
 	// alternative being a third process to go wrong.
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = adapter.Close(ctx, 5*time.Second)
+		// The current one, not the first: a host that restarted its adapter
+		// after a crash owns a different one by now.
+		if a := h.current(); a != nil {
+			_ = a.Close(ctx, 5*time.Second)
+		} else {
+			_ = adapter.Close(ctx, 5*time.Second)
+		}
 		cancel()
 	}()
 
@@ -141,15 +165,31 @@ func RunHost(dir string) error {
 	go h.pump(adapter)
 
 	// A host has no reason to outlive the machine's shutdown sequence, but it
-	// must not die with the terminal Socrates was started from.
+	// must not die with the terminal Socrates was started from. SIGTERM is one
+	// of the three ways a host ends - the others are an explicit close and a
+	// spent restart budget - so it counts as having been asked: the adapter is
+	// closed, no linger applies, and the process exits. Leaving it lingering
+	// with a live listener would make `systemctl stop` hang on every host, and
+	// would let a later send restart an adapter inside a host that was told to
+	// stop.
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGTERM)
 	go func() {
 		select {
 		case <-signals:
+			h.mu.Lock()
+			h.asked = true
+			a := h.adapter
+			h.mu.Unlock()
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = h.current().Close(ctx, 5*time.Second)
+			if a != nil {
+				_ = a.Close(ctx, 5*time.Second)
+			}
 			cancel()
+			// The pump finishes the host when its adapter's channel closes and
+			// somebody asked; this covers the case where it had closed
+			// already, so nothing is left to notice.
+			h.finish()
 		case <-h.done:
 		}
 	}()
@@ -260,6 +300,13 @@ func (h *host) pump(a harness.Adapter) {
 	// restarted with resume, because a crashed CLI must not cost the user
 	// their chat.
 	h.mu.Lock()
+	if h.adapter != a {
+		// A newer adapter has already taken over - this pump is the previous
+		// one draining out, and writing "not running" now would say the wrong
+		// thing about a session that is up.
+		h.mu.Unlock()
+		return
+	}
 	h.status.Running = false
 	h.status.Busy = false
 	h.status.TurnID = ""
@@ -319,6 +366,15 @@ func (h *host) noteStatus(ev harness.Event) {
 			h.status.SessionID = ev.Session
 		}
 	case harness.KindFatal:
+		// Invariant 6: after a fatal the adapter's channel is closed and no
+		// further event arrives. Marking it here rather than waiting for the
+		// pump to notice the close is what makes it ordered: this runs under
+		// journal.mu, before the fatal is broadcast, so a send that the engine
+		// issues the moment it sees that fatal cannot still find Running true
+		// and hand the message to an adapter that is already gone.
+		h.status.Running = false
+		h.status.Busy = false
+		h.status.TurnID = ""
 		h.status.Error = ev.Error
 	}
 }
@@ -500,6 +556,24 @@ func (h *host) subscribe(client *hostClient, req Request) bool {
 	h.clients[client] = struct{}{}
 	h.mu.Unlock()
 
+	// The first frame of a subscription says where it begins.
+	//
+	// There is no unsubscribe op, so a connection stays a broadcast recipient
+	// after the turn that subscribed has ended - and the next turn subscribes
+	// on that same connection. Without this marker its stream starts with
+	// whatever the host happened to push in between: live frames that arrive
+	// before its replay, with an arbitrary gap at the front where the previous
+	// subscriber was being torn down. The client drops everything until it
+	// sees this, which puts the start of the stream exactly here, under the
+	// lock, immediately before the replay.
+	if !client.send(Response{ID: req.ID, Type: TypeOK, Seq: req.FromSeq}) {
+		h.mu.Lock()
+		delete(h.clients, client)
+		h.mu.Unlock()
+		h.journal.mu.Unlock()
+		return false
+	}
+
 	err := h.journal.replay(req.FromSeq, func(ev harness.Event) bool {
 		return client.send(Response{Type: TypeEvent, Event: &ev})
 	})
@@ -526,42 +600,94 @@ func (h *host) subscribe(client *hostClient, req Request) bool {
 // send delivers one user message. The reply's Seq is the journal position the
 // turn starts after, which is what makes replaying a whole turn possible.
 func (h *host) send(req Request) (int64, error) {
+	// The turn is claimed under the lock rather than merely checked for: Busy
+	// is otherwise set by the pump when turn_started arrives, and two sends
+	// landing between the adapter accepting the first message and reporting it
+	// would both find Busy false. The engine is the first line of defence and
+	// this is the second, which only means anything if it is atomic.
 	h.mu.Lock()
-	busy := h.status.Busy
-	running := h.status.Running
-	h.mu.Unlock()
-	if busy {
+	if h.status.Busy {
+		h.mu.Unlock()
 		return 0, errors.New("this chat is still working on the previous message")
 	}
-	if !running {
-		if err := h.restart(); err != nil {
-			return 0, err
+	running := h.status.Running
+	h.status.Busy = true
+	h.status.TurnID = req.TurnID
+	h.mu.Unlock()
+	release := func() {
+		h.mu.Lock()
+		if h.status.TurnID == req.TurnID {
+			h.status.Busy = false
+			h.status.TurnID = ""
 		}
+		h.mu.Unlock()
 	}
 
 	// The floor is read under the journal lock so that no event can slip in
-	// between reading it and the turn beginning.
+	// between reading it and the turn beginning - and it is read BEFORE the
+	// restart below, not after. Bringing an adapter back journals things of
+	// its own: the session id it reports on start, and the notice explaining
+	// the restart. Both belong inside the turn they are part of, and a floor
+	// taken afterwards would race the new adapter's pump for the session id
+	// and drop it whenever the pump won.
 	h.journal.mu.Lock()
 	floor := h.journal.seq
 	h.journal.mu.Unlock()
 
-	// A notice about a restart is journaled after the floor snapshot on
-	// purpose: it belongs inside the turn it explains, not before it, or the
-	// engine's `Seq <= floor` filter would drop it.
+	deliver := func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), adapterSendBudget)
+		defer cancel()
+		return h.current().Send(ctx, req.TurnID, req.Text)
+	}
+
+	if !running {
+		if err := h.restart(); err != nil {
+			release()
+			return 0, err
+		}
+		h.journalRestartNotice(req.TurnID)
+		if err := deliver(); err != nil {
+			release()
+			return 0, err
+		}
+		return floor, nil
+	}
+
+	err := deliver()
+	if err == nil {
+		return floor, nil
+	}
+	// The adapter looked alive a moment ago and would not take the message.
+	// That is very often a CLI that has just died: the engine starts the next
+	// turn the instant it sees this one's turn_finished, and the fatal that
+	// follows it has not been journaled yet, so Running was still true when it
+	// was read. Restarting with resume and trying once more is the same
+	// recovery the design asks for on the next send - it is just triggered by
+	// the refusal rather than by a flag that is set a moment too late. It is
+	// rate limited like every other restart, and it says so in the transcript.
+	if restartErr := h.restart(); restartErr != nil {
+		release()
+		return 0, err
+	}
+	h.journalRestartNotice(req.TurnID)
+	if err := deliver(); err != nil {
+		release()
+		return 0, err
+	}
+	return floor, nil
+}
+
+// journalRestartNotice writes the sentence explaining a restart. It is
+// journaled here rather than inside restart so that it sits above the floor of
+// the turn it belongs to, where the engine will not filter it out.
+func (h *host) journalRestartNotice(turnID string) {
 	h.mu.Lock()
 	notice := h.pendingNotice
 	h.pendingNotice = ""
 	h.mu.Unlock()
 	if notice != "" {
-		h.appendEvent(harness.Event{Kind: harness.KindNotice, TurnID: req.TurnID, Error: notice})
+		h.appendEvent(harness.Event{Kind: harness.KindNotice, TurnID: turnID, Error: notice})
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	if err := h.current().Send(ctx, req.TurnID, req.Text); err != nil {
-		return 0, err
-	}
-	return floor, nil
 }
 
 // restart brings the adapter back after the CLI died, resuming the native
@@ -578,17 +704,23 @@ func (h *host) restart() error {
 	}
 	h.restarts = kept
 	if len(h.restarts) >= maxRestarts {
+		h.asked = true
 		h.mu.Unlock()
-		h.finish()
-		return fmt.Errorf("the agent has crashed %d times in %s and is not being restarted again",
+		msg := fmt.Sprintf("the agent has crashed %d times in %s and is not being restarted again",
 			maxRestarts, restartWindow)
+		// Journaled as well as returned: the send's error reaches the run that
+		// asked, and the fatal reaches anyone else replaying this host - the
+		// chat says what happened rather than quietly stalling.
+		h.appendEvent(harness.Event{Kind: harness.KindFatal, Error: msg})
+		h.finish()
+		return errors.New(msg)
 	}
 	h.restarts = append(h.restarts, now)
 	spec := h.spec.Spec
 	h.mu.Unlock()
 
 	a := h.desc.New()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), adapterRestartBudget)
 	err := a.Start(ctx, spec)
 	cancel()
 	if err != nil {

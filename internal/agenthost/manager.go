@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -31,6 +32,13 @@ import (
 // take - the engine resolves an existing host by chat id before it ever calls
 // Open - and it should read that way in the log.
 const MaxHostsPerChat = 1
+
+// readyTimeout is how long a host that has a socket gets to answer its first
+// request. It is not the dial budget: a dead host fails to dial at once, and a
+// host that failed to start writes final.json within milliseconds, which
+// waitReady watches for. This is the time a host that is genuinely busy coming
+// up - scanning a long journal, launching a CLI - is allowed to take.
+const readyTimeout = 10 * time.Second
 
 // Manager owns every agent session. Each session lives in its own directory
 // below Root, so a Socrates which has just been restarted can find the hosts
@@ -137,10 +145,16 @@ func (m *Manager) connect(ctx context.Context, dir string, spec HostSpec, wait t
 	}
 	deadline := time.Now().Add(wait)
 	for {
+		// A host that failed to start writes final.json within milliseconds
+		// and says why. Checking for it first is what keeps a broken adapter
+		// from costing the full dial budget before the error reaches the run.
+		if final, ok := readFinal(dir); ok && final.Status.Error != "" {
+			return nil, errors.New(final.Status.Error)
+		}
 		conn, err := net.Dial("unix", sockPath)
 		if err == nil {
 			handle := newHandle(spec.ID, spec.ChatID(), dir, conn)
-			if err := handle.waitReady(ctx, 10*time.Second); err != nil {
+			if err := handle.waitReady(ctx, dir, readyTimeout); err != nil {
 				handle.Detach()
 				return nil, err
 			}
@@ -157,20 +171,56 @@ func (m *Manager) connect(ctx context.Context, dir string, spec HostSpec, wait t
 	}
 }
 
-// hostFailure reads the tail of a host's log, used to explain a failed start.
+// hostFailure explains a failed start. final.json is preferred: it is the
+// host's own account of what went wrong, in a sentence written for a person,
+// whereas the log is whatever the process printed on its way out.
 func hostFailure(dir string) string {
+	if final, ok := readFinal(dir); ok && final.Status.Error != "" {
+		return strings.TrimSpace(final.Status.Error)
+	}
 	raw, err := os.ReadFile(filepath.Join(dir, fileLog))
 	if err != nil || len(raw) == 0 {
-		if final, ok := readFinal(dir); ok && final.Status.Error != "" {
-			return strings.TrimSpace(final.Status.Error)
-		}
 		return ""
 	}
 	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
 	if len(lines) > 4 {
 		lines = lines[len(lines)-4:]
 	}
+	for i, line := range lines {
+		lines[i] = stripLogTimestamp(line)
+	}
 	return strings.TrimSpace(strings.Join(lines, " · "))
+}
+
+// stripLogTimestamp removes the "2006/01/02 15:04:05 " the standard logger
+// puts in front of every line, which has no business on a run row.
+func stripLogTimestamp(line string) string {
+	const stamp = len("2006/01/02 15:04:05 ")
+	if len(line) < stamp {
+		return line
+	}
+	head := line[:stamp]
+	for i, r := range head {
+		switch i {
+		case 4, 7:
+			if r != '/' {
+				return line
+			}
+		case 10, 19:
+			if r != ' ' {
+				return line
+			}
+		case 13, 16:
+			if r != ':' {
+				return line
+			}
+		default:
+			if r < '0' || r > '9' {
+				return line
+			}
+		}
+	}
+	return line[stamp:]
 }
 
 // Restore reconnects to the hosts that were running before this process
@@ -210,13 +260,11 @@ func (m *Manager) Restore(ctx context.Context) int {
 			m.removeHost(dir, spec.ID)
 			continue
 		}
-		// A host lingers for a while after its adapter is finished, so a
-		// successful connection is not by itself proof that anything can still
-		// take a turn.
-		if !handle.Alive() {
-			handle.Detach()
-			continue
-		}
+		// Every host that answers is tracked, including one whose adapter has
+		// died: it is still this chat's host, it still holds the session, and
+		// the next send restarts the adapter inside it. A host that is merely
+		// lingering after an explicit close drops its listener within 30
+		// seconds, and its handle goes closed on its own.
 		m.mu.Lock()
 		m.hosts[spec.ID] = handle
 		m.mu.Unlock()
@@ -313,14 +361,6 @@ func (m *Manager) Get(dir string) (*Handle, bool) {
 	return nil, false
 }
 
-// ByID returns a session by host id.
-func (m *Manager) ByID(id string) (*Handle, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	h, ok := m.hosts[id]
-	return h, ok
-}
-
 // List returns the sessions of a chat, newest first. An empty chatID lists
 // every session.
 func (m *Manager) List(chatID string) []*Handle {
@@ -408,16 +448,18 @@ func (m *Manager) Detach() {
 // list, so what happened to it can still be read.
 const FinishedRetention = 30 * time.Minute
 
-// Prune forgets sessions that finished a while ago and removes their
-// directories. A host that merely has no turn running is not finished and is
-// never touched: the next message has to land in the same session.
+// Prune forgets sessions whose host process is gone and removes their
+// directories. A host that is still reachable is never touched, whatever its
+// adapter is doing: it may have no turn running, or a dead CLI waiting to be
+// restarted by the next send, and removing spec.json from under a living
+// process would leave it running with nothing left to identify it.
 func (m *Manager) Prune() {
 	cutoff := time.Now().Add(-FinishedRetention).UnixMilli()
 	m.mu.Lock()
 	var stale []string
 	for id, h := range m.hosts {
 		st := h.Status()
-		if h.Alive() || st.Running {
+		if h.Alive() {
 			continue
 		}
 		ended := st.Ended

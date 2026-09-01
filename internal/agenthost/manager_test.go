@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -40,12 +42,30 @@ func TestMain(m *testing.M) {
 func newManager(t *testing.T) *Manager {
 	t.Helper()
 	t.Setenv("XDG_RUNTIME_DIR", shortDir(t))
-	m, err := NewManager(filepath.Join(t.TempDir(), "agents"), os.Args[0])
+	root := filepath.Join(t.TempDir(), "agents")
+	m, err := NewManager(root, os.Args[0])
 	if err != nil {
 		t.Fatalf("new manager: %v", err)
 	}
-	t.Cleanup(func() { m.Detach() })
+	t.Cleanup(func() { m.Detach(); reapHosts(t, root) })
 	return m
+}
+
+// reapHosts ends every agent-host process serving a directory under root.
+// Detach leaves hosts running on purpose, which is right for a shutdown and
+// wrong for a test that has finished with them.
+func reapHosts(t *testing.T, root string) {
+	t.Helper()
+	for _, pid := range hostProcesses(t, root) {
+		_ = exec.Command("kill", "-TERM", pid).Run()
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && len(hostProcesses(t, root)) > 0 {
+		time.Sleep(50 * time.Millisecond)
+	}
+	for _, pid := range hostProcesses(t, root) {
+		_ = exec.Command("kill", "-9", pid).Run()
+	}
 }
 
 func script(t *testing.T, steps ...step) string {
@@ -231,6 +251,7 @@ func TestManagerCloseChat(t *testing.T) {
 func TestSessionSurvivesARestartOfSocrates(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", shortDir(t))
 	root := filepath.Join(t.TempDir(), "agents")
+	t.Cleanup(func() { reapHosts(t, root) })
 
 	first, err := NewManager(root, os.Args[0])
 	if err != nil {
@@ -261,11 +282,11 @@ func TestSessionSurvivesARestartOfSocrates(t *testing.T) {
 	if restored := second.Restore(t.Context()); restored != 1 {
 		t.Fatalf("reconnected to %d sessions, want 1", restored)
 	}
-	again, ok := second.ByID(id)
+	again, ok := second.Get(filepath.Join(root, id))
 	if !ok {
 		t.Fatalf("session %s was not restored", id)
 	}
-	if !again.Alive() {
+	if !again.Alive() || !again.Working() {
 		t.Fatal("the restored session is not running any more")
 	}
 
@@ -287,9 +308,14 @@ func TestSessionSurvivesARestartOfSocrates(t *testing.T) {
 	}
 }
 
-func TestRestoreDropsHostsWhoseAdapterEnded(t *testing.T) {
+// A host whose adapter died is still this chat's host: it holds the session
+// id, it answers, and the next send restarts the CLI inside it with resume.
+// Dropping it on Restore would leave a process nobody tracks, nobody prunes
+// and nobody can close - one leaked host per crash, forever.
+func TestRestoreKeepsAHostWhoseAdapterDied(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", shortDir(t))
 	root := filepath.Join(t.TempDir(), "agents")
+	t.Cleanup(func() { reapHosts(t, root) })
 	first, err := NewManager(root, os.Args[0])
 	if err != nil {
 		t.Fatalf("new manager: %v", err)
@@ -298,42 +324,191 @@ func TestRestoreDropsHostsWhoseAdapterEnded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
+	id := h.ID()
 	if _, err := h.Send(t.Context(), "run_1", "go"); err != nil {
 		t.Fatalf("send: %v", err)
 	}
-	waitFor(t, 10*time.Second, func() bool { return !h.Alive() })
+	waitFor(t, 10*time.Second, func() bool { return !h.Working() })
+	if !h.Alive() {
+		t.Fatal("the host stopped answering when its adapter died")
+	}
 	first.Detach()
 
 	second, err := NewManager(root, os.Args[0])
 	if err != nil {
 		t.Fatalf("second manager: %v", err)
 	}
-	t.Cleanup(second.Detach)
-	if restored := second.Restore(t.Context()); restored != 0 {
-		t.Errorf("reconnected to %d finished sessions, want 0", restored)
+	t.Cleanup(func() { second.CloseChat(context.Background(), "chat1") })
+	if restored := second.Restore(t.Context()); restored != 1 {
+		t.Fatalf("reconnected to %d hosts, want 1", restored)
+	}
+	again, ok := second.Get(filepath.Join(root, id))
+	if !ok {
+		t.Fatal("the host whose adapter died was not restored")
+	}
+	if !again.Alive() {
+		t.Fatal("the restored host does not answer")
+	}
+	if again.Working() {
+		t.Fatal("the adapter is reported as running although it died")
+	}
+
+	// Pruning must not remove a directory from under a living process.
+	second.Prune()
+	if _, err := os.Stat(filepath.Join(root, id, fileSpec)); err != nil {
+		t.Fatalf("Prune removed the spec of a host that is still answering: %v", err)
+	}
+
+	// And the next send lands in the same host, with a notice saying so.
+	floor, err := again.Send(t.Context(), "run_2", "again")
+	if err != nil {
+		t.Fatalf("the send that should have restarted the adapter failed: %v", err)
+	}
+	if hosts := second.List("chat1"); len(hosts) != 1 {
+		t.Fatalf("a second host was opened for the chat: %d", len(hosts))
+	}
+	frames, unsubscribe := again.Subscribe(floor)
+	defer unsubscribe()
+	sawNotice := false
+	for _, ev := range collect(t, frames, 15*time.Second) {
+		if ev.Kind == harness.KindNotice && strings.Contains(ev.Error, "restarted") {
+			sawNotice = true
+		}
+	}
+	if !sawNotice {
+		t.Error("the restart was not announced in the transcript")
 	}
 }
 
-// A chat whose host has finished must still be able to open a new one, or a
-// crash would lock the conversation out for good.
-func TestFinishedHostsDoNotCountAgainstTheLimit(t *testing.T) {
+// A host whose adapter died holds its chat's one slot, because it is the host
+// that will answer the next message. Closing it - what archiving does - frees
+// the slot.
+func TestAHostWhoseAdapterDiedStillHoldsTheSlot(t *testing.T) {
 	m := newManager(t)
 	h := openTest(t, m, "busy", step{Do: "die"})
 	if _, err := h.Send(t.Context(), "run_1", "go"); err != nil {
 		t.Fatalf("send: %v", err)
 	}
-	waitFor(t, 10*time.Second, func() bool { return !h.Alive() })
+	waitFor(t, 10*time.Second, func() bool { return !h.Working() })
 
-	// The host is still there and still restartable, so it holds the slot; it
-	// is the engine that reuses it. Close it the way archiving would and the
-	// slot is free again.
+	if _, err := m.Open(t.Context(), "busy", testSpec(t, step{Do: "hang"})); err == nil {
+		t.Fatal("a second host was opened beside the one that is waiting to restart")
+	}
 	if err := m.Close(context.Background(), h.ID(), 2*time.Second); err != nil {
 		t.Fatalf("close: %v", err)
 	}
 	if _, err := m.Open(t.Context(), "busy", testSpec(t, step{Do: "hang"})); err != nil {
-		t.Fatalf("a chat whose host finished should accept a new one: %v", err)
+		t.Fatalf("a chat whose host was closed should accept a new one: %v", err)
 	}
 	t.Cleanup(func() { m.CloseChat(context.Background(), "busy") })
+}
+
+// SIGTERM is one of the three ways a host ends. A host that merely closed its
+// adapter and went on lingering with a live listener would make every
+// `systemctl stop` wait for SIGKILL, and would let a later send restart an
+// adapter inside a host that was told to stop.
+func TestSigtermEndsTheHost(t *testing.T) {
+	m := newManager(t)
+	h := openTest(t, m, "chat_term", step{Do: "hang"})
+	if _, err := h.Send(t.Context(), "run_1", "work"); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	procs := hostProcesses(t, h.Dir())
+	if len(procs) != 1 {
+		t.Fatalf("expected one host process, got %v", procs)
+	}
+	if err := exec.Command("kill", "-TERM", procs[0]).Run(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) && len(hostProcesses(t, h.Dir())) > 0 {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if left := hostProcesses(t, h.Dir()); len(left) > 0 {
+		for _, pid := range left {
+			_ = exec.Command("kill", "-9", pid).Run()
+		}
+		t.Fatalf("the host was still running after SIGTERM: %v", left)
+	}
+}
+
+// A plain status call - a Refresh from the API layer - must not inject a
+// second caught-up frame into a live subscription. In adopt mode a stray one
+// before the replay has reached the turn's end interrupts a healthy run.
+func TestOnlyTheSubscribeReplyIsACaughtUpFrame(t *testing.T) {
+	m := newManager(t)
+	h := openTest(t, m, "chat_refresh", step{Do: "hang"})
+	floor, err := h.Send(t.Context(), "run_1", "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	frames, unsubscribe := h.Subscribe(floor)
+	defer unsubscribe()
+
+	caught := 0
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case f, open := <-frames:
+			if !open {
+				t.Fatal("the subscription ended early")
+			}
+			if f.CaughtUp != nil {
+				caught++
+				if caught == 1 {
+					if _, err := h.Refresh(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+		case <-deadline:
+			if caught != 1 {
+				t.Fatalf("%d caught-up frames for one subscribe", caught)
+			}
+			return
+		}
+	}
+}
+
+// Nothing may be left behind by a host that has been opened, subscribed to and
+// closed - the read pump, the forwarder and the host process all go.
+func TestNothingLeaksAcrossOpenAndClose(t *testing.T) {
+	m := newManager(t)
+	time.Sleep(200 * time.Millisecond)
+	before := runtime.NumGoroutine()
+	for i := 0; i < 3; i++ {
+		h, err := m.Open(t.Context(), "chat_leak", testSpec(t, step{Do: "text", Text: "x"}, step{Do: "end"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		floor, _ := h.Send(t.Context(), "r", "go")
+		frames, unsubscribe := h.Subscribe(floor)
+		collect(t, frames, 15*time.Second)
+		unsubscribe()
+		if err := m.Close(t.Context(), h.ID(), 2*time.Second); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, 10*time.Second, func() bool { return len(hostProcesses(t, h.Dir())) == 0 })
+	}
+	time.Sleep(time.Second)
+	if after := runtime.NumGoroutine(); after > before+2 {
+		buf := make([]byte, 1<<20)
+		n := runtime.Stack(buf, true)
+		t.Fatalf("goroutines leaked across open/close: %d -> %d\n%s", before, after, buf[:n])
+	}
+}
+
+// hostProcesses lists the agent-host processes serving one directory.
+func hostProcesses(t *testing.T, dir string) []string {
+	t.Helper()
+	out, _ := exec.Command("pgrep", "-f", "agent-host --dir "+dir).CombinedOutput()
+	var pids []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			pids = append(pids, line)
+		}
+	}
+	return pids
 }
 
 // A socket path that cannot fit into sun_path has to be refused with a

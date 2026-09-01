@@ -36,8 +36,11 @@ type journal struct {
 	f    *os.File
 	seq  int64
 	size int64
-	// trimmedTo is the highest seq that rotation threw away. A subscribe from
-	// at or below it cannot be answered honestly, so it is refused.
+	// trimmedTo is the highest seq that rotation threw away. A subscribe that
+	// asks for anything before it cannot be answered honestly, so it is
+	// refused - including a subscribe from zero, which is a first turn on this
+	// host and would otherwise be handed the surviving tail as if it were the
+	// whole journal.
 	trimmedTo int64
 }
 
@@ -52,13 +55,24 @@ func openJournal(dir string) (*journal, error) {
 	path := journalPath(dir)
 	if info, err := os.Stat(path); err == nil {
 		j.size = info.Size()
+		first := int64(0)
 		if err := j.scan(func(ev harness.Event) bool {
+			if first == 0 {
+				first = ev.Seq
+			}
 			if ev.Seq > j.seq {
 				j.seq = ev.Seq
 			}
 			return true
 		}); err != nil {
 			return nil, err
+		}
+		// A file that does not begin at seq 1 was rotated by a previous run of
+		// this host. Recovering where it was cut is what stops a restarted
+		// host from serving the surviving tail as if it were the whole
+		// journal: a subscribe from before that point is refused instead.
+		if first > 1 {
+			j.trimmedTo = first - 1
 		}
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
@@ -104,7 +118,7 @@ func (j *journal) append(ev harness.Event) (harness.Event, error) {
 // so. It reads the file from the start: files are small, and a linear read is
 // one thing to get wrong instead of an index that can disagree with the data.
 func (j *journal) replay(from int64, fn func(harness.Event) bool) error {
-	if from > 0 && from < j.trimmedTo {
+	if from < j.trimmedTo {
 		return ErrReplayWindow
 	}
 	return j.scan(func(ev harness.Event) bool {
@@ -196,7 +210,10 @@ func (j *journal) rotate() {
 	j.f = nf
 	j.size = int64(len(tail))
 	if first.Seq > 0 {
-		j.trimmedTo = first.Seq
+		// The last seq that is gone, not the first that survives: a subscribe
+		// from exactly that number asks for everything after it, and
+		// everything after it is still here.
+		j.trimmedTo = first.Seq - 1
 	}
 }
 

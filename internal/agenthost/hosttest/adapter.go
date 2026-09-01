@@ -67,6 +67,12 @@ type Step struct {
 	// Twice makes the step try to end the turn a second time, which is how the
 	// sync.Once in closeTurn is tested rather than assumed.
 	Twice bool `json:"twice"`
+	// Open starts a tool call and never finishes it, the way an agent that is
+	// interrupted mid-command leaves one behind.
+	Open bool `json:"open"`
+	// Terse makes the tool's finish event carry only its outcome, the way an
+	// adapter that does not repeat what it already said sends one.
+	Terse bool `json:"terse"`
 	// Count repeats an event step, for the tests that need a long stream.
 	Count int `json:"count"`
 }
@@ -75,11 +81,18 @@ type testAdapter struct {
 	events chan harness.Event
 	script []Step
 
-	mu        sync.Mutex
-	session   string
-	turnID    string
-	turnOnce  *sync.Once
-	cancel    context.CancelFunc
+	mu       sync.Mutex
+	session  string
+	turnID   string
+	turnOnce *sync.Once
+	cancel   context.CancelFunc
+	// dead is set the instant the scripted agent dies, before the fatal that
+	// announces it is even emitted. A real CLI that has exited refuses the
+	// next message because its pipe is gone; without this the fake would go on
+	// accepting one - in the window between the turn_finished the engine acts
+	// on and the fatal the host has not read yet - and the host's
+	// restart-with-resume would never be exercised.
+	dead      bool
 	closed    bool
 	closeOnce sync.Once
 	running   sync.WaitGroup
@@ -124,7 +137,7 @@ func (a *testAdapter) Start(ctx context.Context, spec harness.Spec) error {
 
 func (a *testAdapter) Send(ctx context.Context, turnID, text string) error {
 	a.mu.Lock()
-	if a.closed {
+	if a.dead || a.closed {
 		a.mu.Unlock()
 		return fmt.Errorf("the session is closed")
 	}
@@ -167,8 +180,16 @@ func (a *testAdapter) play(ctx context.Context, turnID string) {
 			case "tool":
 				a.emit(harness.Event{Kind: harness.KindToolStarted, TurnID: turnID, ID: "tool-" + id,
 					Tool: &harness.Tool{Name: s.Name, Title: "Ran a command", Input: s.Input, InputJSON: `{"command":"` + s.Input + `"}`}})
-				a.emit(harness.Event{Kind: harness.KindToolFinished, TurnID: turnID, ID: "tool-" + id,
-					Tool: &harness.Tool{Name: s.Name, Title: "Ran a command", Output: s.Output, OK: s.Exit == 0, ExitCode: s.Exit}})
+				if s.Open {
+					continue
+				}
+				done := &harness.Tool{Name: s.Name, Title: "Ran a command", Output: s.Output, OK: s.Exit == 0, ExitCode: s.Exit}
+				if s.Terse {
+					// The shape a tool result usually has: the outcome and the
+					// output, and nothing repeated from the call itself.
+					done = &harness.Tool{Output: s.Output, OK: s.Exit == 0, ExitCode: s.Exit}
+				}
+				a.emit(harness.Event{Kind: harness.KindToolFinished, TurnID: turnID, ID: "tool-" + id, Tool: done})
 			case "subagent":
 				a.emit(harness.Event{Kind: harness.KindSubagentStarted, TurnID: turnID, ID: "sub-" + id,
 					Tool: &harness.Tool{Name: "Task", Title: "Started a subagent", Input: s.Input}})
@@ -191,7 +212,12 @@ func (a *testAdapter) play(ctx context.Context, turnID string) {
 				a.closeTurn(harness.OutcomeInterrupted, "")
 				return
 			case "die":
-				// What the host sees when the CLI dies mid-turn.
+				// What the host sees when the CLI dies mid-turn. The refusal
+				// comes first: a process that is gone cannot take a message,
+				// whatever anybody upstream has read so far.
+				a.mu.Lock()
+				a.dead = true
+				a.mu.Unlock()
 				a.closeTurn(harness.OutcomeError, "the agent exited mid-turn")
 				a.emit(harness.Event{Kind: harness.KindFatal, Error: "the agent exited mid-turn"})
 				a.finish()
