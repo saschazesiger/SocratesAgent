@@ -228,6 +228,29 @@ func (m *Manager) Restore(ctx context.Context) int {
 	return restored
 }
 
+// Reconnect redials a host whose connection was dropped while the session
+// behind it kept running - the write deadline firing on a peer that froze, a
+// socket closed by hand. It replaces the dead handle rather than adding a
+// second one, so callers that were holding the old one find the new one where
+// they expect it.
+func (m *Manager) Reconnect(ctx context.Context, dir string) (*Handle, error) {
+	spec, ok := readSpec(dir)
+	if !ok {
+		return nil, fmt.Errorf("there is no agent session in %s", dir)
+	}
+	handle, err := m.connect(ctx, dir, spec, 2*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	if old, exists := m.hosts[spec.ID]; exists && old != handle {
+		old.Detach()
+	}
+	m.hosts[spec.ID] = handle
+	m.mu.Unlock()
+	return handle, nil
+}
+
 // removeHost drops a host directory and the socket that lives outside it.
 func (m *Manager) removeHost(dir, id string) {
 	_ = os.RemoveAll(dir)

@@ -491,7 +491,12 @@ func scanMessages(rows *sql.Rows) ([]Message, error) {
 	return out, rows.Err()
 }
 
-// AddMessage appends a visible message.
+// AddMessage appends a visible message, or patches the one that is already
+// there. The upsert is what makes replay harmless: the engine writes the
+// assistant answer of a turn under a deterministic id, and adopting a turn
+// that was partly applied before a restart has to end with the same one row,
+// not two. The sequence number is deliberately not updated, so a replay does
+// not reorder the transcript.
 func (s *Store) AddMessage(m *Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -507,7 +512,9 @@ func (s *Store) AddMessage(m *Message) error {
 	}
 	m.Rev = s.rev.Add(1)
 	_, err := s.db.Exec(`INSERT INTO messages(`+messageCols+`)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`, m.ID, m.ChatID, m.RunID, m.Role, m.Content, m.Seq, m.Rev,
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET content = excluded.content, rev = excluded.rev,
+			run_id = excluded.run_id`, m.ID, m.ChatID, m.RunID, m.Role, m.Content, m.Seq, m.Rev,
 		m.ClientID, m.CreatedAt)
 	return err
 }
