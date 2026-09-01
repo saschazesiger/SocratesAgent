@@ -126,7 +126,9 @@ func (m *Manager) Open(ctx context.Context, chatID string, spec harness.Spec) (*
 	handle, err := m.connect(ctx, dir, on, 10*time.Second)
 	if err != nil {
 		// The host may have failed before it could listen; its log says why.
-		if detail := hostFailure(dir); detail != "" {
+		// Unless it has already said it: connect reads final.json too, and a
+		// sentence printed twice reads like two problems.
+		if detail := hostFailure(dir); detail != "" && !strings.Contains(err.Error(), detail) {
 			return nil, fmt.Errorf("%w: %s", err, detail)
 		}
 		return nil, err

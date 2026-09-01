@@ -457,3 +457,31 @@ func TestARefusedSubscribeIsMarkedAsARefusal(t *testing.T) {
 		t.Fatal("a lost connection was classed as a refusal")
 	}
 }
+
+// The working directory belongs to the engine, and this is the backstop: a
+// host started by hand, or one whose directory went away between being
+// recorded and being used, has to say so in a sentence. Left to exec it would
+// fail with "no such file or directory", which every reader takes to mean the
+// agent binary is missing - and then looks for the wrong thing.
+func TestAHostRefusesAWorkingDirectoryThatIsNotThere(t *testing.T) {
+	m := newManager(t)
+	missing := filepath.Join(shortDir(t), "not", "made", "yet")
+	_, err := m.Open(t.Context(), "chat_nowhere", harness.Spec{
+		Agent: "test", Model: "scripted", Cwd: missing,
+		Env: []string{testScriptEnv + "=" + script(t, step{Do: "hang"})},
+	})
+	if err == nil {
+		t.Fatal("a session was opened in a directory that does not exist")
+	}
+	if !strings.Contains(err.Error(), missing) {
+		t.Errorf("the error should name the directory, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "nothing for test to run in") {
+		t.Errorf("the error should say what the consequence is, got: %v", err)
+	}
+	// And it should say it once. connect reads final.json and so does the
+	// failure detail; printing both reads like two separate problems.
+	if strings.Count(err.Error(), missing) != 1 {
+		t.Errorf("the reason is repeated: %v", err)
+	}
+}

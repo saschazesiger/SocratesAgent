@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -145,6 +146,27 @@ func RunHost(dir string) error {
 		}
 		cancel()
 	}()
+
+	// The working directory is the engine's to create, and this is the
+	// backstop: a host started by hand, or one whose directory was removed
+	// between being recorded and being used, would otherwise fail inside
+	// exec with "no such file or directory" - a sentence every reader takes
+	// to mean the agent binary is missing.
+	if cwd := strings.TrimSpace(spec.Spec.Cwd); cwd != "" {
+		if info, statErr := os.Stat(cwd); statErr != nil || !info.IsDir() {
+			err := fmt.Errorf("the working directory %s is not there, so there is nothing for %s to run in",
+				cwd, spec.Spec.Agent)
+			h.appendEvent(harness.Event{Kind: harness.KindFatal, Error: err.Error()})
+			h.mu.Lock()
+			h.status.Running = false
+			h.status.Error = err.Error()
+			h.status.Ended = time.Now().UnixMilli()
+			final := h.status
+			h.mu.Unlock()
+			writeFinal(dir, Final{Status: final, EndedAt: time.Now().UnixMilli()})
+			return err
+		}
+	}
 
 	startCtx, cancelStart := context.WithTimeout(context.Background(), 2*time.Minute)
 	err = adapter.Start(startCtx, spec.Spec)

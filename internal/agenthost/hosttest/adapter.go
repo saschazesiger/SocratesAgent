@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -73,6 +74,11 @@ type Step struct {
 	// Terse makes the tool's finish event carry only its outcome, the way an
 	// adapter that does not repeat what it already said sends one.
 	Terse bool `json:"terse"`
+	// Exec runs a real command in the session's working directory and reports
+	// what it printed. Every other step is pure bookkeeping; this one is the
+	// only way a test can find out whether that directory is really there,
+	// which is something the process tree discovers and nothing else does.
+	Exec string `json:"exec"`
 	// Count repeats an event step, for the tests that need a long stream.
 	Count int `json:"count"`
 }
@@ -82,6 +88,7 @@ type testAdapter struct {
 	script []Step
 
 	mu       sync.Mutex
+	cwd      string
 	session  string
 	turnID   string
 	turnOnce *sync.Once
@@ -128,6 +135,7 @@ func (a *testAdapter) Start(ctx context.Context, spec harness.Spec) error {
 	}
 	a.mu.Lock()
 	a.session = session
+	a.cwd = spec.Cwd
 	a.mu.Unlock()
 	// Invariant 1: session_id before the first turn_started, including when it
 	// is the id that was passed in.
@@ -195,6 +203,25 @@ func (a *testAdapter) play(ctx context.Context, turnID string) {
 					Tool: &harness.Tool{Name: "Task", Title: "Started a subagent", Input: s.Input}})
 				a.emit(harness.Event{Kind: harness.KindSubagentFinished, TurnID: turnID, ID: "sub-" + id,
 					Tool: &harness.Tool{Name: "Task", Title: "Subagent finished", Output: s.Output, OK: true}})
+			case "exec":
+				a.emit(harness.Event{Kind: harness.KindToolStarted, TurnID: turnID, ID: "exec-" + id,
+					Tool: &harness.Tool{Name: "sh", Title: "Ran a command", Input: s.Exec}})
+				a.mu.Lock()
+				cwd := a.cwd
+				a.mu.Unlock()
+				cmd := exec.CommandContext(ctx, "/bin/sh", "-c", s.Exec)
+				cmd.Dir = cwd
+				out, err := cmd.CombinedOutput()
+				body, code := string(out), 0
+				if err != nil {
+					// A command that cannot be started at all is what a missing
+					// working directory looks like from in here, and saying so
+					// is the whole point of this step.
+					body, code = err.Error(), 1
+				}
+				a.emit(harness.Event{Kind: harness.KindToolFinished, TurnID: turnID, ID: "exec-" + id,
+					Tool: &harness.Tool{Name: "sh", Title: "Ran a command", Output: body,
+						OK: err == nil, ExitCode: code}})
 			case "usage":
 				a.emit(harness.Event{Kind: harness.KindUsage, TurnID: turnID,
 					Usage: &harness.Usage{Input: 100, Output: 20, Total: 120, CostUSD: 0.001}})

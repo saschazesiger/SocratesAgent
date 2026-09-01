@@ -10,7 +10,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -579,7 +581,11 @@ func (e *Engine) ensureHost(ctx context.Context, chat *store.Chat) (*agenthost.H
 		chat.HostDir, chat.HostSeq = h.Dir(), 0
 		return h, nil
 	}
-	h, err := e.Hosts.Open(ctx, chat.ID, e.specFor(chat))
+	spec, err := e.specFor(chat)
+	if err != nil {
+		return nil, err
+	}
+	h, err := e.Hosts.Open(ctx, chat.ID, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -592,20 +598,32 @@ func (e *Engine) ensureHost(ctx context.Context, chat *store.Chat) (*agenthost.H
 
 // specFor is everything the adapter needs, assembled from the chat row and the
 // settings.
-func (e *Engine) specFor(chat *store.Chat) harness.Spec {
+//
+// It also creates the working directory, because this is the one place that
+// decides where a chat works: the folder under the workspace root, or wherever
+// the chat was pinned instead. Nothing else was creating it - the dashboard
+// makes the root and stops there - and a cmd.Dir that does not exist makes
+// exec fail with "no such file or directory", which every reader takes to mean
+// the agent binary is missing. So the chat's very first turn failed, with an
+// error pointing at the wrong thing entirely.
+func (e *Engine) specFor(chat *store.Chat) (harness.Spec, error) {
 	settings := e.Settings()
 	entry, _ := settings.Agents.Entry(chat.Agent)
+	cwd := e.workspace(chat)
+	if err := os.MkdirAll(cwd, 0o700); err != nil {
+		return harness.Spec{}, fmt.Errorf("could not make the working directory %s: %w", cwd, err)
+	}
 	return harness.Spec{
 		Agent:     chat.Agent,
 		Model:     chat.Model,
 		Effort:    chat.Effort,
-		Cwd:       e.workspace(chat),
+		Cwd:       cwd,
 		ChatID:    chat.ID,
 		ChatTitle: chat.Title,
 		SessionID: chat.AgentSession,
 		Binary:    entry.Binary,
 		ExtraArgs: entry.ExtraArgs,
-	}
+	}, nil
 }
 
 // Workspace is where this chat's agent works: its own folder below the

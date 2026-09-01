@@ -45,6 +45,9 @@ type env struct {
 	hosts  *agenthost.Manager
 	bus    *Bus
 	root   string
+	// workspaceRoot is where a chat's own folder goes. Nothing creates that
+	// folder but the engine, which is the thing the workspace tests check.
+	workspaceRoot string
 }
 
 // shortDir is a temp directory whose path is short enough to leave room for a
@@ -110,11 +113,12 @@ func newEnvOn(t *testing.T, st *store.Store, root string) *env {
 		t.Fatalf("manager: %v", err)
 	}
 	settings := config.Default()
-	settings.Agent.WorkspaceRoot = shortDir(t)
+	workspaces := shortDir(t)
+	settings.Agent.WorkspaceRoot = workspaces
 	bus := NewBus()
 	e := New(st, bus, func() config.Settings { return settings }, hosts)
 	t.Cleanup(func() { hosts.Detach() })
-	return &env{engine: e, store: st, hosts: hosts, bus: bus, root: root}
+	return &env{engine: e, store: st, hosts: hosts, bus: bus, root: root, workspaceRoot: workspaces}
 }
 
 func script(t *testing.T, steps ...hosttest.Step) string {
@@ -1286,5 +1290,85 @@ func TestTheRunEventsNeverContradictEachOther(t *testing.T) {
 	if secondStarted < firstDone {
 		t.Fatalf("the second turn was announced as running (%d) before the first was announced as over (%d) - "+
 			"the browser would be left idle in front of a turn that is working", secondStarted, firstDone)
+	}
+}
+
+// A chat works in its own folder under the workspace root, and something has
+// to create it. Nothing did: the dashboard makes the root and stops there, so
+// every real chat's first turn died inside exec with "no such file or
+// directory" - which reads as a missing agent binary and sent whoever saw it
+// looking for the wrong thing entirely. Only a real process can notice, which
+// is why this test runs one.
+func TestTheWorkspaceIsCreatedBeforeTheAgentRunsInIt(t *testing.T) {
+	env := newEnv(t)
+	chat := env.chat(t,
+		"c_workspace",
+		hosttest.Step{Do: "exec", Exec: "pwd"},
+		hosttest.Step{Do: "end", Outcome: "ok"})
+
+	want := filepath.Join(env.workspaceRoot, chat.ID)
+	if _, err := os.Stat(want); !os.IsNotExist(err) {
+		t.Fatalf("the workspace already exists, so this test would prove nothing: %v", err)
+	}
+
+	run, err := env.engine.Start(Turn{ChatID: chat.ID, Text: "go", ClientID: "k1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 30*time.Second, "the run to end", func() bool {
+		return env.runStatus(t, run.ID) != store.RunRunning
+	})
+	if got := env.runStatus(t, run.ID); got != store.RunDone {
+		got, _ := env.store.GetRun(run.ID)
+		t.Fatalf("the turn failed: %s (%s)", got.Status, got.Error)
+	}
+
+	if info, err := os.Stat(want); err != nil || !info.IsDir() {
+		t.Fatalf("the workspace was not created: %v", err)
+	}
+	st, err := env.store.GetStep(run.ID + ":tool:exec-0-0")
+	if err != nil {
+		t.Fatalf("the command left no card: %v", err)
+	}
+	if strings.TrimSpace(st.Body) != want {
+		t.Fatalf("the agent ran in %q, want %q", strings.TrimSpace(st.Body), want)
+	}
+	if st.Status != store.StatusDone {
+		t.Fatalf("the command failed: %#v", st)
+	}
+}
+
+// A chat pinned to a directory of its own gets that one created too, which is
+// the case a PATCH of the workspace makes and the one a person is most likely
+// to type somewhere that does not exist yet.
+func TestAPinnedWorkspaceIsCreatedToo(t *testing.T) {
+	env := newEnv(t)
+	chat := env.chat(t,
+		"c_pinned",
+		hosttest.Step{Do: "exec", Exec: "pwd"},
+		hosttest.Step{Do: "end", Outcome: "ok"})
+
+	pinned := filepath.Join(shortDir(t), "somewhere", "of", "its", "own")
+	if err := env.store.UpdateChat(chat.ID, "", pinned); err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := env.engine.Start(Turn{ChatID: chat.ID, Text: "go", ClientID: "k1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 30*time.Second, "the run to end", func() bool {
+		return env.runStatus(t, run.ID) != store.RunRunning
+	})
+	if got := env.runStatus(t, run.ID); got != store.RunDone {
+		got, _ := env.store.GetRun(run.ID)
+		t.Fatalf("the turn failed: %s (%s)", got.Status, got.Error)
+	}
+	st, err := env.store.GetStep(run.ID + ":tool:exec-0-0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(st.Body) != pinned {
+		t.Fatalf("the agent ran in %q, want the pinned %q", strings.TrimSpace(st.Body), pinned)
 	}
 }
