@@ -784,6 +784,41 @@ func TestALongToolOutputIsTruncated(t *testing.T) {
 	}
 }
 
+// R3: output that fills the cap exactly and then has more dropped is still
+// marked as truncated - the card must never show half a build log as if it
+// were all of it.
+func TestOutputThatLandsExactlyOnTheCapIsStillMarked(t *testing.T) {
+	// One script line is 1 KiB once the fake has decoded it, and the fake
+	// sends one outputDelta per line.
+	const perLine = 1024
+	line := strings.Repeat("x", perLine-1) + `\n`
+	lines := harness.ToolOutputLimit / perLine
+	script := `[{"do":"tool","name":"Bash","input":"cat big","output":"` +
+		strings.Repeat(line, lines+4) + `","exit":0},{"do":"end","outcome":"ok"}]`
+	s := start(t, script, harness.Spec{})
+	s.r.wait(t, harness.KindSessionID)
+	if err := s.a.Send(t.Context(), "run_1", "go"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	s.r.wait(t, harness.KindTurnFinished)
+	fin := of(s.r.all(), harness.KindToolFinished)
+	if len(fin) != 1 {
+		t.Fatalf("tool_finished = %+v", fin)
+	}
+	out := fin[0].Tool.Output
+	kept, marked := strings.CutSuffix(out, "\n… [output truncated]")
+	if !marked {
+		t.Fatalf("%d bytes of output were kept unmarked", len(out))
+	}
+	if len(kept) != harness.ToolOutputLimit {
+		t.Errorf("kept %d bytes, want exactly the limit", len(kept))
+	}
+	// The dropped deltas are not streamed either.
+	if n := len(of(s.r.all(), harness.KindToolOutput)); n != lines {
+		t.Errorf("%d tool_output events, want the %d that fit", n, lines)
+	}
+}
+
 // F1: a session closed mid-turn must still end its turn, because a Send has
 // exactly two outcomes and a host stopped mid-turn must not leave the journal
 // open.

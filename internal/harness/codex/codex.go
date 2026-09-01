@@ -143,7 +143,7 @@ type turn struct {
 	// Touched only by the reader goroutine.
 	texts  map[string]*textBlock
 	reason map[string]*strings.Builder
-	output map[string]*strings.Builder
+	output map[string]*output
 }
 
 func newTurn(id string) *turn {
@@ -153,7 +153,7 @@ func newTurn(id string) *turn {
 		bump:   make(chan struct{}, 1),
 		texts:  map[string]*textBlock{},
 		reason: map[string]*strings.Builder{},
-		output: map[string]*strings.Builder{},
+		output: map[string]*output{},
 	}
 }
 
@@ -270,7 +270,6 @@ func (a *adapter) Start(ctx context.Context, spec harness.Spec) error {
 	go a.read(stdout)
 
 	if err := a.handshake(ctx); err != nil {
-		err = a.startupError(err)
 		// A half-started process must not be left behind for the host to
 		// wonder about.
 		a.mu.Lock()
@@ -287,7 +286,11 @@ func (a *adapter) Start(ctx context.Context, spec harness.Spec) error {
 				_ = cmd.Process.Kill()
 			}
 		}
-		return err
+		// Only now is the exit status known and the stderr tail complete, so
+		// the message is built here rather than before the wait: otherwise a
+		// process that has died leaves Start reporting whatever the broken
+		// pipe happened to be (R1).
+		return a.startupError(err)
 	}
 	return nil
 }
@@ -442,12 +445,22 @@ func (a *adapter) Send(ctx context.Context, turnID, text string) error {
 	// An Interrupt that arrived during the turn/start round trip had no id to
 	// name. The engine fires Interrupt exactly once, so it is sent now rather
 	// than dropped (F5).
-	if t.takeInterrupt() {
-		ictx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		_ = a.interrupt(ictx, t)
-		cancel()
-	}
+	a.sendDeferredInterrupt(t)
 	return nil
+}
+
+// sendDeferredInterrupt sends the Interrupt that had no turn id to name when
+// it arrived. It is called from both places an id can turn up - the turn/start
+// result and the turn/started notification - and does nothing until one of
+// them has actually produced one, so an interrupt cannot be spent on a turn
+// that still cannot be addressed (R2).
+func (a *adapter) sendDeferredInterrupt(t *turn) {
+	if t.nativeID() == "" || !t.takeInterrupt() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_ = a.interrupt(ctx, t)
 }
 
 // startTurn emits turn_started exactly once, whether the turn/start result or

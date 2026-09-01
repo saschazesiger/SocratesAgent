@@ -124,6 +124,10 @@ func (a *adapter) notification(fr frame) {
 		_ = json.Unmarshal(fr.Params, &p)
 		t.setNative(p.Turn.ID)
 		a.startTurn(t)
+		// The RPC result may have carried no id; this one does (R2). The RPC
+		// cannot be made from the reader, which is what would read its answer.
+		a.watchers.Add(1)
+		go func() { defer a.watchers.Done(); a.sendDeferredInterrupt(t) }()
 
 	case "item/started":
 		a.itemStarted(t, fr.Params)
@@ -155,15 +159,17 @@ func (a *adapter) notification(fr frame) {
 		}
 		buf, ok := t.output[p.ItemID]
 		if !ok {
-			buf = &strings.Builder{}
+			buf = &output{}
 			t.output[p.ItemID] = buf
 		}
-		if buf.Len() >= harness.ToolOutputLimit {
+		if buf.b.Len() >= harness.ToolOutputLimit {
 			// The card cannot show more than this and the journal should not
-			// carry more, so a chatty build stops here.
+			// carry more, so a chatty build stops here - but the card must
+			// say so even when the kept part landed exactly on the cap (R3).
+			buf.dropped = true
 			return
 		}
-		buf.WriteString(p.Delta)
+		buf.b.WriteString(p.Delta)
 		a.emit(harness.Event{Kind: harness.KindToolOutput, TurnID: t.id, ID: p.ItemID,
 			Tool: &harness.Tool{Name: "shell", Output: p.Delta}})
 
@@ -480,10 +486,12 @@ func (a *adapter) itemCompleted(t *turn, params json.RawMessage) {
 		if it.AggregatedOutput != nil {
 			out = *it.AggregatedOutput
 		}
+		dropped := false
 		if buf, ok := t.output[it.ID]; ok {
 			if out == "" {
-				out = buf.String()
+				out = buf.b.String()
 			}
+			dropped = buf.dropped
 			delete(t.output, it.ID)
 		}
 		exit := 0
@@ -492,7 +500,7 @@ func (a *adapter) itemCompleted(t *turn, params json.RawMessage) {
 		}
 		a.emit(harness.Event{Kind: harness.KindToolFinished, TurnID: t.id, ID: it.ID,
 			Tool: &harness.Tool{Name: "shell", Title: "Ran a command", Input: it.Command,
-				Output: harness.TruncateOutput(out), OK: exit == 0 && statusOK(it.Status),
+				Output: capOutput(out, dropped), OK: exit == 0 && statusOK(it.Status),
 				ExitCode: exit}})
 
 	case "fileChange":
@@ -631,6 +639,22 @@ func textOf(raw json.RawMessage) string {
 		return obj.Text
 	}
 	return ""
+}
+
+// output accumulates one command's stdout up to the card's limit, remembering
+// whether anything was dropped on the way.
+type output struct {
+	b       strings.Builder
+	dropped bool
+}
+
+// capOutput truncates and, when deltas were dropped, says so even if what was
+// kept is exactly ToolOutputLimit long.
+func capOutput(out string, dropped bool) string {
+	if dropped && len(out) <= harness.ToolOutputLimit {
+		return out + "\n… [output truncated]"
+	}
+	return harness.TruncateOutput(out)
 }
 
 // statusOK reads the item status enums, which all share the same three bad
