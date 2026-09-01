@@ -1,7 +1,9 @@
 package claude
 
 import (
+	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -33,8 +35,6 @@ import (
 // death resolves inside Start, with a short one it lands afterwards.
 func ghostSession(t *testing.T, id string, window time.Duration) *session {
 	t.Helper()
-	shortGrace(t, window, window)
-
 	dir := fakes.Build(t)
 	t.Setenv("PATH", fakes.PathWith(dir))
 	t.Setenv("FAKE_SCRIPT", `[{"do":"text","text":"back again"},{"do":"end","outcome":"ok"}]`)
@@ -46,7 +46,7 @@ func ghostSession(t *testing.T, id string, window time.Duration) *session {
 	t.Setenv("FAKE_ARGV_FILE", argv)
 
 	s := &session{t: t, argv: argv, mu: make(chan struct{}, 1), drain: make(chan struct{})}
-	s.a = New()
+	s.a = newAdapterWithGrace(window, window)
 	go func() {
 		defer close(s.drain)
 		for ev := range s.a.Events() {
@@ -55,6 +55,14 @@ func ghostSession(t *testing.T, id string, window time.Duration) *session {
 			<-s.mu
 		}
 	}()
+	// Registered before Start, so a Start that fails still joins the adapter's
+	// goroutines instead of leaving them running into the next test.
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		_ = s.a.Close(closeCtx, 3*time.Second)
+		<-s.drain
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if err := s.a.Start(ctx, harness.Spec{
@@ -63,12 +71,6 @@ func ghostSession(t *testing.T, id string, window time.Duration) *session {
 	}); err != nil {
 		t.Fatalf("Start on a session the CLI cannot read must not fail the chat: %v", err)
 	}
-	t.Cleanup(func() {
-		closeCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		defer cancel()
-		_ = s.a.Close(closeCtx, 3*time.Second)
-		<-s.drain
-	})
 	return s
 }
 
@@ -143,7 +145,8 @@ func TestResumeFallbackWhenTheDeathLandsBetweenStartAndSend(t *testing.T) {
 
 	// Let the ghost die and be replaced with nothing else going on.
 	s.waitFor("the ghost to be replaced", func([]harness.Event) bool {
-		return len(s.argvLines()) == 2
+		b, err := os.ReadFile(s.argv)
+		return err == nil && bytes.Count(b, []byte("\n")) == 2
 	})
 	if n := count(s.events(), harness.KindFatal, ""); n != 0 {
 		t.Fatalf("the ghost death became a fatal:\n%s", dump(s.events()))
@@ -169,8 +172,6 @@ func TestResumeFallbackWhenTheDeathLandsInsideTheTurn(t *testing.T) {
 // session is gone instead of leaking a closed pipe (SHOULD-FIX-6).
 func TestResumeFallbackIsUsedOnlyOnce(t *testing.T) {
 	const ghost = "99999999-9999-4999-8999-999999999994"
-	shortGrace(t, 20*time.Millisecond, 20*time.Millisecond)
-
 	dir := fakes.Build(t)
 	t.Setenv("PATH", fakes.PathWith(dir))
 	// The relaunched process dies on its first turn, so the adapter meets a
@@ -184,7 +185,7 @@ func TestResumeFallbackIsUsedOnlyOnce(t *testing.T) {
 	t.Setenv("FAKE_ARGV_FILE", argv)
 
 	s := &session{t: t, argv: argv, mu: make(chan struct{}, 1), drain: make(chan struct{})}
-	s.a = New()
+	s.a = newAdapterWithGrace(testGrace, testGrace)
 	go func() {
 		defer close(s.drain)
 		for ev := range s.a.Events() {
@@ -227,8 +228,6 @@ func TestResumeFallbackIsUsedOnlyOnce(t *testing.T) {
 // keeps --resume.
 func TestAWorkingResumeIsNotSecondGuessed(t *testing.T) {
 	const id = "99999999-9999-4999-8999-999999999995"
-	shortGrace(t, 20*time.Millisecond, 20*time.Millisecond)
-
 	dir := fakes.Build(t)
 	t.Setenv("PATH", fakes.PathWith(dir))
 	t.Setenv("FAKE_SCRIPT", `[{"do":"text","text":"still here"},{"do":"end","outcome":"ok"}]`)
@@ -238,7 +237,7 @@ func TestAWorkingResumeIsNotSecondGuessed(t *testing.T) {
 	t.Setenv("FAKE_ARGV_FILE", argv)
 
 	s := &session{t: t, argv: argv, mu: make(chan struct{}, 1), drain: make(chan struct{})}
-	s.a = New()
+	s.a = newAdapterWithGrace(testGrace, testGrace)
 	go func() {
 		defer close(s.drain)
 		for ev := range s.a.Events() {

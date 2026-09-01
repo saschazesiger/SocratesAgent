@@ -34,20 +34,16 @@ type session struct {
 	patience time.Duration
 }
 
-// shortGrace makes the launch windows test-sized and puts them back after.
-// The fake, like the real CLI, says nothing at all until the first turn, so
-// without this every Start would sit out the full production window.
-func shortGrace(t *testing.T, launch, resume time.Duration) {
-	t.Helper()
-	oldL, oldR := launchGrace, resumeGrace
-	launchGrace, resumeGrace = launch, resume
-	t.Cleanup(func() { launchGrace, resumeGrace = oldL, oldR })
-}
+// testGrace is the launch window the hermetic tests give a fake. The fake,
+// like the real CLI, says nothing at all until the first turn, so without a
+// short window every Start would sit out the full production one. It is
+// passed per adapter, never assigned to a package var: a global would be
+// mutated under the goroutines of whatever test ran before.
+const testGrace = 50 * time.Millisecond
 
 // start builds the fakes, puts them on PATH, and starts one adapter.
 func start(t *testing.T, script string, spec harness.Spec) *session {
 	t.Helper()
-	shortGrace(t, 50*time.Millisecond, 50*time.Millisecond)
 	dir := fakes.Build(t)
 	t.Setenv("PATH", fakes.PathWith(dir))
 	t.Setenv("FAKE_SCRIPT", script)
@@ -66,7 +62,7 @@ func start(t *testing.T, script string, spec harness.Spec) *session {
 		spec.Dir = work
 	}
 	s := &session{t: t, argv: argv, mu: make(chan struct{}, 1), drain: make(chan struct{})}
-	s.a = New()
+	s.a = newAdapterWithGrace(testGrace, testGrace)
 	go func() {
 		defer close(s.drain)
 		for ev := range s.a.Events() {
