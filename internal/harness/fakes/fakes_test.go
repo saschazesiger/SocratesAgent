@@ -1508,11 +1508,23 @@ func (o *oc) json(method, path, body string) map[string]any {
 	return decode(o.t, b)
 }
 
-// sse opens the session event stream and returns a channel of decoded frames
-// plus the raw lines, so both the payloads and the framing can be asserted.
+// sse opens the session-scoped event stream and returns a channel of decoded
+// frames plus the raw lines, so both the payloads and the framing can be
+// asserted.
 func (o *oc) sse(session string) (<-chan map[string]any, <-chan string) {
 	o.t.Helper()
-	req, err := http.NewRequest("GET", o.base+"/api/session/"+session+"/event", nil)
+	return o.stream("/api/session/" + session + "/event")
+}
+
+// globalSSE opens GET /api/event, the stream every *.delta frame lives on.
+func (o *oc) globalSSE() (<-chan map[string]any, <-chan string) {
+	o.t.Helper()
+	return o.stream("/api/event")
+}
+
+func (o *oc) stream(path string) (<-chan map[string]any, <-chan string) {
+	o.t.Helper()
+	req, err := http.NewRequest("GET", o.base+path, nil)
 	if err != nil {
 		o.t.Fatal(err)
 	}
@@ -1736,21 +1748,17 @@ func TestOpenCodeSSEFramingAndAdmittedSeq(t *testing.T) {
 	eq(t, "admittedSeq == durable.seq", num(adm, "durable", "seq"), admitted)
 
 	var seqs []float64
-	sawDelta := false
 	for {
 		m := nextFrame(t, frames)
 		if d := dig(m, "durable"); d != nil {
 			seqs = append(seqs, num(m, "durable", "seq"))
 			versions[str(m, "type")] = num(m, "durable", "version")
 		} else if strings.HasSuffix(str(m, "type"), ".delta") {
-			sawDelta = true
+			t.Errorf("a session stream must never carry a *.delta frame: %v", m)
 		}
 		if str(m, "type") == "session.next.step.ended" && str(m, "data", "finish") == "stop" {
 			break
 		}
-	}
-	if !sawDelta {
-		t.Error("no ephemeral *.delta frame arrived")
 	}
 	for i, s := range seqs {
 		if s != admitted+float64(i)+1 {
@@ -1785,6 +1793,8 @@ func TestOpenCodeFullStepStructure(t *testing.T) {
 	id := o.newSession(t.TempDir())
 	frames, _ := o.sse(id)
 	untilFrame(t, frames, "server.connected")
+	globals, _ := o.globalSSE()
+	untilFrame(t, globals, "server.connected")
 	o.json("POST", "/api/session/"+id+"/prompt", `{"prompt":{"text":"hi"},"delivery":"queue"}`)
 
 	var types []string
@@ -1811,16 +1821,48 @@ func TestOpenCodeFullStepStructure(t *testing.T) {
 		}
 	}
 done:
+	// FK-19's order, minus the *.delta frames: the session stream carries the
+	// durable events only.
 	want := []string{
 		"prompt.admitted", "prompted", "step.started",
-		"tool.input.started", "tool.input.delta", "tool.input.ended",
+		"tool.input.started", "tool.input.ended",
 		"tool.called", "tool.success", "step.ended",
-		"step.started", "text.started", "text.delta", "text.delta", "text.delta",
-		"text.ended", "step.ended",
+		"step.started", "text.started", "text.ended", "step.ended",
 	}
 	if strings.Join(types, ",") != strings.Join(want, ",") {
 		t.Errorf("event order:\n got %v\nwant %v", types, want)
 	}
+
+	// The chunks the session stream did not carry are all on /api/event, and
+	// so is traffic for the server's own internal session.
+	var globalTypes []string
+	var text string
+	sawInternal := false
+	for len(globalTypes) < 5 {
+		m := nextFrame(t, globals)
+		globalTypes = append(globalTypes, strings.TrimPrefix(str(m, "type"), "session.next."))
+		if dig(m, "durable") != nil {
+			t.Errorf("the global stream carries the ephemeral chunks, not durables: %v", m)
+		}
+		switch str(m, "data", "sessionID") {
+		case id:
+			if str(m, "type") == "session.next.text.delta" {
+				text += str(m, "data", "delta")
+			}
+		case "ses_internal0001":
+			sawInternal = true
+		default:
+			t.Errorf("unexpected sessionID on the global stream: %v", m)
+		}
+	}
+	wantGlobal := []string{"text.delta", "tool.input.delta", "text.delta", "text.delta", "text.delta"}
+	if strings.Join(globalTypes, ",") != strings.Join(wantGlobal, ",") {
+		t.Errorf("global stream order:\n got %v\nwant %v", globalTypes, wantGlobal)
+	}
+	if !sawInternal {
+		t.Error("the global stream must also carry the server's internal session")
+	}
+	eq(t, "the assembled text deltas", text, "done")
 	if len(stepMsgs) != 2 || stepMsgs[0] == stepMsgs[1] {
 		t.Errorf("each step needs its own assistantMessageID: %v", stepMsgs)
 	}
@@ -2083,6 +2125,8 @@ func TestOpenCodeReasoningEvents(t *testing.T) {
 	id := o.newSession(t.TempDir())
 	frames, _ := o.sse(id)
 	untilFrame(t, frames, "server.connected")
+	globals, _ := o.globalSSE()
+	untilFrame(t, globals, "server.connected")
 	o.json("POST", "/api/session/"+id+"/prompt", `{"prompt":{"text":"hi"},"delivery":"queue"}`)
 
 	started := untilFrame(t, frames, "session.next.reasoning.started")
@@ -2090,12 +2134,57 @@ func TestOpenCodeReasoningEvents(t *testing.T) {
 	if str(started, "data", "assistantMessageID") == "" {
 		t.Error("reasoning.started must carry an assistantMessageID")
 	}
-	delta := untilFrame(t, frames, "session.next.reasoning.delta")
+	// The chunks are on the global stream, never on the session one.
+	delta := untilFrame(t, globals, "session.next.reasoning.delta")
 	if dig(delta, "durable") != nil {
 		t.Error("reasoning.delta is ephemeral and must carry no durable key")
 	}
+	eq(t, "reasoning delta sessionID", str(delta, "data", "sessionID"), id)
 	ended := untilFrame(t, frames, "session.next.reasoning.ended")
 	eq(t, "text", str(ended, "data", "text"), "pondering")
+}
+
+func TestOpenCodeGlobalStreamIsBehindAuthAndNeverReplays(t *testing.T) {
+	// GET /api/event is authenticated like every other route and, unlike the
+	// session stream, replays nothing on connect.
+	o := startOpenCode(t, `[{"do":"text","text":"done"},{"do":"end","outcome":"ok"}]`)
+	code, body := o.do("GET", "/api/event", "", false)
+	eq(t, "unauthenticated status", code, 401)
+	eq(t, "_tag", str(decode(t, body), "_tag"), "UnauthorizedError")
+
+	id := o.newSession(t.TempDir())
+	frames, _ := o.sse(id)
+	untilFrame(t, frames, "server.connected")
+	globals, raws := o.globalSSE()
+	eq(t, "first frame", str(nextFrame(t, globals), "type"), "server.connected")
+	o.json("POST", "/api/session/"+id+"/prompt", `{"prompt":{"text":"hi"},"delivery":"queue"}`)
+	untilFrame(t, frames, "session.next.step.ended")
+	o.waitIdle()
+
+	// A second connection sees none of what has already happened.
+	again, _ := o.globalSSE()
+	eq(t, "first frame", str(nextFrame(t, again), "type"), "server.connected")
+	select {
+	case m := <-again:
+		t.Fatalf("the global stream must not replay, got %v", m)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	// Same framing as the session stream, heartbeat comments included.
+	deadline := time.After(3 * heartbeatWait)
+	for {
+		select {
+		case line := <-raws:
+			if line == ": heartbeat" {
+				return
+			}
+			if !strings.HasPrefix(line, "data: ") {
+				t.Fatalf("unexpected SSE line %q", line)
+			}
+		case <-deadline:
+			t.Fatal("no heartbeat comment line on the global stream")
+		}
+	}
 }
 
 func TestOpenCodeRunsTheScriptOnEveryTurn(t *testing.T) {

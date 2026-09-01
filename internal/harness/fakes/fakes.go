@@ -68,6 +68,23 @@
 // reports in result.subagent_stats.spawned (it defaults to the number of
 // subagent steps the turn ran).
 //
+// # fakeopencode's two event streams
+//
+// The real server splits its SSE traffic, and so does the fake:
+//
+//	GET /api/session/{id}/event   the session's durable events, replayed in
+//	                              full on every connect. It NEVER carries a
+//	                              *.delta frame.
+//	GET /api/event                every session on the server, no replay.
+//	                              This is where text.delta, reasoning.delta
+//	                              and tool.input.delta are published, and it
+//	                              also carries traffic for the server's own
+//	                              internal title session (ses_internal0001),
+//	                              so a client has to filter on
+//	                              data.sessionID.
+//
+// Both are behind the same Basic auth and use the same framing.
+//
 // # fakeclaude's own env vars
 //
 // Two behaviours of the real CLI cannot be scripted, because they happen
