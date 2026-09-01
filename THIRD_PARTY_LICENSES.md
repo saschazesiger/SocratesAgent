@@ -35,8 +35,6 @@ them from the sources named here.
 | `modernc.org/libc` | BSD-3-Clause | <https://gitlab.com/cznic/libc> |
 | `modernc.org/mathutil` | BSD-3-Clause | <https://gitlab.com/cznic/mathutil> |
 | `modernc.org/memory` | BSD-3-Clause | <https://gitlab.com/cznic/memory> |
-| `github.com/creack/pty` | MIT, © Keith Rarick | <https://github.com/creack/pty> |
-| `github.com/hinshun/vt10x` | MIT, © James Gray | <https://github.com/hinshun/vt10x> |
 | `github.com/dustin/go-humanize` | MIT, © Dustin Sallings | <https://github.com/dustin/go-humanize> |
 | `github.com/google/uuid` | BSD-3-Clause, © Google | <https://github.com/google/uuid> |
 | `github.com/remyoudompheng/bigfft` | BSD-3-Clause, © The Go Authors | <https://github.com/remyoudompheng/bigfft> |
@@ -145,8 +143,10 @@ MIT/X derivative), `git` (GPL-2.0, <https://github.com/git/git>) and `ripgrep`
 
 ### The agent CLIs
 
-Installed from npm so a container can actually delegate work. Socrates only
-starts them at a terminal; it bundles no part of them.
+Installed from npm, because a chat is bound to one of them and a container
+without them can serve the UI and nothing else. Socrates starts them as child
+processes and speaks their own headless protocols; it bundles, links and
+modifies no part of them, and it carries none of their credentials.
 
 | Package | Licence | Source |
 | --- | --- | --- |

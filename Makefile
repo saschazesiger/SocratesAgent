@@ -2,7 +2,7 @@ BINARY  ?= socrates
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: build run test race fmt fmt-check vet tidy-check check clean docker install
+.PHONY: build run test race fmt fmt-check vet tidy-check check e2e clean docker install
 
 ## build: compile the single binary into ./socrates
 build:
@@ -50,6 +50,17 @@ tidy-check:
 
 ## check: everything CI runs, and it changes nothing
 check: fmt-check vet tidy-check race build
+
+## e2e: the browser suite - a real server, the fake agent CLIs on PATH, and
+## Playwright driving the page. It is deliberately not part of `check` and not
+## part of CI: it wants node and a Chromium, and it starts detached host
+## processes, which is exactly what it is there to test.
+e2e: build
+	@if [ ! -f e2e/run.mjs ]; then \
+	  echo "e2e/run.mjs is not in this tree yet - the suite lands with the fakes and e2e work package."; \
+	  exit 1; \
+	fi
+	node e2e/run.mjs
 
 docker:
 	docker build -t socrates:$(VERSION) .

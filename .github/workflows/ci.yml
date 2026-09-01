@@ -45,10 +45,13 @@ jobs:
       - name: Build
         run: go build ./...
 
-  # Every release ships a windows/amd64 binary, and internal/term and
+  # Every release ships a windows/amd64 binary, and internal/agenthost and
   # internal/proc each have a Windows only file, so both have to compile and
-  # vet on every change. The test suite is not run here: parts of it script
-  # /bin/sh and send signals a Windows box does not have.
+  # vet on every change. Agent chats themselves do not work on Windows - they
+  # need a unix socket and POSIX detachment - but the server, the dashboard,
+  # the tunnel and voice do, so the build has to stay green. The test suite is
+  # not run here: parts of it script /bin/sh, send signals a Windows box does
+  # not have, and start detached host processes.
   windows:
     runs-on: windows-latest
     steps:
