@@ -181,11 +181,11 @@ func (s *server) createSession(w http.ResponseWriter, r *http.Request) {
 	s.dirs[id] = body.Location.Directory
 	s.mu.Unlock()
 
-	// Global-stream only, as measured.
+	// Durable, but global-stream only, as measured.
 	s.emit(id, "session.created", map[string]any{
 		"timestamp": nowMS(), "sessionID": id,
 		"location": map[string]any{"directory": body.Location.Directory},
-	}, false)
+	}, true)
 
 	writeJSON(w, 200, map[string]any{"data": map[string]any{
 		"id":       id,
@@ -206,10 +206,12 @@ func (s *server) setModel(w http.ResponseWriter, r *http.Request) {
 		Model map[string]any `json:"model"`
 	}
 	_ = json.Unmarshal(raw, &body)
-	// Global-stream only, as measured.
+	// Durable and on the session's own event line: it is seq 1 of a fresh
+	// session and is replayed like any other durable event, which is why a
+	// real first prompt is admitted at seq 2.
 	s.emit(id, "session.next.model.switched", map[string]any{
 		"timestamp": nowMS(), "sessionID": id, "model": body.Model,
-	}, false)
+	}, true)
 	w.WriteHeader(204)
 }
 
@@ -712,8 +714,16 @@ func (s *server) emitLocked(session, typ string, data any, durable bool) int64 {
 		"location": map[string]any{"directory": s.dirs[session]},
 		"data":     data,
 	}
+	globalOnly := isGlobalOnly(typ)
 	var seq int64
-	if durable {
+	if durable && globalOnly {
+		// Durable, but not on the session's own event line: model.switched is
+		// seq 1 of a fresh session, so session.created cannot be. It keeps a
+		// durable envelope and takes no number from the session.
+		ev["durable"] = map[string]any{
+			"aggregateID": session, "seq": 0, "version": durableVersion(typ),
+		}
+	} else if durable {
 		s.seq[session]++
 		seq = s.seq[session]
 		ev["durable"] = map[string]any{
@@ -724,7 +734,7 @@ func (s *server) emitLocked(session, typ string, data any, durable bool) int64 {
 	if err != nil {
 		return seq
 	}
-	if durable {
+	if durable && !globalOnly {
 		s.log[session] = append(s.log[session], raw)
 	}
 	// FK-18: the global stream carries *every* frame the server emits, for
@@ -732,7 +742,7 @@ func (s *server) emitLocked(session, typ string, data any, durable bool) int64 {
 	// session stream never sees a *.delta and never sees the server's own
 	// bookkeeping. A client on /api/event that forgets to filter on `durable`
 	// therefore receives each durable event a second time.
-	if !isDelta(typ) && !isGlobalOnly(typ) {
+	if !isDelta(typ) && !globalOnly {
 		fanOut(s.subs[session], raw)
 	}
 	fanOut(s.global, raw)
@@ -752,11 +762,10 @@ func fanOut(chans []chan json.RawMessage, raw json.RawMessage) {
 // published on the global stream only.
 func isDelta(typ string) bool { return strings.HasSuffix(typ, ".delta") }
 
-// isGlobalOnly reports whether typ is one of the server's own bookkeeping
-// frames, which were measured on the global stream and on no session stream.
-func isGlobalOnly(typ string) bool {
-	return typ == "session.created" || typ == "session.next.model.switched"
-}
+// isGlobalOnly reports whether typ was measured on the global stream and on
+// no session stream. It is durable all the same, it just does not belong to
+// the session's replayable event line.
+func isGlobalOnly(typ string) bool { return typ == "session.created" }
 
 // durableVersion is the durable schema version an event carries. The research
 // observed 2 on step.ended and 1 everywhere else; no adapter rule reads it, so

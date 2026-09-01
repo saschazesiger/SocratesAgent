@@ -1668,6 +1668,18 @@ func (o *oc) newSession(dir string) string {
 	return str(res, "data", "id")
 }
 
+// setModel does what every adapter start does after creating a session. The
+// model.switched event it produces is durable and is seq 1 of a fresh
+// session, so the first prompt after it is admitted at seq 2.
+func (o *oc) setModel(id string) {
+	o.t.Helper()
+	code, body := o.do("POST", "/api/session/"+id+"/model",
+		`{"model":{"id":"fake-thinker","providerID":"opencode","variant":"high"}}`, true)
+	if code != 204 {
+		o.t.Fatalf("POST /model = %d %s", code, body)
+	}
+}
+
 func (o *oc) activeIDs() []string {
 	o.t.Helper()
 	res := o.json("GET", "/api/session/active", "")
@@ -1811,8 +1823,19 @@ func TestOpenCodeSSEFramingAndAdmittedSeq(t *testing.T) {
 		t.Errorf("server.connected must carry no durable key")
 	}
 
+	// A real adapter sets the model first, and that is a durable event on the
+	// session's own line: seq 1.
+	o.setModel(id)
+	switched := nextFrame(t, frames)
+	eq(t, "the first durable frame", str(switched, "type"), "session.next.model.switched")
+	eq(t, "model.switched seq", num(switched, "durable", "seq"), 1)
+	eq(t, "model.switched aggregateID", str(switched, "durable", "aggregateID"), id)
+
 	res := o.json("POST", "/api/session/"+id+"/prompt", `{"prompt":{"text":"hi"},"delivery":"queue"}`)
 	admitted := num(res, "data", "admittedSeq")
+	// A fresh session's first prompt is admitted at seq 2, behind
+	// model.switched.
+	eq(t, "first admittedSeq", admitted, 2)
 
 	adm := untilFrame(t, frames, "session.next.prompt.admitted")
 	eq(t, "aggregateID", str(adm, "durable", "aggregateID"), id)
@@ -2173,7 +2196,9 @@ func TestOpenCodeReplaysTheWholeDurableHistoryOnEveryConnect(t *testing.T) {
 	id := o.newSession(t.TempDir())
 	frames, _ := o.sse(id)
 	untilFrame(t, frames, "server.connected")
-	o.json("POST", "/api/session/"+id+"/prompt", `{"prompt":{"text":"hi"},"delivery":"queue"}`)
+	o.setModel(id)
+	res := o.json("POST", "/api/session/"+id+"/prompt", `{"prompt":{"text":"hi"},"delivery":"queue"}`)
+	eq(t, "first admittedSeq", num(res, "data", "admittedSeq"), 2)
 	untilFrame(t, frames, "session.next.step.ended")
 	o.waitIdle()
 
@@ -2190,15 +2215,18 @@ func TestOpenCodeReplaysTheWholeDurableHistoryOnEveryConnect(t *testing.T) {
 			break
 		}
 	}
-	want := "session.next.prompt.admitted,session.next.prompted,session.next.step.started," +
-		"session.next.text.started,session.next.text.ended,session.next.step.ended"
+	// model.switched is part of the session's durable history and is replayed
+	// with everything else.
+	want := "session.next.model.switched,session.next.prompt.admitted,session.next.prompted," +
+		"session.next.step.started,session.next.text.started,session.next.text.ended," +
+		"session.next.step.ended"
 	if strings.Join(replayed, ",") != want {
 		t.Errorf("replay:\n got %v\nwant %v", strings.Join(replayed, ","), want)
 	}
 
 	// The second turn's seq continues counting across the server's whole life.
-	res := o.json("POST", "/api/session/"+id+"/prompt", `{"prompt":{"text":"again"},"delivery":"queue"}`)
-	eq(t, "second admittedSeq", num(res, "data", "admittedSeq"), 7)
+	res = o.json("POST", "/api/session/"+id+"/prompt", `{"prompt":{"text":"again"},"delivery":"queue"}`)
+	eq(t, "second admittedSeq", num(res, "data", "admittedSeq"), 8)
 }
 
 func TestOpenCodeReasoningEvents(t *testing.T) {
@@ -2276,9 +2304,11 @@ func TestOpenCodeGlobalStreamMirrorsEveryDurableFrame(t *testing.T) {
 	eq(t, "durable frames seen twice", duplicates, len(scopedOrder))
 }
 
-func TestOpenCodeServerBookkeepingIsGlobalOnly(t *testing.T) {
-	// session.created and session.next.model.switched were measured on the
-	// global stream and on no session stream.
+func TestOpenCodeSessionCreatedIsDurableButGlobalOnly(t *testing.T) {
+	// session.created was measured on the global stream and on no session
+	// stream. It carries a durable envelope all the same — it just does not
+	// belong to the session's replayable event line, so it takes no seq:
+	// model.switched is seq 1 of a fresh session.
 	o := startOpenCode(t, `[{"do":"end","outcome":"ok"}]`)
 	globals, _ := o.globalSSE()
 	untilFrame(t, globals, "server.connected")
@@ -2288,23 +2318,45 @@ func TestOpenCodeServerBookkeepingIsGlobalOnly(t *testing.T) {
 	created := untilFrame(t, globals, "session.created")
 	eq(t, "sessionID", str(created, "data", "sessionID"), id)
 	eq(t, "directory", str(created, "data", "location", "directory"), dir)
-	if dig(created, "durable") != nil {
-		t.Errorf("session.created carries no durable key: %v", created)
+	if dig(created, "durable") == nil {
+		t.Fatalf("session.created is durable: %v", created)
 	}
+	eq(t, "aggregateID", str(created, "durable", "aggregateID"), id)
+	eq(t, "seq", num(created, "durable", "seq"), 0)
 
+	// It reaches neither the live session stream nor its replay.
 	frames, _ := o.sse(id)
 	untilFrame(t, frames, "server.connected")
-	code, _ := o.do("POST", "/api/session/"+id+"/model",
-		`{"model":{"id":"fake-thinker","providerID":"opencode","variant":"high"}}`, true)
-	eq(t, "status", code, 204)
-	switched := untilFrame(t, globals, "session.next.model.switched")
-	eq(t, "model id", str(switched, "data", "model", "id"), "fake-thinker")
-	eq(t, "variant", str(switched, "data", "model", "variant"), "high")
+	o.setModel(id)
+	eq(t, "the session stream's first frame", str(nextFrame(t, frames), "type"),
+		"session.next.model.switched")
 
-	// Neither reached the session stream: the next thing there is the turn.
-	o.json("POST", "/api/session/"+id+"/prompt", `{"prompt":{"text":"hi"},"delivery":"queue"}`)
-	first := nextFrame(t, frames)
-	eq(t, "the session stream's first frame", str(first, "type"), "session.next.prompt.admitted")
+	replay, _ := o.sse(id)
+	untilFrame(t, replay, "server.connected")
+	eq(t, "the replay's first frame", str(nextFrame(t, replay), "type"),
+		"session.next.model.switched")
+}
+
+func TestOpenCodeModelSwitchedIsOnBothStreams(t *testing.T) {
+	// It is a durable event of the session, so it goes to the session stream,
+	// its replay and the global stream alike.
+	o := startOpenCode(t, `[{"do":"end","outcome":"ok"}]`)
+	id := o.newSession(t.TempDir())
+	frames, _ := o.sse(id)
+	untilFrame(t, frames, "server.connected")
+	globals, _ := o.globalSSE()
+	untilFrame(t, globals, "server.connected")
+
+	o.setModel(id)
+	scoped := nextFrame(t, frames)
+	eq(t, "type", str(scoped, "type"), "session.next.model.switched")
+	eq(t, "model id", str(scoped, "data", "model", "id"), "fake-thinker")
+	eq(t, "variant", str(scoped, "data", "model", "variant"), "high")
+	eq(t, "seq", num(scoped, "durable", "seq"), 1)
+
+	global := untilFrame(t, globals, "session.next.model.switched")
+	eq(t, "the same event id on both streams", str(global, "id"), str(scoped, "id"))
+	eq(t, "the same seq on both streams", num(global, "durable", "seq"), 1)
 }
 
 func TestOpenCodeGlobalStreamIsBehindAuthAndNeverReplays(t *testing.T) {

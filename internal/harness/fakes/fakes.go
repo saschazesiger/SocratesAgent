@@ -88,13 +88,17 @@
 //	                              a second time, the text.delta /
 //	                              reasoning.delta / tool.input.delta chunks
 //	                              that appear nowhere else, the server's own
-//	                              session.created and
-//	                              session.next.model.switched, and traffic for
-//	                              its internal title session
-//	                              (ses_internal0001). A client here has to
-//	                              filter on both `durable` and
-//	                              data.sessionID, or it double-counts every
-//	                              turn.
+//	                              durable session.created, and traffic for its
+//	                              internal title session (ses_internal0001). A
+//	                              client here has to filter on both `durable`
+//	                              and data.sessionID, or it double-counts
+//	                              every turn.
+//
+// session.next.model.switched is durable on the session's own event line: it
+// is seq 1 of a fresh session and is replayed there, which is why a real
+// first prompt comes back with admittedSeq 2. session.created is durable too
+// but belongs to no session event line, so it takes no seq and appears on the
+// global stream only.
 //
 // Both are behind the same Basic auth and use the same framing.
 //
