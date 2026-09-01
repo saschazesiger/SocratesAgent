@@ -6,6 +6,10 @@ Every chat is bound to one of the three agents and one of its models, and what
 you type goes straight into that program's own headless protocol. There is no
 model in between: Socrates does not think, it carries.
 
+<p align="center">
+  <img src="docs/screenshot-chat.png" alt="A chat with a tool card, a reasoning step and the agent's answer" width="860">
+</p>
+
 ---
 
 ## Why
@@ -206,6 +210,10 @@ Then open <http://localhost:8080>.
 3. Go back to the chat, press **+**, pick an agent and a model, and ask for
    something.
 
+<p align="center">
+  <img src="docs/screenshot-admin.png" alt="The Agents card in the admin dashboard" width="860">
+</p>
+
 ## Agents and models
 
 A chat is bound to one agent at creation and keeps it for life. The new-chat
@@ -338,6 +346,10 @@ microphone button with a recording timer, a short status line while the agent
 works, and the finished answer shown as large as it fits and read out loud. If
 the agent needs a decision it asks for it in that answer, which is read out with
 the rest — you tap the microphone and say what you want.
+
+<p align="center">
+  <img src="docs/screenshot-auto.png" alt="Audio mode on a phone: one microphone button and the answer shown large" width="300">
+</p>
 
 One answer is spoken per turn, at the end, not every sentence as it appears. A
 long turn is therefore quiet for a while; the status line is what tells you it is
