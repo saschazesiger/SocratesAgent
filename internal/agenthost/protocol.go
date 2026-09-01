@@ -4,8 +4,15 @@ import "github.com/saschazesiger/SocratesAgent/internal/harness"
 
 // An agent session runs inside its own small host process so that it survives
 // a restart of Socrates. Socrates talks to that host over a unix socket with
-// newline delimited JSON: every request carries an id and gets exactly one
-// reply with the same id, while journal events arrive unsolicited with id 0.
+// newline delimited JSON: every request carries an id and gets a reply with
+// the same id, while journal events arrive unsolicited with id 0.
+//
+// Every op answers exactly once, except subscribe, which answers twice: an
+// empty `ok` the moment the host begins serving the subscription, and then the
+// `status` that closes the replay. The first is a marker rather than a reply -
+// it is what tells the client where its stream begins, since the host goes on
+// pushing to a connection whose previous subscription has ended - and only the
+// second one completes the request.
 
 // Operations understood by an agent host.
 const (

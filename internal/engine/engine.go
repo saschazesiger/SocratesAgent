@@ -127,6 +127,26 @@ func (e *Engine) commitMessage(m *store.Message) error {
 	return nil
 }
 
+// commitRun announces what a run is doing, and lets go of the chat in the same
+// breath when a turn has ended.
+//
+// The two have to be one step. Releasing first and publishing after leaves a
+// window in which another Start passes the busy check, creates its run and
+// publishes run{running} - and then this call publishes run{done} on top of
+// it, leaving the browser idle in front of a turn that is working. Publishing
+// first and releasing after is the mirror image: the browser is told the turn
+// is over and its next message is refused as busy. commitMu is the same lock
+// every other commit takes, so the ordering the offline story rests on covers
+// this too.
+func (e *Engine) commitRun(chatID string, run *store.Run, release func()) {
+	e.commitMu.Lock()
+	defer e.commitMu.Unlock()
+	if release != nil {
+		release()
+	}
+	e.publish(chatID, Event{Type: "run", Run: run})
+}
+
 // commitStepRemoval retires a step. A deletion carries no revision of its own,
 // which is why a reconnecting client is also told which steps still exist.
 func (e *Engine) commitStepRemoval(chatID, stepID string) error {
@@ -258,7 +278,7 @@ func (e *Engine) Start(turn Turn) (*store.Run, error) {
 			e.publish(chatID, Event{Type: "chat", Chat: chat})
 		}
 	}
-	e.publish(chatID, Event{Type: "run", Run: run})
+	e.commitRun(chatID, run, nil)
 
 	if strings.TrimSpace(chat.Title) == "" {
 		go e.generateTitle(chat.ID, text)
@@ -464,10 +484,15 @@ func (e *Engine) consume(frames <-chan agenthost.Frame, p *pump, run *store.Run,
 	if p.finished() {
 		return
 	}
-	// The host told us why. Both reasons it can give are permanent for this
-	// run - the journal was rotated past our floor, or the subscribe was
-	// refused - so there is nothing to retry.
-	if lastErr != nil {
+	// A refusal is final: the host looked at what was asked - a floor below
+	// the point rotation trimmed to, say - and said no, and asking again gets
+	// the same answer. Anything else that ended the subscription is a
+	// connection losing its footing, and that falls through to the one redial
+	// below: a healthy turn behind a dropped socket must not be interrupted
+	// just because the socket went while its replay was streaming rather than
+	// a moment later.
+	var refused *agenthost.Refused
+	if errors.As(lastErr, &refused) {
 		p.replayFailed(lastErr)
 		return
 	}
@@ -673,7 +698,7 @@ func (e *Engine) Adopt(ctx context.Context) []string {
 
 		// A browser that connected before Adopt finished was told busy:false.
 		// This one line corrects it without moving the listener.
-		e.publish(chat.ID, Event{Type: "run", Run: run})
+		e.commitRun(chat.ID, run, nil)
 
 		go e.adopt(ctxRun, chat, run, h, handle)
 	}
@@ -700,5 +725,5 @@ func (e *Engine) interrupt(chat *store.Chat, run *store.Run, reason string) {
 		return
 	}
 	run.Status, run.Error = store.RunInterrupted, reason
-	e.publish(chat.ID, Event{Type: "run", Run: run})
+	e.commitRun(chat.ID, run, nil)
 }

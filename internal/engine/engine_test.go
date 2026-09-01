@@ -1143,3 +1143,138 @@ func TestASendTheInstantTheRunIsDoneIsAccepted(t *testing.T) {
 		}
 	}
 }
+
+// A connection that goes while a replay is streaming is still just a dropped
+// connection: the turn behind it is healthy and the redial picks it back up.
+// Treating it as a refusal - the host said no, do not ask again - interrupts a
+// turn that was about to finish, and it is the likelier of the two moments for
+// a socket to go, because a replay is when the wire is busiest.
+func TestAConnectionLostDuringAReplayIsStillJustAHiccup(t *testing.T) {
+	env := newEnv(t)
+	// A long first turn, so the replay an adopt has to stream takes long
+	// enough for the connection to be dropped in the middle of it.
+	chat := env.chat(t, "c_midreplay",
+		hosttest.Step{Do: "text", Text: "chatter", Count: 400},
+		hosttest.Step{Do: "text", Text: "the answer"},
+		hosttest.Step{Do: "end", Outcome: "ok"})
+
+	run, err := env.engine.Start(Turn{ChatID: chat.ID, Text: "go", ClientID: "k1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 30*time.Second, "the first turn to finish", func() bool {
+		return env.runStatus(t, run.ID) != store.RunRunning
+	})
+	waitFor(t, 30*time.Second, "the engine to let go of the chat", func() bool {
+		return !env.engine.Busy(chat.ID)
+	})
+
+	// Put the run back the way a restart would find it, and drop the
+	// connection while the adopt's replay of those hundreds of events is in
+	// flight.
+	if err := env.store.SetRunStatus(run.ID, store.RunRunning, ""); err != nil {
+		t.Fatal(err)
+	}
+	hosts := env.hosts.List(chat.ID)
+	if len(hosts) != 1 {
+		t.Fatalf("expected one host, got %d", len(hosts))
+	}
+	go func() {
+		time.Sleep(15 * time.Millisecond)
+		hosts[0].Detach()
+	}()
+
+	if claimed := env.engine.Adopt(context.Background()); len(claimed) != 1 {
+		t.Fatalf("Adopt claimed %#v", claimed)
+	}
+	waitFor(t, 60*time.Second, "the adopted run to end", func() bool {
+		return env.runStatus(t, run.ID) != store.RunRunning
+	})
+	got, _ := env.store.GetRun(run.ID)
+	if got.Status != store.RunDone {
+		t.Fatalf("a connection lost mid-replay cost the turn: %q (%s)", got.Status, got.Error)
+	}
+	msgs, _ := env.store.ListMessages(chat.ID)
+	answers := 0
+	for _, m := range msgs {
+		if m.Role == "assistant" {
+			answers++
+			if !strings.Contains(m.Content, "the answer") {
+				t.Errorf("the answer lost its last block: %q", m.Content)
+			}
+		}
+	}
+	if answers != 1 {
+		t.Fatalf("%d assistant messages", answers)
+	}
+}
+
+// Letting go of the chat and saying the turn is over are one step. With a gap
+// between them a Start that slips through publishes run{running} first, this
+// one publishes run{done} on top of it, and the browser sits idle in front of
+// a turn that is working.
+func TestTheRunEventsNeverContradictEachOther(t *testing.T) {
+	env := newEnv(t)
+	chat := env.chat(t, "c_order2",
+		hosttest.Step{Do: "text", Text: "ok"},
+		hosttest.Step{Do: "end", Outcome: "ok"})
+
+	_, ch := env.bus.Subscribe(chat.ID)
+	first, err := env.engine.Start(Turn{ChatID: chat.ID, Text: "one", ClientID: "k1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A caller doing exactly what the browser does, only faster: spin on the
+	// chat being free and send the instant it is.
+	sent := make(chan *store.Run, 1)
+	go func() {
+		deadline := time.Now().Add(25 * time.Second)
+		for time.Now().Before(deadline) {
+			if !env.engine.Busy(chat.ID) {
+				run, err := env.engine.Start(Turn{ChatID: chat.ID, Text: "two", ClientID: "k2"})
+				if err == nil {
+					sent <- run
+					return
+				}
+			}
+		}
+		sent <- nil
+	}()
+
+	var second *store.Run
+	select {
+	case second = <-sent:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the second turn never started")
+	}
+	if second == nil {
+		t.Fatal("the second turn was refused for a chat that was free")
+	}
+	waitFor(t, 30*time.Second, "both turns to finish", func() bool {
+		return env.runStatus(t, second.ID) != store.RunRunning
+	})
+
+	// The last thing said about the first run must come before the first thing
+	// said about the second: a browser replaying this stream is never left
+	// idle in front of a turn that is working.
+	firstDone, secondStarted := -1, -1
+	for i, ev := range drain(ch, time.Second) {
+		if ev.Type != "run" || ev.Run == nil {
+			continue
+		}
+		if ev.Run.ID == first.ID && ev.Run.Status != store.RunRunning && firstDone < 0 {
+			firstDone = i
+		}
+		if ev.Run.ID == second.ID && ev.Run.Status == store.RunRunning && secondStarted < 0 {
+			secondStarted = i
+		}
+	}
+	if firstDone < 0 || secondStarted < 0 {
+		t.Fatalf("the run events did not both arrive (done at %d, started at %d)", firstDone, secondStarted)
+	}
+	if secondStarted < firstDone {
+		t.Fatalf("the second turn was announced as running (%d) before the first was announced as over (%d) - "+
+			"the browser would be left idle in front of a turn that is working", secondStarted, firstDone)
+	}
+}

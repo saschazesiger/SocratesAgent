@@ -17,6 +17,21 @@ import (
 // ErrGone is returned when the host process of a session is no longer there.
 var ErrGone = errors.New("this agent session is no longer running")
 
+// Refused is a subscription the host declined, in its own words. It is the one
+// error class a caller must not retry: the host has looked at what was asked
+// and said no, and asking again gets the same answer. Everything else that can
+// end a subscription - a dropped connection, a host that went away mid-replay -
+// is a connection losing its footing, and that is worth exactly one redial.
+type Refused struct{ Reason string }
+
+func (e *Refused) Error() string { return e.Reason }
+
+// Is lets errors.Is see through to the sentinel a refusal names, so a caller
+// can ask "was this the replay window?" without matching on text.
+func (e *Refused) Is(target error) bool {
+	return target == ErrReplayWindow && e.Reason == ErrReplayWindow.Error()
+}
+
 // sendTimeout is how long the engine waits for a send to be accepted. It has
 // to cover the worst the host may spend inside one - restarting a crashed
 // adapter and then handing it the message - or a slow resume fails the run
@@ -238,15 +253,17 @@ func (h *Handle) markGone() {
 	h.closed = true
 	h.status.Running = false
 	h.status.Busy = false
-	pending := h.pending
 	h.pending = map[int64]chan Response{}
 	sub := h.sub
 	h.sub = nil
 	h.mu.Unlock()
 
-	for _, ch := range pending {
-		ch <- Response{Type: TypeError, Error: ErrGone.Error()}
-	}
+	// Closing done is what releases every call still waiting, and it is the
+	// only thing that does. An earlier version also pushed a synthetic error
+	// response into each pending channel, which cost nothing but a lie: a
+	// caller cannot then tell the host having refused something from the
+	// connection having gone, and those two deserve opposite answers - one is
+	// final, the other is worth a redial.
 	close(h.done)
 	if sub != nil {
 		sub.stop()
@@ -453,15 +470,20 @@ func (h *Handle) Subscribe(from int64) (<-chan Frame, func()) {
 		}
 	}()
 	go func() {
-		_, err := h.call(context.Background(), Request{ID: reqID, Op: OpSubscribe, FromSeq: from}, 5*time.Minute)
+		resp, err := h.call(context.Background(), Request{ID: reqID, Op: OpSubscribe, FromSeq: from}, 5*time.Minute)
 		if err == nil {
 			return
 		}
-		// The host refused, or the connection went. Either way there will be
-		// no caught-up frame, so the reason is handed over as the last frame
-		// before the channel closes - a consumer that only saw a closed
-		// channel would redial a healthy host and be refused again.
-		s.fail(err)
+		// Either way there will be no caught-up frame, so the reason is handed
+		// over as the last frame before the channel closes: a consumer that
+		// saw only a closed channel would redial a healthy host and be refused
+		// again. The two cases are kept apart, because they deserve opposite
+		// answers - a refusal is final, a lost connection is worth one redial.
+		if resp.Type == TypeError {
+			s.fail(&Refused{Reason: resp.Error})
+		} else {
+			s.fail(err)
+		}
 		unsubscribe()
 	}()
 	return out, unsubscribe

@@ -556,7 +556,10 @@ func (h *host) subscribe(client *hostClient, req Request) bool {
 	h.clients[client] = struct{}{}
 	h.mu.Unlock()
 
-	// The first frame of a subscription says where it begins.
+	// The first frame of a subscription says that it has begun. It carries
+	// nothing but its own id: the client already knows the floor it asked for,
+	// and what it needs from this frame is the position in the stream, not a
+	// number.
 	//
 	// There is no unsubscribe op, so a connection stays a broadcast recipient
 	// after the turn that subscribed has ended - and the next turn subscribes
@@ -566,7 +569,7 @@ func (h *host) subscribe(client *hostClient, req Request) bool {
 	// subscriber was being torn down. The client drops everything until it
 	// sees this, which puts the start of the stream exactly here, under the
 	// lock, immediately before the replay.
-	if !client.send(Response{ID: req.ID, Type: TypeOK, Seq: req.FromSeq}) {
+	if !client.send(Response{ID: req.ID, Type: TypeOK}) {
 		h.mu.Lock()
 		delete(h.clients, client)
 		h.mu.Unlock()

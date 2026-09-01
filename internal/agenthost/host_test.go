@@ -2,8 +2,11 @@ package agenthost
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -368,5 +371,89 @@ func TestASecondSubscriptionStartsAtItsOwnFloor(t *testing.T) {
 			t.Fatalf("event %d of the second subscription has seq %d, want %d - the stream has a gap or a repeat: %v",
 				i, seq, want, seqs)
 		}
+	}
+}
+
+// The two ways a subscription can end badly are kept apart on the wire,
+// because they deserve opposite answers: a host that refused what was asked
+// will refuse it again, and a connection that went is worth exactly one redial.
+func TestARefusedSubscribeIsMarkedAsARefusal(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", shortDir(t))
+	root := filepath.Join(t.TempDir(), "agents")
+	t.Cleanup(func() { reapHosts(t, root) })
+
+	// A host whose journal begins at seq 1000: everything below it is gone, so
+	// a subscribe from before that point is one the host must refuse.
+	id := "host_refused0001"
+	dir := filepath.Join(root, id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sock, err := SocketPath(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := HostSpec{ID: id, Socket: sock, Created: time.Now().UnixMilli(), Spec: harness.Spec{
+		Agent: "test", Model: "scripted", Cwd: t.TempDir(), ChatID: "chat_refused", Dir: dir,
+		Env: []string{testScriptEnv + "=" + script(t, step{Do: "hang"})},
+	}}
+	raw, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, fileSpec), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var journal []byte
+	for seq := 1000; seq < 1005; seq++ {
+		journal = append(journal, []byte(fmt.Sprintf(
+			`{"kind":"notice","seq":%d,"ts":1,"error":"old"}`+"\n", seq))...)
+	}
+	if err := os.WriteFile(filepath.Join(dir, fileEvents), journal, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(os.Args[0], "agent-host", "--dir", dir)
+	logf, _ := os.Create(filepath.Join(dir, fileLog))
+	cmd.Stdout, cmd.Stderr = logf, logf
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() })
+
+	m, err := NewManager(root, os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(m.Detach)
+	waitFor(t, 30*time.Second, func() bool { return m.Restore(t.Context()) == 1 || len(m.List("")) == 1 })
+	h, ok := m.Get(dir)
+	if !ok {
+		t.Fatal("the host was not restored")
+	}
+
+	frames, unsubscribe := h.Subscribe(5)
+	defer unsubscribe()
+	var last error
+	for f := range frames {
+		if f.Err != nil {
+			last = f.Err
+		}
+	}
+	if last == nil {
+		t.Fatal("a refused subscribe ended without saying why")
+	}
+	var refused *Refused
+	if !errors.As(last, &refused) {
+		t.Fatalf("the refusal is not marked as one: %#v", last)
+	}
+	if !errors.Is(last, ErrReplayWindow) {
+		t.Fatalf("the refusal does not name the replay window: %v", last)
+	}
+
+	// And a connection that simply went is not a refusal, so the caller knows
+	// to redial it once instead of giving up on the turn.
+	if errors.As(ErrGone, new(*Refused)) {
+		t.Fatal("a lost connection was classed as a refusal")
 	}
 }

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"path/filepath"
 	"strconv"
@@ -50,10 +51,10 @@ type pump struct {
 	partial   map[string]string
 	currentID string
 
-	// release lets the chat go before the run's last event is published. The
-	// browser sends the next message the moment it sees a run turn done, and a
-	// chat still registered as active at that instant answers ErrBusy for a
-	// turn that is over.
+	// release lets the chat go, in the same locked step that publishes the
+	// run's last event. The browser sends the next message the moment it sees
+	// a run turn done, and a chat still registered as active at that instant
+	// answers ErrBusy for a turn that is over.
 	release func()
 	// lastSeq is the highest journal position this pump has applied. The same
 	// event can reach it twice - a live push and the replay that follows it on
@@ -408,13 +409,10 @@ func (p *pump) finish(outcome, errText string) {
 		log.Printf("engine: set run status: %v", err)
 	}
 	p.run.Status, p.run.Error = status, errText
-	// Let go of the chat first, then say the turn is over. The other order is
-	// a race the user loses: they see the answer, they type, and the send is
-	// refused for a turn that has already finished.
-	if p.release != nil {
-		p.release()
-	}
-	p.engine.publish(p.chat.ID, Event{Type: "run", Run: p.run})
+	// Letting go of the chat and saying the turn is over are one step: see
+	// commitRun. Doing them in either order with a gap between hands the
+	// browser a state that contradicts the one it is about to be sent.
+	p.engine.commitRun(p.chat.ID, p.run, p.release)
 }
 
 // finished reports whether this turn has already been ended.
@@ -455,7 +453,7 @@ func (p *pump) closeOpenSteps(outcome string) {
 // says which of the two things happened.
 func (p *pump) replayFailed(err error) {
 	body := "the agent host could not be reached"
-	if err != nil && strings.Contains(err.Error(), agenthost.ErrReplayWindow.Error()) {
+	if errors.Is(err, agenthost.ErrReplayWindow) {
 		body = "the transcript of this turn was too long to replay after a restart"
 	}
 	if p.done {
