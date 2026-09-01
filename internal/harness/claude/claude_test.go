@@ -34,9 +34,20 @@ type session struct {
 	patience time.Duration
 }
 
+// shortGrace makes the launch windows test-sized and puts them back after.
+// The fake, like the real CLI, says nothing at all until the first turn, so
+// without this every Start would sit out the full production window.
+func shortGrace(t *testing.T, launch, resume time.Duration) {
+	t.Helper()
+	oldL, oldR := launchGrace, resumeGrace
+	launchGrace, resumeGrace = launch, resume
+	t.Cleanup(func() { launchGrace, resumeGrace = oldL, oldR })
+}
+
 // start builds the fakes, puts them on PATH, and starts one adapter.
 func start(t *testing.T, script string, spec harness.Spec) *session {
 	t.Helper()
+	shortGrace(t, 50*time.Millisecond, 50*time.Millisecond)
 	dir := fakes.Build(t)
 	t.Setenv("PATH", fakes.PathWith(dir))
 	t.Setenv("FAKE_SCRIPT", script)
@@ -338,6 +349,11 @@ func TestToolTurnAndBlockIDs(t *testing.T) {
 	}
 	if finished.Tool.Output != "ok\n" || !finished.Tool.OK {
 		t.Fatalf("tool_finished reported %+v", finished.Tool)
+	}
+	// SHOULD-FIX-4: the finish event carries the name and title again, or the
+	// engine's patch blanks the card's header.
+	if finished.Tool.Name != "Bash" || finished.Tool.Title != "Ran a command" {
+		t.Fatalf("tool_finished dropped the card's identity: %+v", finished.Tool)
 	}
 	// F-2: no exit code is on the wire, so none is invented.
 	if finished.Tool.ExitCode != 0 {
@@ -718,8 +734,14 @@ func TestCloseEndsAnOpenTurn(t *testing.T) {
 		t.Fatalf("closing: %v", err)
 	}
 	s.waitClosed()
-	if n := count(s.events(), harness.KindTurnFinished, "run_1"); n != 1 {
-		t.Fatalf("an open turn got %d turn_finished events on Close:\n%s", n, dump(s.events()))
+	evs := s.events()
+	if n := count(evs, harness.KindTurnFinished, "run_1"); n != 1 {
+		t.Fatalf("an open turn got %d turn_finished events on Close:\n%s", n, dump(evs))
+	}
+	// Revision 9's E4: the outcome is interrupted, not an error - the user's
+	// session was shut down, their turn did not fail.
+	if end := only(t, evs, harness.KindTurnFinished); end.Outcome != harness.OutcomeInterrupted {
+		t.Fatalf("Close ended the open turn as %q, wanted interrupted", end.Outcome)
 	}
 }
 
@@ -766,6 +788,45 @@ func TestVisibleSubagentsProduceNoNotice(t *testing.T) {
 	evs := s.waitTurn("run_1")
 	if n := count(evs, harness.KindNotice, ""); n != 0 {
 		t.Fatalf("wanted no notice, got %d:\n%s", n, dump(evs))
+	}
+}
+
+// init arrives inside the first turn under --input-format stream-json (E-1),
+// which is the fake's default and the real CLI's behaviour - but a build that
+// announced itself at start must work identically, because the session id the
+// adapter reports is the one Socrates generated either way.
+func TestBothInitOrdersProduceTheSameSession(t *testing.T) {
+	for _, atStart := range []bool{false, true} {
+		name := "init inside the first turn"
+		if atStart {
+			name = "init at process start"
+		}
+		t.Run(name, func(t *testing.T) {
+			if atStart {
+				t.Setenv("FAKE_INIT_AT_START", "1")
+			}
+			s := start(t, `[{"do":"text","text":"hi"},{"do":"end","outcome":"ok"}]`,
+				harness.Spec{Model: "sonnet", ChatID: "chat_init"})
+
+			// Invariant 1 holds before anything has been read from the CLI.
+			first := s.waitFor("session_id", func(evs []harness.Event) bool { return len(evs) > 0 })
+			if first[0].Kind != harness.KindSessionID || first[0].Session == "" {
+				t.Fatalf("wanted session_id first, got:\n%s", dump(first))
+			}
+			s.send("run_1", "hello")
+			evs := s.waitTurn("run_1")
+			if only(t, evs, harness.KindTurnFinished).Outcome != harness.OutcomeOK {
+				t.Fatalf("the turn did not end ok:\n%s", dump(evs))
+			}
+			// Exactly one session_id either way: the id the CLI echoes is the
+			// id Start already reported, so there is no correction.
+			if n := count(evs, harness.KindSessionID, ""); n != 1 {
+				t.Fatalf("wanted one session_id, got %d:\n%s", n, dump(evs))
+			}
+			if !hasFlag(s.argvLines()[0], "--session-id", first[0].Session) {
+				t.Fatalf("--session-id does not match the reported session %q", first[0].Session)
+			}
+		})
 	}
 }
 

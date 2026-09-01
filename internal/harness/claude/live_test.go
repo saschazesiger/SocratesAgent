@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/saschazesiger/SocratesAgent/internal/harness"
 )
 
@@ -170,21 +172,34 @@ func TestLiveClaudeTurn(t *testing.T) {
 }
 
 // TestLiveClaudeResumeFallback is R-3 against the real CLI: a --resume of a
-// session that does not exist. The CLI accepts the flag, stays alive and
-// silent, and only fails on the first turn - so the adapter relaunches under
-// the same id and replays that turn, and the user gets an answer plus one
-// notice instead of a dead chat.
+// session that does not exist. The exec succeeds; the CLI then writes
+// result{error_during_execution, is_error:true, num_turns:0} unprompted, 1.3 s
+// to 3.9 s later, and exits 1. The adapter has to relaunch under the same id
+// and carry on, so the user gets an answer plus one notice instead of a dead
+// chat.
 func TestLiveClaudeResumeFallback(t *testing.T) {
 	liveOrSkip(t)
 
 	cwd := t.TempDir()
-	// A well-formed uuid the CLI has never seen.
-	const ghost = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	// A fresh uuid every run. A constant one stops being a ghost the moment
+	// this test has passed once: the relaunch writes a real transcript under
+	// it, and --resume resolves ids globally rather than per cwd (E-3), so the
+	// next run would resume happily and pass for the wrong reason.
+	ghost := uuid.NewString()
+	t.Logf("ghost session id = %s", ghost)
 	s := liveSession(t, harness.Spec{
 		Model: liveModel, Effort: liveEffort, Cwd: cwd, Dir: cwd,
 		ChatID: "chat_live_resume", ChatTitle: "Socrates live resume", SessionID: ghost,
 	})
 	defer s.closeLive()
+
+	// The production gap: the host starts the adapter and the user types
+	// later, so the death has to be survived with no turn open and no Send
+	// racing it. Winning that race by microseconds is what hid the bug.
+	time.Sleep(3 * time.Second)
+	if n := count(s.events(), harness.KindFatal, ""); n != 0 {
+		t.Fatalf("the ghost death was reported as fatal:\n%s", dump(s.events()))
+	}
 
 	s.send("run_1", "Reply with exactly: OK")
 	evs := s.waitTurn("run_1")

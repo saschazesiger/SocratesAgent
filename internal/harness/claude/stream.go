@@ -265,13 +265,18 @@ func (a *adapter) toolUse(turnID, parent string, block contentBlock) {
 		InputJSON: inputJSON(block.Input),
 	}
 	kind := harness.KindToolStarted
-	if block.Name == "Task" {
+	isTask := block.Name == "Task"
+	if isTask {
 		kind = harness.KindSubagentStarted
-		a.mu.Lock()
-		a.taskIDs[block.ID] = true
-		a.sawTask = true
-		a.mu.Unlock()
 	}
+	// The finish event has to carry the name and title again, or the engine's
+	// patch blanks the card's header (SHOULD-FIX-4).
+	a.mu.Lock()
+	a.tools[block.ID] = &harness.Tool{Name: block.Name, Title: title}
+	if isTask {
+		a.sawTask = true
+	}
+	a.mu.Unlock()
 	a.out.emit(harness.Event{
 		Kind: kind, TurnID: turnID, ID: block.ID, Parent: parent, Tool: tool,
 	})
@@ -304,16 +309,25 @@ func (a *adapter) userLine(env envelope, parent string) {
 			output = toolUseResultText(env.ToolUseResult)
 		}
 		a.mu.Lock()
-		isTask := a.taskIDs[block.ToolUseID]
+		was := a.tools[block.ToolUseID]
 		a.mu.Unlock()
 
-		kind, title := harness.KindToolFinished, ""
-		if isTask {
+		name, title := "", ""
+		if was != nil {
+			name, title = was.Name, was.Title
+		}
+		kind := harness.KindToolFinished
+		if name == "Task" {
 			kind, title = harness.KindSubagentFinished, "Subagent finished"
 		}
 		a.out.emit(harness.Event{
 			Kind: kind, TurnID: turnID, ID: block.ToolUseID, Parent: parent,
 			Tool: &harness.Tool{
+				// SHOULD-FIX-4: §2.3's wire example for tool_finished carries
+				// name and title, and the engine patches the card with what
+				// this event says - an empty title would blank the header the
+				// start event filled in.
+				Name:   name,
 				Title:  title,
 				Output: harness.TruncateOutput(output),
 				OK:     !block.IsError,
@@ -333,23 +347,21 @@ func (a *adapter) userLine(env envelope, parent string) {
 func (a *adapter) result(env envelope) {
 	a.mu.Lock()
 	turnID, interrupted, sawTask := a.turnID, a.interruptSent, a.sawTask
-	// R-3: a --resume the CLI cannot read produces exactly this - an error
-	// result on the first turn with no init ever having arrived - rather than
-	// a failed launch. One relaunch under the same id, replaying this turn.
-	retry := a.resumed && !a.ready && env.IsError && !a.retried && turnID != ""
-	if retry {
-		a.retrying, a.retried = true, true
+	// BLOCKER-1 / R-3: the signature of a --resume the CLI could not read is
+	// an error result that ended no turn (num_turns 0) on a resumed process
+	// that never saw init. It arrives unprompted 1.3-3.9 s after launch, so
+	// it is recorded here whether or not a turn is open, and eof() - which
+	// alone knows the process is really gone - arms the one relaunch.
+	if a.resumed && !a.ready && env.IsError && env.NumTurns == 0 {
+		a.resumeFailed = true
+		a.mu.Unlock()
+		return
 	}
-	text := a.turnText
-	if turnID != "" && !retry {
+	if turnID != "" {
 		a.pendingUsage = usageOf(env)
 	}
 	a.mu.Unlock()
 	if turnID == "" {
-		return
-	}
-	if retry {
-		go a.retryWithoutResume(turnID, text)
 		return
 	}
 

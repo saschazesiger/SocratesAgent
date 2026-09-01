@@ -30,7 +30,11 @@ type envelope struct {
 	Response *controlResponse `json:"response"`
 
 	// result
-	IsError        bool                  `json:"is_error"`
+	IsError bool `json:"is_error"`
+	// NumTurns is 0 only on a result that ended nothing - which, together
+	// with is_error and an init that never came, is the signature of a
+	// --resume the CLI could not read (R-3, BLOCKER-1).
+	NumTurns       int                   `json:"num_turns"`
 	TerminalReason string                `json:"terminal_reason"`
 	Result         string                `json:"result"`
 	TotalCostUSD   float64               `json:"total_cost_usd"`
@@ -198,8 +202,10 @@ func describe(name string, input json.RawMessage) (title, oneLine string) {
 		return s
 	}
 	switch name {
-	case "Bash", "BashOutput":
+	case "Bash":
 		title, oneLine = "Ran a command", str("command")
+	case "BashOutput":
+		title, oneLine = "Read command output", str("bash_id")
 	case "Read":
 		title, oneLine = "Read "+base(str("file_path")), str("file_path")
 	case "Write":

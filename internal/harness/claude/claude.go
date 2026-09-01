@@ -55,9 +55,32 @@ func New() harness.Adapter { return newAdapter() }
 // but only once the first user message has been written - verified live
 // against 2.1.252, where a process left idle for 20 seconds produced zero
 // bytes and then emitted init the instant a turn arrived. What Start can
-// prove is that the CLI accepted its argv, and that it does within
-// milliseconds: a rejected flag exits before anything is written (F-4).
-const launchGrace = 1500 * time.Millisecond
+// prove is that the CLI accepted its argv: a rejected flag exits 1 with zero
+// bytes on stdout in about a second - measured 0.57-0.91 s on an idle machine
+// (F-4). Three seconds leaves room for a loaded one; it is paid once per host,
+// not per turn.
+//
+// It is a var only so the tests can shorten it; nothing outside this package
+// writes it.
+var launchGrace = 3 * time.Second
+
+// resumeGrace is how long a *resumed* Start additionally waits before calling
+// the session good.
+//
+// A --resume of a session the CLI cannot read does not fail the exec: the CLI
+// starts, writes `result{error_during_execution, is_error:true, num_turns:0}`
+// unprompted and exits 1 with "No conversation found with session ID" on
+// stderr. Measured at 1.3-3.2 s to that line and 1.8-3.9 s to the exit across
+// six runs on two machines, so no wait can be a guarantee - which is why the
+// R-3 relaunch is armed from eof() and Send waits on one in flight. This
+// window only buys the common case: the failure resolves inside Start and the
+// host never hands the engine a session that is already dead.
+var resumeGrace = 3 * time.Second
+
+// retryWait bounds everything the R-3 relaunch waits for, so a CLI that ever
+// stopped exiting after that result cannot leave a turn open forever with no
+// turn_finished (invariant 2).
+const retryWait = 10 * time.Second
 
 // interruptDeadline is how long Interrupt waits for the control_response. The
 // CLI answers promptly (research §3); the wait exists so that a lost response
@@ -107,7 +130,11 @@ type adapter struct {
 	assistantN  map[string]int         // message id -> next arrival index
 	deltas      map[string]*deltaBuf   // block id -> coalesced text_delta state
 
-	taskIDs map[string]bool // tool_use ids that were a Task, i.e. a subagent
+	// tools remembers what each tool_use id was, so tool_finished can carry
+	// the name and title again: the engine patches the card with whatever the
+	// finish event says, and an empty title blanks a header the start event
+	// had filled in.
+	tools   map[string]*harness.Tool
 	sawTask bool
 
 	// Interrupt correlation.
@@ -116,19 +143,39 @@ type adapter struct {
 
 	stderr *ring
 
-	// sessionUUID is the id Socrates owns for this chat: generated on a fresh
-	// chat, passed in on a resume, and the same one either way after a
-	// relaunch.
-	sessionUUID string
-	resumed     bool   // this process was launched with --resume
-	retried     bool   // the R-3 fallback has already been used once
-	retrying    bool   // a relaunch is in flight: this death is not fatal
-	turnText    string // the text of the turn in flight, for the R-3 replay
+	// The R-3 state machine. sessionUUID is the id Socrates owns for this
+	// chat: generated on a fresh chat, passed in on a resume, and the same one
+	// either way after a relaunch. The rest tracks one non-repeating
+	// transition, resumed -> resumeFailed -> retried:
+	//
+	//	resumed      this process carries --resume, so it can fail that way
+	//	resumeFailed the ghost signature was seen: is_error with num_turns 0
+	//	             and no init ever having arrived
+	//	retried      the one relaunch this adapter is allowed has been claimed
+	//	retrying     that relaunch is in flight right now, so the death that
+	//	             triggered it is expected and is not a fatal
+	//	retryDone    closed when the relaunch has finished, either way; Start
+	//	             and Send wait on it rather than racing it
+	sessionUUID  string
+	resumed      bool
+	resumeFailed bool
+	retried      bool
+	retrying     bool
+	retryDone    chan struct{}
 
-	closing bool // Close was called: an EOF is expected, not fatal
-	ready   bool // system/init arrived, so the CLI really opened the session
-	exited  chan struct{}
-	eofDone chan struct{}
+	turnText string // the text of the turn in flight, for the R-3 replay
+
+	// pendingNotice is said at the start of the next turn. A notice with no
+	// turn id, journalled before any run exists, is one the engine has no
+	// place to show.
+	pendingNotice string
+
+	closing   bool // Close was called: an EOF is expected, not fatal
+	dead      bool // the process is gone: Send says so instead of failing a write
+	ready     bool // system/init arrived, so the CLI really opened the session
+	startedOK bool // Start returned nil, so a death from here on is a real one
+	exited    chan struct{}
+	eofDone   chan struct{}
 	// spoke is closed by the reader the first time the CLI writes anything.
 	// It is the fast path out of launchGrace for an agent that does announce
 	// itself at start.
@@ -144,7 +191,7 @@ func newAdapter() *adapter {
 		streamNext:  map[string]int{},
 		assistantN:  map[string]int{},
 		deltas:      map[string]*deltaBuf{},
-		taskIDs:     map[string]bool{},
+		tools:       map[string]*harness.Tool{},
 		controls:    map[string]chan struct{}{},
 		stderr:      &ring{limit: stderrKeep},
 		exited:      make(chan struct{}),
@@ -168,17 +215,67 @@ func (a *adapter) Start(ctx context.Context, spec harness.Spec) error {
 	a.spec, a.sessionUUID = spec, id
 	a.mu.Unlock()
 
-	if err := a.launch(ctx, spec, id, spec.SessionID != ""); err != nil {
-		return err
+	err := a.launch(ctx, spec, id, spec.SessionID != "")
+	if err != nil {
+		// A resumed launch that died may be R-3's ghost rather than a broken
+		// install. eof() is the one place that arms the relaunch, so Start
+		// waits for its verdict instead of racing it.
+		if !a.awaitRetry(ctx) {
+			return err
+		}
 	}
 	// Invariant 1: session_id before the first turn_started, including when
 	// it is the id that was passed in. It is the id Socrates generated rather
 	// than one read off the wire, because the CLI says nothing at all until
 	// the first turn - and it is the id the CLI echoes back, since
 	// --fork-session, the one flag that reallocates it, is never used. If the
-	// CLI ever disagrees, stream.go emits the correction.
+	// CLI ever disagreed, the correction would come from the init line inside
+	// the first turn (stream.go) - so it would carry that turn's id, not this
+	// moment's.
+	a.mu.Lock()
+	a.startedOK = true
+	a.mu.Unlock()
 	a.out.emit(harness.Event{Kind: harness.KindSessionID, Session: id})
 	return nil
+}
+
+// awaitRetry runs, or waits out, the R-3 relaunch that the death of a resumed
+// process arms, and reports whether the adapter came back alive.
+//
+// It does not wait for eof to get there first: the ghost result is decoded
+// before the stream ends, so resumeFailed is already set by the time Start
+// sees the process go, and claimRetry - one mutex, one winner - decides
+// between the two of them. Whoever loses waits on the winner's channel.
+func (a *adapter) awaitRetry(ctx context.Context) bool {
+	run, done := a.takeRetry()
+	switch {
+	case run:
+		// No turn can be open yet: Start has not returned.
+		a.retryWithoutResume("", "")
+	case done != nil:
+		if !waitFor(ctx, done, 3*retryWait) {
+			return false
+		}
+	default:
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.stdin != nil && !a.dead
+}
+
+// waitFor blocks on ch, reporting whether it closed before ctx or the cap.
+func waitFor(ctx context.Context, ch <-chan struct{}, cap time.Duration) bool {
+	t := time.NewTimer(cap)
+	defer t.Stop()
+	select {
+	case <-ch:
+		return true
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return false
+	}
 }
 
 // launch starts one process and returns once it has accepted its argv.
@@ -211,7 +308,7 @@ func (a *adapter) launch(ctx context.Context, spec harness.Spec, sessionID strin
 	}
 
 	a.mu.Lock()
-	a.cmd, a.stdin, a.resumed, a.ready = cmd, stdin, resume, false
+	a.cmd, a.stdin, a.resumed, a.ready, a.dead = cmd, stdin, resume, false, false
 	exited, eofDone, spoke := a.exited, a.eofDone, a.spoke
 	a.mu.Unlock()
 
@@ -235,18 +332,34 @@ func (a *adapter) launch(ctx context.Context, spec harness.Spec, sessionID strin
 	// Start returns only when the session can take a turn. There is nothing
 	// to read that proves it - see launchGrace - so what is proven instead is
 	// that the CLI did not reject its argv and walk straight back out.
-	timer := time.NewTimer(launchGrace)
-	defer timer.Stop()
-	select {
-	case <-exited:
-		return fmt.Errorf("claude: %s exited before it was ready%s", bin, a.stderrSuffix())
-	case <-spoke:
-		// It wrote something, so it is past its argv parsing.
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
+	window := launchGrace
+	if resume {
+		// A resumed launch's first line can be the ghost death itself, so
+		// speaking is not proof of health here and the window is the longer
+		// one.
+		window = resumeGrace
 	}
-	return nil
+	timer := time.NewTimer(window)
+	defer timer.Stop()
+	for {
+		select {
+		case <-exited:
+			return fmt.Errorf("claude: %s exited before it was ready%s", bin, a.stderrSuffix())
+		case <-spoke:
+			if resume {
+				// Keep waiting: this line may be the death, and the caller
+				// gets its verdict from awaitRetry either way.
+				spoke = nil
+				continue
+			}
+			// It wrote something, so it is past its argv parsing.
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			return nil
+		}
+	}
 }
 
 // Argv is the exact production command line. It is built in one place so that
@@ -287,71 +400,169 @@ func Argv(spec harness.Spec, sessionID string, resume bool) []string {
 	return append(args, spec.ExtraArgs...)
 }
 
-// resetForRelaunch clears the per-process state so the resume retry starts
-// from a clean slate. The outbox survives: it is the adapter's one event
-// stream and the caller may already be ranging over it.
+// takeRetry settles a caller's part in the one R-3 relaunch this adapter is
+// allowed, under a single lock: run it, wait for the one already running, or
+// neither. Start and eof both race for it - eof runs the moment the ghost
+// process is reaped, and the relaunch it starts clears resumeFailed - so
+// reading the flags and claiming them has to be one indivisible step or Start
+// asks a question whose answer has already been erased.
+//
+// done is non-nil once anyone has claimed, and stays non-nil, closed, after
+// the relaunch is over: a later caller waiting on it is told "already
+// handled" immediately.
+func (a *adapter) takeRetry() (run bool, done chan struct{}) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.resumed {
+		return false, nil
+	}
+	if a.retryDone != nil {
+		return false, a.retryDone
+	}
+	if !a.resumeFailed || a.retried || a.closing {
+		return false, nil
+	}
+	a.retried, a.retrying = true, true
+	a.retryDone = make(chan struct{})
+	return true, a.retryDone
+}
+
+// stopOldProcess makes sure the process being replaced is really gone and its
+// reader really finished, without waiting on it forever: a CLI that stopped
+// exiting after the ghost result would otherwise strand the turn.
+func (a *adapter) stopOldProcess() {
+	a.mu.Lock()
+	cmd, exited, eofDone := a.cmd, a.exited, a.eofDone
+	a.mu.Unlock()
+	if cmd == nil {
+		return
+	}
+	select {
+	case <-exited:
+		// Already reaped. Signalling its group now would signal whatever
+		// inherited the id.
+	default:
+		_ = proc.Terminate(cmd)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), retryWait)
+	defer cancel()
+	waitFor(ctx, eofDone, retryWait)
+}
+
+// resetForRelaunch clears the per-process state so the relaunch starts from a
+// clean slate. The outbox survives: it is the adapter's one event stream and
+// the caller may already be ranging over it.
 func (a *adapter) resetForRelaunch() {
 	a.mu.Lock()
-	eofDone := a.eofDone
-	a.mu.Unlock()
-	<-eofDone
-
-	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.cmd, a.stdin, a.session, a.resolvedModel, a.waitErr = nil, nil, "", "", nil
-	a.ready = false
+	a.ready, a.dead, a.resumeFailed = false, false, false
 	a.exited = make(chan struct{})
 	a.spoke = make(chan struct{})
 	a.eofDone = make(chan struct{})
 	a.stderr = &ring{limit: stderrKeep}
-	a.mu.Unlock()
 }
 
-// retryWithoutResume is R-3, moved to where the failure actually shows up.
+// retryWithoutResume is R-3, armed by the signature of the failure rather than
+// by its timing.
 //
-// The design put it at Start, on the assumption that a --resume of a session
-// the CLI cannot read fails the launch. Live, it does not: the CLI accepts the
-// flag, stays alive and silent, and only on the first turn writes
-// `result{subtype:"error_during_execution", is_error:true, num_turns:0}` and
-// exits 1 with "No conversation found with session ID" on stderr. So the
-// fallback is armed by that result instead - once - and the turn that
-// triggered it is replayed on the fresh process rather than being lost.
+// The design put the fallback at Start, on the assumption that a --resume of a
+// session the CLI cannot read fails the launch. It does not: the exec
+// succeeds, and the CLI then writes
+// result{subtype:"error_during_execution", is_error:true, num_turns:0}
+// unprompted and exits 1 with "No conversation found with session ID" on
+// stderr - measured between 1.3 s and 3.9 s after launch, which is before,
+// during or after the first Send depending on nothing the adapter controls.
+// So the arm is that signature (an error result with zero turns, on a resumed
+// process that never saw init), the trigger is eof(), and a turn that was
+// already open is replayed on the fresh process under the same turn id.
 func (a *adapter) retryWithoutResume(turnID, text string) {
+	defer a.finishRetry()
+
+	a.stopOldProcess()
 	a.resetForRelaunch()
 
 	a.mu.Lock()
 	spec, id := a.spec, a.sessionUUID
-	a.retrying = false
 	a.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*retryWait)
 	defer cancel()
 	if err := a.launch(ctx, spec, id, false); err != nil {
-		a.closeTurn(harness.OutcomeError,
-			"the previous session could not be resumed and a fresh one could not be started: "+err.Error())
-		a.out.emit(harness.Event{Kind: harness.KindFatal, Error: err.Error()})
+		msg := "the previous session could not be resumed and a fresh one could not be started: " + err.Error()
+		a.closeTurn(harness.OutcomeError, msg)
+		a.out.emit(harness.Event{Kind: harness.KindFatal, Error: msg})
 		a.out.finish()
 		return
 	}
-	a.notice(turnID, "the previous session could not be resumed; this chat continues without its earlier history")
 	a.out.emit(harness.Event{Kind: harness.KindSessionID, Session: id})
 
-	line, err := userLine(text)
-	if err != nil {
-		a.closeTurn(harness.OutcomeError, err.Error())
+	const lost = "the previous session could not be resumed; this chat continues without its earlier history"
+	if turnID == "" {
+		// There is no run to hang it on yet, and a notice journalled before
+		// any run exists is one the engine has nowhere to show. It is said at
+		// the start of the next turn instead.
+		a.mu.Lock()
+		a.pendingNotice = lost
+		a.mu.Unlock()
 		return
 	}
-	a.mu.Lock()
-	stdin := a.stdin
-	a.mu.Unlock()
-	if stdin == nil {
-		a.closeTurn(harness.OutcomeError, "the session was closed while it was being restarted")
-		return
-	}
+	a.notice(turnID, lost)
+
 	// No second turn_started: this is the same turn, on a new process.
-	if _, err := stdin.Write(line); err != nil {
+	if err := a.writeTurn(text); err != nil {
 		a.closeTurn(harness.OutcomeError, "replaying the turn after the restart: "+err.Error())
 	}
 }
+
+// finishRetry releases everyone waiting on the relaunch.
+func (a *adapter) finishRetry() {
+	a.mu.Lock()
+	done := a.retryDone
+	a.retrying = false
+	a.mu.Unlock()
+	if done == nil {
+		return
+	}
+	select {
+	case <-done:
+	default:
+		close(done)
+	}
+}
+
+// pendingRetry returns the channel of an R-3 relaunch in flight, or nil.
+func (a *adapter) pendingRetry() chan struct{} {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.retrying {
+		return nil
+	}
+	return a.retryDone
+}
+
+// writeTurn puts one user line on stdin. Send and the R-3 replay share it, so
+// "the session is not running" reads the same either way.
+func (a *adapter) writeTurn(text string) error {
+	line, err := userLine(text)
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	stdin, dead := a.stdin, a.dead
+	a.mu.Unlock()
+	if stdin == nil || dead {
+		return errNotRunning
+	}
+	if _, err := stdin.Write(line); err != nil {
+		return fmt.Errorf("claude: writing the turn: %w", err)
+	}
+	return nil
+}
+
+// errNotRunning is what every method says once the CLI is gone, instead of
+// leaking a pipe's "file already closed" to a caller who cannot act on it.
+var errNotRunning = errors.New("claude: the session is not running")
 
 // modelMatches reports whether the model the CLI resolved is the one that was
 // asked for. An alias resolves to a canonical dated id ("haiku" ->
@@ -366,15 +577,19 @@ func modelMatches(want, got string) bool {
 // -------------------------------------------------------------------- send
 
 func (a *adapter) Send(ctx context.Context, turnID, text string) error {
-	line, err := userLine(text)
-	if err != nil {
-		return err
+	// A ghost resume can die at any point up to several seconds after Start,
+	// so a Send may land while the R-3 relaunch is in flight. Waiting for it
+	// turns what would be a failed run into a turn on the fresh process.
+	if done := a.pendingRetry(); done != nil {
+		if !waitFor(ctx, done, retryWait) {
+			return errNotRunning
+		}
 	}
 
 	a.mu.Lock()
-	if a.stdin == nil {
+	if a.stdin == nil || a.dead {
 		a.mu.Unlock()
-		return errors.New("claude: the session is not running")
+		return errNotRunning
 	}
 	if a.turnID != "" {
 		a.mu.Unlock()
@@ -383,14 +598,16 @@ func (a *adapter) Send(ctx context.Context, turnID, text string) error {
 	a.turnID, a.turnOnce, a.turnText = turnID, &sync.Once{}, text
 	a.pendingUsage, a.notices, a.badLines = nil, 0, 0
 	a.sawTask = false
-	stdin := a.stdin
+	pending := a.pendingNotice
+	a.pendingNotice = ""
 	a.mu.Unlock()
 
-	if _, err := stdin.Write(line); err != nil {
+	if err := a.writeTurn(text); err != nil {
 		a.mu.Lock()
 		a.turnID, a.turnOnce = "", nil
+		a.pendingNotice = pending
 		a.mu.Unlock()
-		return fmt.Errorf("claude: writing the turn: %w", err)
+		return err
 	}
 
 	// F-1: Claude has no turn-start message of its own - system/status fires
@@ -399,6 +616,11 @@ func (a *adapter) Send(ctx context.Context, turnID, text string) error {
 	// --replay-user-messages echo is deliberately not the trigger: it is one
 	// more thing that can fail to arrive.
 	a.out.emit(harness.Event{Kind: harness.KindTurnStarted, TurnID: turnID})
+	if pending != "" {
+		// An R-3 relaunch that happened before any run existed says so here,
+		// where the transcript has a turn to show it in.
+		a.notice(turnID, pending)
+	}
 	return nil
 }
 
@@ -406,7 +628,7 @@ func (a *adapter) Send(ctx context.Context, turnID, text string) error {
 
 func (a *adapter) Interrupt(ctx context.Context) error {
 	a.mu.Lock()
-	if a.turnID == "" || a.stdin == nil {
+	if a.turnID == "" || a.stdin == nil || a.dead {
 		// A no-op when nothing is running, per the Adapter contract.
 		a.mu.Unlock()
 		return nil
@@ -424,7 +646,13 @@ func (a *adapter) Interrupt(ctx context.Context) error {
 		return err
 	}
 	if _, err := stdin.Write(line); err != nil {
-		return fmt.Errorf("claude: writing the interrupt: %w", err)
+		// NIT-7: the flag was set before the write, and a request that never
+		// left must not make the next result read as the user's own cancel.
+		a.mu.Lock()
+		a.interruptSent = false
+		delete(a.controls, id)
+		a.mu.Unlock()
+		return errNotRunning
 	}
 
 	timer := time.NewTimer(interruptDeadline)
@@ -448,8 +676,17 @@ func (a *adapter) Interrupt(ctx context.Context) error {
 // ------------------------------------------------------------------- close
 
 func (a *adapter) Close(ctx context.Context, grace time.Duration) error {
+	// Setting closing first stops claimRetry, so at most the relaunch already
+	// in flight has to be waited out - and it must be, or Close would leave
+	// its process running behind a stream it had already finished.
 	a.mu.Lock()
 	a.closing = true
+	a.mu.Unlock()
+	if done := a.pendingRetry(); done != nil {
+		waitFor(ctx, done, retryWait)
+	}
+
+	a.mu.Lock()
 	stdin, cmd, exited, eofDone := a.stdin, a.cmd, a.exited, a.eofDone
 	a.mu.Unlock()
 
@@ -515,6 +752,14 @@ func (a *adapter) closeTurn(outcome, errText string) {
 		usage := a.pendingUsage
 		a.turnID, a.turnOnce, a.pendingUsage = "", nil, nil
 		a.interruptSent = false
+		// NIT-9: the block and tool bookkeeping is per turn by construction -
+		// an API message never spans a result - so it is cleared here rather
+		// than growing by a few entries per turn for the life of the process.
+		a.streamMsg = map[string]string{}
+		a.streamBlock = map[string]map[int]int{}
+		a.streamNext = map[string]int{}
+		a.assistantN = map[string]int{}
+		a.tools = map[string]*harness.Tool{}
 		a.mu.Unlock()
 
 		a.dropDeltas()
@@ -533,14 +778,30 @@ func (a *adapter) closeTurn(outcome, errText string) {
 func (a *adapter) eof() {
 	a.mu.Lock()
 	closing, retrying, open, werr := a.closing, a.retrying, a.turnID != "", a.waitErr
+	turnID, text := a.turnID, a.turnText
+	// The process is gone: a Send from here on says so instead of failing on
+	// a closed pipe (SHOULD-FIX-6).
+	a.dead, a.stdin = true, nil
 	a.mu.Unlock()
 
 	if retrying {
-		// The R-3 fallback is relaunching this session under the same id.
-		// This death is expected and the replacement owns the stream.
+		// The R-3 fallback is already relaunching this session under the same
+		// id. This death is expected and the replacement owns the stream.
 		return
 	}
-	if closing {
+	// BLOCKER-1: this is the one place that knows the process is really gone,
+	// so it is where R-3 is armed - whether the ghost result arrived before
+	// Start returned, between Start and Send, or inside a turn.
+	if run, _ := a.takeRetry(); run {
+		go a.retryWithoutResume(turnID, text)
+		return
+	}
+	a.mu.Lock()
+	startedOK := a.startedOK
+	a.mu.Unlock()
+	if closing || !startedOK {
+		// NIT-8: a process that died before Start ever returned is Start's
+		// error to report, not a fatal on a stream nobody is pumping yet.
 		a.closeTurn(harness.OutcomeInterrupted, "")
 		a.out.finish()
 		return
