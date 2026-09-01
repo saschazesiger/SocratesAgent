@@ -1,6 +1,6 @@
 // Small helpers shared by every page: JSON fetch, DOM building and toasts.
 
-import { request, NetworkError, mountConnectionBar } from './net.js';
+import { request, NetworkError, HttpError, mountConnectionBar } from './net.js';
 
 export { clientKey, onWake, LiveStream, Outbox, HttpError, NetworkError, RetryLater, setClass, CONNECTION_GRACE } from './net.js';
 
@@ -131,6 +131,26 @@ export function toast(message, kind = '') {
     node.style.opacity = '0';
     setTimeout(() => node.remove(), 260);
   }, kind === 'error' ? 6000 : 3200);
+}
+
+// isBusyConflict is the one refusal that passes on its own: the chat is still
+// working on the previous turn. Everything permanent uses another status, so
+// this is the only one worth waiting out rather than showing as a failure.
+export function isBusyConflict(err) {
+  return err instanceof HttpError && err.status === 409;
+}
+
+// fmtTokens is the usage line's unit: 12345 -> "12.3k". Whole thousands lose
+// the trailing zero, because "12.0k" reads as more precision than there is.
+export function fmtTokens(n) {
+  const value = Number(n) || 0;
+  if (value < 1000) return String(Math.round(value));
+  if (value < 1000000) {
+    const k = value / 1000;
+    return (k < 10 ? k.toFixed(1) : String(Math.round(k))).replace(/\.0$/, '') + 'k';
+  }
+  const m = value / 1000000;
+  return (m < 10 ? m.toFixed(1) : String(Math.round(m))).replace(/\.0$/, '') + 'M';
 }
 
 export function fmtClock(seconds) {

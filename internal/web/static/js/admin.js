@@ -4,6 +4,7 @@ import { api, el, toast, isOffline, errorMessage, setClass, onWake } from './api
 import { speak, speechKind } from './voice.js';
 import { combobox } from './combobox.js';
 import * as models from './models.js';
+import * as agents from './agents.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -87,6 +88,7 @@ async function load() {
   buildModelPickers();
   bind();
   loadModels();
+  loadAgents();
   if (data.local_url) localURL = data.local_url;
   refreshTunnel();
   refreshVoice();
@@ -167,6 +169,107 @@ async function loadModels() {
   }
 }
 
+/* ---------------------------------------------------------------- agents */
+
+// The three programs Socrates can hand a chat to. What is settable about one
+// of them is small on purpose - whether it is used at all, where its binary
+// is, and the one flag this app did not think of - because everything else is
+// the app's business rather than a preference.
+//
+// The rest of the card is not a setting at all: it is what this machine
+// reported, and it is here so that "Codex is missing" is answered on the page
+// where somebody would look for it.
+const AGENT_IDS = ['claude', 'codex', 'opencode'];
+
+async function loadAgents(force = false) {
+  renderAgents(force ? 'refreshing' : 'loading');
+  try {
+    await agents.load(force);
+    renderAgents('');
+  } catch (err) {
+    renderAgents(errorMessage(err));
+  }
+}
+
+function agentSetting(id, key, fallback) {
+  const value = getPath(settings, 'agents.' + id + '.' + key);
+  return value === undefined || value === null ? fallback : value;
+}
+
+function renderAgents(status) {
+  const host = $('agentsList');
+  if (!host) return;
+  host.innerHTML = '';
+  const found = agents.list();
+  if (!found.length) {
+    host.append(el('div', { class: 'hint', text: status === 'loading'
+      ? 'Asking this machine which agents are installed…'
+      : (status || 'Socrates could not ask this machine which agents are installed.') }));
+    return;
+  }
+  if (status && status !== 'loading' && status !== 'refreshing') {
+    host.append(el('div', { class: 'hint', text: status }));
+  } else if (agents.stale()) {
+    host.append(el('div', { class: 'hint', text: 'Showing the agents from your last visit — this machine could not be asked just now.' }));
+  }
+  for (const id of AGENT_IDS) {
+    const agent = found.find((a) => a.id === id);
+    if (agent) host.append(agentCard(agent, status === 'refreshing'));
+  }
+}
+
+function agentCard(agent, refreshing) {
+  const enabled = !!agentSetting(agent.id, 'enabled', agent.enabled);
+
+  const toggle = el('input', { type: 'checkbox' });
+  toggle.checked = enabled;
+  toggle.addEventListener('change', () => setPath(settings, 'agents.' + agent.id + '.enabled', toggle.checked));
+
+  // What this machine reported, in the order somebody reads it: is it here,
+  // which build, and how much it can be run on.
+  const facts = [];
+  if (!agent.installed) facts.push('not installed');
+  else {
+    if (agent.version) facts.push(agent.version);
+    if (agent.path) facts.push(agent.path);
+  }
+  const count = (agent.models || []).length;
+  if (count) facts.push(count + ' model' + (count === 1 ? '' : 's') + (agent.static ? ' · curated' : ''));
+
+  const binary = el('input', {
+    class: 'input mono', type: 'text', spellcheck: 'false',
+    placeholder: agent.path || 'found on PATH',
+    value: agentSetting(agent.id, 'binary', '') || '',
+  });
+  binary.addEventListener('input', () => setPath(settings, 'agents.' + agent.id + '.binary', binary.value.trim()));
+
+  const args = el('input', {
+    class: 'input mono', type: 'text', spellcheck: 'false', placeholder: '--some-flag',
+    value: (agentSetting(agent.id, 'extra_args', []) || []).join(' '),
+  });
+  args.addEventListener('input', () => setPath(settings, 'agents.' + agent.id + '.extra_args', splitArgs(args.value)));
+
+  const refresh = el('button', {
+    class: 'btn sm', type: 'button', text: refreshing ? 'Asking…' : 'Refresh models',
+    disabled: refreshing,
+    onclick: () => { loadAgents(true).catch(() => {}); },
+  });
+
+  return el('div', { class: 'agent-card' + (agent.installed ? '' : ' missing') },
+    el('div', { class: 'agent-head' },
+      el('label', { class: 'switch' }, toggle, el('span', { class: 'track' }), el('span', { text: agent.label })),
+      el('span', { class: 'agent-facts mono', text: facts.join(' · ') }),
+    ),
+    agent.error ? el('div', { class: 'agent-note bad', text: agent.error }) : null,
+    agent.notes ? el('div', { class: 'agent-note', text: agent.notes }) : null,
+    el('div', { class: 'grid-2' },
+      field('Binary path', binary, 'Leave it empty to look the program up on PATH, which is what a normal installation wants.'),
+      field('Extra arguments', args, 'Appended to every command line, for the one flag this app did not think of.'),
+    ),
+    el('div', { class: 'row' }, refresh),
+  );
+}
+
 function bind() {
   $('saveTop').addEventListener('click', save);
   $('saveBottom').addEventListener('click', save);
@@ -227,6 +330,9 @@ async function save() {
     settings = data.settings;
     fillForm();
     syncModelPickers();
+    // The card is drawn from the settings it just wrote, so it has to follow
+    // whatever the server normalised them into.
+    renderAgents('');
     refreshTunnel();
     hint('Saved');
     toast('Settings saved');
