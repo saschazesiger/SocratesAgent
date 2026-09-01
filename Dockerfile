@@ -8,9 +8,11 @@ ARG VERSION=docker
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/socrates .
 
 # ---- runtime --------------------------------------------------------------
-# The delegate agents (claude, codex, opencode) are Node CLIs. They are
-# installed here so a container can actually delegate work; set INSTALL_AGENTS=0
-# to build a slim image and mount your own binaries instead.
+# The three agents (claude, codex, opencode) are Node CLIs, and a chat is bound
+# to one of them, so a container without them can serve the UI and nothing else.
+# They are installed here; set INSTALL_AGENTS=0 to build a slim image and mount
+# your own binaries instead. Their credentials are not in the image and never
+# should be: sign each CLI in once, or mount the config directory it uses.
 #
 # The voice that reads answers out loud is Piper, running on this machine: the
 # engine and the two voices Socrates speaks are baked in, so a container needs

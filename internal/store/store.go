@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,13 +34,19 @@ CREATE TABLE IF NOT EXISTS kv (
   value TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS chats (
-  id          TEXT PRIMARY KEY,
-  title       TEXT NOT NULL DEFAULT '',
-  workspace   TEXT NOT NULL DEFAULT '',
-  client_id   TEXT NOT NULL DEFAULT '',
-  created_at  INTEGER NOT NULL,
-  updated_at  INTEGER NOT NULL,
-  archived_at INTEGER NOT NULL DEFAULT 0
+  id            TEXT PRIMARY KEY,
+  title         TEXT NOT NULL DEFAULT '',
+  workspace     TEXT NOT NULL DEFAULT '',
+  client_id     TEXT NOT NULL DEFAULT '',
+  agent         TEXT NOT NULL DEFAULT '',
+  model         TEXT NOT NULL DEFAULT '',
+  effort        TEXT NOT NULL DEFAULT '',
+  agent_session TEXT NOT NULL DEFAULT '',
+  host_dir      TEXT NOT NULL DEFAULT '',
+  host_seq      INTEGER NOT NULL DEFAULT 0,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL,
+  archived_at   INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS messages (
   id         TEXT PRIMARY KEY,
@@ -53,12 +60,6 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, seq);
-CREATE TABLE IF NOT EXISTS llm_messages (
-  id      INTEGER PRIMARY KEY AUTOINCREMENT,
-  chat_id TEXT NOT NULL,
-  payload TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_llm_chat ON llm_messages(chat_id, id);
 CREATE TABLE IF NOT EXISTS runs (
   id         TEXT PRIMARY KEY,
   chat_id    TEXT NOT NULL,
@@ -137,6 +138,16 @@ func migrate(db *sql.DB) error {
 		{"chats", "archived_at", "INTEGER NOT NULL DEFAULT 0"},
 		{"messages", "rev", "INTEGER NOT NULL DEFAULT 0"},
 		{"messages", "client_id", "TEXT NOT NULL DEFAULT ''"},
+		// A chat is bound to one agent when it is created. Every chat that
+		// exists before this migration gets the empty string, which is what
+		// makes it a read-only transcript: there is no CLI that saw the half
+		// of the conversation a different mechanism produced.
+		{"chats", "agent", "TEXT NOT NULL DEFAULT ''"},
+		{"chats", "model", "TEXT NOT NULL DEFAULT ''"},
+		{"chats", "effort", "TEXT NOT NULL DEFAULT ''"},
+		{"chats", "agent_session", "TEXT NOT NULL DEFAULT ''"},
+		{"chats", "host_dir", "TEXT NOT NULL DEFAULT ''"},
+		{"chats", "host_seq", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		has, err := hasColumn(db, add.table, add.column)
 		if err != nil {
@@ -148,6 +159,12 @@ func migrate(db *sql.DB) error {
 		if _, err := db.Exec("ALTER TABLE " + add.table + " ADD COLUMN " + add.column + " " + add.definition); err != nil {
 			return err
 		}
+	}
+	// The orchestrator kept a transcript in the provider's own format so it
+	// could send the whole tool-calling history back. There is no
+	// orchestrator, so there is nothing to send.
+	if _, err := db.Exec(`DROP TABLE IF EXISTS llm_messages`); err != nil {
+		return err
 	}
 	// The unique indexes are what make a retried request idempotent: the same
 	// client id can only ever produce one chat and one message.
@@ -239,9 +256,25 @@ type Chat struct {
 	Workspace string `json:"workspace"`
 	// ClientID is the key the browser generated for the request that created
 	// this chat. It is what makes creating a chat safe to retry.
-	ClientID  string `json:"client_id,omitempty"`
-	CreatedAt int64  `json:"created_at"`
-	UpdatedAt int64  `json:"updated_at"`
+	ClientID string `json:"client_id,omitempty"`
+
+	// Agent is which program answers in this chat, and it is decided when the
+	// chat is created: a conversation cannot change who it is with.
+	Agent  string `json:"agent"`
+	Model  string `json:"model"`
+	Effort string `json:"effort,omitempty"`
+	// AgentSession is the program's own session id, which is what lets a chat
+	// be resumed after its process, or Socrates itself, was restarted. It is
+	// not something to hand out, so it stays off the wire, as do the two
+	// fields below: they are plumbing the browser has no use for.
+	AgentSession string `json:"-"`
+	HostDir      string `json:"-"`
+	// HostSeq is the journal seq at which the current or last turn began - not
+	// the last event consumed. See internal/engine.
+	HostSeq int64 `json:"-"`
+
+	CreatedAt int64 `json:"created_at"`
+	UpdatedAt int64 `json:"updated_at"`
 	// Archived is a chat that has been put away: it keeps its transcript but
 	// owns nothing that is still running, and it is hidden from the sidebar
 	// until the list is switched to showing everything. ArchivedAt is when
@@ -251,11 +284,13 @@ type Chat struct {
 	ArchivedAt int64 `json:"-"`
 }
 
-const chatCols = `id, title, workspace, client_id, created_at, updated_at, archived_at`
+const chatCols = `id, title, workspace, client_id, agent, model, effort,
+                  agent_session, host_dir, host_seq, created_at, updated_at, archived_at`
 
 func scanChat(row interface{ Scan(...any) error }) (*Chat, error) {
 	c := &Chat{}
-	err := row.Scan(&c.ID, &c.Title, &c.Workspace, &c.ClientID, &c.CreatedAt, &c.UpdatedAt, &c.ArchivedAt)
+	err := row.Scan(&c.ID, &c.Title, &c.Workspace, &c.ClientID, &c.Agent, &c.Model, &c.Effort,
+		&c.AgentSession, &c.HostDir, &c.HostSeq, &c.CreatedAt, &c.UpdatedAt, &c.ArchivedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -272,8 +307,9 @@ func (s *Store) CreateChat(c *Chat) error {
 	}
 	c.UpdatedAt = c.CreatedAt
 	c.Archived, c.ArchivedAt = false, 0
-	_, err := s.db.Exec(`INSERT INTO chats(id, title, workspace, client_id, created_at, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?)`, c.ID, c.Title, c.Workspace, c.ClientID, c.CreatedAt, c.UpdatedAt)
+	_, err := s.db.Exec(`INSERT INTO chats(id, title, workspace, client_id, agent, model, effort, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`, c.ID, c.Title, c.Workspace, c.ClientID,
+		c.Agent, c.Model, c.Effort, c.CreatedAt, c.UpdatedAt)
 	return err
 }
 
@@ -344,6 +380,52 @@ func (s *Store) UpdateChat(id, title, workspace string) error {
 	return err
 }
 
+// UpdateChatModel changes which model, and how hard, this chat's agent works.
+// The agent itself is never changed: a different agent is a different
+// conversation.
+func (s *Store) UpdateChatModel(id, model, effort string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.Exec(`UPDATE chats SET model = ?, effort = ?, updated_at = ? WHERE id = ?`,
+		model, effort, now(), id)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetChatSession records the agent's own session id, which is what a resume
+// after a restart is built on.
+func (s *Store) SetChatSession(id, session string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`UPDATE chats SET agent_session = ? WHERE id = ?`, session, id)
+	return err
+}
+
+// SetChatHost records which host directory a chat is using and resets the
+// turn-start position in the same statement: a new host has a new journal that
+// starts at seq 1, and carrying an old position over would make it skip its
+// own first events. Passing an empty dir clears both.
+func (s *Store) SetChatHost(id, hostDir string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`UPDATE chats SET host_dir = ?, host_seq = 0 WHERE id = ?`, hostDir, id)
+	return err
+}
+
+// SetChatHostSeq records where the turn that is starting begins in the host's
+// journal. Written once per turn, never per event: no revision, no publish.
+func (s *Store) SetChatHostSeq(id string, seq int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`UPDATE chats SET host_seq = ? WHERE id = ?`, seq, id)
+	return err
+}
+
 // TouchChat bumps the updated_at timestamp used for sidebar ordering.
 func (s *Store) TouchChat(id string) error {
 	s.mu.Lock()
@@ -363,7 +445,6 @@ func (s *Store) DeleteChat(id string) error {
 	defer tx.Rollback()
 	for _, q := range []string{
 		`DELETE FROM messages WHERE chat_id = ?`,
-		`DELETE FROM llm_messages WHERE chat_id = ?`,
 		`DELETE FROM steps WHERE chat_id = ?`,
 		`DELETE FROM runs WHERE chat_id = ?`,
 		`DELETE FROM chats WHERE id = ?`,
@@ -410,7 +491,12 @@ func scanMessages(rows *sql.Rows) ([]Message, error) {
 	return out, rows.Err()
 }
 
-// AddMessage appends a visible message.
+// AddMessage appends a visible message, or patches the one that is already
+// there. The upsert is what makes replay harmless: the engine writes the
+// assistant answer of a turn under a deterministic id, and adopting a turn
+// that was partly applied before a restart has to end with the same one row,
+// not two. The sequence number is deliberately not updated, so a replay does
+// not reorder the transcript.
 func (s *Store) AddMessage(m *Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -426,7 +512,9 @@ func (s *Store) AddMessage(m *Message) error {
 	}
 	m.Rev = s.rev.Add(1)
 	_, err := s.db.Exec(`INSERT INTO messages(`+messageCols+`)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`, m.ID, m.ChatID, m.RunID, m.Role, m.Content, m.Seq, m.Rev,
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET content = excluded.content, rev = excluded.rev,
+			run_id = excluded.run_id`, m.ID, m.ChatID, m.RunID, m.Role, m.Content, m.Seq, m.Rev,
 		m.ClientID, m.CreatedAt)
 	return err
 }
@@ -469,35 +557,6 @@ func (s *Store) MessageByClientID(chatID, clientID string) (*Message, error) {
 	return &msgs[0], nil
 }
 
-// ------------------------------------------------------------ llm messages
-
-// AppendLLMMessage stores one raw provider message (the exact JSON that is sent
-// back to the model), so a chat can be continued with full tool call context.
-func (s *Store) AppendLLMMessage(chatID string, payload []byte) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, err := s.db.Exec(`INSERT INTO llm_messages(chat_id, payload) VALUES(?, ?)`, chatID, string(payload))
-	return err
-}
-
-// LLMMessages returns the raw provider messages of a chat in order.
-func (s *Store) LLMMessages(chatID string) ([]json.RawMessage, error) {
-	rows, err := s.db.Query(`SELECT payload FROM llm_messages WHERE chat_id = ? ORDER BY id`, chatID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []json.RawMessage{}
-	for rows.Next() {
-		var p string
-		if err := rows.Scan(&p); err != nil {
-			return nil, err
-		}
-		out = append(out, json.RawMessage(p))
-	}
-	return out, rows.Err()
-}
-
 // -------------------------------------------------------------------- runs
 
 // Run states.
@@ -509,7 +568,8 @@ const (
 	RunInterrupted = "interrupted"
 )
 
-// Run is one turn of the orchestrator.
+// Run is one turn: a user message, everything the agent did about it, and the
+// answer at the end.
 type Run struct {
 	ID        string `json:"id"`
 	ChatID    string `json:"chat_id"`
@@ -573,33 +633,60 @@ func (s *Store) ActiveRun(chatID string) (*Run, error) {
 	return r, err
 }
 
-// RecoverRuns marks runs that were in flight when the process died. Called once
-// at startup so the UI never shows a spinner that will never finish.
-func (s *Store) RecoverRuns() error {
+// RecoverRuns marks runs that were in flight when the process died, except the
+// ones the engine has just adopted from a host that kept running. Called once
+// at startup so the UI never shows a spinner that will never finish - and with
+// the exclusion list, so it does not interrupt the run Adopt claimed one line
+// earlier, or the tool steps still running underneath its pump.
+func (s *Store) RecoverRuns(except ...string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ts := now()
+	notIn, args := excludeClause("id", except)
 	// 'waiting_input' is gone as a state, but databases written by older
 	// versions still hold runs that were parked in it. They are recovered here
 	// like any other run that never finished.
+	runArgs := append([]any{RunInterrupted, ts}, args...)
 	if _, err := s.db.Exec(`UPDATE runs SET status = ?, error = 'Server restarted while this run was in progress.', updated_at = ?
-		WHERE status IN ('running','waiting_input')`, RunInterrupted, ts); err != nil {
+		WHERE status IN ('running','waiting_input')`+notIn, runArgs...); err != nil {
 		return err
 	}
-	_, err := s.db.Exec(`UPDATE steps SET status = ?, updated_at = ? WHERE status = ?`,
-		StatusInterrupted, ts, StatusRunning)
+	stepNotIn, stepArgs := excludeClause("run_id", except)
+	all := append([]any{StatusInterrupted, ts, StatusRunning}, stepArgs...)
+	_, err := s.db.Exec(`UPDATE steps SET status = ?, updated_at = ? WHERE status = ?`+stepNotIn, all...)
 	return err
+}
+
+// excludeClause builds a "AND col NOT IN (?, ?)" fragment and its arguments.
+// With nothing to exclude it returns an empty string, so the statement is
+// exactly what it was before adoption existed.
+func excludeClause(column string, ids []string) (string, []any) {
+	if len(ids) == 0 {
+		return "", nil
+	}
+	args := make([]any, 0, len(ids))
+	placeholders := make([]string, 0, len(ids))
+	for _, id := range ids {
+		args = append(args, id)
+		placeholders = append(placeholders, "?")
+	}
+	return " AND " + column + " NOT IN (" + strings.Join(placeholders, ", ") + ")", args
 }
 
 // ------------------------------------------------------------------- steps
 
-// Step kinds shown in the process view.
+// Step kinds shown in the process view. The set is closed and chat.js renders
+// exactly these seven: adding one is a change to the browser as well.
 const (
-	StepThinking = "thinking"
-	StepText     = "text"
-	StepTerminal = "terminal"
-	StepShell    = "shell"
-	StepError    = "error"
+	StepTool      = "tool"
+	StepSubagent  = "subagent"
+	StepReasoning = "reasoning"
+	// StepDraft is the answer while it is still being written. It is removed
+	// when the turn ends and the text becomes a real assistant message.
+	StepDraft  = "draft"
+	StepUsage  = "usage"
+	StepNotice = "notice"
+	StepError  = "error"
 )
 
 // Step statuses.
@@ -658,10 +745,16 @@ func (s *Store) DeleteStep(id string) error {
 	return err
 }
 
-// NextStepSeq returns the next ordering number inside a run.
-func (s *Store) NextStepSeq(runID string) (int64, error) {
+// NextStepSeq returns the next ordering number for a chat's transcript.
+//
+// The scope is the chat and not the run on purpose: ListSteps orders a whole
+// chat by seq, so a run whose counter restarted at 1 would have its steps sort
+// in among the previous run's. It is what the engine seeds a run's counter
+// with, at the start of a run and again when a turn is adopted after a
+// restart.
+func (s *Store) NextStepSeq(chatID string) (int64, error) {
 	var maxSeq sql.NullInt64
-	if err := s.db.QueryRow(`SELECT MAX(seq) FROM steps WHERE run_id = ?`, runID).Scan(&maxSeq); err != nil {
+	if err := s.db.QueryRow(`SELECT MAX(seq) FROM steps WHERE chat_id = ?`, chatID).Scan(&maxSeq); err != nil {
 		return 0, err
 	}
 	return maxSeq.Int64 + 1, nil

@@ -43,42 +43,6 @@ func TestChatStreamingAccumulatesText(t *testing.T) {
 	}
 }
 
-func TestChatStreamingAssemblesSplitToolCalls(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		io.WriteString(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"terminal_open","arguments":"{\"skill\":"}}]}}]}`+"\n\n")
-		io.WriteString(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"claude\"}"}}]}}]}`+"\n\n")
-		io.WriteString(w, `data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`+"\n\n")
-		io.WriteString(w, "data: [DONE]\n\n")
-	}))
-	defer server.Close()
-
-	client := New(server.URL, "key")
-	var announced []string
-	res, err := client.Chat(context.Background(), ChatRequest{Model: "m"},
-		&StreamHandler{OnToolCall: func(name string) { announced = append(announced, name) }})
-	if err != nil {
-		t.Fatalf("chat: %v", err)
-	}
-	if len(res.ToolCalls) != 1 {
-		t.Fatalf("tool calls = %#v", res.ToolCalls)
-	}
-	call := res.ToolCalls[0]
-	if call.ID != "call_a" || call.Function.Name != "terminal_open" {
-		t.Errorf("call = %#v", call)
-	}
-	var args map[string]any
-	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
-		t.Fatalf("arguments not reassembled: %q", call.Function.Arguments)
-	}
-	if args["skill"] != "claude" {
-		t.Errorf("args = %#v", args)
-	}
-	if len(announced) != 1 || announced[0] != "terminal_open" {
-		t.Errorf("announced = %#v", announced)
-	}
-}
-
 func TestChatSurfacesAPIErrors(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusPaymentRequired)

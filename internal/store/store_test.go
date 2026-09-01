@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -74,12 +75,12 @@ func TestStepsSinceRevision(t *testing.T) {
 	_ = st.CreateChat(&Chat{ID: "c1"})
 	_ = st.CreateRun(&Run{ID: "r1", ChatID: "c1", Status: RunRunning})
 
-	first := &Step{ID: "s1", RunID: "r1", ChatID: "c1", Seq: 1, Kind: StepText, Body: "one", Status: StatusDone}
+	first := &Step{ID: "s1", RunID: "r1", ChatID: "c1", Seq: 1, Kind: StepDraft, Body: "one", Status: StatusDone}
 	if err := st.PutStep(first); err != nil {
 		t.Fatal(err)
 	}
 	mark := st.Rev()
-	second := &Step{ID: "s2", RunID: "r1", ChatID: "c1", Seq: 2, Kind: StepText, Body: "two", Status: StatusDone}
+	second := &Step{ID: "s2", RunID: "r1", ChatID: "c1", Seq: 2, Kind: StepDraft, Body: "two", Status: StatusDone}
 	if err := st.PutStep(second); err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +111,7 @@ func TestRecoverRuns(t *testing.T) {
 	st := openTest(t)
 	_ = st.CreateChat(&Chat{ID: "c1"})
 	_ = st.CreateRun(&Run{ID: "r1", ChatID: "c1", Status: RunRunning})
-	_ = st.PutStep(&Step{ID: "s1", RunID: "r1", ChatID: "c1", Kind: StepText, Status: StatusRunning})
+	_ = st.PutStep(&Step{ID: "s1", RunID: "r1", ChatID: "c1", Kind: StepDraft, Status: StatusRunning})
 
 	if err := st.RecoverRuns(); err != nil {
 		t.Fatal(err)
@@ -145,24 +146,6 @@ func TestSessions(t *testing.T) {
 	_ = st.CreateSession("expired", -time.Hour)
 	if st.ValidSession("expired") {
 		t.Fatal("expired session must not validate")
-	}
-}
-
-func TestLLMMessages(t *testing.T) {
-	st := openTest(t)
-	_ = st.CreateChat(&Chat{ID: "c1"})
-	for _, payload := range []string{`{"role":"user","content":"a"}`, `{"role":"assistant","content":"b"}`} {
-		if err := st.AppendLLMMessage("c1", []byte(payload)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	messages, err := st.LLMMessages("c1")
-	if err != nil || len(messages) != 2 {
-		t.Fatalf("messages = %#v (%v)", messages, err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(messages[1], &decoded); err != nil || decoded["content"] != "b" {
-		t.Fatalf("decode: %v %#v", err, decoded)
 	}
 }
 
@@ -390,5 +373,125 @@ func TestArchiveChat(t *testing.T) {
 	}
 	if err := st.SetChatArchived("missing", true); err != ErrNotFound {
 		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+// A chat is bound to one agent when it is created, and the binding, the native
+// session id and the host bookkeeping all have to survive a reload - the
+// restart promise is built on the last two.
+func TestChatCarriesItsAgentBinding(t *testing.T) {
+	st := openTest(t)
+	if err := st.CreateChat(&Chat{ID: "c1", Agent: "claude", Model: "sonnet", Effort: "medium"}); err != nil {
+		t.Fatal(err)
+	}
+	chat, err := st.GetChat("c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chat.Agent != "claude" || chat.Model != "sonnet" || chat.Effort != "medium" {
+		t.Fatalf("binding = %#v", chat)
+	}
+	if chat.AgentSession != "" || chat.HostDir != "" || chat.HostSeq != 0 {
+		t.Fatalf("a fresh chat already has host bookkeeping: %#v", chat)
+	}
+
+	if err := st.UpdateChatModel("c1", "opus", "high"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetChatSession("c1", "sess_abc"); err != nil {
+		t.Fatal(err)
+	}
+	chat, _ = st.GetChat("c1")
+	if chat.Model != "opus" || chat.Effort != "high" || chat.AgentSession != "sess_abc" {
+		t.Fatalf("after the change: %#v", chat)
+	}
+	if chat.Agent != "claude" {
+		t.Fatal("changing the model changed the agent")
+	}
+	if err := st.UpdateChatModel("nothing", "opus", ""); err != ErrNotFound {
+		t.Errorf("updating a chat that is not there = %v", err)
+	}
+
+	// The session id is internal plumbing and a session id is not something to
+	// hand out, so none of the three reach the browser.
+	raw, err := json.Marshal(chat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, gone := range []string{"sess_abc", "agent_session", "host_dir", "host_seq"} {
+		if strings.Contains(string(raw), gone) {
+			t.Errorf("%s is written to the wire: %s", gone, raw)
+		}
+	}
+}
+
+// host_seq means "where this turn began". A new host has a new journal that
+// starts at seq 1, so carrying an old position over would make the chat skip
+// the first events of its own fresh journal and wait forever for an end it had
+// already gone past.
+func TestSetChatHostResetsTheTurnPosition(t *testing.T) {
+	st := openTest(t)
+	if err := st.CreateChat(&Chat{ID: "c1", Agent: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetChatHost("c1", "/data/agents/host_a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetChatHostSeq("c1", 412); err != nil {
+		t.Fatal(err)
+	}
+	chat, _ := st.GetChat("c1")
+	if chat.HostDir != "/data/agents/host_a" || chat.HostSeq != 412 {
+		t.Fatalf("chat = %#v", chat)
+	}
+
+	if err := st.SetChatHost("c1", "/data/agents/host_b"); err != nil {
+		t.Fatal(err)
+	}
+	chat, _ = st.GetChat("c1")
+	if chat.HostDir != "/data/agents/host_b" || chat.HostSeq != 0 {
+		t.Fatalf("a new host kept the old turn position: %#v", chat)
+	}
+
+	// Clearing the host clears both.
+	if err := st.SetChatHost("c1", ""); err != nil {
+		t.Fatal(err)
+	}
+	chat, _ = st.GetChat("c1")
+	if chat.HostDir != "" || chat.HostSeq != 0 {
+		t.Fatalf("clearing left something behind: %#v", chat)
+	}
+}
+
+// Without the exclusion list the run Adopt has just claimed is marked
+// interrupted one line after being adopted, and its running tool steps are
+// interrupted underneath the pump that is still filling them in.
+func TestRecoverRunsSkipsWhatWasAdopted(t *testing.T) {
+	st := openTest(t)
+	_ = st.CreateChat(&Chat{ID: "c1"})
+	_ = st.CreateRun(&Run{ID: "kept", ChatID: "c1", Status: RunRunning})
+	_ = st.CreateRun(&Run{ID: "lost", ChatID: "c1", Status: RunRunning})
+	_ = st.PutStep(&Step{ID: "s_kept", RunID: "kept", ChatID: "c1", Kind: StepTool, Status: StatusRunning})
+	_ = st.PutStep(&Step{ID: "s_lost", RunID: "lost", ChatID: "c1", Kind: StepTool, Status: StatusRunning})
+
+	if err := st.RecoverRuns("kept"); err != nil {
+		t.Fatal(err)
+	}
+	if run, _ := st.GetRun("kept"); run.Status != RunRunning {
+		t.Errorf("the adopted run was interrupted anyway: %q", run.Status)
+	}
+	if run, _ := st.GetRun("lost"); run.Status != RunInterrupted {
+		t.Errorf("the orphaned run was not recovered: %q", run.Status)
+	}
+	steps := map[string]string{}
+	all, _ := st.ListSteps("c1")
+	for _, s := range all {
+		steps[s.ID] = s.Status
+	}
+	if steps["s_kept"] != StatusRunning {
+		t.Errorf("a step of the adopted run was interrupted underneath its pump: %q", steps["s_kept"])
+	}
+	if steps["s_lost"] != StatusInterrupted {
+		t.Errorf("a step of the orphaned run was not recovered: %q", steps["s_lost"])
 	}
 }

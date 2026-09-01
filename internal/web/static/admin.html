@@ -33,11 +33,6 @@
       </div>
       <div class="grid-2">
         <div class="field">
-          <label>Answering model</label>
-          <div id="orChat"></div>
-          <div class="hint">Needs tool calling. Claude, GPT and Gemini models all work.</div>
-        </div>
-        <div class="field">
           <label>Transcription model</label>
           <div id="orTranscribe"></div>
           <div class="hint">A dedicated transcriber such as openai/gpt-transcribe or deepgram/nova-3, or a chat model that accepts audio such as google/gemini-2.5-flash.</div>
@@ -52,36 +47,21 @@
     </section>
 
     <section class="card">
-      <h2>Skills</h2>
-      <p class="card-sub">A skill is a program Socrates knows how to operate the way a person does: how it is started, what its screens look like, which keys answer its questions. All of that ships with the app and is kept up to date with it. You decide which ones Socrates may use, what it should use them for, and which models it may run each of them on.</p>
-      <div id="skills"></div>
+      <h2>Agents</h2>
+      <p class="card-sub">The coding agents Socrates can hand a chat to. Each one has to be installed and signed in on this machine; Socrates only starts it and reads what it says back.</p>
+      <div class="agents-list" id="agentsList">
+        <div class="hint">Asking this machine which agents are installed…</div>
+      </div>
     </section>
 
     <section class="card">
-      <h2>Orchestration</h2>
-      <p class="card-sub">How the top level agent behaves.</p>
-      <div class="field">
-        <label for="systemPrompt">System prompt</label>
-        <textarea class="textarea" id="systemPrompt" rows="10" spellcheck="false"></textarea>
-        <div class="hint">The list of skills, how to drive each of them, the working directory, the open terminal sessions and the voice mode hints are appended automatically.</div>
-      </div>
-      <div class="grid-2">
-        <div class="field">
-          <label for="maxIterations">Maximum steps per message</label>
-          <input class="input" type="number" id="maxIterations" min="1" max="200">
-          <div class="hint">How often the agent may call itself before it has to answer.</div>
-        </div>
-        <div class="field">
-          <label for="temperature">Temperature</label>
-          <input class="input" type="number" id="temperature" min="0" max="2" step="0.1">
-        </div>
-      </div>
+      <h2>Workspace</h2>
+      <p class="card-sub">Where a chat works when it was not pointed somewhere else.</p>
       <div class="field">
         <label for="workspaceRoot">Workspace root</label>
         <input class="input mono" type="text" id="workspaceRoot" spellcheck="false">
         <div class="hint">Every chat gets its own folder below this path. A chat can be pinned to another directory from the chat itself.</div>
       </div>
-      <button class="btn sm" id="resetPrompt" type="button">Restore default prompt</button>
     </section>
 
     <section class="card">
@@ -172,7 +152,7 @@
 
     <section class="card">
       <h2>Setup check</h2>
-      <p class="card-sub">Verifies the API key, the workspace, the terminal and every enabled skill.</p>
+      <p class="card-sub">Verifies the API key, the workspace, the agent hosts and every enabled agent.</p>
       <button class="btn sm" id="runChecks" type="button">Run checks</button>
       <div class="checks" id="checks"></div>
     </section>

@@ -15,8 +15,99 @@ import (
 	"testing"
 	"time"
 
+	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
+	"github.com/saschazesiger/SocratesAgent/internal/piper"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
+
+	// The adapters register themselves in init, exactly as they do for the
+	// real binary through main.go. Without them this package's tests would be
+	// talking to an empty registry.
+	_ "github.com/saschazesiger/SocratesAgent/internal/harness/claude"
+	_ "github.com/saschazesiger/SocratesAgent/internal/harness/codex"
+	_ "github.com/saschazesiger/SocratesAgent/internal/harness/opencode"
 )
+
+// TestMain puts a stand-in piper where every server built in this package will
+// find one, for the whole test binary rather than per test.
+//
+// It has to be process-wide. server.New starts the voice install on a
+// goroutine of its own - that is what stops a first answer from waiting on a
+// 150 MB download - and that goroutine outlives the test that started it. With
+// the environment set per test and restored by its cleanup, a goroutine
+// scheduled a moment late finds no installation, decides one is needed, and
+// downloads 145 MB into a data directory the test has already removed. A few
+// hundred of those fill a tmpfs and every build on the machine starts failing
+// for want of space.
+func TestMain(m *testing.M) {
+	// A chat that sends a message re-executes this binary as an agent host,
+	// because that is what Manager.Open does with os.Executable(). Without
+	// this branch the child runs the whole test suite again - every host spawn
+	// forking a fresh copy of every test in this package, each with its own
+	// temp directories and its own voice install. That is how a few hundred
+	// megabytes of /tmp per run became thirteen gigabytes.
+	if len(os.Args) > 1 && os.Args[1] == "agent-host" {
+		dir := ""
+		for i := 2; i < len(os.Args)-1; i++ {
+			if os.Args[i] == "--dir" || os.Args[i] == "-dir" {
+				dir = os.Args[i+1]
+			}
+		}
+		if err := agenthost.RunHost(dir); err != nil {
+			fmt.Fprintln(os.Stderr, "host:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	root, err := os.MkdirTemp("", "socrates-piper")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "test setup:", err)
+		os.Exit(1)
+	}
+	if err := bakePiper(root); err != nil {
+		fmt.Fprintln(os.Stderr, "test setup:", err)
+		os.RemoveAll(root)
+		os.Exit(1)
+	}
+	os.Setenv(piper.EnvDir, root)
+	code := m.Run()
+	os.RemoveAll(root)
+	os.Exit(code)
+}
+
+// bakePiper writes the smallest tree the voice engine accepts as installed: a
+// binary that exits at once, the espeak data it names on every command line,
+// and both voices at a size that is not mistaken for a truncated download.
+func bakePiper(root string) error {
+	binary := filepath.Join(root, "piper", "piper")
+	if runtime.GOOS == "windows" {
+		binary += ".exe"
+	}
+	if err := os.MkdirAll(filepath.Join(root, "piper", "espeak-ng-data"), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		return err
+	}
+	voices := filepath.Join(root, "voices")
+	if err := os.MkdirAll(voices, 0o755); err != nil {
+		return err
+	}
+	for _, voice := range []string{piper.VoiceEnglish, piper.VoiceGerman} {
+		model := filepath.Join(voices, voice+".onnx")
+		if err := os.WriteFile(model, nil, 0o644); err != nil {
+			return err
+		}
+		if err := os.Truncate(model, 2<<20); err != nil {
+			return err
+		}
+		config := `{"audio":{"sample_rate":22050},"espeak":{"voice":"` + voice + `"},"padding":"` +
+			strings.Repeat("x", 200) + `"}`
+		if err := os.WriteFile(model+".json", []byte(config), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 type testEnv struct {
 	server *httptest.Server
@@ -28,18 +119,28 @@ type testEnv struct {
 func newEnv(t *testing.T) *testEnv {
 	t.Helper()
 	installedVoice(t)
-	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	// One root for the whole environment, taken first so that its removal is
+	// the last cleanup to run. Everything the server keeps on disk lives under
+	// it, and the cleanup registered below - which stops the server, the
+	// tunnel and the database - runs before it: a directory removed while a
+	// goroutine of the server is still writing into it comes straight back,
+	// and that is how a test leaves a tree behind.
+	root := t.TempDir()
+	st, err := store.Open(filepath.Join(root, "db", "test.db"))
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
-	t.Cleanup(func() { st.Close() })
-
-	srv, err := New(st, t.TempDir())
+	srv, err := New(st, filepath.Join(root, "data"))
 	if err != nil {
 		t.Fatalf("server: %v", err)
 	}
 	ts := httptest.NewServer(srv.Handler())
-	t.Cleanup(ts.Close)
+	t.Cleanup(func() {
+		ts.Close()
+		srv.StopTunnel()
+		srv.DetachAgents()
+		st.Close()
+	})
 
 	jar, _ := cookiejar.New(nil)
 	noRedirect := func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }
@@ -117,7 +218,7 @@ func TestSetupLoginAndChats(t *testing.T) {
 		t.Fatalf("anonymous API access should be 401, got %d", res.StatusCode)
 	}
 
-	_, created := env.do(t, env.client, "POST", "/api/chats", `{"title":"Test chat"}`)
+	_, created := env.do(t, env.client, "POST", "/api/chats", `{"title":"Test chat","agent":"claude"}`)
 	chat, _ := created["chat"].(map[string]any)
 	chatID, _ := chat["id"].(string)
 	if chatID == "" {
@@ -183,186 +284,17 @@ func TestSettingsRoundTrip(t *testing.T) {
 	if settings == nil {
 		t.Fatalf("no settings in %#v", data)
 	}
-	settings["openrouter"].(map[string]any)["chat_model"] = "openai/gpt-5"
+	settings["openrouter"].(map[string]any)["title_model"] = "openai/gpt-5"
 	body, _ := json.Marshal(map[string]any{"settings": settings})
 	res, saved := env.do(t, env.client, "PUT", "/api/settings", string(body))
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("save failed: %d", res.StatusCode)
 	}
 	updated := saved["settings"].(map[string]any)["openrouter"].(map[string]any)
-	if updated["chat_model"] != "openai/gpt-5" {
+	if updated["title_model"] != "openai/gpt-5" {
 		t.Fatalf("model was not stored: %#v", updated)
 	}
 
-	// The shipped skills come along with the settings, read only: the
-	// dashboard needs their names, what they run and the wording it uses as
-	// the placeholder of the one field it lets the user rewrite.
-	catalogue, _ := data["skills"].([]any)
-	if len(catalogue) != 3 {
-		t.Fatalf("expected the three shipped skills in the response, got %#v", data["skills"])
-	}
-	if catalogue[0].(map[string]any)["startup"] == "" {
-		t.Fatal("a shipped skill arrived without its manual")
-	}
-
-	// Everything the settings document stores about a skill is whether it is
-	// on and what it should be used for. A document that says more - one
-	// written by an older version - is folded back onto the shipped list.
-	settings["skills"] = []any{
-		map[string]any{"id": "opencode", "name": "B", "command": "opencode", "enabled": true,
-			"description": "my own words", "startup": "press enter", "idle_seconds": 90},
-		map[string]any{"id": "invented", "name": "Mine", "command": "mine", "enabled": true},
-	}
-	body, _ = json.Marshal(map[string]any{"settings": settings})
-	res, saved = env.do(t, env.client, "PUT", "/api/settings", string(body))
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("save failed: %d", res.StatusCode)
-	}
-	skills, _ := saved["settings"].(map[string]any)["skills"].([]any)
-	if len(skills) != 3 {
-		t.Fatalf("expected one entry per shipped skill, got %#v", skills)
-	}
-	stored := map[string]map[string]any{}
-	for _, entry := range skills {
-		sk := entry.(map[string]any)
-		stored[sk["id"].(string)] = sk
-		if _, ok := sk["command"]; ok {
-			t.Fatalf("the settings document still stores how a skill is run: %#v", sk)
-		}
-	}
-	if stored["invented"] != nil {
-		t.Fatal("a skill the app does not ship survived the save")
-	}
-	if stored["opencode"]["enabled"] != true || stored["opencode"]["description"] != "my own words" {
-		t.Fatalf("the two decisions were not stored: %#v", stored["opencode"])
-	}
-	if stored["claude"]["enabled"] != true {
-		t.Fatalf("a shipped skill lost its default: %#v", stored["claude"])
-	}
-
-	// And it survives a reload, which is what the dashboard reads.
-	_, again := env.do(t, env.client, "GET", "/api/settings", "")
-	reloaded := again["settings"].(map[string]any)["skills"].([]any)
-	if len(reloaded) != 3 {
-		t.Fatalf("skills did not survive the reload: %#v", reloaded)
-	}
-	last := reloaded[len(reloaded)-1].(map[string]any)
-	if last["id"] != "opencode" || last["description"] != "my own words" {
-		t.Fatalf("the description did not survive the reload: %#v", last)
-	}
-}
-
-// The third decision the dashboard makes about a skill: which models Socrates
-// may start it on. The list has to reach the server and come back, and the
-// shipped catalogue has to carry both a default list and the mechanism that
-// applies it, so the dashboard can show a placeholder and say how it works.
-func TestSkillModelsRoundTrip(t *testing.T) {
-	env := newEnv(t)
-	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
-
-	_, data := env.do(t, env.client, "GET", "/api/settings", "")
-	catalogue, _ := data["skills"].([]any)
-	if len(catalogue) == 0 {
-		t.Fatalf("no shipped skills in %#v", data)
-	}
-	for _, entry := range catalogue {
-		preset := entry.(map[string]any)
-		shipped, _ := preset["models"].([]any)
-		if len(shipped) == 0 {
-			t.Fatalf("%v ships without a default model list: %#v", preset["id"], preset)
-		}
-		if strings.TrimSpace(fmt.Sprint(preset["applying"])) == "" {
-			t.Fatalf("%v does not say how a model reaches the program", preset["id"])
-		}
-		first := shipped[0].(map[string]any)
-		if first["id"] == "" || first["use_when"] == "" {
-			t.Fatalf("%v ships a model nobody can read or ask for: %#v", preset["id"], first)
-		}
-	}
-
-	settings, _ := data["settings"].(map[string]any)
-	settings["skills"] = []any{
-		map[string]any{"id": "claude", "enabled": true, "models": []any{
-			// The blank id and the second entry under the same id are what a
-			// half filled row in the dashboard sends.
-			map[string]any{"id": "opus", "effort": "HIGH", "use_when": "the hard ones"},
-			map[string]any{"id": "", "effort": "low", "use_when": "a row nobody filled in"},
-			map[string]any{"id": "opus", "effort": "low", "use_when": "the same one again"},
-			map[string]any{"id": "haiku", "effort": "ludicrous", "use_when": "chores"},
-		}},
-	}
-	body, _ := json.Marshal(map[string]any{"settings": settings})
-	res, saved := env.do(t, env.client, "PUT", "/api/settings", string(body))
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("save failed: %d", res.StatusCode)
-	}
-	stored := map[string]map[string]any{}
-	for _, entry := range saved["settings"].(map[string]any)["skills"].([]any) {
-		sk := entry.(map[string]any)
-		stored[sk["id"].(string)] = sk
-	}
-	models, _ := stored["claude"]["models"].([]any)
-	if len(models) != 2 {
-		t.Fatalf("the model list was not cleaned up on the way in: %#v", stored["claude"]["models"])
-	}
-	first := models[0].(map[string]any)
-	if first["id"] != "opus" || first["effort"] != "high" {
-		t.Fatalf("the first model came back as %#v", first)
-	}
-	if second := models[1].(map[string]any); second["id"] != "haiku" || second["effort"] != nil {
-		t.Fatalf("an effort nobody has should fall back to the program's own: %#v", second)
-	}
-	// A skill the save said nothing about keeps the shipped list, which is
-	// stored as nothing at all so that a later version can improve it.
-	if _, ok := stored["codex"]["models"]; ok {
-		t.Fatalf("the shipped list was written into the settings document: %#v", stored["codex"])
-	}
-
-	_, again := env.do(t, env.client, "GET", "/api/settings", "")
-	for _, entry := range again["settings"].(map[string]any)["skills"].([]any) {
-		sk := entry.(map[string]any)
-		if sk["id"] != "claude" {
-			continue
-		}
-		reloaded, _ := sk["models"].([]any)
-		if len(reloaded) != 2 || reloaded[0].(map[string]any)["id"] != "opus" {
-			t.Fatalf("the model list did not survive the reload: %#v", sk["models"])
-		}
-	}
-}
-
-func TestTerminalEndpointsNeedAuth(t *testing.T) {
-	env := newEnv(t)
-	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
-
-	// A session that does not exist is a 404, not a crash.
-	res, _ := env.do(t, env.client, "GET", "/api/terminals/term_missing", "")
-	if res.StatusCode != http.StatusNotFound {
-		t.Fatalf("unknown session should be 404, got %d", res.StatusCode)
-	}
-
-	// And without a session cookie nothing is reachable at all.
-	anonymous := &http.Client{}
-	res, _ = env.do(t, anonymous, "GET", "/api/terminals/term_missing", "")
-	if res.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("terminal endpoints must require a login, got %d", res.StatusCode)
-	}
-}
-
-func TestListTerminalsIsEmptyForANewChat(t *testing.T) {
-	env := newEnv(t)
-	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
-	_, chat := env.do(t, env.client, "POST", "/api/chats", `{}`)
-	id := chat["chat"].(map[string]any)["id"].(string)
-
-	_, data := env.do(t, env.client, "GET", "/api/chats/"+id+"/terminals", "")
-	terminals, ok := data["terminals"].([]any)
-	if !ok {
-		t.Fatalf("no terminal list in %#v", data)
-	}
-	if len(terminals) != 0 {
-		t.Fatalf("a new chat should have no sessions, got %#v", terminals)
-	}
 }
 
 func TestPasswordHashing(t *testing.T) {
@@ -508,12 +440,12 @@ func TestRepeatedSendWithTheSameKeyIsOneMessage(t *testing.T) {
 	env := newEnv(t)
 	env.do(t, env.client, "POST", "/api/setup", `{"password":"correct horse"}`)
 
-	_, created := env.do(t, env.client, "POST", "/api/chats", `{"client_id":"chat-key"}`)
+	_, created := env.do(t, env.client, "POST", "/api/chats", `{"client_id":"chat-key","agent":"claude"}`)
 	chat := created["chat"].(map[string]any)
 	id := chat["id"].(string)
 
 	// Creating the chat again with the same key gives back the same chat.
-	_, again := env.do(t, env.client, "POST", "/api/chats", `{"client_id":"chat-key"}`)
+	_, again := env.do(t, env.client, "POST", "/api/chats", `{"client_id":"chat-key","agent":"claude"}`)
 	if again["chat"].(map[string]any)["id"] != id {
 		t.Fatalf("a repeated create made a second chat: %v", again)
 	}
@@ -559,7 +491,7 @@ func TestRepeatedSendWithTheSameKeyIsOneMessage(t *testing.T) {
 func TestEventStreamReplaysFromARevision(t *testing.T) {
 	env := newEnv(t)
 	env.do(t, env.client, "POST", "/api/setup", `{"password":"correct horse"}`)
-	_, created := env.do(t, env.client, "POST", "/api/chats", `{}`)
+	_, created := env.do(t, env.client, "POST", "/api/chats", `{"agent":"claude"}`)
 	id := created["chat"].(map[string]any)["id"].(string)
 
 	// Two steps and a message written before the client connects; one of the
@@ -634,7 +566,7 @@ func TestEventStreamReplaysFromARevision(t *testing.T) {
 func TestFirstConnectionGetsTheRecentMessages(t *testing.T) {
 	env := newEnv(t)
 	env.do(t, env.client, "POST", "/api/setup", `{"password":"correct horse"}`)
-	_, created := env.do(t, env.client, "POST", "/api/chats", `{}`)
+	_, created := env.do(t, env.client, "POST", "/api/chats", `{"agent":"claude"}`)
 	id := created["chat"].(map[string]any)["id"].(string)
 	if err := env.store.AddMessage(&store.Message{
 		ID: "m1", ChatID: id, RunID: "r1", Role: "user", Content: "hello",
@@ -704,7 +636,7 @@ func TestArchiveAndRestoreChat(t *testing.T) {
 	env := newEnv(t)
 	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
 
-	_, created := env.do(t, env.client, "POST", "/api/chats", `{"title":"Old work"}`)
+	_, created := env.do(t, env.client, "POST", "/api/chats", `{"title":"Old work","agent":"claude"}`)
 	id := created["chat"].(map[string]any)["id"].(string)
 
 	res, archived := env.do(t, env.client, "POST", "/api/chats/"+id+"/archive", "")
@@ -747,5 +679,314 @@ func TestArchiveAndRestoreChat(t *testing.T) {
 	res, _ = env.do(t, env.client, "POST", "/api/chats/nope/archive", "")
 	if res.StatusCode != http.StatusNotFound {
 		t.Fatalf("archiving an unknown chat = %d", res.StatusCode)
+	}
+}
+
+// noAgentsOnPATH keeps every test in this file hermetic: nothing that could be
+// a real coding agent is found, so no discovery ever starts a process.
+func noAgentsOnPATH(t *testing.T) {
+	t.Helper()
+	t.Setenv("PATH", t.TempDir())
+}
+
+// The picker and the admin card are built from this, so every field has to be
+// there even for an agent that is not installed - "missing" is an answer, not
+// an absence.
+func TestAgentsEndpoint(t *testing.T) {
+	noAgentsOnPATH(t)
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+
+	res, _ := env.do(t, env.anon, "GET", "/api/agents", "")
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("the agent list must require a login, got %d", res.StatusCode)
+	}
+
+	_, data := env.do(t, env.client, "GET", "/api/agents", "")
+	agents, _ := data["agents"].([]any)
+	if len(agents) != 3 {
+		t.Fatalf("expected one entry per agent, got %#v", data)
+	}
+	byID := map[string]map[string]any{}
+	for _, entry := range agents {
+		a := entry.(map[string]any)
+		byID[a["id"].(string)] = a
+		for _, field := range []string{"label", "enabled", "installed", "path", "version",
+			"has_effort", "default_model", "default_effort", "static", "models", "notes", "error"} {
+			if _, ok := a[field]; !ok {
+				t.Errorf("%s arrived without %s", a["id"], field)
+			}
+		}
+	}
+	claude := byID["claude"]
+	if claude == nil {
+		t.Fatal("no claude entry")
+	}
+	if claude["installed"] != false {
+		t.Errorf("claude was found on an empty PATH: %#v", claude)
+	}
+	if claude["error"] == "" {
+		t.Error("a missing agent did not say why")
+	}
+	if data["refreshed_at"] == nil {
+		t.Error("the catalogue did not say when it was made")
+	}
+
+	// Refresh is the dashboard's button: same shape, discovered again.
+	res, again := env.do(t, env.client, "POST", "/api/agents/refresh", "")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("refresh failed: %d", res.StatusCode)
+	}
+	if list, _ := again["agents"].([]any); len(list) != 3 {
+		t.Fatalf("refresh returned %#v", again)
+	}
+}
+
+// A chat is bound at creation, and every refusal here is permanent - so it is
+// 422 and never 409, which the browser would retry until the end of time.
+func TestCreateChatValidatesItsBinding(t *testing.T) {
+	noAgentsOnPATH(t)
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+
+	res, body := env.do(t, env.client, "POST", "/api/chats", `{}`)
+	if res.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("a chat without an agent = %d, want 422: %#v", res.StatusCode, body)
+	}
+	res, _ = env.do(t, env.client, "POST", "/api/chats", `{"agent":"invented"}`)
+	if res.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("an unknown agent = %d, want 422", res.StatusCode)
+	}
+
+	// An empty model falls back to the agent's default.
+	_, created := env.do(t, env.client, "POST", "/api/chats", `{"agent":"claude"}`)
+	chat := created["chat"].(map[string]any)
+	if chat["agent"] != "claude" || chat["model"] != "sonnet" {
+		t.Fatalf("binding = %#v", chat)
+	}
+
+	// Claude's list is curated, not a whitelist: a model id nobody has heard
+	// of yet is accepted, and Claude reports a bad one as a clean run error.
+	_, typed := env.do(t, env.client, "POST", "/api/chats",
+		`{"agent":"claude","model":"some-new-alias","effort":"high"}`)
+	c := typed["chat"].(map[string]any)
+	if c["model"] != "some-new-alias" || c["effort"] != "high" {
+		t.Fatalf("a typed model was not accepted: %#v", c)
+	}
+
+	// A switched-off agent is refused by name.
+	settings := env.settings(t)
+	settings["agents"].(map[string]any)["claude"].(map[string]any)["enabled"] = false
+	env.saveSettings(t, settings)
+	res, body = env.do(t, env.client, "POST", "/api/chats", `{"agent":"claude"}`)
+	if res.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("a switched-off agent = %d, want 422", res.StatusCode)
+	}
+	if detail, _ := body["error"].(string); !strings.Contains(detail, "dashboard") {
+		t.Errorf("the refusal should say where to turn it back on, got %q", detail)
+	}
+}
+
+// The idempotency key answers before any validation runs: a chat that already
+// exists is an answer, whatever the settings have since become.
+func TestCreateChatIsIdempotentBeforeItValidates(t *testing.T) {
+	noAgentsOnPATH(t)
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+
+	_, first := env.do(t, env.client, "POST", "/api/chats", `{"client_id":"k","agent":"claude"}`)
+	id := first["chat"].(map[string]any)["id"].(string)
+
+	settings := env.settings(t)
+	settings["agents"].(map[string]any)["claude"].(map[string]any)["enabled"] = false
+	env.saveSettings(t, settings)
+
+	res, again := env.do(t, env.client, "POST", "/api/chats", `{"client_id":"k"}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("a repeated create = %d", res.StatusCode)
+	}
+	if again["chat"].(map[string]any)["id"] != id {
+		t.Fatalf("a repeated create made a second chat: %#v", again)
+	}
+}
+
+// A chat that predates the rewrite is a read-only transcript: the API says so
+// with 422, which the Outbox marks failed and offers a retry for, rather than
+// with 409, which it would retry forever behind a message that is not true.
+func TestALegacyChatIsReadOnly(t *testing.T) {
+	noAgentsOnPATH(t)
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+	if err := env.store.CreateChat(&store.Chat{ID: "chat_legacy", Title: "From before"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, snapshot := env.do(t, env.client, "GET", "/api/chats/chat_legacy", "")
+	if snapshot["legacy"] != true || snapshot["agent_ok"] != false {
+		t.Fatalf("a legacy chat was not marked as one: %#v", snapshot)
+	}
+
+	res, body := env.do(t, env.client, "POST", "/api/chats/chat_legacy/messages", `{"text":"hello"}`)
+	if res.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("sending into a legacy chat = %d, want 422", res.StatusCode)
+	}
+	if detail, _ := body["error"].(string); !strings.Contains(detail, "start a new chat") {
+		t.Errorf("the refusal should say what to do instead, got %q", detail)
+	}
+}
+
+// The model may change between turns; the agent never. A different agent is a
+// different conversation, and there is no CLI that saw the first half of this
+// one.
+func TestPatchChangesTheModelButNeverTheAgent(t *testing.T) {
+	noAgentsOnPATH(t)
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+	_, created := env.do(t, env.client, "POST", "/api/chats", `{"agent":"claude"}`)
+	id := created["chat"].(map[string]any)["id"].(string)
+
+	res, updated := env.do(t, env.client, "PATCH", "/api/chats/"+id, `{"model":"opus","effort":"high"}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("changing the model = %d: %#v", res.StatusCode, updated)
+	}
+	chat, _ := env.store.GetChat(id)
+	if chat.Model != "opus" || chat.Effort != "high" {
+		t.Fatalf("the change was not stored: %#v", chat)
+	}
+
+	res, _ = env.do(t, env.client, "PATCH", "/api/chats/"+id, `{"agent":"codex"}`)
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("changing the agent = %d, want 400", res.StatusCode)
+	}
+	chat, _ = env.store.GetChat(id)
+	if chat.Agent != "claude" {
+		t.Fatalf("the agent changed anyway: %q", chat.Agent)
+	}
+}
+
+// The header shows what this chat is bound to, and whether that still works.
+func TestChatSnapshotDescribesItsBinding(t *testing.T) {
+	noAgentsOnPATH(t)
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+	_, created := env.do(t, env.client, "POST", "/api/chats", `{"agent":"claude","model":"sonnet"}`)
+	id := created["chat"].(map[string]any)["id"].(string)
+
+	_, snapshot := env.do(t, env.client, "GET", "/api/chats/"+id, "")
+	if snapshot["agent_label"] != "Claude Code" {
+		t.Errorf("agent_label = %#v", snapshot["agent_label"])
+	}
+	if snapshot["legacy"] != false {
+		t.Errorf("a new chat was called legacy: %#v", snapshot["legacy"])
+	}
+	if _, ok := snapshot["model_label"]; !ok {
+		t.Error("no model_label in the snapshot")
+	}
+	if _, ok := snapshot["agent_ok"]; !ok {
+		t.Error("no agent_ok in the snapshot")
+	}
+}
+
+// Every route the terminal used to own is gone, and gone means 404 rather than
+// an endpoint that answers with nothing.
+func TestTheTerminalRoutesAreGone(t *testing.T) {
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+	for _, path := range []string{
+		"/api/terminals/anything",
+		"/api/terminals/anything/events",
+	} {
+		res, _ := env.do(t, env.client, "GET", path, "")
+		if res.StatusCode != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404", path, res.StatusCode)
+		}
+	}
+}
+
+// StripANSI came across from the deleted terminal package with these two
+// cases: a coding agent that prints its version with a colour in it is the
+// only reason it is still here.
+func TestStripANSI(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"colour", "\x1b[1;32mgreen\x1b[0m", "green"},
+		{"cursor move", "a\x1b[3;5Hb", "ab"},
+		{"clear screen", "\x1b[2J\x1b[Hclean", "clean"},
+		{"window title", "\x1b]0;a title\x07text", "text"},
+		{"osc string terminator", "\x1b]8;;https://example.com\x1b\\link", "link"},
+		{"private mode", "\x1b[?1049htext", "text"},
+		{"charset", "\x1b(Btext", "text"},
+		{"bel and nul", "a\x07b\x00c", "abc"},
+		{"plain", "nothing to strip", "nothing to strip"},
+	}
+	for _, c := range cases {
+		if got := StripANSI(c.in); got != c.want {
+			t.Errorf("%s: StripANSI(%q) = %q, want %q", c.name, c.in, got, c.want)
+		}
+	}
+}
+
+// settings reads the current settings document as the dashboard does.
+func (e *testEnv) settings(t *testing.T) map[string]any {
+	t.Helper()
+	_, data := e.do(t, e.client, "GET", "/api/settings", "")
+	settings, _ := data["settings"].(map[string]any)
+	if settings == nil {
+		t.Fatalf("no settings in %#v", data)
+	}
+	return settings
+}
+
+func (e *testEnv) saveSettings(t *testing.T, settings map[string]any) {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{"settings": settings})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, _ := e.do(t, e.client, "PUT", "/api/settings", string(body))
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("saving settings = %d", res.StatusCode)
+	}
+}
+
+// A send that already landed is answered with the run it produced, whatever
+// the settings have become since. Refusing the retry of a message that is
+// already in the transcript would be a permanent error the person did nothing
+// to earn - and the browser would show it as one.
+func TestARetriedSendSurvivesTheAgentBeingSwitchedOff(t *testing.T) {
+	noAgentsOnPATH(t)
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+	_, created := env.do(t, env.client, "POST", "/api/chats", `{"agent":"claude"}`)
+	id := created["chat"].(map[string]any)["id"].(string)
+
+	res, first := env.do(t, env.client, "POST", "/api/chats/"+id+"/messages",
+		`{"text":"hello","client_id":"send-key"}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("the first send = %d: %#v", res.StatusCode, first)
+	}
+	runID := first["run"].(map[string]any)["id"].(string)
+
+	settings := env.settings(t)
+	settings["agents"].(map[string]any)["claude"].(map[string]any)["enabled"] = false
+	env.saveSettings(t, settings)
+
+	// A fresh send is refused, permanently and by name.
+	res, _ = env.do(t, env.client, "POST", "/api/chats/"+id+"/messages",
+		`{"text":"another","client_id":"other-key"}`)
+	if res.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("a send to a switched-off agent = %d, want 422", res.StatusCode)
+	}
+	// The retry of the one that landed is not.
+	res, again := env.do(t, env.client, "POST", "/api/chats/"+id+"/messages",
+		`{"text":"hello","client_id":"send-key"}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("the retried send = %d: %#v", res.StatusCode, again)
+	}
+	if again["run"].(map[string]any)["id"] != runID {
+		t.Fatalf("the retry produced a second run: %#v", again)
 	}
 }

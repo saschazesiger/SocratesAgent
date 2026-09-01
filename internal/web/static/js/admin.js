@@ -4,6 +4,7 @@ import { api, el, toast, isOffline, errorMessage, setClass, onWake } from './api
 import { speak, speechKind } from './voice.js';
 import { combobox } from './combobox.js';
 import * as models from './models.js';
+import * as agents from './agents.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -30,16 +31,12 @@ let defaults = null;
 // searchable dropdown rather than typed into a text field, so none of them are
 // in FIELDS.
 const MODEL_PICKERS = [
-  ['orChat', 'openrouter.chat_model', () => models.chat()],
   ['orTranscribe', 'openrouter.transcribe_model', () => models.audio()],
   ['orTitle', 'openrouter.title_model', () => models.chat()],
 ];
 
 const FIELDS = [
   ['orKey', 'openrouter.api_key'],
-  ['systemPrompt', 'agent.system_prompt'],
-  ['maxIterations', 'agent.max_iterations', 'number'],
-  ['temperature', 'agent.temperature', 'number'],
   ['workspaceRoot', 'agent.workspace_root'],
   ['voiceLanguage', 'voice.language'],
   ['sttPrompt', 'voice.stt_prompt'],
@@ -86,18 +83,17 @@ async function load() {
   const data = await api('/api/settings');
   settings = data.settings;
   defaults = data.defaults;
-  catalogue = data.skills || [];
   $('versionLabel').textContent = 'Socrates ' + (data.version || '');
   fillForm();
   buildModelPickers();
-  renderSkills();
   bind();
   loadModels();
+  loadAgents();
   if (data.local_url) localURL = data.local_url;
   refreshTunnel();
   refreshVoice();
   if (new URLSearchParams(location.search).get('welcome')) {
-    showNotice('Welcome. Add your OpenRouter key, check the skills below, then head back to the chat.', 'ok');
+    showNotice('Welcome. Add your OpenRouter key, check the agents below, then head back to the chat.', 'ok');
   }
   const tunnelError = sessionStorage.getItem('socrates.tunnel_error');
   if (tunnelError) {
@@ -173,6 +169,107 @@ async function loadModels() {
   }
 }
 
+/* ---------------------------------------------------------------- agents */
+
+// The three programs Socrates can hand a chat to. What is settable about one
+// of them is small on purpose - whether it is used at all, where its binary
+// is, and the one flag this app did not think of - because everything else is
+// the app's business rather than a preference.
+//
+// The rest of the card is not a setting at all: it is what this machine
+// reported, and it is here so that "Codex is missing" is answered on the page
+// where somebody would look for it.
+const AGENT_IDS = ['claude', 'codex', 'opencode'];
+
+async function loadAgents(force = false) {
+  renderAgents(force ? 'refreshing' : 'loading');
+  try {
+    await agents.load(force);
+    renderAgents('');
+  } catch (err) {
+    renderAgents(errorMessage(err));
+  }
+}
+
+function agentSetting(id, key, fallback) {
+  const value = getPath(settings, 'agents.' + id + '.' + key);
+  return value === undefined || value === null ? fallback : value;
+}
+
+function renderAgents(status) {
+  const host = $('agentsList');
+  if (!host) return;
+  host.innerHTML = '';
+  const found = agents.list();
+  if (!found.length) {
+    host.append(el('div', { class: 'hint', text: status === 'loading'
+      ? 'Asking this machine which agents are installed…'
+      : (status || 'Socrates could not ask this machine which agents are installed.') }));
+    return;
+  }
+  if (status && status !== 'loading' && status !== 'refreshing') {
+    host.append(el('div', { class: 'hint', text: status }));
+  } else if (agents.stale()) {
+    host.append(el('div', { class: 'hint', text: 'Showing the agents from your last visit — this machine could not be asked just now.' }));
+  }
+  for (const id of AGENT_IDS) {
+    const agent = found.find((a) => a.id === id);
+    if (agent) host.append(agentCard(agent, status === 'refreshing'));
+  }
+}
+
+function agentCard(agent, refreshing) {
+  const enabled = !!agentSetting(agent.id, 'enabled', agent.enabled);
+
+  const toggle = el('input', { type: 'checkbox' });
+  toggle.checked = enabled;
+  toggle.addEventListener('change', () => setPath(settings, 'agents.' + agent.id + '.enabled', toggle.checked));
+
+  // What this machine reported, in the order somebody reads it: is it here,
+  // which build, and how much it can be run on.
+  const facts = [];
+  if (!agent.installed) facts.push('not installed');
+  else {
+    if (agent.version) facts.push(agent.version);
+    if (agent.path) facts.push(agent.path);
+  }
+  const count = (agent.models || []).length;
+  if (count) facts.push(count + ' model' + (count === 1 ? '' : 's') + (agent.static ? ' · curated' : ''));
+
+  const binary = el('input', {
+    class: 'input mono', type: 'text', spellcheck: 'false',
+    placeholder: agent.path || 'found on PATH',
+    value: agentSetting(agent.id, 'binary', '') || '',
+  });
+  binary.addEventListener('input', () => setPath(settings, 'agents.' + agent.id + '.binary', binary.value.trim()));
+
+  const args = el('input', {
+    class: 'input mono', type: 'text', spellcheck: 'false', placeholder: '--some-flag',
+    value: (agentSetting(agent.id, 'extra_args', []) || []).join(' '),
+  });
+  args.addEventListener('input', () => setPath(settings, 'agents.' + agent.id + '.extra_args', splitArgs(args.value)));
+
+  const refresh = el('button', {
+    class: 'btn sm', type: 'button', text: refreshing ? 'Asking…' : 'Refresh models',
+    disabled: refreshing,
+    onclick: () => { loadAgents(true).catch(() => {}); },
+  });
+
+  return el('div', { class: 'agent-card' + (agent.installed ? '' : ' missing') },
+    el('div', { class: 'agent-head' },
+      el('label', { class: 'switch' }, toggle, el('span', { class: 'track' }), el('span', { text: agent.label })),
+      el('span', { class: 'agent-facts mono', text: facts.join(' · ') }),
+    ),
+    agent.error ? el('div', { class: 'agent-note bad', text: agent.error }) : null,
+    agent.notes ? el('div', { class: 'agent-note', text: agent.notes }) : null,
+    el('div', { class: 'grid-2' },
+      field('Binary path', binary, 'Leave it empty to look the program up on PATH, which is what a normal installation wants.'),
+      field('Extra arguments', args, 'Appended to every command line, for the one flag this app did not think of.'),
+    ),
+    el('div', { class: 'row' }, refresh),
+  );
+}
+
 function bind() {
   $('saveTop').addEventListener('click', save);
   $('saveBottom').addEventListener('click', save);
@@ -214,10 +311,6 @@ function bind() {
       busyButton(button, false, 'Reading…');
     }
   });
-  $('resetPrompt').addEventListener('click', () => {
-    $('systemPrompt').value = defaults.agent.system_prompt;
-    toast('Default prompt restored. Do not forget to save.');
-  });
   document.addEventListener('keydown', (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key === 's') {
       event.preventDefault();
@@ -228,7 +321,6 @@ function bind() {
 
 async function save() {
   const next = collect();
-  next.skills = settings.skills;
   const buttons = [$('saveTop'), $('saveBottom')];
   for (const button of buttons) busyButton(button, true, 'Saving…');
   try {
@@ -238,7 +330,9 @@ async function save() {
     settings = data.settings;
     fillForm();
     syncModelPickers();
-    renderSkills();
+    // The card is drawn from the settings it just wrote, so it has to follow
+    // whatever the server normalised them into.
+    renderAgents('');
     refreshTunnel();
     hint('Saved');
     toast('Settings saved');
@@ -264,162 +358,11 @@ function showNotice(text, kind) {
   notice.textContent = text;
 }
 
-/* ---------------------------------------------------------------- skills */
-
-// catalogue is what the app ships: the name of each skill, the program it
-// runs, the wording it uses by default, the models it suggests and - read only
-// - how a model and an effort actually reach that program. How a skill is
-// started and its manual belong to the app and are kept up to date with it, so
-// the card offers exactly the decisions the settings document stores: the
-// switch, the description, and the list of models.
-let catalogue = [];
-
-function renderSkills() {
-  const host = $('skills');
-  host.innerHTML = '';
-  for (const skill of catalogue) host.append(skillCard(skill));
-}
-
-// settingFor is the stored decision about one skill. The server sends one per
-// shipped skill, so this normally finds it; a skill it somehow says nothing
-// about gets an entry rather than a dead switch.
-function settingFor(id) {
-  if (!Array.isArray(settings.skills)) settings.skills = [];
-  let found = settings.skills.find((entry) => entry.id === id);
-  if (!found) {
-    found = { id, enabled: false, description: '' };
-    settings.skills.push(found);
-  }
-  return found;
-}
-
 function field(label, control, hintText) {
   return el('div', { class: 'field' },
     el('label', { text: label }),
     control,
     hintText ? el('div', { class: 'hint', text: hintText }) : null);
-}
-
-function skillCard(skill) {
-  const setting = settingFor(skill.id);
-  const head = el('div', { class: 'skill-head' },
-    el('label', { class: 'switch' },
-      el('input', {
-        type: 'checkbox', checked: !!setting.enabled,
-        onchange: (event) => { setting.enabled = event.target.checked; },
-      }),
-      el('span', { class: 'track' })),
-    el('span', { class: 'nm', text: skill.name || skill.id }),
-    el('span', { class: 'kind', text: 'runs ' + skill.command }));
-
-  const body = el('div', { class: 'skill-body' },
-    field('When should Socrates use it?',
-      el('textarea', {
-        class: 'textarea', rows: '3', value: setting.description || '',
-        placeholder: skill.description || '',
-        oninput: (event) => { setting.description = event.target.value; },
-      }),
-      'Goes straight into the system prompt, so write it the way you would explain it to a ' +
-      'colleague. Leave empty for the default.'),
-    modelList(skill, setting));
-
-  return el('div', { class: 'skill' }, head, body);
-}
-
-/* ----------------------------------------------------------- model lists */
-
-const EFFORTS = [
-  ['', 'default'],
-  ['low', 'low'],
-  ['medium', 'medium'],
-  ['high', 'high'],
-];
-
-// modelList is the second half of a skill card: which models Socrates may
-// start this program on. Socrates picks one per session by reading the "when
-// to use" column, exactly the way it picks the skill itself by reading the
-// description above.
-//
-// The rows are edited in place in the stored setting. An empty list is not a
-// decision - it means "whatever the app ships" - so clearing every row brings
-// the shipped list back on the next save, the same as an empty description.
-function modelList(skill, setting) {
-  const shipped = skill.models || [];
-  const rows = el('div', { class: 'models' });
-
-  // The stored list is what the user has changed; with nothing stored the card
-  // shows the shipped list, so what is on screen is always what will run.
-  if (!Array.isArray(setting.models) || setting.models.length === 0) {
-    setting.models = shipped.map((m) => ({ id: m.id, effort: m.effort || '', use_when: m.use_when || '' }));
-  }
-
-  const draw = () => {
-    rows.innerHTML = '';
-    for (const entry of setting.models) rows.append(modelRow(setting, entry, draw));
-    if (setting.models.length === 0) {
-      rows.append(el('div', { class: 'hint', text: 'No models. Saving like this restores the ones that ship with the app.' }));
-    }
-  };
-  draw();
-
-  const add = el('button', {
-    type: 'button', class: 'btn sm', text: 'Add model',
-    onclick: () => {
-      setting.models.push({ id: '', effort: '', use_when: '' });
-      draw();
-    },
-  });
-
-  const reset = shipped.length
-    ? el('button', {
-      type: 'button', class: 'btn sm ghost', text: 'Reset to shipped',
-      onclick: () => {
-        setting.models = shipped.map((m) => ({ id: m.id, effort: m.effort || '', use_when: m.use_when || '' }));
-        draw();
-      },
-    })
-    : null;
-
-  return el('div', { class: 'field' },
-    el('label', { text: 'Models it may run on' }),
-    rows,
-    el('div', { class: 'row models-actions' }, add, reset),
-    el('div', { class: 'hint' },
-      'Model names in ' + (skill.name || skill.id) + '’s own naming, not OpenRouter ids. Socrates ' +
-      'reads the "when to use" line and picks one when it opens the session; the first row is what it ' +
-      'gets when it does not pick.'),
-    el('div', { class: 'hint mono', text: skill.applying || '' }));
-}
-
-function modelRow(setting, entry, draw) {
-  const remove = el('button', {
-    type: 'button', class: 'btn sm ghost', title: 'Remove this model', text: 'Remove',
-    onclick: () => {
-      setting.models = setting.models.filter((m) => m !== entry);
-      draw();
-    },
-  });
-
-  const effort = el('select', {
-    class: 'select', 'aria-label': 'Reasoning effort',
-    onchange: (event) => { entry.effort = event.target.value; },
-  }, EFFORTS.map(([value, label]) => el('option', {
-    value, text: label, selected: (entry.effort || '') === value,
-  })));
-
-  return el('div', { class: 'model-row' },
-    el('input', {
-      class: 'input mono', type: 'text', value: entry.id || '',
-      placeholder: 'model id', 'aria-label': 'Model id',
-      oninput: (event) => { entry.id = event.target.value; },
-    }),
-    effort,
-    el('input', {
-      class: 'input', type: 'text', value: entry.use_when || '',
-      placeholder: 'when to use this model', 'aria-label': 'When to use this model',
-      oninput: (event) => { entry.use_when = event.target.value; },
-    }),
-    remove);
 }
 
 // splitArgs understands simple quoting so paths with spaces survive.
