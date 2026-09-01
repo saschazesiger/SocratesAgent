@@ -1,22 +1,19 @@
 // The chat page: sidebar, live process view, composer, voice and audio mode.
 
 import {
-  api, el, toast, confirmDialog, fmtClock, isOffline, errorMessage,
+  api, el, toast, confirmDialog, fmtClock, fmtTokens, isOffline, errorMessage,
   setClass, LiveStream, Outbox, clientKey, onWake, HttpError, RetryLater,
-  CONNECTION_GRACE,
+  isBusyConflict, CONNECTION_GRACE,
 } from './api.js';
 import { renderMarkdown } from './markdown.js';
 import {
   Recorder, describeMicError, speak, stopSpeaking, isSpeaking,
   onSpeechError, fetchSpeech, playSpeech,
 } from './voice.js';
+import * as agents from './agents.js';
+import { combobox } from './combobox.js';
 
 const $ = (id) => document.getElementById(id);
-
-// The terminal dock is gone with the pseudo terminal it drew. Tool activity
-// is rendered as cards in the transcript now; the remaining `dock` guards are
-// WP5's to remove along with the two views that used it.
-const dock = null;
 
 const dom = {
   navScrim: $('navScrim'),
@@ -26,8 +23,10 @@ const dom = {
   thread: $('thread'),
   threadInner: $('threadInner'),
   title: $('chatTitle'),
+  agentBadge: $('chatAgent'),
   archivedTag: $('chatArchived'),
   composer: $('composer'),
+  composerLegacy: $('composerLegacy'),
   input: $('input'),
   sendBtn: $('sendBtn'),
   micBtn: $('micBtn'),
@@ -47,6 +46,10 @@ const dom = {
   panelTitle: $('panelTitle'),
   panelWorkspace: $('panelWorkspace'),
   panelWorkspaceNow: $('panelWorkspaceNow'),
+  panelBinding: $('panelBinding'),
+  panelModel: $('panelModel'),
+  panelEffort: $('panelEffort'),
+  panelBindingHint: $('panelBindingHint'),
   autoReplay: $('autoReplay'),
   autoDetails: $('autoDetails'),
 };
@@ -59,12 +62,23 @@ const state = {
   chatScope: readValue('socrates.chatScope') === 'all' ? 'all' : 'active',
   chatId: null,
   chat: null,
-  // Which of the four the pane is showing: the conversation, the conversation
-  // with its terminal beside it, the terminal itself, or the hands free
+  // Which of the two the pane is showing: the conversation, or the hands free
   // screen. Remembered per chat, because it is how that chat is used rather
   // than a passing choice - except hands free, which follows the person.
   // What was remembered is read in init, once the page is there to show it.
   view: 'chat',
+  // What this chat is bound to, as the header shows it: the agent's name, the
+  // model's name, whether the binding still works on this machine, and whether
+  // this is a transcript from before Socrates talked to agents directly.
+  agentLabel: '',
+  modelLabel: '',
+  agentOK: true,
+  legacy: false,
+  // What the new chat sheet decided, for a chat that does not exist yet. It
+  // travels in the payload of every queued message that has no chat id, so a
+  // chat typed into while offline is created with its agent when the message
+  // is finally delivered.
+  pendingBinding: null,
   rev: 0,
   busy: false,
   serverBusy: false,
@@ -113,6 +127,7 @@ const ICONS = {
   cross: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
   chev: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="13" height="13"><path d="m9 6 6 6-6 6"/></svg>',
   dot: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="3.5"/></svg>',
+  info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.6v.1"/></svg>',
   trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7h16M9 7V5h6v2M7 7l1 12h8l1-12"/></svg>',
   archive: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8M10 12h4"/></svg>',
   restore: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8M12 17v-6M9 14l3-3 3 3"/></svg>',
@@ -216,13 +231,22 @@ async function init() {
     .then((prefs) => { if (prefs) state.prefs = prefs; })
     .catch(() => { /* defaults are fine */ })
     .finally(primeOfflineNotice);
+  // The agent catalogue is what the new chat sheet and the header badge are
+  // drawn from. It is fetched here so it is warm before either is needed, and
+  // it falls back to the copy from the last visit on its own.
+  agents.load()
+    .then(() => paintAgentBadge())
+    .catch(() => { /* the sheet says so when it is opened */ });
   await refreshChats(BOOT);
   // The address bar is the more reliable of the two: reopening the app with no
   // signal cannot fetch the chat list, and falling back to a blank new chat
   // there would lose both the place and the draft that belongs to it.
   const fromHash = location.hash.replace(/^#/, '');
+  // A chat that was started and typed into but never delivered has no id to
+  // open, and opening another chat over it would put the bubble the person is
+  // waiting on to land on no screen at all. It wins the boot.
   if (fromHash) await openChat(fromHash);
-  else if (firstChatId()) await openChat(firstChatId());
+  else if (firstChatId() && !state.pendingBinding) await openChat(firstChatId());
   else {
     showEmptyState();
     restoreDraft();
@@ -251,6 +275,17 @@ function boot(attempt = 1) {
 function buildQueues() {
   state.outbox = new Outbox('messages', sendQueuedMessage);
   state.outbox.onChange(renderPending);
+  // A chat that was started but never delivered survives a reload in the
+  // queue. Its binding comes back with it, so the header still says who is
+  // going to answer and a second message lands in the same chat.
+  const unbound = state.outbox.items.find((item) => !item.payload.chatId && item.payload.agent);
+  if (unbound) {
+    state.pendingBinding = {
+      agent: unbound.payload.agent,
+      model: unbound.payload.model || '',
+      effort: unbound.payload.effort || '',
+    };
+  }
 }
 
 // sendQueuedMessage is the whole "say something" transaction: create the chat
@@ -258,7 +293,19 @@ function buildQueues() {
 // the pair can be repeated from the start without duplicating anything.
 async function sendQueuedMessage(payload, item) {
   if (!payload.chatId) {
-    const created = await api('/api/chats', { method: 'POST', body: { client_id: payload.chatKey } });
+    // The binding travels with the message rather than being read from the
+    // page: by the time this runs the page may have been reloaded, and a
+    // create with no agent is refused permanently - which would lose a message
+    // the person did nothing to earn.
+    const created = await api('/api/chats', {
+      method: 'POST',
+      body: {
+        client_id: payload.chatKey,
+        agent: payload.agent || '',
+        model: payload.model || '',
+        effort: payload.effort || '',
+      },
+    });
     payload.chatId = created.chat.id;
     state.outbox.persist();
     adoptCreatedChat(created.chat, item);
@@ -284,23 +331,32 @@ function adoptCreatedChat(chat, item) {
   const queued = state.outbox.items.filter((entry) => entry.id !== item.id && !entry.payload.chatId);
   for (const entry of queued) entry.payload.chatId = chat.id;
   state.outbox.persist();
+  // The chat exists, so the binding the sheet produced has done its job and
+  // the sheet may be opened again.
+  state.pendingBinding = null;
   if (state.chatId) return;
   state.chatId = chat.id;
-  if (dock) dock.setChat(chat.id);
   state.chat = chat;
   updateArchivedMark();
   state.effectiveWorkspace = '';
   state.rev = 0;
+  state.legacy = false;
+  state.agentOK = true;
+  paintAgentBadge();
   dom.chatSettings.hidden = false;
-  // The chat that was typed into now exists, so the two stops that need one
-  // are open for business.
-  setView(state.view, { silent: true });
   location.hash = chat.id;
   connect();
   refreshChats();
 }
 
+// boot retries init on a bad connection, so this guards against binding every
+// handler a second time - which is what made one tap on the menu button toggle
+// the drawer twice.
+let bound = false;
+
 function bindUI() {
+  if (bound) return;
+  bound = true;
   dom.composer.addEventListener('submit', (event) => {
     event.preventDefault();
     submitText(dom.input.value);
@@ -323,8 +379,7 @@ function bindUI() {
       submitText(dom.input.value);
     }
   });
-  $('newChat').addEventListener('click', () => startNewChat());
-  $('newTerminal').addEventListener('click', () => { startNewTerminalChat().catch(() => {}); });
+  $('newChat').addEventListener('click', () => { startNewChat().catch(() => {}); });
   dom.chatScope.addEventListener('click', (event) => {
     const button = event.target.closest('.seg');
     if (button) setChatScope(button.dataset.scope);
@@ -360,7 +415,7 @@ function bindUI() {
   $('menuBtn').addEventListener('click', () => setNav(!navOpen()));
   // Tapping beside the drawer closes it. The scrim is what "beside" means: it
   // covers everything the drawer is over, so this one handler is every empty
-  // spot, the conversation behind it and the terminal under that.
+  // spot and the conversation behind it.
   dom.navScrim.addEventListener('click', closeNav);
   // The rest of "beside", for the few things that sit above the scrim - the
   // connection bar - and for a wide window, where there is no scrim at all.
@@ -466,14 +521,13 @@ function setChatScope(scope) {
 
 /* ------------------------------------------------------------ chat view */
 
-// Four ways to use a chat: the conversation, the conversation with its
-// terminal beside it, the terminal on its own, and the hands free screen.
-// They are one slider in the top bar because they are one decision - which of
-// them has the pane - and separate switches for it could disagree.
-const VIEWS = ['chat', 'split', 'terminal', 'auto'];
+// Two ways to use a chat: reading and typing, or hands free. They are one
+// slider in the top bar because they are one decision - which of them has the
+// pane - and a pair of switches for it could disagree.
+const VIEWS = ['chat', 'auto'];
 
-// The view is remembered per chat: a terminal chat is still a terminal the
-// next time it is opened, whatever was done in between.
+// The view is remembered per chat, so a chat that is used hands free is still
+// hands free the next time it is opened.
 function viewKey(id) { return 'socrates.view.' + id; }
 
 // storedView is where a chat starts. Hands free is the one choice that follows
@@ -486,59 +540,31 @@ function storedView(id) {
   return readFlag('socrates.auto') ? 'auto' : 'chat';
 }
 
-// setView is the only thing that decides what the pane shows. Each of the four
+// setView is the only thing that decides what the pane shows. Each of the two
 // is a whole screen rather than a panel, so switching is a matter of handing
-// the pane over: nothing about the chat, its stream or the session running at
-// its terminal changes underneath.
+// the pane over: nothing about the chat or its stream changes underneath.
 function setView(view, options = {}) {
-  const wanted = VIEWS.includes(view) ? view : 'chat';
-  // A terminal needs a chat to run in, and a blank page has none yet.
-  const next = !state.chatId && (wanted === 'split' || wanted === 'terminal') ? 'chat' : wanted;
+  const next = VIEWS.includes(view) ? view : 'chat';
   const before = state.view;
   state.view = next;
   renderViewSlider();
   if (!options.silent && state.chatId) writeValue(viewKey(state.chatId), next);
   if (!options.silent) writeValue('socrates.auto', next === 'auto' ? '1' : '0');
-  setClass(document.body, 'term-mode', next === 'terminal');
   setClass(document.body, 'auto', next === 'auto');
   if (before === 'auto' && next !== 'auto') stopSpeaking();
   if (next === 'auto' && before !== 'auto' && !options.silent && state.lastAnswer) {
     showAutoAnswer(state.lastAnswer, false);
   }
-  if (!dock) return;
-  dock.setFullscreen(next === 'terminal');
-  dock.setOpen(next === 'split');
-  if ((next !== 'terminal' && next !== 'split') || !state.chatId) return;
-  // Both of those stops mean this chat has a shell running in it. Asking for
-  // one that is already there costs nothing: the server keeps one per chat
-  // and says so.
-  dock.ensureTerminal(state.chatId).catch((err) => {
-    toast(isOffline(err)
-      ? 'No connection — the terminal will open when there is signal.'
-      : errorMessage(err), 'error');
-  });
 }
 
-// updateSliderLive is the dot on the terminal stop: whether there is a program
-// running at this chat's terminal. It is kept honest by the same second that
-// keeps the rest of the page honest, and again the moment the pane changes -
-// switching chats takes the sessions of the old one with it.
-function updateSliderLive() {
-  setClass(dom.viewSlider, 'live', !!(dock && dock.isLive()));
-}
-
-// renderViewSlider says two things: which stop has the pane, and which of them
-// can have it at all.
+// renderViewSlider says which stop has the pane.
 function renderViewSlider() {
   for (const stop of dom.viewSlider.querySelectorAll('.stop')) {
     const on = stop.dataset.view === state.view;
-    const off = !state.chatId && (stop.dataset.view === 'split' || stop.dataset.view === 'terminal');
     stop.setAttribute('aria-checked', on ? 'true' : 'false');
-    stop.setAttribute('aria-disabled', off ? 'true' : 'false');
     // One tab stop for the group, the way a set of radio buttons behaves.
     stop.tabIndex = on ? 0 : -1;
   }
-  updateSliderLive();
   placeKnob();
 }
 
@@ -562,15 +588,6 @@ function restoreView(id) {
   setView(storedView(id), { silent: true });
 }
 
-// A terminal chat gets a name it can be told apart by in the list. Six
-// characters is enough to never see the same one twice in a sidebar.
-function terminalName() {
-  const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
-  let tail = '';
-  for (let i = 0; i < 6; i += 1) tail += alphabet[Math.floor(Math.random() * alphabet.length)];
-  return 'Terminal ' + tail;
-}
-
 // busyButton is the smallest honest answer to a tap that has to wait for the
 // network: the control stops taking taps and says it is working.
 function busyButton(button, on) {
@@ -580,32 +597,6 @@ function busyButton(button, on) {
   const spin = button.querySelector(':scope > .spinner');
   if (on && !spin) button.prepend(el('span', { class: 'spinner' }));
   if (!on && spin) spin.remove();
-}
-
-// startNewTerminalChat makes a chat whose whole point is its terminal. It is
-// an ordinary chat - it shows up in the list, it survives a restart with its
-// session - opened straight into Terminal Mode.
-async function startNewTerminalChat() {
-  const button = $('newTerminal');
-  busyButton(button, true);
-  try {
-    const created = await api('/api/chats', {
-      method: 'POST', attempts: 2, body: { client_id: clientKey(), title: terminalName() },
-    });
-    const chat = created && created.chat;
-    if (!chat) throw new Error('The terminal chat could not be created.');
-    // Written before the chat is opened, so opening it lands on the terminal
-    // the same way every other chat restores the view it was left in.
-    writeValue(viewKey(chat.id), 'terminal');
-    state.chats = [chat, ...state.chats.filter((c) => c.id !== chat.id)];
-    renderChatList();
-    await openChat(chat.id);
-    refreshChats().catch(() => { /* the sidebar keeps what it has */ });
-  } catch (err) {
-    toast(isOffline(err) ? 'No connection — the terminal could not be opened yet.' : errorMessage(err), 'error');
-  } finally {
-    busyButton(button, false);
-  }
 }
 
 // The sidebar is patched rather than rebuilt. Its rows carry the running dot,
@@ -763,7 +754,7 @@ async function setArchived(chat, archived) {
     const ok = await confirmDialog({
       title: 'Archive this chat?',
       body: '"' + (chat.title || 'New chat') + '" keeps its conversation, but the run in progress '
-        + 'is stopped and its terminal sessions are closed. Sending a message makes it active again.',
+        + 'is stopped and its agent session is closed. Sending a message makes it active again.',
       confirmLabel: 'Archive chat',
     });
     if (!ok) return;
@@ -778,15 +769,6 @@ async function setArchived(chat, archived) {
   if (open) {
     state.chat.archived = archived;
     updateArchivedMark();
-    // Everything this chat had running has just been ended, so a terminal on
-    // screen is a picture of a program that is gone.
-    if (archived) {
-      if (state.view === 'split' || state.view === 'terminal') setView('chat');
-      if (dock) {
-        dock.setChat(null);
-        dock.setChat(chat.id);
-      }
-    }
   }
   renderChatList();
   api('/api/chats/' + encodeURIComponent(chat.id) + (archived ? '/archive' : '/unarchive'), {
@@ -835,7 +817,6 @@ async function deleteChat(chat) {
   if (state.chatId === chat.id) {
     disconnect();
     state.chatId = null;
-    if (dock) dock.setChat(null);
     state.chat = null;
     setView(state.view, { silent: true });
     updateArchivedMark();
@@ -879,13 +860,30 @@ function firstChatId() {
   return chat ? chat.id : '';
 }
 
-function startNewChat() {
+// startNewChat asks who should answer, and then clears the page for the first
+// message. The chat itself is not created here: the outbox creates it inside
+// the same transaction that delivers the first message, which is what makes
+// "type it offline, it arrives later" work. The binding travels with it.
+async function startNewChat() {
   closeNav();
+  // The outbox assigns a newly created chat's id to every queued item that has
+  // none, which is only safe while there can be at most one unbound chat in
+  // flight. A second one would have its messages adopted into the first.
+  if (state.outbox && state.outbox.items.some((item) => !item.payload.chatId)) {
+    toast('Finish sending the chat you started first.');
+    return;
+  }
+  const binding = await agents.openNewChatSheet();
+  if (!binding) return;
+  state.pendingBinding = binding;
   saveDraft();
   disconnect();
   state.chatId = null;
-  if (dock) dock.setChat(null);
   state.chat = null;
+  state.legacy = false;
+  state.agentOK = true;
+  state.agentLabel = '';
+  state.modelLabel = '';
   setView(state.view, { silent: true });
   updateArchivedMark();
   state.rev = 0;
@@ -897,11 +895,81 @@ function startNewChat() {
   dom.chatSettings.hidden = true;
   dom.chatPanel.hidden = true;
   setBusy(false);
+  paintAgentBadge();
+  updateComposerMode();
   showEmptyState();
   renderChatList();
   resetAutoScreen('Tap the microphone and speak');
   restoreDraft();
   dom.input.focus();
+}
+
+// paintAgentBadge is the one line in the header that says what this chat is
+// bound to. A chat with no agent - a transcript from before the rewrite - says
+// so instead, and one whose agent has since been removed is marked.
+function paintAgentBadge() {
+  const badge = dom.agentBadge;
+  if (!badge) return;
+  if (state.legacy) {
+    badge.hidden = false;
+    badge.className = 'agent-badge warn';
+    badge.replaceChildren(el('span', { class: 'b-model', text: 'No agent' }));
+    badge.title = 'This chat was made before Socrates talked to agents directly.';
+    return;
+  }
+  const binding = state.chat && state.chat.agent
+    ? { agent: state.chat.agent, model: state.chat.model, effort: state.chat.effort }
+    : state.pendingBinding;
+  if (!binding || !binding.agent) {
+    badge.hidden = true;
+    badge.replaceChildren();
+    return;
+  }
+  // The labels the server sent are the truthful ones; before there is a chat
+  // to ask about, the cached catalogue says the same thing.
+  const known = agents.agent(binding.agent);
+  const agentLabel = state.agentLabel || (known ? known.label : binding.agent);
+  const modelEntry = agents.modelOf(binding.agent, binding.model);
+  const modelLabel = state.modelLabel || (modelEntry ? modelEntry.label : binding.model);
+  // The three parts are separate elements so a narrow top bar can drop the
+  // agent's name - which is fixed for the life of the chat and is in the
+  // settings popover - rather than eat the chat's own name. The whole binding
+  // stays in the title attribute either way.
+  const parts = [];
+  const push = (cls, text) => {
+    if (!text) return;
+    // The separator is a node of its own so that hiding a part takes its
+    // separator with it, rather than leaving a dot hanging off the front.
+    if (parts.length) parts.push(el('span', { class: 'b-sep', text: ' · ' }));
+    parts.push(el('span', { class: cls, text }));
+  };
+  push('b-agent', agentLabel);
+  push('b-model', modelLabel);
+  push('b-effort', binding.effort);
+  badge.hidden = false;
+  badge.className = 'agent-badge' + (state.agentOK ? '' : ' warn');
+  badge.replaceChildren(...parts);
+  const full = [agentLabel, modelLabel, binding.effort].filter(Boolean).join(' · ');
+  badge.title = state.agentOK
+    ? full
+    : full + ' — ' + agentLabel + ' is not available on this machine any more.';
+}
+
+// updateComposerMode swaps the composer for one sentence on a chat that can
+// never be answered again. Nothing is queued from there, so the outbox never
+// sees a message that can only ever fail.
+//
+// Hands free goes with it. Audio mode is a microphone and nothing else, so on
+// a chat that cannot be answered it is a button that would record, spend a
+// transcription and then be told no - which is a worse way of saying no than
+// not offering it.
+function updateComposerMode() {
+  setClass(document.body, 'legacy-chat', state.legacy);
+  if (dom.composerLegacy) dom.composerLegacy.hidden = !state.legacy;
+  const auto = dom.viewSlider.querySelector('.stop[data-view="auto"]');
+  if (auto) auto.setAttribute('aria-disabled', state.legacy ? 'true' : 'false');
+  if (state.legacy && state.view === 'auto') setView('chat', { silent: true });
+  updateMicState();
 }
 
 async function openChat(id, options = {}) {
@@ -913,15 +981,22 @@ async function openChat(id, options = {}) {
   disconnect();
   clearTimeout(state.reopenTimer);
   state.chatId = id;
-  if (dock) dock.setChat(id);
   // The view belongs to the chat, and it is restored before anything is
-  // fetched: a terminal chat opened with no signal is still a terminal.
+  // fetched: a chat that was used hands free opens hands free with no signal.
   restoreView(id);
   state.rev = 0;
   state.lastAnswer = '';
   state.workSince = 0;
   state.workLabel = '';
   state.loadFailed = false;
+  // Until this chat has answered for itself, nothing about the last one is
+  // still true of it.
+  state.agentLabel = '';
+  state.modelLabel = '';
+  state.agentOK = true;
+  state.legacy = false;
+  paintAgentBadge();
+  updateComposerMode();
   location.hash = id;
 
   let data;
@@ -947,6 +1022,13 @@ async function openChat(id, options = {}) {
   updateArchivedMark();
   state.defaultWorkspace = data.default_workspace || '';
   state.effectiveWorkspace = data.effective_workspace || '';
+  state.agentLabel = data.agent_label || '';
+  state.modelLabel = data.model_label || '';
+  state.agentOK = data.agent_ok !== false;
+  state.legacy = !!data.legacy;
+  state.pendingBinding = null;
+  paintAgentBadge();
+  updateComposerMode();
   state.rev = data.rev || 0;
   dom.title.textContent = data.chat.title || 'New chat';
   writeValue(titleKey(id), data.chat.title || '');
@@ -988,7 +1070,7 @@ function showEmptyState() {
   state.turnEls.clear();
   const wrap = el('div', { class: 'empty' },
     el('h2', { text: 'What should we work on?' }),
-    el('p', { text: 'Socrates plans the work and hands it to Claude Code, Codex or OpenCode.' }),
+    el('p', { text: 'This chat goes straight to the agent it is bound to.' }),
   );
   const suggestions = el('div', { class: 'suggestions' });
   for (const text of [
@@ -1160,14 +1242,13 @@ function tickWorkRow() {
 function workLabelFor(step) {
   const detail = detailOf(step);
   switch (step.kind) {
-    case 'terminal':
-      return isRunning(step.status)
-        ? (step.title || 'The program') + ' is working…'
-        : (step.title || 'The program') + ' finished';
-    case 'shell': return 'Running ' + (detail.command || step.title || 'a command') + '…';
-    case 'thinking': return 'Thinking…';
-    case 'text': return 'Writing the answer…';
-    case 'error': return '';
+    case 'tool': return (detail.name || step.title || 'Working') + '…';
+    case 'subagent': return 'A subagent is working…';
+    case 'reasoning': return 'Thinking…';
+    case 'draft': return 'Writing the answer…';
+    case 'usage': return '';
+    case 'notice': return '';
+    case 'error': return step.title || '';
     default: return '';
   }
 }
@@ -1266,16 +1347,19 @@ function toggleStep(node, id) {
 // ever called once per step; everything after that goes through update, so no
 // running animation is interrupted by a redraw.
 function buildStep(step) {
-  const detail = detailOf(step);
   switch (step.kind) {
-    case 'terminal': return buildTerminal(step, detail);
-    case 'shell': return buildShell(step);
+    case 'tool': return buildTool(step, 'tool');
+    case 'subagent': return buildTool(step, 'subagent');
+    case 'reasoning': return buildCollapsible(step, 'Reasoning', ICONS.spark);
+    case 'usage': return buildUsage(step);
+    case 'notice': return buildNotice(step);
     case 'error': return buildError(step);
-    case 'thinking': return buildCollapsible(step, 'Reasoning', ICONS.spark);
-    // The engine writes five kinds and this page ships in the same binary that
-    // writes them, so text is the last of the five rather than a fallback for
-    // a kind that could arrive.
-    default: return buildText(step);
+    case 'draft': return buildText(step);
+    // The seven above are a closed set (§4.4) and this page ships in the same
+    // binary that writes them, so nothing should ever land here. If something
+    // does, it is shown as a note rather than as the answer: a kind we do not
+    // understand must not be able to look like what the agent said.
+    default: return buildNotice(step);
   }
 }
 
@@ -1328,76 +1412,89 @@ function buildCollapsible(step, label, iconHtml) {
   return node;
 }
 
-// A terminal keeps one line in the transcript, and no more. The screen itself
-// is in the dock beside the conversation: a program painting a full screen
-// several times a second is something you look at, not something you scroll
-// past on the way to the next message.
-function buildTerminal(step, detail) {
-  const node = el('div', { class: 'step term-line', 'data-step': step.id });
-  const dot = el('span', { class: 'term-dot' });
-  const what = el('span', { class: 'what' });
-  const open = el('button', {
-    class: 'open-term', type: 'button', text: 'Open terminal',
-    onclick: () => {
-      if (!dock) return;
-      const current = state.stepData.get(step.id) || step;
-      const now = detailOf(current);
-      dock.open(now.session, current, now);
-    },
-  });
-  node.append(dot, what, open);
-  node.update = (next) => {
-    state.stepData.set(next.id, next);
-    const now = detailOf(next);
-    const running = now.running !== false && next.status === 'running';
-    // One class at a time, and only when it changed. What keeps the pulse
-    // going is that this dot is patched rather than replaced; the guards here
-    // just keep the writes honest.
-    setClass(dot, 'live', running);
-    setClass(dot, 'failed', !running && next.status === 'failed');
-    setClass(dot, 'stopped', !running && next.status !== 'failed');
-    const name = next.title || 'a program';
-    const text = running
-      ? 'Opened ' + name + ' in a terminal'
-      : 'Ran ' + name + ' in a terminal — ' + (now.exit_code ? 'exited ' + now.exit_code : 'finished');
-    if (what.textContent !== text) what.textContent = text;
-    open.hidden = !now.session;
-    // The dock learns about every session from the step that opened it, so a
-    // reloaded page finds its terminals again without a second endpoint.
-    if (dock) dock.noteStep(next, now);
-  };
-  node.update(Object.assign({}, step, { detail: detail || step.detail }));
-  return node;
-}
-
-// A shell command is a one shot: the command line and what it printed.
-function buildShell(step) {
-  const node = el('div', { class: 'step collapsible', 'data-step': step.id });
-  const spinner = el('span', { class: 'spinner', hidden: true });
+// A tool call is a card: what was run, on the head line, and what it printed
+// underneath. It is written once and patched from there, so the spinner turns
+// from the moment the call starts until the moment it ends and the output
+// grows without the row being rebuilt around it.
+//
+// A subagent is the same card with a different tag and no exit code: it is one
+// agent handing work to another, not a command with a status to report.
+function buildTool(step, flavour) {
+  const node = el('div', { class: 'step collapsible tool-step', 'data-step': step.id });
+  const icon = statusIcon();
+  const tag = el('span', { class: 'tag', text: flavour === 'subagent' ? 'agent' : 'tool' });
+  const name = el('span', { class: 'name' });
   const val = el('span', { class: 'val' });
   const meta = el('span', { class: 'meta', hidden: true });
-  const head = el('div', { class: 'sub-line' },
-    spinner,
-    el('span', { class: 'tag', text: 'shell' }),
-    val,
-    meta,
+  const head = el('div', { class: 'head' },
+    icon, tag, name, val, meta,
+    el('span', { class: 'chev', html: ICONS.chev }),
   );
-  head.style.cursor = 'pointer';
   head.addEventListener('click', () => toggleStep(node, step.id));
+  // The arguments the tool was called with, when the adapter had them as JSON.
+  // They are above the output because they explain it.
+  const input = el('pre', { class: 'tool-input', hidden: true });
   const body = el('div', { class: 'body code' });
-  node.append(head, body);
+  node.append(head, input, body);
 
   node.update = (next) => {
     const detail = detailOf(next);
-    spinner.hidden = !isRunning(next.status);
-    val.textContent = detail.command || next.title || '';
-    meta.hidden = !detail.exit_code;
-    if (detail.exit_code) meta.textContent = 'exit ' + detail.exit_code;
-    const text = next.body || '(no output)';
+    icon.set(next.status);
+    const label = detail.name || next.title || (flavour === 'subagent' ? 'subagent' : 'tool');
+    if (name.textContent !== label) name.textContent = label;
+    const line = detail.input || (detail.name ? '' : next.title || '');
+    if (val.textContent !== line) val.textContent = line;
+    // Only a failure is worth a number. A command that exited 0 says so by
+    // being ticked.
+    const exit = Number(detail.exit_code) || 0;
+    const showExit = flavour !== 'subagent' && exit !== 0;
+    meta.hidden = !showExit;
+    if (showExit) meta.textContent = 'exit ' + exit;
+    const json = detail.input_json || '';
+    input.hidden = !json;
+    if (json && input.textContent !== json) input.textContent = json;
+    const text = next.body || (isRunning(next.status) ? '' : '(no output)');
     if (body.textContent !== text) body.textContent = text;
   };
   node.update(step);
   if (state.expanded.has(step.id)) node.classList.add('open');
+  return node;
+}
+
+// What the turn cost, in one dim line. A field that is zero is left out rather
+// than printed as a zero, because a number that is not known and a number that
+// is nothing look the same on a phone.
+function buildUsage(step) {
+  const node = el('div', { class: 'step usage-step', 'data-step': step.id });
+  node.update = (next) => {
+    const detail = detailOf(next);
+    const parts = [];
+    if (detail.input) parts.push(fmtTokens(detail.input) + ' in');
+    if (detail.output) parts.push(fmtTokens(detail.output) + ' out');
+    if (detail.cached) parts.push(fmtTokens(detail.cached) + ' cached');
+    if (detail.reasoning) parts.push(fmtTokens(detail.reasoning) + ' reasoning');
+    if (detail.cost_usd) parts.push('$' + Number(detail.cost_usd).toFixed(3));
+    const text = parts.join(' · ');
+    if (node.textContent !== text) node.textContent = text;
+    node.hidden = !text;
+  };
+  node.update(step);
+  return node;
+}
+
+// A notice is the agent saying something about itself - a restart, a turn
+// closed by a backstop, a warning about the model. One line, out of the way,
+// but never silent.
+function buildNotice(step) {
+  const node = el('div', { class: 'step notice-step', 'data-step': step.id });
+  const glyph = el('span', { class: 'glyph', html: ICONS.info });
+  const text = el('span', { class: 'what' });
+  node.append(glyph, text);
+  node.update = (next) => {
+    const body = next.body || next.title || '';
+    if (text.textContent !== body) text.textContent = body;
+  };
+  node.update(step);
   return node;
 }
 
@@ -1443,7 +1540,85 @@ function toggleChatPanel() {
   dom.chatPanel.hidden = !opening;
   if (!opening) return;
   fillChatPanel({ force: true });
+  fillBindingFields();
   dom.panelTitle.focus();
+}
+
+/* ------------------------------------------------- model and effort here */
+
+// The agent a chat is bound to is fixed for its life, but the model it runs on
+// and the effort it runs at are not - as long as nothing is running. A change
+// closes the chat's agent session and opens a fresh one on the new model; the
+// conversation itself resumes, so this is not a way of starting over.
+const binding = { picker: null, model: '', effort: '' };
+
+const EFFORT_LEVELS = [
+  { value: '', label: 'Default' },
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+];
+
+function buildBindingFields() {
+  if (!dom.panelModel || binding.picker) return;
+  binding.picker = combobox({
+    value: '',
+    items: () => agents.modelItems(state.chat ? state.chat.agent : ''),
+    placeholder: 'sonnet',
+    onChange: (value) => {
+      binding.model = value.trim();
+      renderPanelEffort();
+    },
+  });
+  dom.panelModel.append(binding.picker.node);
+  for (const level of EFFORT_LEVELS) {
+    const button = el('button', {
+      class: 'seg', type: 'button', 'data-value': level.value, 'aria-pressed': 'false',
+    }, el('span', { class: 'seg-label', text: level.label }));
+    button.addEventListener('click', () => {
+      binding.effort = level.value;
+      renderPanelEffort();
+    });
+    dom.panelEffort.append(button);
+  }
+}
+
+function renderPanelEffort() {
+  if (!dom.panelEffort) return;
+  const model = agents.modelOf(state.chat ? state.chat.agent : '', binding.model);
+  const efforts = model ? (model.efforts || []) : [];
+  const entry = state.chat ? agents.agent(state.chat.agent) : null;
+  const show = efforts.length > 0 || (!model && entry && entry.has_effort);
+  dom.panelEffort.hidden = !show;
+  if (binding.effort && efforts.length && !efforts.includes(binding.effort)) binding.effort = '';
+  for (const button of dom.panelEffort.querySelectorAll('.seg')) {
+    const on = button.dataset.value === binding.effort;
+    button.classList.toggle('on', on);
+    button.setAttribute('aria-pressed', on ? 'true' : 'false');
+    button.disabled = state.busy
+      || (button.dataset.value !== '' && efforts.length > 0 && !efforts.includes(button.dataset.value));
+  }
+}
+
+// fillBindingFields shows what this chat is bound to right now, and says why
+// the controls are dead when they are.
+function fillBindingFields() {
+  if (!dom.panelBinding) return;
+  const chat = state.chat;
+  const usable = !!(chat && chat.agent) && !state.legacy;
+  dom.panelBinding.hidden = !usable;
+  if (!usable) return;
+  buildBindingFields();
+  binding.model = chat.model || '';
+  binding.effort = chat.effort || '';
+  binding.picker.setValue(binding.model, false);
+  renderPanelEffort();
+  const input = dom.panelModel.querySelector('input');
+  if (input) input.disabled = state.busy;
+  const known = agents.agent(chat.agent);
+  dom.panelBindingHint.textContent = state.busy
+    ? 'The model can only be changed between turns.'
+    : (known ? known.label : chat.agent) + ' answers in this chat. A different agent is a different chat.';
 }
 
 // saveChatSettings answers on screen and tells the server afterwards. The
@@ -1459,18 +1634,29 @@ function saveChatSettings() {
   const typed = dom.panelWorkspace.value.trim();
   const workspace = typed === state.defaultWorkspace ? '' : typed;
   const title = dom.panelTitle.value.trim();
-  const before = { title: chat.title, workspace: chat.workspace };
+  const before = { title: chat.title, workspace: chat.workspace, model: chat.model, effort: chat.effort };
+  const body = { title, workspace };
+  // The model and the effort only travel when they actually changed: a PATCH
+  // that names them closes the chat's agent session, and a Save that only
+  // renamed the chat has no business doing that.
+  const bound = !!chat.agent && !state.legacy && !dom.panelBinding.hidden;
+  if (bound && binding.model && binding.model !== chat.model) body.model = binding.model;
+  if (bound && (binding.effort || '') !== (chat.effort || '')) body.effort = binding.effort;
   chat.title = title;
   chat.workspace = workspace;
+  if (body.model !== undefined) chat.model = body.model;
+  if (body.effort !== undefined) chat.effort = body.effort;
   dom.title.textContent = title || 'New chat';
   writeValue(titleKey(chat.id), title);
   patchChatListItem(chat);
   fillChatPanel({ force: true });
+  state.modelLabel = '';
+  paintAgentBadge();
   dom.chatPanel.hidden = true;
   api('/api/chats/' + encodeURIComponent(chat.id), {
     method: 'PATCH',
     attempts: 2,
-    body: { title, workspace },
+    body,
   }).then((data) => {
     if (!data || !data.chat) return;
     if (state.chat && state.chat.id === data.chat.id) {
@@ -1479,6 +1665,8 @@ function saveChatSettings() {
       dom.title.textContent = data.chat.title || 'New chat';
       writeValue(titleKey(data.chat.id), data.chat.title || '');
       fillChatPanel({ force: true });
+      state.modelLabel = '';
+      paintAgentBadge();
     }
     patchChatListItem(data.chat);
     refreshChats().catch(() => {});
@@ -1486,12 +1674,23 @@ function saveChatSettings() {
   }).catch((err) => {
     chat.title = before.title;
     chat.workspace = before.workspace;
+    chat.model = before.model;
+    chat.effort = before.effort;
     if (state.chat && state.chat.id === chat.id) {
       dom.title.textContent = before.title || 'New chat';
       writeValue(titleKey(chat.id), before.title || '');
       fillChatPanel({ force: true });
+      state.modelLabel = '';
+      paintAgentBadge();
     }
     patchChatListItem(chat);
+    // A 409 here is the one refusal that passes on its own, and it is the only
+    // one worth explaining rather than merely reporting: the model is a thing
+    // you change between turns.
+    if (isBusyConflict(err)) {
+      toast('The model can only be changed between turns.', 'error');
+      return;
+    }
     toast(isOffline(err) ? 'No connection — the chat was not changed.' : errorMessage(err), 'error');
   });
 }
@@ -1593,9 +1792,16 @@ function setLive(live, extra = {}) {
 // screen still current? A stream between connections is not an outage - a chat
 // switch closes one and opens another - so a short gap says nothing, while no
 // network at all says it immediately.
+//
+// The device saying it has no network is checked before the chat id, because a
+// chat that does not exist yet is exactly where the offline story starts: a
+// message typed into a blank page is queued, and a working row that says
+// "Sending…" over it while there is no signal is the one thing this app must
+// never do.
 function isStale() {
-  if (!state.chatId || state.live) return false;
+  if (state.live) return false;
   if (navigator.onLine === false) return true;
+  if (!state.chatId) return false;
   return Date.now() - (state.liveLostAt || Date.now()) >= CONNECTION_GRACE;
 }
 
@@ -1617,8 +1823,6 @@ function updateLiveUI() {
   } else if (!stale) {
     state.staleShown = false;
   }
-  if (dock) dock.tick();
-  updateSliderLive();
   if (state.busy || stale) tickWorkRow();
   updateAutoOffline(stale);
 }
@@ -1748,7 +1952,7 @@ function updateSendButton() {
 // The microphone follows the run: there is nothing to say into it while
 // Socrates is still working.
 function updateMicState() {
-  const blocked = state.busy;
+  const blocked = state.busy || state.legacy;
   setClass(dom.autoMic, 'busy', blocked);
   dom.autoMic.disabled = blocked;
   dom.micBtn.disabled = blocked;
@@ -1777,6 +1981,18 @@ async function stopRun() {
 function submitText(raw) {
   const text = (raw || '').trim();
   if (!text || state.busy) return;
+  // A chat with no agent can never be answered, so nothing is queued from it:
+  // the outbox must never hold a message that can only ever fail.
+  if (state.legacy) {
+    toast('This chat was made before Socrates talked to agents directly. Start a new chat.');
+    return;
+  }
+  // The binding the sheet produced is what makes a chat that does not exist
+  // yet creatable later, offline included.
+  if (!state.chatId && !state.pendingBinding) {
+    startNewChat().then(() => { if (state.pendingBinding) submitText(text); }).catch(() => {});
+    return;
+  }
   dom.input.value = '';
   saveDraft();
   autosize();
@@ -1790,12 +2006,19 @@ function submitText(raw) {
   // Adding to the queue is what makes the page busy: the bubble, the working
   // row and the locked composer all follow from there, with no round trip in
   // between.
+  const binding = state.pendingBinding || {};
   state.outbox.add({
     chatId: state.chatId,
     chatKey: state.chatId ? '' : clientKey(),
     key: clientKey(),
     text,
     auto: state.view === 'auto',
+    // Persisted with the item: when this is finally sent the page may have
+    // been reloaded, and the create that goes with it still has to say which
+    // agent answers in the chat it is making.
+    agent: state.chatId ? '' : (binding.agent || ''),
+    model: state.chatId ? '' : (binding.model || ''),
+    effort: state.chatId ? '' : (binding.effort || ''),
   });
   setAutoStatus('Working…');
   scrollToEnd(true);
@@ -2022,13 +2245,18 @@ function updateAutoLive(step) {
   const detail = detailOf(step);
   let label = '';
   switch (step.kind) {
-    case 'terminal':
-      label = (step.title || 'A program') + (step.status === 'running' ? ' is working…' : ' finished');
+    case 'tool': {
+      const name = detail.name || step.title || 'A tool';
+      label = detail.input ? name + ': ' + detail.input : name + '…';
       break;
-    case 'shell': label = 'Running ' + (detail.command || 'a command') + '…'; break;
-    case 'thinking': label = 'Thinking…'; break;
-    case 'text': label = 'Writing the answer…'; break;
+    }
+    case 'subagent': label = 'A subagent is working…'; break;
+    case 'reasoning': label = 'Thinking…'; break;
+    case 'draft': label = 'Writing the answer…'; break;
+    case 'notice': label = step.body || 'Note'; break;
     case 'error': label = step.title || 'Something went wrong'; break;
+    // Usage is a number for afterwards, not something to say out loud while
+    // the turn is still going.
     default: return;
   }
   dom.autoLive.textContent = label;

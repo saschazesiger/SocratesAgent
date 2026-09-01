@@ -80,6 +80,46 @@ func TestServiceWorkerCarriesTheVersion(t *testing.T) {
 	}
 }
 
+// The offline shell is only whole if it holds the entire import graph the chat
+// page boots from. A module that is imported but not precached turns "open
+// Socrates in a tunnel" back into the browser's error page, which is the one
+// thing the worker exists to prevent - and it is the kind of omission a new
+// import makes silently.
+func TestServiceWorkerShellHoldsTheWholeChatImportGraph(t *testing.T) {
+	worker := string(assets["sw.js"])
+	relative := regexp.MustCompile(`from\s+["']\./([^"'?]+)`)
+	seen := map[string]bool{}
+	var walk func(name string)
+	walk = func(name string) {
+		if seen[name] {
+			return
+		}
+		seen[name] = true
+		data, ok := assets["js/"+name]
+		if !ok {
+			t.Fatalf("chat.js's import graph names js/%s, which is not embedded", name)
+		}
+		for _, m := range relative.FindAllStringSubmatch(string(data), -1) {
+			walk(m[1])
+		}
+	}
+	walk("chat.js")
+	if len(seen) < 5 {
+		t.Fatalf("walked only %d modules, so this proves nothing", len(seen))
+	}
+	for name := range seen {
+		if !strings.Contains(worker, "'/static/js/"+name+"'") {
+			t.Errorf("sw.js does not precache /static/js/%s, which the chat page imports", name)
+		}
+	}
+	// The page itself and its stylesheet are what everything else hangs off.
+	for _, path := range []string{"'/'", "'/static/css/app.css'"} {
+		if !strings.Contains(worker, path) {
+			t.Errorf("sw.js does not precache %s", path)
+		}
+	}
+}
+
 // A stamped address names one exact version of one file and can never mean
 // anything else; an unstamped one has to be asked about every time.
 func TestStampedAssetsAreKeptUnstampedOnesRevalidated(t *testing.T) {
