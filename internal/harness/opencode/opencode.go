@@ -33,7 +33,22 @@
 //
 // Nothing depends on the second stream: an installation that does not serve it
 // loses the streaming increments and still delivers every text block whole,
-// which is what invariant 4 allows an adapter that cannot stream.
+// which is what invariant 4 allows an adapter that cannot stream. One thing
+// does live only there, though: permission.v2.asked is ephemeral, so the
+// unattended fallback in mapping.go can in practice only fire off the wide
+// stream. With OPENCODE_PERMISSION="allow" it never has to.
+//
+// # Two footnotes from the measurements
+//
+// --port 0 means "OpenCode's own default port if it is free, an operating
+// system port otherwise": a lone chat usually lands on 4096, and concurrent
+// starts fall back cleanly (fifteen starts, no collision). A chat therefore
+// normally sits on the port a user's own `opencode serve` would want; nothing
+// breaks either way, because the port is read back off the startup line.
+//
+// GET /api/model answers 200 with an empty list for about a second after the
+// server is healthy, while providers resolve their credentials, so Discover
+// polls rather than asking once.
 package opencode
 
 import (
@@ -123,6 +138,10 @@ type adapter struct {
 	turnDone    chan struct{}
 	open        bool
 	interrupted bool
+	// produced says this turn emitted a text block or started a tool. A turn
+	// that ends having produced neither, with no error and no interrupt, did
+	// not succeed quietly - it failed silently, and says so.
+	produced bool
 	// lastErr is the session.error remembered for this turn; it is what makes
 	// the outcome "error" rather than "ok".
 	lastErr string
@@ -136,21 +155,33 @@ type adapter struct {
 	seen      map[string]struct{}
 	blocks    []string
 	lastFlush map[string]time.Time
+	// closedBlocks are the block ids whose complete text has already gone out.
+	// The two streams are independent connections, so a block's last delta can
+	// arrive after the session stream's text.ended for it; emitting that delta
+	// then would put a fragment after the finished text and the engine would
+	// append it to the answer.
+	closedBlocks map[string]struct{}
+
+	// wideGone says the server-wide stream has stopped, and wideNoticed that
+	// the transcript has been told about it once.
+	wideGone    bool
+	wideNoticed bool
 }
 
 func newAdapter() *adapter {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &adapter{
-		events:    make(chan harness.Event, 256),
-		closed:    make(chan struct{}),
-		frames:    make(chan frame, 1024),
-		ops:       make(chan func(), 32),
-		ctx:       ctx,
-		cancel:    cancel,
-		tools:     map[string]harness.Tool{},
-		pending:   map[string]string{},
-		seen:      map[string]struct{}{},
-		lastFlush: map[string]time.Time{},
+		events:       make(chan harness.Event, 256),
+		closed:       make(chan struct{}),
+		frames:       make(chan frame, 1024),
+		ops:          make(chan func(), 32),
+		ctx:          ctx,
+		cancel:       cancel,
+		tools:        map[string]harness.Tool{},
+		pending:      map[string]string{},
+		seen:         map[string]struct{}{},
+		lastFlush:    map[string]time.Time{},
+		closedBlocks: map[string]struct{}{},
 	}
 }
 
@@ -205,6 +236,15 @@ func (a *adapter) Start(ctx context.Context, spec harness.Spec) error {
 		srv.stop()
 		return err
 	}
+	// The wide stream has no replay, so it is opened here rather than by its
+	// own goroutine a moment later: increments published in the gap would be
+	// gone for good, and a short answer can be over inside it. Failing to
+	// open it is not a reason to fail Start - the follower retries, and says
+	// so once if the route is not there at all.
+	wide, wideErr := cli.openDeltaStream(a.ctx)
+	if wideErr != nil {
+		wide = nil
+	}
 
 	// Invariant 1: session_id before the first turn_started, including when it
 	// is the id that was passed in. Nothing else is running yet, so this is
@@ -214,7 +254,7 @@ func (a *adapter) Start(ctx context.Context, spec harness.Spec) error {
 	a.wg.Add(4)
 	go a.process()
 	go a.stream(body)
-	go a.deltaStream()
+	go a.deltaStream(wide)
 	go a.watchExit()
 	return nil
 }
@@ -269,8 +309,10 @@ func (a *adapter) Send(ctx context.Context, turnID, text string) error {
 	a.startOnce = &sync.Once{}
 	a.turnDone = make(chan struct{})
 	a.interrupted = false
+	a.produced = false
 	a.lastErr = ""
 	a.notices = 0
+	a.wideNoticed = false
 	a.usage = harness.Usage{}
 	a.usageDirty = false
 	a.tools = map[string]harness.Tool{}
@@ -278,10 +320,18 @@ func (a *adapter) Send(ctx context.Context, turnID, text string) error {
 	a.seen = map[string]struct{}{}
 	a.blocks = nil
 	a.lastFlush = map[string]time.Time{}
+	a.closedBlocks = map[string]struct{}{}
 	a.mu.Unlock()
 
 	admitted, err := a.cli.prompt(ctx, session, text)
 	a.mu.Lock()
+	if err == nil && a.turnOnce == nil {
+		// The server died while the prompt was in flight, and die() has
+		// already ended this turn and closed Events. Opening it again here
+		// would leave a poll running against a corpse and promise a
+		// turn_finished nothing can deliver.
+		err = errors.New("opencode: the server stopped while the message was being delivered")
+	}
 	if err != nil {
 		a.turnID, a.turnOnce, a.startOnce = "", nil, nil
 		a.turnDone, a.gate = nil, nil
@@ -314,16 +364,21 @@ func (a *adapter) Send(ctx context.Context, turnID, text string) error {
 func (a *adapter) Interrupt(ctx context.Context) error {
 	a.mu.Lock()
 	session, open := a.session, a.open
-	if open {
-		a.interrupted = true
-	}
 	a.mu.Unlock()
 	if !open {
 		return nil
 	}
-	err := a.cli.interrupt(ctx, session)
+	if err := a.cli.interrupt(ctx, session); err != nil {
+		// The cancel did not land, so the turn is still the agent's. Saying
+		// "interrupted" for a turn that then finishes on its own would be a
+		// wrong answer about the user's own action.
+		return err
+	}
+	a.mu.Lock()
+	a.interrupted = true
+	a.mu.Unlock()
 	a.armConfirm()
-	return err
+	return nil
 }
 
 // ------------------------------------------------------------------ Events
@@ -412,10 +467,27 @@ func (a *adapter) stream(first io.ReadCloser) {
 // deltaStream follows the server-wide stream for the ephemeral increments the
 // session-scoped one does not carry. Nothing depends on it: if it never
 // connects, the turn still runs and its text still arrives whole, one block at
-// a time, which is what invariant 4 allows an adapter that cannot stream.
-func (a *adapter) deltaStream() {
+// a time, which is what invariant 4 allows an adapter that cannot stream. The
+// transcript is told once either way, because "the answer stopped appearing as
+// it was typed" is otherwise indistinguishable from a stalled agent.
+func (a *adapter) deltaStream(first io.ReadCloser) {
 	defer a.wg.Done()
-	a.follow(nil, true, a.cli.openDeltaStream)
+	a.follow(first, true, a.cli.openDeltaStream)
+}
+
+// wideStreamLost journals one notice per turn - or one outside a turn - about
+// the increments no longer arriving.
+func (a *adapter) wideStreamLost(text string) {
+	a.mu.Lock()
+	if a.wideNoticed {
+		a.mu.Unlock()
+		return
+	}
+	a.wideNoticed = true
+	a.wideGone = true
+	turnID := a.turnID
+	a.mu.Unlock()
+	a.post(func() { a.noticeFor(turnID, text) })
 }
 
 // follow keeps one SSE connection open, re-opening it with backoff when it
@@ -429,6 +501,9 @@ func (a *adapter) follow(first io.ReadCloser, global bool, open func(context.Con
 			body.Close()
 			body = nil
 			attempt = 0
+			if global && a.ctx.Err() == nil {
+				a.wideStreamLost("live typing was interrupted; the answer will still arrive whole")
+			}
 		}
 		select {
 		case <-time.After(streamBackoff(attempt)):
@@ -437,7 +512,13 @@ func (a *adapter) follow(first io.ReadCloser, global bool, open func(context.Con
 		}
 		next, err := open(a.ctx)
 		if err != nil {
-			if a.ctx.Err() != nil || errors.Is(err, errNoRoute) {
+			if a.ctx.Err() != nil {
+				return
+			}
+			if errors.Is(err, errNoRoute) {
+				if global {
+					a.wideStreamLost("live typing is unavailable: this OpenCode does not publish /api/event")
+				}
 				return
 			}
 			attempt++
@@ -508,7 +589,7 @@ func (a *adapter) poll(done <-chan struct{}) {
 				absent++
 				if absent >= backstopAbsent {
 					a.post(func() {
-						a.notice("this turn was closed by the idle check rather than by the agent")
+						a.notice(backstopNotice + a.serverSaid())
 						a.closeTurn("", "")
 					})
 					return
@@ -569,309 +650,34 @@ func (a *adapter) confirmEnd(done <-chan struct{}) {
 	}
 }
 
+// backstopNotice is what a turn closed by the idle poll rather than by a
+// step.ended{finish:"stop"} says in the transcript, so a wrong guess is
+// visible instead of silent.
+const backstopNotice = "this turn was closed by the idle check rather than by the agent"
+
+// serverSaid appends the server's own last error line when there is one. On
+// the failure this notice usually accompanies - a model the server cannot run
+// - nothing reaches the wire at all, but the reason is printed on the
+// server's own output, and it is the only "why" the user can be given.
+func (a *adapter) serverSaid() string {
+	a.mu.Lock()
+	srv := a.srv
+	a.mu.Unlock()
+	if srv == nil {
+		return ""
+	}
+	line := srv.errorLine()
+	if line == "" {
+		return ""
+	}
+	return "; opencode said: " + line
+}
+
 // isActive is one GET /api/session/active for this session.
 func (a *adapter) isActive() (bool, error) {
 	ctx, cancel := context.WithTimeout(a.ctx, pollTimeout)
 	defer cancel()
 	return a.cli.active(ctx, a.currentSession())
-}
-
-// ------------------------------------------------------------- the mapping
-
-// handle is one SSE frame, on the processor goroutine.
-func (a *adapter) handle(f frame) {
-	a.waitGate()
-
-	if f.global {
-		// The server-wide stream is read for the increments the session's own
-		// stream does not carry, and for nothing else: anything durable would
-		// arrive twice, and one server also hosts the internal session
-		// OpenCode opens to title a chat.
-		if f.Durable != nil || f.sessionID() != a.currentSession() {
-			return
-		}
-	}
-
-	a.mu.Lock()
-	if !a.open {
-		// Nothing outside a turn is ours: on a resumed session the stream
-		// replays every previous turn's text and every previous
-		// step.ended{finish:"stop"}, and one of those would arm the
-		// confirmation poll for a turn that has not started.
-		a.mu.Unlock()
-		return
-	}
-	if f.Durable != nil {
-		if f.Durable.Seq <= a.lastSeq {
-			a.mu.Unlock()
-			return
-		}
-		a.lastSeq = f.Durable.Seq
-	}
-	turnID := a.turnID
-	a.mu.Unlock()
-
-	switch f.Type {
-	case evPrompted:
-		a.startTurn()
-
-	case evTextDelta:
-		var d textDeltaData
-		if !decode(f.Data, &d) {
-			return
-		}
-		a.addDelta(blockID(d.AssistantMessageID, d.TextID), d.Delta)
-
-	case evTextEnded:
-		var d textEndedData
-		if !decode(f.Data, &d) {
-			return
-		}
-		id := blockID(d.AssistantMessageID, d.TextID)
-		a.flushDeltas(id)
-		a.emit(harness.Event{Kind: harness.KindText, TurnID: turnID, ID: id, Text: d.Text})
-
-	case evReasoningEnded:
-		var d reasoningEndedData
-		if !decode(f.Data, &d) {
-			return
-		}
-		if strings.TrimSpace(d.Text) == "" {
-			return
-		}
-		a.emit(harness.Event{Kind: harness.KindReasoning, TurnID: turnID,
-			ID: blockID(d.AssistantMessageID, d.ReasoningID), Text: d.Text})
-
-	case evToolCalled:
-		var d toolCalledData
-		if !decode(f.Data, &d) {
-			return
-		}
-		tool := harness.Tool{
-			Name:      d.Tool,
-			Title:     toolTitle(d.Tool, d.Input),
-			Input:     toolSummary(d.Tool, d.Input),
-			InputJSON: compact(d.Input),
-		}
-		a.mu.Lock()
-		a.tools[d.CallID] = tool
-		a.mu.Unlock()
-		a.emit(harness.Event{Kind: harness.KindToolStarted, TurnID: turnID, ID: d.CallID, Tool: &tool})
-
-	case evToolSuccess:
-		var d toolSuccessData
-		if !decode(f.Data, &d) {
-			return
-		}
-		var parts []string
-		for _, c := range d.Content {
-			if c.Text != "" {
-				parts = append(parts, c.Text)
-			}
-		}
-		tool := a.finishedTool(d.CallID)
-		tool.Output = harness.TruncateOutput(strings.Join(parts, "\n"))
-		tool.OK = true
-		if d.Structured.Exit != nil {
-			tool.ExitCode = *d.Structured.Exit
-		}
-		a.emit(harness.Event{Kind: harness.KindToolFinished, TurnID: turnID, ID: d.CallID, Tool: &tool})
-
-	case evToolFailed:
-		var d toolFailedData
-		if !decode(f.Data, &d) {
-			return
-		}
-		tool := a.finishedTool(d.CallID)
-		tool.Output = harness.TruncateOutput(d.Error.Message)
-		tool.OK = false
-		a.emit(harness.Event{Kind: harness.KindToolFinished, TurnID: turnID, ID: d.CallID, Tool: &tool})
-
-	case evStepEnded:
-		var d stepEndedData
-		if !decode(f.Data, &d) {
-			return
-		}
-		a.addUsage(d)
-		a.emitUsage()
-		if d.Finish == finishStop {
-			// One step's "stop" is not the turn's end: a queued prompt can
-			// start another step. The confirmation poll is what decides.
-			a.armConfirm()
-		}
-
-	case evPermissionAsked:
-		var d permissionAskedData
-		if !decode(f.Data, &d) {
-			return
-		}
-		a.notice("opencode asked for permission to " + orElse(d.Action, "run a tool") +
-			"; Socrates answered for you, because it runs unattended")
-		a.answerPermission(d.ID)
-
-	case evSessionError:
-		var d sessionErrorData
-		if !decode(f.Data, &d) {
-			return
-		}
-		d.Raw = f.Data
-		msg := d.message()
-		a.mu.Lock()
-		a.lastErr = msg
-		a.mu.Unlock()
-		a.notice(msg)
-
-	case evPromptAdmitted:
-		// The admission is the HTTP response; the event carries nothing new.
-
-	default:
-		// server.connected, step.started, the tool.input.* trio, the reasoning
-		// and text starts, permission.v2.replied and anything a later release
-		// adds: dropped rather than guessed at.
-	}
-}
-
-// waitGate holds the processor while a Send is being admitted.
-func (a *adapter) waitGate() {
-	a.mu.Lock()
-	gate := a.gate
-	a.mu.Unlock()
-	if gate == nil {
-		return
-	}
-	select {
-	case <-gate:
-	case <-a.ctx.Done():
-	}
-}
-
-// startTurn emits turn_started, once per turn. session.next.prompted is the
-// trigger; closeTurn is the safety net for a turn whose prompted never
-// arrived, because invariant 2 wants a turn_started before every
-// turn_finished.
-func (a *adapter) startTurn() {
-	a.mu.Lock()
-	once, turnID := a.startOnce, a.turnID
-	a.mu.Unlock()
-	if once == nil {
-		return
-	}
-	once.Do(func() {
-		a.emit(harness.Event{Kind: harness.KindTurnStarted, TurnID: turnID})
-	})
-}
-
-// finishedTool is what a tool.success or tool.failed knows about its call: the
-// name and title recorded when it was called, so the finished card does not
-// lose the heading the started card had.
-func (a *adapter) finishedTool(callID string) harness.Tool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	t, ok := a.tools[callID]
-	if !ok {
-		return harness.Tool{Name: "tool", Title: "Ran a tool"}
-	}
-	delete(a.tools, callID)
-	return harness.Tool{Name: t.Name, Title: t.Title}
-}
-
-// answerPermission replies to a permission.v2.asked off the processor, so one
-// slow HTTP call cannot hold up the event stream. With OPENCODE_PERMISSION
-// set this never runs; an ask left unanswered blocks the turn forever, which
-// is why it exists at all.
-func (a *adapter) answerPermission(request string) {
-	session := a.currentSession()
-	go func() {
-		ctx, cancel := context.WithTimeout(a.ctx, requestTimeout)
-		defer cancel()
-		if err := a.cli.replyPermission(ctx, session, request, "always"); err != nil {
-			a.post(func() { a.notice("the permission reply failed: " + err.Error()) })
-		}
-	}()
-}
-
-// ------------------------------------------------------------- text deltas
-
-func blockID(message, block string) string {
-	// text-0 restarts in every step, and a tool-using turn has several steps,
-	// so the assistant message id is what keeps two different blocks apart.
-	if message == "" {
-		return block
-	}
-	return message + ":" + block
-}
-
-func (a *adapter) addDelta(id, delta string) {
-	if delta == "" {
-		return
-	}
-	a.mu.Lock()
-	if _, seen := a.seen[id]; !seen {
-		a.seen[id] = struct{}{}
-		a.blocks = append(a.blocks, id)
-	}
-	a.pending[id] += delta
-	last := a.lastFlush[id]
-	a.mu.Unlock()
-	if time.Since(last) >= harness.TextDeltaFlush {
-		a.flushDeltas(id)
-	}
-}
-
-// flushDeltas emits the buffered increments of one block, or of every block
-// when id is empty. Deltas are coalesced to one event per TextDeltaFlush per
-// block, so a fast stream does not put one event per token in the journal.
-func (a *adapter) flushDeltas(id string) {
-	a.mu.Lock()
-	turnID := a.turnID
-	ids := a.blocks
-	if id != "" {
-		ids = []string{id}
-	}
-	type out struct{ id, text string }
-	var flush []out
-	now := time.Now()
-	for _, b := range ids {
-		text := a.pending[b]
-		if text == "" {
-			continue
-		}
-		delete(a.pending, b)
-		a.lastFlush[b] = now
-		flush = append(flush, out{b, text})
-	}
-	a.mu.Unlock()
-	for _, f := range flush {
-		a.emit(harness.Event{Kind: harness.KindTextDelta, TurnID: turnID, ID: f.id, Text: f.text})
-	}
-}
-
-// ------------------------------------------------------------------- usage
-
-// addUsage accumulates one step's tokens into the turn's running total.
-// Invariant 5: a usage event carries the total so far, not the step's own
-// numbers, and OpenCode reports per step.
-func (a *adapter) addUsage(d stepEndedData) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.usage.Input += d.Tokens.Input
-	a.usage.Output += d.Tokens.Output
-	a.usage.Reasoning += d.Tokens.Reasoning
-	a.usage.Cached += d.Tokens.Cache.Read
-	a.usage.CostUSD += d.Cost
-	a.usageDirty = true
-}
-
-func (a *adapter) emitUsage() {
-	a.mu.Lock()
-	if !a.usageDirty {
-		a.mu.Unlock()
-		return
-	}
-	a.usageDirty = false
-	u, turnID := a.usage, a.turnID
-	a.mu.Unlock()
-	a.emit(harness.Event{Kind: harness.KindUsage, TurnID: turnID, Usage: &u})
 }
 
 // ------------------------------------------------------------- ending a turn
@@ -896,6 +702,12 @@ func (a *adapter) closeTurn(outcome, errText string) {
 				outcome = harness.OutcomeInterrupted
 			case a.lastErr != "":
 				outcome, errText = harness.OutcomeError, a.lastErr
+			case !a.produced:
+				// session.error does not fire on the failure paths of this
+				// build: a turn on a model the server cannot run simply
+				// stops, and the backstop closes it. Calling that ok would
+				// show an empty assistant message under a green tick.
+				outcome, errText = harness.OutcomeError, "the agent produced no answer"
 			default:
 				outcome = harness.OutcomeOK
 			}
@@ -928,23 +740,43 @@ func (a *adapter) closeTurn(outcome, errText string) {
 func (a *adapter) die(reason string) {
 	a.mu.Lock()
 	open := a.open || a.turnOnce != nil
+	srv := a.srv
+	// Whatever happens next, the server's exit is not news any more.
+	a.stopping = true
 	a.mu.Unlock()
 	if open {
 		a.closeTurn(harness.OutcomeError, reason)
 	}
 	a.emit(harness.Event{Kind: harness.KindFatal, Error: reason})
 	a.finish()
+	// A server that stopped answering is still running, and the host only
+	// calls Close when it decides to; a wedged `opencode serve` must not
+	// outlive the chat it belonged to. Off this goroutine, because stopping
+	// waits for the process and this one is the writer of Events.
+	if srv != nil {
+		go srv.stop()
+	}
 }
 
-// notice is a one-liner for the transcript, capped so a chatty stream cannot
-// flood it.
+// notice is a one-liner for the transcript, attributed to the turn in flight.
 func (a *adapter) notice(text string) {
+	a.mu.Lock()
+	turnID := a.turnID
+	a.mu.Unlock()
+	a.noticeFor(turnID, text)
+}
+
+// noticeFor is notice for a turn named by the caller, so a message written by
+// something that started during a turn - a permission reply, a stream that
+// dropped - still names it when it arrives after the turn has closed. It is
+// capped so a chatty stream cannot flood a transcript.
+func (a *adapter) noticeFor(turnID, text string) {
 	if text == "" {
 		return
 	}
 	a.mu.Lock()
 	a.notices++
-	n, turnID := a.notices, a.turnID
+	n := a.notices
 	a.mu.Unlock()
 	switch {
 	case n < harness.MaxNoticesPerTurn:
@@ -1020,88 +852,6 @@ func lastLine(s string) string {
 	}
 	if len(s) > 400 {
 		s = s[:400] + "…"
-	}
-	return s
-}
-
-// ------------------------------------------------------------- tool wording
-
-// toolTitle is the heading of a tool card, written for a human.
-func toolTitle(name string, input json.RawMessage) string {
-	switch name {
-	case "bash":
-		return "Ran a command"
-	case "read":
-		return titleWith("Read", input, "filePath", "path")
-	case "write":
-		return titleWith("Wrote", input, "filePath", "path")
-	case "edit", "apply_patch":
-		return titleWith("Edited", input, "filePath", "path")
-	case "glob", "grep":
-		return "Searched the code"
-	case "list":
-		return titleWith("Listed", input, "path")
-	case "webfetch":
-		return titleWith("Fetched", input, "url")
-	case "websearch":
-		return "Searched the web"
-	case "todowrite", "todoread":
-		return "Updated the plan"
-	case "task":
-		return "Ran a subagent"
-	case "question":
-		return "Asked a question"
-	case "skill":
-		return "Used a skill"
-	case "":
-		return "Ran a tool"
-	default:
-		return "Ran " + name
-	}
-}
-
-func titleWith(verb string, input json.RawMessage, keys ...string) string {
-	if v := field(input, keys...); v != "" {
-		return verb + " " + v
-	}
-	return verb + " a file"
-}
-
-// toolSummary is the one-line input shown on the card. It prefers the field a
-// person would recognise and falls back to the compact arguments.
-func toolSummary(name string, input json.RawMessage) string {
-	if v := field(input, "command", "filePath", "path", "pattern", "url", "query", "description", "prompt"); v != "" {
-		return oneLine(v)
-	}
-	return oneLine(compact(input))
-}
-
-// field returns the first of keys that is a non-empty string in input.
-func field(input json.RawMessage, keys ...string) string {
-	if len(input) == 0 {
-		return ""
-	}
-	var m map[string]json.RawMessage
-	if json.Unmarshal(input, &m) != nil {
-		return ""
-	}
-	for _, k := range keys {
-		raw, ok := m[k]
-		if !ok {
-			continue
-		}
-		var s string
-		if json.Unmarshal(raw, &s) == nil && strings.TrimSpace(s) != "" {
-			return s
-		}
-	}
-	return ""
-}
-
-func oneLine(s string) string {
-	s = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(s, "\r", " "), "\n", " "))
-	if len(s) > 300 {
-		s = s[:300] + "…"
 	}
 	return s
 }

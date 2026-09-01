@@ -179,6 +179,43 @@ func (s *server) drain(r io.Reader) {
 
 func (s *server) tail() string { return s.output.string() }
 
+// serverLogLine matches the prefix OpenCode puts on a log line:
+// "[17:40:15.802] ERROR (#16699): ".
+var serverLogLine = regexp.MustCompile(`^\[[0-9:.]+\]\s+(ERROR|FATAL|WARN)\s*(\(#\d+\))?:\s*`)
+
+// errorLine is the last thing the server complained about, stripped of its
+// timestamp. It is the only "why" available on the failure paths that never
+// reach the wire: a model the server cannot run makes the turn stop with no
+// event at all, and prints
+//
+//	[17:40:15.802] ERROR (#16699): Failed to drain Session
+//	SessionRunnerModel.ModelUnavailableError: Model unavailable: opencode/does-not-exist
+//
+// on its own output, followed by a stack trace. The trace lines are skipped;
+// the message is not.
+func (s *server) errorLine() string {
+	lines := strings.Split(s.output.string(), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" || strings.HasPrefix(line, "at ") {
+			continue
+		}
+		m := serverLogLine.FindString(line)
+		if m == "" {
+			continue
+		}
+		msg := strings.TrimSpace(line[len(m):])
+		if msg == "" {
+			continue
+		}
+		if len(msg) > 300 {
+			msg = msg[:300] + "…"
+		}
+		return msg
+	}
+	return ""
+}
+
 // stop asks the process group to go away and, if it will not, kills it.
 func (s *server) stop() {
 	if s.cmd == nil || s.cmd.Process == nil {

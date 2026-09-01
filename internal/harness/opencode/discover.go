@@ -16,14 +16,16 @@ import (
 // network, so it is generous.
 const discoverTimeout = 30 * time.Second
 
-// modelsWait is how long GET /api/model is given to stop being empty.
+// modelsPoll is how often GET /api/model is asked again while it is empty.
 // Providers resolve their credentials in the background: for the first second
 // or so after the server is listening and healthy, /api/model answers 200 with
 // an empty list, and a discovery that asked once would report a machine with
-// working credentials as having no models at all. Measured at about 1.4 s on a
-// warm cache against opencode 1.17.13; an install with genuinely nothing
-// connected pays this wait once and then answers honestly.
-const modelsWait = 10 * time.Second
+// working credentials as having no models at all. Measured at 1.0-1.4 s on a
+// warm cache against opencode 1.17.13. The polling runs inside discoverTimeout
+// rather than a shorter budget of its own, so a slow machine is given the same
+// thirty seconds as everything else here; an install with genuinely nothing
+// connected waits them out once and then answers honestly.
+const modelsPoll = 200 * time.Millisecond
 
 // Discover asks a short-lived `opencode serve` which models it has a connected
 // provider for.
@@ -83,20 +85,19 @@ func Discover(ctx context.Context, bin string) (harness.Catalog, error) {
 }
 
 // connectedModels asks for the model list until it is not empty any more, or
-// until the wait is up - at which point an empty list is the answer, because
-// an install with no credentials really does have no models.
+// until the discovery budget is up - at which point an empty list is the
+// answer, because an install with no credentials really does have no models.
 func connectedModels(ctx context.Context, cli *client) ([]modelEntry, error) {
-	deadline := time.Now().Add(modelsWait)
 	for {
 		entries, err := cli.models(ctx)
 		if err != nil {
 			return nil, err
 		}
-		if len(entries) > 0 || time.Now().After(deadline) {
+		if len(entries) > 0 {
 			return entries, nil
 		}
 		select {
-		case <-time.After(200 * time.Millisecond):
+		case <-time.After(modelsPoll):
 		case <-ctx.Done():
 			return entries, nil
 		}

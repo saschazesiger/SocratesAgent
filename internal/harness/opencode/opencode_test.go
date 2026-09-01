@@ -4,6 +4,9 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -254,28 +257,43 @@ func checkInvariants(t *testing.T, evs []harness.Event) {
 		}
 	}
 
-	// 4: the deltas of a block add up to its text.
+	// 4: a block's increments spell out a prefix of its text, and none of them
+	// arrives after it. The prefix rather than the whole is what the two
+	// streams make correct - the wide stream can miss increments when it
+	// reconnects, and the session stream's text.ended closes the block
+	// whatever is still in flight - but an increment *after* the complete text
+	// is the ordering bug that puts a fragment into the answer the user reads.
 	deltas := map[string]string{}
+	closed := map[string]bool{}
 	for _, ev := range evs {
 		switch ev.Kind {
 		case harness.KindTextDelta:
+			if closed[ev.ID] {
+				t.Errorf("block %s: a text_delta arrived after the block's complete text", ev.ID)
+			}
 			deltas[ev.ID] += ev.Text
 		case harness.KindText:
-			if got, ok := deltas[ev.ID]; ok && got != ev.Text {
-				t.Errorf("block %s: deltas spelled %q but the text was %q", ev.ID, got, ev.Text)
+			if got := deltas[ev.ID]; !strings.HasPrefix(ev.Text, got) {
+				t.Errorf("block %s: deltas spelled %q, which is not a prefix of %q", ev.ID, got, ev.Text)
 			}
-			delete(deltas, ev.ID)
+			closed[ev.ID] = true
 		}
 	}
 
-	// 5: usage carries a running total, so it never goes backwards.
+	// 5: usage carries the running total *for its turn*, so it never goes
+	// backwards within one - and it starts again at the next, because a turn's
+	// cost is the turn's, not the session's.
 	var last harness.Usage
 	for _, ev := range evs {
+		if ev.Kind == harness.KindTurnStarted {
+			last = harness.Usage{}
+			continue
+		}
 		if ev.Kind != harness.KindUsage || ev.Usage == nil {
 			continue
 		}
 		if ev.Usage.Input < last.Input || ev.Usage.Output < last.Output || ev.Usage.CostUSD < last.CostUSD {
-			t.Errorf("usage went backwards: %+v then %+v", last, *ev.Usage)
+			t.Errorf("usage went backwards inside turn %s: %+v then %+v", ev.TurnID, last, *ev.Usage)
 		}
 		last = *ev.Usage
 	}
@@ -287,10 +305,24 @@ func checkInvariants(t *testing.T, evs []harness.Event) {
 		}
 	}
 
-	// Every event that belongs to a turn names it.
+	// Every event that belongs to a turn names it. A notice is the one kind
+	// that also exists outside a turn - a stream that dropped before the first
+	// Send has nothing to attribute itself to - so it is only held to the rule
+	// while a turn is open.
+	inTurn := false
 	for _, ev := range evs {
 		switch ev.Kind {
+		case harness.KindTurnStarted:
+			inTurn = true
+		case harness.KindTurnFinished:
+			inTurn = false
+		}
+		switch ev.Kind {
 		case harness.KindSessionID, harness.KindFatal:
+		case harness.KindNotice:
+			if inTurn && ev.TurnID == "" {
+				t.Errorf("a notice inside a turn carries no turn id: %q", ev.Error)
+			}
 		default:
 			if ev.TurnID == "" {
 				t.Errorf("%s carries no turn id", ev.Kind)
@@ -314,9 +346,13 @@ func TestTextTurn(t *testing.T) {
 	if len(text) != 1 || text[0].Text != "All good here." {
 		t.Fatalf("want one complete text block, got:\n%s", dump(evs))
 	}
-	if len(of(evs, harness.KindTextDelta)) == 0 {
-		t.Errorf("no text_delta at all; the stream was not followed")
-	}
+	// Increments are not asserted here: they come off the other stream, and
+	// nothing orders a block's last delta before the session stream's
+	// text.ended for it, so a turn this short can legitimately deliver its
+	// text whole with no increment at all. What must hold either way -
+	// increments spell a prefix and never follow the finished text - is
+	// checkInvariants' rule 4, and that they arrive at all is
+	// TestTextDeltaArrivesFromTheWideStream.
 	fin := first(t, evs, harness.KindTurnFinished)
 	if fin.Outcome != harness.OutcomeOK || fin.Error != "" {
 		t.Errorf("turn_finished = %+v, want a clean ok", fin)
@@ -375,10 +411,15 @@ func TestToolTurnKeepsStepsApart(t *testing.T) {
 		t.Errorf("tool output = %q", finished[0].Tool.Output)
 	}
 
-	// One usage per step.ended, each carrying the running total.
+	// One usage per step.ended, each carrying the running total - and exactly
+	// one, not two. Every durable frame of this turn arrives on the wide
+	// stream as well as the session one, so an adapter that forgot to ignore
+	// durable frames there would double every count in this test: two text
+	// blocks per block id, two tool_finished for one call, two usage events
+	// per step.
 	usage := of(evs, harness.KindUsage)
-	if len(usage) < 2 {
-		t.Fatalf("want a usage per step, got %d:\n%s", len(usage), dump(evs))
+	if len(usage) != 2 {
+		t.Fatalf("want one usage per step (2), got %d:\n%s", len(usage), dump(evs))
 	}
 	last := usage[len(usage)-1].Usage
 	if last.Input <= usage[0].Usage.Input {
@@ -946,7 +987,15 @@ func TestServerWideStreamIsOnlyReadForIncrements(t *testing.T) {
 	other.global = true
 	a.handle(other)
 
-	// And anything durable would arrive twice, once per stream.
+	// And anything durable would arrive twice, once per stream. Worse than the
+	// double: the wide stream also carries frames the session stream never
+	// shows - session.created, model.switched - with durable seqs of their
+	// own, and taking one of those would drag the replay baseline past frames
+	// the session stream has not delivered yet, silently swallowing them.
+	ahead := durable("session.next.model.switched", 20, `{"sessionID":"ses_test","model":{"id":"m","providerID":"p"}}`)
+	ahead.global = true
+	a.handle(ahead)
+
 	dup := durable(evTextEnded, 11, `{"sessionID":"ses_test","assistantMessageID":"msg_1","textID":"text-0","text":"hello"}`)
 	dup.global = true
 	a.handle(dup)
@@ -956,7 +1005,8 @@ func TestServerWideStreamIsOnlyReadForIncrements(t *testing.T) {
 	}
 
 	// The same durable event off the session's own stream is the one that
-	// counts.
+	// counts, and it still arrives even though a higher seq went past on the
+	// wide stream.
 	a.handle(durable(evTextEnded, 11, `{"sessionID":"ses_test","assistantMessageID":"msg_1","textID":"text-0","text":"hello"}`))
 	if got := drain(a); len(got) != 1 || got[0].Kind != harness.KindText {
 		t.Fatalf("the session stream's own event was lost:\n%s", dump(got))
@@ -994,4 +1044,208 @@ func TestCloseEndsAnOpenTurnAsInterrupted(t *testing.T) {
 	if n := count(evs, harness.KindTurnFinished, "run_1"); n != 1 {
 		t.Errorf("turn_finished %d times, want exactly 1", n)
 	}
+}
+
+// TestALateDeltaAfterTextEndedIsDropped is the cross-stream ordering guard.
+// The two SSE connections are independent, so a block's last increment can
+// arrive off the wide stream after the session stream's text.ended for the
+// same block. Emitting it then would put a fragment after the block's complete
+// text, and the engine would append that fragment to the answer the user
+// reads: "hello-from-socrates" followed by "-socrates".
+func TestALateDeltaAfterTextEndedIsDropped(t *testing.T) {
+	a := openTurn(t, "run_1", 10)
+
+	early := ephemeral(evTextDelta, `{"sessionID":"ses_test","assistantMessageID":"msg_1","textID":"text-0","delta":"hello-from"}`)
+	early.global = true
+	a.handle(early)
+
+	a.handle(durable(evTextEnded, 11, `{"sessionID":"ses_test","assistantMessageID":"msg_1","textID":"text-0","text":"hello-from-socrates"}`))
+
+	late := ephemeral(evTextDelta, `{"sessionID":"ses_test","assistantMessageID":"msg_1","textID":"text-0","delta":"-socrates"}`)
+	late.global = true
+	a.handle(late)
+	// And one that arrives after a flush tick too, the other way the buffer
+	// could leak out.
+	a.flushDeltas("")
+
+	// checkInvariants is not run here: this adapter never started, so it has
+	// no session_id. The rules this test is about are asserted directly.
+	got := drain(a)
+	if n := len(of(got, harness.KindText)); n != 1 {
+		t.Fatalf("want one complete text, got %d:\n%s", n, dump(got))
+	}
+	for i, ev := range got {
+		if ev.Kind == harness.KindText && i != len(got)-1 {
+			t.Fatalf("%d events followed the block's complete text:\n%s", len(got)-1-i, dump(got))
+		}
+	}
+	// Invariant 4 is what the engine relies on: the deltas of a block spell
+	// out a prefix of its text, never more.
+	var spelled string
+	for _, ev := range of(got, harness.KindTextDelta) {
+		spelled += ev.Text
+	}
+	if spelled != "hello-from" {
+		t.Errorf("deltas spelled %q, want the prefix that arrived before the block closed", spelled)
+	}
+}
+
+// TestATurnThatProducedNothingIsNotOK is the rule the silent failure paths of
+// this build need: a model the server cannot run makes the turn stop with no
+// event at all, and calling that ok would show an empty assistant message
+// under a green tick.
+func TestATurnThatProducedNothingIsNotOK(t *testing.T) {
+	r := start(t, `[{"do":"end","outcome":"ok"}]`)
+
+	evs := r.send("run_1", "use a model that does not exist", 30*time.Second)
+	checkInvariants(t, evs)
+
+	fin := first(t, evs, harness.KindTurnFinished)
+	if fin.Outcome != harness.OutcomeError {
+		t.Fatalf("turn_finished = %+v, want error", fin)
+	}
+	if fin.Error != "the agent produced no answer" {
+		t.Errorf("run error = %q", fin.Error)
+	}
+	if len(of(evs, harness.KindText)) != 0 || len(of(evs, harness.KindToolStarted)) != 0 {
+		t.Errorf("this turn was supposed to produce nothing:\n%s", dump(evs))
+	}
+}
+
+// TestATurnWithAToolButNoTextIsStillOK is the other half of the rule: a turn
+// that ran a command and said nothing is terse, not failed.
+func TestATurnWithAToolButNoTextIsStillOK(t *testing.T) {
+	r := start(t, `[{"do":"tool","name":"bash","input":"true","output":"","exit":0},
+	                {"do":"end","outcome":"ok"}]`)
+
+	evs := r.send("run_1", "just run it", 30*time.Second)
+	checkInvariants(t, evs)
+
+	if len(of(evs, harness.KindText)) != 0 {
+		t.Fatalf("this turn was supposed to produce no text:\n%s", dump(evs))
+	}
+	if fin := first(t, evs, harness.KindTurnFinished); fin.Outcome != harness.OutcomeOK {
+		t.Errorf("turn_finished = %+v, want ok", fin)
+	}
+}
+
+// TestTheWideStreamIsOptional covers the installation that does not publish
+// /api/event: the follower gives up, says so once, and the turn goes on.
+func TestTheWideStreamIsOptional(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"_tag":"NotFoundError","message":"/api/event"}`, http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	a := openTurn(t, "run_1", 0)
+	a.cli = newClient(ts.URL, "pw")
+
+	a.follow(nil, true, a.cli.openDeltaStream) // returns: a 404 is not retried
+	runPosted(t, a)
+
+	got := drain(a)
+	if len(got) != 1 || got[0].Kind != harness.KindNotice {
+		t.Fatalf("want one notice, got:\n%s", dump(got))
+	}
+	if !strings.Contains(got[0].Error, "/api/event") {
+		t.Errorf("notice = %q", got[0].Error)
+	}
+	if got[0].TurnID != "run_1" {
+		t.Errorf("the notice is not attributed to the open turn: %+v", got[0])
+	}
+}
+
+// TestTheWideStreamSaysWhenItDrops is the same for a connection that opens and
+// then dies: the increments stop, the answer does not, and the transcript says
+// so once rather than leaving a person to wonder why typing stopped.
+func TestTheWideStreamSaysWhenItDrops(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// and the connection ends
+	}))
+	defer ts.Close()
+
+	a := openTurn(t, "run_1", 0)
+	a.cli = newClient(ts.URL, "pw")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.follow(nil, true, a.cli.openDeltaStream)
+	}()
+	runPosted(t, a)
+	a.cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("follow did not stop when the adapter was cancelled")
+	}
+
+	got := drain(a)
+	if len(got) != 1 || got[0].Kind != harness.KindNotice {
+		t.Fatalf("want one notice, got:\n%s", dump(got))
+	}
+	if !strings.Contains(got[0].Error, "interrupted") {
+		t.Errorf("notice = %q", got[0].Error)
+	}
+}
+
+// runPosted waits for one piece of work to reach the processor's queue and
+// runs it here, standing in for the processor goroutine.
+func runPosted(t *testing.T, a *adapter) {
+	t.Helper()
+	select {
+	case op := <-a.ops:
+		op()
+	case <-time.After(10 * time.Second):
+		t.Fatal("nothing was posted to the processor")
+	}
+}
+
+// TestServerErrorLine reads the shape opencode 1.17.13 actually prints when a
+// turn dies without saying so on the wire.
+func TestServerErrorLine(t *testing.T) {
+	s := &server{output: newRing(8 << 10)}
+	s.output.write("opencode server listening on http://127.0.0.1:4096\n")
+	if got := s.errorLine(); got != "" {
+		t.Errorf("a quiet server reported %q", got)
+	}
+	s.output.write("[17:40:15.802] ERROR (#16699): Failed to drain Session " +
+		"SessionRunnerModel.ModelUnavailableError: Model unavailable: opencode/does-not-exist\n" +
+		"    at <anonymous> (/$bunfs/root/chunk-s41t6hbc.js:6:22145)\n" +
+		"    at SessionRunner.run (/$bunfs/root/chunk-ysyjasn4.js:25:2045)\n" +
+		"  sessionID: \"ses_fa1f151daffepIBPXB8wbzN2PN\",\n}\n")
+	want := "Failed to drain Session SessionRunnerModel.ModelUnavailableError: " +
+		"Model unavailable: opencode/does-not-exist"
+	if got := s.errorLine(); got != want {
+		t.Errorf("errorLine = %q\nwant      %q", got, want)
+	}
+}
+
+// TestTextDeltaArrivesFromTheWideStream proves the server-wide stream is
+// actually followed and its increments actually reach the events channel.
+//
+// It sends more than once on purpose. The fake, like the real server, publishes
+// a block's increments only on /api/event and its text.ended only on the
+// session stream; those are two connections read by two goroutines, and over a
+// turn that takes microseconds instead of seconds the session stream sometimes
+// wins outright, closing the block before any increment is handled. That is
+// allowed - the answer still arrives whole. An adapter that does not follow
+// the wide stream at all, or filters its increments away, produces no
+// increment in any turn, which is what this fails on.
+func TestTextDeltaArrivesFromTheWideStream(t *testing.T) {
+	r := start(t, `[{"do":"text","text":"Streaming this answer out in pieces."},{"do":"end","outcome":"ok"}]`)
+
+	for turn := 1; turn <= 6; turn++ {
+		evs := r.send(fmt.Sprintf("run_%d", turn), "hello", 30*time.Second)
+		checkInvariants(t, evs)
+		if len(of(evs, harness.KindTextDelta)) > 0 {
+			return
+		}
+	}
+	t.Fatalf("six turns and not one text_delta; the wide stream is not being read:\n%s", dump(r.events()))
 }

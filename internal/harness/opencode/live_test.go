@@ -284,6 +284,42 @@ func TestLiveOpenCodeResume(t *testing.T) {
 	t.Logf("resumed answer: %q", textOf(evs))
 }
 
+// TestLiveOpenCodeAModelThatCannotRun is the silent-failure path, live. The
+// server accepts the model switch, accepts the prompt, and then stops: nothing
+// on either stream, no step.ended, the session leaves the active map. Only the
+// backstop notices, and the turn must not be reported as a success.
+func TestLiveOpenCodeAModelThatCannotRun(t *testing.T) {
+	spec := liveSpec(t)
+	spec.Model = "opencode|socrates-does-not-exist"
+	r := startLive(t, spec)
+
+	evs := r.send("live_bogus", "say hi", 60*time.Second)
+	checkInvariants(t, evs)
+
+	fin := first(t, evs, harness.KindTurnFinished)
+	if fin.Outcome != harness.OutcomeError || fin.Error != "the agent produced no answer" {
+		t.Errorf("turn_finished = %+v, want error \"the agent produced no answer\"", fin)
+	}
+	if len(of(evs, harness.KindText)) != 0 || len(of(evs, harness.KindToolStarted)) != 0 {
+		t.Errorf("this turn was not supposed to produce anything:\n%s", dump(evs))
+	}
+	var backstop string
+	for _, n := range of(evs, harness.KindNotice) {
+		if strings.Contains(n.Error, "idle check") {
+			backstop = n.Error
+		}
+	}
+	if backstop == "" {
+		t.Fatalf("the backstop did not say it closed the turn:\n%s", dump(evs))
+	}
+	t.Logf("notice: %s", backstop)
+	// The server prints the reason on its own output even though nothing
+	// reaches the wire; that line is the only "why" a user can be given.
+	if !strings.Contains(backstop, "opencode said:") {
+		t.Errorf("the notice does not carry the server's own error line")
+	}
+}
+
 // liveDefaultModel picks something that is actually connected, preferring the
 // free built-in provider so a test run does not cost anything.
 func liveDefaultModel(t *testing.T) string {
