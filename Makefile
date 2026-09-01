@@ -57,7 +57,7 @@ check: fmt-check vet tidy-check race build
 ## processes, which is exactly what it is there to test.
 e2e: build
 	@if [ ! -f e2e/run.mjs ]; then \
-	  echo "e2e/run.mjs is not in this tree yet - the suite lands with the fakes and e2e work package."; \
+	  echo "e2e/run.mjs is not in this tree - the browser suite is left out of the Docker build context."; \
 	  exit 1; \
 	fi
 	node e2e/run.mjs

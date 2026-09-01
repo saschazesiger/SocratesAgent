@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,12 +20,19 @@ import (
 )
 
 // memStore is the key/value half of the store, which is all this package uses.
-type memStore struct{ values map[string]string }
+// It is locked because the real one is: discovery runs on a goroutine of its
+// own and writes the cache from there.
+type memStore struct {
+	mu     sync.Mutex
+	values map[string]string
+}
 
 func newStore() *memStore { return &memStore{values: map[string]string{}} }
 
 func (m *memStore) GetJSON(key string, out any) error {
+	m.mu.Lock()
 	raw, ok := m.values[key]
+	m.mu.Unlock()
 	if !ok {
 		return errors.New("not found")
 	}
@@ -34,7 +44,9 @@ func (m *memStore) SetJSON(key string, in any) error {
 	if err != nil {
 		return err
 	}
+	m.mu.Lock()
 	m.values[key] = string(raw)
+	m.mu.Unlock()
 	return nil
 }
 
@@ -219,4 +231,101 @@ func mustAgent(t *testing.T, snap Snapshot, id string) Agent {
 		t.Fatalf("no %s in the catalogue", id)
 	}
 	return a
+}
+
+// slowClaude puts a claude on PATH that takes its time answering, which is
+// what a cold codex or opencode probe does on a real machine.
+func slowClaude(t *testing.T, delay time.Duration) {
+	t.Helper()
+	dir := t.TempDir()
+	// /bin/sleep by its full path: PATH is about to hold nothing but this
+	// directory, so a bare `sleep` would not be found and the script would
+	// return instantly - which is the opposite of the point.
+	script := fmt.Sprintf("#!/bin/sh\n/bin/sleep %.2f\necho 'claude 9.9.9-slow'\n", delay.Seconds())
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+}
+
+// The browser gives up on the agent list after twelve seconds, and a cold
+// codex plus opencode probe can take longer than that. A discovery that rode
+// the request's context was cancelled halfway when it did - and the half-made
+// answer, every agent carrying "context canceled", was cached for the next
+// half hour, so the first run of a fresh installation offered a picker with no
+// models in it at all.
+//
+// The request may give up. The discovery may not.
+func TestARequestThatGivesUpDoesNotPoisonTheCatalogue(t *testing.T) {
+	slowClaude(t, 2*time.Second)
+	c := New(newStore(), settingsFn(config.Default()))
+
+	impatient, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	first := c.Get(impatient)
+	if waited := time.Since(started); waited > time.Second {
+		t.Fatalf("the request waited %s for a discovery it does not own", waited)
+	}
+	// It has nothing to say, which is honest: nothing is known yet.
+	if len(first.Agents) != 0 {
+		t.Fatalf("a request that gave up returned %d agents", len(first.Agents))
+	}
+	// And nothing half-made was written down.
+	if snap, ok := c.Cached(); ok {
+		for _, a := range snap.Agents {
+			if strings.Contains(a.Error, "context canceled") {
+				t.Fatalf("a cancelled discovery was cached: %#v", a)
+			}
+		}
+	}
+
+	// The next request - a reload a moment later - gets the whole thing.
+	second := c.Get(context.Background())
+	claude := mustAgent(t, second, "claude")
+	if !claude.Installed || claude.Version != "claude 9.9.9-slow" {
+		t.Fatalf("the second request did not get a finished discovery: %#v", claude)
+	}
+	if len(claude.Models) != 4 {
+		t.Fatalf("models = %#v", claude.Models)
+	}
+	if claude.Error != "" {
+		t.Fatalf("the finished discovery carries an error: %q", claude.Error)
+	}
+
+	// And it is the cache from here on, not another round of probes.
+	cached, ok := c.Cached()
+	if !ok {
+		t.Fatal("the finished discovery was not cached")
+	}
+	if got := mustAgent(t, cached, "claude"); !got.Installed {
+		t.Fatalf("the cached entry is not the finished one: %#v", got)
+	}
+}
+
+// The same for the dashboard's Refresh button: the person may close the tab,
+// and the discovery still finishes and still replaces the cache.
+func TestARefreshThatIsAbandonedStillFinishes(t *testing.T) {
+	slowClaude(t, 2*time.Second)
+	c := New(newStore(), settingsFn(config.Default()))
+	if a := mustAgent(t, c.Get(context.Background()), "claude"); !a.Installed {
+		t.Fatalf("the first discovery did not work: %#v", a)
+	}
+
+	impatient, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	if got := c.Refresh(impatient); len(got.Agents) != 0 {
+		t.Fatalf("an abandoned refresh returned %d agents", len(got.Agents))
+	}
+	// Whatever the cache says now, it is never a cancelled discovery.
+	if snap, ok := c.Cached(); ok {
+		for _, a := range snap.Agents {
+			if strings.Contains(a.Error, "context canceled") {
+				t.Fatalf("an abandoned refresh was cached: %#v", a)
+			}
+		}
+	}
+	if a := mustAgent(t, c.Get(context.Background()), "claude"); !a.Installed || len(a.Models) != 4 {
+		t.Fatalf("the refresh did not finish behind the request: %#v", a)
+	}
 }

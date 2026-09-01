@@ -31,6 +31,12 @@ const TTL = 30 * time.Minute
 // cannot manage that in five seconds is not one a chat should be waiting on.
 const versionTimeout = 5 * time.Second
 
+// DiscoveryBudget is how long the probes get altogether. It is generous
+// because it is not a request's patience: nobody is held up by it, and the
+// point of the budget is only that a wedged CLI cannot keep a goroutine and a
+// subprocess for the life of the server.
+const DiscoveryBudget = 2 * time.Minute
+
 // Agent is one program, as the picker and the admin card see it. Every field
 // is always present: an agent that is missing says so in `error` rather than
 // arriving half filled in.
@@ -87,13 +93,25 @@ type Catalog struct {
 	store    Store
 	settings func() config.Settings
 
-	mu        sync.Mutex
-	snapshot  Snapshot
-	loaded    bool
-	refreshMu sync.Mutex
-	// refreshing keeps a background renewal from being started a second time
-	// while the first one is still spawning processes.
-	refreshing bool
+	mu       sync.Mutex
+	snapshot Snapshot
+	loaded   bool
+	// inflight is the discovery that is running, if any. Everyone who asks
+	// while it runs waits on the same one: three CLIs asked for their model
+	// list twice over is a slow machine for no reason.
+	inflight *discovery
+}
+
+// discovery is one run of the probes. It runs on a context of its own and
+// closes done when it is finished, whoever is still waiting by then.
+type discovery struct {
+	done chan struct{}
+	snap Snapshot
+	// complete says the probes ran to the end. A discovery cut short has
+	// nothing worth remembering: its agents are all "context canceled", and
+	// caching that for half an hour is how a first run ends up with a picker
+	// that offers no models at all.
+	complete bool
 }
 
 // New builds a catalogue over the store the settings live in.
@@ -102,27 +120,34 @@ func New(st Store, settings func() config.Settings) *Catalog {
 }
 
 // Get returns the catalogue, discovering it only if nothing is cached. A stale
-// cache is returned at once and renewed in the background: a picker that has
+// cache is returned at once and renewed behind the request: a picker that has
 // to wait twenty seconds for a model list is a picker nobody opens twice.
+//
+// On a cold cache the request waits for the discovery, but it does not own it.
+// The browser gives up after twelve seconds and a cold codex plus opencode
+// probe can take longer than that, so a discovery tied to the request's
+// context was cancelled halfway - and the half-made answer, every agent
+// carrying "context canceled", was what got cached for the next half hour.
+// The first run of a fresh installation therefore offered a picker with no
+// models in it. Detaching the work is the fix: whoever gave up, the probes
+// finish and the answer is there for the next request a moment later.
 func (c *Catalog) Get(ctx context.Context) Snapshot {
-	c.mu.Lock()
-	if !c.loaded {
-		var stored Snapshot
-		if err := c.store.GetJSON(cacheKey, &stored); err == nil && len(stored.Agents) > 0 {
-			c.snapshot = stored
+	snap, ok := c.Cached()
+	if ok {
+		if time.Since(time.UnixMilli(snap.RefreshedAt)) > TTL {
+			c.discover()
 		}
-		c.loaded = true
+		return snap
 	}
-	snap := c.snapshot
-	c.mu.Unlock()
-
-	if len(snap.Agents) == 0 {
-		return c.Refresh(ctx)
+	d := c.discover()
+	select {
+	case <-d.done:
+		return c.withSettings(d.snap)
+	case <-ctx.Done():
+		// This browser is gone. The discovery is not: it finishes, it caches,
+		// and the next request - a reload a few seconds later - gets all of it.
+		return Snapshot{Agents: []Agent{}}
 	}
-	if time.Since(time.UnixMilli(snap.RefreshedAt)) > TTL {
-		c.refreshInBackground()
-	}
-	return c.withSettings(snap)
 }
 
 // Cached is what is known without asking anything. It is what chat creation
@@ -144,32 +169,79 @@ func (c *Catalog) Cached() (Snapshot, bool) {
 	return c.withSettings(c.snapshot), true
 }
 
-func (c *Catalog) refreshInBackground() {
+// Refresh throws the cache away and asks every installed CLI again. It is what
+// the admin dashboard's Refresh button calls, and the caller waits for it - but
+// only with its own patience: the probes run detached, exactly as they do for
+// a cold Get, so a browser that gives up cannot leave a half-made catalogue
+// behind.
+func (c *Catalog) Refresh(ctx context.Context) Snapshot {
 	c.mu.Lock()
-	if c.refreshing {
-		c.mu.Unlock()
-		return
-	}
-	c.refreshing = true
+	c.snapshot = Snapshot{}
+	c.loaded = true
 	c.mu.Unlock()
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		c.Refresh(ctx)
-		c.mu.Lock()
-		c.refreshing = false
-		c.mu.Unlock()
-	}()
+	if err := c.store.SetJSON(cacheKey, Snapshot{}); err != nil {
+		log.Printf("catalog: could not clear the cached agent list: %v", err)
+	}
+
+	d := c.discover()
+	select {
+	case <-d.done:
+		return c.withSettings(d.snap)
+	case <-ctx.Done():
+		return Snapshot{Agents: []Agent{}}
+	}
 }
 
-// Refresh discovers everything again, synchronously. It is what the admin
-// dashboard's Refresh button calls.
-func (c *Catalog) Refresh(ctx context.Context) Snapshot {
-	// One discovery at a time: three CLIs being asked for their model list
-	// twice over is a slow machine for no reason.
-	c.refreshMu.Lock()
-	defer c.refreshMu.Unlock()
+// discover returns the discovery that is running, starting one if there is
+// none. It always runs on a context of its own, never a request's.
+func (c *Catalog) discover() *discovery {
+	c.mu.Lock()
+	if c.inflight != nil {
+		d := c.inflight
+		c.mu.Unlock()
+		return d
+	}
+	d := &discovery{done: make(chan struct{})}
+	c.inflight = d
+	c.mu.Unlock()
 
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), DiscoveryBudget)
+		defer cancel()
+		snap := c.probeAll(ctx)
+		// Only a discovery that ran to the end is remembered. One that was cut
+		// short reports every agent as "context canceled", and half an hour of
+		// that is a picker with nothing in it.
+		complete := ctx.Err() == nil
+		if complete {
+			c.mu.Lock()
+			c.snapshot = snap
+			c.loaded = true
+			c.mu.Unlock()
+			if err := c.store.SetJSON(cacheKey, snap); err != nil {
+				// A catalogue that cannot be cached is still a catalogue; it
+				// just costs three subprocess spawns again after a restart.
+				log.Printf("catalog: could not cache the agent list: %v", err)
+			}
+		} else {
+			log.Printf("catalog: the agent probes did not finish within %s; nothing was cached", DiscoveryBudget)
+		}
+
+		// Everything is in place before anybody is told the discovery is over,
+		// so a caller that has just been handed the answer can also read it
+		// back out of the cache.
+		c.mu.Lock()
+		d.snap, d.complete = snap, complete
+		c.inflight = nil
+		c.mu.Unlock()
+		close(d.done)
+	}()
+	return d
+}
+
+// probeAll asks every agent the settings know about where it is and what it
+// can run.
+func (c *Catalog) probeAll(ctx context.Context) Snapshot {
 	settings := c.settings()
 	snap := Snapshot{RefreshedAt: time.Now().UnixMilli()}
 	for _, id := range harness.IDs() {
@@ -183,18 +255,9 @@ func (c *Catalog) Refresh(ctx context.Context) Snapshot {
 			// for its own tests. It is not offered.
 			continue
 		}
-		snap.Agents = append(snap.Agents, discover(ctx, desc, entry))
+		snap.Agents = append(snap.Agents, discoverOne(ctx, desc, entry))
 	}
-	c.mu.Lock()
-	c.snapshot = snap
-	c.loaded = true
-	c.mu.Unlock()
-	if err := c.store.SetJSON(cacheKey, snap); err != nil {
-		// A catalogue that cannot be cached is still a catalogue; it just
-		// costs three subprocess spawns again after a restart.
-		log.Printf("catalog: could not cache the agent list: %v", err)
-	}
-	return c.withSettings(snap)
+	return snap
 }
 
 // withSettings overlays the parts of an entry that are a setting rather than a
@@ -215,8 +278,8 @@ func (c *Catalog) withSettings(snap Snapshot) Snapshot {
 	return out
 }
 
-// discover asks one agent where it is, what version it is and what it can run.
-func discover(ctx context.Context, desc harness.Descriptor, entry config.AgentEntry) Agent {
+// discoverOne asks one agent where it is, what version it is and what it can run.
+func discoverOne(ctx context.Context, desc harness.Descriptor, entry config.AgentEntry) Agent {
 	a := Agent{
 		ID: desc.ID, Label: desc.Label, Enabled: entry.Enabled,
 		HasEffort: desc.HasEffort, DefaultModel: desc.DefaultModel,

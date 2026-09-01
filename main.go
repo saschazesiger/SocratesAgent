@@ -68,6 +68,15 @@ func main() {
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
+	// A word that is not a flag and not a subcommand is a typo, and flag
+	// parsing simply stops at it: `socrates srve` used to start the server as
+	// though nothing had been said, and so did `socrates serve --data x` with
+	// the flag after a stray word.
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "socrates: %q is not a command or a flag.\n\n", fs.Arg(0))
+		fs.Usage()
+		os.Exit(2)
+	}
 	if *showVersion {
 		fmt.Println(version)
 		return
