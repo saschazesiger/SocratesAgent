@@ -24,6 +24,10 @@ import (
 
 const heartbeatInterval = 2 * time.Second
 
+// openCodeVersion is what `opencode --version` prints: the bare version, in
+// the real format ("1.17.13").
+const openCodeVersion = "1.17.13-fake"
+
 type server struct {
 	steps []script.Step
 
@@ -34,6 +38,7 @@ type server struct {
 	seq     map[string]int64
 	log     map[string][]json.RawMessage
 	subs    map[string][]chan json.RawMessage
+	global  []chan json.RawMessage
 	active  map[string]bool
 	dirs    map[string]string
 	sessN   int
@@ -58,6 +63,12 @@ type turnState struct {
 func main() {
 	script.Record(append(append([]string{}, os.Args...),
 		"OPENCODE_PERMISSION="+os.Getenv("OPENCODE_PERMISSION")))
+
+	// The catalogue runs `opencode --version` before anything else.
+	if script.VersionAsked(os.Args[1:]) {
+		fmt.Println(openCodeVersion)
+		os.Exit(0)
+	}
 
 	if len(os.Args) < 2 || os.Args[1] != "serve" {
 		fmt.Fprintln(os.Stderr, "fakeopencode: expected `serve`")
@@ -129,6 +140,7 @@ func (s *server) routes() http.Handler {
 	})
 	mux.HandleFunc("POST /api/session/{id}/permission/{req}/reply", s.permissionReply)
 	mux.HandleFunc("GET /api/session/{id}/event", s.events)
+	mux.HandleFunc("GET /api/event", s.globalEvents)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, map[string]any{"_tag": "NotFoundError", "message": r.URL.Path})
 	})
@@ -169,6 +181,12 @@ func (s *server) createSession(w http.ResponseWriter, r *http.Request) {
 	s.dirs[id] = body.Location.Directory
 	s.mu.Unlock()
 
+	// Global-stream only, as measured.
+	s.emit(id, "session.created", map[string]any{
+		"timestamp": nowMS(), "sessionID": id,
+		"location": map[string]any{"directory": body.Location.Directory},
+	}, false)
+
 	writeJSON(w, 200, map[string]any{"data": map[string]any{
 		"id":       id,
 		"location": map[string]any{"directory": body.Location.Directory},
@@ -181,7 +199,17 @@ func (s *server) createSession(w http.ResponseWriter, r *http.Request) {
 // setModel is FK-23: 204 always, and the body is recorded verbatim.
 func (s *server) setModel(w http.ResponseWriter, r *http.Request) {
 	raw, _ := io.ReadAll(r.Body)
-	script.Record([]string{"POST /api/session/" + r.PathValue("id") + "/model", string(raw)})
+	id := r.PathValue("id")
+	script.Record([]string{"POST /api/session/" + id + "/model", string(raw)})
+
+	var body struct {
+		Model map[string]any `json:"model"`
+	}
+	_ = json.Unmarshal(raw, &body)
+	// Global-stream only, as measured.
+	s.emit(id, "session.next.model.switched", map[string]any{
+		"timestamp": nowMS(), "sessionID": id, "model": body.Model,
+	}, false)
 	w.WriteHeader(204)
 }
 
@@ -281,8 +309,55 @@ func (s *server) permissionReply(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(204)
 }
 
+// events is the session-scoped stream. It replays the session's whole durable
+// history on every connect and never carries a *.delta frame — those live on
+// the global stream only.
 func (s *server) events(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	ch := make(chan json.RawMessage, 1024)
+	s.mu.Lock()
+	// S-2: an unknown ses_ id is an existing, empty session.
+	replay := append([]json.RawMessage{}, s.log[id]...)
+	s.subs[id] = append(s.subs[id], ch)
+	s.mu.Unlock()
+
+	s.serveSSE(w, r, replay, ch, func() {
+		out := s.subs[id][:0]
+		for _, c := range s.subs[id] {
+			if c != ch {
+				out = append(out, c)
+			}
+		}
+		s.subs[id] = out
+	})
+}
+
+// globalEvents is GET /api/event: every session on this server, no replay. It
+// is where the *.delta frames are published — text.delta, reasoning.delta and
+// tool.input.delta never appear on a session stream — and it also carries
+// traffic for the server's own internal sessions, so a client has to filter on
+// data.sessionID.
+func (s *server) globalEvents(w http.ResponseWriter, r *http.Request) {
+	ch := make(chan json.RawMessage, 1024)
+	s.mu.Lock()
+	s.global = append(s.global, ch)
+	s.mu.Unlock()
+
+	s.serveSSE(w, r, nil, ch, func() {
+		out := s.global[:0]
+		for _, c := range s.global {
+			if c != ch {
+				out = append(out, c)
+			}
+		}
+		s.global = out
+	})
+}
+
+// serveSSE writes one event stream: server.connected, then the replay, then
+// live frames and a heartbeat comment every two seconds.
+func (s *server) serveSSE(w http.ResponseWriter, r *http.Request,
+	replay []json.RawMessage, ch chan json.RawMessage, unregister func()) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "no flush", 500)
@@ -292,21 +367,9 @@ func (s *server) events(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(200)
 
-	ch := make(chan json.RawMessage, 1024)
-	s.mu.Lock()
-	// S-2: an unknown ses_ id is an existing, empty session.
-	replay := append([]json.RawMessage{}, s.log[id]...)
-	s.subs[id] = append(s.subs[id], ch)
-	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
-		out := s.subs[id][:0]
-		for _, c := range s.subs[id] {
-			if c != ch {
-				out = append(out, c)
-			}
-		}
-		s.subs[id] = out
+		unregister()
 		s.mu.Unlock()
 	}()
 
@@ -359,6 +422,11 @@ func (s *server) runTurn(id, msgID string) {
 	s.emit(id, "session.next.prompted", map[string]any{
 		"timestamp": nowMS(), "sessionID": id, "messageID": msgID,
 	}, true)
+
+	// The real server titles a chat in a session of its own and its chunks
+	// land on the global stream too, so a client that does not filter on
+	// data.sessionID picks up text that belongs to nobody's turn.
+	s.internalChatter()
 
 	dead := func() bool {
 		select {
@@ -481,6 +549,20 @@ func (s *server) ask(id, resource string, done <-chan struct{}) bool {
 	case <-done:
 		return false
 	}
+}
+
+// internalSessionID is the server's own title-generation session. Its frames
+// appear on the global stream and belong to no chat.
+const internalSessionID = "ses_internal0001"
+
+// internalChatter publishes one frame for the server's internal session on the
+// global stream.
+func (s *server) internalChatter() {
+	s.emit(internalSessionID, "session.next.text.delta", map[string]any{
+		"timestamp": nowMS(), "sessionID": internalSessionID,
+		"assistantMessageID": "msg_title0001", "textID": "text-0",
+		"delta": "Naming the chat",
+	}, false)
 }
 
 // step returns the open step's assistantMessageID, starting a step if none is
@@ -645,13 +727,35 @@ func (s *server) emitLocked(session, typ string, data any, durable bool) int64 {
 	if durable {
 		s.log[session] = append(s.log[session], raw)
 	}
-	for _, ch := range s.subs[session] {
+	// FK-18: the global stream carries *every* frame the server emits, for
+	// every session — the durable ones as well as the chunks — while a
+	// session stream never sees a *.delta and never sees the server's own
+	// bookkeeping. A client on /api/event that forgets to filter on `durable`
+	// therefore receives each durable event a second time.
+	if !isDelta(typ) && !isGlobalOnly(typ) {
+		fanOut(s.subs[session], raw)
+	}
+	fanOut(s.global, raw)
+	return seq
+}
+
+func fanOut(chans []chan json.RawMessage, raw json.RawMessage) {
+	for _, ch := range chans {
 		select {
 		case ch <- raw:
 		default:
 		}
 	}
-	return seq
+}
+
+// isDelta reports whether typ is one of the streaming chunk events. They are
+// published on the global stream only.
+func isDelta(typ string) bool { return strings.HasSuffix(typ, ".delta") }
+
+// isGlobalOnly reports whether typ is one of the server's own bookkeeping
+// frames, which were measured on the global stream and on no session stream.
+func isGlobalOnly(typ string) bool {
+	return typ == "session.created" || typ == "session.next.model.switched"
 }
 
 // durableVersion is the durable schema version an event carries. The research
@@ -676,6 +780,9 @@ func (s *server) drain() {
 			for _, ch := range chans {
 				pending += len(ch)
 			}
+		}
+		for _, ch := range s.global {
+			pending += len(ch)
 		}
 		s.mu.Unlock()
 		if pending == 0 {

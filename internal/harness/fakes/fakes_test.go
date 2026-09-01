@@ -147,6 +147,19 @@ func (p *proc) rest() []map[string]any {
 
 func (p *proc) closeStdin() { _ = p.in.Close() }
 
+// silentFor fails unless the process writes nothing for d.
+func (p *proc) silentFor(d time.Duration) {
+	p.t.Helper()
+	select {
+	case l, ok := <-p.lines:
+		if ok {
+			p.t.Fatalf("expected silence, got %s", l)
+		}
+		p.t.Fatal("expected silence, stdout closed")
+	case <-time.After(d):
+	}
+}
+
 func (p *proc) wait() (int, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -261,6 +274,35 @@ func TestBuildCompilesTheThreeFakesOncePerTestBinary(t *testing.T) {
 	}
 }
 
+func TestEveryFakeAnswersVersion(t *testing.T) {
+	// The catalogue probes `<binary> --version`; a usage error there pollutes
+	// the new-chat sheet hint and the admin diagnostics row.
+	for _, tc := range []struct {
+		binary string
+		want   string
+	}{
+		{"claude", "2.1.252-fake (Claude Code)"},
+		{"codex", "codex-cli 0.152.0-fake"},
+		{"opencode", "1.17.13-fake"},
+	} {
+		for _, flag := range []string{"--version", "-v", "-V"} {
+			t.Run(tc.binary+" "+flag, func(t *testing.T) {
+				p := start(t, tc.binary, nil, flag)
+				eq(t, "version line", p.nextRaw(), tc.want)
+				if extra := p.rest(); len(extra) != 0 {
+					t.Errorf("nothing may follow the version line, got %v", extra)
+				}
+				code, err := p.wait()
+				if err != nil {
+					t.Fatal(err)
+				}
+				eq(t, "exit code", code, 0)
+				eq(t, "stderr", p.stderr.String(), "")
+			})
+		}
+	}
+}
+
 // --------------------------------------------------------------- fakeclaude
 
 const claudeArgs = "-p --output-format stream-json --input-format stream-json --verbose --include-partial-messages"
@@ -272,6 +314,25 @@ func claudeArgv(extra ...string) []string {
 func startClaude(t *testing.T, steps string, extra ...string) *proc {
 	t.Helper()
 	return start(t, "claude", scriptEnv(steps), claudeArgv(extra...)...)
+}
+
+func startClaudeEnv(t *testing.T, steps string, env []string, extra ...string) *proc {
+	t.Helper()
+	return start(t, "claude", append(scriptEnv(steps), env...), claudeArgv(extra...)...)
+}
+
+// firstTurn sends the first user line and consumes the system/init line that
+// opens it. By default the fake writes nothing until it is prompted and init
+// is the first line of the first turn (E-1), so every test that wants to read
+// a turn starts here.
+func (p *proc) firstTurn(text string) map[string]any {
+	p.t.Helper()
+	p.send(userLine(text))
+	m := p.next()
+	if str(m, "type") != "system" || str(m, "subtype") != "init" {
+		p.t.Fatalf("the first turn must open with system/init, got %v", m)
+	}
+	return m
 }
 
 func userLine(text string) string {
@@ -309,7 +370,6 @@ func TestClaudeRecordsItsFullArgv(t *testing.T) {
 		claudeArgv("--model", "sonnet", "--effort", "medium", "--permission-mode",
 			"bypassPermissions", "--setting-sources", "project,local", "--name", "chat title",
 			"--session-id", "e2e")...)
-	p.next() // init
 	p.closeStdin()
 	if _, err := p.wait(); err != nil {
 		t.Fatal(err)
@@ -326,6 +386,7 @@ func TestClaudeRecordsItsFullArgv(t *testing.T) {
 
 func TestClaudeInitLineIsExact(t *testing.T) {
 	p := startClaude(t, `[{"do":"end","outcome":"ok"}]`, "--model", "sonnet")
+	p.send(userLine("hi"))
 	raw := p.nextRaw()
 	m := decode(t, raw)
 
@@ -354,7 +415,7 @@ func TestClaudeInitEchoesTheSessionIDItWasGiven(t *testing.T) {
 	for _, flag := range []string{"--session-id", "--resume"} {
 		t.Run(flag, func(t *testing.T) {
 			p := startClaude(t, `[{"do":"end","outcome":"ok"}]`, flag, "sess-abc")
-			eq(t, "session_id", str(p.next(), "session_id"), "sess-abc")
+			eq(t, "session_id", str(p.firstTurn("hi"), "session_id"), "sess-abc")
 		})
 	}
 }
@@ -363,8 +424,7 @@ func TestClaudeReplaysUserMessagesOnlyWhenAsked(t *testing.T) {
 	// FK-8.
 	t.Run("with the flag", func(t *testing.T) {
 		p := startClaude(t, `[{"do":"end","outcome":"ok"}]`, "--replay-user-messages")
-		p.next() // init
-		p.send(userLine("hello"))
+		p.firstTurn("hello")
 		echo := p.next()
 		eq(t, "type", str(echo, "type"), "user")
 		eq(t, "isReplay", boolean(echo, "isReplay"), true)
@@ -373,8 +433,7 @@ func TestClaudeReplaysUserMessagesOnlyWhenAsked(t *testing.T) {
 	})
 	t.Run("without the flag", func(t *testing.T) {
 		p := startClaude(t, `[{"do":"end","outcome":"ok"}]`)
-		p.next()
-		p.send(userLine("hello"))
+		p.firstTurn("hello")
 		eq(t, "next line", str(p.next(), "type"), "result")
 	})
 }
@@ -382,8 +441,7 @@ func TestClaudeReplaysUserMessagesOnlyWhenAsked(t *testing.T) {
 func TestClaudeStreamsATextBlockInThreeChunksThenCompletesIt(t *testing.T) {
 	// FK-4 / FK-5.
 	p := startClaude(t, `[{"do":"text","text":"abcdef"},{"do":"end","outcome":"ok"}]`, "--model", "sonnet")
-	p.next()
-	p.send(userLine("hi"))
+	p.firstTurn("hi")
 
 	ms := p.next()
 	eq(t, "message_start", str(ms, "event", "type"), "message_start")
@@ -430,8 +488,7 @@ func TestClaudeTextToolTextYieldsTwoMessagesWithIndexZero(t *testing.T) {
 	p := startClaude(t, `[{"do":"text","text":"one"},
 		{"do":"tool","name":"Bash","input":"go test ./...","output":"ok\n","exit":0},
 		{"do":"text","text":"two"},{"do":"end","outcome":"ok"}]`)
-	p.next()
-	p.send(userLine("hi"))
+	p.firstTurn("hi")
 
 	type block struct {
 		msg   string
@@ -498,8 +555,7 @@ func TestClaudeToolCallShape(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			p := startClaude(t, fmt.Sprintf(
 				`[{"do":"tool","name":"Bash","input":"go test ./...","output":"boom\n","exit":%d},{"do":"end","outcome":"ok"}]`, tc.exit))
-			p.next()
-			p.send(userLine("hi"))
+			p.firstTurn("hi")
 
 			a := p.until(func(m map[string]any) bool { return str(m, "type") == "assistant" })
 			eq(t, "block type", str(a, "message", "content", 0, "type"), "tool_use")
@@ -533,8 +589,7 @@ func TestClaudeToolUseHasTheSameStreamCadenceAsText(t *testing.T) {
 	p := startClaude(t, `[{"do":"text","text":"one"},
 		{"do":"tool","name":"Bash","input":"echo hi","output":"hi\n","exit":0},
 		{"do":"end","outcome":"ok"}]`)
-	p.next()
-	p.send(userLine("hi"))
+	p.firstTurn("hi")
 
 	var seq []string
 	var toolStart map[string]any
@@ -573,8 +628,7 @@ func TestClaudeToolUseHasTheSameStreamCadenceAsText(t *testing.T) {
 
 func TestClaudeSubagentUsesTheTaskTool(t *testing.T) {
 	p := startClaude(t, `[{"do":"subagent","input":"find the caller","output":"found it"},{"do":"end","outcome":"ok"}]`)
-	p.next()
-	p.send(userLine("hi"))
+	p.firstTurn("hi")
 	a := p.until(func(m map[string]any) bool { return str(m, "type") == "assistant" })
 	eq(t, "name", str(a, "message", "content", 0, "name"), "Task")
 	eq(t, "subagent_type", str(a, "message", "content", 0, "input", "subagent_type"), "general-purpose")
@@ -586,8 +640,7 @@ func TestClaudeSubagentUsesTheTaskTool(t *testing.T) {
 
 func TestClaudeSubagentCountCanBeOverridden(t *testing.T) {
 	p := startClaude(t, `[{"do":"text","text":"done"},{"do":"end","outcome":"ok","subagents":4}]`)
-	p.next()
-	p.send(userLine("hi"))
+	p.firstTurn("hi")
 	r := p.until(func(m map[string]any) bool { return str(m, "type") == "result" })
 	eq(t, "spawned", num(r, "subagent_stats", "spawned"), 4)
 }
@@ -595,8 +648,7 @@ func TestClaudeSubagentCountCanBeOverridden(t *testing.T) {
 func TestClaudeSuccessResultShape(t *testing.T) {
 	// FK-7.
 	p := startClaude(t, `[{"do":"text","text":"All tests pass."},{"do":"end","outcome":"ok"}]`)
-	p.next()
-	p.send(userLine("hi"))
+	p.firstTurn("hi")
 	r := p.until(func(m map[string]any) bool { return str(m, "type") == "result" })
 
 	eq(t, "subtype", str(r, "subtype"), "success")
@@ -619,8 +671,7 @@ func TestClaudeErrorResultKeepsSubtypeSuccess(t *testing.T) {
 	// FK-7: the bad-model trap. An adapter that keys off subtype rather than
 	// is_error reads this as a success.
 	p := startClaude(t, `[{"do":"end","outcome":"error","error":"model_not_found: nope"}]`)
-	p.next()
-	p.send(userLine("hi"))
+	p.firstTurn("hi")
 	r := p.until(func(m map[string]any) bool { return str(m, "type") == "result" })
 
 	eq(t, "subtype", str(r, "subtype"), "success")
@@ -633,8 +684,7 @@ func TestClaudeErrorResultKeepsSubtypeSuccess(t *testing.T) {
 func TestClaudeInterruptDuringAnOpenTurn(t *testing.T) {
 	// FK-10 (and FK-2's hang: the control channel stays served).
 	p := startClaude(t, `[{"do":"text","text":"working"},{"do":"hang"}]`)
-	p.next()
-	p.send(userLine("hi"))
+	p.firstTurn("hi")
 	p.until(func(m map[string]any) bool {
 		return str(m, "type") == "assistant"
 	})
@@ -658,8 +708,7 @@ func TestClaudeInterruptDuringAnOpenTurn(t *testing.T) {
 func TestClaudeInterruptWhileIdleEmitsNothingFurther(t *testing.T) {
 	// FK-10, second half.
 	p := startClaude(t, `[{"do":"text","text":"done"},{"do":"end","outcome":"ok"}]`)
-	p.next()
-	p.send(userLine("hi"))
+	p.firstTurn("hi")
 	p.until(func(m map[string]any) bool { return str(m, "type") == "result" })
 
 	p.send(`{"type":"control_request","request_id":"x9","request":{"subtype":"interrupt"}}`)
@@ -674,10 +723,14 @@ func TestClaudeInterruptWhileIdleEmitsNothingFurther(t *testing.T) {
 func TestClaudeRunsTheScriptOnEveryTurn(t *testing.T) {
 	// FK-1.
 	p := startClaude(t, `[{"do":"text","text":"hi"},{"do":"end","outcome":"ok"}]`)
-	p.next()
 	var shapes [][]string
 	for turn := 0; turn < 2; turn++ {
-		p.send(userLine("go"))
+		if turn == 0 {
+			// init opens the first turn and only the first turn.
+			p.firstTurn("go")
+		} else {
+			p.send(userLine("go"))
+		}
 		var seq []string
 		for {
 			m := p.next()
@@ -696,8 +749,7 @@ func TestClaudeRunsTheScriptOnEveryTurn(t *testing.T) {
 func TestClaudeDieFlushesEverythingWrittenSoFar(t *testing.T) {
 	// FK-2.
 	p := startClaude(t, `[{"do":"text","text":"partial"},{"do":"die","code":7}]`)
-	p.next()
-	p.send(userLine("hi"))
+	p.firstTurn("hi")
 	seen := false
 	for _, m := range p.rest() {
 		if str(m, "type") == "assistant" && str(m, "message", "content", 0, "text") == "partial" {
@@ -719,8 +771,7 @@ func TestClaudeDieFlushesEverythingWrittenSoFar(t *testing.T) {
 
 func TestClaudeExitsZeroOnStdinEOFWithEmptyStderr(t *testing.T) {
 	p := startClaude(t, `[{"do":"text","text":"hi"},{"do":"end","outcome":"ok"}]`)
-	p.next()
-	p.send(userLine("hi"))
+	p.firstTurn("hi")
 	p.until(func(m map[string]any) bool { return str(m, "type") == "result" })
 	p.closeStdin()
 	code, err := p.wait()
@@ -733,14 +784,175 @@ func TestClaudeExitsZeroOnStdinEOFWithEmptyStderr(t *testing.T) {
 
 func TestClaudeReasoningBlock(t *testing.T) {
 	p := startClaude(t, `[{"do":"reason","text":"thinking hard"},{"do":"end","outcome":"ok"}]`)
-	p.next()
-	p.send(userLine("hi"))
+	p.firstTurn("hi")
 	p.until(func(m map[string]any) bool {
 		return str(m, "event", "type") == "content_block_start"
 	})
 	a := p.until(func(m map[string]any) bool { return str(m, "type") == "assistant" })
 	eq(t, "block type", str(a, "message", "content", 0, "type"), "thinking")
 	eq(t, "thinking", str(a, "message", "content", 0, "thinking"), "thinking hard")
+}
+
+func TestClaudeGhostResumeReproducesTheMeasuredDeath(t *testing.T) {
+	// E-2: `claude --resume <uuid>` for a session the CLI cannot read writes
+	// no system/init at all — after a moment it writes one unprompted result
+	// carrying num_turns:0 and exits 1 with the message on stderr.
+	const ghost = "d48f102b-2683-47be-9c3d-86aeb9f4fc7b"
+	state := t.TempDir()
+	begun := time.Now()
+	p := startClaudeEnv(t, `[{"do":"text","text":"hi"},{"do":"end","outcome":"ok"}]`,
+		[]string{"FAKE_GHOST_RESUME=1", "FAKE_STATE_DIR=" + state},
+		"--resume", ghost, "--model", "sonnet")
+
+	// Nothing comes out while the CLI is looking for the transcript.
+	p.silentFor(100 * time.Millisecond)
+
+	raw := p.nextRaw()
+	if d := time.Since(begun); d < 200*time.Millisecond {
+		t.Errorf("the ghost result arrived after %v, sooner than the pinned delay", d)
+	}
+	m := decode(t, raw)
+	eq(t, "type", str(m, "type"), "result")
+	eq(t, "subtype", str(m, "subtype"), "error_during_execution")
+	eq(t, "is_error", boolean(m, "is_error"), true)
+	// num_turns:0 plus the missing init is the discriminator: a real turn
+	// always has init ahead of it and num_turns >= 1.
+	eq(t, "num_turns", num(m, "num_turns"), 0)
+	eq(t, "terminal_reason", str(m, "terminal_reason"), "api_error")
+	eq(t, "result", str(m, "result"), "No conversation found with session ID: "+ghost)
+	eq(t, "session_id", str(m, "session_id"), ghost)
+
+	for _, extra := range p.rest() {
+		t.Errorf("nothing may follow the ghost result, got %v", extra)
+	}
+	code, err := p.wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, "exit code", code, 1)
+	eq(t, "stderr", strings.TrimSpace(p.stderr.String()),
+		"No conversation found with session ID: "+ghost)
+}
+
+func TestClaudeGhostResumeIsConsumedOnFirstUse(t *testing.T) {
+	// The flag is consumed via a marker in $FAKE_STATE_DIR, so the adapter's
+	// one-shot relaunch succeeds and the whole R-3 path is testable.
+	const ghost = "e5b11969-e49b-4fac-b5bc-c49dc759e7ff"
+	state := t.TempDir()
+	env := []string{"FAKE_GHOST_RESUME=1", "FAKE_STATE_DIR=" + state}
+
+	first := startClaudeEnv(t, `[{"do":"text","text":"hi"},{"do":"end","outcome":"ok"}]`,
+		env, "--resume", ghost)
+	eq(t, "first launch dies", str(first.next(), "subtype"), "error_during_execution")
+	code, err := first.wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, "first exit code", code, 1)
+
+	// The relaunch the adapter makes without --resume is unaffected anyway,
+	// and even a second --resume of the same id now succeeds.
+	second := startClaudeEnv(t, `[{"do":"text","text":"hi"},{"do":"end","outcome":"ok"}]`,
+		env, "--resume", ghost)
+	eq(t, "session_id", str(second.firstTurn("hi"), "session_id"), ghost)
+	second.until(func(m map[string]any) bool { return str(m, "type") == "result" })
+
+	// A different session id is still armed.
+	other := startClaudeEnv(t, `[{"do":"end","outcome":"ok"}]`, env, "--resume", "another-id")
+	eq(t, "another id still dies", str(other.next(), "subtype"), "error_during_execution")
+}
+
+func TestClaudeGhostResumeOnlyFiresForResume(t *testing.T) {
+	// It is a --resume behaviour: a fresh --session-id starts a new session
+	// and must be unaffected, and without the flag --resume always works.
+	t.Run("--session-id is unaffected", func(t *testing.T) {
+		p := startClaudeEnv(t, `[{"do":"end","outcome":"ok"}]`,
+			[]string{"FAKE_GHOST_RESUME=1", "FAKE_STATE_DIR=" + t.TempDir()},
+			"--session-id", "brand-new")
+		eq(t, "session_id", str(p.firstTurn("hi"), "session_id"), "brand-new")
+	})
+	t.Run("the flag is off by default", func(t *testing.T) {
+		p := startClaude(t, `[{"do":"end","outcome":"ok"}]`, "--resume", "anything-at-all")
+		eq(t, "session_id", str(p.firstTurn("hi"), "session_id"), "anything-at-all")
+	})
+}
+
+func TestClaudeInitOpensTheFirstTurnAndOnlyTheFirst(t *testing.T) {
+	// E-1: with --input-format stream-json the real CLI writes nothing until
+	// it is prompted, and init arrives inside the first turn, ahead of the
+	// --replay-user-messages echo.
+	p := startClaude(t, `[{"do":"text","text":"hi"},{"do":"end","outcome":"ok"}]`,
+		"--replay-user-messages", "--session-id", "sess-1")
+	p.silentFor(300 * time.Millisecond)
+
+	initLine := p.firstTurn("go")
+	eq(t, "session_id", str(initLine, "session_id"), "sess-1")
+	echo := p.next()
+	eq(t, "the echo follows init", str(echo, "type"), "user")
+	eq(t, "isReplay", boolean(echo, "isReplay"), true)
+	p.until(func(m map[string]any) bool { return str(m, "type") == "result" })
+
+	// init is written once, not once per turn.
+	p.send(userLine("again"))
+	second := p.next()
+	eq(t, "the second turn starts with the echo", str(second, "type"), "user")
+	p.until(func(m map[string]any) bool { return str(m, "type") == "result" })
+}
+
+func TestClaudeInitPrecedesAnInterruptThatArrivesFirst(t *testing.T) {
+	// Even in deferred mode init is the first line on stdout: a
+	// control_response never arrives without the process having introduced
+	// itself.
+	p := startClaude(t, `[{"do":"end","outcome":"ok"}]`, "--session-id", "sess-3")
+	p.send(`{"type":"control_request","request_id":"x0","request":{"subtype":"interrupt"}}`)
+	m := p.next()
+	eq(t, "subtype", str(m, "subtype"), "init")
+	eq(t, "session_id", str(m, "session_id"), "sess-3")
+	resp := p.next()
+	eq(t, "type", str(resp, "type"), "control_response")
+	eq(t, "request_id", str(resp, "response", "request_id"), "x0")
+
+	// Idle, so nothing follows, and the turn that comes later does not repeat
+	// init.
+	p.send(userLine("hi"))
+	eq(t, "the turn", str(p.next(), "type"), "result")
+}
+
+func TestClaudeGhostMarkerFailureIsLoud(t *testing.T) {
+	// An unwritable $FAKE_STATE_DIR means the flag is never consumed and every
+	// relaunch dies again; that has to be visible rather than looking like a
+	// CLI that simply refuses to resume.
+	dir := t.TempDir()
+	notADir := filepath.Join(dir, "occupied")
+	if err := os.WriteFile(notADir, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"FAKE_GHOST_RESUME=1", "FAKE_STATE_DIR=" + filepath.Join(notADir, "state")}
+
+	p := startClaudeEnv(t, `[{"do":"end","outcome":"ok"}]`, env, "--resume", "gh-1")
+	eq(t, "subtype", str(p.next(), "subtype"), "error_during_execution")
+	code, err := p.wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, "exit code", code, 1)
+	if !strings.Contains(p.stderr.String(), "cannot write the ghost marker") {
+		t.Errorf("stderr does not explain the unusable state dir: %q", p.stderr.String())
+	}
+	if !strings.Contains(p.stderr.String(), "No conversation found with session ID: gh-1") {
+		t.Errorf("stderr lost the CLI's own message: %q", p.stderr.String())
+	}
+}
+
+func TestClaudeInitAtStartIsTheOptIn(t *testing.T) {
+	// The opt-in exists so a test can prove an adapter tolerates both orders.
+	p := startClaudeEnv(t, `[{"do":"end","outcome":"ok"}]`,
+		[]string{"FAKE_INIT_AT_START=1"}, "--session-id", "sess-2")
+	m := p.next()
+	eq(t, "subtype", str(m, "subtype"), "init")
+	eq(t, "session_id", str(m, "session_id"), "sess-2")
+	p.send(userLine("hi"))
+	eq(t, "the turn does not repeat init", str(p.next(), "type"), "result")
 }
 
 // ---------------------------------------------------------------- fakecodex
@@ -1223,7 +1435,6 @@ func TestClaudeEmitsNoBlockAfterTheResultLine(t *testing.T) {
 		p := startClaude(t, `[{"do":"text","text":"one"},
 			{"do":"tool","name":"Bash","input":"seq 3","output":"a\nb\nc\n","exit":0},
 			{"do":"text","text":"two"},{"do":"hang"}]`)
-		p.next()
 		p.send(userLine("hi"))
 		p.send(`{"type":"control_request","request_id":"x1","request":{"subtype":"interrupt"}}`)
 		p.closeStdin()
@@ -1246,8 +1457,7 @@ func TestClaudeEmitsNoBlockAfterTheResultLine(t *testing.T) {
 func TestClaudeAskStepEmitsNothing(t *testing.T) {
 	// There is no approval path under --permission-mode bypassPermissions.
 	p := startClaude(t, `[{"do":"ask","input":"whoami"},{"do":"end","outcome":"ok"}]`)
-	p.next()
-	p.send(userLine("hi"))
+	p.firstTurn("hi")
 	eq(t, "next line", str(p.next(), "type"), "result")
 }
 
@@ -1372,11 +1582,23 @@ func (o *oc) json(method, path, body string) map[string]any {
 	return decode(o.t, b)
 }
 
-// sse opens the session event stream and returns a channel of decoded frames
-// plus the raw lines, so both the payloads and the framing can be asserted.
+// sse opens the session-scoped event stream and returns a channel of decoded
+// frames plus the raw lines, so both the payloads and the framing can be
+// asserted.
 func (o *oc) sse(session string) (<-chan map[string]any, <-chan string) {
 	o.t.Helper()
-	req, err := http.NewRequest("GET", o.base+"/api/session/"+session+"/event", nil)
+	return o.stream("/api/session/" + session + "/event")
+}
+
+// globalSSE opens GET /api/event, the stream every *.delta frame lives on.
+func (o *oc) globalSSE() (<-chan map[string]any, <-chan string) {
+	o.t.Helper()
+	return o.stream("/api/event")
+}
+
+func (o *oc) stream(path string) (<-chan map[string]any, <-chan string) {
+	o.t.Helper()
+	req, err := http.NewRequest("GET", o.base+path, nil)
 	if err != nil {
 		o.t.Fatal(err)
 	}
@@ -1600,21 +1822,17 @@ func TestOpenCodeSSEFramingAndAdmittedSeq(t *testing.T) {
 	eq(t, "admittedSeq == durable.seq", num(adm, "durable", "seq"), admitted)
 
 	var seqs []float64
-	sawDelta := false
 	for {
 		m := nextFrame(t, frames)
 		if d := dig(m, "durable"); d != nil {
 			seqs = append(seqs, num(m, "durable", "seq"))
 			versions[str(m, "type")] = num(m, "durable", "version")
 		} else if strings.HasSuffix(str(m, "type"), ".delta") {
-			sawDelta = true
+			t.Errorf("a session stream must never carry a *.delta frame: %v", m)
 		}
 		if str(m, "type") == "session.next.step.ended" && str(m, "data", "finish") == "stop" {
 			break
 		}
-	}
-	if !sawDelta {
-		t.Error("no ephemeral *.delta frame arrived")
 	}
 	for i, s := range seqs {
 		if s != admitted+float64(i)+1 {
@@ -1649,6 +1867,8 @@ func TestOpenCodeFullStepStructure(t *testing.T) {
 	id := o.newSession(t.TempDir())
 	frames, _ := o.sse(id)
 	untilFrame(t, frames, "server.connected")
+	globals, _ := o.globalSSE()
+	untilFrame(t, globals, "server.connected")
 	o.json("POST", "/api/session/"+id+"/prompt", `{"prompt":{"text":"hi"},"delivery":"queue"}`)
 
 	var types []string
@@ -1675,16 +1895,56 @@ func TestOpenCodeFullStepStructure(t *testing.T) {
 		}
 	}
 done:
+	// FK-19's order, minus the *.delta frames: the session stream carries the
+	// durable events only.
 	want := []string{
 		"prompt.admitted", "prompted", "step.started",
-		"tool.input.started", "tool.input.delta", "tool.input.ended",
+		"tool.input.started", "tool.input.ended",
 		"tool.called", "tool.success", "step.ended",
-		"step.started", "text.started", "text.delta", "text.delta", "text.delta",
-		"text.ended", "step.ended",
+		"step.started", "text.started", "text.ended", "step.ended",
 	}
 	if strings.Join(types, ",") != strings.Join(want, ",") {
 		t.Errorf("event order:\n got %v\nwant %v", types, want)
 	}
+
+	// /api/event carries the same turn again — every durable frame plus the
+	// chunks that appear nowhere else plus the internal session's traffic.
+	var globalTypes []string
+	var text string
+	sawInternal := false
+	for len(globalTypes) < 17 {
+		m := nextFrame(t, globals)
+		globalTypes = append(globalTypes, strings.TrimPrefix(str(m, "type"), "session.next."))
+		if strings.HasSuffix(str(m, "type"), ".delta") && dig(m, "durable") != nil {
+			t.Errorf("a chunk must carry no durable key: %v", m)
+		}
+		switch str(m, "data", "sessionID") {
+		case id:
+			if str(m, "type") == "session.next.text.delta" {
+				text += str(m, "data", "delta")
+			}
+		case "ses_internal0001":
+			sawInternal = true
+		default:
+			t.Errorf("unexpected sessionID on the global stream: %v", m)
+		}
+	}
+	wantGlobal := []string{
+		"prompt.admitted", "prompted", "text.delta", // the internal session's chunk
+		"step.started", "tool.input.started", "tool.input.delta", "tool.input.ended",
+		"tool.called", "tool.success", "step.ended",
+		"step.started", "text.started", "text.delta", "text.delta", "text.delta",
+		"text.ended", "step.ended",
+	}
+	if strings.Join(globalTypes, ",") != strings.Join(wantGlobal, ",") {
+		t.Errorf("global stream order:\n got %v\nwant %v", globalTypes, wantGlobal)
+	}
+	if !sawInternal {
+		t.Error("the global stream must also carry the server's internal session")
+	}
+	// The internal session's chunk is indistinguishable from the turn's own
+	// unless the client filters on data.sessionID.
+	eq(t, "the assembled text deltas", text, "done")
 	if len(stepMsgs) != 2 || stepMsgs[0] == stepMsgs[1] {
 		t.Errorf("each step needs its own assistantMessageID: %v", stepMsgs)
 	}
@@ -1947,6 +2207,8 @@ func TestOpenCodeReasoningEvents(t *testing.T) {
 	id := o.newSession(t.TempDir())
 	frames, _ := o.sse(id)
 	untilFrame(t, frames, "server.connected")
+	globals, _ := o.globalSSE()
+	untilFrame(t, globals, "server.connected")
 	o.json("POST", "/api/session/"+id+"/prompt", `{"prompt":{"text":"hi"},"delivery":"queue"}`)
 
 	started := untilFrame(t, frames, "session.next.reasoning.started")
@@ -1954,12 +2216,138 @@ func TestOpenCodeReasoningEvents(t *testing.T) {
 	if str(started, "data", "assistantMessageID") == "" {
 		t.Error("reasoning.started must carry an assistantMessageID")
 	}
-	delta := untilFrame(t, frames, "session.next.reasoning.delta")
+	// The chunks are on the global stream, never on the session one.
+	delta := untilFrame(t, globals, "session.next.reasoning.delta")
 	if dig(delta, "durable") != nil {
 		t.Error("reasoning.delta is ephemeral and must carry no durable key")
 	}
+	eq(t, "reasoning delta sessionID", str(delta, "data", "sessionID"), id)
 	ended := untilFrame(t, frames, "session.next.reasoning.ended")
 	eq(t, "text", str(ended, "data", "text"), "pondering")
+}
+
+func TestOpenCodeGlobalStreamMirrorsEveryDurableFrame(t *testing.T) {
+	// FK-18: /api/event carries every durable frame a second time, so an
+	// adapter that reads both streams and forgets to filter on `durable`
+	// there sees every text, tool result and step usage twice.
+	o := startOpenCode(t, `[{"do":"tool","name":"bash","input":"echo hi","output":"hi\n","exit":0},
+		{"do":"text","text":"done"},{"do":"end","outcome":"ok"}]`)
+	id := o.newSession(t.TempDir())
+	frames, _ := o.sse(id)
+	untilFrame(t, frames, "server.connected")
+	globals, _ := o.globalSSE()
+	untilFrame(t, globals, "server.connected")
+	o.json("POST", "/api/session/"+id+"/prompt", `{"prompt":{"text":"hi"},"delivery":"queue"}`)
+
+	// Everything the session stream delivered, keyed by event id.
+	scoped := map[string]map[string]any{}
+	var scopedOrder []string
+	for {
+		m := nextFrame(t, frames)
+		scoped[str(m, "id")] = m
+		scopedOrder = append(scopedOrder, str(m, "id"))
+		if str(m, "type") == "session.next.step.ended" && str(m, "data", "finish") == "stop" {
+			break
+		}
+	}
+	if len(scopedOrder) == 0 {
+		t.Fatal("the session stream delivered nothing")
+	}
+
+	// An unfiltered client on /api/event receives each of them again, with
+	// the same event id and the same durable.seq.
+	seen := map[string]bool{}
+	var duplicates int
+	for len(seen) < len(scoped) {
+		m := nextFrame(t, globals)
+		want, ok := scoped[str(m, "id")]
+		if !ok {
+			continue // a chunk or the internal session, neither is durable
+		}
+		if seen[str(m, "id")] {
+			t.Fatalf("the global stream repeated %s", str(m, "id"))
+		}
+		seen[str(m, "id")] = true
+		duplicates++
+		eq(t, "type", str(m, "type"), str(want, "type"))
+		eq(t, "durable.seq", num(m, "durable", "seq"), num(want, "durable", "seq"))
+		eq(t, "durable.aggregateID", str(m, "durable", "aggregateID"), id)
+	}
+	eq(t, "durable frames seen twice", duplicates, len(scopedOrder))
+}
+
+func TestOpenCodeServerBookkeepingIsGlobalOnly(t *testing.T) {
+	// session.created and session.next.model.switched were measured on the
+	// global stream and on no session stream.
+	o := startOpenCode(t, `[{"do":"end","outcome":"ok"}]`)
+	globals, _ := o.globalSSE()
+	untilFrame(t, globals, "server.connected")
+
+	dir := t.TempDir()
+	id := o.newSession(dir)
+	created := untilFrame(t, globals, "session.created")
+	eq(t, "sessionID", str(created, "data", "sessionID"), id)
+	eq(t, "directory", str(created, "data", "location", "directory"), dir)
+	if dig(created, "durable") != nil {
+		t.Errorf("session.created carries no durable key: %v", created)
+	}
+
+	frames, _ := o.sse(id)
+	untilFrame(t, frames, "server.connected")
+	code, _ := o.do("POST", "/api/session/"+id+"/model",
+		`{"model":{"id":"fake-thinker","providerID":"opencode","variant":"high"}}`, true)
+	eq(t, "status", code, 204)
+	switched := untilFrame(t, globals, "session.next.model.switched")
+	eq(t, "model id", str(switched, "data", "model", "id"), "fake-thinker")
+	eq(t, "variant", str(switched, "data", "model", "variant"), "high")
+
+	// Neither reached the session stream: the next thing there is the turn.
+	o.json("POST", "/api/session/"+id+"/prompt", `{"prompt":{"text":"hi"},"delivery":"queue"}`)
+	first := nextFrame(t, frames)
+	eq(t, "the session stream's first frame", str(first, "type"), "session.next.prompt.admitted")
+}
+
+func TestOpenCodeGlobalStreamIsBehindAuthAndNeverReplays(t *testing.T) {
+	// GET /api/event is authenticated like every other route and, unlike the
+	// session stream, replays nothing on connect.
+	o := startOpenCode(t, `[{"do":"text","text":"done"},{"do":"end","outcome":"ok"}]`)
+	code, body := o.do("GET", "/api/event", "", false)
+	eq(t, "unauthenticated status", code, 401)
+	eq(t, "_tag", str(decode(t, body), "_tag"), "UnauthorizedError")
+
+	id := o.newSession(t.TempDir())
+	frames, _ := o.sse(id)
+	untilFrame(t, frames, "server.connected")
+	globals, raws := o.globalSSE()
+	eq(t, "first frame", str(nextFrame(t, globals), "type"), "server.connected")
+	o.json("POST", "/api/session/"+id+"/prompt", `{"prompt":{"text":"hi"},"delivery":"queue"}`)
+	untilFrame(t, frames, "session.next.step.ended")
+	o.waitIdle()
+
+	// A second connection sees none of what has already happened.
+	again, _ := o.globalSSE()
+	eq(t, "first frame", str(nextFrame(t, again), "type"), "server.connected")
+	select {
+	case m := <-again:
+		t.Fatalf("the global stream must not replay, got %v", m)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	// Same framing as the session stream, heartbeat comments included.
+	deadline := time.After(3 * heartbeatWait)
+	for {
+		select {
+		case line := <-raws:
+			if line == ": heartbeat" {
+				return
+			}
+			if !strings.HasPrefix(line, "data: ") {
+				t.Fatalf("unexpected SSE line %q", line)
+			}
+		case <-deadline:
+			t.Fatal("no heartbeat comment line on the global stream")
+		}
+	}
 }
 
 func TestOpenCodeRunsTheScriptOnEveryTurn(t *testing.T) {
