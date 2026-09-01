@@ -38,9 +38,9 @@ const idle = (page, t = 30000) =>
 const busy = (page, t = 10000) =>
   page.waitForFunction(() => document.body.classList.contains('busy'), null, { timeout: t });
 
-// pickModel chooses a model in the new-chat sheet from the keyboard. It is the
-// keyboard and not the mouse on purpose: tapping an option cancels the sheet,
-// which is what the quarantined `modelpick` scenario below documents.
+// pickModel chooses a model in the new-chat sheet from the keyboard. Both ways
+// in are covered: `modelpick` does it with the mouse, which is the path that
+// used to cancel the sheet under the picker.
 async function pickModel(page, container, model) {
   const input = page.locator(container + ' input');
   await input.click();
@@ -1459,27 +1459,18 @@ async function pages() {
 
 // ----------------------------------------------------------- 20. modelpick
 
-// QUARANTINED — a reproduced defect in a file this work package does not own.
+// This scenario picks a model with the mouse, and it exists because that used
+// to throw the chat away. `combobox.js` takes an option on **mousedown** ("the
+// input must not lose focus first") and hides its list in the same handler, so
+// the `click` that follows starts on an element that is already gone and gets
+// retargeted to the nearest one still under the pointer — the `<dialog>`. The
+// sheet judged a backdrop tap by `event.target` alone, so it read its own
+// combobox as a tap beside itself and answered with `finish(null)`. Keyboard
+// selection never produced the retarget, which is why nothing caught it.
 //
-// Tapping a model in the new-chat sheet cancels the sheet. The mechanism is
-// exact and the two halves are each reasonable on their own:
-//
-//   * `combobox.js` chooses an option on **mousedown** ("the input must not
-//     lose focus first") and hides the list in the same handler;
-//   * `agents.js` treats a click whose `event.target` is the `<dialog>` itself
-//     as a tap on the backdrop and answers it with `finish(null)`.
-//
-// By the time the browser dispatches the `click` that follows that mousedown,
-// the option it started on has been hidden, so the event retargets to the
-// nearest element still under the pointer — the dialog — and the sheet cancels
-// itself. Keyboard selection is unaffected, which is why the rest of the suite
-// picks models with ArrowDown+Enter and why nothing else caught this.
-//
-// The whole visible effect is that a person who taps a model gets no chat.
-// `e2e/**` is WP6's; `agents.js` and `combobox.js` are WP5's, so this scenario
-// records the defect rather than working around it. It fails, loudly, and does
-// not fail the run; SOCRATES_E2E_STRICT=1 takes that exemption away, which is
-// what the fix should be checked against.
+// `agents.js` now measures such a click against the sheet's own rectangle and
+// only treats it as the backdrop when the pointer really was outside. This is
+// the regression test for that, and it is an ordinary scenario: it has to pass.
 async function modelpick() {
   const s = await start({ viewport: { width: 1280, height: 900 } });
   try {
@@ -1525,6 +1516,21 @@ async function modelpick() {
     } else {
       ok(false, 'and it is bound to the model that was tapped', 'no chat was created at all');
     }
+
+    // The other half of the fix: a tap that really is beside the sheet still
+    // means no. A rule that kept the sheet open for its own combobox by never
+    // closing it at all would pass everything above and be worse than the bug.
+    await ensureNav(s.page);
+    await s.page.click('#newChat');
+    await s.page.waitForSelector('#newChatSheet[open]');
+    const box = await s.page.$eval('#newChatSheet', (n) => n.getBoundingClientRect().toJSON());
+    await s.page.mouse.click(Math.round(box.left / 2), Math.round(box.top / 2));
+    await wait(500);
+    const afterBackdrop = await s.page.$$eval('#newChatSheet[open]', (n) => n.length);
+    ok(afterBackdrop === 0, 'a tap outside the sheet still closes it',
+      'open=' + afterBackdrop + ' after a click at ' + Math.round(box.left / 2) + ',' + Math.round(box.top / 2)
+      + ' beside a sheet at ' + JSON.stringify({ left: Math.round(box.left), top: Math.round(box.top) }));
+    ok(unexpected(s.errors).length === 0, 'no unexpected console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
 
@@ -1577,13 +1583,14 @@ async function liveclaude() {
     ok(view.error === 0, 'the real turn produced no error step',
       view.error + (view.errorText ? ': ' + view.errorText.trim().slice(0, 200) : ''));
     // A `fork/exec <cli>: no such file or directory` for a CLI that plainly
-    // exists is Go reporting a missing `cmd.Dir`, not a missing binary. It is
-    // the one failure this scenario can name for whoever reads the log.
+    // exists is Go reporting a missing `cmd.Dir`, not a missing binary. That
+    // was this scenario's first find, and engine.specFor now creates the chat's
+    // working directory - so if the words ever come back, they get named rather
+    // than sending the next reader after the wrong thing.
     if (/fork\/exec .*no such file or directory/.test(view.errorText)) {
       ok(false, 'the per-chat workspace directory exists before the agent is started',
-        'engine.Workspace() is <workspace_root>/<chat id> and nothing creates it, so cmd.Dir is '
-        + 'missing and every real chat dies at its first message. Create it by hand and the same '
-        + 'chat answers. internal/engine is WP1\'s: this suite reports it, it does not patch it.');
+        'the chat is started in <workspace_root>/<chat id>; if that directory is missing, Go '
+        + 'reports the missing cmd.Dir against the binary\'s name. Look at engine.specFor.');
     }
     ok(true, 'the steps the real turn produced', view.steps.join(',') || 'none, working row: ' + view.working);
     ok(view.assistant >= 1 && srv.assistant >= 1, 'the real agent answered (DOM and server)',
@@ -1622,10 +1629,7 @@ const ALL = [
   ['sheetphone', 'the sheet at 390x500, with the keyboard up', sheetphone],
   ['admin', 'the Agents card, refresh, save and diagnostics', admin],
   ['pages', 'every page is clean at a phone and at a desk', pages],
-  ['modelpick', 'a model tapped in the new-chat sheet is the model the chat gets', modelpick, {
-    quarantine: 'tapping a model cancels the sheet - a mousedown/click retarget between '
-      + 'combobox.js and agents.js, both of which belong to WP5. See the comment above modelpick().',
-  }],
+  ['modelpick', 'a model tapped in the new-chat sheet is the model the chat gets', modelpick],
   ['liveclaude', 'one real turn against the real Claude Code CLI', liveclaude, { live: true }],
 ];
 
