@@ -9,6 +9,13 @@
   `docs/design/ACTIVITY.md` are the detail.
 
 Status: **binding**. Written 2026-09-02 for Opus implementer agents who have not seen the
+
+> **Superseded (2026-09-02, branch `google-tts`):** the local Piper voice and
+> `internal/piper` are gone. Reading an answer out loud is now Google Cloud
+> Text-to-Speech (`internal/googletts`), called with an API key from
+> Admin → Voice; `GET /api/voice/status` was replaced by `POST
+> /api/voice/check`. Passages below that describe the local engine are
+> history.
 conversation that produced it, and for a Fable reviewer who holds every work package against it.
 
 Sources of truth, in order:
@@ -1868,7 +1875,8 @@ GET    /api/tmux                           {installed, path, version, ok, manage
 POST   /api/tmux/install                   starts the installer
 GET    /api/tmux/events                    SSE, installer progress (see §F.1)
 GET    /api/tunnel, POST /api/tunnel/*     unchanged
-POST   /api/voice/transcribe, /speak, GET /api/voice/status        unchanged
+POST   /api/voice/transcribe, /speak, /check                       (see the note at the top:
+                                           /speak renders at Google, /check proves the key)
 GET    /api/health                         unchanged
 GET    /api/preferences, /api/diagnostics                          kept, updated content
 ```
@@ -2467,11 +2475,13 @@ existing 2-minute budget and a spinner.
 
 ## F.5 Voice — `#voiceCard`
 
-Unchanged from today: `#voiceStatus`, `#voiceLanguage` (`en`/`de`), `#sttPrompt`, `#ttsRate`,
-`#speakAuto`, `#speakChat`, `#testVoice`, plus the OpenRouter key and models
-(`#orKey`, `#orTranscribe`, `#orTitle`). The two "speak" switches keep their storage keys and keep
-working; their hint gains one sentence: *"Reading answers out loud is not wired into the terminal
-yet."* Dictation must be fully working — that is a DECISIONS.md requirement and an e2e scenario.
+Superseded by the Google Cloud Text-to-Speech change. The card holds the OpenRouter key and
+transcription model (`#orKey`, `#orTranscribe`), `#voiceLanguage` (`en`/`de`), `#sttPrompt`, the
+Google key `#googleKey`, one voice name per language (`#googleVoiceEn`, `#googleVoiceDe`),
+`#ttsRate`, the buttons `#testVoice` and `#checkVoiceKey`, the result line `#voiceStatus` and a
+five-step guide to getting a Google Cloud API key. There is no install state and nothing to poll:
+the key either works at Google or it does not, and the two buttons are what ask. The
+`speak_in_auto_mode` / `speak_in_chat_mode` switches are gone — nothing read them.
 
 ## F.6 Remote access — `#tunnelCard`
 
@@ -2550,7 +2560,7 @@ Store: drop `Chat`, `Message`, `Run`, `Step` and every method on them; drop the 
 | `internal/config` | `OpenRouter`, `Voice`, `Tunnel` verbatim; `Agent`/`Agents` replaced by `Workspace`/`Terminal`/`Harnesses` |
 | `internal/catalog` | binary discovery, version probe, kv cache, TTL, refresh — retargeted at the four harnesses |
 | `internal/openrouter` | untouched |
-| `internal/piper` | untouched |
+| `internal/piper` | deleted; `internal/googletts` took its place |
 | `internal/tunnel` | untouched |
 | `internal/proc` | untouched; still needed for the tunnel and the installer |
 | `internal/server/auth.go` | untouched apart from the `logins` rename and `SameSite=Strict` |

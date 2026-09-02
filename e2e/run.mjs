@@ -3627,9 +3627,9 @@ async function notify() {
 /* ------------------------------------------ status, agent and audio helpers */
 
 // A 44 byte WAV header and one sample of silence: enough for the browser to
-// accept it as audio and play nothing. Piper is not installed on a test
-// machine, and what is under test is that the page asks for the render and
-// hands it the right words - not that this laptop can sing.
+// accept it as audio and play nothing. No test ever calls Google - what is
+// under test is that the page asks for the render and hands it the right
+// words, not that a Google project is billed for this run.
 // silentWav is `seconds` of silence as a 16 kHz mono WAV - one sample when
 // nothing is asked for, which is what a scenario that only counts requests
 // needs, and a real length for one that has to catch the page while it is

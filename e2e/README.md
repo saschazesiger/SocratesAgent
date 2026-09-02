@@ -100,9 +100,7 @@ SOCRATES_LIVE_AGENTS=1 node e2e/run.mjs livesession
 ## Artefacts
 
 Screenshots and anything else the run writes go to `e2e/out/`, which is
-gitignored. `e2e/out/voice-cache/` is a Piper install shared by every server the
-suite starts, so a fresh data directory does not mean a 25 MB download per
-scenario. Deleting `e2e/out/` is always safe.
+gitignored. Deleting `e2e/out/` is always safe.
 
 ## The scenarios
 
@@ -139,7 +137,7 @@ scenario. Deleting `e2e/out/` is always safe.
 | `activity-fallback` | a harness that hangs, and the row that leaves busy anyway |
 | `unread` | bold when nobody saw it, gone when the row is opened or typed into |
 | `session-title` | a session that names itself the first time it answers, exactly once |
-| `status-speak` | **Status** spins while it asks, the answer lands on screen as words, and the same words are read out loud once |
+| `status-speak` | **Status** spins while it asks, the answer lands on screen as words, and the same words go to `/api/voice/speak` once — the request is intercepted in the browser, so no scenario ever calls Google |
 | `status-ticker` | the phases of a status — reading the screen, asking the model, speaking, the answer — arrive in order in one line |
 | `agent-run` | a request that needs the keyboard: a run inside the message that asked for it, a **Cancel** beside it, real keystrokes in the pane, and an ending in the conversation |
 | `chat-text` | the chat as a column beside the terminal: a question answered in words with markdown-lite, a reload that comes back to it, and a request that types |

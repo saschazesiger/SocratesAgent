@@ -101,8 +101,8 @@ const (
 // handleSessionStatus says out loud what a terminal is doing.
 //
 // The audio is not here: the page takes the text and posts it to
-// /api/voice/speak, which already owns the length scaled deadline, the "Piper
-// is still installing" answer and the stop logic - and 150 KB of WAV has no
+// /api/voice/speak, which already owns the length scaled deadline, the "no
+// key yet" answer and the stop logic - and a hundred kilobytes of MP3 has no
 // business in a JSON body when the same sentence is also shown on screen.
 func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
 	row, ok := s.session(w, r)
@@ -153,7 +153,7 @@ func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "the model answered with nothing to say")
 		return
 	}
-	// The browser is about to hand this to Piper, so the phase is announced
+	// The browser is about to hand this to the voice, so the phase is announced
 	// from here: the answer and the news that it is being read are one event,
 	// and a second round trip to say so would arrive after the voice did.
 	s.emitStatus(row.ID, statusPhaseSpeaking, "Speaking")
@@ -169,7 +169,7 @@ func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
 // statusPrompt is the whole instruction, screen included.
 //
 // The language is the one in the settings rather than the language of the
-// screen: Piper reads with the voice of that setting, so a German sentence in
+// screen: the voice of that setting is what reads, so a German sentence in
 // the English voice would be worse than an English sentence. One setting,
 // three sides of the conversation.
 func statusPrompt(harness string, state termux.State, language, screen string) string {

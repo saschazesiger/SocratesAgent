@@ -161,8 +161,9 @@ are; the compression is whatever is in front of it.
   a terminal first.
 - **An OpenRouter API key** — <https://openrouter.ai/keys>. Only dictation
   depends on it; without one, everything else works.
-- **`piper`** — only on macOS, and only for the voice: it is the one thing
-  Socrates cannot install for you there. One `brew install piper`.
+- **A Google Cloud API key** — only for reading answers out loud, and the
+  dashboard walks you through getting one. Standard voices are free for the
+  first four million characters a month.
 - **`cloudflared`** — not required: if you turn on remote access and it is
   missing, Socrates downloads it for you.
 
@@ -317,20 +318,22 @@ you are holding has a keyboard.
   dashboard — an audio-capable chat model such as `google/gemini-2.5-flash`, or
   a dedicated transcriber such as `openai/gpt-transcribe`. The browser records
   raw PCM and sends a 16 kHz WAV, so no ffmpeg is involved.
-- **Text to speech** is [Piper](https://github.com/rhasspy/piper), running on
-  the same machine — no provider, no model, no API key. Socrates installs it and
-  both voices by itself, and the Docker image has them baked in. On macOS it
-  installs nothing and says so: those builds ship without the libraries their
-  own binary loads, so `brew install piper` once and Socrates picks it up.
-  It reads the answers in the chat panel: a question you dictated is answered
-  out loud, and any answer can be read again by double-tapping it. **It is not
-  wired into a terminal session** — a pane is a program, not an answer — so
-  what the dashboard offers besides the voice is the installation itself, the
-  language, the speaking rate and a **Test voice output** button.
+- **Text to speech** is [Google Cloud Text-to-Speech](https://cloud.google.com/text-to-speech),
+  called with a single API key — no service account, no SDK, nothing installed
+  on this machine. **Admin → Voice** has the five steps that get you a key:
+  enable the *Cloud Text-to-Speech API* on a Google Cloud project, create an
+  API key under *Credentials*, restrict it to that one API, paste it in, press
+  **Test voice output**. The default voices are `en-US-Standard-C` and
+  `de-DE-Standard-A`; any voice name Google offers works, but only the ones
+  with `Standard` in the name are in the free tier of four million characters a
+  month — WaveNet, Neural2 and Studio voices are billed from the first
+  character. The speaking rate is a setting beside them.
+  Reading out loud happens in the chat panel: a question you dictated is
+  answered out loud, and any answer can be read again by double-tapping it.
+  **It is not wired into a terminal session** — a pane is a program, not an
+  answer.
 - **Spoken language** is one setting, English or Deutsch, and it picks both the
-  language a recording is transcribed into and the installed voice.
-- The bundled engine ships GPL-3.0 and MIT components; what they are and where
-  their source lives is in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+  language a recording is transcribed into and the voice that reads an answer.
 
 ## Remote access
 
@@ -380,7 +383,7 @@ is redacted from the log tail in the dashboard.
 | `-version` | | | print the version and exit |
 | | `OPENROUTER_API_KEY` | | seeds the key on first start |
 | | `SOCRATES_WORKSPACE_ROOT` | `<data>/workspaces` | default workspace root |
-| | `SOCRATES_PIPER_DIR` | | a Piper installation to use instead of the managed one; the Docker image sets it |
+| | `GOOGLE_TTS_API_KEY` | | seeds the Google Cloud Text-to-Speech key on first start |
 
 `socrates serve` is the same thing as plain `socrates`, for anyone who prefers
 to say it out loud. Two more subcommands exist and are internal: `socrates
@@ -462,7 +465,7 @@ internal/store              SQLite persistence (sessions, settings, logins)
 internal/config             the settings document and its defaults
 internal/server             HTTP API, auth, the WebSocket, admin, voice, tunnel
 internal/openrouter         transcription and the model catalogue
-internal/piper              the local voice: its installer and the renderer
+internal/googletts          the voice: a small client for Google Cloud Text-to-Speech
 internal/tunnel             supervised Cloudflare tunnel and its installer
 internal/proc               process group helpers
 internal/web/static         the whole front end: plain HTML, CSS and JS
@@ -477,8 +480,7 @@ rebuild the binary — that is all.
 
 MIT. See [LICENSE](LICENSE).
 
-The local voice is not part of that: Piper, the libraries it ships with and the
-two voice models carry their own licences, one of them GPL-3.0. tmux and the
-coding CLIs are separate programs Socrates starts, each under its own terms.
-They are named in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md), which
-matters to anyone publishing the Docker image.
+tmux and the coding CLIs are separate programs Socrates starts, each under its
+own terms. They are named in
+[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md), which matters to anyone
+publishing the Docker image.

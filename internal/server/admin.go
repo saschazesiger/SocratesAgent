@@ -11,9 +11,9 @@ import (
 
 	"github.com/saschazesiger/SocratesAgent/internal/catalog"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
+	"github.com/saschazesiger/SocratesAgent/internal/googletts"
 	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
 	"github.com/saschazesiger/SocratesAgent/internal/openrouter"
-	"github.com/saschazesiger/SocratesAgent/internal/piper"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 	"github.com/saschazesiger/SocratesAgent/internal/tunnel"
 )
@@ -32,9 +32,7 @@ func orLocal(url string) string {
 func (s *Server) handlePreferences(w http.ResponseWriter, r *http.Request) {
 	settings := s.Settings()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"speak_in_auto_mode": settings.Voice.SpeakInAutoMode,
-		"speak_in_chat_mode": settings.Voice.SpeakInChatMode,
-		"language":           settings.Voice.Language,
+		"language": settings.Voice.Language,
 		"terminal": map[string]any{
 			"scrollback": settings.Terminal.Scrollback,
 			"font_size":  settings.Terminal.FontSize,
@@ -204,7 +202,7 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	default:
 		add("Speech to text", true, "ready", "OpenRouter · "+transcribe)
 	}
-	results = append(results, voiceCheck(s.voice.Status()))
+	results = append(results, voiceCheck(s.Settings().Voice))
 
 	// Remote access, and then the disk everything above writes to.
 	results = append(results, s.tunnelCheck(settings))
@@ -479,25 +477,24 @@ func readable(path string) error {
 	return f.Close()
 }
 
-// voiceCheck says what the local voice can do right now. An install that is
-// still running is the interesting case: it is neither working nor broken, and
-// reporting it as either is what would send someone looking for a setting to
-// fix when the honest answer is that 150 MB are on their way.
-func voiceCheck(voice piper.Status) checkResult {
-	switch {
-	case voice.Ready:
-		detail := voice.Detail
-		if len(voice.Voices) > 0 {
-			detail += " · " + strings.Join(voice.Voices, ", ")
-		}
-		return checkResult{Name: "Text to speech", OK: true, Summary: "ready", Detail: detail}
-	case voice.Err != "":
-		return checkResult{Name: "Text to speech", OK: false, Summary: "failed",
-			Detail: voice.Detail + " · " + voice.Err}
-	default:
-		return checkResult{Name: "Text to speech", OK: false, Summary: "not installed",
-			Detail: voice.Detail}
+// voiceCheck says whether an answer can be read out loud at all. It asks
+// nothing of Google: a setup list that made a paid API call every time it was
+// drawn would be a surprise on somebody's bill, and the one thing this row can
+// know for free - is there a key, and is the voice one of the free ones - is
+// also the one thing that is usually wrong. The "Check key" button in the
+// voice card is what actually talks to Google.
+func voiceCheck(voice config.VoiceSettings) checkResult {
+	if strings.TrimSpace(voice.GoogleAPIKey) == "" {
+		return checkResult{Name: "Text to speech", OK: false,
+			Summary: "no API key",
+			Detail:  notConfigured}
 	}
+	name := voice.GoogleVoice(voice.Language)
+	detail := "Google Cloud Text-to-Speech, speaking as " + name + "."
+	if !googletts.IsStandardVoice(name) {
+		detail += " That is not a Standard voice, so it is billed from the first character."
+	}
+	return checkResult{Name: "Text to speech", OK: true, Summary: "configured", Detail: detail}
 }
 
 // escape sequence parser states.

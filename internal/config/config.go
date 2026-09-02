@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/saschazesiger/SocratesAgent/internal/googletts"
 	"github.com/saschazesiger/SocratesAgent/internal/openrouter"
 )
 
@@ -130,11 +131,9 @@ func NormalizeLanguage(code string) string {
 }
 
 // VoiceSettings configures speech to text and text to speech. The recording
-// always goes to the transcription model in OpenRouterSettings, chosen from
-// the catalogue like every other model in the app. Who reads the answer back
-// is no longer a decision at all: Piper does, on this machine, with the voice
-// of the language below - which is why there is no provider here, no model, no
-// voice name and no key.
+// always goes to the transcription model in OpenRouterSettings. Reading an
+// answer back is Google Cloud Text-to-Speech, which needs one credential of
+// its own - an API key - and picks a voice from the language below.
 type VoiceSettings struct {
 	// Language is the language Socrates speaks: "en" or "de". One setting
 	// drives all three sides of it - which language the transcript is written
@@ -148,13 +147,36 @@ type VoiceSettings struct {
 	// language instead, which is what it understands.
 	STTPrompt string `json:"stt_prompt"`
 
-	// TTSRate is how fast the answer is read, where 1 is the pace the voice
-	// was trained at. It reaches Piper as the length of every phoneme, so half
-	// the rate is a sentence that takes twice as long.
-	TTSRate float64 `json:"tts_rate"`
+	// GoogleAPIKey is the credential for Google Cloud Text-to-Speech. It is
+	// stored and handed to the dashboard exactly like the OpenRouter key: the
+	// dashboard is already behind the password, and a key it cannot read back
+	// is a key nobody can check.
+	GoogleAPIKey string `json:"google_api_key"`
 
-	SpeakInAutoMode bool `json:"speak_in_auto_mode"`
-	SpeakInChatMode bool `json:"speak_in_chat_mode"`
+	// GoogleVoiceEN and GoogleVoiceDE are the voice names per language. They
+	// default to Standard voices, which is the tier with four million
+	// characters a month free; a WaveNet, Neural2 or Studio name works here
+	// and is billed from the first character.
+	GoogleVoiceEN string `json:"google_voice_en"`
+	GoogleVoiceDE string `json:"google_voice_de"`
+
+	// TTSRate is how fast the answer is read, where 1 is the pace the voice
+	// was trained at. It reaches Google as speakingRate, which it accepts
+	// between 0.25 and 4.
+	TTSRate float64 `json:"tts_rate"`
+}
+
+// GoogleVoice is the voice name for a language, falling back to the shipped
+// Standard voice when the dashboard left the field empty.
+func (v VoiceSettings) GoogleVoice(language string) string {
+	name := v.GoogleVoiceEN
+	if NormalizeLanguage(language) == LanguageDE {
+		name = v.GoogleVoiceDE
+	}
+	if strings.TrimSpace(name) == "" {
+		return googletts.DefaultVoice(language)
+	}
+	return strings.TrimSpace(name)
 }
 
 // WorkspaceSettings decides where a session may work. Root is where a
@@ -270,10 +292,12 @@ func Default() Settings {
 			AgentModel:      DefaultAgentModel,
 		},
 		Voice: VoiceSettings{
-			Language:        DefaultLanguage,
-			STTPrompt:       "Transcribe the spoken audio verbatim. Reply with the transcript only, no commentary, no quotes.",
-			TTSRate:         1,
-			SpeakInAutoMode: true,
+			Language:      DefaultLanguage,
+			STTPrompt:     "Transcribe the spoken audio verbatim. Reply with the transcript only, no commentary, no quotes.",
+			GoogleAPIKey:  os.Getenv("GOOGLE_TTS_API_KEY"),
+			GoogleVoiceEN: googletts.DefaultVoiceEN,
+			GoogleVoiceDE: googletts.DefaultVoiceDE,
+			TTSRate:       1,
 		},
 		Tunnel: TunnelSettings{
 			Enabled: false,
@@ -332,11 +356,18 @@ func (s *Settings) Normalize() {
 	if strings.TrimSpace(s.Voice.STTPrompt) == "" {
 		s.Voice.STTPrompt = d.Voice.STTPrompt
 	}
-	// A rate of zero is a field the admin form left behind, and a negative one
-	// is nothing at all.
-	if s.Voice.TTSRate <= 0 {
-		s.Voice.TTSRate = 1
+	s.Voice.GoogleAPIKey = strings.TrimSpace(s.Voice.GoogleAPIKey)
+	if strings.TrimSpace(s.Voice.GoogleVoiceEN) == "" {
+		s.Voice.GoogleVoiceEN = d.Voice.GoogleVoiceEN
 	}
+	if strings.TrimSpace(s.Voice.GoogleVoiceDE) == "" {
+		s.Voice.GoogleVoiceDE = d.Voice.GoogleVoiceDE
+	}
+	s.Voice.GoogleVoiceEN = strings.TrimSpace(s.Voice.GoogleVoiceEN)
+	s.Voice.GoogleVoiceDE = strings.TrimSpace(s.Voice.GoogleVoiceDE)
+	// A rate of zero is a field the admin form left behind, and a negative one
+	// is nothing at all; outside Google's range it would be a refused request.
+	s.Voice.TTSRate = googletts.ClampRate(s.Voice.TTSRate)
 	s.normalizeWorkspace(d)
 	s.normalizeTerminal(d)
 	s.Harnesses.normalize()

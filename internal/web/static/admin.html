@@ -115,12 +115,7 @@
 
     <section class="card" id="voiceCard">
       <h2>Voice</h2>
-      <p class="card-sub">Your recording is transcribed by an OpenRouter model. Reading an answer back is not a model at all: a small voice ships with Socrates and runs on this machine — the spoken language below is what chooses it.</p>
-
-      <div class="voice-status" id="voiceStatus">
-        <span class="state-dot"></span>
-        <span class="state-label">Loading…</span>
-      </div>
+      <p class="card-sub">Your recording is transcribed by an OpenRouter model. Reading an answer back is Google Cloud Text-to-Speech: one API key of its own, and the Standard voices are free for the first four million characters a month.</p>
 
       <div class="field">
         <label for="orKey">OpenRouter API key</label>
@@ -138,23 +133,57 @@
           <option value="en">English</option>
           <option value="de">Deutsch</option>
         </select>
-        <div class="hint">One setting for everything Socrates says: how a recording is transcribed and which voice reads an answer out loud — <span class="mono">en_US-ljspeech-medium</span> for English, <span class="mono">de_DE-thorsten-medium</span> for Deutsch.</div>
+        <div class="hint">One setting for everything Socrates says: how a recording is transcribed, which of the two voices below reads an answer out loud, and which language an answer is written in.</div>
       </div>
       <div class="field">
         <label for="sttPrompt">Transcription instruction</label>
         <input class="input" type="text" id="sttPrompt">
         <div class="hint">Sent with the recording when a chat model does the transcribing. A dedicated transcription model is given the language instead.</div>
       </div>
+
+      <div class="field">
+        <label for="googleKey">Google Cloud API key</label>
+        <input class="input mono" type="password" id="googleKey" placeholder="AIza…" autocomplete="off">
+        <div class="hint">This is what reads answers out loud. The five steps below are how to get one. Save before you test: both buttons use the key the server has stored, not the one typed here.</div>
+      </div>
+      <div class="grid-2">
+        <div class="field">
+          <label for="googleVoiceEn">English voice</label>
+          <input class="input mono" type="text" id="googleVoiceEn" placeholder="en-US-Standard-C" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="googleVoiceDe">German voice</label>
+          <input class="input mono" type="text" id="googleVoiceDe" placeholder="de-DE-Standard-A" autocomplete="off">
+        </div>
+      </div>
+      <div class="hint" style="margin:-6px 0 18px">Only names with <span class="mono">Standard</span> in them are in the free tier. WaveNet, Neural2 and Studio voices sound better and are billed from the first character. The full list is in Google's <a href="https://cloud.google.com/text-to-speech/docs/voices" target="_blank" rel="noopener">supported voices</a>.</div>
       <div class="grid-2">
         <div class="field">
           <label for="ttsRate">Speaking rate</label>
-          <input class="input" type="number" id="ttsRate" min="0.5" max="2" step="0.1">
-          <div class="hint">How fast the voice reads. 1 is its own pace.</div>
+          <input class="input" type="number" id="ttsRate" min="0.25" max="4" step="0.05">
+          <div class="hint">How fast the voice reads. 1 is its own pace; Google accepts 0.25 to 4.</div>
         </div>
       </div>
-      <div class="hint" style="margin-top:10px">Reading out loud is not wired into a terminal session: a pane is a program, not an answer. What is here is the voice itself — installed, managed and testable below — and the language it speaks.</div>
+
+      <div class="voice-status" id="voiceStatus" hidden>
+        <span class="state-dot"></span>
+        <span class="state-label"></span>
+      </div>
       <div class="row" style="margin-top:16px">
         <button class="btn sm" id="testVoice" type="button">Test voice output</button>
+        <button class="btn sm" id="checkVoiceKey" type="button">Check key</button>
+      </div>
+
+      <div class="setup-guide">
+        <h3>Getting a Google Cloud key</h3>
+        <ol class="setup-steps">
+          <li>Open the <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">Google Cloud console</a> and sign in. Create a project or pick one. Billing has to be enabled on that project for the API to answer at all — Standard voices still include four million characters a month free, and only what goes beyond that is charged.</li>
+          <li>Enable the API: <span class="mono">APIs &amp; Services → Library</span>, search for “Cloud Text-to-Speech API”, press Enable — or go <a href="https://console.cloud.google.com/apis/library/texttospeech.googleapis.com" target="_blank" rel="noopener">straight to it</a>.</li>
+          <li>Create the credential: <span class="mono">APIs &amp; Services → Credentials → Create credentials → API key</span>. Copy the key.</li>
+          <li>Recommended: edit that key, and under <span class="mono">API restrictions</span> restrict it to the Cloud Text-to-Speech API. A key that leaks can then do nothing else.</li>
+          <li>Paste it above, save, and press “Test voice output”.</li>
+        </ol>
+        <div class="hint" style="margin-top:10px">What you have used is under <span class="mono">APIs &amp; Services → Cloud Text-to-Speech API → Quotas</span> and <span class="mono">Metrics</span>.</div>
       </div>
     </section>
 

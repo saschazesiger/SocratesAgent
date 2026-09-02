@@ -29,11 +29,6 @@ export const REPO = dirname(HERE);
 // `git add -A` away from being part of the change.
 export const OUT = join(HERE, 'out');
 export const SHOTS = join(OUT, 'shots');
-// Piper installs itself into <dataDir>/voice, and every scenario gets a fresh
-// data directory - which would mean a 25 MB download per server start. One
-// cache, shared by every run on this machine, symlinked into place.
-const VOICE_CACHE = join(OUT, 'voice-cache');
-
 // Everything a run makes outside e2e/out is tracked here, so that an
 // interrupted run - Ctrl-C, a killed CI job, a scenario that throws past its
 // own stop() - takes its directories and its tmux servers with it. Sixty
@@ -170,7 +165,6 @@ export function spawnServer({ data, port, live = false, env = {} }) {
       ...process.env,
       // A live run must find the real CLIs, so the fakes stay off its PATH.
       PATH: (bin ? bin + ':' : '') + process.env.PATH,
-      SOCRATES_PIPER_DIR: VOICE_CACHE,
       // Sessions get their working directory under the run's own data
       // directory. Without this the workspace root is derived from HOME, which
       // a live run does not override - and a real agent turned loose in
@@ -312,10 +306,8 @@ export async function openRouterStub({ text = 'hello from the microphone', repli
  */
 export async function start(options = {}) {
   const live = !!options.live;
-  mkdirSync(VOICE_CACHE, { recursive: true });
   const data = scratchDir('socrates-data-');
   mkdirSync(join(data, 'workspaces'), { recursive: true });
-  try { symlinkSync(VOICE_CACHE, join(data, 'voice')); } catch { /* best effort */ }
   const port = options.port || await freePort();
   const url = 'http://127.0.0.1:' + port;
   const spawned = spawnServer({ data, port, live, env: options.env });
@@ -342,9 +334,9 @@ export async function start(options = {}) {
   const page = await context.newPage();
   const errors = [];
   // Chrome's console text for a failed request carries no URL, so the location
-  // is kept beside it: a 503 from /api/voice/speak is this machine having no
-  // Piper, and a 503 from /messages would be a real defect wearing the same
-  // words.
+  // is kept beside it: a 400 from /api/voice/speak is this machine having no
+  // Google key, and a 400 from /messages would be a real defect wearing the
+  // same words.
   page.on('console', (msg) => {
     if (msg.type() !== 'error') return;
     const at = msg.location() || {};

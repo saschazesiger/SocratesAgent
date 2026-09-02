@@ -2,6 +2,13 @@
 
 These are binding. The design spec must implement them; it may add detail but not contradict.
 
+> **Superseded (2026-09-02, branch `google-tts`):** the local Piper voice and
+> `internal/piper` are gone. Reading an answer out loud is now Google Cloud
+> Text-to-Speech (`internal/googletts`), called with an API key from
+> Admin → Voice; `GET /api/voice/status` was replaced by `POST
+> /api/voice/check`. Passages below that describe the local engine are
+> history.
+
 ## Product
 - Socrates is no longer a web chat. A "chat" (rename to "session" in code; UI label "Session") is an
   interactive terminal running one of: **Shell** (user's login shell / bash), **Claude Code**,
