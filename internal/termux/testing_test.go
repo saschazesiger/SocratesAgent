@@ -58,6 +58,20 @@ type lab struct {
 	store   *store.Store
 }
 
+// realDir is a temporary directory with every symlink in its name resolved.
+// It matters because tmux answers `#{pane_current_path}` with the real path,
+// and on macOS `t.TempDir()` is under `/var/folders/…`, which is a symlink to
+// `/private/var/…`; a test that compares the two without this fails there and
+// nowhere else. Linux with a symlinked TMPDIR shows the same thing.
+func realDir(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("could not resolve %s: %v", path, err)
+	}
+	return resolved
+}
+
 func newLab(t *testing.T, tweak ...func(*Config)) *lab {
 	t.Helper()
 	bin := requireTmux(t)

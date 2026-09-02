@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -253,4 +254,29 @@ func serverGone(err error) bool {
 		strings.Contains(s, "server exited unexpectedly") ||
 		strings.Contains(s, "connection refused") ||
 		strings.Contains(s, "error connecting")
+}
+
+// sockPathLimit is how long a Unix socket path may be, including the
+// terminating NUL that the kernel counts and we do not. Linux allows 108
+// bytes in sun_path, the BSDs and macOS 104; the smaller number is used
+// everywhere, because a data directory that works on one machine and not on
+// the next is worse than one that is refused on both.
+const sockPathLimit = 104
+
+// CheckSocketPaths reports whether a data directory can hold the two Unix
+// sockets Socrates needs: the tmux server's and the hook listener's. It is a
+// length check and nothing else, and it exists because the failure it prevents
+// is unreadable - `bind: invalid argument` on the hook socket, and a tmux
+// command line four hundred characters long quoted back as the reason a
+// session could not start.
+func CheckSocketPaths(dataDir string) error {
+	for _, name := range []string{"tmux.sock", "hook.sock"} {
+		path := filepath.Join(dataDir, name)
+		if len(path) >= sockPathLimit {
+			return fmt.Errorf("the data directory path is too long for a Unix socket: %s is %d bytes "+
+				"and the limit is %d. Start Socrates with a shorter -data directory",
+				path, len(path), sockPathLimit-1)
+		}
+	}
+	return nil
 }

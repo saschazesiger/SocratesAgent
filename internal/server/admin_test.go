@@ -8,6 +8,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/saschazesiger/SocratesAgent/internal/store"
+	"github.com/saschazesiger/SocratesAgent/internal/termux"
 )
 
 // putSettings sends the whole document back the way the dashboard does, with
@@ -257,9 +260,9 @@ func TestDiagnosticsCoversTheEngineTheProgramsAndTheDisk(t *testing.T) {
 		seen[row["name"].(string)] = row
 	}
 	for _, name := range []string{
-		"tmux", "tmux socket", "Workspace", "Shell", "Claude Code", "Claude Code state",
-		"Codex", "Codex state", "OpenCode", "OpenCode state", "OpenRouter", "Speech to text",
-		"Remote access", "Disk",
+		"tmux", "tmux socket", "Recovered sessions", "Workspace", "Shell", "Claude Code",
+		"Claude Code state", "Codex", "Codex state", "OpenCode", "OpenCode state", "OpenRouter",
+		"Speech to text", "Remote access", "Disk",
 	} {
 		if _, ok := seen[name]; !ok {
 			t.Errorf("no %q row in %v", name, seen)
@@ -315,5 +318,51 @@ func TestDiagnosticsCleansWhatAProgramPrintedForItsVersion(t *testing.T) {
 	}
 	if len([]rune(got)) > 121 {
 		t.Fatalf("the version was not clamped: %d runes", len([]rune(got)))
+	}
+}
+
+// A session Socrates took in without a row of its own is the one thing on the
+// machine nobody asked for by name, so the Setup check counts them - and stops
+// counting one that has been renamed, because a renamed one has been dealt
+// with.
+func TestDiagnosticsCountsTheSessionsThatWereTakenIn(t *testing.T) {
+	env := adminEnv(t)
+	row := func(name string) map[string]any {
+		_, data := env.do(t, env.client, "POST", "/api/diagnostics", "{}")
+		checks, _ := data["checks"].([]any)
+		for _, entry := range checks {
+			check := entry.(map[string]any)
+			if check["name"] == name {
+				return check
+			}
+		}
+		t.Fatalf("no %q row in %#v", name, data)
+		return nil
+	}
+	if summary := row("Recovered sessions")["summary"]; summary != "none" {
+		t.Fatalf("a fresh machine reports %q", summary)
+	}
+
+	taken := &store.Session{
+		ID: termux.NewID(), Title: termux.RecoveredTitle, Harness: "shell",
+		Workdir: t.TempDir(), WorkdirMode: store.WorkdirCustom,
+		TmuxName: "soc_taken", State: store.StateRunning,
+	}
+	if err := env.store.CreateSession(taken); err != nil {
+		t.Fatal(err)
+	}
+	found := row("Recovered sessions")
+	if found["summary"] != "1 taken in" || !strings.Contains(found["detail"].(string), taken.ID) {
+		t.Fatalf("the row is %#v", found)
+	}
+	if found["ok"] != true {
+		t.Errorf("taking a session in is not a failure: %#v", found)
+	}
+
+	if err := env.store.UpdateSessionTitle(taken.ID, "The one I kept"); err != nil {
+		t.Fatal(err)
+	}
+	if summary := row("Recovered sessions")["summary"]; summary != "none" {
+		t.Fatalf("a renamed session is still counted: %q", summary)
 	}
 }

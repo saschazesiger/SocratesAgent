@@ -173,7 +173,19 @@ const OPTIONS = {
       hint: '--remote-control.' },
     { key: 'permission_mode', label: 'Permission mode', type: 'select',
       values: ['unset', 'manual', 'acceptEdits', 'auto', 'plan', 'dontAsk', 'bypassPermissions'],
-      group: 'Permissions & sandbox', hint: '--permission-mode. "unset" leaves the flag off.' },
+      group: 'Permissions & sandbox',
+      // bypassPermissions is --dangerously-skip-permissions by another name -
+      // it is the value that makes the launcher suppress Claude Code's own
+      // safety dialog - so it is asked about exactly as the "Dangerous skip"
+      // below is.
+      confirm: (value) => value === 'bypassPermissions',
+      confirmTitle: 'Let Claude Code skip every permission prompt?',
+      confirmBody: 'bypassPermissions is the mode that asks about nothing: every edit, every '
+        + 'command and every network call happens without being approved, and Socrates answers '
+        + 'the safety dialog for it.',
+      confirmAgain: 'This applies to every Claude Code session started from now on. Say yes only '
+        + 'if this machine is one you would let a stranger type on.',
+      hint: '--permission-mode. "unset" leaves the flag off.' },
     { key: 'skip_permissions', label: 'Dangerous skip', type: 'select',
       values: [
         { value: 'off', label: 'Off — the flag is never passed' },
@@ -286,6 +298,11 @@ const OPTIONS = {
       hint: '-s.' },
     { key: 'approval', label: 'Approval policy', type: 'select',
       values: ['on-request', 'on-failure', 'never'], group: 'Permissions & sandbox',
+      confirm: (value) => value === 'never',
+      confirmTitle: 'Let Codex run everything unasked?',
+      confirmBody: 'With never, Codex carries out every command it decides on - including the '
+        + 'ones it would normally stop and ask about - and nothing in the browser can refuse one.',
+      confirmAgain: 'This applies to every Codex session started from now on. Turn approvals off?',
       hint: '-a. on-failure goes through -c approval_policy, because the flag itself rejects it.' },
     { key: 'network_access', label: 'Network access', type: 'switch', group: 'Permissions & sandbox',
       hint: '-c sandbox_workspace_write.network_access=true.' },

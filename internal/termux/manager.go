@@ -145,11 +145,19 @@ func New(st *store.Store, cfg Config) (*Manager, error) {
 	}
 	m.discoverCtx, m.discoverStop = context.WithCancel(context.Background())
 
+	// The path check comes first, because it is the one failure that would
+	// otherwise be diagnosed as something else: with a data directory a
+	// hundred and fifty bytes long, tmux is installed, the version is fine,
+	// and every session dies on a bind nobody can read.
+	m.unavailable = CheckSocketPaths(cfg.DataDir)
+
 	bin := cfg.TmuxBin
 	if bin == "" {
 		found, err := exec.LookPath("tmux")
 		if err != nil {
-			m.unavailable = errors.New("tmux is not installed. Socrates needs it to keep sessions alive")
+			if m.unavailable == nil {
+				m.unavailable = errors.New("tmux is not installed. Socrates needs it to keep sessions alive")
+			}
 			bin = "tmux"
 		} else {
 			bin = found
@@ -214,6 +222,13 @@ func (m *Manager) logf(format string, args ...any) { m.cfg.Logf(format, args...)
 // not start the tmux server: the first session does that, with -f, which is
 // the only way to be sure the user's own tmux.conf never loads.
 func (m *Manager) Start(ctx context.Context) error {
+	// A data directory too long for a Unix socket fails here, on the hook
+	// listener, with `bind: invalid argument`. Saying what is actually wrong
+	// is the whole of the fix: the one line the server logs at start-up is
+	// where somebody will read it.
+	if err := CheckSocketPaths(m.cfg.DataDir); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(m.cfg.DataDir, 0o700); err != nil {
 		return err
 	}

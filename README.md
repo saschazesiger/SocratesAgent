@@ -366,7 +366,7 @@ is redacted from the log tail in the dashboard.
 | Flag | Environment | Default | Meaning |
 | --- | --- | --- | --- |
 | `-addr` | `SOCRATES_ADDR` | `:8080` | listen address; `127.0.0.1:8080` accepts local connections only |
-| `-data` | `SOCRATES_DATA_DIR` | `~/.socrates` | database, tmux socket, journals and workspaces |
+| `-data` | `SOCRATES_DATA_DIR` | `~/.socrates` | database, tmux socket, journals and workspaces. Keep it short: two Unix sockets live in it, and a path over ~100 bytes is refused at start-up with a sentence saying so |
 | `-version` | | | print the version and exit |
 | | `OPENROUTER_API_KEY` | | seeds the key on first start |
 | | `SOCRATES_WORKSPACE_ROOT` | `<data>/workspaces` | default workspace root |
@@ -383,7 +383,7 @@ Inside the data directory:
 ```
 <data>/socrates.db              SQLite: settings, sessions, logins, password hash
 <data>/socrates.db.pre-v3.bak   one-time backup, if an older database was migrated
-<data>/tmux.sock                the Socrates-owned tmux server (0600)
+<data>/tmux.sock                the Socrates-owned tmux server (0700, in a 0700 directory)
 <data>/tmux.conf                generated on every start
 <data>/sessions/<id>/           the launch plan, the journal, generated CLI config
 <data>/workspaces/              where sessions work, unless told otherwise

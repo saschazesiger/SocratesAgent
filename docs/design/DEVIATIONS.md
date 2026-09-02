@@ -1076,6 +1076,51 @@ run did hit the timeout again while another agent's suite was running; the
 `tail -5` in use kept only the last lines, so the dump was lost. If it returns,
 capture the whole panic.
 
+**WP10 / final review F5 — a temporary directory is compared resolved.**
+`TestOrphanSessionIsAdopted` compared `t.TempDir()` with the row's working
+directory, which comes back from tmux as `#{pane_current_path}` and is always
+the real path. On macOS `t.TempDir()` is under `/var/folders/…`, a symlink to
+`/private/var/…`, so the test would have failed on `macos-latest` the moment CI
+started installing tmux there. `realDir` in `testing_test.go` resolves it, and
+the failure was reproduced on Linux with a symlinked TMPDIR before and after.
+It is the only such comparison: production code stores what tmux reports and
+never matches it against a path of its own.
+
+**WP10 / final review F7 — an over-long data directory is refused, in words.**
+`termux.CheckSocketPaths` rejects a `-data` whose `tmux.sock` or `hook.sock`
+would be at or over 104 bytes (the smaller of the Linux and BSD `sun_path`
+limits, so a directory that works here works there). It is the first thing
+`New` decides, so `Available()` carries it into the 503 on `POST /api/sessions`
+and into the engine card, which no longer answers `ok: true` while every
+session dies; `Start` refuses before the hook listener can fail with `bind:
+invalid argument`; and the server logs the sentence at start-up.
+`TestALongDataDirectoryIsDiagnosed` covers all three, and the README's `-data`
+row says to keep it short.
+
+**WP10 / final review F6 — the `opencode` directory in TMPDIR is the real CLI's
+own.** Reproduced outside Go entirely: `TMPDIR=… opencode --version` creates
+`$TMPDIR/opencode`. It appears in a test run only on a machine that has OpenCode
+installed, when the catalogue probes it, and nothing in Socrates can stop a
+third-party binary writing into TMPDIR. The e2e stub directory
+(`socrates-e2e-stub-*`) was ours and is now made through `harness.mjs`'s
+`scratchDir`, so the run's own cleanup takes it away.
+
+**WP10 / final review F9 — the two remaining dangerous values ask twice.**
+Claude Code's `permission_mode = bypassPermissions` and Codex's
+`approval = never` now carry the same confirm-twice as the "Dangerous skip" and
+the sandbox switches beside them. `bypassPermissions` is the value the launcher
+suppresses Claude Code's own safety dialog for, so it was the one place where
+Socrates turned that dialog off without ever showing one of its own.
+
+**WP10 / final review F10, F11 and the WP9b leftover.** `server.go`'s comment
+said the cookie is `SameSite=Strict`; it is Lax, and the comment now says so and
+where the reasoning is. The README's layout block said the tmux socket is 0600
+while the security section said 0700; measured, it is 0700 in a 0700 directory.
+And the Setup check gained a **Recovered sessions** row: how many sessions
+Socrates found on its socket with no row and took in, their ids behind the "i",
+and none once somebody has renamed one - a renamed recovered session is one that
+has been dealt with.
+
 ### WP5 — the final review's F3
 
 **WP5 / §C.1.1 — the responder answers DA1, DA2 and the two window reports, and swallows

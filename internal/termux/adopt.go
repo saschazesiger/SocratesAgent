@@ -165,6 +165,11 @@ func (m *Manager) adopt(ctx context.Context, row *store.Session, p pane) {
 	m.RearmCLIWatch(row)
 }
 
+// RecoveredTitle is the name a session taken in without a row is given. It is
+// also how the Setup check finds them: a recovered session that somebody has
+// renamed is one somebody has dealt with, and it stops being reported.
+const RecoveredTitle = "Recovered session"
+
 // recover takes in a session of ours that has no row.
 //
 // It is never killed. A restored database, a failed migration or a crash in
@@ -182,7 +187,7 @@ func (m *Manager) recover(ctx context.Context, tmuxName string, p pane) {
 	}
 	row := &store.Session{
 		ID:              id,
-		Title:           "Recovered session",
+		Title:           RecoveredTitle,
 		Harness:         "shell",
 		Workdir:         workdir,
 		WorkdirMode:     store.WorkdirCustom,

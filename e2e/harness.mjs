@@ -45,7 +45,7 @@ const litter = new Set();
 // which is how a suite ends up talking to a server from twenty minutes ago.
 const servers = new Set();
 
-function scratchDir(prefix) {
+export function scratchDir(prefix) {
   // Resolved, because on macOS os.tmpdir() is /var/folders/..., a symlink to
   // /private/var/... The server reports the paths it made as real ones, and a
   // scenario comparing them against this would be comparing two spellings of

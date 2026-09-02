@@ -235,18 +235,44 @@ func (s *Server) tmuxChecks(ctx context.Context) []checkResult {
 	if err := s.manager.Available(); err != nil {
 		socket.Summary = "no server"
 		socket.Detail = err.Error()
-		return append(out, socket)
+		return append(out, socket, s.recoveredCheck())
 	}
 	names, err := s.manager.LiveSessionNames(ctx)
 	if err != nil {
 		socket.Summary = "unreachable"
 		socket.Detail = s.manager.Socket() + " · " + err.Error()
-		return append(out, socket)
+		return append(out, socket, s.recoveredCheck())
 	}
 	socket.OK = true
 	socket.Summary = fmt.Sprintf("%d session%s", len(names), plural(len(names)))
 	socket.Detail = s.manager.Socket()
-	return append(out, socket)
+	return append(out, socket, s.recoveredCheck())
+}
+
+// recoveredCheck reports the sessions Socrates found running on its socket
+// with no row of their own and took in rather than killed. They are not a
+// failure - taking them in is the point - but they are the one thing on this
+// machine nobody asked for by name, so the dashboard says how many there are
+// and leaves their ids behind the "i".
+func (s *Server) recoveredCheck() checkResult {
+	row := checkResult{Name: "Recovered sessions", OK: true, Summary: "none"}
+	sessions, err := s.store.ListSessions(true)
+	if err != nil {
+		row.OK, row.Summary, row.Detail = false, "unreadable", err.Error()
+		return row
+	}
+	var ids []string
+	for _, session := range sessions {
+		if session.Title == termux.RecoveredTitle {
+			ids = append(ids, session.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return row
+	}
+	row.Summary = fmt.Sprintf("%d taken in", len(ids))
+	row.Detail = strings.Join(ids, " · ")
+	return row
 }
 
 // harnessCheck is one program: is it here, which build, and can its model list

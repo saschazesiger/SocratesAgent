@@ -79,7 +79,9 @@ func TestAdoptAfterRestart(t *testing.T) {
 // written must not destroy running work.
 func TestOrphanSessionIsAdopted(t *testing.T) {
 	l := newLab(t)
-	dir := t.TempDir()
+	// Resolved, because the row's working directory comes back from tmux as
+	// `#{pane_current_path}`, which is always the real path.
+	dir := realDir(t, t.TempDir())
 	// One real session, so that the server and the hooks exist, and then one
 	// made by hand with no row at all.
 	l.create(shellSpec(dir))

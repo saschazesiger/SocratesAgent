@@ -166,17 +166,25 @@ func (s *Server) handleTmux(w http.ResponseWriter, r *http.Request) {
 	if lines == nil {
 		lines = []string{}
 	}
+	// The binary can be perfect and the engine still unusable - a data
+	// directory too long for a Unix socket is the case that put `ok: true` on
+	// this card while every session died on a bind. The card answers for the
+	// engine, so it answers with whatever stops it running.
+	ok, reason := report.OK, report.Reason
+	if err := s.manager.Available(); err != nil && ok {
+		ok, reason = false, err.Error()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"installed":   report.Installed,
 		"path":        report.Path,
 		"version":     report.Version,
-		"ok":          report.OK,
+		"ok":          ok,
 		"min":         report.Min,
 		"manager":     report.Manager,
 		"privileged":  report.Privileged,
 		"can_install": report.CanInstall,
 		"command":     report.Command,
-		"reason":      report.Reason,
+		"reason":      reason,
 		"installing":  running,
 		"log":         lines,
 		"last_exit":   stored.Exit,

@@ -796,3 +796,43 @@ func TestPaneStateTellsTheThreeCasesApart(t *testing.T) {
 		t.Fatalf("clearDeadSession on a session that is gone: %v", err)
 	}
 }
+
+// TestALongDataDirectoryIsDiagnosed: a data directory whose path is longer
+// than a Unix socket name is a configuration mistake with an unreadable
+// symptom - `bind: invalid argument` from the hook listener, and a
+// four-hundred-character tmux command line quoted back as the reason a session
+// could not start. It is refused up front instead, in words that say what to
+// change.
+func TestALongDataDirectoryIsDiagnosed(t *testing.T) {
+	root := t.TempDir()
+	deep := filepath.Join(root, strings.Repeat("d", 90), strings.Repeat("e", 40))
+	if err := os.MkdirAll(deep, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(root, "socrates.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	m, err := New(st, Config{DataDir: deep, Logf: func(string, ...any) {}})
+	if err != nil {
+		t.Fatalf("the manager should still be built: %v", err)
+	}
+	unavailable := m.Available()
+	if unavailable == nil {
+		t.Fatal("a data directory too long for a socket was accepted")
+	}
+	for _, want := range []string{"too long", "-data"} {
+		if !strings.Contains(unavailable.Error(), want) {
+			t.Errorf("the reason does not mention %q: %v", want, unavailable)
+		}
+	}
+	if err := m.Start(context.Background()); err == nil {
+		t.Fatal("Start should refuse rather than fail on a bind nobody can read")
+	}
+	// And a directory of an ordinary length is not caught by it.
+	if err := CheckSocketPaths(root); err != nil {
+		t.Errorf("an ordinary data directory was refused: %v", err)
+	}
+}

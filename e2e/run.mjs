@@ -10,10 +10,9 @@
 
 import {
   start, setup, shot, ok, scenario, skipScenario, finish, ensureNav, wait,
-  readFakeLog, killTmux, openRouterStub, sessionsOn, windowSize, PASSWORD, LIVE,
+  readFakeLog, killTmux, openRouterStub, sessionsOn, windowSize, scratchDir, PASSWORD, LIVE,
 } from './harness.mjs';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 // A browser that has been switched offline reports its own failed requests.
@@ -907,7 +906,9 @@ async function adminoptions() {
 // is a script that says 3.2a, and `apt-get` is a script that prints what
 // apt-get prints and exits.
 function stubMachine() {
-  const dir = mkdtempSync(join(tmpdir(), 'socrates-e2e-stub-'));
+  // Through the harness, so that the run's own cleanup takes it away: this
+  // directory used to survive every tmuxinstaller run.
+  const dir = scratchDir('socrates-e2e-stub-');
   writeFileSync(join(dir, 'tmux'), '#!/bin/sh\necho "tmux 3.2a"\n', { mode: 0o755 });
   writeFileSync(join(dir, 'apt-get'), `#!/bin/sh
 if [ "$1" = "update" ]; then
