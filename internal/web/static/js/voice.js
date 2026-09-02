@@ -110,10 +110,32 @@ function releaseStream(stream) {
   try { stream.getTracks().forEach((track) => track.stop()); } catch { /* ignore */ }
 }
 
+// How many microphones are open right now. Speech and a microphone in the same
+// room are one device talking to itself: whatever the voice reads out is picked
+// up by the recording and transcribed back as if somebody had said it. So the
+// two never overlap, and this counter is the whole of the rule - a recording
+// that starts silences the voice, and while it is running nothing is read out
+// at all.
+let dictations = 0;
+
 export class Recorder {
   constructor() {
     this.recording = false;
     this.startedAt = 0;
+  }
+
+  // claim is the recording flag and the claim on the room, together, because
+  // they have to be: a flag set without silencing the voice is exactly the
+  // overlap this is here to prevent.
+  claim(on) {
+    if (this.recording === !!on) return;
+    this.recording = !!on;
+    if (this.recording) {
+      dictations += 1;
+      stopSpeaking();
+    } else {
+      dictations = Math.max(0, dictations - 1);
+    }
   }
 
   // start opens the microphone. It is only ever called from a click, because a
@@ -141,7 +163,7 @@ export class Recorder {
       // The stream is live at this point: dropping it without stopping the
       // tracks would leave the recording indicator on for a recording that
       // never started.
-      this.recording = false;
+      this.claim(false);
       releaseStream(this.stream);
       this.stream = null;
       if (this.ctx && this.ctx.state !== 'closed') { try { await this.ctx.close(); } catch { /* ignore */ } }
@@ -156,8 +178,8 @@ export class Recorder {
     if (this.ctx.state === 'suspended') await this.ctx.resume();
     this.sampleRate = this.ctx.sampleRate;
     this.chunks = [];
-    this.recording = true;
     this.startedAt = Date.now();
+    this.claim(true);
 
     const source = this.ctx.createMediaStreamSource(this.stream);
     const mute = this.ctx.createGain();
@@ -193,9 +215,11 @@ export class Recorder {
     return this.recording ? (Date.now() - this.startedAt) / 1000 : 0;
   }
 
-  async stop() {
-    if (!this.recording) return null;
-    this.recording = false;
+  // release closes the microphone and hands back what it captured. Both
+  // endings share it: whether a recording is sent or thrown away is a decision
+  // about the audio, not about the hardware, and the hardware goes either way.
+  async release() {
+    this.claim(false);
     const chunks = this.chunks || [];
     const sampleRate = this.sampleRate || 48000;
     try { this.source && this.source.disconnect(); } catch { /* ignore */ }
@@ -207,6 +231,18 @@ export class Recorder {
     this.stream = null;
     this.ctx = null;
     this.node = null;
+    return { chunks, sampleRate };
+  }
+
+  /** cancel closes the microphone and keeps nothing. Nothing is transcribed. */
+  async cancel() {
+    if (!this.recording) return;
+    await this.release();
+  }
+
+  async stop() {
+    if (!this.recording) return null;
+    const { chunks, sampleRate } = await this.release();
 
     let total = 0;
     for (const chunk of chunks) total += chunk.length;
@@ -230,12 +266,13 @@ export class Recorder {
 /**
  * dictateOnce records one utterance and hands back what was said.
  *
- * It exists because audio mode has no field to write a draft into: the words
- * are the instruction, and the tap that stops the recording is the same tap
- * that sends it. So the whole round trip - microphone, WAV, transcription - is
- * one await, and `onReady` is how the caller gets hold of the stop: it is
- * handed a function to call when the second tap arrives, and the promise
- * resolves with the transcript after it.
+ * It exists because the words are the message: nothing is written into a field
+ * on the way, so the whole round trip - microphone, WAV, transcription - is one
+ * await. `onReady` is how the caller gets hold of the two endings a recording
+ * has: it is handed `{ stop, cancel }`, and whichever is called decides what
+ * this promise resolves with - the transcript, or the empty string for a
+ * recording that was thrown away. A discarded recording is not a failure and
+ * says nothing.
  *
  * `onTime` is called with the seconds recorded so far, for a clock beside the
  * button. Every failure arrives as one sentence a person can read, on
@@ -249,21 +286,22 @@ export async function dictateOnce({ onTime, onReady } = {}) {
     onTime(0);
     ticker = setInterval(() => onTime(recorder.seconds), 200);
   }
-  let stop = null;
-  const stopped = new Promise((resolve) => { stop = resolve; });
+  let settle = null;
+  const ended = new Promise((resolve) => { settle = resolve; });
+  let how = 'stop';
   try {
-    if (onReady) onReady(stop);
-    await stopped;
+    if (onReady) onReady({ stop: () => settle('stop'), cancel: () => settle('cancel') });
+    how = await ended;
   } catch {
     /* a caller that threw from onReady still gets its microphone back below */
   }
-  let result = null;
-  try {
-    result = await recorder.stop();
-  } finally {
-    if (ticker) clearInterval(ticker);
-    if (onTime) onTime(0);
+  if (ticker) clearInterval(ticker);
+  if (onTime) onTime(0);
+  if (how === 'cancel') {
+    await recorder.cancel();
+    return '';
   }
+  const result = await recorder.stop();
   if (!result) throw micError('I did not hear anything.');
   if (result.seconds < 0.4) throw micError('That was too short.');
   const { request, NetworkError } = await network();
@@ -506,6 +544,12 @@ function play(blob) {
  */
 export async function speak(text) {
   if (!plainSpeech(text)) return;
+  // A microphone is open, so this is not the moment to talk: the recording
+  // would hear the voice and the transcript would come back with the answer
+  // read into it. Nothing is queued either - what was worth saying was worth
+  // saying now, and a sentence read out minutes later answers a question
+  // nobody is still holding.
+  if (dictations > 0) return;
   stopSpeaking();
   const mine = generation;
   speakingFlag = true;

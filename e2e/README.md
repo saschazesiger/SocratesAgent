@@ -116,8 +116,7 @@ scenario. Deleting `e2e/out/` is always safe.
 | `sessionlist` | rename, archive, unarchive and delete — and the working directory survives the delete |
 | `exitoverlay` | `/exit 7` raises the overlay with its status in a plain line under it, and **Restart** brings the session back |
 | `webglrenders` | the shipped renderer paints the terminal |
-| `keybar` | a touch-only phone gets no key bar and a desk does; asked for, it sends the right bytes, a sticky `Ctrl` turns the next letter into a control code, and the line input sends a whole line with one `\r` |
-| `dictation` | the microphone records, the server transcribes through a stubbed gateway, and the words land in `#lineInput` — unsent |
+| `keybar` | no device gets the key bar until the ⋯ menu asks for it, on a phone or at a desk; asked for, it sends the right bytes, a sticky `Ctrl` turns the next letter into a control code, and a physical keystroke does not take it away again |
 | `offlineonce` | a whole command typed with the network off arrives **exactly once** when it comes back, the lost connection is visible while it is gone, and the app shell still opens offline |
 | `sigtermreattach` | the server is killed mid-session and restarted; the pane still holds what was typed and the session is running |
 | `takeover` | a second tab with the same viewer id closes the first socket with 1012 and drives the session |
@@ -143,9 +142,8 @@ scenario. Deleting `e2e/out/` is always safe.
 | `status-ticker` | the phases of a status — reading the screen, asking the model, speaking, the answer — arrive in order in one line |
 | `agent-run` | a request that needs the keyboard: a run inside the message that asked for it, a **Cancel** beside it, real keystrokes in the pane, and an ending in the conversation |
 | `chat-text` | the chat as a column beside the terminal: a question answered in words with markdown-lite, a reload that comes back to it, and a request that types |
-| `chat-audio` | auto mode on a phone: no text input anywhere, a microphone instead, and a tap on the pane that cannot open a keyboard |
-| `auto-switch` | the Auto switch: a track, a knob that travels in 150 ms, and a choice this device keeps across a reload |
-| `audio-mode` | two thumb-sized buttons, a ticker that says what the session is doing, a turn that speaks for itself, and one tap from **Agent** to a live microphone |
+| `chat-dictate` | the chat's microphone: **Send recording** and **Discard recording** in place of the mic while it runs, a discarded one that transcribes nothing, a spoken question posted with `auto:true` and its answer read out loud, a typed one with `auto:false` and silence, and any answer read again by double-tapping it |
+| `no-overlap` | speech-to-text and text-to-speech are never open at once: **Status** while the microphone runs says nothing out loud, the same press with it closed does, and a recording that starts silences what is playing |
 | `typeafteroutage` | a cut socket, a locked phone, and a pane that still takes keystrokes |
 | `typekeepsfocus` | a dialog, the ⋯ menu and two sessions: the keys still land in the pane |
 | `design` | white surfaces, a mark wherever a program is named, technical strings only in **Info**, and an animation that does not restart when a row re-renders |
@@ -159,7 +157,7 @@ re-derives them at draw time.
 
 ## Dictation needs a microphone and a gateway
 
-`dictation` asks Chromium for its own fake microphone
+`chat-dictate` asks Chromium for its own fake microphone
 (`--use-fake-device-for-media-stream`) and points `openrouter.base_url` at a
 small HTTP stub the scenario starts. It has to be a real server rather than a
 Playwright route: the browser posts the recording to `/api/voice/transcribe`

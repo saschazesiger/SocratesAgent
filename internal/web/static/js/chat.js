@@ -6,15 +6,27 @@
 // same thread. Which of the two it does is the model's decision (server side,
 // chat.go), not a second button.
 //
-// There are two input rows and never both. With auto mode off it is a text
-// field and a Send. With auto mode on it is one microphone the size of a
-// thumb and *no focusable text input anywhere in this panel*, because the
-// promise of that mode is that a phone in a car never opens a keyboard.
+// There is one input row and everybody gets it: a field, a microphone and a
+// Send. How a question was asked is what decides how it is answered - a
+// question that was spoken is phrased for the ear and read out loud, a typed
+// one is answered on the screen - so there is no mode to be in, only the way
+// the last question happened to be asked.
 
 import { api, el, toast, setClass, errorMessage, isOffline, fmtClock } from './api.js';
 import { dictateOnce } from './voice.js';
 
 const path = (id, suffix) => '/api/sessions/' + encodeURIComponent(id) + suffix;
+
+// How long a second tap on a bubble is still part of the first one. A touch
+// screen has no dblclick of its own, so the gesture is measured here; 350 ms
+// is what the platforms themselves use.
+const DOUBLE_TAP = 350;
+
+// How long after a tap a mouse event is that tap being replayed. A touch
+// screen does synthesize click and dblclick from taps, after the fact, and a
+// gesture counted twice would read an answer out loud and stop it again in
+// the same movement.
+const MOUSE_AFTER_TOUCH = 700;
 
 // What a phase of a run is called in the one line a run message carries.
 const RUN_WORDS = {
@@ -32,9 +44,9 @@ const RUN_WORDS = {
  *   dom      the shared id map
  *   current  the session on screen, or null
  *   live     whether the socket is up
- *   audio    whether auto mode is on
  *   refit    re-measure the pane after the layout changed
  *   say      read one line out loud
+ *   read     read one line out loud, or stop if something is being read
  */
 export function mountChat(ctx) {
   const { dom } = ctx;
@@ -49,78 +61,99 @@ export function mountChat(ctx) {
   let open = false;
   let thinking = false;
   let sending = false;
-  let stopDictation = null;
+  // The recording that is running, as the two endings it has, or null, and
+  // whether one is being opened - the microphone takes a moment to answer,
+  // and a second tap in that moment must not open a second one.
+  let dictation = null;
+  let opening = false;
+  // How many questions asked out loud are still waiting for their answer. It
+  // is a count and not a mode: a spoken question is owed a spoken answer even
+  // if the next thing typed is a written one, and the answers arrive in the
+  // order the questions were asked.
+  let owed = 0;
   let loadedFor = '';
+  // The row under the log, built once so that what is half typed into it
+  // survives everything that redraws the conversation above it.
+  const foot = {};
 
   /* ------------------------------------------------------------ the input */
 
-  // The text row: a field, and Enter sends. It exists only when auto mode is
-  // off, so that "no focusable text input" is a fact about the DOM and not a
-  // rule somebody has to remember.
-  function textRow() {
+  const MIC_SVG = '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>';
+  const OK_SVG = '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>';
+  const NO_SVG = '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+
+  // The row is built once and its parts are shown or hidden afterwards, so
+  // that a recording started halfway through a sentence does not take the
+  // sentence with it.
+  function buildFoot() {
+    dom.chatFoot.innerHTML = '';
     const input = el('input', {
       class: 'input', type: 'text', id: 'chatText',
       autocorrect: 'off', autocapitalize: 'sentences', autocomplete: 'off',
       enterkeyhint: 'send', placeholder: 'Ask about this session…',
-    });
-    const send = el('button', {
-      class: 'btn primary', type: 'button', id: 'chatSend', text: 'Send',
-      onclick: () => submit(input.value, input),
     });
     input.addEventListener('keydown', (event) => {
       if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
       event.preventDefault();
       submit(input.value, input);
     });
-    return el('div', { class: 'chat-compose' }, input, send);
-  }
-
-  // The microphone row: one button, tap to start, tap again to stop, and what
-  // was heard is the message. No confirmation step - the whole point of this
-  // mode is that it costs one tap.
-  function micRow() {
     const mic = el('button', {
-      class: 'chat-mic', type: 'button', id: 'chatMic',
-      html: '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>',
+      class: 'icon-btn', type: 'button', id: 'chatMic',
+      title: 'Speak', 'aria-label': 'Speak', html: MIC_SVG,
+      onclick: () => dictate(),
     });
-    mic.append(el('span', { class: 'chat-mic-word', text: 'Speak' }));
-    mic.addEventListener('click', () => dictate(mic));
-    return mic;
-  }
-
-  function buildFoot() {
-    dom.chatFoot.innerHTML = '';
-    dom.chatFoot.append(ctx.audio() ? micRow() : textRow());
+    const clock = el('span', { class: 'rec-time', id: 'chatRecTime', text: fmtClock(0) });
+    // A running recording has two endings and both are on screen, because
+    // "I did not mean that" is the half a single Stop button could not say.
+    const keep = el('button', {
+      class: 'icon-btn', type: 'button', id: 'chatRecSend',
+      title: 'Send recording', 'aria-label': 'Send recording', html: OK_SVG,
+      onclick: () => { if (dictation) dictation.stop(); },
+    });
+    const drop = el('button', {
+      class: 'icon-btn rec-drop', type: 'button', id: 'chatRecCancel',
+      title: 'Discard recording', 'aria-label': 'Discard recording', html: NO_SVG,
+      onclick: () => { if (dictation) dictation.cancel(); },
+    });
+    const send = el('button', {
+      class: 'btn primary', type: 'button', id: 'chatSend', text: 'Send',
+      onclick: () => submit(input.value, input),
+    });
+    const actions = el('span', { class: 'rec-actions' }, mic, clock, keep, drop);
+    Object.assign(foot, { input, mic, clock, keep, drop, send, actions });
+    dom.chatFoot.append(el('div', { class: 'chat-compose' }, input, actions, send));
     paint();
   }
 
-  async function dictate(mic) {
-    if (stopDictation) {
-      const stop = stopDictation;
-      stopDictation = null;
-      stop();
-      return;
-    }
-    const word = mic.querySelector('.chat-mic-word');
-    setClass(mic, 'rec', true);
-    word.textContent = 'Stop';
+  // dictate records one question and sends it as one. A question asked out
+  // loud is answered out loud, which is what `owed` is for.
+  async function dictate() {
+    if (dictation || opening) return;
+    opening = true;
     try {
       const text = await dictateOnce({
-        onTime: (secs) => { if (stopDictation) word.textContent = 'Stop · ' + fmtClock(secs); },
-        onReady: (stop) => { stopDictation = stop; },
+        onTime: (secs) => { foot.clock.textContent = fmtClock(secs); },
+        onReady: (ends) => { dictation = ends; paint(); },
       });
-      await submit(text, null);
+      dictation = null;
+      paint();
+      // A discarded recording resolves to nothing, and nothing is what it
+      // does: no request, no message, and nothing said about it.
+      if (text) await submit(text, null, { spoken: true });
     } catch (err) {
       toast((err && err.userMessage) || errorMessage(err), 'error');
     } finally {
-      stopDictation = null;
-      setClass(mic, 'rec', false);
-      word.textContent = 'Speak';
+      dictation = null;
+      opening = false;
+      foot.clock.textContent = fmtClock(0);
       paint();
     }
   }
 
-  async function submit(raw, field) {
+  // submit sends one question. `spoken` says it was dictated, which is both
+  // how the server is asked to phrase the answer - short, no code, for the
+  // ear - and why the answer will be read out when it arrives.
+  async function submit(raw, field, { spoken = false } = {}) {
     const text = String(raw || '').trim();
     const session = ctx.current();
     if (!text || !session) return;
@@ -146,12 +179,13 @@ export function mountChat(ctx) {
     }
     sending = true;
     thinking = true;
+    if (spoken) owed += 1;
     if (field) field.value = '';
     render();
     paint();
     try {
       const data = await api(path(session.id, '/chat'), {
-        method: 'POST', attempts: 1, timeout: 30000, body: { text, auto: !!ctx.audio() },
+        method: 'POST', attempts: 1, timeout: 30000, body: { text, auto: spoken },
       });
       // The socket usually beats this, and take() drops whichever arrives
       // second. With no socket at all it is the only copy there is.
@@ -162,6 +196,8 @@ export function mountChat(ctx) {
       // they were cleared out of. Retyping a question because the key was not
       // configured yet is a punishment for the server's problem.
       if (field && !field.value) field.value = text;
+      // The answer that is not coming is not owed a voice either.
+      if (owed) owed -= 1;
       // A 400 from this route is the one case where the server's own words are
       // the instruction - "open /admin and pick an agent model" - so they are
       // shown where the answer was expected rather than in a toast that goes.
@@ -189,7 +225,11 @@ export function mountChat(ctx) {
     messages = messages.concat([msg]);
     if (msg.role === 'assistant') {
       thinking = false;
-      if (ctx.audio() && !msg.failed) ctx.say(msg.text);
+      // The oldest question asked out loud is the one this answers.
+      if (owed) {
+        owed -= 1;
+        if (!msg.failed) ctx.say(msg.text);
+      }
     }
     render();
   }
@@ -243,6 +283,31 @@ export function mountChat(ctx) {
       }));
   }
 
+  // hearable makes one answer readable out loud by the gesture that means
+  // "again, but say it": a double-tap. It is the way back to the voice for an
+  // answer that arrived while somebody was looking at the screen and is now
+  // being read in a car - and the same gesture while it is being read is
+  // silence, because that is what is wanted at the second tap.
+  function hearable(bubble, text) {
+    bubble.title = 'Double-tap to read aloud';
+    // The second tap is timed here, because a touch screen has no double-tap
+    // gesture of its own to listen for. It is deliberately not a
+    // preventDefault: selecting a sentence out of an answer has to keep
+    // working, exactly as a double-click already lets it.
+    let last = 0;
+    let touched = 0;
+    bubble.addEventListener('touchend', () => {
+      const now = Date.now();
+      touched = now;
+      if (now - last <= DOUBLE_TAP) { last = 0; ctx.read(text); return; }
+      last = now;
+    });
+    bubble.addEventListener('dblclick', () => {
+      if (Date.now() - touched <= MOUSE_AFTER_TOUCH) return;
+      ctx.read(text);
+    });
+  }
+
   function render() {
     const log = dom.chatLog;
     const atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 40;
@@ -250,9 +315,7 @@ export function mountChat(ctx) {
     if (!messages.length && !thinking) {
       log.append(el('div', {
         class: 'chat-empty',
-        text: ctx.audio()
-          ? 'Hold the microphone and ask. It can answer, or drive the terminal for you.'
-          : 'Ask what this session is doing, or what to do next. It can also do it for you.',
+        text: 'Ask what this session is doing, or what to do next. It can also do it for you.',
       }));
     }
     for (const msg of messages) {
@@ -262,6 +325,7 @@ export function mountChat(ctx) {
       renderText(bubble, msg.text);
       const row = msg.run_id ? runRow(msg.run_id) : null;
       if (row) bubble.append(row);
+      if (msg.role !== 'user' && !msg.failed) hearable(bubble, msg.text);
       log.append(bubble);
     }
     if (thinking) log.append(el('div', { class: 'chat-msg assistant thinking', text: 'Thinking…' }));
@@ -281,15 +345,21 @@ export function mountChat(ctx) {
   /* ------------------------------------------------------------- painting */
 
   function paint() {
+    if (!foot.input) return;
     const usable = !!ctx.current() && ctx.live();
-    const field = document.getElementById('chatText');
-    const send = document.getElementById('chatSend');
-    const mic = document.getElementById('chatMic');
-    if (field) field.disabled = !usable;
-    if (send) send.disabled = !usable || sending;
-    // Stopping a recording is always available: the microphone is on this
-    // device and turning it off asks the server nothing.
-    if (mic) mic.disabled = !usable && !stopDictation;
+    const recording = !!dictation;
+    foot.input.disabled = !usable;
+    foot.send.disabled = !usable || sending;
+    foot.mic.disabled = !usable;
+    // While it is recording, the microphone is the two endings instead: what
+    // is being asked for at that moment is send it or throw it away, and
+    // both of them are always available - the microphone is on this device
+    // and turning it off asks the server nothing.
+    foot.mic.hidden = recording;
+    foot.clock.hidden = !recording;
+    foot.keep.hidden = !recording;
+    foot.drop.hidden = !recording;
+    setClass(foot.actions, 'rec', recording);
   }
 
   async function load(session) {
@@ -307,8 +377,8 @@ export function mountChat(ctx) {
   buildFoot();
 
   const handle = {
-    /** open shows the panel and puts the cursor or the thumb where it goes. */
-    open(opts = {}) {
+    /** open shows the panel and puts the cursor where it goes. */
+    open() {
       const session = ctx.current();
       if (!session) return;
       open = true;
@@ -317,19 +387,7 @@ export function mountChat(ctx) {
       load(session);
       render();
       paint();
-      // With a keyboard, the field is what was asked for. Without one - auto
-      // mode - nothing is focused at all, on purpose.
-      if (!ctx.audio()) {
-        const field = document.getElementById('chatText');
-        if (field) field.focus();
-        return;
-      }
-      // The audio bar's own button asks for the microphone rather than for a
-      // panel to then find the microphone in: one tap, which is the budget.
-      if (opts.dictate && !stopDictation && ctx.live()) {
-        const mic = document.getElementById('chatMic');
-        if (mic && !mic.disabled) dictate(mic);
-      }
+      foot.input.focus();
     },
     close() {
       open = false;
@@ -343,18 +401,16 @@ export function mountChat(ctx) {
     attached() {
       loadedFor = '';
       thinking = false;
+      owed = 0;
+      // A recording belongs to the session it was started in: sending its
+      // transcript to the one that has just taken the screen would put the
+      // question to the wrong agent.
+      if (dictation) dictation.cancel();
       runs.clear();
       replace([]);
       if (open && !ctx.current()) this.close();
       if (open) load(ctx.current());
       paint();
-    },
-
-    /** audioChanged rebuilds the input row, which is the whole difference. */
-    audioChanged() {
-      if (stopDictation) { const stop = stopDictation; stopDictation = null; stop(); }
-      buildFoot();
-      render();
     },
 
     /** live repaints what an outage takes away. */

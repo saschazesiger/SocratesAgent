@@ -1,23 +1,17 @@
-// The phone half of the terminal: the key bar, the line input and the
-// microphone.
+// The phone half of the terminal: the key bar.
 //
 // A phone keyboard has no Escape, no Tab, no Ctrl and no arrows, and the four
 // CLIs this app exists to drive need all of them. So the keys they lack are a
 // row of buttons that write the same bytes a real key would.
 //
-// The line input beside them is not a convenience, it is the fix for a real
-// defect: iOS autocorrect rewrites characters *after* they have been typed,
-// and a terminal has already sent them one at a time by then - the correction
-// arrives as a burst of backspaces into a shell that had moved on. A whole
-// line, composed in an ordinary text field and sent with one carriage return,
-// cannot be corrected behind the app's back.
-//
-// Dictation is the same field reached by voice: voice.js records, the server
-// transcribes, and the text lands in the field *unsent*. Nothing here speaks;
-// the text-to-speech half of voice.js stays exported and unused, as §E.6 says.
+// It is off until it is asked for, on every device. A bar that decided for
+// itself whether this machine has a keyboard was wrong on the two devices that
+// matter most - a tablet in a case, a laptop with a touch screen - and being
+// wrong about it means either a row of buttons nobody wanted or the missing
+// keys nowhere to be found. The session menu is one tap, and the answer is
+// remembered for this device.
 
-import { api, el, toast, fmtClock, isOffline, setClass } from './api.js';
-import { Recorder, describeMicError } from './voice.js';
+import { el, toast, setClass } from './api.js';
 
 /* ---------------------------------------------------------- the key bar */
 
@@ -49,90 +43,14 @@ function isTypedKey(data) {
   return [...data].length === 1 && data.charCodeAt(0) >= 0x20 && data.charCodeAt(0) !== 0x7f;
 }
 
-// A device with a mouse and a hover has a keyboard behind it. The query is
-// both halves on purpose: a phone matches neither, and a laptop with a
-// touchscreen matches both.
-const KEYBOARD_MEDIA = '(hover: hover) and (pointer: fine)';
-
-// Whether a physical key has actually been pressed on this page. Nothing
-// resets it: a keyboard that was there once is taken to still be there.
-let keyboardSeen = false;
-
 /**
- * isPhysicalKeyEvent is the one honest signal a real keyboard gives.
- *
- * An on-screen keyboard delivers its keys through composition instead: the
- * key is `Unidentified`, the legacy code is 229, and `code` - which names a
- * physical key on a physical layout - is empty. A hardware key on the same
- * device fills all three in.
- */
-export function isPhysicalKeyEvent(event) {
-  if (!event || event.isTrusted === false || event.isComposing) return false;
-  if (event.keyCode === 229) return false;
-  if (!event.key || event.key === 'Unidentified') return false;
-  return !!event.code;
-}
-
-/**
- * keyboardLikely is whether a device plausibly has a physical keyboard.
- *
- * It is pure, and it is the whole of the rule: a keyboard that has been used
- * is a keyboard; a mouse pointer that can hover is a computer; and an iPad,
- * which Safari reports as a Mac with a touch screen, is the one device that
- * looks like neither and is used with a keyboard anyway.
- */
-export function keyboardLikely({ pointerFine = false, seen = false, platform = '', touchPoints = 0 } = {}) {
-  if (seen) return true;
-  if (pointerFine) return true;
-  return /mac/i.test(platform) && touchPoints > 1;
-}
-
-function keyboardEnv() {
-  const nav = typeof navigator === 'object' ? navigator : {};
-  return {
-    pointerFine: matchMedia(KEYBOARD_MEDIA).matches,
-    seen: keyboardSeen,
-    platform: nav.platform || (nav.userAgentData && nav.userAgentData.platform) || '',
-    touchPoints: nav.maxTouchPoints || 0,
-  };
-}
-
-/**
- * keyBarWanted is whether this device gets the key bar without being asked.
- *
- * The bar stands in for keys a keyboard has and a touch screen does not - Esc,
- * Tab, Ctrl, the arrows - so it is only worth the rows it costs where there is
- * a keyboard to stand beside. A phone gets the line input and the microphone
- * instead, and the session menu can still ask for the bar anywhere; the answer
- * is remembered.
+ * keyBarWanted is whether this device has asked for the bar. Nothing else
+ * decides: no media query, no platform string, no keystroke seen. Off is the
+ * default, because the bar is the answer to a question - "where is Escape?" -
+ * that most sessions never ask.
  */
 export function keyBarWanted() {
-  try {
-    const stored = localStorage.getItem(KEYBAR_PREF);
-    if (stored === 'on') return true;
-    if (stored === 'off') return false;
-  } catch { /* a browser with no storage gets the default */ }
-  return keyboardLikely(keyboardEnv());
-}
-
-/**
- * onKeyBarWanted calls back whenever the answer above can have changed: a
- * window dragged onto another screen, a keyboard paired with a tablet.
- */
-export function onKeyBarWanted(cb) {
-  const query = matchMedia(KEYBOARD_MEDIA);
-  const fire = () => cb(keyBarWanted());
-  const onKey = (event) => {
-    if (keyboardSeen || !isPhysicalKeyEvent(event)) return;
-    keyboardSeen = true;
-    fire();
-  };
-  query.addEventListener('change', fire);
-  window.addEventListener('keydown', onKey, true);
-  return () => {
-    query.removeEventListener('change', fire);
-    window.removeEventListener('keydown', onKey, true);
-  };
+  try { return localStorage.getItem(KEYBAR_PREF) === 'on'; } catch { return false; }
 }
 
 /** setKeyBarWanted records the answer the session menu gave. */
@@ -267,172 +185,18 @@ async function paste(term, send) {
   send(bracketed ? '\x1b[200~' + text + '\x1b[201~' : text);
 }
 
-/* ------------------------------------------------------ the line composer */
-
-const draftKey = (sessionId) => 'socrates.term.' + sessionId + '.draft';
-
-function readDraft(sessionId) {
-  try {
-    const raw = localStorage.getItem(draftKey(sessionId));
-    if (!raw) return { draft: '', pending: [] };
-    const parsed = JSON.parse(raw);
-    return { draft: parsed.draft || '', pending: Array.isArray(parsed.pending) ? parsed.pending : [] };
-  } catch { return { draft: '', pending: [] }; }
-}
-
-function writeDraft(sessionId, value) {
-  try {
-    if (!value.draft && !value.pending.length) localStorage.removeItem(draftKey(sessionId));
-    else localStorage.setItem(draftKey(sessionId), JSON.stringify(value));
-  } catch { /* a line that cannot be saved is still on screen */ }
-}
-
-/**
- * mountComposer wires the line input and the microphone to one session.
- *
- * A submitted line goes through the same numbered input path a keystroke
- * does, so it is subject to the same exactly-once rule; what is different is
- * that it stays in localStorage until the server has acknowledged it. A
- * half-typed keystroke is not worth persisting across a page being killed. A
- * composed line is - it is the thing the person actually meant to say.
- */
-export function mountComposer({ form, input, mic, recTime, sessionId, socket, term }) {
-  const stored = readDraft(sessionId);
-  // What was in flight when the tab died is not in flight any more: no socket
-  // holds it, and the server was never told about it twice. So it comes back
-  // as an ordinary draft in the field, and the pending list starts empty -
-  // otherwise a line sent after a reload stays in storage for ever and is
-  // handed back on every later reload of the same session.
-  const pending = [];
-  input.value = [...stored.pending, stored.draft].filter(Boolean).join(' ');
-  const save = () => writeDraft(sessionId, { draft: input.value, pending });
-  save();
-
-  const recorder = new Recorder();
-  let ticker = null;
-
-  const onInput = () => save();
-  input.addEventListener('input', onInput);
-
-  const onSubmit = (event) => {
-    event.preventDefault();
-    const text = input.value;
-    input.value = '';
-    // The line and its carriage return are one frame, because they are one
-    // thing: half a line delivered is worse than none.
-    const entry = { text };
-    pending.push(text);
-    save();
-    const done = () => {
-      const at = pending.indexOf(text);
-      if (at >= 0) pending.splice(at, 1);
-      save();
-    };
-    if (socket) {
-      socket.sendInput(text + '\r', { text, onDelivered: done, onLost: done });
-    } else {
-      done();
-    }
-    input.focus();
-  };
-  form.addEventListener('submit', onSubmit);
-
-  const stopTicker = () => { if (ticker) { clearInterval(ticker); ticker = null; } };
-  const paintMic = (recording) => {
-    setClass(mic, 'rec', recording);
-    mic.setAttribute('aria-pressed', recording ? 'true' : 'false');
-    mic.title = recording ? 'Stop' : 'Speak';
-    recTime.hidden = !recording;
-    if (!recording) recTime.textContent = fmtClock(0);
-  };
-
-  const onMic = async () => {
-    if (recorder.recording) { await finish(); return; }
-    try {
-      await recorder.start();
-    } catch (err) {
-      toast(describeMicError(err), 'error');
-      return;
-    }
-    paintMic(true);
-    ticker = setInterval(() => { recTime.textContent = fmtClock(recorder.seconds); }, 200);
-  };
-
-  async function finish() {
-    stopTicker();
-    const result = await recorder.stop();
-    paintMic(false);
-    if (!result) { toast('I did not hear anything.'); return; }
-    if (result.seconds < 0.4) { toast('That was too short.'); return; }
-    mic.disabled = true;
-    try {
-      // Transcription only reads the audio back as words, so retrying it
-      // costs a moment and loses nothing - which is what a bad line wants.
-      const data = await api('/api/voice/transcribe', {
-        method: 'POST', attempts: 3, timeout: 60000,
-        body: { audio: result.base64, format: result.format },
-      });
-      const text = (data && data.text) || '';
-      if (!text) { toast('I did not catch that.'); return; }
-      // Into the field, never into the pane: dictation is a draft, and the
-      // person presses Send.
-      input.value = input.value ? input.value + ' ' + text : text;
-      save();
-      input.focus();
-    } catch (err) {
-      // The status line and the gateway's own words are not a sentence
-      // anybody can act on, and §E.10 keeps technical strings out of what is
-      // shown. The mic is still there and the recording can be repeated.
-      toast(isOffline(err)
-        ? 'No connection — that recording could not be transcribed.'
-        : 'The recording could not be transcribed. Try again.', 'error');
-    } finally {
-      mic.disabled = false;
-    }
-  }
-
-  mic.addEventListener('click', onMic);
-
-  return {
-    /**
-     * restore puts text the server never acknowledged back in the field.
-     *
-     * This is the `viewer_fresh` path of §D.6: the server has no memory of
-     * this viewer, so it cannot tell a resend from new input. Nothing is sent
-     * twice; the line is handed back and the person decides.
-     */
-    restore(lines) {
-      const text = lines.filter(Boolean).join(' ');
-      if (!text) return;
-      for (const line of lines) {
-        const at = pending.indexOf(line);
-        if (at >= 0) pending.splice(at, 1);
-      }
-      input.value = input.value ? text + ' ' + input.value : text;
-      save();
-    },
-    dispose() {
-      stopTicker();
-      if (recorder.recording) recorder.stop().catch(() => {});
-      paintMic(false);
-      input.removeEventListener('input', onInput);
-      form.removeEventListener('submit', onSubmit);
-      mic.removeEventListener('click', onMic);
-    },
-  };
-}
-
 /* --------------------------------------------------------- the viewport */
 
 /**
  * followViewport keeps the app the size of what the person can actually see.
  *
  * When a phone raises its keyboard the layout viewport does not change - only
- * the visual one does - so a page sized to 100% keeps the composer under the
- * keyboard, which is the field the whole mobile design is built around. The
- * height goes into a custom property the shell is sized by, and the window is
- * scrolled back to the top, because iOS scrolls the page instead of resizing
- * it and a scrolled shell hides the top bar.
+ * the visual one does - so a page sized to 100% puts the bottom of itself
+ * under the keyboard, and the bottom of the chat panel is the field somebody
+ * is typing the question into. The height goes into a custom property the
+ * shell is sized by, and the window is scrolled back to the top, because iOS
+ * scrolls the page instead of resizing it and a scrolled shell hides the top
+ * bar.
  */
 export function followViewport() {
   const vv = window.visualViewport;

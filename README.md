@@ -52,12 +52,12 @@ password guards the lot.
   once, that the size changed under it — Socrates owns the size rather than
   letting tmux shrink the pane to the smallest client.
 - **A phone that can drive a TUI.** A key bar with `Esc`, `Tab`, sticky `Ctrl`
-  and `Alt`, arrows, `^C`, `^D`, `^Z` and paste, plus a line input that sends a
-  whole line with one `\r` — because autocorrect rewrites characters *after* a
-  terminal has already sent them one at a time.
-- **Dictation.** Record in the browser, transcribe through OpenRouter, and the
-  words land in the line input **unsent**, for you to read before they reach a
-  program that runs commands.
+  and `Alt`, arrows, `^C`, `^D`, `^Z` and paste, one tap away in the session
+  menu — the keys a touch keyboard does not have.
+- **Ask instead of type.** A conversation beside the terminal: ask what a
+  session is doing or what to do next, in writing or by holding the microphone,
+  and it answers — or drives the terminal for you and says so in the same
+  thread. A question you spoke is answered out loud.
 - **Reachable from anywhere, without opening a port.** A managed Cloudflare
   tunnel publishes the local server: a throwaway `trycloudflare.com` address in
   one click, or your own hostname with a tunnel token. `cloudflared` is
@@ -284,28 +284,28 @@ Two deployment shapes follow from that:
 ## On a phone
 
 <p align="center">
-  <img src="docs/screenshot-phone.png" alt="A session on a phone: the pane, the key bar and the line input" width="300">
+  <img src="docs/screenshot-phone.png" alt="A session on a phone: the pane and the key bar under it" width="300">
 </p>
 
-The session list is a drawer, the sheet is a bottom sheet, and under the pane
-there are two things a touch keyboard cannot do on its own:
+The session list is a drawer and the sheet is a bottom sheet. Under the pane
+there is the one thing a touch keyboard cannot do on its own:
 
 - **The key bar** — `Esc`, `Tab`, `Ctrl`, `Alt`, the four arrows, `⏎`, `^C`,
   `^D`, `^Z`, paste and a keyboard toggle. `Ctrl` and `Alt` are sticky: tap to
   arm for the next letter, tap again to lock, tap again to clear.
-- **The line input** — type a whole line, correct it, then send it with one
-  `\r`. The microphone beside it dictates into the same field, and nothing is
-  sent until you send it. A half-typed line survives a reload.
 
-It appears by itself on a coarse pointer or a narrow window, and the session
-menu can force it either way.
+It is off until you ask for it — **Show key bar** in the session menu — and
+that answer is remembered on this device. Nothing guesses at whether the thing
+you are holding has a keyboard.
 
 ## Voice
 
 - **Microphones need a secure context.** Browsers only allow recording on
   `localhost` or over HTTPS. On a server, put Socrates behind TLS or the
   Cloudflare tunnel, or the microphone will report that it is blocked.
-- **Speech to text** goes through the transcription model chosen in the
+- **Speech to text** is the microphone in the chat panel: hold it, and while it
+  records the two things that can happen to a recording are on screen — send it
+  or discard it. It goes through the transcription model chosen in the
   dashboard — an audio-capable chat model such as `google/gemini-2.5-flash`, or
   a dedicated transcriber such as `openai/gpt-transcribe`. The browser records
   raw PCM and sends a 16 kHz WAV, so no ffmpeg is involved.

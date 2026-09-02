@@ -890,10 +890,6 @@ a { color: inherit; }
   from { opacity: 0; transform: translateY(8px) scale(.98); }
   to { opacity: 1; transform: none; }
 }
-@keyframes pulse-rec {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(207, 63, 63, .35); }
-  50% { box-shadow: 0 0 0 14px rgba(207, 63, 63, 0); }
-}
 
 /* Turning off decoration must not turn off the one thing that says work is
    still happening, so the loading marks keep a slow, gentle beat. */
@@ -950,12 +946,6 @@ a { color: inherit; }
   }
   body.nav-open .nav-scrim { opacity: 1; pointer-events: auto; }
   .menu-btn { display: inline-flex; }
-  .composer {
-    padding: 8px
-             calc(12px + env(safe-area-inset-right, 0px))
-             calc(10px + env(safe-area-inset-bottom, 0px))
-             calc(12px + env(safe-area-inset-left, 0px));
-  }
   .topbar {
     gap: 8px;
     padding: 0
@@ -1020,8 +1010,8 @@ a { color: inherit; }
   }
   /* Mobile first: the session's name comes before the caption beside it. The
      harness is its mark and the mark stays; the model is what goes, and it is
-     still in the bubble under a tap. With Status, Agent and audio mode in the
-     bar the caption goes at this width rather than at 380, because a model id
+     still in the bubble under a tap. With Status and Agent in the bar the
+     caption goes at this width rather than at 380, because a model id
      squeezed to one letter is not a caption. */
   .agent-badge { max-width: 40%; gap: 5px; padding: 0 5px; }
   .agent-badge > .b-model { display: none; }
@@ -1058,6 +1048,13 @@ a { color: inherit; }
   padding: 10px 12px 12px;
   overflow: hidden;
   transition: opacity .2s var(--ease);
+}
+/* With no key bar on screen the pane is the bottom of the page, so it is what
+   keeps its last row clear of a phone's home bar. When the bar is up, the bar
+   carries that instead - and a page that cannot answer `:has()` keeps the
+   layout it has always had. */
+.main:has(#keybar[hidden]) .term-wrap {
+  padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
 }
 .term-host { width: 100%; height: 100%; }
 .term-host .xterm { height: 100%; }
@@ -1189,40 +1186,18 @@ a { color: inherit; }
   animation: spin .9s linear infinite;
 }
 
-/* The line composer. A whole line is typed here and sent in one piece, which
-   is what stops a phone's autocorrect from rewriting characters a terminal has
-   already been given one at a time. */
-.composer {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 16px 14px;
-  border-top: 1px solid var(--line);
-}
-.composer .input { flex: 1; min-width: 0; }
-/* The microphone is a toggle: while it is recording it says so, and the clock
-   beside it is the only moving thing on the shelf. */
-.composer .icon-btn.rec {
-  color: var(--red);
-  background: var(--bg-hover);
-  animation: pulse-rec 1.6s var(--ease) infinite;
-}
-.rec-time {
-  flex: none;
-  font-family: var(--mono);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-soft);
-}
-
 /* The keys a phone keyboard does not have. One row, scrolled sideways with a
    thumb, on white like everything else. */
 .keybar {
   flex: none;
   display: flex;
   gap: 6px;
-  padding: 6px 12px;
+  /* The bar is the bottom of the page, so it is what keeps its buttons clear
+     of the home bar and of a rounded corner. */
+  padding: 6px
+           calc(12px + env(safe-area-inset-right, 0px))
+           calc(6px + env(safe-area-inset-bottom, 0px))
+           calc(12px + env(safe-area-inset-left, 0px));
   overflow-x: auto;
   border-top: 1px solid var(--line);
   scrollbar-width: none;
@@ -1252,108 +1227,12 @@ a { color: inherit; }
 .key.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 .key.lock { box-shadow: 0 0 0 2px var(--bg), 0 0 0 3px var(--accent); }
 
-/* ------------------------------------------------------------ audio mode */
-
-/* A phone in a car. The terminal stays exactly where it is and simply gets
-   shorter; what is added is two buttons a thumb cannot miss, on white with a
-   hairline like everything else. */
-.audio-bar {
-  flex: none;
-  display: flex;
-  gap: 10px;
-  padding: 10px 12px;
-  border-top: 1px solid var(--line);
-  background: var(--bg);
-}
-.audio-btn {
-  flex: 1;
-  min-height: 64px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r);
-  background: var(--bg);
-  color: var(--text);
-  font: inherit;
-  font-size: 16px;
-  font-weight: 550;
-  letter-spacing: -.01em;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-  transition: background .16s var(--ease), color .16s var(--ease), border-color .16s var(--ease);
-}
-.audio-btn:hover { background: var(--bg-hover); }
-.audio-btn:active { background: var(--bg-sunken); }
-.audio-btn:disabled { opacity: .4; cursor: default; }
-.audio-btn:disabled:hover { background: var(--bg); }
-/* Recording is the one state that has to be readable from a metre away. */
-.audio-btn.rec {
-  color: var(--red);
-  border-color: var(--red);
-  font-variant-numeric: tabular-nums;
-}
-
-/* Auto mode is a setting, so it wears a switch. The knob fills with the text
-   colour when it is on, which is the same "on" the dashboard's switches use,
-   and the word beside it is the only word in the top bar's row of marks. */
-.auto-switch {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  height: 34px;
-  padding: 0 8px;
-  border: 1px solid transparent;
-  border-radius: var(--r-sm);
-  background: none;
-  color: var(--text-soft);
-  font: inherit;
-  font-size: 12.5px;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-  transition: color .14s var(--ease), border-color .14s var(--ease);
-}
-.auto-switch:hover { color: var(--text); border-color: var(--line); }
-.auto-switch:disabled { opacity: .4; cursor: default; }
-.auto-switch .auto-word { letter-spacing: -.01em; }
-.auto-switch .auto-track {
-  position: relative;
-  display: block;
-  width: 44px;
-  height: 24px;
-  flex: none;
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
-  background: var(--bg);
-  transition: background .15s var(--ease), border-color .15s var(--ease);
-}
-.auto-switch .auto-knob {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  border: 1px solid var(--line-strong);
-  background: var(--bg);
-  transition: transform .15s var(--ease), background .15s var(--ease), border-color .15s var(--ease);
-}
-.auto-switch[aria-checked="true"] { color: var(--text); }
-.auto-switch[aria-checked="true"] .auto-track { border-color: var(--text); }
-.auto-switch[aria-checked="true"] .auto-knob {
-  transform: translateX(20px);
-  background: var(--text);
-  border-color: var(--text);
-}
-@media (prefers-reduced-motion: reduce) {
-  .auto-switch .auto-track, .auto-switch .auto-knob { transition: none; }
-}
-
 /* --------------------------------------------------------------- the ticker */
 
-/* One line at a time of what is happening right now: a status being made, an
-   operator run taking a step, or - in auto mode - what the session is doing.
-   New lines rise into the window and the old one leaves upwards, the way a
-   departure board turns over, because on a phone in a car the movement is
-   what says something changed. */
+/* One line at a time of what is happening right now: a status being made, or
+   an operator run taking a step. New lines rise into the window and the old
+   one leaves upwards, the way a departure board turns over, because on a
+   phone in a car the movement is what says something changed. */
 .term-ticker {
   display: flex;
   align-items: center;
@@ -1457,6 +1336,11 @@ body.stale .icon-btn.working svg { animation-play-state: paused; }
 }
 .chat-msg.user { align-self: flex-end; border-color: var(--line-strong); }
 .chat-msg.assistant { align-self: flex-start; }
+/* A double-tap reads an answer out loud. Where there is a pointer it says so
+   by not being plain text; on a touch screen a cursor is nothing at all. */
+@media (hover: hover) and (pointer: fine) {
+  .chat-msg.assistant { cursor: pointer; }
+}
 .chat-msg.failed { border-color: var(--red); color: var(--red); }
 .chat-msg.thinking { color: var(--text-faint); }
 .chat-msg p { margin: 0 0 8px; }
@@ -1488,31 +1372,21 @@ body.stale .icon-btn.working svg { animation-play-state: paused; }
 }
 .chat-compose { display: flex; align-items: center; gap: 8px; }
 .chat-compose .input { flex: 1; min-width: 0; }
-/* With auto mode on there is no field anywhere: the whole row is one
-   microphone, because the point is that no keyboard ever opens. */
-.chat-mic {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  width: 100%;
-  min-height: 64px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r);
-  background: var(--bg);
-  color: var(--text);
-  font: inherit;
-  font-size: 16px;
-  font-weight: 550;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-  transition: background .16s var(--ease), color .16s var(--ease), border-color .16s var(--ease);
+/* The microphone, and in its place while it is recording the two endings a
+   recording has: send what was heard, or throw it away. They stand where the
+   microphone stood, so the thumb that started the recording is already there
+   when it has to decide. */
+.rec-actions { display: flex; align-items: center; gap: 2px; }
+.rec-actions .rec-time { margin: 0 4px; }
+.rec-actions.rec .rec-time { color: var(--red); }
+.rec-actions .rec-drop:hover { color: var(--red); }
+.rec-time {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-soft);
 }
-.chat-mic:hover { background: var(--bg-hover); }
-.chat-mic:disabled { opacity: .4; cursor: default; }
-.chat-mic:disabled:hover { background: var(--bg); }
-.chat-mic.rec { color: var(--red); border-color: var(--red); font-variant-numeric: tabular-nums; }
-.chat-mic .ico { width: 22px; height: 22px; flex: none; }
 
 /* On a phone the chat is a sheet over the terminal rather than a column
    beside it: 360px of chat and 30px of terminal would be neither. */
@@ -1524,13 +1398,13 @@ body.stale .icon-btn.working svg { animation-play-state: paused; }
     border-left: none;
     z-index: 9;
   }
+  /* As a sheet it is the bottom of the screen, so its row is what has to
+     stay clear of the home bar - unless the key bar is under it and already
+     doing that. */
+  .main:has(#keybar[hidden]) .chat-foot {
+    padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  }
 }
-
-/* Auto mode: nothing on this page may open a keyboard. The composer and the
-   key bar are not merely hidden, they are gone from the layout, and the chat
-   panel builds a microphone instead of a field. */
-body.audio-mode .composer,
-body.audio-mode .keybar { display: none !important; }
 
 /* ------------------------------------------------------- the session list */
 
