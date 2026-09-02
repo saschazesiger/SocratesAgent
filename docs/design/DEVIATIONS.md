@@ -1225,3 +1225,35 @@ this one, and are not deviations):
   answer rather than show it against the new session.
 - A Restart the user pressed still leaves the row unread, per §A.5.
 - `agentDriver.runs` keeps one entry per session ever driven.
+
+## Sidebar, sheet and key bar (2026-09-02)
+
+A pass over what the page shows for its own sake rather than the person's.
+Everything here is a deliberate departure from §E's text, not a defect in it.
+
+1. **The state dot is gone.** §E.10's row was a mark, a name, a dot and an "i";
+   the dot repeated the state word and the mark's own ring, and said nothing
+   else. The amber it carried for `waiting` — the one signal that was only on
+   the dot — moved onto the ring: a complete amber circle, standing still,
+   against the hairline arc that turns for `busy`.
+2. **The row's "i" became `Info` in the row menu.** The same facts, in a dialog
+   built like `confirmDialog`, and the header's "What this session runs" tip is
+   folded into it, so a session's facts exist in exactly one place. The exit
+   overlay's status and fail reason are plain lines under their sentence.
+   `notice()` keeps its "i": what it holds is a fact about *that* notice — the
+   conversation a resume came from, the model a Status answer used — and not a
+   fact about the session.
+3. **The new-session sheet lost its per-harness "i", its `Advanced`
+   disclosure and the catalogue's `notes` sentence.** The notes still describe
+   each program on the dashboard, where a program is chosen once; the sheet is
+   read by somebody about to start work.
+4. **A row of choices is one control.** `.seg-row` is a single hairline with
+   equal parts inside it that together are the width of the row, instead of
+   pill buttons that wrapped.
+5. **The key bar follows the keyboard, not the phone.** §E.6 drew it wherever
+   the pointer was coarse; it stands in for keys a *keyboard* is missing, so it
+   is now drawn where there plausibly is one — `(hover: hover) and (pointer:
+   fine)`, an iPadOS Safari that reports itself as a Mac with a touch screen, or
+   a physical key actually seen (`keyboardLikely`/`isPhysicalKeyEvent`, both
+   pure and both asserted in `keybar`). A phone gets the line input and the
+   microphone, and the session menu still turns the bar on anywhere.
