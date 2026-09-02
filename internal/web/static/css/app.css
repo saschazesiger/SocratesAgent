@@ -363,6 +363,21 @@ a { color: inherit; }
   padding: 4px 8px 12px;
   scrollbar-width: thin;
 }
+/* Which day the rows below it were last used on. It is a label rather than a
+   band: a hairline above it separates the group, and the surface stays the one
+   white the whole page is. The first group needs no line - the list's own top
+   is the separation. */
+.chat-group {
+  margin-top: 10px;
+  padding: 10px 10px 5px;
+  border-top: 1px solid var(--line);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.chat-group:first-child { margin-top: 0; padding-top: 2px; border-top: 0; }
 .chat-item {
   display: flex;
   align-items: center;

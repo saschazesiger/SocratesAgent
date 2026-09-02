@@ -14,6 +14,10 @@ import {
 } from './harness.mjs';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+// The one thing the harness cannot hand over: when a session was last used is
+// the store's own record of what happened to it, so `daygroups` writes it in
+// the store itself.
+import { DatabaseSync } from 'node:sqlite';
 
 // A browser that has been switched offline reports its own failed requests.
 // They are the point of the scenarios that do it, not a defect in the page.
@@ -4342,6 +4346,272 @@ async function typekeepsfocus() {
   } finally { await s.stop(); }
 }
 
+/* --------------------------------------------------------- 41. daygroups */
+
+// The sidebar is read by day - today's sessions, yesterday's, what is left of
+// the week, of the month, and everything older - so it is drawn that way, with
+// a quiet header over each group and no group that has nothing in it.
+//
+// A list with history in it cannot be waited for, so it is made: the moment a
+// session was last used is written straight into the store.
+
+// backdate rewrites when a session was last used.
+//
+// There is no API for it and there should not be: `updated_at` is the store's
+// own record of things that happened to a session, not something a client gets
+// to choose. So the scenario writes the two columns itself, with node's own
+// SQLite against the same file the server has open, which is the smallest
+// thing that can produce a "last month".
+function backdate(s, moments) {
+  const db = new DatabaseSync(join(s.data, 'socrates.db'), { timeout: 10000 });
+  try {
+    const set = db.prepare('UPDATE sessions SET updated_at = ?, created_at = ? WHERE id = ?');
+    for (const [id, at] of Object.entries(moments)) {
+      const done = set.run(at, at, id);
+      if (Number(done.changes) !== 1) throw new Error('no session ' + id + ' to backdate');
+    }
+  } finally { db.close(); }
+}
+
+// dayPlan is the groups today can have, in the order the list draws them, each
+// with a moment that is certainly inside it. The calendar is this machine's own
+// local one, which is the calendar the browser groups by.
+//
+// Not every group exists on every day of the year: on a Monday or a Tuesday the
+// week has no room for a third group, and in the first days of a month the
+// month has none for a fourth. Those are ordinary days, so the scenario asks
+// for what today can have rather than pretending every day is a Friday.
+function dayPlan(now = Date.now()) {
+  const midnight = new Date(now);
+  midnight.setHours(0, 0, 0, 0);
+  // Days are moved by the calendar rather than by subtracting hours, because
+  // twice a year a day is 23 or 25 hours long.
+  const back = (days) => {
+    const day = new Date(midnight);
+    day.setDate(day.getDate() - days);
+    return day;
+  };
+  const noon = (day) => new Date(day).setHours(12, 0, 0, 0);
+  const yesterday = back(1);
+  const week = back((midnight.getDay() + 6) % 7);
+  const month = new Date(midnight.getFullYear(), midnight.getMonth(), 1);
+  const plan = [
+    { key: 'today', label: 'Today', at: now },
+    { key: 'yesterday', label: 'Yesterday', at: noon(yesterday) },
+  ];
+  if (week.getTime() < yesterday.getTime()) plan.push({ key: 'week', label: 'This week', at: noon(week) });
+  if (month.getTime() < week.getTime()) plan.push({ key: 'month', label: 'This month', at: noon(month) });
+  // Older is half a day before the earliest boundary above it - the first of
+  // the month, or the Monday of this week when the month started after it,
+  // which is what the first days of a month look like. Half a day is enough
+  // whatever the clocks did that night.
+  const oldest = Math.min(month.getTime(), week.getTime());
+  plan.push({ key: 'older', label: 'Older', at: oldest - 12 * 3600 * 1000 });
+  return plan;
+}
+
+// listing is what the sidebar is actually showing: every child in order,
+// headers and rows alike, with whatever marker it was stamped with.
+const listing = (page) => page.evaluate(() => [...document.getElementById('sessionList').children]
+  .map((node) => ({
+    group: node.classList.contains('chat-group') ? node.textContent : '',
+    row: node.classList.contains('chat-item') ? node.querySelector('.label').textContent : '',
+    id: node.dataset.id || '',
+    stamp: node.dataset.stamp || '',
+    archived: node.classList.contains('archived'),
+    other: node.classList.contains('chat-group') || node.classList.contains('chat-item')
+      ? '' : node.className || node.tagName,
+  })));
+
+// under is which header each row is below, by the name the row reads.
+function under(shown) {
+  const out = new Map();
+  let head = '';
+  for (const node of shown) {
+    if (node.group) head = node.group;
+    else if (node.row) out.set(node.row, head);
+  }
+  return out;
+}
+
+// stampAll marks every header and row on screen, so the next render can be
+// asked whether it kept them or built new ones.
+const stampAll = (page) => page.evaluate(() => {
+  for (const node of document.getElementById('sessionList').children) {
+    node.dataset.stamp = node.dataset.id || node.dataset.group || 'other';
+  }
+});
+
+async function daygroups() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+
+    // The calendar first, on its own. Which day a moment belongs to is a pure
+    // function in a module of its own, so it can be asked directly - and it
+    // has to be, because a group the plan below cannot reach today (a month
+    // that started inside this week, which is what the first days of a month
+    // look like) is still a group the page draws on other days.
+    const calendar = await s.page.evaluate(async () => {
+      const day = await import('/static/js/daygroups.js');
+      // A Thursday, so every group has room: the week started on the Monday
+      // and the month before that.
+      const now = new Date(2026, 8, 17, 10, 30).getTime();
+      const at = (year, month, date, hour = 12) => new Date(year, month, date, hour).getTime();
+      return {
+        groups: day.DAY_GROUPS.map((one) => one.key + '=' + one.label).join(' | '),
+        said: [
+          ['the small hours of today', at(2026, 8, 17, 0)],
+          ['tonight', at(2026, 8, 17, 23)],
+          ['a clock that runs ahead', at(2026, 8, 18, 1)],
+          ['last night', at(2026, 8, 16, 23)],
+          ['the Monday this week started on', at(2026, 8, 14, 0)],
+          ['the Sunday before it', at(2026, 8, 13, 23)],
+          ['the first of this month', at(2026, 8, 1)],
+          ['the last of the month before', at(2026, 7, 31)],
+          ['a row with no timestamp at all', 0],
+        ].map(([what, ts]) => what + ': ' + day.bucketOf(ts, now)).join(' | '),
+        moment: day.momentOf({ updated_at: 7, created_at: 3 }) + ',' + day.momentOf({ created_at: 3 }),
+      };
+    });
+    ok(calendar.groups === 'today=Today | yesterday=Yesterday | week=This week'
+      + ' | month=This month | older=Older',
+      'the five groups, in the order the list draws them', calendar.groups);
+    ok(calendar.said === 'the small hours of today: today | tonight: today'
+      + ' | a clock that runs ahead: today | last night: yesterday'
+      + ' | the Monday this week started on: week | the Sunday before it: month'
+      + ' | the first of this month: month | the last of the month before: older'
+      + ' | a row with no timestamp at all: older',
+      'and every boundary of the local calendar is where a person would put it', calendar.said);
+    ok(calendar.moment === '7,3', 'a session is grouped by its last use, and by its creation if it has none',
+      calendar.moment);
+
+    const plan = dayPlan();
+    const create = async (title) => {
+      const made = await s.context.request.post(s.url + '/api/sessions',
+        { data: { harness: 'shell', title } });
+      if (!made.ok()) throw new Error('could not create ' + title + ': ' + made.status());
+      return (await made.json()).session.id;
+    };
+    // One session per group, oldest group first, and a second one for today so
+    // that the order inside a group can be asserted at all. They are made over
+    // the API rather than through the sheet: `createshell` is where starting a
+    // session is proven, and what is under test here is when it was last used.
+    const ids = {};
+    for (const group of [...plan].reverse()) ids[group.key] = await create('Group ' + group.key);
+    const second = await create('Group today two');
+
+    // The one session of the Yesterday group is archived, which is how "only
+    // groups with something in them" gets a group that is empty in Active and
+    // not in All - and how an archived row gets asserted to be in its own day
+    // like every other row.
+    const archived = ids.yesterday;
+    const away = await s.context.request.post(s.url + '/api/sessions/' + archived + '/archive',
+      { data: { archived: true } });
+    if (!away.ok()) throw new Error('could not archive: ' + away.status());
+
+    // Written after the archive, because archiving is something that happened
+    // to the session and bumped the very column being set here.
+    const moments = {};
+    for (const group of plan) if (group.key !== 'today') moments[ids[group.key]] = group.at;
+    backdate(s, moments);
+    ok(true, 'a session for every group today can have, backdated in the store',
+      plan.map((g) => g.label).join(' | '));
+
+    await open(s);
+    await s.page.waitForFunction((n) => document.querySelectorAll('#sessionList .chat-item').length === n,
+      plan.length, { timeout: 20000 });
+
+    const active = await listing(s.page);
+    const heads = active.filter((n) => n.group).map((n) => n.group);
+    const wantActive = plan.map((g) => g.label).filter((label) => label !== 'Yesterday');
+    ok(heads.join(' | ') === wantActive.join(' | '),
+      'the list is grouped by day, in order, and a group with nothing in it is not drawn',
+      heads.join(' | '));
+    ok(active.every((n) => !n.other), 'and the list holds nothing but headers and rows',
+      active.filter((n) => n.other).map((n) => n.other).join(' | ') || 'headers and rows');
+
+    const where = under(active);
+    const misplaced = plan.filter((g) => g.key !== 'yesterday')
+      .filter((g) => where.get('Group ' + g.key) !== g.label);
+    ok(misplaced.length === 0 && where.get('Group today two') === 'Today',
+      'every session is under the day it was last used on',
+      [...where].map(([title, head]) => head + ': ' + title).join(' | '));
+
+    const listed = await (await s.context.request.get(s.url + '/api/sessions')).json();
+    const server = (listed.sessions || []).map((one) => one.id);
+    const drawn = active.filter((n) => n.id).map((n) => n.id);
+    ok(drawn.join(',') === server.join(',') && drawn.includes(second),
+      'and the rows keep the order the server gave them, newest first',
+      drawn.length + ' rows in the order the server listed them');
+
+    // All: the archived session comes back, in its own day, and everything
+    // that was on screen is still the element it was.
+    const before = new Set(active.filter((n) => n.group || n.row).map((n) => n.id || n.group));
+    await stampAll(s.page);
+    await s.page.click('#sessionScope .seg[data-scope="all"]');
+    await s.page.waitForFunction((n) => document.querySelectorAll('#sessionList .chat-item').length === n,
+      plan.length + 1, { timeout: 15000 });
+    const all = await listing(s.page);
+    const allHeads = all.filter((n) => n.group).map((n) => n.group);
+    ok(allHeads.join(' | ') === plan.map((g) => g.label).join(' | '),
+      'All is grouped the same way, and brings back the group Active had nothing in',
+      allHeads.join(' | '));
+    const archivedRow = all.find((n) => n.id === archived);
+    ok(!!archivedRow && archivedRow.archived && under(all).get('Group yesterday') === 'Yesterday',
+      'an archived session is in its own day like any other row',
+      archivedRow ? under(all).get('Group yesterday') + (archivedRow.archived ? ' (archived)' : '') : 'no row');
+    const kept = all.filter((n) => before.has(n.id || n.group) && n.stamp);
+    ok(kept.length === before.size,
+      'and every header and row that was already there survived the re-render',
+      kept.length + ' of ' + before.size + ' elements kept');
+
+    // A rename is a use, so the row moves to Today - taking its element with
+    // it, and leaving no empty header behind.
+    await stampAll(s.page);
+    const renamed = 'Group older, used again';
+    await s.context.request.patch(s.url + '/api/sessions/' + ids.older, { data: { title: renamed } });
+    // A wake is how the page is told to look again: the same event a phone
+    // sends when it comes back.
+    await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await s.page.waitForFunction((want) => [...document.querySelectorAll('#sessionList .chat-item .label')]
+      .some((n) => n.textContent === want), renamed, { timeout: 20000 });
+    const moved = await listing(s.page);
+    const movedRow = moved.find((n) => n.id === ids.older);
+    ok(!!movedRow && movedRow.stamp === ids.older,
+      'a row that moves to another day keeps the element it had',
+      movedRow ? movedRow.stamp || 'a new row' : 'gone');
+    const first = moved.filter((n) => n.id)[0] || {};
+    ok(under(moved).get(renamed) === 'Today' && first.id === ids.older,
+      'and it is the newest row of Today', under(moved).get(renamed) + ', row 1 of the list');
+    const movedHeads = moved.filter((n) => n.group).map((n) => n.group);
+    ok(movedHeads.join(' | ') === plan.map((g) => g.label).filter((label) => label !== 'Older').join(' | '),
+      'the day it left is gone with it, and the rest of the headers are unchanged',
+      movedHeads.join(' | '));
+    ok(movedHeads.length > 1 && moved.filter((n) => n.group).every((n) => n.stamp),
+      'and the headers that stay are the elements that were already there',
+      moved.filter((n) => n.group).map((n) => n.stamp).join(' | '));
+
+    // The header is a label, not a band: the surface under it is the page's one
+    // white, and a hairline is what separates the groups.
+    const style = await s.page.evaluate(() => [...document.querySelectorAll('#sessionList .chat-group')]
+      .map((node) => {
+        const css = getComputedStyle(node);
+        return { fill: css.backgroundColor, top: css.borderTopWidth, size: css.fontSize };
+      }));
+    ok(style.length > 1 && style.every((one) => one.fill === 'rgba(0, 0, 0, 0)')
+      && style[0].top === '0px' && style.slice(1).every((one) => one.top === '1px'),
+      'a header is a quiet label on white, hairline-separated below the first',
+      JSON.stringify(style));
+
+    await shot(s.page, 'daygroups');
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 // -------------------------------------------------------------------- run
 
 const ALL = [
@@ -4351,6 +4621,7 @@ const ALL = [
   ['pages', 'every page is clean at a phone and at a desk', pages],
   ['harnesses', 'all four session types start and are seen in the browser', harnesses],
   ['sessionlist', 'rename, archive, unarchive and delete', sessionlist],
+  ['daygroups', 'the list is grouped by day, and a row keeps its element when it moves', daygroups],
   ['exitoverlay', 'a pane that ends, its status under the sentence, and Restart', exitoverlay],
   ['webglrenders', 'the shipped renderer paints the terminal', webglrenders],
   ['keybar', 'the key bar sends the right bytes and the line input sends whole lines', keybar],

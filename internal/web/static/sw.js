@@ -53,6 +53,7 @@ const SHELL = [
   '/static/js/keybar.js',
   '/static/js/harnesses.js',
   '/static/js/logos.js',
+  '/static/js/daygroups.js',
   '/static/js/combobox.js',
   '/static/js/voice.js',
   '/static/js/assist.js',
