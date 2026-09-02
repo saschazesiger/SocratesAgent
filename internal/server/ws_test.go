@@ -1575,3 +1575,135 @@ func TestTerminalLateTerminalReplyNeverReachesThePane(t *testing.T) {
 		t.Fatalf("the journal carries a device attributes reply:\n%q", journal)
 	}
 }
+
+// ------------------------------------------------------------------ activity
+
+// activityOf waits until a session's activity frame or list entry says what
+// the test is waiting for, and returns the map it saw.
+func (c *wsClient) activityOf(sessionID string, cond func(map[string]any) bool) map[string]any {
+	c.t.Helper()
+	var found map[string]any
+	c.await("an activity frame for "+sessionID, 30*time.Second, func() bool {
+		for i := len(c.ctrl) - 1; i >= 0; i-- {
+			frame := c.ctrl[i]
+			if frame["t"] != "activity" {
+				continue
+			}
+			sessions, _ := frame["sessions"].(map[string]any)
+			entry, _ := sessions[sessionID].(map[string]any)
+			if entry != nil && cond(entry) {
+				found = entry
+				return true
+			}
+		}
+		return false
+	})
+	return found
+}
+
+// TestActivityReachesEveryOpenSocket is the whole reason broadcastAll exists:
+// the sidebar shows every session, and a browser has one socket - the one for
+// the terminal it is looking at - so a busy mark on a row nobody has open can
+// only arrive on somebody else's socket.
+func TestActivityReachesEveryOpenSocket(t *testing.T) {
+	e := newSessionEnv(t)
+	watched := e.shellSession(100, 30)
+	other := e.shellSession(100, 30)
+
+	c := e.dialWS(watched, "viewer=tab-a&cols=100&rows=30")
+	hello := c.hello()
+	if _, ok := hello["activity"].(map[string]any); !ok {
+		t.Fatalf("hello carried no activity map: %#v", hello)
+	}
+	if agent, ok := hello["agent"]; !ok || agent != nil {
+		t.Fatalf("hello carried %#v for agent, want an explicit null", hello["agent"])
+	}
+
+	// A session nobody is watching starts working. Its state has to reach the
+	// socket that is attached to a different session altogether.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := e.srv.Sessions().SendKeys(ctx, other, []termux.Key{
+		{Text: "sleep 4"}, {Name: "Enter"},
+	}); err != nil {
+		t.Fatalf("send-keys: %v", err)
+	}
+	c.activityOf(other, func(a map[string]any) bool { return a["state"] == "busy" })
+
+	// And when it finishes, the row is unread: work ended and nobody saw it.
+	done := c.activityOf(other, func(a map[string]any) bool {
+		return a["state"] == "idle" && a["unread"] == true
+	})
+	if done["source"] != "exact" {
+		t.Fatalf("a shell was answered by %q, want the exact layer", done["source"])
+	}
+
+	// The read frame clears it, for a session this socket is not attached to.
+	c.sendJSON(map[string]any{"t": "read", "id": other})
+	c.activityOf(other, func(a map[string]any) bool { return a["unread"] == false })
+}
+
+// TestActivityUnreadIsClearedByTypingAndByTheReadRoute.
+func TestActivityUnreadIsClearedByTypingAndByTheReadRoute(t *testing.T) {
+	e := newSessionEnv(t)
+	id := e.shellSession(100, 30)
+	c := e.dialWS(id, "viewer=tab-a&cols=100&rows=30")
+	c.hello()
+
+	// A command that finishes leaves the row unread.
+	c.send(1, "sleep 3\r")
+	c.activityOf(id, func(a map[string]any) bool { return a["state"] == "busy" })
+	c.activityOf(id, func(a map[string]any) bool {
+		return a["state"] == "idle" && a["unread"] == true
+	})
+
+	// Typing clears it, through the input path and nothing else.
+	c.send(2, "\r")
+	c.activityOf(id, func(a map[string]any) bool { return a["unread"] == false })
+
+	// And so does the REST route, which is what a page with no socket uses.
+	c.send(3, "sleep 3\r")
+	c.activityOf(id, func(a map[string]any) bool {
+		return a["state"] == "idle" && a["unread"] == true
+	})
+	res, payload := e.do(t, e.client, "POST", "/api/sessions/"+id+"/read", "")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("read: %d %#v", res.StatusCode, payload)
+	}
+	session, _ := payload["session"].(map[string]any)
+	activity, _ := session["activity"].(map[string]any)
+	if activity == nil || activity["unread"] != false {
+		t.Fatalf("the answer to a read still says %#v", activity)
+	}
+	c.activityOf(id, func(a map[string]any) bool { return a["unread"] == false })
+}
+
+// TestSessionListCarriesActivity: the poll is the catch-up path for a browser
+// with no socket open, so every view has to carry the same answer the frame
+// does.
+func TestSessionListCarriesActivity(t *testing.T) {
+	e := newSessionEnv(t)
+	id := e.shellSession(100, 30)
+
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		_, payload := e.do(t, e.client, "GET", "/api/sessions", "")
+		list, _ := payload["sessions"].([]any)
+		if len(list) != 1 {
+			t.Fatalf("the list has %d sessions", len(list))
+		}
+		view, _ := list[0].(map[string]any)
+		activity, _ := view["activity"].(map[string]any)
+		if activity == nil {
+			t.Fatalf("a session view carries no activity: %#v", view)
+		}
+		if activity["state"] == "idle" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the session never settled on idle: %#v", activity)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	_ = id
+}

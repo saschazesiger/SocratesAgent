@@ -150,6 +150,17 @@ func (h *termHub) forSession(sessionID string) []*termViewer {
 	return h.sessionViewers(sessionID)
 }
 
+// all is every remembered viewer, for the one frame that goes everywhere.
+func (h *termHub) all() []*termViewer {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]*termViewer, 0, len(h.viewers))
+	for _, tv := range h.viewers {
+		out = append(out, tv)
+	}
+	return out
+}
+
 func (h *termHub) count(sessionID string) int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -174,6 +185,10 @@ func (h *termHub) sessionViewers(sessionID string) []*termViewer {
 type termConn struct {
 	tv   *termViewer
 	conn *websocket.Conn
+	// srv is the server this socket belongs to. A socket has to reach the
+	// manager for the two things the client asks of it that are not bytes: a
+	// keystroke clears an unread mark, and so does a `read` frame.
+	srv *Server
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -471,7 +486,7 @@ func (s *Server) serveTerminal(r *http.Request, conn *websocket.Conn, row *store
 
 	wctx, wcancel := context.WithCancel(ctx)
 	c := &termConn{
-		tv: tv, conn: conn,
+		tv: tv, conn: conn, srv: s,
 		ctx: ctx, cancel: cancel,
 		wctx: wctx, wcancel: wcancel,
 		stopped: make(chan struct{}),
@@ -608,6 +623,13 @@ func helloFrame(s *Server, row *store.Session, viewer *termux.Viewer, tv *termVi
 		"replay_from":  replayFrom,
 		"input_ack":    ack,
 		"viewer_fresh": fresh,
+		// Every running session's activity, not just this one's: the sidebar
+		// is drawn from a reconnect without a request of its own.
+		"activity": s.manager.Activities(),
+		// The operator run, if one is live on this session. It is null until
+		// WP2 fills it, and the page renders a run from hello, from the frame
+		// and from the REST route with one function either way.
+		"agent": s.agentSnapshot(row.ID),
 	}
 }
 
@@ -1249,8 +1271,21 @@ func (e *protocolError) Error() string { return e.why }
 // check on the socket being replaced could be written a second time by the one
 // replacing it - which is the one half of the promise that is absolute.
 func (c *termConn) onInput(payload []byte) error {
+	wrote, err := c.writeInput(payload)
+	if wrote {
+		// Typing at a session is the whole of having seen it. This is outside
+		// writeInput because clearing the mark ends in a broadcast, and a
+		// broadcast may not run under the viewer's own lock.
+		c.srv.manager.NoteInput(c.tv.sessionID)
+	}
+	return err
+}
+
+// writeInput is onInput's body, under the viewer's lock. The boolean is
+// whether anything reached the pane.
+func (c *termConn) writeInput(payload []byte) (bool, error) {
 	if len(payload) < 9 || payload[0] != frameInput {
-		return &protocolError{why: "that is not an input frame"}
+		return false, &protocolError{why: "that is not an input frame"}
 	}
 	seq := binary.BigEndian.Uint64(payload[1:9])
 	body := payload[9:]
@@ -1259,7 +1294,7 @@ func (c *termConn) onInput(payload []byte) error {
 	tv.mu.Lock()
 	defer tv.mu.Unlock()
 	if tv.conn != c {
-		return nil // This socket has been taken over; its input is stale.
+		return false, nil // This socket has been taken over; its input is stale.
 	}
 	if !tv.sawInput {
 		if seq == 0 {
@@ -1267,7 +1302,7 @@ func (c *termConn) onInput(payload []byte) error {
 			// number - none - tells the client where to start rather than
 			// leaving it wondering why nothing is typed.
 			c.send(map[string]any{"t": "input_ack", "seq": uint64(0)})
-			return nil
+			return false, nil
 		}
 		tv.sawInput = true
 		tv.lastInput = seq - 1
@@ -1275,14 +1310,14 @@ func (c *termConn) onInput(payload []byte) error {
 	last := tv.lastInput
 	switch {
 	case seq <= last:
-		return nil // Already written; this is a resend.
+		return false, nil // Already written; this is a resend.
 	case seq > last+1:
 		c.send(map[string]any{"t": "input_ack", "seq": last})
-		return nil
+		return false, nil
 	}
 	if tv.viewer == nil {
 		c.send(map[string]any{"t": "error", "message": "this terminal is not attached", "fatal": true})
-		return errors.New("input arrived for a viewer with no terminal")
+		return false, errors.New("input arrived for a viewer with no terminal")
 	}
 	// A terminal report is not a keystroke. The browser answers questions
 	// nothing asked it any more - a reply held across an outage, a tab woken
@@ -1293,12 +1328,12 @@ func (c *termConn) onInput(payload []byte) error {
 	if len(keys) > 0 {
 		if _, err := tv.viewer.Write(keys); err != nil {
 			c.send(map[string]any{"t": "error", "message": err.Error(), "fatal": true})
-			return err
+			return false, err
 		}
 	}
 	tv.lastInput = seq
 	c.noteAck(seq)
-	return nil
+	return len(keys) > 0, nil
 }
 
 // onControl handles the JSON half of the client's side. The result is whether
@@ -1308,7 +1343,10 @@ func (c *termConn) onControl(payload []byte) bool {
 		T    string `json:"t"`
 		Cols int    `json:"cols"`
 		Rows int    `json:"rows"`
-		ID   int    `json:"id"`
+		// ID is a number on a ping and a session id on a read, so it is kept
+		// as it arrived and read by the case that wants it. Decoding it as one
+		// type would make the other frame unparseable rather than ignored.
+		ID json.RawMessage `json:"id"`
 		// Seq is the last output byte the client says it has rendered. It is
 		// diagnostics only, and it is a JSON number, so it is exact up to 2^53
 		// - a bound this counter would need years of a busy terminal to reach.
@@ -1325,13 +1363,24 @@ func (c *termConn) onControl(payload []byte) bool {
 	}
 	switch frame.T {
 	case "ping":
-		c.send(map[string]any{"t": "pong", "id": frame.ID})
+		id := any(0)
+		if len(frame.ID) > 0 {
+			id = frame.ID
+		}
+		c.send(map[string]any{"t": "pong", "id": id})
 	case "lag":
 		c.tv.mu.Lock()
 		c.tv.lag = frame.Seq
 		c.tv.mu.Unlock()
 	case "resize":
 		c.onResize(frame.Cols, frame.Rows)
+	case "read":
+		// The id is explicit because the sidebar clears the unread mark of
+		// rows that are not the session this socket is attached to.
+		var id string
+		if err := json.Unmarshal(frame.ID, &id); err == nil && id != "" {
+			c.srv.manager.MarkRead(id)
+		}
 	case "bye":
 		return true
 	}
@@ -1391,4 +1440,61 @@ func (s *Server) broadcast(sessionID string, frame func(*termViewer) any) {
 			c.send(frame(tv))
 		}
 	}
+}
+
+// broadcastAll sends a frame to every open socket, whatever session it is
+// attached to.
+//
+// It exists for exactly one frame: the activity of a session nobody is
+// watching. The sidebar shows every session, and a browser has one socket -
+// the one for the terminal it is looking at - so a busy mark on a row nobody
+// has open can only arrive on somebody else's socket. Without this the
+// sidebar would need a poll, and the product's own constraint is a phone on a
+// bad connection.
+func (s *Server) broadcastAll(frame func(*termViewer) any) {
+	for _, tv := range s.hub.all() {
+		tv.mu.Lock()
+		c := tv.conn
+		tv.mu.Unlock()
+		if c != nil {
+			c.send(frame(tv))
+		}
+	}
+}
+
+// onSessionActivity turns a committed busy/idle/waiting change into the frame
+// every open socket hears. It is the Manager's OnActivity, wired here for the
+// same reason OnExit is: the pane is the substrate's business and the frame is
+// the transport's.
+func (s *Server) onSessionActivity(sessionID string, a termux.Activity) {
+	frame := map[string]any{
+		"t":        "activity",
+		"sessions": map[string]termux.Activity{sessionID: a},
+	}
+	s.broadcastAll(func(*termViewer) any { return frame })
+}
+
+// emitAgent carries one step of an operator run to the viewers of its session.
+// WP1 owns the transport; the payload is the run's.
+func (s *Server) emitAgent(sessionID string, payload map[string]any) {
+	frame := map[string]any{"t": "agent"}
+	for key, value := range payload {
+		frame[key] = value
+	}
+	s.broadcast(sessionID, func(*termViewer) any { return frame })
+}
+
+// agentSnapshot is the live operator run of a session as hello reports it.
+//
+// The loop itself belongs to WP2, which installs agentRunOf; until then, and
+// after any restart of the server, the answer is null - which is what the page
+// is written for either way, because a run lives only in memory.
+func (s *Server) agentSnapshot(sessionID string) any {
+	s.mu.RLock()
+	of := s.agentRunOf
+	s.mu.RUnlock()
+	if of == nil {
+		return nil
+	}
+	return of(sessionID)
 }

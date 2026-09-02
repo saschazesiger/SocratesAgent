@@ -55,6 +55,10 @@ type Server struct {
 
 	mu       sync.RWMutex
 	settings config.Settings
+	// agentRunOf answers with the operator run of one session, or nil. It is
+	// installed by the loop that owns the runs, so that the transport can put
+	// a run into hello without knowing what a run is.
+	agentRunOf func(sessionID string) any
 
 	mux *http.ServeMux
 
@@ -103,6 +107,7 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	// which is why the Manager is handed two functions rather than a socket.
 	cfg.OnExit = s.onSessionExit
 	cfg.OnSize = s.onSessionSize
+	cfg.OnActivity = s.onSessionActivity
 	manager, err := termux.New(st, cfg)
 	if err != nil {
 		return nil, err
@@ -151,6 +156,9 @@ func (s *Server) StartSessions(ctx context.Context) error {
 		log.Printf("terminal sessions: could not reconcile with tmux: %v", err)
 	}
 	s.manager.StartPoll(ctx)
+	// The detector starts after Adopt, so that its first tick sees the
+	// sessions that survived the last run rather than an empty server.
+	s.manager.StartActivity(ctx)
 	return nil
 }
 
@@ -291,6 +299,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/sessions/{id}/resume", s.auth(s.handleResumeSession))
 	mux.HandleFunc("POST /api/sessions/{id}/restart", s.auth(s.handleRestartSession))
 	mux.HandleFunc("POST /api/sessions/{id}/ack-resume", s.auth(s.handleAckResume))
+	mux.HandleFunc("POST /api/sessions/{id}/read", s.auth(s.handleMarkRead))
 	mux.HandleFunc("GET /api/sessions/{id}/journal", s.auth(s.handleJournal))
 	mux.HandleFunc("GET /api/sessions/{id}/ws", s.auth(s.handleSessionWS))
 
