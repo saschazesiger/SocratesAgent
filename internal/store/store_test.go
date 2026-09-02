@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -804,5 +805,50 @@ func TestMigrateAddsTheTitleSource(t *testing.T) {
 	}
 	if got, _ := st.GetSession("a1"); got.TitleSource != TitleAuto {
 		t.Fatalf("the migrated column does not take a value: %#v", got)
+	}
+}
+
+// The title run reads the row, then spends up to twenty seconds asking a
+// model. Somebody who renames the session inside that window has said what it
+// is called, and the answer that arrives afterwards must not take the name
+// back off them.
+func TestAnAutoTitleNeverLandsOnANameSomebodyTyped(t *testing.T) {
+	st := openTest(t)
+	if err := st.CreateSession(newSession("a1")); err != nil {
+		t.Fatal(err)
+	}
+	// The rename happens while the model is still thinking.
+	if err := st.UpdateSessionTitle("a1", "Mine"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetAutoSessionTitle("a1", "What the model came up with"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("the automatic name was allowed in over a rename: %v", err)
+	}
+	got, err := st.GetSession("a1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != "Mine" || got.TitleSource != TitleUser {
+		t.Fatalf("the session ended up called %q, named by %q", got.Title, got.TitleSource)
+	}
+
+	// The same goes for the marking a refusal does: a session somebody has
+	// named needs no marking, and marking it must not unclaim it.
+	if err := st.MarkSessionTitled("a1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a refused naming still marked a session somebody had named: %v", err)
+	}
+	if got, _ := st.GetSession("a1"); got.TitleSource != TitleUser {
+		t.Fatalf("the name now belongs to %q", got.TitleSource)
+	}
+
+	// And on a nameless session both still do what they are for.
+	if err := st.CreateSession(newSession("a2")); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetAutoSessionTitle("a2", "Fixing the parser"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.GetSession("a2"); got.Title != "Fixing the parser" || got.TitleSource != TitleAuto {
+		t.Fatalf("a nameless session was not named: %q by %q", got.Title, got.TitleSource)
 	}
 }

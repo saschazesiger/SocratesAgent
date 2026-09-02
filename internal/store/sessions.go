@@ -281,15 +281,43 @@ func (s *Store) UpdateSessionTitle(id, title string) error {
 
 // SetAutoSessionTitle records the name the title run came up with, and marks
 // the session as named so the run never happens again.
+//
+// It applies only while the session is still nameless. The title run reads the
+// row, then spends up to twenty seconds asking a model, and somebody who
+// renames the session inside that window has said what it is called: an
+// unconditional write would replace their name with the model's, which is
+// exactly what "a name somebody typed is never replaced by one a model wrote"
+// forbids. `ErrNotFound` back means the door closed while the model was
+// thinking, and the caller must not announce a name it did not set.
 func (s *Store) SetAutoSessionTitle(id, title string) error {
-	return s.update(id, `title = ?, title_source = ?`, title, TitleAuto)
+	return s.updateNameless(id, `title = ?, title_source = ?`, title, TitleAuto)
 }
 
 // MarkSessionTitled records that the one automatic naming has happened, for a
 // run that produced nothing usable. Without it a model that answers with an
 // empty string would be asked again on every later turn.
+//
+// It is scoped the same way: a rename during the run is the answer, and a
+// session somebody has named needs no marking to stop being asked about.
 func (s *Store) MarkSessionTitled(id string) error {
-	return s.update(id, `title_source = ?`, TitleAuto)
+	return s.updateNameless(id, `title_source = ?`, TitleAuto)
+}
+
+// updateNameless is `update` for the two writes the automatic naming makes: it
+// touches the row only while nothing has named it yet.
+func (s *Store) updateNameless(id, query string, args ...any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	args = append(args, now(), id)
+	res, err := s.db.Exec(`UPDATE sessions SET `+query+`, updated_at = ? WHERE id = ? AND title_source = ''`, args...)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return ErrNotFound
+	}
+	s.bump()
+	return nil
 }
 
 // SetSessionState records where a session is in its life. The exit status and
