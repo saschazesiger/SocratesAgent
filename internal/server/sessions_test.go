@@ -51,6 +51,16 @@ var (
 	fakeErr  error
 )
 
+// removeFakeBin takes the shared fake CLI directory away. It is called from
+// TestMain, which is the only point at which the last test that needed it has
+// finished - a sync.Once dir belongs to no single test, so t.TempDir cannot
+// own it.
+func removeFakeBin() {
+	if fakeDir != "" {
+		os.RemoveAll(fakeDir)
+	}
+}
+
 // fakeBinDir builds e2e/fakebin/faketui once per test run and links it under
 // the three names the launchers look for, so that a session created through
 // the API runs the fake and never a real CLI.

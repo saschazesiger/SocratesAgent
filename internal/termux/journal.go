@@ -117,7 +117,13 @@ func journalSink(r io.Reader, path string, maxBytes int64, keep int) error {
 	if keep < 0 {
 		keep = 0
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	// The session directory is made when the session is made. A sink that has
+	// to create it is a sink writing for a session that is already gone - a
+	// pane relaunched by a goroutine that outlived the thing that started it -
+	// and creating it there would resurrect a tree somebody has deleted. In a
+	// test that tree is the temporary directory, and this is how forty of them
+	// came back after t.TempDir had removed them.
+	if _, err := os.Stat(filepath.Dir(path)); err != nil {
 		return err
 	}
 	f, size, err := openJournal(path)

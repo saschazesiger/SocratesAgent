@@ -137,10 +137,16 @@ func staleDateDir(root, path string, since time.Time) bool {
 	if err != nil {
 		return false
 	}
-	// The whole of the day after this one has to be behind the launch before
-	// the directory can be skipped: a file written at 23:59 is stamped on the
-	// day it belongs to, and the launch may be minutes later.
-	return day.AddDate(0, 0, 1).Before(since.Add(-discoverySkew))
+	// Two whole days after this one have to be behind the launch before the
+	// directory can be skipped. One day covers the ordinary case - a file
+	// written at 23:59 is stamped on the day it belongs to, and the launch may
+	// be minutes later. The second day is the margin for a clock that does not
+	// agree with ours: the directory name is parsed in this process's local
+	// zone, Codex stamps it in its own, and a launch in the first hours of a
+	// day east of UTC would otherwise skip the directory the session is about
+	// to be written into. Two days of extra reading costs a handful of
+	// os.Stat calls; skipping the right directory costs the session id.
+	return day.AddDate(0, 0, 2).Before(since.Add(-discoverySkew))
 }
 
 func isRolloutName(name string) bool {

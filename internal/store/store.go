@@ -158,8 +158,13 @@ func (s *Store) bump() int64 {
 	v := s.rev.Add(1)
 	if v >= s.revMark {
 		s.revMark = v + revCheckpoint
-		_, _ = s.db.Exec(`INSERT INTO kv(key, value) VALUES(?, ?)
-			ON CONFLICT(key) DO UPDATE SET value = excluded.value`, revKey, strconv.FormatInt(s.revMark, 10))
+		// A failed reservation is not fatal - the counter still moves, and this
+		// run stays monotonic - but it silently removes the guarantee across a
+		// crash, so it is said out loud rather than swallowed.
+		if _, err := s.db.Exec(`INSERT INTO kv(key, value) VALUES(?, ?)
+			ON CONFLICT(key) DO UPDATE SET value = excluded.value`, revKey, strconv.FormatInt(s.revMark, 10)); err != nil {
+			log.Printf("store: could not reserve revisions up to %d: %v", s.revMark, err)
+		}
 	}
 	return v
 }

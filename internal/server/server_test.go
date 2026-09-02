@@ -56,6 +56,10 @@ func TestMain(m *testing.M) {
 	os.Setenv(piper.EnvDir, root)
 	code := m.Run()
 	os.RemoveAll(root)
+	// The fake CLI directory is shared by every test through a sync.Once, so
+	// no single test owns it and t.TempDir cannot remove it. Here is the one
+	// point at which the last test that needed it has finished.
+	removeFakeBin()
 	os.Exit(code)
 }
 
