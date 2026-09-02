@@ -70,10 +70,23 @@ Command line, in order:
     organization's policy (managed setting \`disableRemoteControl\`)`.
   - `remoteControlAtStartup: false` in `~/.claude.json` (or
     `$CLAUDE_CONFIG_DIR/.claude.json`), at the top level and inside the
-    `projects[<cwd>]` entry when one already exists. The binary logs
+    `projects[<cwd>]` entry. The binary logs
     `remoteControlAtStartup: true in …` for `project and local` and for
     `legacy_global_config`, so a person who once turned Remote Control on by
     hand has a stored preference that would start it again with no flag at all.
+
+Working-directory trust: **`projects[<cwd>].hasTrustDialogAccepted: true`** in
+the same global config, written before the pane opens, creating the entry when
+Claude Code has never been run in that directory — which for a dynamic
+workspace directory is every single time. Without it 2.1.258 opens on a
+blocking full-screen question (`Accessing workspace: <cwd>` / "Is this a
+project you created or one you trust?") whose highlighted answer is **No,
+exit**, and no session can be started from the browser at all. There is no
+command-line flag for it in 2.1.258, `--dangerously-skip-permissions` is about
+tool permissions and is decided after it, and the settings file has no key for
+it. This is Claude Code's counterpart of the
+`projects={"<cwd>"={trust_level="trusted"}}` override Codex is given below;
+both were verified against the shipped binaries.
 
 Generated settings file (`<session dir>/claude-settings.json`, mode 0600):
 

@@ -791,6 +791,17 @@ async function touchscroll() {
 
 // One real session against a real, logged in CLI. It types `/status`, which
 // costs nothing: it must never spend tokens on a model turn.
+//
+// "Something was rendered" is not enough, and was not: Claude Code used to
+// come up on its own blocking workspace question - "Accessing workspace: … Is
+// this a project you created or one you trust?", highlighted answer **No,
+// exit** - because a dynamic workspace directory is one it has never been
+// opened in and nothing had marked it trusted. The pane was full of text and
+// the row said `running`, and the session was unusable. So this asserts on the
+// two things that tell a started Claude Code from a stopped one: its own
+// banner, and the absence of that question.
+const CLAUDE_TRUST_QUESTION = 'Accessing workspace';
+
 async function livesession() {
   const s = await start({ viewport: { width: 1280, height: 720 }, live: true });
   try {
@@ -799,11 +810,18 @@ async function livesession() {
     await open(s);
     await startSession(s.page, 'claude');
     await s.page.waitForSelector('#term .xterm', { timeout: 60000 });
-    await wait(4000);
-    await typeLine(s.page, '/status');
-    await wait(4000);
+    const started = await awaitScreen(s.page, 'Claude Code v', 45000);
     const text = await screen(s.page);
     ok(text.trim().length > 0, 'the real CLI rendered something in the browser', oneLine(text));
+    ok(started, 'Claude Code reached its own prompt in a directory it has never seen',
+      oneLine(text.split('\n').find((l) => l.includes('Claude Code v')) || text));
+    ok(!text.includes(CLAUDE_TRUST_QUESTION),
+      'and was not stopped by the workspace-trust question, whose answer is "No, exit"',
+      text.includes(CLAUDE_TRUST_QUESTION) ? 'the trust screen is on the pane' : 'no trust screen');
+    await typeLine(s.page, '/status');
+    await wait(4000);
+    const after = await screen(s.page);
+    ok(after.trim().length > 0, 'and it answered a slash command that costs nothing', oneLine(after));
     ok(unexpected(s.errors).length === 0, 'no console errors',
       unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }

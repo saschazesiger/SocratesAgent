@@ -340,11 +340,90 @@ func TestClaudeGlobalConfigPinKeepsTheRestOfTheFile(t *testing.T) {
 		t.Fatalf("the pin rewrote the whole file: %v", doc)
 	}
 
-	// A working directory Claude Code has never been run in gets no entry
-	// invented for it: there is no stored preference there to clear.
+	// Only this session's directory is touched. Somebody else's project entry
+	// is not invented and not changed.
 	if _, found := projects["/somewhere/else"]; found {
-		t.Errorf("the pin invented a project entry: %v", projects)
+		t.Errorf("the pin invented a project entry for a directory nothing asked about: %v", projects)
 	}
+}
+
+// The regression this file exists for: a session works in a directory Claude
+// Code has never been opened in - every dynamic workspace directory is brand
+// new - and without `hasTrustDialogAccepted` on its own project entry the
+// binary opens on the blocking "Accessing workspace: … Is this a project you
+// created or one you trust?" screen, whose highlighted answer is "No, exit".
+// Verified against 2.1.258: with the entry the same launch goes straight to
+// the prompt.
+func TestClaudeGlobalConfigTrustsAFreshWorkingDirectory(t *testing.T) {
+	l := newLab(t)
+	path := claudeGlobalConfigPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A global config from a real machine: Claude Code has been run, but never
+	// in this session's directory.
+	stored := `{"theme":"light","projects":{"/elsewhere":{"hasTrustDialogAccepted":true}}}`
+	if err := os.WriteFile(path, []byte(stored), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l.plan(Claude{})
+
+	entry := claudeProjectEntry(t, path, l.cwd)
+	if entry["hasTrustDialogAccepted"] != true {
+		t.Errorf("the working directory is not trusted, so the session opens on the workspace question: %v", entry)
+	}
+	if entry["remoteControlAtStartup"] != false {
+		t.Errorf("remoteControlAtStartup = %v", entry["remoteControlAtStartup"])
+	}
+
+	// The same has to hold for a resume: a machine that rebooted relaunches
+	// with --resume, in the same directory, through the same path.
+	if err := os.WriteFile(path, []byte(stored), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req := l.req()
+	req.CLISession = "9c2e6b1a-0000-4000-8000-000000000001"
+	if _, err := (Claude{}).ResumePlan(context.Background(), req); err != nil {
+		t.Fatalf("ResumePlan: %v", err)
+	}
+	if entry := claudeProjectEntry(t, path, l.cwd); entry["hasTrustDialogAccepted"] != true {
+		t.Errorf("a resumed session is not trusted either: %v", entry)
+	}
+}
+
+// And with no global config at all - a machine where Claude Code has never
+// been started - the file that is grown from nothing still carries the entry.
+func TestClaudeGlobalConfigTrustsWithNoFileAtAll(t *testing.T) {
+	l := newLab(t)
+	path := claudeGlobalConfigPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	l.plan(Claude{})
+	if entry := claudeProjectEntry(t, path, l.cwd); entry["hasTrustDialogAccepted"] != true {
+		t.Errorf("a config grown from nothing does not trust the directory: %v", entry)
+	}
+}
+
+func claudeProjectEntry(t *testing.T, path, cwd string) map[string]any {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	projects, _ := doc["projects"].(map[string]any)
+	entry, _ := projects[cwd].(map[string]any)
+	if entry == nil {
+		t.Fatalf("there is no project entry for %s in %v", cwd, doc)
+	}
+	return entry
 }
 
 // -------------------------------------------------------------------- codex

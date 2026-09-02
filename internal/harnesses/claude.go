@@ -218,9 +218,9 @@ func claudeGlobalConfigPath() string {
 	return filepath.Join(home, ".claude.json")
 }
 
-// pinClaudeGlobalConfig writes the two preferences that are not settings-file
-// keys into Claude Code's global configuration: the light theme, and Remote
-// Control off at startup.
+// pinClaudeGlobalConfig writes the three preferences that are not
+// settings-file keys into Claude Code's global configuration: the light theme,
+// Remote Control off at startup, and the working directory trusted.
 //
 // Where those preferences live was verified against the 2.1.258 binary rather
 // than guessed. The defaults object the binary builds for its global config -
@@ -239,25 +239,46 @@ func claudeGlobalConfigPath() string {
 // `remoteControlAtStartup: true in …` for `project and local` and for
 // `legacy_global_config`, so a person who once turned Remote Control on by
 // hand has a stored preference that starts it again with no flag at all. It is
-// cleared at the top level and inside the entry for this working directory -
-// but only when that entry already exists, because a projects entry Socrates
-// invents is a directory Claude Code has never been run in, where the
-// preference cannot be set in the first place.
+// cleared at the top level and inside the entry for this working directory.
+//
+// `hasTrustDialogAccepted` is what lets the session start at all. A Socrates
+// session works in a directory Claude Code has never been opened in - a
+// dynamic workspace directory is brand new every time - and in one of those
+// the binary opens on a blocking full-screen question ("Accessing workspace:
+// … Is this a project you created or one you trust?") whose highlighted answer
+// is **No, exit**. Nothing on the command line skips it: there is no
+// --trust flag in 2.1.258, --dangerously-skip-permissions is about tool
+// permissions and comes after it, and the settings file has no key for it.
+// The gate is the per-project attribute in the global config - verified
+// against 2.1.258: with `projects[<cwd>].hasTrustDialogAccepted = true` the
+// same launch goes straight to the prompt. This is the exact counterpart of
+// the `trust_level="trusted"` override Codex is given on its command line
+// (§Codex in docs/design/HARNESS-POLICY.md); Claude Code has no command line
+// for it, so the entry is written here.
+//
+// So the entry for this working directory is created when it does not exist,
+// rather than only amended when it does. A directory Socrates itself made and
+// is about to start a session in is a directory the person asked for; leaving
+// the answer to a dialog nobody is watching, on a phone, in a car, is the
+// thing this whole product exists not to do.
 //
 // The file belongs to the user and holds their credentials, so it is read,
 // changed by exactly these keys and written through a temporary file in the
 // same directory; when it does not exist at all, what is written is a file
 // with only them in it, which is what Claude Code itself would grow from. A
-// failure is not a launch failure: COLORFGBG is the lever that actually
-// decides the palette, and the missing flag is what actually decides Remote
-// Control.
+// failure is still not a launch failure - the pane opens and says what is
+// wrong with it, which is more use than a create that refuses with the same
+// sentence - but it is no longer only cosmetic: without the trust entry the
+// session opens on the workspace question, so a failure is worth reading in
+// the log rather than swallowing.
 //
 // It is a side effect of building a plan rather than of starting the pane, and
 // Claude Code writes the same file under a lock of its own. A write that lands
-// while another Claude is running can therefore be overwritten by it. That
-// costs one session the wrong palette and nothing else, which is why it is
-// left as it is rather than being turned into a lock protocol against a file
-// format nobody has documented.
+// while another Claude is running can therefore be overwritten by it, at the
+// cost of that session's palette and its trust entry. It is left as it is
+// rather than turned into a lock protocol against a file format nobody has
+// documented; what the session then shows is Claude Code's own question, not a
+// silent failure.
 func pinClaudeGlobalConfig(path, cwd string) {
 	if path == "" {
 		return
@@ -281,10 +302,39 @@ func pinClaudeGlobalConfig(path, cwd string) {
 		doc["remoteControlAtStartup"] = false
 		changed = true
 	}
-	if projects, ok := doc["projects"].(map[string]any); ok && cwd != "" {
-		if entry, ok := projects[cwd].(map[string]any); ok && entry["remoteControlAtStartup"] != false {
-			entry["remoteControlAtStartup"] = false
-			changed = true
+	if cwd != "" {
+		projects, ok := doc["projects"].(map[string]any)
+		if !ok {
+			// A "projects" that is there but is not an object belongs to a
+			// file this code does not understand, and replacing it would
+			// throw away whatever it is. Nothing is written in that case.
+			if _, present := doc["projects"]; present {
+				projects = nil
+			} else {
+				projects = map[string]any{}
+				doc["projects"] = projects
+				changed = true
+			}
+		}
+		if projects != nil {
+			entry, ok := projects[cwd].(map[string]any)
+			if !ok {
+				if _, present := projects[cwd]; !present {
+					entry = map[string]any{}
+					projects[cwd] = entry
+					changed = true
+				}
+			}
+			if entry != nil {
+				if entry["hasTrustDialogAccepted"] != true {
+					entry["hasTrustDialogAccepted"] = true
+					changed = true
+				}
+				if entry["remoteControlAtStartup"] != false {
+					entry["remoteControlAtStartup"] = false
+					changed = true
+				}
+			}
 		}
 	}
 	if !changed {
