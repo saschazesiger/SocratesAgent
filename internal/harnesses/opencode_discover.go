@@ -37,33 +37,55 @@ type openCodeSession struct {
 	} `json:"time"`
 }
 
+func (s openCodeSession) created() time.Time { return time.UnixMilli(s.Time.Created) }
+
 // DiscoverOpenCodeSession waits for the TUI's own HTTP server to name the
-// session that belongs to this working directory.
+// session that belongs to this pane.
 //
 // It never creates one. A POST /session would force an id into existence that
 // the TUI is not showing, and `--session <that id>` on the next boot would
 // open an empty screen - which looks exactly like losing the conversation.
-func DiscoverOpenCodeSession(ctx context.Context, access ServerAccess, cwd string) (string, error) {
-	cwd = filepath.Clean(cwd)
+//
+// GET /session lists every session in the shared database, not this process's,
+// so the working directory is nowhere near enough to identify one: a preset or
+// a typed-in directory with any OpenCode history at all would answer on the
+// first poll with a conversation the user never had in this pane. The launch
+// time is what narrows it down, and the ids other rows already hold are what
+// separate two sessions started in the same directory.
+func DiscoverOpenCodeSession(ctx context.Context, access ServerAccess, d Discovery) (string, error) {
+	d.Cwd = filepath.Clean(d.Cwd)
 	client := &http.Client{Timeout: 10 * time.Second}
 	serverBy := time.Now().Add(openCodeServerWait)
 	sessionBy := time.Now().Add(openCodeSessionWait)
 	answered := false
+	var lastErr error
 
 	for {
 		sessions, err := listOpenCodeSessions(ctx, client, access)
 		switch {
 		case err == nil:
 			answered = true
-			if id := newestIn(sessions, cwd); id != "" {
+			if id := newestIn(sessions, d); id != "" {
 				return id, nil
 			}
 		case errors.Is(err, errOpenCodeAuth):
 			// The password did not match. That is a launch failure and not
 			// something a retry can mend.
 			return "", err
-		case !answered && time.Now().After(serverBy):
-			return "", fmt.Errorf("the OpenCode server never answered on port %d: %w", access.Port, err)
+		default:
+			lastErr = err
+		}
+		// Step 4 of the recipe: a version that does not serve the API, or a
+		// server that never came up, still leaves its sessions in the
+		// database, which is read strictly read-only.
+		if !answered && time.Now().After(serverBy) {
+			id, dbErr := newestInDB(ctx, d)
+			if id != "" {
+				return id, nil
+			}
+			if dbErr != nil {
+				return "", fmt.Errorf("the OpenCode server never answered on port %d (%v) and its database could not be read: %w", access.Port, lastErr, dbErr)
+			}
 		}
 		if time.Now().After(sessionBy) {
 			return "", nil
@@ -105,16 +127,23 @@ func listOpenCodeSessions(ctx context.Context, client *http.Client, access Serve
 	return sessions, nil
 }
 
-// newestIn picks this directory's most recent session.
+// newestIn picks this pane's session out of everything the server listed.
 //
 // It sorts on the creation time rather than the id, deliberately: OpenCode's
 // ids are descending, so "newest" is the lexicographically smallest one, which
 // is the opposite of what every other id in this application does and exactly
 // the sort of thing a later reader would quietly "fix".
-func newestIn(sessions []openCodeSession, cwd string) string {
+func newestIn(sessions []openCodeSession, d Discovery) string {
 	var mine []openCodeSession
 	for _, s := range sessions {
-		if s.ID != "" && filepath.Clean(s.Directory) == cwd {
+		switch {
+		case s.ID == "" || filepath.Clean(s.Directory) != d.Cwd:
+		case d.startedBefore(s.created()):
+			// It was created before this pane was; it is somebody's earlier
+			// conversation in the same folder.
+		case d.claimed(s.ID):
+			// Another row of this harness already holds it.
+		default:
 			mine = append(mine, s)
 		}
 	}
@@ -123,6 +152,45 @@ func newestIn(sessions []openCodeSession, cwd string) string {
 	}
 	sort.SliceStable(mine, func(i, j int) bool { return mine[i].Time.Created > mine[j].Time.Created })
 	return mine[0].ID
+}
+
+// newestInDB is the same question asked of OpenCode's own database, for the
+// case where the HTTP server is unreachable. It is opened read-only, twice
+// over: it belongs to OpenCode and Socrates has no business writing a byte of
+// it. A missing database is not an error - it means there is nothing to find
+// yet - and only a database that exists and cannot be read is.
+func newestInDB(ctx context.Context, d Discovery) (string, error) {
+	dir := openCodeDataDir()
+	if dir == "" {
+		return "", nil
+	}
+	path := filepath.Join(dir, "opencode.db")
+	if _, err := os.Stat(path); err != nil {
+		return "", nil
+	}
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=query_only(1)")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = db.Close() }()
+	rows, err := db.QueryContext(ctx,
+		"SELECT id, directory, time_created FROM session WHERE directory = ? ORDER BY time_created DESC LIMIT 50", d.Cwd)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = rows.Close() }()
+	var sessions []openCodeSession
+	for rows.Next() {
+		var s openCodeSession
+		if err := rows.Scan(&s.ID, &s.Directory, &s.Time.Created); err != nil {
+			return "", err
+		}
+		sessions = append(sessions, s)
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	return newestIn(sessions, d), nil
 }
 
 // VerifyCLISession asks OpenCode's own database whether a session still

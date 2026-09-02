@@ -162,8 +162,13 @@ export function readFakeLog(data) {
 
 // mockOpenRouter answers every OpenRouter call with one fixed transcription,
 // so the dictation scenario needs no key and spends nothing.
+//
+// The pattern mirrors openrouter.DefaultBaseURL, which is
+// https://openrouter.ai/api/v1 - one host, no subdomain. A glob that asked for
+// a subdomain (`*.openrouter.ai`) would match nothing and let the request go
+// to the real API, which either spends money or fails the scenario with a 401.
 export async function mockOpenRouter(context, { text = 'hello from the microphone' } = {}) {
-  await context.route('**://*.openrouter.ai/**', (route) => route.fulfill({
+  await context.route('**/openrouter.ai/**', (route) => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({ text, choices: [{ message: { content: text } }] }),

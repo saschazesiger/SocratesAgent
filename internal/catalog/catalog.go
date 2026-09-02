@@ -430,8 +430,11 @@ func refreshStatic(a *Agent) {
 }
 
 // probeVersion runs the binary's version command and keeps the first readable
-// line of it. A failure is not an error worth reporting on its own: the model
-// list is the stronger signal that a CLI is usable.
+// line of it. A failure is not an error worth reporting on its own - the model
+// list is the stronger signal that a CLI is usable - but neither is it a
+// version: dash answers `--version` with `sh: 0: Illegal option --` and a exit
+// status, and the dashboard would show that sentence as the shell's version.
+// So a command that failed has no version at all.
 func probeVersion(ctx context.Context, path string, args []string) string {
 	if len(args) == 0 {
 		args = []string{"--version"}
@@ -439,9 +442,8 @@ func probeVersion(ctx context.Context, path string, args []string) string {
 	ctx, cancel := context.WithTimeout(ctx, versionTimeout)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, path, args...).CombinedOutput()
-	line := strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
-	if err != nil && line == "" {
+	if err != nil {
 		return ""
 	}
-	return line
+	return strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
 }

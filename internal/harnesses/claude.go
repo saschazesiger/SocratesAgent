@@ -40,11 +40,18 @@ const claudeSettingsFile = "claude-settings.json"
 const claudeDebugFile = "claude-debug.log"
 
 // Plan builds a fresh session, with a uuid of our own choosing.
+//
+// It mints a new one every time and never looks at req.CLISession, and that is
+// the safety rule rather than a simplification. A session id may be used with
+// --session-id exactly once - the binary answers `Error: Session ID <id> is
+// already in use.` and the pane dies before the user can type - so the only id
+// that is safe to start with is one that has never been started with. A
+// conversation that is meant to be continued goes through ResumePlan; a
+// conversation whose transcript could not be found is a new conversation, and
+// this is where that becomes true rather than depending on a caller having
+// remembered to clear a field.
 func (c Claude) Plan(ctx context.Context, req PlanRequest) (LaunchPlan, error) {
-	id := strings.TrimSpace(req.CLISession)
-	if _, err := uuid.Parse(id); err != nil {
-		id = uuid.NewString()
-	}
+	id := uuid.NewString()
 	return c.plan(req, []string{"--session-id", id}, id)
 }
 
@@ -103,15 +110,31 @@ func (c Claude) plan(req PlanRequest, lead []string, id string) (LaunchPlan, err
 	argv = flag(argv, "--advisor", opts.Advisor)
 	argv = flag(argv, "--autocompact", opts.Autocompact)
 	argv = flag(argv, "--append-system-prompt", opts.AppendSystemPrompt)
-	argv = flag(argv, "--system-prompt-snapshot", oneOf(opts.SystemPromptSnapshot, []string{"on", "off"}))
+	if strings.TrimSpace(opts.AppendSystemPrompt) != "" {
+		// The snapshot only decides anything when there is an appended prompt:
+		// with it on, a *changed* append on a later launch is ignored until
+		// compaction. Passing it unconditionally would flip Claude's own
+		// default (on, for the built-in prompt) for every session that never
+		// appends anything, which is an unrequested behaviour change with a
+		// prompt-cache cost on every resume.
+		argv = flag(argv, "--system-prompt-snapshot", oneOf(opts.SystemPromptSnapshot, []string{"on", "off"}))
+	}
 	argv = switchFlag(argv, "--exclude-dynamic-system-prompt-sections", opts.ExcludeDynamicPromptSections)
 	argv = switchFlag(argv, "--disable-slash-commands", opts.DisableSlashCommands)
 	argv = repeated(argv, "--mcp-config", opts.MCPConfig)
 	argv = switchFlag(argv, "--strict-mcp-config", opts.StrictMCPConfig)
 	argv = repeated(argv, "--plugin-dir", opts.PluginDirs)
 	if opts.RemoteControl {
+		// The name is optional, and an optional value takes the next
+		// non-dash argument - which would be the first of extra_args if the
+		// admin left the name empty. The session title is a better name than
+		// somebody's raw flag, and it is always there.
+		name := strings.TrimSpace(opts.RemoteControlName)
+		if name == "" {
+			name = strings.TrimSpace(req.Title)
+		}
 		argv = append(argv, "--remote-control")
-		if name := strings.TrimSpace(opts.RemoteControlName); name != "" {
+		if name != "" {
 			argv = append(argv, name)
 		}
 	}
@@ -286,8 +309,17 @@ func claudeGlobalConfigPath() string {
 //
 // The file belongs to the user and holds their credentials, so it is read,
 // changed by exactly one key and written through a temporary file in the same
-// directory. A failure is not a launch failure: COLORFGBG is the lever that
-// actually decides the palette, and this is the belt to its braces.
+// directory; when it does not exist at all, what is written is a file with
+// only this key in it, which is what Claude Code itself would grow from. A
+// failure is not a launch failure: COLORFGBG is the lever that actually
+// decides the palette, and this is the belt to its braces.
+//
+// It is a side effect of building a plan rather than of starting the pane, and
+// Claude Code writes the same file under a lock of its own. A pin that lands
+// while another Claude is running can therefore be overwritten by it. That
+// costs one session the wrong palette and nothing else, which is why it is
+// left as it is rather than being turned into a lock protocol against a file
+// format nobody has documented.
 func pinClaudeTheme(path string) {
 	if path == "" {
 		return

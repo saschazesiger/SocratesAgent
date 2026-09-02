@@ -136,12 +136,8 @@ func (o OpenCode) plan(req PlanRequest, session []string) (LaunchPlan, error) {
 	tuiPath := SessionFile(req.DataDir, req.SessionID, openCodeTUIFile)
 
 	env := baseEnv(req)
-	env["OPENCODE_TUI_CONFIG"] = tuiPath
-	env["OPENCODE_CONFIG_CONTENT"] = string(inline)
 	env["OPENCODE_DISABLE_AUTOUPDATE"] = "1"
 	env["OPENCODE_DISABLE_TERMINAL_TITLE"] = "1"
-	env["OPENCODE_SERVER_USERNAME"] = openCodeUser
-	env["OPENCODE_SERVER_PASSWORD"] = password
 	if opts.DisableModelsFetch {
 		// This is what lets OpenCode start with no network at all, which is
 		// the difference between a usable session in a car and a spinner.
@@ -157,6 +153,17 @@ func (o OpenCode) plan(req PlanRequest, session []string) (LaunchPlan, error) {
 		env["OPENCODE_PERMISSION"] = perm
 	}
 	addExtraEnv(env, opts.ExtraEnv)
+	// These four are the launch, not a preference: the two generated documents
+	// are what make the session look and behave the way it was configured, and
+	// the credentials are the only thing between the agent and any process on
+	// the machine. An extra_env entry that overwrote a password would turn
+	// every discovery poll into a 401 and the launch into a failure; one that
+	// overwrote a config path would silently drop the theme. So they are
+	// applied last and the raw list cannot reach them.
+	env["OPENCODE_TUI_CONFIG"] = tuiPath
+	env["OPENCODE_CONFIG_CONTENT"] = string(inline)
+	env["OPENCODE_SERVER_USERNAME"] = openCodeUser
+	env["OPENCODE_SERVER_PASSWORD"] = password
 
 	openCodeSecrets.Store(req.SessionID, ServerAccess{Port: port, Username: openCodeUser, Password: password})
 
@@ -221,8 +228,12 @@ func openCodeConfig(opts config.OpenCodeOptions, req PlanRequest) ([]byte, error
 }
 
 // freePort asks the kernel for a port nobody is using, then closes it and
-// hands the number to OpenCode. There is a window between the two in which
-// something else could take it, so a bind race is retried once.
+// hands the number to OpenCode.
+//
+// There is a window between the two in which something else could take it. It
+// cannot be closed from here - only the process that binds the port finds out
+// - so what is retried here is the ask, not the race; the race shows up as a
+// session that failed to start, and belongs to whoever watches for that.
 func freePort() (int, error) {
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {

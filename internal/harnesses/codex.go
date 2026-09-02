@@ -112,13 +112,17 @@ func (c Codex) plan(req PlanRequest, lead []string) (LaunchPlan, error) {
 	argv = append(argv, opts.ExtraArgs...)
 
 	env := baseEnv(req)
-	// The originator is one of the two things that tell a rollout file written
-	// by Socrates apart from one the user started by hand.
-	env["CODEX_INTERNAL_ORIGINATOR_OVERRIDE"] = codexOriginator
 	if opts.DisableKeyboardEnhancement {
 		env["CODEX_TUI_DISABLE_KEYBOARD_ENHANCEMENT"] = "1"
 	}
 	addExtraEnv(env, opts.ExtraEnv)
+	// The originator is what tells a rollout file written by Socrates apart
+	// from one the user started by hand, and it is how the session id is found
+	// again. It is set after the raw list on purpose: §C.11 lists it as always
+	// applied and not user-visible, and an extra_env entry that overwrote it
+	// would leave the watcher matching nothing at all, in silence, for fifteen
+	// minutes.
+	env["CODEX_INTERNAL_ORIGINATOR_OVERRIDE"] = codexOriginator
 
 	return LaunchPlan{
 		Argv:       argv,
@@ -151,12 +155,18 @@ func trustLevelOverride(cwd string) string {
 // tomlAssign is `key="value"`, for the string-valued -c overrides.
 func tomlAssign(key, value string) string { return key + "=" + tomlString(value) }
 
+// tomlString quotes a value as a TOML basic string.
+//
+// json.Marshal does that job: it escapes the quote, the backslash and every
+// control character below 0x20 as escapes TOML also accepts, and leaves UTF-8
+// alone. The one place the two disagree is DEL, which TOML requires escaped
+// and JSON does not, so that one character is escaped here.
 func tomlString(value string) string {
 	quoted, err := json.Marshal(value)
 	if err != nil {
 		return `""`
 	}
-	return string(quoted)
+	return strings.ReplaceAll(string(quoted), "\u007f", `\u007F`)
 }
 
 func tomlStringArray(values []string) string {

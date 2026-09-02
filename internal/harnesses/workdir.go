@@ -30,7 +30,12 @@ var WorkdirModes = []string{WorkdirDynamic, WorkdirPreset, WorkdirCustom}
 // blockedRoots are the directories a custom path may never resolve to. They
 // are the ones where an agent with write access is not a mistake but an
 // incident, and none of them is ever what somebody meant to type.
-var blockedRoots = []string{"/", "/etc", "/usr", "/bin", "/sbin", "/boot", "/proc", "/sys", "/dev"}
+var blockedRoots = []string{"/", "/etc", "/usr", "/bin", "/sbin", "/boot"}
+
+// blockedTrees are refused with everything under them. They are the kernel's
+// own filesystems: a workspace cannot live there, and a path that reaches into
+// one is either a mistake or an attempt.
+var blockedTrees = []string{"/proc", "/sys", "/dev"}
 
 // ResolveWorkdir turns a mode and a path from the new-session sheet into the
 // directory a session actually runs in, creating it where the mode says to.
@@ -113,8 +118,14 @@ func customWorkdir(settings config.Settings, path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for _, blocked := range blockedRoots {
-		if clean == blocked {
+	// Both the path as written and the path it resolves to are judged.
+	// Resolving matters because MkdirAll follows a symlink, so /tmp/somewhere
+	// -> / would otherwise put an agent at the root of the disk under a
+	// harmless-looking name. Judging the written form matters too, because on
+	// a merged-usr machine /bin resolves to /usr/bin, and "/bin" is still not
+	// somewhere anybody meant to work.
+	for _, candidate := range []string{clean, resolveExisting(clean)} {
+		if blockedPath(candidate) {
 			return "", fmt.Errorf("%s is not a place to run an agent", clean)
 		}
 	}
@@ -122,6 +133,42 @@ func customWorkdir(settings config.Settings, path string) (string, error) {
 		return "", fmt.Errorf("the working directory could not be created: %w", err)
 	}
 	return clean, nil
+}
+
+// blockedPath reports whether a path is one of the places an agent may never
+// be given, either exactly or - for the kernel's own filesystems, where
+// nothing at all is a workspace - anywhere underneath.
+func blockedPath(path string) bool {
+	for _, blocked := range blockedRoots {
+		if path == blocked {
+			return true
+		}
+	}
+	for _, tree := range blockedTrees {
+		if path == tree || strings.HasPrefix(path, tree+string(os.PathSeparator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveExisting follows the symlinks of the longest part of a path that
+// exists, and puts the rest back on the end. A custom directory is usually
+// asked for before it exists, so resolving the whole path would answer
+// nothing; resolving the part that is there is what catches a link in it.
+func resolveExisting(path string) string {
+	rest := ""
+	for current := path; ; {
+		if resolved, err := filepath.EvalSymlinks(current); err == nil {
+			return filepath.Join(resolved, rest)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return path
+		}
+		rest = filepath.Join(filepath.Base(current), rest)
+		current = parent
+	}
 }
 
 // checkPath is the shape every path has to have: absolute, clean, and with no

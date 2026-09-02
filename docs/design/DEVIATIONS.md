@@ -210,6 +210,70 @@ as the endpoint exists and harmless until then. The leak assertion is the specif
 not typed anything yet" path - the one that leaves `cli_session_state='pending'` - unreachable
 from the suite, and it is not what the real TUI does either.
 
+### WP3 follow-up (review findings)
+
+**WP3 / §C.7 — the OpenCode discoverer is bounded by the launch time, and both discoverers
+take the ids other sessions already hold.** §C.7 step 2 says "take the newest entry whose
+directory == cwd", which is only safe in a directory nothing has ever run in. `GET /session`
+lists every session in the shared database, so in a preset or typed-in directory with any
+history the first poll would have answered with a conversation the user never had in that
+pane, and the next reboot would have opened it. `Discovery{Cwd, Since, Claimed}` is now passed
+to `WatchRollout` and `DiscoverOpenCodeSession`: anything stamped more than five seconds
+before the launch belongs to an earlier session, and an id another row of the same harness
+already holds is skipped. The five seconds are for the two clocks - the stamp is written by
+the CLI a moment after Socrates noted the launch, at a coarser resolution.
+
+**WP3 / §C.6, §C.7 — the residual race: two sessions of one harness in one directory.**
+Neither CLI offers a per-session handle. Codex has a candidate -
+`CODEX_INTERNAL_ORIGINATOR_OVERRIDE=socrates-<session id>` would land in
+`session_meta.originator` and be exact - but whether the backend accepts an unknown originator
+cannot be established without starting a real session, so it goes on the manual-check list
+rather than into the code. OpenCode has no equivalent input at all. What is implemented is the
+exclusion set, which prevents the *second* claim from duplicating the first; two sessions
+whose first turns are both still pending can still swap ids, and the pair is only distinguished
+once one of them is recorded. WP9a's `createcodex`/`createopencode` and the manual checks own
+what is left.
+
+**WP3 / §C.2 — a custom working directory is judged by what it resolves to, and `/proc`,
+`/sys` and `/dev` are refused with everything under them.** §C.2 says the path "is rejected if
+it resolves to" one of the blocked roots; comparing the cleaned string only would have let
+`/tmp/innocent -> /etc` through, because `MkdirAll` follows the link. Both the path as written
+and its symlink-resolved form are now checked - the written form still matters, because on a
+merged-usr machine `/bin` resolves to `/usr/bin` and `/bin` is still not a workspace. The
+three pseudo-filesystems are widened from the exact match the section lists to the whole tree:
+nothing under any of them is a place to work.
+
+**WP3 / §C.11 — the mandatory environment is applied after `extra_env`, not before.**
+`CODEX_INTERNAL_ORIGINATOR_OVERRIDE`, `OPENCODE_SERVER_PASSWORD`, `OPENCODE_SERVER_USERNAME`,
+`OPENCODE_TUI_CONFIG` and `OPENCODE_CONFIG_CONTENT` are the launch rather than a preference -
+§C.11 lists the originator as "always applied, not user-visible" - and an `extra_env` entry
+that overwrote one of them would disarm the session-id discovery or turn every discovery poll
+into a 401, silently in the first case. The raw list can no longer reach them.
+
+**WP3 / §C.5 — `--system-prompt-snapshot` is only passed when there is an appended prompt.**
+WP1 defaults the setting to `off` and normalises `""` to `off`, so the launcher was flipping
+Claude's own default (`on`, for the built-in prompt) for every session, at a prompt-cache cost
+on every resume. The flag only decides anything when `append_system_prompt` is set - which is
+how §C.5 frames it - so that is when it is emitted. The admin control keeps its two values;
+WP1's normaliser is untouched.
+
+**WP3 / §H.2 — the leak assertion checks for sessions, not for the absence of a server.**
+§H.2 asks for "no `soc_*` tmux session and no tmux server on `<data>/tmux.sock`". The second
+half is unattainable as the substrate is built: WP2 starts the server explicitly with
+`exit-empty off`, precisely so that the global hooks exist before any pane can die, so a server
+with zero sessions is the correct end state of a clean run and not a leak. `sessionsOn` answers
+the same for "no server" and for "a server with no sessions", the assertion is on the session
+list, and `kill-server` remains the backstop. If WP4 ever stops the server when the last
+session is deleted, the stronger form becomes assertable and should be restored.
+
+**WP3 / §C.13 — a shortlist saved under the old OpenCode adapter names models the new id
+scheme rejects.** WP1's `migrateSettingsDocument` moves `agents.opencode.models[]` across
+verbatim and this package changed the id from the old `provider|model` to `provider/model`,
+which is what `-m` takes; a migrated entry therefore reaches the sheet as a "typed in" id that
+OpenCode refuses. The translation belongs to WP1's migration (one `strings.Replace` on the
+opencode entry's picks), not to the launcher, and is recorded here because WP3 is what made it
+necessary.
+
 ## WP4 — Session HTTP API
 
 **WP4 / §A.11, §C.8 — `Ensure`, `Restart` and the resume flow are `internal/termux/ensure.go`,
@@ -226,8 +290,10 @@ exactly what the work package says must not wait for a UI. `restart` is the same
 state forced first, as the section describes; `resume` leaves a running session alone.
 
 **WP4 / §C.8 — the `notice` control frame is not pushed.** There is no transport in WP4. The
-`resumed` flag on the row and `POST /api/sessions/{id}/ack-resume` carry the same fact, and WP5
-adds the frame on top of them.
+`resumed` flag on the row, the `resume_fresh`/`resumed_from` fields beside it and
+`POST /api/sessions/{id}/ack-resume` carry everything the frame needs, and WP5 builds it from
+them. (The first version of this entry claimed the flag alone carried the same fact; it did not
+— see the review follow-up below.)
 
 **WP4 / §C.6, §C.7 — running the session-id discoverers is nobody's scope, so WP4 runs them.**
 `WatchRollout` and `DiscoverOpenCodeSession` were built in WP3 and no work package says who
@@ -252,3 +318,106 @@ would be one more thing to keep in step.
 endpoint streams the current file and the rotated one before it, which is up to 128 MB through
 one response and one `[]byte`. What "download scrollback" is for is the recent past, and the
 whole file remains on disk for anyone who wants it.
+
+## WP5 — The WebSocket transport
+
+**WP5 / §D.1 — `cols`/`rows` are optional on the handshake, and fall back to the size the
+session already wears.** The section calls them required. Refusing a socket for a missing
+query parameter would mean a browser that reconnected before it had measured its terminal gets
+no terminal at all, and there is a better answer available: the row's own size, which the store
+keeps above zero because `SetSessionSize` refuses anything else. A value that *is* given is
+still validated as 1–1000 and a nonsense one is a 400.
+
+**WP5 / §D.2 — output sequence numbers are one-based, and `replay_from` is the number of bytes
+the client already has.** §D.2 says the first byte after an attach is 1; the WP2 ring counts
+from 0. The transport bridges the two rather than changing the ring: the frame header carries
+`ringOffset + 1`, and `since` - the last byte the client rendered - is the ring offset the
+writer resumes from. `hello.replay_from` echoes that number, so `0` means "you have nothing;
+reset the terminal", exactly as the section requires.
+
+**WP5 / §D.3, §D.8 — the grace and the watchdog periods are fields of the `Server` and the
+hub, not constants.** They are ninety seconds, fifteen seconds and ten seconds in production,
+set once in `New` from the constants beside them. A test that proved the grace and the ping
+watchdog with those values would take two and a half minutes and nobody would run it; the tests
+that do prove them set milliseconds on their own server instance before any socket exists.
+
+**WP5 / §D.7 — the handshake ceiling is its own counter beside the password throttle, not the
+password throttle itself.** §D.7 says to reuse `throttle(ip)`, which only knows about failed
+logins; twenty handshakes a minute is a different question, so `allowHandshake(ip)` counts
+them under the same mutex. Both are applied: an address being slowed down for guessing
+passwords cannot open terminals either.
+
+**WP5 / §D.2 — a `bye` closes the viewer's terminal instead of leaving it in the grace.** The
+section calls `bye` a clean detach and does not say what happens to the tmux client. A tab that
+said it was leaving is not coming back, and holding its client for ninety seconds would spend
+one of the eight viewer slots on nobody.
+
+**WP5 / §C.8 — the resume `notice` carries `resumed_from` and `cli`.** §C.8 specifies
+`{kind, resumed_from, fresh}` and §D.2 shows `{kind, fresh, cli}`. The frame carries the union:
+`fresh` is false only when the conversation id was verified and actually resumed, `resumed_from`
+is that id, and `cli` is the harness. WP4's open item - "the `notice` control frame is not
+pushed" - is closed by this.
+
+**WP5 / §D.5 — a control frame that cannot be queued closes the socket rather than blocking.**
+The section bounds the *output* direction only. Control frames are broadcast by the Manager's
+own goroutines (a pane that died, another viewer's resize), so a viewer that has stopped
+reading must not be able to hold one of them up: thirty-two queued frames is the point at which
+the connection is closed with 1013 and left to its grace.
+
+### WP4 follow-up (review findings)
+
+**WP4 / §C.8, §B.4 — what a resume did is a key/value note, not a column.** Finding 4 is right
+that `resumed:true, resume_count:1` is byte for byte the same after a resume that continued a
+conversation and after one that had to start a new one, and §C.8 requires the banner to tell
+them apart. The outcome is recorded under `resume_note:<id>` in `kv` - `{fresh, resumed_from,
+at}` - rather than as two more columns on `sessions`: it is unread-notice state with exactly
+the life of the `resumed` flag, it is cleared by the same acknowledgement and deleted with the
+session, and a column would mean a schema change in WP1's file and a migration for a fact that
+is only interesting between a resume and the next glance at the screen.
+
+**WP4 / §D.9 — the session JSON carries three fields the store row does not serialise.**
+`sessionView` wraps `store.Session` with `cli_session_state` (the session list's technical
+detail shows whether a conversation is `verified`, `pending` or `lost`) and, after a resume,
+`resume_fresh` and `resumed_from`. The row's own tags stay as WP1 wrote them; the envelope is
+the API's, and the whole set is documented at the top of `sessions.go`.
+
+**WP4 / §C.5, §C.6 — "could not tell" no longer collapses to "gone".** The first cut treated
+every `VerifyCLISession` error as a lost conversation, which contradicted §C.5 and §C.6 and the
+`Harness` interface's own contract, and made a missing `CODEX_HOME` in Socrates' environment
+permanently discard a stored id. A verification that errors now keeps the id and attempts the
+resume; only a provable absence (`false, nil`) marks it `lost` and starts fresh. OpenCode still
+degrades to fresh, because its own launcher answers `false` rather than an error for a question
+it cannot settle - which is where that policy belongs.
+
+**WP4 / §A.10, §C.8 — a refusal to replace a live session is `ErrStillRunning`, and the row is
+never touched.** `Relaunch` used to record every failure, including that refusal, as
+`state='failed'`, and `resume` swallowed the error - so a Restart pressed on a working terminal
+answered 200 with a failed row that nothing polls out of again. The refusal is now a typed
+error, `Restart` asks tmux before it changes any state, `resume` propagates what `Relaunch`
+returns, and the handler answers 409.
+
+**WP4 / §C.8 — everything that relaunches one session is serialised per session.** Two viewers
+opening the same rebooted session at once both planned a launch, and the second `new-session`
+failed as a duplicate and marked the row failed. `Ensure` and `Restart` now take a per-session
+lock and re-read the row inside it, so the second viewer is answered with the first's result:
+one relaunch, one `resume_count`.
+
+**WP4 / §A.8 — `Adopt` re-arms the session-id watchers, and `Delete` cancels them.** Taking
+ownership of the discoverers (above) was only half done: the watcher was started by `launch`
+alone, so a Codex or OpenCode session that outlived a Socrates restart stayed `pending` for
+ever and could never be resumed - the durability case the product exists for. `Adopt` now
+starts one for every adopted row still `pending`, with `since` taken from `created_at`, reading
+the launch back from `plan.json`; OpenCode's server password is recovered from the same file,
+which is the only copy that survives the process that generated it and the reason the file is
+0600. A deleted session's watcher is cancelled rather than left to write to a row that is gone.
+
+**WP4 / §A.5, §D.9 — client-supplied sizes are bounded, and a losing idempotent create takes
+its directory back.** `cols`/`rows` outside 10-1000 are a 400 before any row or directory
+exists (tmux refuses the window otherwise, and the client's mistake became a failed session and
+an orphaned workspace directory). When `Create` finds the row a concurrent identical request
+already made, the empty dynamic directory this one created on the way in is removed and the
+answer is 200 rather than 201.
+
+**WP4 / §A.9 — a `starting` row over a live pane is promoted by the poll.** If the last write
+of a create does not land, the pane is alive and the row is behind; the poll now says so, and
+`Ensure`'s ten-second grace asks tmux before it writes `failed` over a working terminal.

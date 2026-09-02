@@ -42,14 +42,14 @@ const codexIndex = "state_5.sqlite"
 // The uuid in the file name is the same value as payload.session_id, so once
 // the working directory and the originator have been confirmed from line 0,
 // the name is enough.
-func WatchRollout(ctx context.Context, codexHome, cwd string, since time.Time) (string, error) {
+func WatchRollout(ctx context.Context, codexHome string, d Discovery) (string, error) {
 	if codexHome == "" {
 		return "", errors.New("codex: there is no CODEX_HOME to watch")
 	}
-	cwd = filepath.Clean(cwd)
+	d.Cwd = filepath.Clean(d.Cwd)
 	deadline := time.Now().Add(codexWatchBudget)
 	for {
-		id, err := findRollout(codexHome, cwd, since)
+		id, err := findRollout(codexHome, d)
 		if err != nil {
 			return "", err
 		}
@@ -68,13 +68,14 @@ func WatchRollout(ctx context.Context, codexHome, cwd string, since time.Time) (
 }
 
 // findRollout is one pass over the rollout tree. A file older than the launch
-// is skipped without being opened, which is what keeps a directory of a
-// thousand past sessions cheap to poll.
-func findRollout(codexHome, cwd string, since time.Time) (string, error) {
+// is skipped without being opened, and a whole day's directory is skipped
+// without being entered, which is what keeps a home with years of sessions in
+// it cheap to poll every two seconds.
+func findRollout(codexHome string, d Discovery) (string, error) {
 	root := filepath.Join(codexHome, "sessions")
 	newest := time.Time{}
 	found := ""
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			// A directory that vanished under the walk is not a failure: Codex
 			// writes into this tree while we read it.
@@ -83,18 +84,30 @@ func findRollout(codexHome, cwd string, since time.Time) (string, error) {
 			}
 			return err
 		}
-		if d.IsDir() || !isRolloutName(d.Name()) {
+		if entry.IsDir() {
+			if staleDateDir(root, path, d.Since) {
+				return fs.SkipDir
+			}
 			return nil
 		}
-		info, err := d.Info()
-		if err != nil || info.ModTime().Before(since) {
+		if !isRolloutName(entry.Name()) {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil || d.startedBefore(info.ModTime()) {
 			return nil
 		}
 		meta, err := readSessionMeta(path)
 		if err != nil || meta.Payload.SessionID == "" {
 			return nil
 		}
-		if filepath.Clean(meta.Payload.Cwd) != cwd || meta.Payload.Originator != codexOriginator {
+		if filepath.Clean(meta.Payload.Cwd) != d.Cwd || meta.Payload.Originator != codexOriginator {
+			return nil
+		}
+		// Another session of this harness, in this directory, got there
+		// first. Codex offers no per-session handle to tell two of them
+		// apart, so the ids already spoken for are the discriminator.
+		if d.claimed(meta.Payload.SessionID) {
 			return nil
 		}
 		if info.ModTime().After(newest) {
@@ -106,6 +119,28 @@ func findRollout(codexHome, cwd string, since time.Time) (string, error) {
 		return "", err
 	}
 	return found, nil
+}
+
+// staleDateDir reports whether a directory of the YYYY/MM/DD tree is entirely
+// older than the launch. Only a full date - three levels below the root - is
+// judged, because a year or a month directory can hold a day that is not.
+func staleDateDir(root, path string, since time.Time) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	parts := strings.Split(rel, string(os.PathSeparator))
+	if len(parts) != 3 {
+		return false
+	}
+	day, err := time.ParseInLocation("2006/01/02", strings.Join(parts, "/"), time.Local)
+	if err != nil {
+		return false
+	}
+	// The whole of the day after this one has to be behind the launch before
+	// the directory can be skipped: a file written at 23:59 is stamped on the
+	// day it belongs to, and the launch may be minutes later.
+	return day.AddDate(0, 0, 1).Before(since.Add(-discoverySkew))
 }
 
 func isRolloutName(name string) bool {

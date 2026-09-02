@@ -2,6 +2,7 @@ package harnesses
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -233,14 +234,24 @@ func TestClaudeRestartNeverReusesSessionID(t *testing.T) {
 	if err != nil || ok {
 		t.Fatalf("a missing transcript was reported as %v (%v)", ok, err)
 	}
-	// This is the flow of §C.8: a lost id is cleared before Plan is called.
-	req.CLISession = ""
+	// The request still carries the id whose transcript has just gone. Plan is
+	// what has to refuse to reuse it: a caller that forgot to clear the field
+	// would otherwise build `--session-id <an id already in use>`, and the
+	// pane would die on the binary's own refusal before anybody could type.
 	fresh, err := Claude{}.Plan(ctx, req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if again := valueOf(fresh.Argv, "--session-id"); again == id || again == "" {
 		t.Fatalf("the fresh launch reused the id %q", again)
+	}
+	// And twice over: two plans from one request are two conversations.
+	second, err := Claude{}.Plan(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if valueOf(second.Argv, "--session-id") == valueOf(fresh.Argv, "--session-id") {
+		t.Fatal("two fresh plans were given the same session id")
 	}
 	if carries(fresh.Argv, "--resume") {
 		t.Fatal("a fresh launch tried to resume")
@@ -512,7 +523,7 @@ func TestCodexWatchRolloutMatchesCwdAndOriginator(t *testing.T) {
 	mine := uuid.NewString()
 	write(mine, l.cwd, codexOriginator)
 
-	got, err := findRollout(home, l.cwd, time.Now().Add(-time.Minute))
+	got, err := findRollout(home, Discovery{Cwd: l.cwd, Since: time.Now().Add(-time.Minute)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -520,8 +531,9 @@ func TestCodexWatchRolloutMatchesCwdAndOriginator(t *testing.T) {
 		t.Fatalf("the watcher matched %q, want %q", got, mine)
 	}
 
-	// A file written before this launch belongs to an earlier session.
-	got, err = findRollout(home, l.cwd, time.Now().Add(time.Minute))
+	// A file written before this launch belongs to an earlier session. An
+	// hour, not a minute: the skew allowance is five seconds.
+	got, err = findRollout(home, Discovery{Cwd: l.cwd, Since: time.Now().Add(time.Hour)})
 	if err != nil || got != "" {
 		t.Fatalf("an older rollout was claimed: %q %v", got, err)
 	}
@@ -531,7 +543,10 @@ func TestCodexWatchRolloutMatchesCwdAndOriginator(t *testing.T) {
 
 func TestOpenCodePositionalCwdIsLast(t *testing.T) {
 	l := newLab(t)
-	l.settings.Harnesses.OpenCode.ExtraArgs = []string{"--cors", "https://example.test"}
+	// A boolean flag, deliberately: an array-valued one such as --cors would
+	// swallow the positional path, which is a real trap and is on the manual
+	// list rather than something this test should paper over.
+	l.settings.Harnesses.OpenCode.ExtraArgs = []string{"--mdns"}
 	plan := l.plan(OpenCode{})
 	if plan.Argv[len(plan.Argv)-1] != l.cwd {
 		t.Fatalf("the project path is not last: %v", plan.Argv)
@@ -583,6 +598,7 @@ func TestOpenCodeServerPasswordIsSet(t *testing.T) {
 	}
 	t.Cleanup(func() { ForgetOpenCodeAccess("abcdef0123456789") })
 
+	launched := time.Now()
 	var sawAuth bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, pass, given := r.BasicAuth()
@@ -592,14 +608,18 @@ func TestOpenCodeServerPasswordIsSet(t *testing.T) {
 			return
 		}
 		sawAuth = true
-		_, _ = w.Write([]byte(`[{"id":"ses_one","directory":"` + l.cwd + `","time":{"created":1}}]`))
+		// One conversation from long before this pane, one from after it.
+		// Only the second is this pane's.
+		_, _ = w.Write([]byte(`[{"id":"ses_old","directory":"` + l.cwd + `","time":{"created":1}},` +
+			`{"id":"ses_one","directory":"` + l.cwd + `","time":{"created":` + strconv.FormatInt(launched.Add(time.Second).UnixMilli(), 10) + `}}]`))
 	}))
 	defer srv.Close()
 	port := serverPort(t, srv.URL)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	id, err := DiscoverOpenCodeSession(ctx, ServerAccess{Port: port, Username: access.Username, Password: access.Password}, l.cwd)
+	id, err := DiscoverOpenCodeSession(ctx, ServerAccess{Port: port, Username: access.Username, Password: access.Password},
+		Discovery{Cwd: l.cwd, Since: launched})
 	if err != nil || id != "ses_one" {
 		t.Fatalf("discovery = %q, %v", id, err)
 	}
@@ -608,7 +628,8 @@ func TestOpenCodeServerPasswordIsSet(t *testing.T) {
 	}
 
 	// A wrong password is a launch failure and not something a retry mends.
-	_, err = DiscoverOpenCodeSession(ctx, ServerAccess{Port: port, Username: access.Username, Password: "wrong"}, l.cwd)
+	_, err = DiscoverOpenCodeSession(ctx, ServerAccess{Port: port, Username: access.Username, Password: "wrong"},
+		Discovery{Cwd: l.cwd, Since: launched})
 	if err == nil {
 		t.Fatal("a 401 was treated as something to wait out")
 	}
@@ -618,19 +639,105 @@ func TestOpenCodeServerPasswordIsSet(t *testing.T) {
 // the opposite of every other id in this application, and exactly the sort of
 // thing a later reader would quietly "fix".
 func TestOpenCodeNewestIsByCreationTime(t *testing.T) {
-	sessions := []openCodeSession{
-		{ID: "ses_zzz", Directory: "/w"},
-		{ID: "ses_aaa", Directory: "/w"},
-		{ID: "ses_mmm", Directory: "/elsewhere"},
+	launched := time.Now()
+	at := func(id, dir string, offset time.Duration) openCodeSession {
+		s := openCodeSession{ID: id, Directory: dir}
+		s.Time.Created = launched.Add(offset).UnixMilli()
+		return s
 	}
-	sessions[0].Time.Created = 2000
-	sessions[1].Time.Created = 1000
-	sessions[2].Time.Created = 9000
-	if got := newestIn(sessions, "/w"); got != "ses_zzz" {
+	// Two sessions of this pane and one somebody else's directory. The ids
+	// descend as OpenCode mints them, so the newest is the smallest.
+	sessions := []openCodeSession{
+		at("ses_zzz", "/w", time.Second),
+		at("ses_yyy", "/w", 2*time.Second),
+		at("ses_mmm", "/elsewhere", 3*time.Second),
+	}
+	d := Discovery{Cwd: "/w", Since: launched}
+	if got := newestIn(sessions, d); got != "ses_yyy" {
 		t.Fatalf("newest = %q", got)
 	}
-	if got := newestIn(sessions, "/nothing"); got != "" {
+	if got := newestIn(sessions, Discovery{Cwd: "/nothing", Since: launched}); got != "" {
 		t.Fatalf("a directory with no session answered %q", got)
+	}
+}
+
+// A directory with history is the normal case for a preset or a typed-in
+// path: GET /session lists every session in the shared database, and a pane
+// that claimed the newest of those would show the user a conversation they
+// never had here.
+func TestOpenCodeIgnoresSessionsOlderThanTheLaunch(t *testing.T) {
+	launched := time.Now()
+	old := openCodeSession{ID: "ses_old", Directory: "/w"}
+	old.Time.Created = launched.Add(-time.Hour).UnixMilli()
+	d := Discovery{Cwd: "/w", Since: launched}
+
+	if got := newestIn([]openCodeSession{old}, d); got != "" {
+		t.Fatalf("a session from before the launch was claimed: %q", got)
+	}
+	fresh := openCodeSession{ID: "ses_new", Directory: "/w"}
+	fresh.Time.Created = launched.Add(time.Second).UnixMilli()
+	if got := newestIn([]openCodeSession{old, fresh}, d); got != "ses_new" {
+		t.Fatalf("newest = %q, want the one this pane started", got)
+	}
+	// The stamps have coarser resolution than the launch time, so a session
+	// minted a moment "before" the launch is still this pane's.
+	skewed := openCodeSession{ID: "ses_skew", Directory: "/w"}
+	skewed.Time.Created = launched.Add(-time.Second).UnixMilli()
+	if got := newestIn([]openCodeSession{skewed}, d); got != "ses_skew" {
+		t.Fatalf("the skew allowance dropped this pane's own session: %q", got)
+	}
+}
+
+// Two sessions of one harness can share a directory, and neither CLI offers a
+// handle to tell them apart. The ids the other rows already hold are what
+// keeps the second session from adopting the first one's conversation.
+func TestDiscoverySkipsIdsAnotherSessionHolds(t *testing.T) {
+	launched := time.Now()
+	first := openCodeSession{ID: "ses_first", Directory: "/w"}
+	first.Time.Created = launched.Add(time.Second).UnixMilli()
+	second := openCodeSession{ID: "ses_second", Directory: "/w"}
+	second.Time.Created = launched.Add(2 * time.Second).UnixMilli()
+
+	taken := map[string]bool{"ses_second": true}
+	d := Discovery{Cwd: "/w", Since: launched, Claimed: func(id string) bool { return taken[id] }}
+	if got := newestIn([]openCodeSession{first, second}, d); got != "ses_first" {
+		t.Fatalf("the discoverer claimed %q, which another session already holds", got)
+	}
+	taken["ses_first"] = true
+	if got := newestIn([]openCodeSession{first, second}, d); got != "" {
+		t.Fatalf("every session is spoken for and the discoverer answered %q", got)
+	}
+
+	// The same for Codex, over real rollout files in one directory.
+	l := newLab(t)
+	home := codexHome()
+	dir := filepath.Join(home, "sessions", "2026", "09", "02")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mine, theirs := uuid.NewString(), uuid.NewString()
+	for _, id := range []string{mine, theirs} {
+		meta, err := json.Marshal(map[string]any{
+			"type":    "session_meta",
+			"payload": map[string]any{"session_id": id, "cwd": l.cwd, "originator": codexOriginator},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "rollout-2026-09-02T08-00-00-"+id+".jsonl"), append(meta, '\n'), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := findRollout(home, Discovery{
+		Cwd:     l.cwd,
+		Since:   time.Now().Add(-time.Minute),
+		Claimed: func(id string) bool { return id == theirs },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != mine {
+		t.Fatalf("the watcher returned %q, want the one nobody holds", got)
 	}
 }
 
@@ -825,10 +932,33 @@ func TestResolveWorkdir(t *testing.T) {
 	if got, err := ResolveWorkdir(settings, WorkdirCustom, custom, "codex", "id"); err != nil || got != custom {
 		t.Fatalf("custom = %q, %v", got, err)
 	}
-	for _, blocked := range []string{"/", "/etc", "/usr", "/bin", "/sbin", "/boot", "/proc"} {
+	for _, blocked := range []string{"/", "/etc", "/usr", "/bin", "/sbin", "/boot",
+		"/proc", "/proc/1", "/sys", "/sys/kernel", "/dev", "/dev/shm/work"} {
 		if _, err := ResolveWorkdir(settings, WorkdirCustom, blocked, "codex", "id"); err == nil {
 			t.Errorf("%s was accepted as a working directory", blocked)
 		}
+	}
+
+	// The rule is what a path resolves to. MkdirAll follows a symlink, so a
+	// harmless-looking name pointing at /etc has to be refused by the name it
+	// ends up at, not the one it was typed as.
+	links := t.TempDir()
+	trap := filepath.Join(links, "innocent")
+	if err := os.Symlink("/etc", trap); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveWorkdir(settings, WorkdirCustom, trap, "codex", "id"); err == nil {
+		t.Errorf("%s -> /etc was accepted", trap)
+	}
+	// The resolution works on the longest part of the path that exists, so a
+	// directory that is not there yet is still judged by where its parent
+	// really is.
+	sysLink := filepath.Join(links, "harmless")
+	if err := os.Symlink("/sys", sysLink); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveWorkdir(settings, WorkdirCustom, filepath.Join(sysLink, "workspace"), "codex", "id"); err == nil {
+		t.Errorf("%s/workspace, which is under /sys, was accepted", sysLink)
 	}
 	settings.Workspace.AllowCustom = false
 	if _, err := ResolveWorkdir(settings, WorkdirCustom, custom, "codex", "id"); err == nil {
@@ -860,4 +990,57 @@ func serverPort(t *testing.T, rawURL string) int {
 		t.Fatalf("port %q: %v", port, err)
 	}
 	return n
+}
+
+// Step 4 of the discovery recipe: a version that does not serve the HTTP API,
+// or a server that never came up, still leaves its sessions in the database.
+// The same two bounds apply there - it is the same question asked of a
+// different source, not a looser one.
+func TestOpenCodeFallsBackToTheDatabase(t *testing.T) {
+	l := newLab(t)
+	dir := filepath.Join(openCodeDataDir())
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "opencode.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(`CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT, time_created INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	launched := time.Now()
+	insert := func(id, dir string, at time.Time) {
+		if _, err := db.Exec(`INSERT INTO session (id, directory, time_created) VALUES (?,?,?)`, id, dir, at.UnixMilli()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert("ses_yesterday", l.cwd, launched.Add(-24*time.Hour))
+	insert("ses_elsewhere", filepath.Join(l.home, "other"), launched.Add(time.Second))
+	insert("ses_mine", l.cwd, launched.Add(time.Second))
+	insert("ses_theirs", l.cwd, launched.Add(2*time.Second))
+
+	ctx := context.Background()
+	got, err := newestInDB(ctx, Discovery{
+		Cwd:     l.cwd,
+		Since:   launched,
+		Claimed: func(id string) bool { return id == "ses_theirs" },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "ses_mine" {
+		t.Fatalf("the database fallback answered %q", got)
+	}
+
+	// No database at all is "nothing found yet", not a failure: the session
+	// stays pending and the watcher keeps looking.
+	if err := os.Remove(filepath.Join(dir, "opencode.db")); err != nil {
+		t.Fatal(err)
+	}
+	got, err = newestInDB(ctx, Discovery{Cwd: l.cwd, Since: launched})
+	if got != "" || err != nil {
+		t.Fatalf("a missing database answered %q, %v", got, err)
+	}
 }
