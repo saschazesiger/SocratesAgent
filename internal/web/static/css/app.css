@@ -278,8 +278,11 @@ a { color: inherit; }
 
 .app {
   display: grid;
-  /* Two tracks: the chat list and the conversation. */
-  grid-template-columns: 264px minmax(0, 1fr);
+  /* Two tracks: the chat list and the conversation. --side-w is the first of
+     them, so collapsing the sidebar is one number changing rather than a
+     second layout. */
+  grid-template-columns: var(--side-w, 264px) minmax(0, 1fr);
+  transition: grid-template-columns .16s var(--ease);
   /* --app-h is the visual viewport, which is the only height a phone with its
      keyboard up tells the truth about; keybar.js keeps it current and it is
      unset everywhere else. */
@@ -303,15 +306,32 @@ a { color: inherit; }
   flex-direction: column;
   gap: 14px;
 }
+/* The name of the thing, and beside it the one control that changes the
+   shape of the page. */
+.brand-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 .brand {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 0 6px;
+  min-width: 0;
+  flex: 1;
   font-weight: 650;
   letter-spacing: -.025em;
   font-size: 16px;
 }
+.brand-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A hairline square, like every other icon button that is a control rather
+   than a decoration. It wears the drawing of what it is about to do. */
+.side-toggle {
+  flex: none;
+  border: 1px solid var(--line);
+}
+.side-toggle .ico-rail { display: none; }
 .brand .mark {
   width: 26px;
   height: 26px;
@@ -447,6 +467,54 @@ a { color: inherit; }
 }
 .side-foot .btn { flex: 1; height: 34px; font-size: 13px; border-color: transparent; background: transparent; }
 .side-foot .btn:hover { background: var(--bg-hover); }
+
+/* ------------------------------------------------------- the sidebar as a rail
+
+   Collapsed, the column is 56px of marks: the logo, a square New session, one
+   agent mark per session, and the two footer actions. Every word in it goes,
+   and what a row is called moves into its `title`. It is a desk feature only -
+   under the drawer breakpoint below the sidebar is already a drawer, and a
+   drawer that is also a rail is a drawer nobody can read. */
+@media (min-width: 901px) {
+  body.side-collapsed .app { --side-w: 56px; }
+  body.side-collapsed .side-head { padding: 12px 8px 10px; gap: 10px; }
+  body.side-collapsed .brand-row { flex-direction: column; gap: 8px; }
+  body.side-collapsed .brand { flex: none; padding: 0; justify-content: center; }
+  body.side-collapsed .brand-name { display: none; }
+  body.side-collapsed .side-toggle .ico-wide { display: none; }
+  body.side-collapsed .side-toggle .ico-rail { display: block; }
+  /* A square with the same mark on it, and its words in the tooltip. */
+  body.side-collapsed .new-chat {
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    margin: 0 auto;
+    justify-content: center;
+  }
+  body.side-collapsed .btn-label { display: none; }
+  body.side-collapsed .scope { display: none; }
+  body.side-collapsed .chat-list { padding: 4px 6px 12px; }
+  /* The day header keeps its hairline - which is what actually separates the
+     groups - and loses the word, which does not fit in a rail. */
+  body.side-collapsed .chat-group { font-size: 0; padding: 8px 4px 0; }
+  body.side-collapsed .list-empty { display: none; }
+  body.side-collapsed .chat-item { justify-content: center; gap: 0; padding: 8px 0; }
+  body.side-collapsed .chat-item .label,
+  body.side-collapsed .chat-item .act,
+  body.side-collapsed .chat-item .tag { display: none; }
+  body.side-collapsed .side-foot { flex-direction: column; align-items: center; padding: 8px 6px; gap: 4px; }
+  body.side-collapsed .side-foot .btn {
+    flex: none;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    justify-content: center;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* The width is the news, not the travel. */
+  .app { transition: none; }
+}
 
 .main {
   display: flex;
@@ -626,7 +694,17 @@ a { color: inherit; }
   cursor: pointer;
   transition: color .16s var(--ease), background .16s var(--ease), box-shadow .16s var(--ease);
 }
-.seg-row .seg:first-child { border-left: 0; }
+/* The selected cell wears a 1px accent ring drawn inside its own box. A
+   square corner inside a rounded row is clipped by the row's own radius, so
+   the two cells that touch a corner carry the same radius the row's inner
+   edge has - the row's 11px less its 1px border - and the ring, the hover
+   fill and the clip then follow exactly the same curve. */
+.seg-row .seg:first-child { border-left: 0; border-radius: 10px 0 0 10px; }
+.seg-row .seg:last-child { border-radius: 0 10px 10px 0; }
+.seg-row .seg:only-child { border-radius: 10px; }
+/* The fill stops at the padding edge, so a hover on an edge cell cannot paint
+   over the row's hairline at half a device pixel. */
+.seg-row .seg { background-clip: padding-box; }
 .seg-row .seg .seg-text {
   display: flex; flex-direction: column; align-items: center; gap: 1px;
   min-width: 0; overflow: hidden;
@@ -929,6 +1007,9 @@ a { color: inherit; }
   }
   .side-foot { padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)); }
   body.nav-open .sidebar { transform: none; }
+  /* A drawer is already the narrow state, and one that was also a rail could
+     not be read at all. */
+  .side-toggle { display: none; }
   .nav-scrim {
     display: block;
     position: fixed;
@@ -1114,6 +1195,13 @@ a { color: inherit; }
 }
 .term-notice .notice-text { flex: 1; min-width: 0; }
 .term-notice .notice-close { width: 26px; height: 26px; flex: none; }
+/* A line that has been read leaves the way it came: it fades, and the space is
+   free for the next one. NOTICE_FADE in session.js is this duration. */
+.term-notice.leaving { opacity: 0; transition: opacity .18s var(--ease); }
+@media (prefers-reduced-motion: reduce) {
+  .term-notice { animation: none; }
+  .term-notice.leaving { transition: none; }
+}
 
 /* What blocks the pane: it ended, it could not start, or it is on its way
    back. A card on white with a hairline, and the technical part behind an

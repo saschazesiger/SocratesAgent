@@ -126,3 +126,26 @@ superseded text stays where it is, because the history is the reason.
   when each session was last used, in the browser's own local calendar rather than the server's.
 
 Detail: `docs/design/DESIGN.md` §E.6 and §E.8 (revision 4), and `docs/design/ACTIVITY.md` §D.
+
+## Revision 5 — the shell, 2026-09-02
+
+Four changes to the frame around the terminal. Binding like the rest.
+
+- **A notice puts itself away.** Every line above the pane — `resumed`, `resized`, `desync`, the
+  answer **Status** puts there — fades after 6 s, and a new line replaces whatever is up. The
+  timer and the close button are the same decision, so the `resumed` line still acknowledges
+  itself on the way out. A line carrying a control the person has yet to press (the **Cancel** of
+  a running run) is not news and stays. The close button never goes away.
+- **The selected cell of a `.seg-row` hugs the corner.** The 1px accent ring is drawn inside a
+  square cell, and a square corner inside an 11px row was clipped: the two cells that touch a
+  corner now carry the row's own inner radius, so the ring, the hover fill and the clip follow one
+  curve at 1× and at 2×.
+- **The working directory is a dropdown, not a row of cells.** The same strict `combobox` the
+  model is picked with: `Dynamic`, one entry per admin preset (its name, with the full path as
+  sub-text) and `Custom path…`. A machine with a dozen preset directories on it was a dozen cells
+  three characters wide. Nothing about what is POSTed changes.
+- **The sidebar collapses to a rail.** 264px of names, or 56px of marks, from one hairline button
+  beside the brand, remembered per device. On a phone the sidebar is already a drawer, so the
+  control is not there and the rail is never entered.
+
+Detail: `docs/design/DESIGN.md` §E.2, §E.3, §E.7 and §E.8 (revision 5).

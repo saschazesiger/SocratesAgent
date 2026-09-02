@@ -390,17 +390,23 @@ async function pages() {
       ok(bare.tips === 0 && !bare.advanced && bare.prose === '',
         `the sheet has no "i", no Advanced and no explanations at ${tag}`, JSON.stringify(bare));
 
-      // A row of choices is one control: equal parts that together are the
-      // width of the row.
-      const seg = await s.page.evaluate(() => {
-        const row = document.getElementById('nsDir');
-        const parts = [...row.querySelectorAll('.seg')].map((n) => n.getBoundingClientRect().width);
-        return { row: row.getBoundingClientRect().width, parts };
+      // Where a session works is a dropdown, not a row of cells: a machine with
+      // a dozen preset directories on it still has one control the width of
+      // the sheet, and the field says which place is chosen.
+      const dir = await s.page.evaluate(() => {
+        const host = document.getElementById('nsDir');
+        const input = host.querySelector('.combo-input');
+        const box = host.getBoundingClientRect();
+        return {
+          combo: !!host.querySelector('.combo'),
+          segs: host.querySelectorAll('.seg').length,
+          value: input ? input.value : '',
+          width: Math.round(box.width),
+          sheet: Math.round(document.getElementById('newSessionSheet').getBoundingClientRect().width),
+        };
       });
-      const equal = seg.parts.every((w) => Math.abs(w - seg.parts[0]) <= 1);
-      const fills = Math.abs(seg.parts.reduce((a, b) => a + b, 0) - seg.row) <= 2 + seg.parts.length;
-      ok(seg.parts.length > 0 && equal && fills,
-        `the working-directory choices are equal and fill the row at ${tag}`, JSON.stringify(seg));
+      ok(dir.combo && dir.segs === 0 && dir.value === 'Dynamic',
+        `the working directory is a dropdown, starting on Dynamic at ${tag}`, JSON.stringify(dir));
       await shot(s.page, 'pages-sheet-' + tag);
       await s.page.click('#nsCancel');
 
@@ -897,10 +903,21 @@ async function adminoptions() {
     await ensureNav(s.page);
     await s.page.click('#newSession');
     await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-    const cell = '#nsDir .seg[data-value="preset:' + preset + '"]';
+    // The directory is picked out of the dropdown: open it, and take the entry
+    // whose value is this preset. Its own label is the directory's name and
+    // the full path is the sub-text under it.
+    await s.page.click('#nsDir .combo-input');
+    const cell = '#nsDir .combo-option[data-value="preset:' + preset + '"]';
+    await s.page.waitForSelector(cell, { timeout: 5000 }).catch(() => {});
     const offered = await s.page.$(cell);
     ok(!!offered, 'the new-session sheet offers the preset directory', cell);
-    if (offered) await s.page.click(cell);
+    if (offered) {
+      const hint = await s.page.$eval(cell, (n) => (n.querySelector('.combo-hint') || {}).textContent || '');
+      ok(hint === preset, 'and its full path is the sub-text under its name', hint);
+      await s.page.click(cell);
+      await s.page.waitForFunction(() =>
+        document.getElementById('nsDirHint').textContent.length > 0, null, { timeout: 5000 });
+    }
     await s.page.click('#nsHarness .seg[data-value="claude"]');
     await s.page.click('#nsStart');
     await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
@@ -2178,13 +2195,16 @@ async function rebootresume() {
       banner.bubbleShown + ' ' + oneLine(banner.bubble));
     await shot(s.page, 'rebootresume');
 
-    // Dismissing it is a decision the server keeps: the banner does not come
-    // back on the next reload.
-    await s.page.click('#termNotice .notice-close');
-    await s.page.waitForFunction(() => document.getElementById('termNotice').hidden,
-      null, { timeout: 5000 });
+    // A notice is news, and news that has been read is in the way: it goes on
+    // its own once it has been up long enough to read, and going is the same
+    // decision the close button makes - the flag behind it is cleared either
+    // way, and the banner does not come back on the next reload.
+    const went = await s.page.waitForFunction(() => document.getElementById('termNotice').hidden,
+      null, { timeout: 9000 }).then(() => true).catch(() => false);
+    ok(went, 'the banner puts itself away without being dismissed',
+      went ? 'gone' : 'still up after 9 s');
     const acked = await waitForAck(s, claudeId);
-    ok(acked.resumed === false, 'putting the banner away cleared the flag behind it',
+    ok(acked.resumed === false, 'and the line going cleared the flag behind it',
       JSON.stringify({ resumed: acked.resumed, resume_count: acked.resume_count }));
     ok(acked.resume_count === 1, 'and the resume was counted once', String(acked.resume_count));
     await s.page.reload({ waitUntil: 'domcontentloaded' });
@@ -2228,8 +2248,8 @@ async function rebootresume() {
 /* ---------------------------------------------------------- 18. twoviewers */
 
 // recordNotices keeps every notice the thin line above the terminal has shown,
-// in order. It is an init script rather than a poll because the resized notice
-// puts itself away after four seconds, and a scenario that only looked at the
+// in order. It is an init script rather than a poll because every notice puts
+// itself away once it has been read, and a scenario that only looked at the
 // end would see nothing at all - or, worse, would count two of them as one.
 function recordNotices() {
   window.__notices = [];
@@ -2734,6 +2754,25 @@ async function design() {
       })));
     ok(sheetMarks.length === 4 && sheetMarks.every((one) => one.mark === one.harness),
       'the sheet gives every harness its own mark', JSON.stringify(sheetMarks));
+
+    // Where a session works is a dropdown, and it opens on a list of places
+    // with the full path as the sub-text - never a row of cells three
+    // characters wide.
+    await s.page.click('#nsDir .combo-input');
+    await s.page.waitForSelector('#nsDir .combo-option', { timeout: 5000 });
+    const dir = await s.page.evaluate(() => {
+      const host = document.getElementById('nsDir');
+      return {
+        combo: !!host.querySelector('.combo'),
+        segs: host.querySelectorAll('.seg').length,
+        options: [...host.querySelectorAll('.combo-option')].map((n) => n.dataset.value),
+        value: host.querySelector('.combo-input').value,
+      };
+    });
+    ok(dir.combo && dir.segs === 0 && dir.options.includes('dynamic') && dir.value === 'Dynamic',
+      'the working directory is a dropdown, not a row of cells', JSON.stringify(dir));
+    await shot(s.page, 'design-dir-open');
+    await s.page.keyboard.press('Escape');
     await s.page.keyboard.press('Escape');
     await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 10000 })
       .catch(() => {});
@@ -2891,6 +2930,94 @@ async function design() {
     ok(!/\b(exact|quiet|unknown|run_id|phase)\b/.test(spoken) && !spoken.includes(id),
       'nothing the detector knows is written on the page in words',
       oneLine((/\b(exact|quiet|unknown|run_id|phase)\b/.exec(spoken) || ['none'])[0]));
+
+    /* --------------------------------------------- the sidebar as a rail */
+
+    // A column of names is what a desk wants and a laptop cannot spare. The
+    // control beside the brand takes it down to a rail of marks, this device
+    // remembers the answer, and the pane is re-measured for the width it has
+    // actually been given.
+    const wide = await s.page.evaluate(() =>
+      Math.round(document.getElementById('sidebar').getBoundingClientRect().width));
+    await s.page.click('#sideCollapse');
+    await wait(400);
+    const rail = await s.page.evaluate(() => {
+      const bar = document.getElementById('sidebar');
+      const seen = (sel) => {
+        const node = document.querySelector(sel);
+        return !!node && node.checkVisibility();
+      };
+      const row = document.querySelector('#sessionList .chat-item');
+      return {
+        width: Math.round(bar.getBoundingClientRect().width),
+        brand: seen('.brand-name'),
+        scope: seen('#sessionScope'),
+        label: seen('#sessionList .chat-item .label'),
+        newWords: seen('#newSession .btn-label'),
+        foot: seen('#logout .btn-label'),
+        mark: !!row && !!row.querySelector('.agent-mark'),
+        named: row ? row.title : '',
+        fill: getComputedStyle(bar).backgroundColor,
+        cols: document.getElementById('termSize').textContent,
+      };
+    });
+    ok(wide > 200 && rail.width <= 72 && rail.width < wide,
+      'the collapse control takes the sidebar down to a rail', wide + ' -> ' + rail.width + ' px');
+    ok(!rail.brand && !rail.scope && !rail.label && !rail.newWords && !rail.foot
+      && rail.mark && rail.named.length > 0,
+    'the rail is marks and no words, and a row is named in its tooltip', JSON.stringify(rail));
+    ok(white(rail.fill), 'and the rail is the same white as everything else', rail.fill);
+    await shot(s.page, 'design-rail');
+
+    // Per device, and it survives the reload it is there to be useful across.
+    await s.page.reload({ waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    await wait(500);
+    const kept = await s.page.evaluate(() => ({
+      collapsed: document.body.classList.contains('side-collapsed'),
+      width: Math.round(document.getElementById('sidebar').getBoundingClientRect().width),
+    }));
+    ok(kept.collapsed && kept.width <= 72, 'and a reload comes back to the rail',
+      JSON.stringify(kept));
+
+    // The rail gives its width to the pane, which is measured in characters
+    // and so has to be measured again: expanding the sidebar takes those
+    // columns back.
+    const railCols = await s.page.$eval('#termSize', (n) => n.textContent);
+    await s.page.click('#sideCollapse');
+    await wait(600);
+    const wideCols = await s.page.$eval('#termSize', (n) => n.textContent);
+    const colsOf = (text) => Number(String(text).split('×')[0]) || 0;
+    ok(colsOf(railCols) > colsOf(wideCols),
+      'and the pane is re-measured when the stage changes width',
+      railCols + ' (rail) -> ' + wideCols + ' (column)');
+
+    /* ----------------------------------- a line that puts itself away */
+
+    // A notice is news. It never blocks, it can always be closed by hand, and
+    // it goes on its own once it has been up long enough to read - otherwise
+    // the top of the pane fills with lines about things that are over.
+    const other = await s.context.newPage();
+    const otherErrors = [];
+    other.on('console', (msg) => { if (msg.type() === 'error') otherErrors.push(msg.text()); });
+    other.on('pageerror', (err) => otherErrors.push(String(err)));
+    await other.setViewportSize({ width: 640, height: 480 });
+    await other.goto(s.url + '/#' + id, { waitUntil: 'domcontentloaded' });
+    const otherUp = await other.waitForSelector('#term .xterm', { timeout: 20000 })
+      .then(() => true).catch(() => false);
+    ok(otherUp, 'the second viewer has the same session open',
+      otherUp ? 'attached' : 'hash=' + await other.evaluate(() => location.hash)
+        + ' errors=' + otherErrors.join(' | '));
+    const raised = await s.page.waitForSelector('#termNotice:not([hidden])', { timeout: 20000 })
+      .then(() => true).catch(() => false);
+    ok(raised, 'a second viewer puts a line above the pane',
+      raised ? await s.page.$eval('#termNotice', (n) => n.innerText.trim()) : 'nothing appeared');
+    const closes = await s.page.waitForFunction(
+      () => document.getElementById('termNotice').hidden, null, { timeout: 9000 })
+      .then(() => true).catch(() => false);
+    ok(closes, 'and it puts itself away without being dismissed',
+      closes ? 'gone' : 'still up after 9 s');
+    await other.close();
 
     // Rule 1 again, on the other page, and rule 2 on the admin cards.
     await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
@@ -3765,6 +3892,9 @@ async function statusspeak() {
     const shown = await noticeText(s.page);
     ok(shown.includes('finished') && shown === stub.text,
       'what the model said is on screen, in words', oneLine(shown));
+    // The line is on a timer, so everything about it is read while it is up.
+    const tip = await s.page.$eval('#termNotice .tip-bubble', (n) => n.textContent).catch(() => '');
+    await shot(s.page, 'status-speak');
 
     for (let i = 0; i < 60 && said.length === 0; i += 1) await wait(200);
     ok(said.length === 1, 'and it was read out loud exactly once', said.length + ' render(s)');
@@ -3772,7 +3902,6 @@ async function statusspeak() {
 
     // The model id and the state are facts about the machine, so they are
     // behind the "i" and never in the sentence.
-    const tip = await s.page.$eval('#termNotice .tip-bubble', (n) => n.textContent).catch(() => '');
     ok(!shown.includes('stub/model') && !shown.includes('idle'),
       'no identifier leaked into the line that is read out loud', oneLine(shown));
     ok(tip.length > 0, 'and the details are under the "i" beside it', oneLine(tip));
@@ -3783,7 +3912,12 @@ async function statusspeak() {
     ok(cleared, 'and the spinner stops when there is nothing left to wait for',
       cleared ? 'stopped' : 'still turning');
 
-    await shot(s.page, 'status-speak');
+    // And the line does not sit there for ever: it is one sentence, it has
+    // been read, and the top of the pane is free again.
+    const gone = await s.page.waitForFunction(() => document.getElementById('termNotice').hidden,
+      null, { timeout: 9000 }).then(() => true).catch(() => false);
+    ok(gone, 'and the answer puts itself away once it has been read',
+      gone ? 'gone' : 'still up after 9 s');
     ok(unexpected(s.errors).length === 0, 'no console errors',
       unexpected(s.errors).join(' | ') || '0');
   } finally {

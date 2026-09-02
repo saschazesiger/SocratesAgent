@@ -28,6 +28,16 @@ let comboCount = 0;
  * options.onChange     called with the new value
  * options.items        () => [{value, label, hint, group}]
  * options.placeholder  shown while empty
+ * options.strict       only a listed entry is a value; what is typed filters
+ *                      the list and nothing else. A model catalogue is open -
+ *                      a model the CLI has not reported still saves - but a
+ *                      working directory is not: the server keeps a list of
+ *                      the places a session may work, and a typed half-path is
+ *                      not one of them.
+ * options.display      how a value reads in the field. Without it the value is
+ *                      its own label, which is right for a model id and wrong
+ *                      for anything whose value is a key.
+ * options.emptyText    what an empty list says.
  */
 export function combobox(options = {}) {
   const {
@@ -35,7 +45,13 @@ export function combobox(options = {}) {
     onChange = () => {},
     items = () => [],
     placeholder = '',
+    strict = false,
+    display = null,
+    emptyText = 'No model matches',
   } = options;
+
+  // shown is the text the field wears for a value.
+  const shown = (one) => (display ? display(one ?? '') : (one ?? ''));
 
   const id = 'combo' + (++comboCount);
   let current = value ?? '';
@@ -46,7 +62,7 @@ export function combobox(options = {}) {
   const input = el('input', {
     class: 'input mono combo-input',
     type: 'text',
-    value: current,
+    value: shown(current),
     placeholder,
     spellcheck: 'false',
     autocomplete: 'off',
@@ -68,7 +84,7 @@ export function combobox(options = {}) {
 
   function setValue(next, notify = true) {
     current = next ?? '';
-    input.value = current;
+    input.value = shown(current);
     if (notify) onChange(current);
   }
 
@@ -96,7 +112,7 @@ export function combobox(options = {}) {
   function render() {
     list.innerHTML = '';
     if (!filtered.length) {
-      list.append(el('div', { class: 'combo-empty', text: 'No model matches' }));
+      list.append(el('div', { class: 'combo-empty', text: emptyText }));
       return;
     }
     let group = null;
@@ -108,6 +124,9 @@ export function combobox(options = {}) {
       const option = el('div', {
         class: 'combo-option' + (index === active ? ' active' : '') + (item.value === current ? ' chosen' : ''),
         role: 'option',
+        // The value is on the element so anything outside can find the entry
+        // it means without matching on the words.
+        'data-value': item.value,
         id: id + '-opt-' + index,
         'aria-selected': index === active ? 'true' : 'false',
         // mousedown, not click: the input must not lose focus first.
@@ -161,6 +180,9 @@ export function combobox(options = {}) {
   function close() {
     if (!isOpen) return;
     isOpen = false;
+    // A strict field shows the entry it is on, never the half-typed filter
+    // that was used to find one.
+    if (strict) input.value = shown(current);
     list.hidden = true;
     input.setAttribute('aria-expanded', 'false');
     input.removeAttribute('aria-activedescendant');
@@ -174,12 +196,19 @@ export function combobox(options = {}) {
     close();
   }
 
-  input.addEventListener('focus', () => open(''));
+  input.addEventListener('focus', () => {
+    // In a strict field the text is a label, so typing has to replace it
+    // rather than run on from the end of it.
+    if (strict) input.select();
+    open('');
+  });
   input.addEventListener('input', () => {
-    // The typed text is the value straight away, so a model that is not in
-    // the catalogue still saves.
-    current = input.value;
-    onChange(current);
+    if (!strict) {
+      // The typed text is the value straight away, so a model that is not in
+      // the catalogue still saves.
+      current = input.value;
+      onChange(current);
+    }
     open(input.value);
   });
 
@@ -215,7 +244,7 @@ export function combobox(options = {}) {
         if (!isOpen) return;
         event.preventDefault();
         event.stopPropagation();
-        input.value = current;
+        input.value = shown(current);
         close();
         break;
       case 'Tab':

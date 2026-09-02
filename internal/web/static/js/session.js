@@ -651,7 +651,7 @@ const state = {
 };
 
 const dom = {};
-const ids = ['sidebar', 'navScrim', 'menuBtn', 'newSession', 'sessionScope', 'sessionList',
+const ids = ['sidebar', 'navScrim', 'menuBtn', 'sideCollapse', 'newSession', 'sessionScope', 'sessionList',
   'activityLive', 'sessionHarness', 'sessionTitle', 'sessionArchived', 'termSize',
   'statusBtn', 'agentBtn', 'soundBtn', 'notifyBtn', 'sessionMenu',
   'stage', 'termWrap', 'term', 'termOverlay', 'termLines', 'termNotice',
@@ -800,6 +800,10 @@ function clockOf(at) {
 
 function updateRow(row, session) {
   row.querySelector('.label').textContent = session.title;
+  // Collapsed, a row is one mark and no words, so the name moves into the
+  // tooltip - the only place left where it can be read. Expanded it is written
+  // on the row, and a tooltip repeating it would be noise.
+  row.title = sidebarCollapsed() ? session.title : '';
   const attached = !!(state.current && state.current.id === session.id);
   setClass(row, 'active', attached);
   setClass(row, 'archived', !!session.archived);
@@ -1154,7 +1158,7 @@ function showEmpty() {
   dom.termSize.hidden = true;
   dom.sessionArchived.hidden = true;
   dom.termOverlay.hidden = true;
-  dom.termNotice.hidden = true;
+  clearNotice();
   if (state.reachable) { state.wanted = ''; location.hash = ''; }
 }
 
@@ -1250,8 +1254,39 @@ function actionButton(session, label, busyLabel) {
   });
 }
 
-// notice draws the thin line at the top of the pane. It never blocks and it is
-// always dismissible; `onDismiss` is what a notice does when it is put away.
+// How long a line above the pane stays before it puts itself away. Long enough
+// to read one sentence and look back at it - the same beat as the ticker's own
+// linger in assist.js, because the two lines sit on top of each other and a
+// reader should not have to learn two rhythms. A line that carries a control
+// the person still has to press is never taken away on a timer; see `extra`
+// below.
+const NOTICE_LINGER = 6000;
+// How long the leaving line is given to fade. It is the CSS transition on
+// `.term-notice.leaving` plus a frame, and under reduced motion the CSS makes
+// the fade instant while this stays the same.
+const NOTICE_FADE = 180;
+
+// The timers of the line that is up: the one that decides when it goes, and
+// the one that takes it off the page once it has faded. There is only ever one
+// notice, so there is only ever one of each.
+let noticeTimer = null;
+let noticeFade = null;
+
+// clearNotice takes the line away with no ceremony and cancels whatever it had
+// running. It is the path for "there is nothing to say any more" - a session
+// being detached - rather than for "this has been read".
+function clearNotice() {
+  if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null; }
+  if (noticeFade) { clearTimeout(noticeFade); noticeFade = null; }
+  dom.termNotice.classList.remove('leaving');
+  dom.termNotice.hidden = true;
+}
+
+// notice draws the thin line at the top of the pane. It never blocks, it is
+// always dismissible, and it puts itself away once it has been read;
+// `onDismiss` is what a notice does when it goes, however it goes - the close
+// button and the timer are the same decision, so the resume flag is cleared
+// either way.
 //
 // `facts` is the technical half of what the notice knows - the conversation a
 // resume came from, and anything else that is an identifier rather than a
@@ -1259,12 +1294,28 @@ function actionButton(session, label, busyLabel) {
 // itself.
 function notice(kind, text, onDismiss, facts, extra) {
   const host = dom.termNotice;
+  // A new line replaces the one that is up, so the space is free for the next
+  // one and no timer from the old line reaches the new one.
+  if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null; }
+  if (noticeFade) { clearTimeout(noticeFade); noticeFade = null; }
+  host.classList.remove('leaving');
   host.innerHTML = '';
   host.dataset.kind = kind;
+  const dismiss = () => {
+    if (host.hidden) return;
+    if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null; }
+    host.classList.add('leaving');
+    noticeFade = setTimeout(() => {
+      noticeFade = null;
+      host.hidden = true;
+      host.classList.remove('leaving');
+    }, NOTICE_FADE);
+    if (onDismiss) onDismiss();
+  };
   const close = el('button', {
     class: 'icon-btn notice-close', type: 'button', 'aria-label': 'Dismiss',
     html: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
-    onclick: () => { host.hidden = true; if (onDismiss) onDismiss(); },
+    onclick: dismiss,
   });
   // `host` is a plain element, and `ParentNode.append` writes a null argument
   // into the line as the word "null" - only `el()` filters. So the tip is
@@ -1276,6 +1327,10 @@ function notice(kind, text, onDismiss, facts, extra) {
   if (extra) host.append(extra);
   host.append(close);
   host.hidden = false;
+  // News goes when it has been read. A line with a control on it is not news:
+  // a Cancel belongs to a run that is still running, and it stays until the
+  // run does not need it any more.
+  if (!extra) noticeTimer = setTimeout(dismiss, NOTICE_LINGER);
   return host;
 }
 
@@ -1487,8 +1542,7 @@ function onControl(sessionId, frame) {
     case 'size':
       if (frame.by === 'other') {
         showSize(frame.cols, frame.rows);
-        const line = notice('resized', 'Another viewer resized this session to ' + frame.cols + '×' + frame.rows + '.');
-        setTimeout(() => { if (line.dataset.kind === 'resized') line.hidden = true; }, 4000);
+        notice('resized', 'Another viewer resized this session to ' + frame.cols + '×' + frame.rows + '.');
         if (state.term) state.term.refit();
       }
       break;
@@ -1638,6 +1692,59 @@ async function newSession() {
 function openNav() { document.body.classList.add('nav-open'); }
 function closeNav() { document.body.classList.remove('nav-open'); }
 
+/* ------------------------------------------------- the sidebar as a rail */
+
+// Whether this device keeps the sidebar as a rail. It is a fact about this
+// screen and not about the account: the same person wants the column on a
+// desk and the width on a laptop, and a preference that travelled between them
+// would be wrong on one of them every time.
+const SIDE_KEY = 'socrates.sidebar';
+// The width transition in app.css, plus a frame. The pane is measured in
+// characters, so it has to be re-measured once the stage has stopped moving -
+// too early and it fits to a width the sidebar is still in the middle of
+// leaving.
+const SIDE_MS = 200;
+
+// The drawer breakpoint from app.css. Below it the sidebar is a drawer, the
+// collapse control is not on the page, and the rail must never be entered:
+// a drawer that is also a rail is a drawer with nothing in it to read.
+const railAllowed = () => window.matchMedia('(min-width: 901px)').matches;
+
+function sidebarCollapsed() { return document.body.classList.contains('side-collapsed'); }
+
+function showSidebar(collapsed, remember = true) {
+  const want = collapsed && railAllowed();
+  setClass(document.body, 'side-collapsed', want);
+  if (dom.sideCollapse) {
+    dom.sideCollapse.setAttribute('aria-expanded', want ? 'false' : 'true');
+    const words = want ? 'Expand the sidebar' : 'Collapse the sidebar';
+    dom.sideCollapse.title = words;
+    dom.sideCollapse.setAttribute('aria-label', words);
+  }
+  // What a row shows depends on which shape it is in, so the list is drawn
+  // again rather than patched from the outside.
+  renderList();
+  if (remember) {
+    try { localStorage.setItem(SIDE_KEY, want ? 'rail' : 'wide'); } catch { /* private window */ }
+  }
+  setTimeout(() => { if (state.term) state.term.refit(); }, SIDE_MS);
+}
+
+function restoreSidebar() {
+  let saved = '';
+  try { saved = localStorage.getItem(SIDE_KEY) || ''; } catch { /* private window */ }
+  // The state is applied without writing it back: a phone that is too narrow
+  // for the rail must not overwrite what the desk it syncs nothing with chose.
+  showSidebar(saved === 'rail', false);
+  // A window that crosses the drawer breakpoint leaves the rail behind, and
+  // takes it up again on the way back if that is what this device asked for.
+  window.matchMedia('(min-width: 901px)').addEventListener('change', () => {
+    let want = '';
+    try { want = localStorage.getItem(SIDE_KEY) || ''; } catch { /* private window */ }
+    showSidebar(want === 'rail', false);
+  });
+}
+
 /* ----------------------------------------------------------------- start */
 
 function wire() {
@@ -1646,6 +1753,9 @@ function wire() {
     if (document.body.classList.contains('nav-open')) closeNav(); else openNav();
   });
   dom.navScrim.addEventListener('click', closeNav);
+  if (dom.sideCollapse) {
+    dom.sideCollapse.addEventListener('click', () => showSidebar(!sidebarCollapsed()));
+  }
   dom.sessionScope.addEventListener('click', (event) => {
     const button = event.target.closest('.seg');
     if (!button) return;
@@ -1708,6 +1818,10 @@ function wire() {
 
 async function boot() {
   wire();
+  // Before anything is measured: the rail is a different stage width, and a
+  // terminal fitted to the wide one and then narrowed is a terminal that
+  // reflows in front of the person.
+  restoreSidebar();
   // Status, Agent and the chat, mounted before anything is measured: the
   // panel takes width off the pane, and a layout applied afterwards resizes a
   // terminal somebody is already looking at.

@@ -1965,6 +1965,11 @@ which is why the `DELETED` above no longer holds), `daygroups.js` (the sidebar's
   <div class="app">
     <aside class="sidebar" id="sidebar">
       <div class="side-top">
+        <!-- rev 5: the brand, and the control that takes the column to a rail. -->
+        <div class="brand-row">
+          <div class="brand">… <span class="brand-name">Socrates</span></div>
+          <button class="icon-btn side-toggle" id="sideCollapse">…</button>
+        </div>
         <button class="btn primary" id="newSession">New session</button>
         <div class="seg-row" id="sessionScope">
           <button class="seg on" data-scope="active">Active</button>
@@ -2031,10 +2036,15 @@ Three steps in one sheet, revealed progressively; `harnesses.js` owns it.
    from `logos.js` and an `infoTip` carrying the version and binary path (`bubbleClass:'mono'`).
    `shell` gets a new mark in `logos.js`: a `>_` glyph, tile style, `#131010`.
    Ids: `#nsHarness`, cells `data-value="shell|claude|codex|opencode"`.
-2. **Directory** — `#nsDirField`: a `.seg-row` with `Dynamic` (default), one cell per admin
-   preset, and `Custom…`. Choosing `Custom…` reveals `#nsDirPath`, a text input with a hint
-   showing what will be created. Dynamic shows the path that *will* be created, greyed:
-   `<root>/claude-20260902-064615-a1b2c3d4`.
+2. **Directory** — `#nsDirField`: <!-- rev 5 --> a `combobox` (`combobox.js`, `strict:true`) over
+   `Dynamic` (default, sub-text *a fresh directory for every session*), one entry per admin preset
+   (label = the directory's name, sub-text = its full path) and `Custom path…`. It was a
+   `.seg-row`; a machine with a dozen presets on it made that a dozen cells three characters wide.
+   Strict because the list is the whole of what the server allows — unlike the model catalogue,
+   which is open. Choosing `Custom path…` reveals `#nsDirPath`, a text input with a hint showing
+   what will be created. Dynamic shows the path that *will* be created, greyed:
+   `<root>/claude-20260902-064615-a1b2c3d4`. What is POSTed is unchanged: `workdir_mode` and
+   `workdir`.
 3. **Model** — `#nsModelField`, hidden entirely for `shell`. A `combobox` over
    `harnesses.modelItems(id)`, exactly as today. Effort is a `.seg-row` (`#nsEffort`) rebuilt per
    model, hidden when the model reports none.
@@ -2272,11 +2282,20 @@ service-worker SHELL list and `embed_test.go` keeps asserting it.
 | kind | text |
 |---|---|
 | `resumed` | `Resumed after a restart.` — plus `The previous conversation could not be resumed, so this one starts fresh.` when `fresh` is true. Dismissing calls `POST /ack-resume`. |
-| `resized` | `Another viewer resized this session to 60×20.` — auto-dismisses after 4 s (§A.7) |
+| `resized` | `Another viewer resized this session to 60×20.` (§A.7) |
 | `desync` | `Reconnected — the screen was redrawn.` — after a `replay_from:0` hello |
 
 All three follow the design rules: white ground, hairline border, no second background shade, the
 technical part (exit status, stderr, the other viewer's size) behind an `infoTip`.
+
+<!-- rev 5 --> **A notice puts itself away.** Every line above the pane fades out after
+`NOTICE_LINGER` (6 s, the same number as `TICKER_LINGER` in `assist.js`, because the two lines are
+stacked over the same pane) and a new one replaces whatever is up, so the space is free for the
+next. Going on the timer is the same decision the close button makes — `onDismiss` runs either
+way, so the `resumed` line still `POST`s `/ack-resume`. The one exception is a line carrying a
+control the person still has to press (`extra`, the **Cancel** of a run in progress): that is not
+news, and it stays until the run does. The manual close button never goes away, and under
+`prefers-reduced-motion` the fade is instant.
 
 ## E.8 Session list
 
@@ -2290,6 +2309,16 @@ Delete uses `confirmDialog({danger:true})` and its body says the working directo
 
 Motion: rows fade in over 120 ms with `--ease`; the state dot pulses only while `running` and
 only when `!body.stale` (the existing `body.stale` rule already pauses `.chat-item .dot`).
+
+<!-- rev 5 --> **The sidebar collapses to a rail.** `#sideCollapse`, a hairline `icon-btn` beside
+the brand, takes the column from 264px to 56px (`--side-w` on `.app`, a 160 ms width transition,
+none under `prefers-reduced-motion`) and back. Collapsed, the rail is marks and no words: the logo,
+a square **New session**, one `agentMark` per session with the activity ring it already had and the
+session's name in its `title`, and Admin / Sign out as icons. The scope switch and the day-group
+words go; the group's hairline stays. The answer is kept per device in `localStorage`
+(`socrates.sidebar`), and the terminal is refitted once the stage has stopped moving. Below the
+drawer breakpoint the control is not on the page at all and the rail is never entered — a drawer
+that is also a rail is a drawer with nothing in it to read.
 
 <!-- rev 4 --> The rows are **grouped by day** — Today, Yesterday, This week, This month, Older,
 by `updated_at` in the browser's own local calendar (`daygroups.js`), a group with nothing in it
