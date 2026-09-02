@@ -832,3 +832,50 @@ Both ends are tested against the process table: a session deleted and a server
 killed with SIGKILL. The servers themselves are guarded in the tests, where the
 leak came from: a package-level timeout panics before any cleanup runs, so each
 lab arms a small shell loop that outlives that panic and takes the server down.
+
+## WP9a — Harness lifecycle in the browser
+
+**WP9a / §H.3 rows 13-15, §E.8 — the scenarios prove the conversation id through
+`cli_session_state` and the resume argv, because the id itself is not in the
+API.** `store.Session.CLISessionID` is `json:"-"`, so no endpoint hands the CLI's
+own session id to the browser; §H.3 asks the three create scenarios to assert on
+`cli_session_id`, and §E.8 lists it among a row's technical detail. The
+scenarios assert the same facts through what is reachable: the `--session-id`
+Claude Code was given at creation, the id the program itself answers `/id` with,
+`cli_session_state` leaving `pending` for `known` once the discoverer has found
+the conversation, and the id on the **resume** command line - which can only
+have come from the store, since the process that knew it was gone. `session.js`
+shows `cli_session_state` in a row's tip rather than the id, for the same
+reason. Exposing the id is a server change and belongs to whoever owns
+`internal/store` and `internal/server`.
+
+**WP9a / §C.8 — after a reboot only the first session can be resumed;
+`clearDeadSession` refuses the rest.** Found by `rebootresume` and reproduced
+without a browser. `Manager.clearDeadSession` decides whether a stale tmux
+session is a husk by running `display-message -p -t <name> -F '#{pane_dead}'`
+and treating any answer other than `1` as "still running". On tmux 3.6 a
+missing target is **not** an error: the command exits 0 and prints an empty
+line, so `!= "1"` is true and the relaunch is refused with `ErrStillRunning`.
+While the tmux server is gone entirely the call fails with `serverGone` and the
+resume works, which is why the first session after a reboot comes back and every
+later one is answered `409 the session is still running` - with its pane sitting
+under "Resuming after a restart…" for ever. The fix is in
+`internal/termux/manager.go`, which this package does not own, so `rebootresume`
+resumes one session (the Claude Code one, which is what §H.3 row 16 asks for)
+and the defect is reported to the coordinator instead of worked around.
+
+**WP9a / §E.7 — `resuming` is a client-side state, because the store has none.**
+The overlay table lists `resuming`, but `store` has only starting, running,
+exited, needs_resume and failed, and the row says `needs_resume` for the whole
+of a resume - which happens inside the WebSocket handshake. Opening such a
+session would otherwise leave "This session is not running." on screen for the
+seconds the relaunch takes, and a list refresh in the middle would redraw the
+button that had just been pressed. `session.js` therefore keeps
+`state.resuming`, set when this tab opens a session that is not running and
+cleared as soon as the server says what it became.
+
+**WP9a / §E.7 — the resumed banner carries `resumed_from` behind an `infoTip`.**
+§E.7 gives the banner two sentences and §E.10 rule 3 says every identifier is
+hover-only; the notice had no place for one. `notice()` now takes the facts and
+renders the same "i" the overlays use, so "Resumed after a restart." keeps the
+conversation it came back on behind it rather than in the line.

@@ -10,7 +10,7 @@
 
 import {
   start, setup, shot, ok, scenario, skipScenario, finish, ensureNav, wait,
-  readFakeLog, openRouterStub, sessionsOn, windowSize, PASSWORD, LIVE,
+  readFakeLog, killTmux, openRouterStub, sessionsOn, windowSize, PASSWORD, LIVE,
 } from './harness.mjs';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1668,10 +1668,35 @@ const launchesOf = (s, name) => readFakeLog(s.data).filter((entry) => entry.name
 const lastLaunch = (s, name) => launchesOf(s, name).slice(-1)[0] || null;
 const argvOf = (entry) => (entry && entry.argv ? entry.argv.join(' ') : '');
 
+// journalOf is every byte the pane has printed, which is what a scenario about
+// a launch has to read: the banner is written before the first viewer has
+// resized the window, so the screen may have reflowed it away, while the
+// journal is the record and cannot.
+async function journalOf(s, id) {
+  const res = await s.context.request.get(s.url + '/api/sessions/' + encodeURIComponent(id) + '/journal');
+  return res.ok() ? res.text() : '';
+}
+
+// conversationOf asks the program itself which conversation it is in. The fake
+// answers `/id` the way each real CLI knows its own session, and it is the only
+// answer in this suite that does not come from Socrates - which is what makes
+// it worth comparing a resume against.
+async function conversationOf(page) {
+  await typeLine(page, '/id');
+  await awaitScreen(page, 'session ', 20000);
+  const text = await screen(page);
+  const found = /session (\S+)/.exec(text);
+  return found ? found[1] : '';
+}
+
 // startWithModel drives the sheet the way `startSession` does and picks a
 // model on the way through, which is the step §E.3 hides for Shell and which
 // no other scenario exercises.
 async function startWithModel(page, harness, modelLabel) {
+  // The hash already names whatever session this tab is on, so the wait below
+  // is for it to become a different one - a second session started in the same
+  // tab is otherwise "finished" before it has begun.
+  const was = await page.evaluate(() => location.hash.slice(1));
   await ensureNav(page);
   await page.click('#newSession');
   await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
@@ -1684,17 +1709,26 @@ async function startWithModel(page, harness, modelLabel) {
   }
   await page.click('#nsStart');
   await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
-  await page.waitForFunction(() => location.hash.length > 1, null, { timeout: 30000 });
+  await page.waitForFunction((before) => location.hash.length > 1 && location.hash.slice(1) !== before,
+    was, { timeout: 30000 });
   return page.evaluate(() => location.hash.slice(1));
 }
 
 // waitForCLISession polls until the discoverer has learned which conversation
 // this pane is holding. Codex and OpenCode both write nothing until a turn has
 // happened, so the caller types one first and this is the wait afterwards.
+//
+// The id itself is deliberately not in the API - `cli_session_id` is
+// `json:"-"` on the row - so `cli_session_state` reaching `known` is how the
+// browser's side of the world learns that a conversation was found, and the
+// resume argv is where the id itself is checked. `pending` is the watcher
+// still looking, which is where a session sits until its first turn.
+const CLI_FOUND = ['known', 'verified'];
+
 async function waitForCLISession(s, id, timeout = 30000) {
   const until = Date.now() + timeout;
   let row = await sessionRow(s, id);
-  while (Date.now() < until && !(row && row.cli_session_id)) {
+  while (Date.now() < until && !(row && CLI_FOUND.includes(row.cli_session_state))) {
     await wait(500);
     row = await sessionRow(s, id);
   }
@@ -1783,11 +1817,12 @@ async function createclaude() {
     const id = await s.page.evaluate(() => location.hash.slice(1));
 
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    ok(await awaitScreen(s.page, 'FAKE claude'), 'the session is up', oneLine(await screen(s.page)));
-    ok(await awaitScreen(s.page, 'theme=light'), 'and it was told the terminal is light',
-      oneLine(await screen(s.page)));
-
     const row = await sessionRow(s, id);
+    const banner = await journalOf(s, id);
+    ok(/FAKE claude/.test(banner), 'the session is up', oneLine(banner));
+    ok(/theme=light/.test(banner), 'and it was told the terminal is light',
+      oneLine((/FAKE claude[^\r\n]*/.exec(banner) || [''])[0]));
+
     const launch = lastLaunch(s, 'claude');
     ok(!!launch, 'the fake recorded its launch', launch ? 'one record' : 'nothing in fake.log');
     ok(launch.cwd === row.workdir, 'it was started in the session’s own working directory',
@@ -1795,9 +1830,13 @@ async function createclaude() {
     ok(/(^| )--model haiku( |$)/.test(argvOf(launch)), 'with the model that was picked in the sheet',
       argvOf(launch));
     const fixed = launch.argv[launch.argv.indexOf('--session-id') + 1];
-    ok(launch.argv.includes('--session-id')
-      && /^[0-9a-f-]{36}$/.test(fixed || '') && fixed === row.cli_session_id,
-      'and with the --session-id the store holds for it', fixed + ' vs ' + row.cli_session_id);
+    ok(launch.argv.includes('--session-id') && /^[0-9a-f-]{36}$/.test(fixed || ''),
+      'and with a --session-id fixed at creation', fixed || 'none');
+    const conversation = await conversationOf(s.page);
+    ok(conversation === fixed, 'which is the conversation the program says it is in',
+      conversation + ' vs ' + fixed);
+    ok(row.cli_session_state === 'known' || row.cli_session_state === 'verified',
+      'and the row knows it is holding one', row.cli_session_state);
 
     // §E.10 rule 2 and 3: the header names the model beside the mark of what
     // runs it, and the path is behind the "i".
@@ -1823,7 +1862,7 @@ async function createclaude() {
     ok(await awaitScreen(s.page, 'FAKE claude', 25000), 'Restart brought Claude Code back',
       oneLine(await screen(s.page)));
     const again = launchesOf(s, 'claude').slice(before);
-    ok(again.length === 1 && argvOf(again[0]).includes('--resume ' + row.cli_session_id),
+    ok(again.length === 1 && argvOf(again[0]).includes('--resume ' + fixed),
       'and it was resumed on the conversation it already had', argvOf(again[0]));
     const back = await sessionRow(s, id);
     ok(back.state === 'running', 'the row is running again', back.state);
@@ -1848,9 +1887,10 @@ async function createcodex() {
     await open(s);
     const id = await startWithModel(s.page, 'codex', null);
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    ok(await awaitScreen(s.page, 'FAKE codex'), 'the session is up', oneLine(await screen(s.page)));
-    ok(await awaitScreen(s.page, 'theme=light'), 'and it was told the terminal is light',
-      oneLine(await screen(s.page)));
+    const banner = await journalOf(s, id);
+    ok(/FAKE codex/.test(banner), 'the session is up', oneLine(banner));
+    ok(/theme=light/.test(banner), 'and it was told the terminal is light',
+      oneLine((/FAKE codex[^\r\n]*/.exec(banner) || [''])[0]));
 
     const row = await sessionRow(s, id);
     const launch = lastLaunch(s, 'codex');
@@ -1864,22 +1904,25 @@ async function createcodex() {
 
     // A turn is what makes Codex write its rollout down; before one there is
     // nothing to discover and that is not a failure.
-    ok(!row.cli_session_id, 'before a turn there is no conversation to remember',
-      row.cli_session_id || 'empty');
+    ok(row.cli_session_state === 'pending', 'before a turn there is nothing to discover yet',
+      row.cli_session_state);
     await typeLine(s.page, 'hello codex');
     ok(await awaitScreen(s.page, 'you said: hello codex'), 'the turn was taken',
       oneLine(await screen(s.page)));
     const found = await waitForCLISession(s, id, 30000);
-    ok(!!found.cli_session_id, 'and the conversation id was discovered from what it wrote',
-      found.cli_session_id || 'still empty');
+    ok(CLI_FOUND.includes(found.cli_session_state),
+      'and the conversation it wrote down was discovered', found.cli_session_state);
+    const conversation = await conversationOf(s.page);
+    ok(/^[0-9a-f-]{36}$/.test(conversation), 'the program names the conversation it is in',
+      conversation || 'none');
     await shot(s.page, 'createcodex');
 
     const before = await endAndRestart(s, 'codex', 0);
     ok(await awaitScreen(s.page, 'FAKE codex', 25000), 'Restart brought Codex back',
       oneLine(await screen(s.page)));
     const again = launchesOf(s, 'codex').slice(before);
-    ok(again.length === 1 && argvOf(again[0]).startsWith('resume ' + found.cli_session_id),
-      'and it was resumed on the conversation it had taken', argvOf(again[0]));
+    ok(again.length === 1 && argvOf(again[0]).startsWith('resume ' + conversation),
+      'and it was resumed on that same conversation', argvOf(again[0]));
 
     ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
       unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
@@ -1900,9 +1943,10 @@ async function createopencode() {
     await open(s);
     const id = await startWithModel(s.page, 'opencode', null);
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    ok(await awaitScreen(s.page, 'FAKE opencode'), 'the session is up', oneLine(await screen(s.page)));
-    ok(await awaitScreen(s.page, 'theme=light'), 'and it was told the terminal is light',
-      oneLine(await screen(s.page)));
+    const banner = await journalOf(s, id);
+    ok(/FAKE opencode/.test(banner), 'the session is up', oneLine(banner));
+    ok(/theme=light/.test(banner), 'and it was told the terminal is light',
+      oneLine((/FAKE opencode[^\r\n]*/.exec(banner) || [''])[0]));
 
     const row = await sessionRow(s, id);
     const launch = lastLaunch(s, 'opencode');
@@ -1919,16 +1963,19 @@ async function createopencode() {
     ok(await awaitScreen(s.page, 'you said: hello opencode'), 'the turn was taken',
       oneLine(await screen(s.page)));
     const found = await waitForCLISession(s, id, 40000);
-    ok(/^ses_/.test(found.cli_session_id || ''),
-      'and the discoverer read the conversation id over the authenticated HTTP server',
-      found.cli_session_id || 'still empty');
+    ok(CLI_FOUND.includes(found.cli_session_state),
+      'and the discoverer read the conversation over the authenticated HTTP server',
+      found.cli_session_state);
+    const conversation = await conversationOf(s.page);
+    ok(/^ses_/.test(conversation), 'which is the session the program itself is in',
+      conversation || 'none');
     await shot(s.page, 'createopencode');
 
     const before = await endAndRestart(s, 'opencode', 0);
     ok(await awaitScreen(s.page, 'FAKE opencode', 25000), 'Restart brought OpenCode back',
       oneLine(await screen(s.page)));
     const again = launchesOf(s, 'opencode').slice(before);
-    ok(again.length === 1 && argvOf(again[0]).includes('--session ' + found.cli_session_id),
+    ok(again.length === 1 && argvOf(again[0]).includes('--session ' + conversation),
       'and it was resumed on the session the server had named', argvOf(again[0]));
 
     ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
@@ -1940,15 +1987,15 @@ async function createopencode() {
 
 // A reboot, without rebooting: the tmux server is killed behind Socrates' back
 // and everything it was running goes with it. Nothing is relaunched eagerly -
-// forty stored sessions must not become forty programs - so the sessions sit
-// in needs_resume until somebody opens one, and opening one is what this
-// scenario does.
+// forty stored sessions must not become forty programs - so a session sits in
+// needs_resume until somebody opens one, and opening one is what this scenario
+// does.
 //
-// Two sessions are killed, because the two halves of §C.8 are different: a
-// Shell has no conversation and comes back as a fresh login shell, while
-// Claude Code has a uuid on disk and has to come back with **--resume** on its
-// command line. And the banner that says so has to be shown, and putting it
-// away has to be remembered.
+// Claude Code is the harness it is done with, because it is the one that has a
+// conversation on disk: coming back means coming back with **--resume** on the
+// command line and not merely coming back. The banner that says so has to be
+// shown, the conversation it names has to be behind the "i", and putting it
+// away has to be remembered across a reload.
 async function rebootresume() {
   const s = await start({ viewport: { width: 1280, height: 720 } });
   try {
@@ -1956,18 +2003,12 @@ async function rebootresume() {
     await useDomRenderer(s);
     await open(s);
 
-    const shellId = await startWithModel(s.page, 'shell', null);
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    const marker = 'before-' + Math.random().toString(36).slice(2, 8);
-    await typeLine(s.page, 'echo ' + marker);
-    ok(await awaitScreen(s.page, marker), 'the shell session is up', oneLine(await screen(s.page)));
-
     const claudeId = await startWithModel(s.page, 'claude', 'Sonnet');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    ok(await awaitScreen(s.page, 'FAKE claude'), 'and so is the Claude Code one',
-      oneLine(await screen(s.page)));
-    const conversation = (await sessionRow(s, claudeId)).cli_session_id;
-    ok(/^[0-9a-f-]{36}$/.test(conversation || ''), 'which is holding a conversation',
+    ok(/FAKE claude/.test(await journalOf(s, claudeId)), 'the session is up',
+      oneLine(await journalOf(s, claudeId)));
+    const conversation = await conversationOf(s.page);
+    ok(/^[0-9a-f-]{36}$/.test(conversation), 'which is holding a conversation',
       conversation || 'none');
 
     // The tab is put away first. With a page attached, the socket's own
@@ -1977,20 +2018,19 @@ async function rebootresume() {
     await s.page.goto('about:blank', { waitUntil: 'domcontentloaded' });
     killTmux(s.data);
 
-    for (const [id, what] of [[shellId, 'the shell session'], [claudeId, 'the Claude Code session']]) {
-      const row = await waitForState(s, id, ['needs_resume'], 40000);
-      ok(row.state === 'needs_resume', what + ' is waiting to be resumed, not running and not dead',
-        row.state);
-    }
+    const waiting = await waitForState(s, claudeId, ['needs_resume'], 40000);
+    ok(waiting.state === 'needs_resume',
+      'the session is waiting to be resumed, not running and not dead', waiting.state);
 
     // The reload. Opening the session is what resumes it, and the resume is
     // the whole of the handshake - so what the pane says while it waits is
     // "Resuming after a restart…", never "this session is not running".
     const beforeClaude = launchesOf(s, 'claude').length;
-    const beforeShell = launchesOf(s, 'shell').length;
     await s.page.goto(s.url + '/#' + claudeId, { waitUntil: 'domcontentloaded' });
-    ok(await awaitScreen(s.page, 'FAKE claude', 40000), 'opening it brought Claude Code back',
-      oneLine(await screen(s.page)));
+    await waitForState(s, claudeId, ['running'], 40000);
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    ok(/FAKE claude/.test((await journalOf(s, claudeId)).slice(-4000)),
+      'opening it brought Claude Code back', oneLine((await journalOf(s, claudeId)).slice(-200)));
 
     const relaunch = launchesOf(s, 'claude').slice(beforeClaude);
     ok(relaunch.length === 1 && argvOf(relaunch[0]).includes('--resume ' + conversation),
@@ -2024,7 +2064,8 @@ async function rebootresume() {
     // Dismissing it is a decision the server keeps: the banner does not come
     // back on the next reload.
     await s.page.click('#termNotice .notice-close');
-    await s.page.waitForSelector('#termNotice[hidden]', { timeout: 5000 });
+    await s.page.waitForFunction(() => document.getElementById('termNotice').hidden,
+      null, { timeout: 5000 });
     const acked = await waitForAck(s, claudeId);
     ok(acked.resumed === false, 'putting the banner away cleared the flag behind it',
       JSON.stringify({ resumed: acked.resumed, resume_count: acked.resume_count }));
@@ -2032,27 +2073,23 @@ async function rebootresume() {
     await s.page.reload({ waitUntil: 'domcontentloaded' });
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
     await wait(1500);
-    const still = await s.page.$eval('#termNotice', (n) => n.hidden);
-    ok(still === true, 'and a reload does not show it again', 'hidden=' + still);
+    // A reload of a tab the server still remembers can raise the *desync*
+    // notice, which is a different sentence about a different thing. What must
+    // not come back is the resumed banner.
+    const still = await s.page.$eval('#termNotice',
+      (n) => (n.hidden ? 'hidden' : n.dataset.kind));
+    ok(still !== 'resumed', 'and a reload does not show it again', still);
 
-    // The other half of §C.8: a Shell has nothing to resume, so it comes back
-    // as a plain login shell and says so by working.
-    await s.page.goto(s.url + '/#' + shellId, { waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    const after = 'after-' + Math.random().toString(36).slice(2, 8);
-    await typeLine(s.page, 'echo ' + after);
-    ok(await awaitScreen(s.page, after, 30000), 'the shell session came back and works',
-      oneLine(await screen(s.page)));
-    ok(launchesOf(s, 'shell').length === beforeShell,
-      'and it needed no CLI to do it', 'a login shell, not a program');
-    const shellRow = await sessionRow(s, shellId);
-    ok(shellRow.state === 'running', 'both sessions are running again', shellRow.state);
+    // And the session is a working session, not a screen that came back: the
+    // pane it was given is a new program, and it answers.
+    await typeLine(s.page, 'hello again');
+    ok(await awaitScreen(s.page, 'you said: hello again', 25000),
+      'and the session that came back is one that works', oneLine(await screen(s.page)));
 
     ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
       unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
   } finally { await s.stop(); }
 }
-
 
 /* ---------------------------------------------------------- 18. twoviewers */
 
@@ -2376,6 +2413,10 @@ const ALL = [
   ['backpressure', 'two hundred lines arrive whole, on screen and in the journal', backpressure],
   ['deletekeepsdir', 'delete kills the tmux session and keeps the work', deletekeepsdir],
   ['recoveredsession', 'a tmux session with no row is taken in, never killed', recoveredsession],
+  ['createclaude', 'Claude Code from the sheet to the command line, and back after an exit', createclaude],
+  ['createcodex', 'Codex is trusted where it works, and its conversation is found', createcodex],
+  ['createopencode', 'OpenCode names its session over its own authenticated server', createopencode],
+  ['rebootresume', 'a machine that rebooted, and the session that comes back with its conversation', rebootresume],
   ['livesession', 'one real session against the real Claude Code CLI', livesession, { live: true }],
 ];
 

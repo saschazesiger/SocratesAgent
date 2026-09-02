@@ -525,6 +525,11 @@ const state = {
   // The overflow menu a row or the header last opened, so a second one
   // replaces it rather than stacking on it.
   menu: null,
+  // Whether this tab is waiting for a session it opened to be relaunched.
+  // §C.8's resume happens inside the handshake and the row says needs_resume
+  // for the whole of it, so the pane's own overlay is the only place that
+  // knows.
+  resuming: false,
   // How the terminal is drawn, from the dashboard. The defaults here are what
   // a page that could not ask uses, and they are the same numbers the settings
   // document ships with.
@@ -877,7 +882,17 @@ function drawOverlay(session) {
     host.append(el('div', { class: 'overlay-card' }, ...nodes));
     host.hidden = false;
   };
-  switch (session.state) {
+  // `resuming` is the one state the store does not have: it is the window
+  // between this tab asking for a session that is not running and the server
+  // answering with what it became. The row still says needs_resume for all of
+  // it, and a list refresh in the middle must not redraw the button that has
+  // already been pressed.
+  let drawn = session.state;
+  if (state.resuming) {
+    if (drawn === 'needs_resume' || drawn === 'starting') drawn = 'resuming';
+    else state.resuming = false;
+  }
+  switch (drawn) {
     case 'exited':
       show(
         el('p', { class: 'overlay-title' }, 'The session ended.',
@@ -915,7 +930,12 @@ function drawOverlay(session) {
 
 // notice draws the thin line at the top of the pane. It never blocks and it is
 // always dismissible; `onDismiss` is what a notice does when it is put away.
-function notice(kind, text, onDismiss) {
+//
+// `facts` is the technical half of what the notice knows - the conversation a
+// resume came from, and anything else that is an identifier rather than a
+// sentence. §E.10 rule 3: it goes behind the "i" and never into the line
+// itself.
+function notice(kind, text, onDismiss, facts) {
   const host = dom.termNotice;
   host.innerHTML = '';
   host.dataset.kind = kind;
@@ -924,7 +944,9 @@ function notice(kind, text, onDismiss) {
     html: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
     onclick: () => { host.hidden = true; if (onDismiss) onDismiss(); },
   });
-  host.append(el('span', { class: 'notice-text', text }), close);
+  host.append(el('span', { class: 'notice-text', text }),
+    facts && facts.length ? infoTip(facts, { label: 'What was resumed', bubbleClass: 'mono' }) : null,
+    close);
   host.hidden = false;
   return host;
 }
@@ -955,6 +977,7 @@ function detach() {
   dom.term.innerHTML = '';
   setClass(dom.termWrap, 'stale', false);
   state.live = false;
+  state.resuming = false;
 }
 
 /**
@@ -967,6 +990,18 @@ function detach() {
 function attach(session) {
   detach();
   applySession(session);
+
+  // Opening a session that is not running is what relaunches it (§C.8), and
+  // the relaunch happens inside the handshake: the program has to be started,
+  // its conversation verified and its pane made before the socket is answered.
+  // "This session is not running" would be the last thing said for those
+  // seconds, and it would read as nothing having happened - so from the moment
+  // it is opened until the server says what it became, the session is
+  // resuming.
+  if (session.state === 'needs_resume' || session.state === 'starting') {
+    state.resuming = true;
+    drawOverlay(session);
+  }
 
   const socketRef = { socket: null };
   state.term = createTerm(dom.term, {
@@ -1073,7 +1108,7 @@ function onControl(sessionId, frame) {
           api('/api/sessions/' + encodeURIComponent(sessionId) + '/ack-resume', { method: 'POST' })
             .then((data) => replaceSession(data.session))
             .catch(() => { /* the flag stays up and the banner comes back */ });
-        });
+        }, frame.resumed_from ? ['conversation ' + frame.resumed_from] : null);
       }
       break;
     case 'input_lost':
