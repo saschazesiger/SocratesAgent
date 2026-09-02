@@ -25,6 +25,7 @@ import { DAY_GROUPS, bucketOf, momentOf } from './daygroups.js';
 import * as harnesses from './harnesses.js';
 import { createTerm, measurePane } from './term.js';
 import { mountAssist, audioWanted } from './assist.js';
+import { mountNotify } from './notify.js';
 import {
   mountKeyBar, mountComposer, keyBarWanted, setKeyBarWanted, onKeyBarWanted, followViewport,
 } from './keybar.js';
@@ -655,7 +656,7 @@ const state = {
 const dom = {};
 const ids = ['sidebar', 'navScrim', 'menuBtn', 'newSession', 'sessionScope', 'sessionList',
   'activityLive', 'sessionHarness', 'sessionTitle', 'sessionArchived', 'termSize',
-  'statusBtn', 'agentBtn', 'audioModeBtn', 'sessionMenu',
+  'statusBtn', 'agentBtn', 'audioModeBtn', 'soundBtn', 'notifyBtn', 'sessionMenu',
   'stage', 'termWrap', 'term', 'termOverlay', 'termLines', 'termNotice',
   'termTicker', 'tickerWindow', 'termEmpty',
   'chatPanel', 'chatLog', 'chatFoot', 'chatClose',
@@ -824,6 +825,11 @@ function updateRow(row, session) {
   setClass(row, 'unread', !!act && !!act.unread && !attached);
 }
 
+// The chime and the notification, mounted once in boot(). It is not on
+// `state` because it is not state: it is two switches on this device and one
+// call, and nothing on the page ever asks it a question.
+let notifier = null;
+
 /**
  * mergeActivity takes a map of committed changes and draws them.
  *
@@ -842,6 +848,7 @@ function mergeActivity(sessions) {
     changed = true;
     announce(id, next, prev);
     if (state.assist) state.assist.activity(id, next, prev);
+    if (notifier) notifier.completed(id, next, prev);
   }
   if (changed) renderList();
 }
@@ -1743,6 +1750,15 @@ async function boot() {
     // Leaving auto mode is somebody saying they want to type again, so the
     // pane takes the focus back rather than waiting to be tapped.
     focusTerm: () => { if (state.term) state.term.focus(); },
+  });
+  // The chime and the notification. Mounted here rather than in mountAssist
+  // because they are not about the session on screen: they fire for whichever
+  // session finished, and their two switches are in the bar whether or not
+  // anything is attached.
+  notifier = mountNotify({
+    dom,
+    sessionOf,
+    select: (id) => selectSession(id),
   });
   followViewport();
   // Read before anything is fetched: on an offline reload this is the only

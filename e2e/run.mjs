@@ -3340,6 +3340,314 @@ async function unread() {
   }
 }
 
+/* ------------------------------- a chime and a notification when work ends */
+
+// stubNotify stands in for the two browser facilities a headless shell has no
+// use for: the notification tray and the speaker.
+//
+// Both are recorded rather than faked away, because what is under test is not
+// that this machine can ring - it is that the page rings once, for the right
+// session, with the right words, and only when the two switches say so.
+async function stubNotify(page) {
+  await page.addInitScript(() => {
+    window.__notes = [];
+    window.__beeps = [];
+    window.__asked = 0;
+    window.__toasts = [];
+
+    class FakeNotification {
+      constructor(title, options) {
+        this.title = title;
+        this.options = options || {};
+        window.__notes.push({ title, options: this.options });
+      }
+
+      close() { this.closed = true; }
+    }
+    // A permission the browser granted this origin survives a reload, so the
+    // stub starts where a second visit would.
+    FakeNotification.permission = 'granted';
+    FakeNotification.requestPermission = () => {
+      window.__asked += 1;
+      FakeNotification.permission = window.__perm || 'granted';
+      return Promise.resolve(FakeNotification.permission);
+    };
+    window.Notification = FakeNotification;
+
+    // One chime is one oscillator with two notes scheduled on it, so one
+    // entry here is one chime.
+    class FakeAudioContext {
+      constructor() {
+        this.state = 'running';
+        this.currentTime = 0;
+        this.destination = { kind: 'destination' };
+      }
+
+      createOscillator() {
+        const notes = [];
+        return {
+          type: 'sine',
+          frequency: { setValueAtTime: (hz) => notes.push(hz) },
+          connect() {},
+          disconnect() {},
+          start: () => window.__beeps.push(notes.slice()),
+          stop() {},
+        };
+      }
+
+      createGain() {
+        const ramp = () => {};
+        return {
+          gain: {
+            setValueAtTime: ramp,
+            linearRampToValueAtTime: ramp,
+            exponentialRampToValueAtTime: ramp,
+          },
+          connect() {},
+          disconnect() {},
+        };
+      }
+
+      resume() { this.state = 'running'; return Promise.resolve(); }
+    }
+    window.AudioContext = FakeAudioContext;
+    window.webkitAudioContext = FakeAudioContext;
+
+    addEventListener('DOMContentLoaded', () => {
+      const host = document.getElementById('toasts');
+      if (!host) return;
+      new MutationObserver((records) => {
+        for (const record of records) {
+          for (const node of record.addedNodes) {
+            if (node.textContent) window.__toasts.push(node.textContent);
+          }
+        }
+      }).observe(host, { childList: true });
+    });
+  });
+}
+
+// The two toggles as the page has drawn them: what they claim, what they are
+// called, and which of their two glyphs is the one on screen.
+const toggles = (page) => page.evaluate(() => {
+  const read = (id) => {
+    const btn = document.getElementById(id);
+    if (!btn) return null;
+    const svgs = [...btn.querySelectorAll('svg')];
+    return {
+      pressed: btn.getAttribute('aria-pressed'),
+      title: btn.title,
+      label: btn.getAttribute('aria-label'),
+      disabled: !!btn.disabled,
+      visible: !!btn.checkVisibility && btn.checkVisibility(),
+      shown: svgs.filter((n) => getComputedStyle(n).display !== 'none')
+        .map((n) => n.getAttribute('class')).join(','),
+      strokes: [...new Set(svgs.map((n) => n.getAttribute('stroke-width')))].join(','),
+    };
+  };
+  return { sound: read('soundBtn'), notify: read('notifyBtn') };
+});
+
+const rang = (page) => page.evaluate(() => ({
+  beeps: (window.__beeps || []).length,
+  notes: (window.__notes || []).slice(),
+  asked: window.__asked || 0,
+  toasts: (window.__toasts || []).slice(),
+}));
+
+// drive makes one turn happen in a Shell session and waits for it to be over,
+// which is the edge the whole feature hangs off.
+async function drive(s, id, seconds = 2) {
+  await keepBusy(s.page, 'shell', seconds * 1000);
+  const spun = await awaitRow(s.page, id, (r) => r.busy, 10000);
+  const done = spun.ok && (await awaitRow(s.page, id, (r) => !r.busy, 20000)).ok;
+  // The frame that ends the turn and the call it makes are the same tick, but
+  // the assertion is about a count, so it is read a moment later.
+  await wait(600);
+  return done;
+}
+
+// A session that stops working while nobody is looking at the page: a chime,
+// a notification, and two switches that decide whether either happens.
+async function notify() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await stubNotify(s.page);
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+
+    // Both are facts about this device, so they are in the bar before there
+    // is a session to have an opinion about.
+    const fresh = await toggles(s.page);
+    ok(!!fresh.sound && fresh.sound.visible && !!fresh.notify && fresh.notify.visible,
+      'both toggles are in the header with no session attached', JSON.stringify({
+        sound: fresh.sound && fresh.sound.visible, notify: fresh.notify && fresh.notify.visible,
+      }));
+    ok(fresh.sound.pressed === 'true' && fresh.sound.title === 'Sound on'
+      && fresh.sound.label === 'Sound on',
+      'sound is on by default, and says so in both places', JSON.stringify(fresh.sound));
+    ok(fresh.notify.pressed === 'false' && fresh.notify.title === 'Notifications off'
+      && !fresh.notify.disabled,
+      'notifications are off by default, because a permission has to be asked for',
+      JSON.stringify(fresh.notify));
+    ok(fresh.sound.shown === 'ico-on' && fresh.notify.shown === 'ico-off',
+      'and each shows exactly the glyph of the state it is in',
+      fresh.sound.shown + ' / ' + fresh.notify.shown);
+    ok(fresh.sound.strokes === '1.7' && fresh.notify.strokes === '1.7',
+      'the crossed-out glyph is the same stroke weight as the plain one',
+      fresh.sound.strokes + ' / ' + fresh.notify.strokes);
+
+    await s.page.click('#notifyBtn');
+    await s.page.waitForFunction(
+      () => document.getElementById('notifyBtn').getAttribute('aria-pressed') === 'true',
+      null, { timeout: 5000 });
+    const asked = await rang(s.page);
+    ok(asked.asked === 1, 'turning notifications on asks the browser, from the click',
+      asked.asked + ' request(s)');
+    const on = await toggles(s.page);
+    ok(on.notify.title === 'Notifications on' && on.notify.shown === 'ico-on',
+      'and the button says so', JSON.stringify(on.notify));
+
+    // Per device, so a reload finds them where they were left.
+    await s.page.reload({ waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#soundBtn', { timeout: 15000 });
+    const kept = await toggles(s.page);
+    ok(kept.sound.pressed === 'true' && kept.notify.pressed === 'true',
+      'a reload keeps both choices', JSON.stringify({
+        sound: kept.sound.pressed, notify: kept.notify.pressed,
+      }));
+
+    const id = await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    // A session that has only just been made goes through its own first
+    // busy-to-idle, and that one is real: the count is taken afterwards.
+    const settled = await awaitRow(s.page, id, (r) => !r.busy, 20000);
+    ok(settled.ok, 'the new session settles before anything is counted', took(settled));
+    await wait(1200);
+    const title = await s.page.$eval(rowSel(id) + ' .label', (n) => n.textContent);
+
+    // Two more controls that are never hidden is two more things a phone's
+    // top bar has to fit, with a session attached and every other control in
+    // it. The bar gives up its spacing rather than spilling off the edge, and
+    // nothing in it may become untappable doing so.
+    await s.page.setViewportSize({ width: 390, height: 844 });
+    await wait(500);
+    const narrow = await s.page.evaluate(() => {
+      const box = (id) => {
+        const node = document.getElementById(id);
+        if (!node || node.hidden) return 0;
+        return Math.round(node.getBoundingClientRect().width);
+      };
+      return {
+        overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        sound: box('soundBtn'),
+        notify: box('notifyBtn'),
+        menu: box('sessionMenu'),
+        mark: !!document.querySelector('#sessionHarness .agent-mark')
+          && document.querySelector('#sessionHarness').getBoundingClientRect().width > 8,
+      };
+    });
+    ok(narrow.overflow <= 1, 'a phone with a session attached does not scroll sideways',
+      narrow.overflow + 'px');
+    ok(narrow.sound >= 26 && narrow.notify >= 26 && narrow.sound === narrow.menu,
+      'and both toggles are still the size of the other controls beside them',
+      JSON.stringify(narrow));
+    ok(narrow.mark, 'and the harness still has room for its mark', String(narrow.mark));
+    await s.page.setViewportSize({ width: 1280, height: 720 });
+    await wait(500);
+
+    let before = await rang(s.page);
+    ok(await drive(s, id, 3), 'a turn in the shell starts and finishes', 'sleep 3');
+    let after = await rang(s.page);
+    ok(after.beeps - before.beeps === 1, 'it chimed exactly once',
+      (after.beeps - before.beeps) + ' chime(s)');
+    const note = after.notes[after.notes.length - 1];
+    ok(after.notes.length - before.notes.length === 1 && !!note && note.title === title
+      && note.options.body === 'Finished',
+      'and one notification named the session and said what happened',
+      JSON.stringify(note || null) + ' vs ' + JSON.stringify(title));
+    ok(!!note && note.options.tag === 'socrates:' + id && !!note.options.icon,
+      'tagged with the session, so a second one replaces it rather than stacking',
+      note ? note.options.tag : 'none');
+
+    // Muted: the notification is the one that survives, because it is the one
+    // that can be read afterwards.
+    await s.page.click('#soundBtn');
+    const muted = await toggles(s.page);
+    ok(muted.sound.pressed === 'false' && muted.sound.title === 'Sound off'
+      && muted.sound.shown === 'ico-off',
+      'muting shows the crossed-out speaker and says the words', JSON.stringify(muted.sound));
+    before = await rang(s.page);
+    ok(await drive(s, id, 3), 'a second turn starts and finishes', 'sleep 3');
+    after = await rang(s.page);
+    ok(after.beeps - before.beeps === 0 && after.notes.length - before.notes.length === 1,
+      'muted, it is silent and still notifies',
+      (after.beeps - before.beeps) + ' chime(s), '
+      + (after.notes.length - before.notes.length) + ' note(s)');
+
+    await s.page.click('#notifyBtn');
+    await s.page.waitForFunction(
+      () => document.getElementById('notifyBtn').getAttribute('aria-pressed') === 'false',
+      null, { timeout: 5000 });
+    before = await rang(s.page);
+    ok(await drive(s, id, 3), 'a third turn starts and finishes', 'sleep 3');
+    after = await rang(s.page);
+    ok(after.notes.length - before.notes.length === 0 && after.beeps - before.beeps === 0,
+      'with both off, a finished turn says nothing at all',
+      (after.beeps - before.beeps) + ' chime(s), '
+      + (after.notes.length - before.notes.length) + ' note(s)');
+
+    // Both back on, so the reload below is measured against a page that would
+    // otherwise have plenty to say. Turning sound on plays it once, which is
+    // how a person hears what they have just chosen.
+    const quiet = await rang(s.page);
+    await s.page.click('#soundBtn');
+    await s.page.click('#notifyBtn');
+    await s.page.waitForFunction(
+      () => document.getElementById('notifyBtn').getAttribute('aria-pressed') === 'true',
+      null, { timeout: 5000 });
+    const previewed = await rang(s.page);
+    ok(previewed.beeps - quiet.beeps === 1, 'turning sound on plays it once as a preview',
+      (previewed.beeps - quiet.beeps) + ' chime(s)');
+
+    // The handshake replays every running session's state, and a replay is not
+    // news: a page that reloads while a turn is running must not ring for a
+    // turn that started before it existed.
+    await keepBusy(s.page, 'shell', 12000);
+    const running = await awaitRow(s.page, id, (r) => r.busy, 10000);
+    ok(running.ok, 'a turn is still running when the page is reloaded', took(running));
+    await s.page.reload({ waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const seeded = await awaitRow(s.page, id, (r) => r.busy, 15000);
+    ok(seeded.ok, 'and the reloaded page draws it as still working', took(seeded));
+    const replay = await rang(s.page);
+    ok(replay.beeps === 0 && replay.notes.length === 0,
+      'nothing fired on the replay, with both switches on',
+      replay.beeps + ' chime(s), ' + replay.notes.length + ' note(s)');
+
+    // A browser that says no. The switch may not claim something it cannot
+    // do, and the reason belongs where the tap was.
+    await s.page.click('#notifyBtn');
+    await s.page.waitForFunction(
+      () => document.getElementById('notifyBtn').getAttribute('aria-pressed') === 'false',
+      null, { timeout: 5000 });
+    await s.page.evaluate(() => { window.__perm = 'denied'; });
+    await s.page.click('#notifyBtn');
+    await wait(600);
+    const denied = await toggles(s.page);
+    const said = await rang(s.page);
+    ok(denied.notify.pressed === 'false' && denied.notify.title === 'Notifications off',
+      'a refused permission leaves the switch off', JSON.stringify(denied.notify));
+    ok(said.toasts.some((t) => /blocked for this site/.test(t)),
+      'and the page says why, where the tap was', JSON.stringify(said.toasts.slice(-2)));
+
+    await shot(s.page, 'notify');
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 /* ------------------------------------------ status, agent and audio helpers */
 
 // A 44 byte WAV header and one sample of silence: enough for the browser to
@@ -4649,6 +4957,7 @@ const ALL = [
   ['activity-waiting', 'a permission prompt: a still amber ring, and no timeout', activitywaiting],
   ['activity-fallback', 'a harness that hangs, and the row that leaves busy anyway', activityfallback],
   ['unread', 'bold when nobody saw it, gone when the row is opened or typed into', unread],
+  ['notify', 'a chime and a notification when a session stops working, and two switches', notify],
   ['session-title', 'a session that names itself the first time it answers', sessiontitle],
   ['status-speak', 'Status says what the screen shows, on the page and out loud', statusspeak],
   ['status-ticker', 'the phases of a status, in order, in one line', statusticker],

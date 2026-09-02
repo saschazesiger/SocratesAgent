@@ -525,6 +525,71 @@ while `hello.chat` re-seeds the panel. Activity goes stale with the rest of the
 page under the existing `body.stale` rule, which stops the sidebar spinner and
 the Status button's.
 
+## D.6 The chime and the notification
+
+The sidebar is only news to somebody looking at it. There is one moment worth
+interrupting a person for — the same committed edge §A.4 marks unread on — and
+`internal/web/static/js/notify.js` is the whole of what happens at it.
+
+**The moment.** `mergeActivity` is the one door every change comes through, so
+`notifier.completed(id, next, prev)` is called from it, beside
+`state.assist.activity`. A **completion** is `prev` existing, `prev.state ===
+'busy'`, and `next.state` being `idle` or `waiting`. It fires for **every**
+session, attached or not — the session nobody is watching is the point of it.
+It fires for none of: a first sighting (`prev` is null, which is also what a
+`hello` replay and a reload look like), `unknown → anything` (nothing
+finished; the detector merely found its footing), or a state that did not
+change.
+
+**The chime.** Two sine notes on one oscillator — 880 Hz then 1175 Hz, ~120 ms
+each, a gentle envelope with a dip between them, the whole of it under 400 ms —
+through a lazily created `AudioContext`, resumed if suspended. One oscillator
+and not two, so one chime is one voice. No audio file, nothing to fetch, and
+nothing to precache. At most **one chime per 1.5 s** across all sessions: six
+sessions finishing inside a second are one piece of news. Notifications are
+not rate limited — the `tag` handles duplicates. Every failure is silent: a
+chime that did not happen is not worth a sentence on the screen.
+
+**The notification.** `new Notification(session.title, { body, tag:
+'socrates:' + id, renotify: true, icon: '/static/img/logo.png' })`, with
+`body` the sidebar's own words — "Finished" for `idle`, "Needs an answer" for
+`waiting`. The tag is the session, so a session that finishes twice while the
+phone is locked leaves one line in the tray. Clicking it focuses the window,
+calls `selectSession(id)` and closes itself. There is no visibility rule: a
+session that finishes while its own page is open and visible still notifies,
+because the person who asked for notifications asked for that too.
+
+**The two switches**, both `.icon-btn` in the `.topbar` before `#sessionMenu`
+and — unlike everything else in that bar — present whether or not a session is
+attached, because they are facts about the device and not about a session:
+
+- `#soundBtn`, `localStorage['socrates.sound']`, default **on**. Off shows a
+  speaker with a stroke through it and `aria-pressed="false"`; the title and
+  the accessible name are "Sound on" / "Sound off". Turning it on is the
+  gesture the browser was waiting for, so the context is woken and the chime
+  is played once as a preview.
+- `#notifyBtn`, `localStorage['socrates.notify']`, default **off**, because it
+  cannot be honoured without asking and asking unprompted is how a page gets
+  blocked for ever. Turning it on calls `Notification.requestPermission()`
+  from inside the click and only stays on for `granted`; anything else raises
+  "Notifications are blocked for this site in the browser." and leaves it off.
+  With no `Notification` at all — iOS Safari outside a home-screen app — the
+  button is disabled and titled "Notifications are not available in this
+  browser". A permission revoked between two visits turns the stored flag off
+  at boot rather than being ignored on every completion.
+
+Both are read at boot, every `localStorage` access is wrapped, and each glyph
+pair is one drawing and the same drawing with a stroke through it, at the same
+stroke weight, swapped by CSS off `aria-pressed` so nothing has to be kept in
+step in script.
+
+**e2e `notify`** stubs `window.Notification` and `window.AudioContext` with
+`page.addInitScript` and measures counts, not clocks: the defaults, the ask,
+both choices surviving a reload, one chime and one correctly titled note per
+completion, muting silencing the chime and not the note, both off saying
+nothing, a reload during a running turn firing nothing on the replay, and a
+refused permission leaving the switch off with the reason in a toast.
+
 ---
 
 # E. Work packages
