@@ -1075,3 +1075,23 @@ a package that ran long under whole-repo parallelism, not a deadlock. One later
 run did hit the timeout again while another agent's suite was running; the
 `tail -5` in use kept only the last lines, so the dump was lost. If it returns,
 capture the whole panic.
+
+### WP5 — the final review's F3
+
+**WP5 / §C.1.1 — the responder answers DA1, DA2 and the two window reports, and swallows
+XTVERSION and DSR.** §C.1.1 answers only the colours and the theme mode and passes the rest to
+the browser. Measured on tmux 3.6, an attach asks a client six things, and a reply is only a
+reply while tmux is still waiting for it: one that arrives after an outage is typed into the
+pane, so the person's next command runs as `1;2c0;276;0cecho …`. DA1 and DA2 are answered with
+the bytes xterm.js would have sent, the window reports from the size Socrates owns (a cell of
+8x18 for the pixel form, which nothing on this side can know), and XTVERSION and DSR are taken
+out of the stream and left unanswered - nothing answers them today either, and an invented
+answer would be worse than tmux's own timeout.
+
+**WP5 / §D.2 — reply-shaped client input is dropped.** Belt and braces for a page loaded
+against an older Socrates or a reply held across a reload: a device attributes reply, a three
+number window report, a cursor position report and an XTVERSION answer are dropped on the input
+path, everything else is passed through byte for byte, and bracketed paste is respected so that
+pasted text is delivered as it was pasted. The one keystroke this cannot tell from a report is
+shift with F3 under xterm's modified function key encoding, which is the same `CSI 1 ; 2 R` as
+a cursor at the top left; a corrupted command line is the worse of the two to keep.

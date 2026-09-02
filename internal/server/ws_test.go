@@ -3,6 +3,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -1521,4 +1522,56 @@ func TestTerminalAHandshakeNeverStrandsTheViewer(t *testing.T) {
 	// And the viewer that was served is a working terminal, not a shell of one.
 	live.send(1, "echo stranded-no\r")
 	live.waitFor("stranded-no")
+}
+
+// TestTerminalLateTerminalReplyNeverReachesThePane is the defect a person
+// could see: xterm.js answers the questions tmux asks on an attach, and when
+// the answer arrives late - across an outage, a slow tunnel, a phone waking -
+// tmux is no longer waiting for it and types it into the pane, in front of the
+// command the person meant to run.
+//
+// Nothing asks the browser anything any more, so a report arriving here is
+// stale by construction and is dropped. What the person typed still runs.
+func TestTerminalLateTerminalReplyNeverReachesThePane(t *testing.T) {
+	e := newSessionEnv(t)
+	id := e.shellSession(100, 30)
+	first := e.dialWS(id, "viewer=tab-a&cols=100&rows=30")
+	first.hello()
+	first.send(1, "echo before-the-outage\r")
+	first.waitFor("before-the-outage")
+	rendered := first.settle()
+	first.drop()
+
+	back := e.dialWS(id, fmt.Sprintf("viewer=tab-a&cols=100&rows=30&since=%d", rendered))
+	hello := back.hello()
+	ack := uint64(floatOf(t, hello, "input_ack"))
+
+	// The replies the browser held while it was away, in the order xterm.js
+	// sends them, and then the command.
+	back.send(ack+1, "\x1b[?1;2c\x1b[>0;276;0c\x1b[8;30;100t\x1b[4;540;800t")
+	back.send(ack+2, "echo after-the-outage\r")
+	back.waitFor("after-the-outage")
+	time.Sleep(500 * time.Millisecond)
+
+	screen, err := e.tmux("capture-pane", "-p", "-t", "soc_"+id)
+	if err != nil {
+		t.Fatalf("capture-pane: %v", err)
+	}
+	for _, corruption := range []string{"1;2c", "0;276;0c", "8;30;100t", "command not found"} {
+		if strings.Contains(screen, corruption) {
+			t.Fatalf("a stale terminal report was typed into the pane (%q):\n%s", corruption, screen)
+		}
+	}
+	// The command line the shell echoed and the line it printed: the command
+	// ran, and it ran as it was typed.
+	if n := strings.Count(screen, "after-the-outage"); n != 2 {
+		t.Fatalf("the command after the outage ran %d times, want twice:\n%s", n, screen)
+	}
+	journal, err := termux.TailJournal(e.srv.dataDir, id, 1<<20)
+	if err != nil {
+		t.Fatalf("journal: %v", err)
+	}
+	if bytes.Contains(journal, []byte("\x1b[?1;2c")) || bytes.Contains(journal, []byte("1;2c0;276;0c")) {
+		t.Fatalf("the journal carries a device attributes reply:\n%q", journal)
+	}
 }

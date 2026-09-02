@@ -120,6 +120,10 @@ type termViewer struct {
 	// lag is the last output byte the client said it had rendered. Nothing in
 	// the transport depends on it; the Diagnostics panel reads it.
 	lag uint64
+	// pasting is whether this tab's input frames ended inside a bracketed
+	// paste, so that a paste split across frames is delivered as the text it
+	// is rather than read as a terminal talking.
+	pasting bool
 }
 
 // termHub is every viewer the server currently remembers, keyed by session and
@@ -1280,8 +1284,14 @@ func (c *termConn) onInput(payload []byte) error {
 		c.send(map[string]any{"t": "error", "message": "this terminal is not attached", "fatal": true})
 		return errors.New("input arrived for a viewer with no terminal")
 	}
-	if len(body) > 0 {
-		if _, err := tv.viewer.Write(body); err != nil {
+	// A terminal report is not a keystroke. The browser answers questions
+	// nothing asked it any more - a reply held across an outage, a tab woken
+	// from sleep, a page from an older Socrates - and tmux, no longer waiting
+	// for one, would type it into the pane in front of the next command.
+	keys, pasting := termux.StripReplies(body, tv.pasting)
+	tv.pasting = pasting
+	if len(keys) > 0 {
+		if _, err := tv.viewer.Write(keys); err != nil {
 			c.send(map[string]any{"t": "error", "message": err.Error(), "fatal": true})
 			return err
 		}

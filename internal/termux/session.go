@@ -278,6 +278,12 @@ func (v *Viewer) Close() error {
 // size until whoever owns the socket gets round to closing it.
 func (v *Viewer) pump(resp *Responder) {
 	defer close(v.done)
+	if resp.Size == nil {
+		// The window reports tmux asks for are answered with the size this
+		// viewer is wearing, which Socrates owns and the browser only asks
+		// for.
+		resp.Size = v.Size
+	}
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := v.master.Read(buf)
