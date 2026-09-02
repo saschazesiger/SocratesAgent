@@ -39,6 +39,10 @@ const (
 	// ackEvery batches input acknowledgements: one per hundred milliseconds,
 	// carrying the highest sequence number accepted so far.
 	ackEvery = 100 * time.Millisecond
+	// maxInputFailures is how many input frames in a row a pane may refuse
+	// before the socket is ended and a new handshake is left to attach another
+	// terminal. One failure is a frame, several in a row are a terminal.
+	maxInputFailures = 3
 
 	// handshakeBurst is how many sockets one address may open per minute.
 	handshakeBurst  = 20
@@ -233,6 +237,10 @@ type termConn struct {
 	slow    time.Duration
 	// overdue is set when a write has been stuck for that long.
 	overdue atomic.Bool
+
+	// inputFails counts input frames the pane refused in a row. Only the read
+	// loop touches it, and the read loop is one goroutine.
+	inputFails int
 
 	closeOnce sync.Once
 	// taken is set by a takeover, and is how the goroutines of the socket
@@ -478,7 +486,7 @@ func (s *Server) serveTerminal(r *http.Request, conn *websocket.Conn, row *store
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	tv, fresh, err := s.hub.acquire(ctx, s.manager, row, viewerID, cols, rows)
+	tv, fresh, redrawn, err := s.hub.acquire(ctx, s.manager, row, viewerID, cols, rows)
 	if err != nil {
 		_ = conn.Close(websocket.StatusTryAgainLater, truncateReason(err.Error()))
 		return err
@@ -508,10 +516,12 @@ func (s *Server) serveTerminal(r *http.Request, conn *websocket.Conn, row *store
 	tv.takeOver(c)
 
 	since := parseSince(r)
-	if fresh {
+	// A terminal that was attached a moment ago - because this tab's own one
+	// had ended - is this client's redraw, exactly as a first attach is.
+	if fresh || redrawn {
 		since = 0
 	}
-	sent, replayed := tv.replayPoint(ctx, s.manager, row, since, cols, rows, fresh)
+	sent, replayed := tv.replayPoint(ctx, s.manager, row, since, cols, rows, fresh || redrawn)
 
 	// abandon is how every handshake that ends before the writer exists has to
 	// end: the writer that was never started is marked stopped, and the viewer
@@ -553,7 +563,7 @@ func (s *Server) serveTerminal(r *http.Request, conn *websocket.Conn, row *store
 		}
 	}
 
-	if !fresh {
+	if !fresh && !redrawn {
 		// A tab that comes back re-takes the window the way any attaching
 		// viewer does, and at whatever size it is now: it may have been
 		// rotated or had a keyboard opened while it was away. It happens after
@@ -664,7 +674,7 @@ func truncateReason(msg string) string {
 // whether the server has no memory of this tab, and therefore cannot tell a
 // resend from new input.
 func (h *termHub) acquire(ctx context.Context, m *termux.Manager, row *store.Session,
-	viewerID string, cols, rows int) (*termViewer, bool, error) {
+	viewerID string, cols, rows int) (tv *termViewer, fresh, redrawn bool, err error) {
 	key := viewerKey(row.ID, viewerID)
 
 	h.mu.Lock()
@@ -678,26 +688,59 @@ func (h *termHub) acquire(ctx context.Context, m *termux.Manager, row *store.Ses
 		// one already running and blocked on this lock must not close a
 		// terminal the reconnect is about to be handed.
 		tv.generation++
-		alive, attaching := tv.viewer != nil, tv.attaching
+		viewer, attaching := tv.viewer, tv.attaching
+		// A remembered tmux client that has ended is not a terminal: it is a
+		// ring nobody will ever add to and a file no keystroke will ever reach
+		// again. Treating it as alive is what left a tab watching a screen
+		// that still looked right while everything it typed failed - for ever,
+		// because the entry survived every reconnect and every reconnect chose
+		// it again. So the entry is kept, because it holds the input counter
+		// that makes the tab's held keystrokes deliverable exactly once, and
+		// the terminal under it is replaced.
+		dead := viewer != nil && viewer.Ended()
+		if dead {
+			tv.viewer = nil
+			tv.attaching = true
+		}
+		alive := viewer != nil && !dead
 		tv.mu.Unlock()
 		if alive {
 			h.mu.Unlock()
-			return tv, false, nil
+			return tv, false, false, nil
+		}
+		if dead {
+			h.mu.Unlock()
+			replacement, err := m.Attach(ctx, row.ID, viewerID, cols, rows)
+			tv.mu.Lock()
+			tv.attaching = false
+			tv.viewer = replacement
+			// The paste state belonged to the terminal that is gone.
+			tv.pasting = false
+			tv.mu.Unlock()
+			go func() { _ = viewer.Close() }()
+			if err != nil {
+				h.drop(tv)
+				return nil, false, false, err
+			}
+			// Not fresh - the server still knows exactly how much of this
+			// tab's input it has written - but everything on screen came from
+			// a terminal that no longer exists, so it is redrawn.
+			return tv, false, true, nil
 		}
 		if attaching {
 			h.mu.Unlock()
-			return nil, false, errors.New("this viewer is still being attached; try again")
+			return nil, false, false, errors.New("this viewer is still being attached; try again")
 		}
 		delete(h.viewers, key)
 	}
 	if len(h.sessionViewers(row.ID)) >= maxViewersPerSession {
 		h.mu.Unlock()
-		return nil, false, fmt.Errorf("this session already has %d viewers", maxViewersPerSession)
+		return nil, false, false, fmt.Errorf("this session already has %d viewers", maxViewersPerSession)
 	}
 	// The slot is claimed before the attach, which takes tmux commands and a
 	// pseudo terminal: two handshakes racing must make eight viewers, not
 	// nine.
-	tv := &termViewer{sessionID: row.ID, viewerID: viewerID, attaching: true}
+	tv = &termViewer{sessionID: row.ID, viewerID: viewerID, attaching: true}
 	h.viewers[key] = tv
 	h.mu.Unlock()
 
@@ -708,9 +751,9 @@ func (h *termHub) acquire(ctx context.Context, m *termux.Manager, row *store.Ses
 	tv.mu.Unlock()
 	if err != nil {
 		h.drop(tv)
-		return nil, false, err
+		return nil, false, false, err
 	}
-	return tv, true, nil
+	return tv, true, false, nil
 }
 
 // release starts the grace once the socket that owned this viewer has gone.
@@ -849,6 +892,12 @@ func (tv *termViewer) takeOver(c *termConn) {
 	tv.mu.Lock()
 	previous := tv.conn
 	tv.conn = c
+	// A bracketed paste that was cut in half by a lost socket has no second
+	// half: the client sends a paste as one frame, so anything arriving on a
+	// new connection is a new frame. Carrying the flag over would leave this
+	// viewer reading every terminal report as pasted text for as long as the
+	// tab lived.
+	tv.pasting = false
 	tv.mu.Unlock()
 	if previous == nil {
 		return
@@ -1349,7 +1398,11 @@ func (c *termConn) writeInput(payload []byte) (bool, error) {
 		return false, nil
 	}
 	if tv.viewer == nil {
-		c.send(map[string]any{"t": "error", "message": "this terminal is not attached", "fatal": true})
+		// The socket is not at fault and neither is the frame: this tab's
+		// terminal is being replaced. Ending the connection is what gets the
+		// keystroke written, because the next handshake attaches one - and it
+		// is not acknowledged, so the client still holds it.
+		c.send(map[string]any{"t": "error", "message": "this terminal is being re-attached", "fatal": false})
 		return false, errors.New("input arrived for a viewer with no terminal")
 	}
 	// A terminal report is not a keystroke. The browser answers questions
@@ -1360,9 +1413,32 @@ func (c *termConn) writeInput(payload []byte) (bool, error) {
 	tv.pasting = pasting
 	if len(keys) > 0 {
 		if _, err := tv.viewer.Write(keys); err != nil {
-			c.send(map[string]any{"t": "error", "message": err.Error(), "fatal": true})
-			return false, err
+			// Nothing was written, so nothing is acknowledged: the client is
+			// told the last number that did reach the pane, which is the same
+			// "start again from here" a gap is answered with, and it renumbers
+			// and resends what it is holding.
+			c.send(map[string]any{"t": "input_ack", "seq": last})
+			if errors.Is(err, termux.ErrClosed) {
+				// The tmux client is gone. Only a new handshake can attach
+				// another one, so this socket ends - and the keystroke is
+				// still held by a client that never heard an ack for it.
+				c.send(map[string]any{"t": "error", "message": "this terminal is being re-attached", "fatal": false})
+				return false, err
+			}
+			// Anything else is one frame that failed, and one frame that
+			// failed is not a connection that failed: the socket stays up for
+			// every other frame, and only a pane that refuses several in a row
+			// is given up on.
+			c.inputFails++
+			log.Printf("session %s: viewer %s could not be written to: %v", tv.sessionID, tv.viewerID, err)
+			if c.inputFails >= maxInputFailures {
+				c.send(map[string]any{"t": "error", "message": "this terminal is being re-attached", "fatal": false})
+				return false, err
+			}
+			c.send(map[string]any{"t": "error", "message": "That keystroke did not reach the session.", "fatal": false})
+			return false, nil
 		}
+		c.inputFails = 0
 	}
 	tv.lastInput = seq
 	c.noteAck(seq)
