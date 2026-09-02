@@ -122,6 +122,8 @@ export class Recorder {
   constructor() {
     this.recording = false;
     this.startedAt = 0;
+    // The meter's tap on the live audio, once there is any. Null until attach.
+    this.analyser = null;
   }
 
   // claim is the recording flag and the claim on the room, together, because
@@ -185,6 +187,17 @@ export class Recorder {
     const mute = this.ctx.createGain();
     mute.gain.value = 0;
 
+    // A meter on the same graph as the capture, so what is drawn is the audio
+    // that is actually being recorded rather than a second reading of the
+    // device. It is a tap off the source and feeds nothing, so a caller that
+    // never looks at it costs one node.
+    try {
+      this.analyser = this.ctx.createAnalyser();
+      this.analyser.fftSize = 1024;
+      this.analyser.smoothingTimeConstant = 0.6;
+      source.connect(this.analyser);
+    } catch { this.analyser = null; }
+
     let attached = false;
     if (this.ctx.audioWorklet) {
       try {
@@ -225,6 +238,8 @@ export class Recorder {
     try { this.source && this.source.disconnect(); } catch { /* ignore */ }
     try { this.node && this.node.disconnect(); } catch { /* ignore */ }
     if (this.node && this.node.port) this.node.port.onmessage = null;
+    try { this.analyser && this.analyser.disconnect(); } catch { /* ignore */ }
+    this.analyser = null;
     if (this.stream) this.stream.getTracks().forEach((track) => track.stop());
     if (this.ctx && this.ctx.state !== 'closed') { try { await this.ctx.close(); } catch { /* ignore */ } }
     this.chunks = [];
@@ -269,10 +284,13 @@ export class Recorder {
  * It exists because the words are the message: nothing is written into a field
  * on the way, so the whole round trip - microphone, WAV, transcription - is one
  * await. `onReady` is how the caller gets hold of the two endings a recording
- * has: it is handed `{ stop, cancel }`, and whichever is called decides what
- * this promise resolves with - the transcript, or the empty string for a
- * recording that was thrown away. A discarded recording is not a failure and
- * says nothing.
+ * has: it is handed `{ stop, cancel, analyser }`, and whichever ending is
+ * called decides what this promise resolves with - the transcript, or the
+ * empty string for a recording that was thrown away. A discarded recording is
+ * not a failure and says nothing. `analyser` is the live AnalyserNode of the
+ * recording, for a level meter; it is null where the browser has none, and it
+ * is disconnected when the microphone is released, so nothing has to be handed
+ * back afterwards.
  *
  * `onTime` is called with the seconds recorded so far, for a clock beside the
  * button. Every failure arrives as one sentence a person can read, on
@@ -290,7 +308,7 @@ export async function dictateOnce({ onTime, onReady } = {}) {
   const ended = new Promise((resolve) => { settle = resolve; });
   let how = 'stop';
   try {
-    if (onReady) onReady({ stop: () => settle('stop'), cancel: () => settle('cancel') });
+    if (onReady) onReady({ stop: () => settle('stop'), cancel: () => settle('cancel'), analyser: recorder.analyser || null });
     how = await ended;
   } catch {
     /* a caller that threw from onReady still gets its microphone back below */

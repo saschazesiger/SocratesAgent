@@ -657,6 +657,8 @@ const ids = ['sidebar', 'navScrim', 'menuBtn', 'newSession', 'sessionScope', 'se
   'stage', 'termWrap', 'term', 'termOverlay', 'termLines', 'termNotice',
   'termTicker', 'tickerWindow', 'termEmpty',
   'chatPanel', 'chatLog', 'chatFoot', 'chatClose',
+  'chatMic', 'chatMicText', 'chatSpeak',
+  'chatRecSheet', 'chatRecMeter', 'chatRecTime', 'chatRecSend', 'chatRecCancel',
   'keybar', 'logout'];
 for (const id of ids) dom[id] = document.getElementById(id);
 

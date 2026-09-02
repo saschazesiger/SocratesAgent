@@ -1306,11 +1306,37 @@ body.stale .icon-btn.working svg { animation-play-state: paused; }
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 48px;
-  padding: 0 8px 0 16px;
+  min-height: 56px;
+  padding: 6px 8px 6px 16px;
   border-bottom: 1px solid var(--line);
 }
-.chat-head-title { flex: 1; font-size: 13.5px; font-weight: 560; letter-spacing: -.01em; }
+.chat-head-title { flex: 1; min-width: 0; font-size: 13.5px; font-weight: 560; letter-spacing: -.01em; }
+/* The microphone. Outlined rather than filled, because Send is the filled
+   thing on this screen and two black buttons would be a question about which
+   one is the action. Big enough to be hit by a thumb that is driving. */
+.pill {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 540;
+  letter-spacing: -.01em;
+  cursor: pointer;
+  transition: background .16s var(--ease), border-color .16s var(--ease), transform .16s var(--ease);
+}
+.pill .ico { width: 17px; height: 17px; flex: none; }
+.pill:hover:not(:disabled) { background: var(--bg-hover); border-color: #cfd0d5; }
+.pill:active:not(:disabled) { transform: scale(.985); }
+.pill:disabled { opacity: .45; cursor: not-allowed; }
 .chat-log {
   flex: 1;
   min-height: 0;
@@ -1372,20 +1398,63 @@ body.stale .icon-btn.working svg { animation-play-state: paused; }
 }
 .chat-compose { display: flex; align-items: center; gap: 8px; }
 .chat-compose .input { flex: 1; min-width: 0; }
-/* The microphone, and in its place while it is recording the two endings a
-   recording has: send what was heard, or throw it away. They stand where the
-   microphone stood, so the thumb that started the recording is already there
-   when it has to decide. */
-.rec-actions { display: flex; align-items: center; gap: 2px; }
-.rec-actions .rec-time { margin: 0 4px; }
-.rec-actions.rec .rec-time { color: var(--red); }
-.rec-actions .rec-drop:hover { color: var(--red); }
+
+/* The recording sheet: what the microphone is hearing, how long it has been
+   hearing it, and the two endings a recording has. Both endings are large
+   enough to be hit without looking, because that is when they are hit. */
+.rec-meter {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  height: 64px;
+  margin: 2px 0 12px;
+}
+.rec-meter .rec-bar {
+  width: 5px;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--text);
+  opacity: .82;
+  transform: scaleY(.07);
+  transition: transform .06s linear;
+  will-change: transform;
+}
+/* Where motion is not wanted the level is one bar that fills, refreshed a few
+   times a second rather than every frame. */
+.rec-meter.plain { gap: 0; height: 12px; margin: 10px 0 16px; }
+.rec-meter.plain .rec-bar {
+  width: 100%;
+  height: 12px;
+  transform: none;
+  background: var(--bg-sunken);
+  overflow: hidden;
+  position: relative;
+}
+.rec-meter.plain .rec-bar::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--level, 0%);
+  border-radius: 999px;
+  background: var(--text);
+}
 .rec-time {
   flex: none;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 12.5px;
   font-variant-numeric: tabular-nums;
   color: var(--text-soft);
+  text-align: center;
+}
+.rec-sheet .rec-time { margin-bottom: 16px; }
+.rec-buttons { display: flex; gap: 10px; }
+.rec-big {
+  flex: 1 1 0;
+  min-height: 56px;
+  border-radius: 14px;
+  font-size: 15px;
+  font-weight: 550;
 }
 
 /* On a phone the chat is a sheet over the terminal rather than a column
