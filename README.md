@@ -213,6 +213,14 @@ Then open <http://localhost:8080>.
 
 ## First run
 
+0. **Sign the CLIs in first.** Socrates starts them; it does not log them in.
+   Run `claude` (and `codex`, and `opencode`) once in a shell on the machine
+   Socrates runs on, as the same user, and complete the login and whatever
+   first-run questions each one asks — Claude Code's text-style choice and its
+   sign-in are full-screen prompts, and a session started before they are
+   answered opens on them instead of on a prompt. If `ANTHROPIC_API_KEY` is
+   exported in your shell, note that Socrates deliberately does not pass it to
+   a session: every session is a signed-in Claude Code.
 1. `/setup` asks for the password you will use from now on. You can paste your
    OpenRouter key right away and decide whether the instance should be
    published through a Cloudflare tunnel — both can also be changed later.

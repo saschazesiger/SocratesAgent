@@ -132,6 +132,29 @@ func baseEnv(req PlanRequest) map[string]string {
 	}
 }
 
+// resolvedCwd is the working directory as the kernel - and therefore every CLI
+// that asks for its own - reports it: with the symlinks gone.
+//
+// Both trust mechanisms key a stored entry by the working directory, and both
+// programs look it up under the name they read back from the process rather
+// than the one Socrates handed them. A workspace root reached through a link -
+// /tmp on macOS, a linked projects directory, a home that is a symlink - would
+// otherwise be trusted under a name neither program ever asks about, and the
+// session would open on the trust prompt with the entry sitting in the file.
+//
+// A path that cannot be resolved is returned unchanged: the caller is about to
+// start a program in it, and the unresolved name is a better guess than none.
+func resolvedCwd(cwd string) string {
+	if cwd == "" {
+		return cwd
+	}
+	real, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		return cwd
+	}
+	return real
+}
+
 // ---------------------------------------------------------------- binaries
 
 // resolveBinary turns the user's override, or the harness's default name, into

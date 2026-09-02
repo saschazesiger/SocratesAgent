@@ -1,8 +1,11 @@
 package harnesses
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -113,13 +116,44 @@ func (c Claude) plan(req PlanRequest, lead []string, id string) (LaunchPlan, err
 	// would take it from the pane as well as from the program.
 	env["CLAUDE_CODE_DISABLE_TERMINAL_TITLE"] = "1"
 	env["CLAUDE_CODE_NO_FLICKER"] = "1"
+	// --dangerously-skip-permissions refuses to run as root:
+	// `--dangerously-skip-permissions cannot be used with root/sudo
+	// privileges for security reasons`, and the pane is dead before the user
+	// can read it. The binary's condition is
+	// `getuid() === 0 && IS_SANDBOX !== "1" && !CLAUDE_CODE_BUBBLEWRAP` [BIN],
+	// so the variable is what says "this root is a container's root". Socrates
+	// in its own Docker image is exactly that, and it is the deployment the
+	// product ships. It is set only when the process really is root, because a
+	// normal account has no such check and IS_SANDBOX would then be a claim
+	// about a machine nobody asked us about.
+	//
+	// The pane's environment is built here rather than inherited, so this is
+	// not a variable Socrates' own environment can be relied on to carry: a
+	// server started from a login shell that happened to export IS_SANDBOX
+	// would work and the same server started by systemd would not.
+	if os.Geteuid() == 0 {
+		env["IS_SANDBOX"] = "1"
+	}
+	// A key exported into Socrates' own environment would otherwise reach the
+	// pane through tmux and stop the session on `Detected a custom API key …
+	// ❯ No (recommended)`. Every Socrates session is a logged-in Claude Code,
+	// which is the policy the settings file and the global config are written
+	// for; an ambient key is not part of it. tmux has no "unset" in
+	// new-session, so it is set to nothing, which the binary reads as absent.
+	env["ANTHROPIC_API_KEY"] = ""
 
 	settings, err := claudeSettings(env)
 	if err != nil {
 		return LaunchPlan{}, err
 	}
 
-	pinClaudeGlobalConfig(claudeGlobalConfigPath(), req.Cwd)
+	if err := pinClaudeGlobalConfig(claudeGlobalConfigPath(), req.Cwd); err != nil {
+		// Not a launch failure: the pane opens and shows Claude Code's own
+		// words, which is more use than a create that refuses with these. The
+		// log is where the reason for a session that stopped on the workspace
+		// question is written down.
+		req.logf("claude: could not pin the global configuration for session %s: %v", req.SessionID, err)
+	}
 
 	return LaunchPlan{
 		Argv:       argv,
@@ -185,6 +219,33 @@ func (Claude) VerifyCLISession(ctx context.Context, req PlanRequest) (bool, erro
 	return len(matches) > 0, nil
 }
 
+// ClaudeSignIn is what the dashboard needs to say whether Claude Code has been
+// through its own first run on this machine: the onboarding questions answered
+// and an account stored.
+//
+// Nothing Socrates passes can skip either. A session started before them opens
+// on "Choose the text style that looks best with your terminal" or on the
+// sign-in screen, which is a full pane of Claude Code's own words and a
+// session that cannot be used - the same failure shape as the workspace
+// question, and the same thing the dashboard should say out loud rather than
+// showing a green row beside it.
+func ClaudeSignIn() (onboarded bool, account string) {
+	raw, err := os.ReadFile(claudeGlobalConfigPath())
+	if err != nil {
+		return false, ""
+	}
+	var doc struct {
+		HasCompletedOnboarding bool `json:"hasCompletedOnboarding"`
+		OAuthAccount           struct {
+			EmailAddress string `json:"emailAddress"`
+		} `json:"oauthAccount"`
+	}
+	if json.Unmarshal(raw, &doc) != nil {
+		return false, ""
+	}
+	return doc.HasCompletedOnboarding, strings.TrimSpace(doc.OAuthAccount.EmailAddress)
+}
+
 // DiscoverModels returns the curated list; see claude_models.go.
 func (Claude) DiscoverModels(ctx context.Context, bin string) (Catalog, error) {
 	return claudeModels(), nil
@@ -218,9 +279,9 @@ func claudeGlobalConfigPath() string {
 	return filepath.Join(home, ".claude.json")
 }
 
-// pinClaudeGlobalConfig writes the two preferences that are not settings-file
-// keys into Claude Code's global configuration: the light theme, and Remote
-// Control off at startup.
+// pinClaudeGlobalConfig writes the three preferences that are not
+// settings-file keys into Claude Code's global configuration: the light theme,
+// Remote Control off at startup, and the working directory trusted.
 //
 // Where those preferences live was verified against the 2.1.258 binary rather
 // than guessed. The defaults object the binary builds for its global config -
@@ -239,38 +300,72 @@ func claudeGlobalConfigPath() string {
 // `remoteControlAtStartup: true in …` for `project and local` and for
 // `legacy_global_config`, so a person who once turned Remote Control on by
 // hand has a stored preference that starts it again with no flag at all. It is
-// cleared at the top level and inside the entry for this working directory -
-// but only when that entry already exists, because a projects entry Socrates
-// invents is a directory Claude Code has never been run in, where the
-// preference cannot be set in the first place.
+// cleared at the top level and inside the entry for this working directory.
+//
+// `hasTrustDialogAccepted` is what lets the session start at all. A Socrates
+// session works in a directory Claude Code has never been opened in - a
+// dynamic workspace directory is brand new every time - and in one of those
+// the binary opens on a blocking full-screen question ("Accessing workspace:
+// … Is this a project you created or one you trust?") whose highlighted answer
+// is **No, exit**. Nothing on the command line skips it: there is no
+// --trust flag in 2.1.258, --dangerously-skip-permissions is about tool
+// permissions and comes after it, and the settings file has no key for it.
+// The gate is the per-project attribute in the global config - verified
+// against 2.1.258: with `projects[<cwd>].hasTrustDialogAccepted = true` the
+// same launch goes straight to the prompt. This is the exact counterpart of
+// the `trust_level="trusted"` override Codex is given on its command line
+// (§Codex in docs/design/HARNESS-POLICY.md); Claude Code has no command line
+// for it, so the entry is written here.
+//
+// So the entry for this working directory is created when it does not exist,
+// rather than only amended when it does. A directory Socrates itself made and
+// is about to start a session in is a directory the person asked for; leaving
+// the answer to a dialog nobody is watching, on a phone, in a car, is the
+// thing this whole product exists not to do.
 //
 // The file belongs to the user and holds their credentials, so it is read,
 // changed by exactly these keys and written through a temporary file in the
 // same directory; when it does not exist at all, what is written is a file
 // with only them in it, which is what Claude Code itself would grow from. A
-// failure is not a launch failure: COLORFGBG is the lever that actually
-// decides the palette, and the missing flag is what actually decides Remote
-// Control.
+// failure is still not a launch failure - the pane opens and says what is
+// wrong with it, which is more use than a create that refuses with the same
+// sentence - but it is no longer only cosmetic: without the trust entry the
+// session opens on the workspace question, so the error is returned and the
+// caller writes it to the log.
 //
 // It is a side effect of building a plan rather than of starting the pane, and
 // Claude Code writes the same file under a lock of its own. A write that lands
-// while another Claude is running can therefore be overwritten by it. That
-// costs one session the wrong palette and nothing else, which is why it is
-// left as it is rather than being turned into a lock protocol against a file
-// format nobody has documented.
-func pinClaudeGlobalConfig(path, cwd string) {
+// while another Claude is running can therefore be overwritten by it, at the
+// cost of that session's palette and its trust entry. It is left as it is
+// rather than turned into a lock protocol against a file format nobody has
+// documented; what the session then shows is Claude Code's own question, not a
+// silent failure.
+func pinClaudeGlobalConfig(path, cwd string) error {
 	if path == "" {
-		return
+		return errors.New("there is no home directory to write Claude Code's global configuration in")
 	}
+	// Claude Code keys the entry by `process.cwd()`, which is the resolved
+	// path: a directory reached through a symlink - /tmp on macOS, a linked
+	// workspace root, a home that is a link - would otherwise get an entry
+	// under a name the binary never looks up, and the session would open on
+	// the trust question with the entry sitting right there in the file.
+	cwd = resolvedCwd(cwd)
 	doc := map[string]any{}
 	raw, err := os.ReadFile(path)
 	switch {
 	case err == nil:
-		if json.Unmarshal(raw, &doc) != nil {
-			return
+		// A file with nothing in it is a file Claude Code has not written yet
+		// - an interrupted first run leaves one - and it is not JSON. Treating
+		// it as missing is what stops one zero-byte file costing every session
+		// its trust entry for ever.
+		if len(bytes.TrimSpace(raw)) == 0 {
+			break
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			return fmt.Errorf("%s is not JSON this can safely change: %w", path, err)
 		}
 	case !os.IsNotExist(err):
-		return
+		return err
 	}
 	changed := false
 	if doc["theme"] != "light" {
@@ -281,37 +376,62 @@ func pinClaudeGlobalConfig(path, cwd string) {
 		doc["remoteControlAtStartup"] = false
 		changed = true
 	}
-	if projects, ok := doc["projects"].(map[string]any); ok && cwd != "" {
-		if entry, ok := projects[cwd].(map[string]any); ok && entry["remoteControlAtStartup"] != false {
+	if cwd != "" {
+		projects, ok := doc["projects"].(map[string]any)
+		if !ok {
+			// A "projects" that is there but is not an object belongs to a
+			// file this code does not understand, and replacing it would
+			// throw away whatever it is. Nothing is written in that case.
+			if _, present := doc["projects"]; present {
+				return fmt.Errorf(`%s has a "projects" that is not an object, so the working directory cannot be trusted from here`, path)
+			}
+			projects = map[string]any{}
+			doc["projects"] = projects
+			changed = true
+		}
+		entry, ok := projects[cwd].(map[string]any)
+		if !ok {
+			if _, present := projects[cwd]; present {
+				return fmt.Errorf("%s has a project entry for %s that is not an object", path, cwd)
+			}
+			entry = map[string]any{}
+			projects[cwd] = entry
+			changed = true
+		}
+		if entry["hasTrustDialogAccepted"] != true {
+			entry["hasTrustDialogAccepted"] = true
+			changed = true
+		}
+		if entry["remoteControlAtStartup"] != false {
 			entry["remoteControlAtStartup"] = false
 			changed = true
 		}
 	}
 	if !changed {
-		return
+		return nil
 	}
 	out, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
-		return
+		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".claude.json.*")
 	if err != nil {
-		return
+		return err
 	}
 	name := tmp.Name()
 	defer func() { _ = os.Remove(name) }()
 	if _, err := tmp.Write(out); err != nil {
 		_ = tmp.Close()
-		return
+		return err
 	}
 	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
-		return
+		return err
 	}
 	if err := tmp.Close(); err != nil {
-		return
+		return err
 	}
-	_ = os.Rename(name, path)
+	return os.Rename(name, path)
 }
 
 // pick takes the session's own choice when there is one, and the dashboard's
