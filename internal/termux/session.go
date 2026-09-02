@@ -59,6 +59,12 @@ func (m *Manager) reclaim(v *Viewer, cols, rows int) bool {
 	return true
 }
 
+// demote makes a viewer the least recently seen one without dropping it.
+func (s *liveSession) demote(v *Viewer) {
+	s.remove(v)
+	s.viewers = append([]*Viewer{v}, s.viewers...)
+}
+
 func (s *liveSession) remove(v *Viewer) {
 	for i, existing := range s.viewers {
 		if existing == v {
@@ -193,7 +199,36 @@ func (v *Viewer) Retake(ctx context.Context, cols, rows int) error {
 // the socket and not the expiry: a phone that drove out of coverage must not
 // pin a laptop's window to sixty columns for a minute and a half. A viewer
 // that comes back re-takes ownership like any other attaching one.
-func (v *Viewer) Idle() { v.m.forget(v) }
+func (v *Viewer) Idle() { v.m.demote(v) }
+
+// demote takes the window away from a viewer whose socket has gone without
+// taking the viewer away from the session: its terminal is still attached for
+// the length of the grace, and a session that is deleted in the meantime has
+// to be able to close it. It becomes the least recent viewer instead, so that
+// ownership passes to whoever is still watching and comes back to it only when
+// it reconnects.
+func (m *Manager) demote(v *Viewer) {
+	m.mu.Lock()
+	live := m.live[v.SessionID]
+	if live == nil {
+		m.mu.Unlock()
+		return
+	}
+	wasOwner := live.owner() == v
+	live.demote(v)
+	next := live.owner()
+	m.mu.Unlock()
+
+	if !wasOwner || next == nil || next == v {
+		// With nobody else watching, the window keeps the size it has.
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := m.own(ctx, next); err != nil {
+		m.logf("could not hand the window size over to viewer %s: %v", next.ID, err)
+	}
+}
 
 // Close detaches this viewer and lets the session carry on without it.
 //

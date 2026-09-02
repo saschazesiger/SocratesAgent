@@ -41,10 +41,12 @@ type Server struct {
 	// hub is every browser tab the transport currently remembers, including
 	// the ones whose socket has dropped and whose terminal is in its grace.
 	hub *termHub
-	// pingEvery and pingTimeout are the transport's watchdog, set once here so
-	// that the tests can run it in milliseconds rather than in minutes.
-	pingEvery   time.Duration
-	pingTimeout time.Duration
+	// pingEvery, pingTimeout and writeTimeout are the transport's watchdog and
+	// its slow-reader guard, set once here so that the tests can run them in
+	// milliseconds rather than in minutes.
+	pingEvery    time.Duration
+	pingTimeout  time.Duration
+	writeTimeout time.Duration
 
 	mu       sync.RWMutex
 	settings config.Settings
@@ -67,13 +69,14 @@ type attempt struct {
 // its own files, including a cloudflared it downloads itself.
 func New(st *store.Store, dataDir string) (*Server, error) {
 	s := &Server{
-		store:       st,
-		dataDir:     dataDir,
-		hub:         newTermHub(),
-		pingEvery:   defaultPingEvery,
-		pingTimeout: defaultPingTimeout,
-		loginFail:   map[string]*attempt{},
-		wsRate:      map[string]*attempt{},
+		store:        st,
+		dataDir:      dataDir,
+		hub:          newTermHub(),
+		pingEvery:    defaultPingEvery,
+		pingTimeout:  defaultPingTimeout,
+		writeTimeout: defaultWriteTimeout,
+		loginFail:    map[string]*attempt{},
+		wsRate:       map[string]*attempt{},
 	}
 
 	settings := config.Default()
@@ -278,7 +281,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/sessions", s.auth(s.handleCreateSession))
 	mux.HandleFunc("GET /api/sessions/{id}", s.auth(s.handleGetSession))
 	mux.HandleFunc("PATCH /api/sessions/{id}", s.auth(s.handleRenameSession))
-	mux.HandleFunc("DELETE /api/sessions/{id}", s.auth(s.handleDeleteSession))
+	mux.HandleFunc("DELETE /api/sessions/{id}", s.auth(s.endingViewers(s.handleDeleteSession)))
 	mux.HandleFunc("POST /api/sessions/{id}/archive", s.auth(s.handleArchiveSession))
 	mux.HandleFunc("POST /api/sessions/{id}/resume", s.auth(s.handleResumeSession))
 	mux.HandleFunc("POST /api/sessions/{id}/restart", s.auth(s.handleRestartSession))

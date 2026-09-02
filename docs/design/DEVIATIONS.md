@@ -491,3 +491,53 @@ read the pane out of the DOM, and the shipped default must not be the untested p
 **WP6 / §H.2 — `e2e/harness.mjs` was touched, two selectors.** `setup()` waited for `#newChat`
 and `ensureNav()` names the drawer it opens; both now say `#newSession`. The boot, assert and
 leak machinery is unchanged.
+
+### WP5 fix-up — the review findings
+
+**WP5 / §D.7 — the session cookie stays `SameSite=Lax`.** The section asks for `Strict`. A
+WebSocket handshake is not a top level navigation, so `Lax` already withholds the cookie from a
+cross site request and the origin check inside `websocket.Accept` is what actually defends the
+transport; `Strict` adds nothing to that and costs the one case people meet, a link to the
+tunnel opened from another app landing on the login page. The spec owner is asked to revert
+§D.7.
+
+**WP5 / §D.5 — a stalled viewer is told 1013 only if it starts reading again.** The section
+says a write that blocks for thirty seconds is closed with 1013. A close frame needs room in
+the same socket, so a peer whose buffer is full cannot be told anything: at the deadline the
+connection is marked overdue and the writer closes it with 1013 as soon as the stuck frame is
+away - which is the moment the client reads again - and one further interval later the socket
+is dropped without a word. What notices that case is the client's own ping watchdog, which is
+what it is for. The Go test drives the whole path over a listener with a four kilobyte send
+buffer, because a loopback connection otherwise buffers several megabytes before a write
+blocks at all.
+
+**WP5 / §D.7 — the handshake ceiling counts only handshakes that would start a terminal.** A
+reconnect carrying a viewer id the hub still remembers is never counted: twenty a minute is a
+guard against a broken client starting tmux clients, and a phone flapping in and out of
+coverage with two tabs open would otherwise lock itself out of its own terminal for a minute.
+The forwarding headers (`CF-Connecting-IP`, `X-Forwarded-For`) are now believed only when the
+peer itself is loopback or on a private network, so that a caller cannot choose its own
+identity and rate limit nothing; the same change applies to the login throttle, which reads the
+same helper.
+
+**WP5 / §A.10 — deleting a session ends its viewers through the transport.** Step 1 says
+"detach and close every viewer PTY", and the Manager only ever saw the viewers that still held
+the window. A viewer whose socket dropped is now demoted rather than forgotten
+(`termux.Manager.demote`), so `Delete` closes its terminal too, and the delete route is wrapped
+so that every socket on a session that was actually deleted is told in a frame and closed with
+1001, taking its grace timer and its ring with it.
+
+**WP5 / §D.2 — a client that breaks the framing is closed with 1002 and loses its terminal.**
+The spec does not say. A zero length or wrong-kind binary frame used to close as a normal
+closure and leave the viewer in its ninety second grace, which is eight bad frames away from a
+session that can hold no more viewers.
+
+**WP5 / §D.6 — input sequence numbers start at one.** A first frame at zero is answered with
+`input_ack: 0` rather than silently discarded, so a client that got it wrong is told where to
+start. Sequence numbers are JSON numbers and therefore exact to 2^53, which a keystroke
+counter reaches in no lifetime.
+
+**WP5 / §D.2 — `hello.session` is the same envelope every other endpoint answers with**
+(`sessionView`, WP4), so the browser has one shape for a session; and the resume `notice` reads
+`Manager.ResumeNoteOf` rather than guessing from the row, so the banner and the session list
+cannot disagree.

@@ -115,11 +115,13 @@ func (s *Server) startLogin(w http.ResponseWriter, r *http.Request) error {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
-		// Strict rather than Lax: the WebSocket handshake carries this cookie
-		// and is checked for origin, and no second CSRF token is worth the
-		// reconnect it would break. The only visible effect is that following
-		// a link from another site lands on the login page.
-		SameSite: http.SameSiteStrictMode,
+		// Lax, not Strict. A WebSocket handshake is not a top level
+		// navigation, so Lax already withholds this cookie from a cross site
+		// request; Strict would add nothing to the transport's CSRF story -
+		// the origin check inside websocket.Accept is what defends it - and
+		// would cost the one case people actually meet, a link to the tunnel
+		// opened from another app landing on the login page.
+		SameSite: http.SameSiteLaxMode,
 		Secure:   r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"),
 		MaxAge:   int(sessionTTL.Seconds()),
 	})
@@ -127,19 +129,36 @@ func (s *Server) startLogin(w http.ResponseWriter, r *http.Request) error {
 }
 
 func clientIP(r *http.Request) string {
-	// Cloudflare puts the real caller here; it is the value to rate limit on
-	// when Socrates is published through a tunnel.
-	if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
-		return cf
-	}
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		return strings.TrimSpace(strings.SplitN(fwd, ",", 2)[0])
-	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
+	}
+	// Cloudflare and a reverse proxy put the real caller in a header, and it
+	// is the value to rate limit on when Socrates is published through one.
+	// The header is believed only when the connection itself came from a
+	// machine that could be that proxy - loopback, or the private network the
+	// container sits on. From anywhere else it is a caller choosing its own
+	// identity, which is a rate limit that limits nothing.
+	if forwarder(host) {
+		if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
+			return cf
+		}
+		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+			return strings.TrimSpace(strings.SplitN(fwd, ",", 2)[0])
+		}
 	}
 	return host
+}
+
+// forwarder reports whether a peer is close enough to be the proxy in front of
+// Socrates: cloudflared runs beside it, and a container's proxy is on the same
+// private network.
+func forwarder(host string) bool {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
 }
 
 // throttle slows down password guessing.

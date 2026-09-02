@@ -7,7 +7,9 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
@@ -610,8 +612,8 @@ func TestTerminalPingPong(t *testing.T) {
 	})
 	silent.readInBackground()
 	silent.hello()
-	if got := silent.closeStatus(5 * time.Second); got != websocket.StatusPolicyViolation {
-		t.Fatalf("the silent viewer closed with %v, want 1008", got)
+	if got := silent.closeStatus(5 * time.Second); got != websocket.StatusGoingAway {
+		t.Fatalf("the silent viewer closed with %v, want 1001", got)
 	}
 	// The one that answers is untouched.
 	answering.send(1, "echo still-here\r")
@@ -693,6 +695,137 @@ func TestTerminalResumeNotice(t *testing.T) {
 	c.waitFor("FAKE claude")
 }
 
+// blackHole is a connection that stops carrying anything the moment the test
+// says so, without closing: it is a phone driving into a tunnel, which is not
+// the same event as a socket being closed and is the one the server cannot see
+// coming.
+type blackHole struct {
+	net.Conn
+	mu      sync.Mutex
+	blocked bool
+	release chan struct{}
+}
+
+func (c *blackHole) Read(p []byte) (int, error) {
+	c.mu.Lock()
+	blocked, release := c.blocked, c.release
+	c.mu.Unlock()
+	if blocked {
+		<-release
+		return 0, net.ErrClosed
+	}
+	return c.Conn.Read(p)
+}
+
+func (c *blackHole) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	blocked := c.blocked
+	c.mu.Unlock()
+	if blocked {
+		return len(p), nil // Swallowed, like a packet in a tunnel.
+	}
+	return c.Conn.Write(p)
+}
+
+func (c *blackHole) Close() error {
+	c.offline(false)
+	return c.Conn.Close()
+}
+
+func (c *blackHole) offline(on bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.blocked = on
+	if !on && c.release != nil {
+		close(c.release)
+		c.release = nil
+	}
+	if on && c.release == nil {
+		c.release = make(chan struct{})
+	}
+}
+
+// blackHoleClient is an HTTP client whose one connection can be cut off.
+func blackHoleClient() (*http.Client, func(bool)) {
+	var (
+		mu    sync.Mutex
+		conns []*blackHole
+	)
+	client := &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			conn, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			hole := &blackHole{Conn: conn}
+			mu.Lock()
+			conns = append(conns, hole)
+			mu.Unlock()
+			return hole, nil
+		},
+	}}
+	return client, func(on bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, hole := range conns {
+			hole.offline(on)
+		}
+	}
+}
+
+// TestTerminalOfflineThenOnline is the drive through a tunnel: the socket is
+// not closed, it simply stops carrying anything, and the browser comes back on
+// a new one with the same viewer id. The server has not noticed the old socket
+// is dead, so this is a takeover, and everything the transport promises has to
+// hold across it - the gap arrives, once, and the keys typed afterwards are
+// acknowledged and reach the pane.
+func TestTerminalOfflineThenOnline(t *testing.T) {
+	e := newSessionEnv(t)
+	id := e.shellSession(100, 30)
+
+	client, setOffline := blackHoleClient()
+	first := e.dialWSRaw(id, "viewer=tab-a&cols=100&rows=30",
+		&websocket.DialOptions{HTTPClient: client})
+	first.readInBackground()
+	first.hello()
+	first.send(1, "echo before-the-tunnel\r")
+	first.waitFor("before-the-tunnel")
+	rendered := first.settle()
+
+	// Into the tunnel. Nothing is closed; the server still believes in this
+	// socket.
+	setOffline(true)
+	t.Cleanup(func() { setOffline(false) })
+	if _, err := e.tmux("send-keys", "-t", "soc_"+id, "echo while-offline", "Enter"); err != nil {
+		t.Fatal(err)
+	}
+	e.waitForPane(id, "while-offline")
+
+	// Out of the tunnel, on a new socket with the same viewer id.
+	back := e.dialWS(id, fmt.Sprintf("viewer=tab-a&cols=100&rows=30&since=%d", rendered))
+	hello := back.hello()
+	if hello["viewer_fresh"] != false {
+		t.Fatalf("the tab lost its place by going offline: %#v", hello)
+	}
+	ack := uint64(floatOf(t, hello, "input_ack"))
+	if ack != 1 {
+		t.Fatalf("input_ack = %d after the tunnel, want 1", ack)
+	}
+	back.waitFor("while-offline")
+	if strings.Count(back.screen(), "while-offline") != 2 {
+		t.Fatalf("the gap was not delivered exactly once:\n%q", back.screen())
+	}
+
+	// And the terminal takes input again, which is the half that wedged.
+	back.send(ack+1, "echo after-the-tunnel\r")
+	back.waitFor("after-the-tunnel")
+	acked := back.waitCtrl("input_ack")
+	if got := uint64(floatOf(t, acked, "seq")); got != ack+1 {
+		t.Fatalf("the keystroke after the tunnel was acknowledged as %d, want %d", got, ack+1)
+	}
+	e.waitForPane(id, "after-the-tunnel")
+}
+
 // TestTerminalSlowReaderStaysFlat: a viewer that never reads must not grow the
 // server and must not stall the pane. The ring is the only buffer there is, so
 // the bytes it cannot hold are simply forgotten.
@@ -706,7 +839,9 @@ func TestTerminalSlowReaderStaysFlat(t *testing.T) {
 	fast.hello()
 
 	// Rather more than the ring holds, as fast as the shell can print it.
-	fast.send(1, "i=0; while [ $i -lt 40000 ]; do echo \"line $i xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"; i=$((i+1)); done; echo spin-done\r")
+	// The marker is split in the command line so that the shell's echo of what
+	// was typed cannot satisfy the wait: only the loop's own output can.
+	fast.send(1, "i=0; while [ $i -lt 40000 ]; do echo \"line $i xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"; i=$((i+1)); done; echo spin-d''one\r")
 	fast.waitFor("spin-done")
 	e.waitForPane(id, "spin-done")
 
@@ -758,3 +893,483 @@ func TestTerminalCleanDetach(t *testing.T) {
 		t.Fatal("a detach took the session with it")
 	}
 }
+
+// ---------------------------------------------------------------- ordering
+
+// orderedClient records the order frames arrive in, which the client above
+// cannot: it keeps control and output frames in separate lists, and the one
+// thing the protocol is strict about is that hello comes first.
+type orderedClient struct {
+	t    *testing.T
+	conn *websocket.Conn
+
+	mu    sync.Mutex
+	order []string
+	out   []byte
+	err   error
+	done  chan struct{}
+}
+
+func (e *sessionEnv) dialOrdered(sessionID, query string) *orderedClient {
+	e.t.Helper()
+	conn, res, err := websocket.Dial(context.Background(), e.wsURL(sessionID, query), e.dialOptions(nil))
+	if err != nil {
+		status := 0
+		if res != nil {
+			status = res.StatusCode
+		}
+		e.t.Fatalf("dial %s: %v (status %d)", query, err, status)
+	}
+	conn.SetReadLimit(8 << 20)
+	c := &orderedClient{t: e.t, conn: conn, done: make(chan struct{})}
+	e.t.Cleanup(func() { _ = conn.CloseNow() })
+	go func() {
+		defer close(c.done)
+		for {
+			typ, payload, err := conn.Read(context.Background())
+			if err != nil {
+				c.mu.Lock()
+				c.err = err
+				c.mu.Unlock()
+				return
+			}
+			c.mu.Lock()
+			switch {
+			case typ == websocket.MessageBinary && len(payload) >= 9:
+				c.order = append(c.order, fmt.Sprintf("out:%d", binary.BigEndian.Uint64(payload[1:9])))
+				c.out = append(c.out, payload[9:]...)
+			case typ == websocket.MessageBinary:
+				c.order = append(c.order, "bin")
+			default:
+				var frame map[string]any
+				_ = json.Unmarshal(payload, &frame)
+				kind, _ := frame["t"].(string)
+				c.order = append(c.order, kind)
+			}
+			c.mu.Unlock()
+		}
+	}()
+	return c
+}
+
+// firstFrame is the kind of the first frame this socket received.
+func (c *orderedClient) firstFrame(within time.Duration) string {
+	c.t.Helper()
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		c.mu.Lock()
+		if len(c.order) > 0 {
+			first := c.order[0]
+			c.mu.Unlock()
+			return first
+		}
+		c.mu.Unlock()
+		time.Sleep(5 * time.Millisecond)
+	}
+	return "<nothing at all>"
+}
+
+func (c *orderedClient) frames() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.order...)
+}
+
+func (c *orderedClient) rendered() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return uint64(len(c.out))
+}
+
+func (c *orderedClient) screen() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return string(c.out)
+}
+
+func (c *orderedClient) close() {
+	_ = c.conn.CloseNow()
+	<-c.done
+}
+
+// clientCount is how many tmux clients are attached to a session, which is how
+// a test tells a reused terminal from a fresh attach.
+func (e *sessionEnv) clientCount(id string) int {
+	out, _ := e.tmux("list-clients", "-t", "soc_"+id, "-F", "#{client_tty}")
+	if strings.TrimSpace(out) == "" {
+		return 0
+	}
+	return len(strings.Split(strings.TrimSpace(out), "\n"))
+}
+
+// TestTerminalHelloIsAlwaysFirst pins the one ordering rule the protocol has.
+// hello carries replay_from, which decides whether the client resets its
+// terminal, and input_ack, which decides how it renumbers what it holds:
+// output or a size frame arriving in front of it is rendered into a screen
+// that is about to be cleared, or numbered against an anchor that has not
+// arrived.
+func TestTerminalHelloIsAlwaysFirst(t *testing.T) {
+	e := newSessionEnv(t)
+	id := e.shellSession(100, 30)
+
+	// A fresh connect, where tmux paints the moment it attaches.
+	fresh := e.dialOrdered(id, "viewer=tab-a&cols=100&rows=30")
+	if got := fresh.firstFrame(20 * time.Second); got != "hello" {
+		t.Fatalf("a fresh connect began with %q: %v", got, fresh.frames())
+	}
+	fresh.close()
+
+	// A reconnect that has a gap waiting for it in the ring.
+	for i := 0; i < 10; i++ {
+		if _, err := e.tmux("send-keys", "-t", "soc_"+id, fmt.Sprintf("echo gap-%d", i), "Enter"); err != nil {
+			t.Fatal(err)
+		}
+		e.waitForPane(id, fmt.Sprintf("gap-%d", i))
+		c := e.dialOrdered(id, fmt.Sprintf("viewer=tab-a&cols=100&rows=30&since=%d", fresh.rendered()))
+		if got := c.firstFrame(20 * time.Second); got != "hello" {
+			t.Fatalf("reconnect %d began with %q: %v", i, got, c.frames())
+		}
+		time.Sleep(100 * time.Millisecond)
+		c.close()
+	}
+
+	// A reconnect at a size the window is not wearing: the size frame the
+	// resize broadcasts must be behind hello, not in front of it.
+	rotated := e.dialOrdered(id, "viewer=tab-a&cols=80&rows=24&since=1")
+	if got := rotated.firstFrame(20 * time.Second); got != "hello" {
+		t.Fatalf("a reconnect at a new size began with %q: %v", got, rotated.frames())
+	}
+	e.waitForWindow(id, "80x24")
+	rotated.close()
+}
+
+// TestTerminalResyncKeepsHelloFirst is the same rule on the path where it
+// matters most: the client is behind what the ring can serve, so the terminal
+// is replaced and hello says replay_from 0 - a reset - which must not arrive
+// after the repaint it is meant to precede.
+func TestTerminalResyncKeepsHelloFirst(t *testing.T) {
+	e := newSessionEnv(t)
+	id := e.shellSession(100, 30)
+	first := e.dialWS(id, "viewer=tab-a&cols=100&rows=30")
+	first.hello()
+	first.send(1, "echo ready\r")
+	first.waitFor("ready")
+	rendered := first.settle()
+	first.drop()
+	time.Sleep(200 * time.Millisecond)
+	before := e.clientCount(id)
+
+	// More than the ring holds, while the tab is away.
+	if _, err := e.tmux("send-keys", "-t", "soc_"+id,
+		"i=0; while [ $i -lt 30000 ]; do echo \"line $i xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"; i=$((i+1)); done; echo over-d''one",
+		"Enter"); err != nil {
+		t.Fatal(err)
+	}
+	e.waitForPane(id, "over-done")
+	time.Sleep(300 * time.Millisecond)
+
+	c := e.dialOrdered(id, fmt.Sprintf("viewer=tab-a&cols=100&rows=30&since=%d", rendered))
+	if got := c.firstFrame(20 * time.Second); got != "hello" {
+		t.Fatalf("the resync began with %q: %v", got, c.frames())
+	}
+	back := e.dialWS(id, fmt.Sprintf("viewer=tab-b&cols=100&rows=30&since=%d", rendered))
+	back.hello()
+	if after := e.clientCount(id); after != before+1 {
+		t.Fatalf("the resync left %d tmux clients, want %d", after, before+1)
+	}
+}
+
+// TestTerminalReloadWithoutSinceResyncs: a tab that comes back with an empty
+// terminal - the ordinary page reload - is told to start from nothing and is
+// given a fresh attach. Replaying the ring to it would repaint the whole
+// session, including the device attribute queries tmux wrote at the first
+// attach, which the terminal would answer a second time into a pane that never
+// asked.
+func TestTerminalReloadWithoutSinceResyncs(t *testing.T) {
+	e := newSessionEnv(t)
+	id := e.shellSession(100, 30)
+	first := e.dialWS(id, "viewer=tab-a&cols=100&rows=30")
+	first.hello()
+	first.send(1, "echo before-the-reload\r")
+	first.waitFor("before-the-reload")
+	first.settle()
+	first.drop()
+	time.Sleep(200 * time.Millisecond)
+
+	second := e.dialWS(id, "viewer=tab-a&cols=100&rows=30")
+	hello := second.hello()
+	if hello["viewer_fresh"] != false {
+		t.Fatalf("the reload was not recognised as the same tab: %#v", hello)
+	}
+	if got := floatOf(t, hello, "replay_from"); got != 0 {
+		t.Fatalf("replay_from = %v on a reload, want 0", got)
+	}
+	second.send(2, "echo after-the-reload\r")
+	second.waitFor("after-the-reload")
+	// The proof that this was a fresh attach and not a replay: the stream
+	// starts at byte one of a new ring. A reused terminal would have resumed
+	// at the old ring's base, hundreds of bytes in, and delivered the whole
+	// session - including the device attribute queries tmux wrote when it
+	// first attached, which the terminal would answer a second time into a
+	// pane that never asked.
+	second.mu.Lock()
+	firstSeq := second.frames[0]
+	second.mu.Unlock()
+	if firstSeq != 1 {
+		t.Fatalf("the reload was served from the old ring, at %d", firstSeq)
+	}
+	if n := e.clientCount(id); n != 1 {
+		t.Fatalf("the reload left %d tmux clients, want 1", n)
+	}
+	if !strings.Contains(second.screen(), "before-the-reload") {
+		t.Fatalf("the reload did not repaint the screen:\n%q", second.screen())
+	}
+}
+
+// TestTerminalTakeoverOfAHalfOpenSocket is the case the takeover exists for:
+// the old socket is not closed, it is simply not there any more. hello must
+// not wait for a close handshake with a phone that has gone.
+func TestTerminalTakeoverOfAHalfOpenSocket(t *testing.T) {
+	e := newSessionEnv(t)
+	id := e.shellSession(100, 30)
+	halfOpen := e.dialWSRaw(id, "viewer=tab-a&cols=100&rows=30", nil) // Never read.
+	_ = halfOpen
+	time.Sleep(300 * time.Millisecond)
+
+	start := time.Now()
+	c := e.dialOrdered(id, "viewer=tab-a&cols=100&rows=30")
+	if got := c.firstFrame(20 * time.Second); got != "hello" {
+		t.Fatalf("the takeover began with %q: %v", got, c.frames())
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("hello took %s over a half-open socket", took)
+	}
+}
+
+// narrowListener hands out sockets that can hold almost nothing, so that a
+// client which stops reading blocks the server's writer within a frame or two
+// rather than after the several megabytes a loopback connection will otherwise
+// buffer on its own.
+type narrowListener struct{ net.Listener }
+
+func (l *narrowListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err == nil {
+		if tcp, ok := conn.(*net.TCPConn); ok {
+			_ = tcp.SetWriteBuffer(4096)
+			_ = tcp.SetReadBuffer(4096)
+		}
+	}
+	return conn, err
+}
+
+// narrowServer is the same handler on a listener like that.
+func (e *sessionEnv) narrowServer() *httptest.Server {
+	e.t.Helper()
+	ts := httptest.NewUnstartedServer(e.srv.Handler())
+	ts.Listener = &narrowListener{Listener: ts.Listener}
+	ts.Start()
+	e.t.Cleanup(ts.Close)
+	return ts
+}
+
+// TestTerminalSlowReaderIsGivenUpOn: a viewer whose write stalls is let go of
+// - the server stops writing to it, its terminal waits out the grace, and the
+// pane and the other viewers never notice.
+//
+// What the stalled client is told is bounded by TCP rather than by this code:
+// the 1013 is written the moment the stuck frame is away, which is the moment
+// the client starts reading again, and a client that never reads again cannot
+// be told anything, because a socket whose buffer is full has no room for a
+// close frame either. That is what the client's own ping watchdog is for.
+func TestTerminalSlowReaderIsGivenUpOn(t *testing.T) {
+	e := newSessionEnv(t)
+	// A short guard for every socket in this test: a viewer that is reading
+	// takes each frame in microseconds, so only one that has stopped trips it.
+	e.srv.writeTimeout = 300 * time.Millisecond
+	e.srv.hub.grace = time.Hour
+	id := e.shellSession(100, 30)
+
+	narrow := e.narrowServer()
+	conn, _, err := websocket.Dial(context.Background(),
+		"ws"+strings.TrimPrefix(narrow.URL, "http")+"/api/sessions/"+id+"/ws?viewer=tab-slow&cols=100&rows=30",
+		e.dialOptions(nil))
+	if err != nil {
+		t.Fatalf("dial the stalled viewer: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.CloseNow() })
+
+	fast := e.dialWS(id, "viewer=tab-fast&cols=100&rows=30")
+	fast.hello()
+	fast.send(1, "timeout 3 base64 -w 90 /dev/urandom; echo spin-d''one\r")
+	fast.waitFor("spin-done")
+
+	var stalled *termViewer
+	for _, tv := range e.srv.hub.forSession(id) {
+		if tv.viewerID == "tab-slow" {
+			stalled = tv
+		}
+	}
+	if stalled == nil {
+		t.Fatal("the stalled viewer was forgotten altogether")
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		stalled.mu.Lock()
+		gone := stalled.conn == nil
+		stalled.mu.Unlock()
+		if gone {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	stalled.mu.Lock()
+	live, kept := stalled.conn, stalled.viewer != nil
+	stalled.mu.Unlock()
+	if live != nil {
+		t.Fatal("the server is still writing to a viewer that stopped taking frames")
+	}
+	if !kept {
+		t.Fatal("the stalled viewer lost its terminal instead of its socket")
+	}
+
+	// The pane and the other viewer were never held up by it, and the stalled
+	// tab can come back to the terminal it left.
+	fast.send(2, "echo still-fine\r")
+	fast.waitFor("still-fine")
+	back := e.dialWS(id, "viewer=tab-slow&cols=100&rows=30")
+	hello := back.hello()
+	if hello["viewer_fresh"] != false {
+		t.Fatalf("the stalled viewer lost its place: %#v", hello)
+	}
+}
+
+// TestTerminalMalformedFrameIsAProtocolError: a client that breaks the framing
+// is told so, and does not get to park a terminal in the ninety second grace -
+// eight bad frames would otherwise fill the session's viewer table.
+func TestTerminalMalformedFrameIsAProtocolError(t *testing.T) {
+	e := newSessionEnv(t)
+	e.srv.hub.grace = time.Hour
+	id := e.shellSession(100, 30)
+
+	cases := []struct {
+		name  string
+		frame []byte
+	}{
+		{"a frame with no header", nil},
+		{"a header with no body", []byte{frameInput, 0, 0, 0, 0, 0, 0, 0}},
+		{"the wrong kind byte", append([]byte{frameOutput}, make([]byte, 12)...)},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			client := e.dialWS(id, "viewer=tab-bad&cols=100&rows=30")
+			client.hello()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := client.conn.Write(ctx, websocket.MessageBinary, c.frame); err != nil {
+				t.Fatal(err)
+			}
+			cancel()
+			if got := client.closeStatus(5 * time.Second); got != websocket.StatusProtocolError {
+				t.Fatalf("%s closed with %v, want 1002", c.name, got)
+			}
+			deadline := time.Now().Add(5 * time.Second)
+			for e.srv.hub.count(id) > 0 && time.Now().Before(deadline) {
+				time.Sleep(20 * time.Millisecond)
+			}
+			if n := e.srv.hub.count(id); n != 0 {
+				t.Fatalf("%s left %d viewers in the grace", c.name, n)
+			}
+		})
+	}
+	if !e.hasTmuxSession(id) {
+		t.Fatal("a malformed frame took the session with it")
+	}
+}
+
+// TestTerminalDeleteEndsTheViewers: deleting a session closes every window on
+// to it - the connected ones with a reason, the ones waiting out their grace
+// with their timers and terminals (§A.10 step 1).
+func TestTerminalDeleteEndsTheViewers(t *testing.T) {
+	e := newSessionEnv(t)
+	e.srv.hub.grace = time.Hour
+	id := e.shellSession(100, 30)
+
+	dropped := e.dialWS(id, "viewer=tab-gone&cols=100&rows=30")
+	dropped.hello()
+	dropped.drop()
+	watching := e.dialWS(id, "viewer=tab-here&cols=100&rows=30")
+	watching.hello()
+	deadline := time.Now().Add(5 * time.Second)
+	for e.srv.hub.count(id) < 2 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	res, payload := e.do(t, e.client, "DELETE", "/api/sessions/"+id, "")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("delete: %d %#v", res.StatusCode, payload)
+	}
+	frame := watching.waitCtrl("error")
+	if frame["fatal"] != true {
+		t.Fatalf("the viewer was not told the session had gone: %#v", frame)
+	}
+	if got := watching.closeStatus(5 * time.Second); got != websocket.StatusGoingAway {
+		t.Fatalf("the socket closed with %v, want 1001", got)
+	}
+	if n := e.srv.hub.count(id); n != 0 {
+		t.Fatalf("%d viewers outlived the session", n)
+	}
+}
+
+// TestTerminalViewerCapIsEnforced: a session holds at most eight viewers, which
+// is the bound on what a grace period can cost.
+func TestTerminalViewerCapIsEnforced(t *testing.T) {
+	e := newSessionEnv(t)
+	id := e.shellSession(100, 30)
+	for i := 0; i < maxViewersPerSession; i++ {
+		c := e.dialWS(id, fmt.Sprintf("viewer=tab-%d&cols=100&rows=30", i))
+		c.hello()
+	}
+	over := e.dialWS(id, "viewer=tab-too-many&cols=100&rows=30")
+	if got := over.closeStatus(5 * time.Second); got != websocket.StatusTryAgainLater {
+		t.Fatalf("the ninth viewer was closed with %v, want 1013", got)
+	}
+	if n := e.srv.hub.count(id); n != maxViewersPerSession {
+		t.Fatalf("the session holds %d viewers, want %d", n, maxViewersPerSession)
+	}
+}
+
+// TestTerminalReconnectIsNotRateLimited: the handshake ceiling is there to stop
+// a broken client starting terminals, not to punish a phone that keeps losing
+// its connection. A viewer the server still remembers is always let back in.
+func TestTerminalReconnectIsNotRateLimited(t *testing.T) {
+	e := newSessionEnv(t)
+	id := e.shellSession(100, 30)
+	known := e.dialWS(id, "viewer=tab-a&cols=100&rows=30")
+	known.hello()
+	rendered := known.settle()
+	known.drop()
+
+	// Spend the whole minute's allowance on new terminals.
+	e.srv.loginMu.Lock()
+	e.srv.wsRate[clientIPOfTest] = &attempt{count: handshakeBurst + 5, until: time.Now().Add(handshakeWindow)}
+	e.srv.loginMu.Unlock()
+
+	back := e.dialWS(id, fmt.Sprintf("viewer=tab-a&cols=100&rows=30&since=%d", rendered))
+	hello := back.hello()
+	if hello["viewer_fresh"] != false {
+		t.Fatalf("the reconnect was not the remembered viewer: %#v", hello)
+	}
+	// A tab the server has never seen is still refused.
+	opts := e.dialOptions(nil)
+	conn, res, err := websocket.Dial(context.Background(), e.wsURL(id, "viewer=tab-new&cols=100&rows=30"), opts)
+	if err == nil {
+		conn.CloseNow()
+		t.Fatal("a new viewer was let through the ceiling")
+	}
+	if res == nil || res.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("a new viewer was refused with %v, want 429", res)
+	}
+}
+
+// clientIPOfTest is the address httptest clients connect from.
+const clientIPOfTest = "127.0.0.1"
