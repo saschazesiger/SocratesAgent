@@ -122,6 +122,21 @@
       <aside class="chat-panel" id="chatPanel" hidden aria-label="Ask the agent">
         <header class="chat-head">
           <span class="chat-head-title">Ask</span>
+          <!-- The microphone is a pill rather than an icon because it is the
+               control this app is used with: a thumb in a car finds a word and
+               44px of border, and does not find a 20px glyph in a text row. -->
+          <button class="pill" id="chatMic" type="button" title="Speak" aria-label="Speak">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+            <span class="pill-text" id="chatMicText">Speak</span>
+          </button>
+          <!-- Whether answers are read out loud, as the same on/off drawing the
+               header's sound toggle uses. Off until it is asked for, and asked
+               for by dictating once. -->
+          <button class="icon-btn toggle" id="chatSpeak" type="button" aria-pressed="false"
+                  title="Answers are not read aloud" aria-label="Answers are not read aloud">
+            <svg class="ico-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6 9H3v6h3l5 4z"/><path d="M15.4 8.6a4.8 4.8 0 0 1 0 6.8"/><path d="M18.4 5.6a9 9 0 0 1 0 12.8"/></svg>
+            <svg class="ico-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6 9H3v6h3l5 4z"/><path d="M15.4 8.6a4.8 4.8 0 0 1 0 6.8"/><path d="M3 3l18 18"/></svg>
+          </button>
           <button class="icon-btn" id="chatClose" type="button" aria-label="Close the chat">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
           </button>
@@ -162,6 +177,20 @@
   <div class="sheet-actions">
     <button class="btn sm" type="button" id="nsCancel">Cancel</button>
     <button class="btn sm primary" type="button" id="nsStart">Start session</button>
+  </div>
+</dialog>
+
+<!-- The recording sheet. A recording is the whole screen while it runs, because
+     what is being asked of it - keep this, or throw it away - is the only thing
+     being asked, and both answers have to be findable without looking. The
+     meter is there so that a microphone that hears nothing looks like one. -->
+<dialog class="sheet rec-sheet" id="chatRecSheet" aria-label="Recording">
+  <h2 class="sheet-title">Listening…</h2>
+  <div class="rec-meter" id="chatRecMeter" aria-hidden="true"></div>
+  <div class="rec-time mono" id="chatRecTime">0:00</div>
+  <div class="rec-buttons">
+    <button class="btn primary rec-big" type="button" id="chatRecSend">Send</button>
+    <button class="btn rec-big" type="button" id="chatRecCancel">Cancel</button>
   </div>
 </dialog>
 

@@ -6,11 +6,15 @@
 // same thread. Which of the two it does is the model's decision (server side,
 // chat.go), not a second button.
 //
-// There is one input row and everybody gets it: a field, a microphone and a
-// Send. How a question was asked is what decides how it is answered - a
-// question that was spoken is phrased for the ear and read out loud, a typed
-// one is answered on the screen - so there is no mode to be in, only the way
-// the last question happened to be asked.
+// The input row is a field and a Send, and nothing else. Speaking is a pill in
+// the header instead, big enough for a thumb in a car, and it opens a sheet
+// with the level it is hearing and the two endings a recording has.
+//
+// Whether answers are read out loud is one switch beside it, off until it is
+// asked for, and dictating once asks for it. It is a switch and not a property
+// of each question because the two things a person does in a car - speak, and
+// listen - are the same decision, and a rule that had to be re-earned by every
+// question meant a typed follow-up in a car came back silently.
 
 import { api, el, toast, setClass, errorMessage, isOffline, fmtClock } from './api.js';
 import { dictateOnce } from './voice.js';
@@ -36,6 +40,28 @@ const RUN_WORDS = {
   done: 'done',
   error: 'stopped',
 };
+
+// Whether answers are read out loud, remembered per device and per browser.
+const SPEAK_KEY = 'socrates.chat.speak';
+
+function stored(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === 'on') return true;
+    if (raw === 'off') return false;
+  } catch { /* a private window remembers nothing, and that is allowed */ }
+  return fallback;
+}
+
+function remember(key, on) {
+  try { localStorage.setItem(key, on ? 'on' : 'off'); } catch { /* nothing to do about it */ }
+}
+
+// How many bars the level meter has, and how far a frame may fall. The decay
+// is what makes a voice look like a voice: the peak of a syllable stays up for
+// a moment instead of flickering out between two of them.
+const METER_BARS = 15;
+const METER_DECAY = 0.06;
 
 /**
  * mountChat wires the panel to one page.
@@ -66,11 +92,13 @@ export function mountChat(ctx) {
   // and a second tap in that moment must not open a second one.
   let dictation = null;
   let opening = false;
-  // How many questions asked out loud are still waiting for their answer. It
-  // is a count and not a mode: a spoken question is owed a spoken answer even
-  // if the next thing typed is a written one, and the answers arrive in the
-  // order the questions were asked.
-  let owed = 0;
+  // Whether the transcript of a finished recording is still on its way. The
+  // pill says so and stays shut until it lands.
+  let transcribing = false;
+  // Whether answers are read out loud. Per device, like the header's sound and
+  // notification switches, and for the same reason: it is about this phone's
+  // speaker, not about the account.
+  let speaking = stored(SPEAK_KEY, false);
   let loadedFor = '';
   // The row under the log, built once so that what is half typed into it
   // survives everything that redraws the conversation above it.
@@ -78,13 +106,8 @@ export function mountChat(ctx) {
 
   /* ------------------------------------------------------------ the input */
 
-  const MIC_SVG = '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>';
-  const OK_SVG = '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>';
-  const NO_SVG = '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
-
-  // The row is built once and its parts are shown or hidden afterwards, so
-  // that a recording started halfway through a sentence does not take the
-  // sentence with it.
+  // The row is built once, so that what is half typed into it survives
+  // everything above it being redrawn.
   function buildFoot() {
     dom.chatFoot.innerHTML = '';
     const input = el('input', {
@@ -97,63 +120,175 @@ export function mountChat(ctx) {
       event.preventDefault();
       submit(input.value, input);
     });
-    const mic = el('button', {
-      class: 'icon-btn', type: 'button', id: 'chatMic',
-      title: 'Speak', 'aria-label': 'Speak', html: MIC_SVG,
-      onclick: () => dictate(),
-    });
-    const clock = el('span', { class: 'rec-time', id: 'chatRecTime', text: fmtClock(0) });
-    // A running recording has two endings and both are on screen, because
-    // "I did not mean that" is the half a single Stop button could not say.
-    const keep = el('button', {
-      class: 'icon-btn', type: 'button', id: 'chatRecSend',
-      title: 'Send recording', 'aria-label': 'Send recording', html: OK_SVG,
-      onclick: () => { if (dictation) dictation.stop(); },
-    });
-    const drop = el('button', {
-      class: 'icon-btn rec-drop', type: 'button', id: 'chatRecCancel',
-      title: 'Discard recording', 'aria-label': 'Discard recording', html: NO_SVG,
-      onclick: () => { if (dictation) dictation.cancel(); },
-    });
     const send = el('button', {
       class: 'btn primary', type: 'button', id: 'chatSend', text: 'Send',
       onclick: () => submit(input.value, input),
     });
-    const actions = el('span', { class: 'rec-actions' }, mic, clock, keep, drop);
-    Object.assign(foot, { input, mic, clock, keep, drop, send, actions });
-    dom.chatFoot.append(el('div', { class: 'chat-compose' }, input, actions, send));
+    Object.assign(foot, { input, send });
+    dom.chatFoot.append(el('div', { class: 'chat-compose' }, input, send));
     paint();
   }
 
-  // dictate records one question and sends it as one. A question asked out
-  // loud is answered out loud, which is what `owed` is for.
+  /* ----------------------------------------------------------- the meter */
+
+  // The level meter. It is the answer to the one question a recording sheet
+  // has to answer before it is trusted - is it hearing me - and it is drawn
+  // from the recording's own analyser, so a meter that moves is proof that
+  // audio is arriving rather than that the page is animating.
+  const calm = matchMedia('(prefers-reduced-motion: reduce)');
+  let meterFrame = 0;
+  let meterTimer = 0;
+  let bars = [];
+  let levels = [];
+
+  function buildMeter() {
+    const host = dom.chatRecMeter;
+    if (!host) return;
+    const plain = calm.matches;
+    const count = plain ? 1 : METER_BARS;
+    setClass(host, 'plain', plain);
+    if (bars.length === count && host.childNodes.length === count) return;
+    host.innerHTML = '';
+    bars = [];
+    for (let i = 0; i < count; i += 1) {
+      const bar = el('span', { class: 'rec-bar' });
+      bars.push(bar);
+      host.append(bar);
+    }
+    levels = new Array(count).fill(0);
+  }
+
+  // level is the loudness of one frame, 0..1, from the time-domain samples.
+  // RMS rather than peak: a click is not a voice, and a meter that jumps to
+  // full on one sample says nothing about whether words are getting through.
+  function level(analyser, buf) {
+    analyser.getByteTimeDomainData(buf);
+    let sum = 0;
+    for (let i = 0; i < buf.length; i += 1) {
+      const v = (buf[i] - 128) / 128;
+      sum += v * v;
+    }
+    // The square root is the amplitude; the multiplier puts ordinary speech
+    // near the top of the meter instead of in the bottom tenth of it.
+    return Math.min(1, Math.sqrt(sum / buf.length) * 4.5);
+  }
+
+  function startMeter(analyser) {
+    stopMeter();
+    buildMeter();
+    if (!analyser || !bars.length) return;
+    const buf = new Uint8Array(analyser.fftSize);
+    if (calm.matches) {
+      // No animation: the level is read a few times a second and the one bar
+      // is set to it. It still moves with the room, which is the information.
+      const tick = () => {
+        bars[0].style.setProperty('--level', Math.round(level(analyser, buf) * 100) + '%');
+      };
+      tick();
+      meterTimer = setInterval(tick, 150);
+      return;
+    }
+    const draw = () => {
+      const now = level(analyser, buf);
+      // The newest reading enters at the middle and the older ones walk out to
+      // both edges, so the shape reads as a voice rather than as a bar chart.
+      levels.pop();
+      levels.unshift(now);
+      const middle = (bars.length - 1) / 2;
+      for (let i = 0; i < bars.length; i += 1) {
+        const age = Math.round(Math.abs(i - middle));
+        const value = Math.max(levels[age] - age * METER_DECAY, 0);
+        bars[i].style.transform = 'scaleY(' + (0.07 + value * 0.93).toFixed(3) + ')';
+      }
+      meterFrame = requestAnimationFrame(draw);
+    };
+    meterFrame = requestAnimationFrame(draw);
+  }
+
+  function stopMeter() {
+    if (meterFrame) { cancelAnimationFrame(meterFrame); meterFrame = 0; }
+    if (meterTimer) { clearInterval(meterTimer); meterTimer = 0; }
+    levels = levels.map(() => 0);
+    for (const bar of bars) {
+      bar.style.transform = '';
+      bar.style.removeProperty('--level');
+    }
+  }
+
+  /* ------------------------------------------------------- the recording */
+
+  function closeSheet() {
+    stopMeter();
+    if (dom.chatRecSheet && dom.chatRecSheet.open) dom.chatRecSheet.close();
+  }
+
+  // dictate records one question and sends it as one. Dictating is also how the
+  // voice is asked for: somebody who is talking to the page is not reading it.
   async function dictate() {
-    if (dictation || opening) return;
+    if (dictation || opening || transcribing) return;
     opening = true;
+    paint();
     try {
       const text = await dictateOnce({
-        onTime: (secs) => { foot.clock.textContent = fmtClock(secs); },
-        onReady: (ends) => { dictation = ends; paint(); },
+        onTime: (secs) => {
+          if (dom.chatRecTime) dom.chatRecTime.textContent = fmtClock(secs);
+        },
+        onReady: (ends) => {
+          dictation = ends;
+          if (dom.chatRecSheet && !dom.chatRecSheet.open) dom.chatRecSheet.showModal();
+          startMeter(ends.analyser);
+          paint();
+        },
       });
+      // The microphone is closed by now either way, so the sheet has nothing
+      // left to show: what happens next happens at the pill.
       dictation = null;
+      transcribing = false;
+      closeSheet();
       paint();
       // A discarded recording resolves to nothing, and nothing is what it
       // does: no request, no message, and nothing said about it.
-      if (text) await submit(text, null, { spoken: true });
+      if (text) {
+        setSpeaking(true);
+        await submit(text, null);
+      }
     } catch (err) {
       toast((err && err.userMessage) || errorMessage(err), 'error');
     } finally {
       dictation = null;
+      transcribing = false;
       opening = false;
-      foot.clock.textContent = fmtClock(0);
+      closeSheet();
+      if (dom.chatRecTime) dom.chatRecTime.textContent = fmtClock(0);
       paint();
     }
   }
 
-  // submit sends one question. `spoken` says it was dictated, which is both
-  // how the server is asked to phrase the answer - short, no code, for the
-  // ear - and why the answer will be read out when it arrives.
-  async function submit(raw, field, { spoken = false } = {}) {
+  /* ------------------------------------------------------- the loudspeaker */
+
+  function setSpeaking(on) {
+    if (speaking === !!on) return;
+    speaking = !!on;
+    remember(SPEAK_KEY, speaking);
+    paintSpeak();
+  }
+
+  function paintSpeak() {
+    const btn = dom.chatSpeak;
+    if (!btn) return;
+    const words = speaking ? 'Answers are read aloud' : 'Answers are not read aloud';
+    btn.setAttribute('aria-pressed', speaking ? 'true' : 'false');
+    btn.title = words;
+    btn.setAttribute('aria-label', words);
+  }
+
+  // submit sends one question. `auto` in the body is the server's instruction
+  // to phrase the answer for the ear - one or two spoken sentences, no code
+  // (chat.go, chatSystemPrompt) - so it is exactly the loudspeaker switch: an
+  // answer that is about to be read out is written to be listened to, and one
+  // that is not keeps the code in it. It is read at send time rather than at
+  // arrival, because that is when the phrasing is decided.
+  async function submit(raw, field) {
     const text = String(raw || '').trim();
     const session = ctx.current();
     if (!text || !session) return;
@@ -179,13 +314,12 @@ export function mountChat(ctx) {
     }
     sending = true;
     thinking = true;
-    if (spoken) owed += 1;
     if (field) field.value = '';
     render();
     paint();
     try {
       const data = await api(path(session.id, '/chat'), {
-        method: 'POST', attempts: 1, timeout: 30000, body: { text, auto: spoken },
+        method: 'POST', attempts: 1, timeout: 30000, body: { text, auto: speaking },
       });
       // The socket usually beats this, and take() drops whichever arrives
       // second. With no socket at all it is the only copy there is.
@@ -196,8 +330,6 @@ export function mountChat(ctx) {
       // they were cleared out of. Retyping a question because the key was not
       // configured yet is a punishment for the server's problem.
       if (field && !field.value) field.value = text;
-      // The answer that is not coming is not owed a voice either.
-      if (owed) owed -= 1;
       // A 400 from this route is the one case where the server's own words are
       // the instruction - "open /admin and pick an agent model" - so they are
       // shown where the answer was expected rather than in a toast that goes.
@@ -225,11 +357,10 @@ export function mountChat(ctx) {
     messages = messages.concat([msg]);
     if (msg.role === 'assistant') {
       thinking = false;
-      // The oldest question asked out loud is the one this answers.
-      if (owed) {
-        owed -= 1;
-        if (!msg.failed) ctx.say(msg.text);
-      }
+      // The switch is the whole rule: with it on every answer is read out, and
+      // with it off none is. An answer that failed is a sentence about this
+      // page rather than an answer, and is not read.
+      if (speaking && !msg.failed) ctx.say(msg.text);
     }
     render();
   }
@@ -347,19 +478,18 @@ export function mountChat(ctx) {
   function paint() {
     if (!foot.input) return;
     const usable = !!ctx.current() && ctx.live();
-    const recording = !!dictation;
     foot.input.disabled = !usable;
     foot.send.disabled = !usable || sending;
-    foot.mic.disabled = !usable;
-    // While it is recording, the microphone is the two endings instead: what
-    // is being asked for at that moment is send it or throw it away, and
-    // both of them are always available - the microphone is on this device
-    // and turning it off asks the server nothing.
-    foot.mic.hidden = recording;
-    foot.clock.hidden = !recording;
-    foot.keep.hidden = !recording;
-    foot.drop.hidden = !recording;
-    setClass(foot.actions, 'rec', recording);
+    if (dom.chatMic) {
+      // The pill is shut while a recording is being opened, is running, or is
+      // being turned into words: all three are one recording, and a second tap
+      // in any of them would start a second microphone.
+      dom.chatMic.disabled = !usable || opening || !!dictation || transcribing;
+      const words = transcribing ? 'Transcribing…' : 'Speak';
+      if (dom.chatMicText) dom.chatMicText.textContent = words;
+      dom.chatMic.title = words;
+      dom.chatMic.setAttribute('aria-label', words);
+    }
   }
 
   async function load(session) {
@@ -374,6 +504,37 @@ export function mountChat(ctx) {
   /* --------------------------------------------------------------- wiring */
 
   if (dom.chatClose) dom.chatClose.addEventListener('click', () => handle.close());
+  if (dom.chatMic) dom.chatMic.addEventListener('click', () => dictate());
+  if (dom.chatSpeak) dom.chatSpeak.addEventListener('click', () => setSpeaking(!speaking));
+  if (dom.chatRecSend) {
+    dom.chatRecSend.addEventListener('click', () => {
+      if (!dictation) return;
+      // The words are on their way to the server from here, so the sheet has
+      // said everything it can: the pill carries the wait.
+      transcribing = true;
+      stopMeter();
+      dictation.stop();
+      dictation = null;
+      if (dom.chatRecSheet && dom.chatRecSheet.open) dom.chatRecSheet.close();
+      paint();
+    });
+  }
+  if (dom.chatRecCancel) dom.chatRecCancel.addEventListener('click', () => { if (dictation) dictation.cancel(); });
+  if (dom.chatRecSheet) {
+    // Escape and a tap on the backdrop are the same answer as Cancel: a sheet
+    // that closed while the microphone stayed open would be a recording
+    // nobody could see and nobody could stop.
+    dom.chatRecSheet.addEventListener('cancel', () => { if (dictation) dictation.cancel(); });
+    dom.chatRecSheet.addEventListener('close', () => {
+      stopMeter();
+      if (dictation) dictation.cancel();
+    });
+    dom.chatRecSheet.addEventListener('click', (event) => {
+      if (event.target === dom.chatRecSheet && dictation) dictation.cancel();
+    });
+  }
+  buildMeter();
+  paintSpeak();
   buildFoot();
 
   const handle = {
@@ -401,7 +562,6 @@ export function mountChat(ctx) {
     attached() {
       loadedFor = '';
       thinking = false;
-      owed = 0;
       // A recording belongs to the session it was started in: sending its
       // transcript to the one that has just taken the screen would put the
       // question to the wrong agent.

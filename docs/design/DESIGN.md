@@ -2228,21 +2228,31 @@ line-restore (§D.6) are removed on every device. It existed to fight iOS autoco
 rewrites characters that have already been sent one at a time, and it cost the page a second
 field, a second microphone and a second promise about text nobody had sent yet. What a phone
 actually wants to say to a session it now says in words: the chat beside the terminal, with one
-input row for everyone — field, microphone, Send (ACTIVITY.md §D.3). Typing into the pane is the
+input row for everyone — a field and a Send (ACTIVITY.md §D.3). Typing into the pane is the
 terminal's own path, unchanged, and the key bar supplies the keys a touch keyboard has not got.
 
 **Dictation lives in the chat, not here.** `voice.js` is still the recorder — `new Recorder()`,
 `start()`, `stop()` → `{base64, format, seconds}` → `api('/api/voice/transcribe', {method:'POST',
 attempts:3, timeout:60000, body:{audio, format}})` → `{text}` — but it is `chat.js` that calls it,
-through `dictateOnce`, and a running recording shows the two endings a recording has: **Send
-recording** and **Discard recording**, with the elapsed clock between them. `describeMicError`
-still provides the failure sentence.
+through `dictateOnce`. <!-- rev 5 --> The way in is a **`#chatMic` pill in `.chat-head`** —
+outlined, 999px, microphone plus the word "Speak", ≥44px tall — not an icon in the input row; it
+opens `#chatRecSheet`, a `<dialog class="sheet">` with a live level meter (`#chatRecMeter`, drawn
+from the recording's own `AnalyserNode`, which `dictateOnce` hands to `onReady` alongside `stop`
+and `cancel`; one filling bar under `prefers-reduced-motion`), the elapsed clock `#chatRecTime`,
+and the two endings as 56px buttons: **Send** and **Cancel**. Escape and the backdrop are Cancel,
+closing the sheet for any reason releases the microphone and stops the meter, and while the
+transcript is in flight the pill reads "Transcribing…" and is disabled. `describeMicError` still
+provides the failure sentence.
 
-<!-- rev 4 --> **TTS is wired in, and the page is what calls it.** `speak()` reads the answer to a
-question that was dictated (posted with `auto: true`) and reads any assistant bubble on a
-double-tap; a typed question is answered in writing only. It refuses while a recording is open and
-a starting recording silences it, so the microphone and the voice are never both live
-(ACTIVITY.md §D.3). It is still never given the pane — a pane is a program, not an answer.
+<!-- rev 5 --> **TTS is wired in, and one switch decides it.** `#chatSpeak` in `.chat-head` — the
+same on/off drawing as `#soundBtn`, `aria-pressed` — is whether assistant answers are read out
+loud. It is **off by default**, remembered per device in `localStorage` under
+`socrates.chat.speak`, and **turned on by the first successful dictation**; it can be turned off
+again by hand. With it on, every arriving assistant answer is read (`ctx.say`) and the question is
+posted with `auto: true`, which is what asks `chat.go` to phrase the answer for the ear; with it
+off nothing is read and `auto` is `false`. Any answer is still readable on a double-tap, and the
+same gesture stops it. `speak()` refuses while a recording is open and a starting recording
+silences it, so the microphone and the voice are never both live (ACTIVITY.md §D.3). It is still never given the pane — a pane is a program, not an answer.
 `internal/server/voice.go` and `internal/piper` are untouched, `voice.js` stays in the
 service-worker SHELL list and `embed_test.go` keeps asserting it.
 
@@ -2731,7 +2741,7 @@ on the command line select a subset, `finish()` prints the table. Always
 | 3 | `reloadkeepsscreen` | type, reload, the same screen returns without a full clear | WP6 |
 | 4 | `pages` | `/`, `/admin`, `/login`, `/setup` are clean (no console errors) at 390×844 and 1280×720 | WP6 |
 | 5 | `keybar` | <!-- rev 4 --> no device gets the bar unasked; **Show key bar** in the session menu puts it up and the answer survives a reload; `Esc`, `^C`, arrows and the sticky `Ctrl` send the right bytes | WP7 |
-| 6 | `chat-dictate` | <!-- rev 4 --> with `mockOpenRouter`, the microphone in the chat panel records and offers **Send recording** and **Discard recording**; a sent one is transcribed, submitted with `auto:true` and answered out loud, a discarded one costs nothing. Replaces `dictation`, which typed into a field that no longer exists | ACTIVITY.md |
+| 6 | `chat-dictate` | <!-- rev 5 --> with `mockOpenRouter`, the **Speak** pill in `.chat-head` opens the recording sheet with its level meter and its two 56px endings, **Send** and **Cancel**; a sent one is transcribed, submitted with `auto:true` and answered out loud, and it turns the loudspeaker switch on; a cancelled one costs nothing; the switch turned off by hand makes the next question `auto:false` and silent. Replaces `dictation`, which typed into a field that no longer exists | ACTIVITY.md |
 | 7 | `offlineonce` | offline, type 20 characters, online: each appears **exactly once** in the pane and in `journal.raw` | WP7 |
 | 8 | `sigtermreattach` | `SIGTERM` the server mid-session, restart on the same port and data dir, reattach; the pane still holds what was typed and the state is `running` | WP7 |
 | 9 | `takeover` | open the same session in a second tab with the same `viewer` id; the first socket closes within 1 s and the second one works | WP7 |

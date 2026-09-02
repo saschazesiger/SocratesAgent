@@ -112,6 +112,16 @@ superseded text stays where it is, because the history is the reason.
   idle or waiting, a chime (Web Audio, no audio file to fetch) and a browser notification. Sound
   defaults on; notifications default off, because they cannot be honoured without asking and
   asking unprompted is how a page gets blocked for good.
+- **Speaking is a pill and listening is a switch (2026-09-02).** In the chat header: a **Speak**
+  pill (outlined, 44px, microphone and the word) that opens a recording sheet with a live level
+  meter, the clock, and two 56px buttons — **Send** and **Cancel**; Escape or the backdrop is
+  Cancel, and closing the sheet for any reason gives the microphone back. The input row is a field
+  and a Send, with no microphone in it. Beside the pill, a speaker toggle that decides whether
+  answers are read out loud: **off by default**, remembered per device, and **switched on by the
+  first successful dictation** — it can be switched off again by hand. It replaces the old rule
+  that a spoken question earned exactly one spoken answer, which went silent on the first typed
+  follow-up in a car. The toggle's state at send time is what goes to the server as `auto`, so an
+  answer that will be read out is phrased for the ear.
 - **The session list is grouped by day** — Today, Yesterday, This week, This month, Older — by
   when each session was last used, in the browser's own local calendar rather than the server's.
 

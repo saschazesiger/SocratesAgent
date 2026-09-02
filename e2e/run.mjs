@@ -4009,29 +4009,44 @@ async function chattext() {
 
 /* ------------------------------------------------------ 38. chat-dictate */
 
-// micRow is the microphone and the two endings a running recording has, as
-// the panel is actually drawing them.
+// micRow is the chat's header and its recording sheet as the panel is actually
+// drawing them: the pill, the loudspeaker switch, and - while one is running -
+// the sheet with the two endings a recording has.
 const micRow = (page) => page.evaluate(() => {
-  const shown = (id) => {
-    const node = document.getElementById(id);
-    return !!node && !node.hidden;
+  const node = (id) => document.getElementById(id);
+  const box = (id) => {
+    const n = node(id);
+    if (!n) return null;
+    const r = n.getBoundingClientRect();
+    return { w: Math.round(r.width), h: Math.round(r.height) };
   };
-  const titled = (id) => (document.getElementById(id) || {}).title || '';
-  const clock = document.getElementById('chatRecTime');
+  const sheet = node('chatRecSheet');
+  const clock = node('chatRecTime');
+  const pill = node('chatMic');
   return {
-    mic: shown('chatMic'),
-    keep: shown('chatRecSend'),
-    drop: shown('chatRecCancel'),
-    clockShown: shown('chatRecTime'),
+    pillInHead: !!pill && !!pill.closest('.chat-head'),
+    pillText: pill ? pill.textContent.trim() : '',
+    pillBox: box('chatMic'),
+    pillDisabled: !!pill && pill.disabled,
+    micInRow: !!document.querySelector('.chat-compose #chatMic'),
+    composeParts: [...document.querySelectorAll('.chat-compose > *')].map((n) => n.id || n.tagName),
+    speak: node('chatSpeak') ? node('chatSpeak').getAttribute('aria-pressed') : 'missing',
+    speakInHead: !!node('chatSpeak') && !!node('chatSpeak').closest('.chat-head'),
+    open: !!sheet && sheet.open,
+    keep: box('chatRecSend'),
+    drop: box('chatRecCancel'),
+    labels: ['chatRecSend', 'chatRecCancel'].map((id) => (node(id) || {}).textContent || '').join(','),
+    bars: document.querySelectorAll('#chatRecMeter .rec-bar').length,
     clock: clock ? clock.textContent.trim() : '',
-    titles: [titled('chatRecSend'), titled('chatRecCancel')].join(','),
+    stored: (() => { try { return localStorage.getItem('socrates.chat.speak'); } catch { return 'blocked'; } })(),
   };
 });
 
-// The microphone in the chat, which is the only microphone there is: two
-// endings while it records, a discarded recording that costs nothing, a
-// question that was spoken answered out loud, a typed one answered in
-// writing, and any answer readable again by double-tapping it.
+// The microphone in the chat, which is the only microphone there is: a pill in
+// the header that opens a sheet, two endings while it records, a discarded
+// recording that costs nothing, a loudspeaker switch that the first dictation
+// turns on and a hand can turn off again, and any answer readable again by
+// double-tapping it.
 async function chatdictate() {
   const spoken = JSON.stringify({ reply: 'It is waiting for you.', act: null });
   const written = JSON.stringify({ reply: 'Nothing is running in it.', act: null });
@@ -4082,45 +4097,57 @@ async function chatdictate() {
     await openChat(s.page);
 
     const idle = await micRow(s.page);
-    ok(idle.mic && !idle.keep && !idle.drop && !idle.clockShown,
-      'the row is a field, a microphone and a Send: one microphone, no endings',
-      JSON.stringify(idle));
+    ok(idle.pillInHead && /Speak/.test(idle.pillText) && !idle.micInRow,
+      'the microphone is a pill in the header, and the input row is a field and a Send',
+      JSON.stringify(idle.composeParts) + ' / ' + idle.pillText);
+    ok(idle.pillBox && idle.pillBox.h >= 44,
+      'the pill is big enough to be hit by a thumb', JSON.stringify(idle.pillBox));
+    ok(idle.speakInHead && idle.speak === 'false',
+      'the loudspeaker switch is beside it and starts off', idle.speak);
+    ok(!idle.open, 'and no recording sheet is open', String(idle.open));
 
-    // Recording: the microphone is replaced by the two things that can happen
-    // to a recording, and nothing else in the row moves.
+    // Recording: a sheet with the level it is hearing and the two things that
+    // can happen to a recording, both of them large.
     await s.page.click('#chatMic');
-    await s.page.waitForSelector('#chatRecSend:not([hidden])', { timeout: 15000 });
+    await s.page.waitForSelector('#chatRecSheet[open]', { timeout: 15000 });
     await wait(1300);
     const rec = await micRow(s.page);
-    ok(!rec.mic && rec.keep && rec.drop,
-      'a running recording is Send and Discard, and no microphone', JSON.stringify(rec));
-    ok(rec.titles === 'Send recording,Discard recording',
-      'and each of them says which it is', rec.titles);
-    ok(rec.clockShown && /^\d+:\d\d$/.test(rec.clock),
+    ok(rec.open && rec.keep && rec.drop,
+      'the pill opens a sheet with both endings on it', JSON.stringify(rec));
+    ok(rec.labels === 'Send,Cancel', 'and each of them says which it is', rec.labels);
+    ok(rec.keep.h >= 56 && rec.drop.h >= 56,
+      'both are big enough to be hit without looking',
+      rec.keep.h + 'px / ' + rec.drop.h + 'px');
+    ok(rec.bars >= 1, 'the sheet shows what the microphone is hearing', rec.bars + ' bar(s)');
+    ok(/^\d+:\d\d$/.test(rec.clock),
       'the clock says how long it has been listening', rec.clock);
+    ok(rec.pillDisabled, 'and the pill cannot start a second one', String(rec.pillDisabled));
     await shot(s.page, 'chat-dictate-recording');
     const fits = await s.page.evaluate(() => {
-      const row = document.querySelector('.chat-compose').getBoundingClientRect();
+      const head = document.querySelector('.chat-head').getBoundingClientRect();
       const middle = (box) => (box.top + box.bottom) / 2;
-      const parts = [...document.querySelectorAll('.chat-compose > *')]
+      const parts = [...document.querySelectorAll('.chat-head > *')]
+        .map((n) => n.getBoundingClientRect());
+      const buttons = [...document.querySelectorAll('#chatRecSheet .rec-big')]
         .map((n) => n.getBoundingClientRect());
       return {
-        aligned: parts.every((box) => Math.abs(middle(box) - middle(row)) <= 2),
-        inside: parts.every((box) => box.left >= row.left - 1 && box.right <= row.right + 1),
-        field: Math.round(parts[0].width),
+        aligned: parts.every((box) => Math.abs(middle(box) - middle(head)) <= 2),
+        inside: parts.every((box) => box.left >= head.left - 1 && box.right <= head.right + 1),
+        title: Math.round(parts[0].width),
+        buttonsInside: buttons.every((box) => box.left >= 0 && box.right <= window.innerWidth + 1),
       };
     });
-    ok(fits.aligned && fits.inside && fits.field > 100,
-      'and it is still one row on a phone, with the field still usable',
-      JSON.stringify(fits));
+    ok(fits.aligned && fits.inside && fits.title > 0 && fits.buttonsInside,
+      'the header still fits on a phone, and so does the sheet', JSON.stringify(fits));
 
     // Discard: the audio is thrown away. Nothing is transcribed, nothing is
     // asked, and nothing is said about it.
     await s.page.click('#chatRecCancel');
-    await s.page.waitForSelector('#chatMic:not([hidden])', { timeout: 10000 });
+    await s.page.waitForSelector('#chatRecSheet:not([open])', { state: 'attached', timeout: 10000 });
     await wait(800);
     const after = await micRow(s.page);
-    ok(after.mic && !after.keep && !after.drop, 'Discard gives the microphone back', JSON.stringify(after));
+    ok(!after.open && !after.pillDisabled, 'Cancel closes it and gives the microphone back',
+      JSON.stringify(after));
     ok(transcribes.length === 0 && asked.length === 0 && (await chatBubbles(s.page)).length === 0,
       'and it costs nothing: no transcription, no question, no message',
       transcribes.length + ' transcribe, ' + asked.length + ' chat');
@@ -4128,7 +4155,7 @@ async function chatdictate() {
     // Send: transcribed, posted as a question that was spoken, answered, and
     // the answer read out loud without anybody asking for that.
     await s.page.click('#chatMic');
-    await s.page.waitForSelector('#chatRecSend:not([hidden])', { timeout: 15000 });
+    await s.page.waitForSelector('#chatRecSheet[open]', { timeout: 15000 });
     await wait(1300);
     await s.page.click('#chatRecSend');
     const posted = await awaitBubble(s.page, (msgs) =>
@@ -4143,6 +4170,10 @@ async function chatdictate() {
       JSON.stringify(replied.seen.map((m) => oneLine(m.text)).slice(-1)));
     ok(asked.length === 1 && asked[0].auto === true,
       'a question that was spoken is sent as one', JSON.stringify(asked));
+    const switched = await micRow(s.page);
+    ok(switched.speak === 'true' && switched.stored === 'on',
+      'dictating once turns the loudspeaker on, and this device remembers it',
+      switched.speak + ', stored ' + switched.stored);
     for (let i = 0; i < 80 && said.length === 0; i += 1) await wait(200);
     ok(said.length === 1 && /waiting for you/.test(said[0] || ''),
       'and its answer is read out loud, unasked', said.length + ': ' + oneLine(said[0] || ''));
@@ -4150,8 +4181,12 @@ async function chatdictate() {
     await s.page.waitForFunction(() => !document.getElementById('statusBtn').classList.contains('speaking'),
       null, { timeout: 20000 }).catch(() => {});
 
-    // A typed question is the other half of the same rule: answered on the
-    // screen, and the voice stays out of it.
+    // The switch is the only rule, and a hand can turn it off again: from here
+    // on the answers are written and nothing is read out loud.
+    await s.page.click('#chatSpeak');
+    const off = await micRow(s.page);
+    ok(off.speak === 'false' && off.stored === 'off',
+      'and it can be turned off again by hand', off.speak + ', stored ' + off.stored);
     await askChat(s.page, 'and what should I do next?');
     const second = await awaitBubble(s.page, (msgs) =>
       msgs.some((m) => m.who === 'assistant' && /Nothing is running/.test(m.text)), 60000);
@@ -4159,7 +4194,8 @@ async function chatdictate() {
       JSON.stringify(second.seen.map((m) => oneLine(m.text)).slice(-1)));
     await wait(1500);
     ok(asked.length === 2 && asked[1].auto === false,
-      'and it is sent as a typed one', JSON.stringify(asked.map((a) => a.auto)));
+      'with the loudspeaker off a question is sent to be read rather than heard',
+      JSON.stringify(asked.map((a) => a.auto)));
     ok(said.length === 1, 'so nothing was read out loud for it', said.length + ' render(s)');
 
     // Any answer can be asked for out loud afterwards: two taps on the bubble.
@@ -4230,9 +4266,11 @@ async function nooverlap() {
     // A recording is running, and Status is pressed: the answer arrives on
     // the screen, and it is not read into the microphone.
     await s.page.click('#chatMic');
-    await s.page.waitForSelector('#chatRecSend:not([hidden])', { timeout: 15000 });
+    await s.page.waitForSelector('#chatRecSheet[open]', { timeout: 15000 });
+    // The recording sheet is modal, so Status is pressed through the page
+    // rather than through the pointer the backdrop is holding.
     await s.page.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 15000 });
-    await s.page.click('#statusBtn');
+    await s.page.$eval('#statusBtn', (n) => n.click());
     const shown = await s.page.waitForFunction(() => {
       const host = document.getElementById('termNotice');
       return !!host && !host.hidden && host.dataset.kind === 'status';
@@ -4244,7 +4282,7 @@ async function nooverlap() {
     // The recording is thrown away, and the same button says the same thing
     // out loud - so what stopped the voice was the microphone and nothing else.
     await s.page.click('#chatRecCancel');
-    await s.page.waitForSelector('#chatMic:not([hidden])', { timeout: 10000 });
+    await s.page.waitForSelector('#chatRecSheet:not([open])', { state: 'attached', timeout: 10000 });
     await s.page.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 20000 });
     await s.page.click('#statusBtn');
     for (let i = 0; i < 120 && said.length === 0; i += 1) await wait(200);

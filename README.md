@@ -55,9 +55,11 @@ password guards the lot.
   and `Alt`, arrows, `^C`, `^D`, `^Z` and paste, one tap away in the session
   menu — the keys a touch keyboard does not have.
 - **Ask instead of type.** A conversation beside the terminal: ask what a
-  session is doing or what to do next, in writing or by holding the microphone,
-  and it answers — or drives the terminal for you and says so in the same
-  thread. A question you spoke is answered out loud.
+  session is doing or what to do next, in writing or with the **Speak** pill —
+  which opens a sheet showing what it hears, with one big Send and one big
+  Cancel — and it answers, or drives the terminal for you and says so in the
+  same thread. A speaker switch beside the pill decides whether answers are
+  read out loud; it starts off and the first thing you dictate turns it on.
 - **Told when a session stops working.** The list is grouped by day — Today,
   Yesterday, This week, This month, Older — so the sessions being worked on are
   at the top. And when any of them goes from busy to finished, or to waiting for
