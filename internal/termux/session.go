@@ -124,6 +124,20 @@ func (v *Viewer) Size() (cols, rows int) {
 // viewer was closed or because tmux let go of it.
 func (v *Viewer) Done() <-chan struct{} { return v.done }
 
+// Ended reports whether this viewer's pseudo terminal has gone.
+//
+// It is not the same as closed: a tmux client can be detached from outside -
+// another client running detach-client, a tmux server that was restarted, a
+// window that was killed - and what is left behind is a Viewer with an intact
+// ring that can never carry a keystroke again. A caller that keeps handing
+// input to one of those writes into a closed file for ever, so every caller
+// that is about to use a remembered viewer asks this first.
+func (v *Viewer) Ended() bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.closed || v.ended
+}
+
 // Err is why the viewer ended, once Done is closed.
 func (v *Viewer) Err() error {
 	v.mu.Lock()

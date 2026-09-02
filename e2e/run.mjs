@@ -3713,6 +3713,166 @@ async function audiomode() {
   }
 }
 
+/* ------------------------------------------------- input never dies */
+
+// typeafteroutage is the bug report: "sometimes I can no longer type anything
+// into the session". The socket is cut in every way a phone cuts one - the
+// radio going, the screen locking - and after each of them the pane has to
+// take a keystroke again, with no reload.
+async function typeafteroutage() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await recordSockets(s.page);
+    await open(s);
+    await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+
+    const first = 'before-' + Math.random().toString(36).slice(2, 8);
+    await typeLine(s.page, 'echo ' + first);
+    ok(await awaitScreen(s.page, first), 'the pane answers before anything is cut',
+      oneLine(await screen(s.page)));
+
+    // (a) The radio goes, and comes back.
+    await s.context.setOffline(true);
+    await s.page.evaluate(() => window.dispatchEvent(new Event('offline')));
+    await s.page.waitForFunction(() => document.body.classList.contains('conn-lost'),
+      null, { timeout: 20000 });
+
+    // (e) A burst typed while there is no socket, one character at a time,
+    // which is what a person does the moment they notice nothing is happening.
+    // Every byte of it has to arrive, in the order it was typed.
+    const burst = 'burst' + Math.random().toString(36).slice(2, 6);
+    await s.page.click('#term .xterm-screen');
+    await focusTerm(s.page);
+    await s.page.keyboard.type('printf "%s\\n" ' + burst, { delay: 8 });
+    await s.page.keyboard.press('Enter');
+
+    await s.context.setOffline(false);
+    await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
+    const back = await s.page.waitForFunction(() => !document.body.classList.contains('conn-lost'),
+      null, { timeout: 25000 }).then(() => true).catch(() => false);
+    ok(back, 'the socket came back on its own', back ? 'conn-lost cleared' : 'still lost');
+
+    const said = () => s.page.evaluate(() => window.__toasts.slice());
+    const arrived = await awaitScreen(s.page, burst, 25000);
+    ok(arrived || (await said()).some((t) => /may not have been delivered/.test(t)),
+      'what was typed in the outage arrived in order, or was said to be lost',
+      arrived ? burst : JSON.stringify(await said()));
+
+    const after = 'after-' + Math.random().toString(36).slice(2, 8);
+    await typeLine(s.page, 'echo ' + after);
+    ok(await awaitScreen(s.page, after, 25000), 'and the pane takes a keystroke again after the outage',
+      oneLine(await screen(s.page)));
+
+    // (b) The phone is locked and unlocked: no network event at all, only the
+    // page being hidden and shown again.
+    await s.context.setOffline(true);
+    await s.page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await wait(1500);
+    await s.context.setOffline(false);
+    await s.page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+      document.dispatchEvent(new Event('visibilitychange'));
+      window.dispatchEvent(new Event('pageshow'));
+    });
+
+    const woke = 'woke-' + Math.random().toString(36).slice(2, 8);
+    await typeLine(s.page, 'echo ' + woke);
+    ok(await awaitScreen(s.page, woke, 30000), 'and after a lock and an unlock, without a reload',
+      oneLine(await screen(s.page)));
+
+    await shot(s.page, 'typeafteroutage');
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+// typekeepsfocus is the other half of the same complaint, and it has nothing to
+// do with the network: a dialog, an overflow menu or a session being switched
+// leaves the focus somewhere that is not the terminal, and every key after that
+// is swallowed in silence. The page always gives the focus back.
+async function typekeepsfocus() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    const one = await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+    const mark = Math.random().toString(36).slice(2, 6);
+
+    await typeLine(s.page, 'echo one-' + mark);
+    ok(await awaitScreen(s.page, 'one-' + mark), 'the first session answers', oneLine(await screen(s.page)));
+
+    // (c) The rename dialog, opened and cancelled. Nothing is clicked on the
+    // pane afterwards: the keys go straight to wherever the page left the
+    // focus, which is exactly what a person does.
+    await s.page.click('#sessionTitle');
+    await s.page.waitForSelector('dialog.modal[open]', { timeout: 10000 });
+    await s.page.click('dialog.modal .btn.sm:not(.primary)');
+    await s.page.waitForSelector('dialog.modal[open]', { state: 'detached', timeout: 10000 });
+    const dialogMark = 'dialog-' + mark;
+    await s.page.keyboard.type('echo ' + dialogMark);
+    await s.page.keyboard.press('Enter');
+    ok(await awaitScreen(s.page, dialogMark, 15000), 'typing works after a dialog was opened and closed',
+      oneLine(await screen(s.page)));
+
+    // And the ⋯ menu, opened and dismissed the way a stray tap dismisses it.
+    await s.page.click('#sessionMenu');
+    await s.page.waitForSelector('.menu', { timeout: 10000 });
+    // Taken by one of its own entries, which is how a menu usually goes: the
+    // button that opened it keeps the focus, and the entry is the one whose
+    // only effect is on this device.
+    await s.page.click('.menu .menu-item:nth-child(2)');
+    await s.page.waitForSelector('.menu', { state: 'detached', timeout: 10000 });
+    const menuMark = 'menu-' + mark;
+    await s.page.keyboard.type('echo ' + menuMark);
+    await s.page.keyboard.press('Enter');
+    ok(await awaitScreen(s.page, menuMark, 15000), 'and after the ⋯ menu was opened and closed',
+      oneLine(await screen(s.page)));
+
+    // (d) Two sessions, and a keystroke into each of them.
+    const two = await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+    await typeLine(s.page, 'echo two-' + mark);
+    ok(await awaitScreen(s.page, 'two-' + mark, 20000), 'the second session takes a keystroke',
+      oneLine(await screen(s.page)));
+
+    await s.page.click('.chat-item[data-id="' + one + '"]');
+    await s.page.waitForFunction((id) => location.hash.slice(1) === id, one, { timeout: 15000 });
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+    // The pane really is the other session's, which is what makes the
+    // keystroke below an assertion about the session that was switched to.
+    ok(await awaitScreen(s.page, 'one-' + mark, 25000), 'the pane is the first session again',
+      oneLine(await screen(s.page)));
+    const backOne = 'back-one-' + mark;
+    await typeLine(s.page, 'echo ' + backOne);
+    ok(await awaitScreen(s.page, backOne, 25000), 'and the first one still does after switching back',
+      oneLine(await screen(s.page)));
+
+    await s.page.click('.chat-item[data-id="' + two + '"]');
+    await s.page.waitForFunction((id) => location.hash.slice(1) === id, two, { timeout: 15000 });
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+    ok(await awaitScreen(s.page, 'two-' + mark, 25000), 'and the second session\u2019s pane after switching again',
+      oneLine(await screen(s.page)));
+    const backTwo = 'back-two-' + mark;
+    await typeLine(s.page, 'echo ' + backTwo);
+    ok(await awaitScreen(s.page, backTwo, 25000), 'and so does the second, after switching again',
+      oneLine(await screen(s.page)));
+
+    await shot(s.page, 'typekeepsfocus');
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 // -------------------------------------------------------------------- run
 
 const ALL = [
@@ -3753,6 +3913,8 @@ const ALL = [
   ['status-speak', 'Status says what the screen shows, on the page and out loud', statusspeak],
   ['agent-run', 'a goal in words, a progress line, and keystrokes in the pane', agentrun],
   ['audio-mode', 'two large buttons, a remembered choice, and a turn that speaks for itself', audiomode],
+  ['typeafteroutage', 'a cut socket, a locked phone, and a pane that still takes keystrokes', typeafteroutage],
+  ['typekeepsfocus', 'a dialog, the ⋯ menu and two sessions: the keys still land in the pane', typekeepsfocus],
   ['design', 'white surfaces, marks, hover-only detail and motion that does not restart', design],
   ['livesession', 'one real session against the real Claude Code CLI', livesession, { live: true }],
 ];

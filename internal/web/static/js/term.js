@@ -135,8 +135,15 @@ export function createTerm(host, opts = {}) {
     term.textarea.setAttribute('spellcheck', 'false');
   }
 
-  if (opts.onData) term.onData(opts.onData);
-  if (opts.onBinary) term.onBinary(opts.onBinary);
+  // The one path everything typed takes. It is wrapped because an exception
+  // thrown out of a listener leaves xterm's key handling half way through the
+  // event it was in the middle of - and a page that has thrown once must still
+  // deliver the next keystroke.
+  const guarded = (handler) => (data) => {
+    try { handler(data); } catch (err) { console.error('terminal input', err); }
+  };
+  if (opts.onData) term.onData(guarded(opts.onData));
+  if (opts.onBinary) term.onBinary(guarded(opts.onBinary));
 
   // Fitting. A ResizeObserver catches the window, the drawer and the sidebar;
   // visualViewport catches the phone keyboard opening, which window.resize

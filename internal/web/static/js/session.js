@@ -17,7 +17,7 @@
 
 import {
   api, el, toast, infoTip, confirmDialog, errorMessage, isOffline, isBusyConflict,
-  setClass, onWake, clientKey, CONNECTION_GRACE,
+  setClass, onWake, clientKey, CONNECTION_GRACE, restoreFocus, setFocusFallback,
 } from './api.js';
 import { connectionSource } from './net.js';
 import { agentMark } from './logos.js';
@@ -52,6 +52,29 @@ const PING_OFFSET = 7000;
 // `visibilitychange` and `focus` in the same tick.
 const HELLO_TIMEOUT = 10000;
 const WAKE_COALESCE = 60;
+
+// The input watchdog. The server acknowledges input every hundred
+// milliseconds, so a keystroke that has been on a wire and is still
+// unacknowledged after this is not a slow link, it is a socket that is open
+// and dead - the half-open case a phone produces several times a day, and the
+// one the person reports as "I cannot type any more". It reconnects the
+// socket, and only the socket: a program that prints nothing for an hour is a
+// normal program, and nothing here ever touches the tmux session.
+const INPUT_ACK_TIMEOUT = 8000;
+const INPUT_WATCH_EVERY = 2000;
+
+// How long a browser that says it has no network is left alone before a
+// handshake is tried anyway. `online` is the signal this waits for, and iOS
+// after a lock does not always raise one - so it is a floor, not the only way
+// back.
+const OFFLINE_RETRY = 5000;
+
+// What may be held for a socket that is not open. It is a bound on memory and
+// on how much of a burst a person can be handed back, not a policy: the
+// ordinary outage holds a handful of keystrokes. What is over the bound is the
+// oldest, and it is said out loud rather than dropped in silence.
+const MAX_HELD_FRAMES = 512;
+const MAX_HELD_BYTES = 128 * 1024;
 
 /**
  * viewerId is this tab's identity for as long as the tab lives.
@@ -124,7 +147,11 @@ class TermSocket {
     this.wakeTimer = null;
     this.pingId = 0;
     this.lagTimer = null;
+    this.inputTimer = null;
     this.lastLag = 0;
+    // heldBytes is what the queue below is bounded by, kept beside it rather
+    // than summed on every keystroke.
+    this.heldBytes = 0;
 
     this.size = { cols: 0, rows: 0 };
     this.conn = connectionSource({ global: true });
@@ -206,6 +233,7 @@ class TermSocket {
     if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; }
     if (this.pingDeadline) { clearTimeout(this.pingDeadline); this.pingDeadline = null; }
     if (this.lagTimer) { clearInterval(this.lagTimer); this.lagTimer = null; }
+    if (this.inputTimer) { clearInterval(this.inputTimer); this.inputTimer = null; }
   }
 
   url() {
@@ -227,7 +255,12 @@ class TermSocket {
     // A browser that knows it has no network should wait for the radio rather
     // than burn battery on a handshake that cannot succeed.
     if (navigator.onLine === false) {
-      this.report('offline', { immediate: true });
+      // A wake event is the good reason to try again, but it is not a
+      // guarantee: an iPhone coming back from a lock screen sometimes raises
+      // none at all, and a socket that waits for a signal that never comes is
+      // a session that can never be typed into again.
+      this.report('offline', { immediate: true, retryAt: Date.now() + OFFLINE_RETRY, retryNow: () => this.reconnect(0) });
+      this.retryTimer = setTimeout(() => { this.retryTimer = null; this.open(); }, OFFLINE_RETRY);
       return;
     }
     this.report('connecting');
@@ -333,6 +366,7 @@ class TermSocket {
     // would throw away, in silence, every keystroke made in the round trip
     // that `hello` took to arrive.
     this.held = this.held.filter((f) => !f.sent || f.seq > ack);
+    this.countHeld();
     this.inputSeq = ack;
     // From here the counter means what the server means by it, so input may
     // go out again.
@@ -347,6 +381,7 @@ class TermSocket {
       // keystroke made between the socket opening and hello arriving.
       const lost = this.held.filter((f) => f.sent);
       this.held = this.held.filter((f) => !f.sent);
+      this.countHeld();
       if (lost.length) {
         // Nothing is duplicated, and the person is told: loose keystrokes are
         // counted, and a composed line goes back into the field it was
@@ -371,6 +406,7 @@ class TermSocket {
       this.inputSeq += 1;
       held.seq = this.inputSeq;
       held.frame = inputFrame(held.seq, held.bytes);
+      held.at = Date.now();
       held.sent = this.write(held.frame) || held.sent;
     }
 
@@ -386,6 +422,7 @@ class TermSocket {
       if (held.onDelivered) held.onDelivered();
     }
     this.held = kept;
+    this.countHeld();
     // An ack that leaves a hole in front of what is still held is the server
     // refusing a gap (§D.6): it wrote nothing and it is saying where to start
     // again. Renumbering from there and resending is the re-anchor it asks
@@ -397,9 +434,17 @@ class TermSocket {
         this.inputSeq += 1;
         held.seq = this.inputSeq;
         held.frame = inputFrame(held.seq, held.bytes);
+        held.at = Date.now();
         held.sent = this.write(held.frame) || held.sent;
       }
     }
+  }
+
+  /** countHeld re-derives the queue's size after it has been filtered. */
+  countHeld() {
+    let bytes = 0;
+    for (const held of this.held) bytes += held.bytes.length;
+    this.heldBytes = bytes;
   }
 
   startTimers() {
@@ -422,6 +467,21 @@ class TermSocket {
       ping();
       this.pingTimer = setInterval(ping, PING_EVERY);
     }, PING_OFFSET);
+    // The input watchdog. A socket that is open, anchored and answering
+    // nothing about what was typed into it is a socket that has to be made
+    // again - and the frames are still held, so making it again delivers
+    // them.
+    this.inputTimer = setInterval(() => {
+      if (!this.isOpen() || !this.anchored) return;
+      const now = Date.now();
+      for (const held of this.held) {
+        if (held.sent && now - (held.at || now) > INPUT_ACK_TIMEOUT) {
+          this.report('connecting', { immediate: true });
+          this.reconnect(0);
+          return;
+        }
+      }
+    }, INPUT_WATCH_EVERY);
     // Diagnostics only: how far behind this viewer is. Nothing in the
     // transport depends on it.
     this.lagTimer = setInterval(() => {
@@ -452,16 +512,47 @@ class TermSocket {
     const entry = {
       seq: this.inputSeq, bytes, frame: inputFrame(this.inputSeq, bytes),
       text: opts.text, onDelivered: opts.onDelivered, onLost: opts.onLost,
+      // at is when these bytes were last put on a wire, which is what the
+      // input watchdog measures.
+      at: 0,
       // sent records whether these bytes have ever been on a wire, which is
       // what decides their fate when the server turns out not to remember
       // this viewer: only what was sent can be a resend.
       sent: false,
     };
     this.held.push(entry);
+    this.heldBytes += bytes.length;
+    this.trimHeld();
     // Only a socket that has been anchored by its hello may send: before that
     // the number on the frame means nothing to the server, and a number below
     // its own is a keystroke silently thrown away.
-    if (this.anchored) entry.sent = this.write(entry.frame);
+    if (this.anchored) {
+      entry.at = Date.now();
+      entry.sent = this.write(entry.frame);
+    }
+  }
+
+  /**
+   * trimHeld keeps the queue of undelivered input bounded.
+   *
+   * An outage that lasts is still an outage: the queue may not grow until the
+   * tab dies of it. What goes is the oldest, because the newest is what the
+   * person is typing now - and what goes is counted and said, which is the
+   * whole rule: input is either delivered or reported, never quietly gone.
+   */
+  trimHeld() {
+    if (this.held.length <= MAX_HELD_FRAMES && this.heldBytes <= MAX_HELD_BYTES) return;
+    const lines = [];
+    let keystrokes = 0;
+    while (this.held.length > 1
+      && (this.held.length > MAX_HELD_FRAMES || this.heldBytes > MAX_HELD_BYTES)) {
+      const gone = this.held.shift();
+      this.heldBytes -= gone.bytes.length;
+      if (gone.text !== undefined) lines.push(gone.text);
+      else if (gone.bytes[0] !== 0x1b) keystrokes += 1;
+      if (gone.onLost) gone.onLost();
+    }
+    if (keystrokes || lines.length) this.onControl({ t: 'input_lost', keystrokes, lines });
   }
 
   resize(cols, rows) {
@@ -535,8 +626,9 @@ const state = {
   // the moment the list can be read.
   wanted: '',
   // The overflow menu a row or the header last opened, so a second one
-  // replaces it rather than stacking on it.
+  // replaces it rather than stacking on it, and the button it hangs from.
   menu: null,
+  menuAnchor: null,
   // The session whose relaunch this tab has asked for and not yet been
   // answered about. It is what keeps the pressed Restart pressed across a list
   // refresh, and what stops a second press starting a second relaunch.
@@ -833,11 +925,24 @@ function promptTitle(current) {
       el('div', { class: 'modal-actions' }, cancel, accept),
     );
     let settled = false;
+    const was = document.activeElement;
+    // The dialog is taken out of the page and the focus is put back where it
+    // came from here, in the call that ends it, rather than in the `close`
+    // listener alone: a dialog that is closed but left in the document keeps
+    // the focus on its own button, and a page whose focus is on a button
+    // nobody can see swallows every key that is typed at it. That is one of
+    // the two ways this app could stop taking input without anything looking
+    // wrong.
+    const dismiss = () => {
+      dialog.remove();
+      restoreFocus(was);
+    };
     const finish = (value) => {
       if (settled) return;
       settled = true;
       resolve(value);
       dialog.close();
+      dismiss();
     };
     accept.addEventListener('click', () => finish(input.value.trim() || current));
     cancel.addEventListener('click', () => finish(null));
@@ -845,7 +950,7 @@ function promptTitle(current) {
       if (event.key === 'Enter') { event.preventDefault(); finish(input.value.trim() || current); }
     });
     dialog.addEventListener('cancel', (event) => { event.preventDefault(); finish(null); });
-    dialog.addEventListener('close', () => { finish(null); dialog.remove(); });
+    dialog.addEventListener('close', () => { finish(null); dismiss(); });
     document.body.append(dialog);
     dialog.showModal();
     input.focus();
@@ -941,6 +1046,11 @@ function openRowMenu(anchor, id) {
   menu.style.top = Math.round(box.bottom + 6) + 'px';
   menu.style.left = Math.round(Math.min(box.left, window.innerWidth - menu.offsetWidth - 10)) + 'px';
   state.menu = menu;
+  // The button that opened the menu keeps the focus while it is open, and a
+  // button with the focus answers Enter and space - so it is handed back when
+  // the menu goes, or the next thing typed re-opens the menu instead of
+  // reaching the pane.
+  state.menuAnchor = anchor;
   setTimeout(() => document.addEventListener('click', closeMenu, { once: true }), 0);
 
   function item(text, run, kind) {
@@ -952,7 +1062,38 @@ function openRowMenu(anchor, id) {
 }
 
 function closeMenu() {
-  if (state.menu) { state.menu.remove(); state.menu = null; }
+  if (!state.menu) return;
+  state.menu.remove();
+  state.menu = null;
+  const anchor = state.menuAnchor;
+  state.menuAnchor = null;
+  if (anchor && document.activeElement === anchor) anchor.blur();
+  // The menu took the focus out of the pane, so the menu gives it back.
+  keepTypingAlive();
+}
+
+/**
+ * keepTypingAlive puts the focus back in the terminal when nothing else wants
+ * it.
+ *
+ * A menu, a dialog or a key that has been dismissed leaves the focus on the
+ * body, and a body with the focus swallows every key silently: the pane keeps
+ * showing, the socket keeps saying it is live, and nothing the person types
+ * arrives anywhere. That is the shape of "I can no longer type into the
+ * session" that has nothing to do with the network, so it is fixed by one
+ * rule - if a session is open and the focus has landed on nothing, it belongs
+ * to the pane.
+ *
+ * It never takes the focus from something that wants it: a field, a button, a
+ * dialog and an open menu all keep it.
+ */
+function keepTypingAlive() {
+  if (!state.term) return;
+  if (state.menu || document.querySelector('dialog[open]')) return;
+  const active = document.activeElement;
+  if (active && active.isConnected
+    && active !== document.body && active !== document.documentElement) return;
+  state.term.focus();
 }
 
 /* ------------------------------------------------------- the terminal view */
@@ -1510,6 +1651,27 @@ function wire() {
     const id = location.hash.replace(/^#/, '');
     if (id) state.wanted = id;
     if (id && (!state.current || state.current.id !== id)) selectSession(id);
+  });
+  // Anything that ends with the focus nowhere - a dialog closing, a menu
+  // item, a notice being dismissed - hands it back to the pane on the next
+  // tick, once the browser has settled on where it went.
+  // Where a dialog puts the focus when it has nowhere to put it back.
+  setFocusFallback(keepTypingAlive);
+  document.addEventListener('focusout', () => setTimeout(keepTypingAlive, 0));
+  // Not only on an event: an element that is removed while it has the focus
+  // takes the focus with it and raises nothing at all - which is exactly what
+  // a dialog does on its way out. So the same rule is also checked on the
+  // second, which is the difference between a page that cannot be typed into
+  // and one that can.
+  setInterval(keepTypingAlive, 1000);
+  // And a tap anywhere on the pane means the pane, even when it lands on an
+  // overlay, a notice or the padding around the terminal.
+  dom.termWrap.addEventListener('pointerup', () => {
+    if (!state.term) return;
+    const active = document.activeElement;
+    if (active && active.closest && active.closest('input, textarea, button, dialog, .menu')
+      && !active.classList.contains('xterm-helper-textarea')) return;
+    state.term.focus();
   });
   window.addEventListener('online', updateStale);
   window.addEventListener('offline', updateStale);

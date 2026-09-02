@@ -1257,3 +1257,42 @@ Everything here is a deliberate departure from §E's text, not a defect in it.
    a physical key actually seen (`keyboardLikely`/`isPhysicalKeyEvent`, both
    pure and both asserted in `keybar`). A phone gets the line input and the
    microphone, and the session menu still turns the bar on anywhere.
+## Input durability (2026-09-02)
+
+The report was "sometimes I can no longer type anything into the session": the
+pane keeps showing, the socket keeps saying live, and nothing typed arrives.
+Five causes, and where the fix departs from what §D says:
+
+1. **§D.6 — a reconnect that finds a dead terminal.** A `tmux` client can end
+   without the browser hearing anything (`detach-client` from elsewhere, a tmux
+   server restart, a killed window). The hub's viewer entry only asked whether
+   its `*termux.Viewer` was non-nil, so every reconnect chose the same closed
+   pseudo terminal for ever. `acquire` now asks `Viewer.Ended()` and attaches a
+   replacement **under the same entry**: the hello says `viewer_fresh: false`
+   (the input counter survives, so what the tab holds is delivered exactly once)
+   together with `replay_from: 0` (the screen is redrawn). §D.6 describes those
+   two as going together; they do not have to.
+2. **§D.5 — an input frame the pane refuses.** It closed the connection with a
+   `fatal` error. A frame that failed is not a connection that failed: the
+   client is now given `input_ack` with the last number that did reach the pane
+   - the same "start again from here" a gap is answered with, so it renumbers
+   and resends - and the socket stays up. `termux.ErrClosed`, or three refusals
+   in a row, still ends the socket, because only a new handshake can attach a
+   new terminal.
+3. Bracketed-paste state is reset on every takeover: a paste cut in half by a
+   lost socket left the viewer reading every terminal report as pasted text.
+4. **Client.** The held-input queue is bounded (512 frames / 128 KB, oldest
+   dropped and reported, never dropped in silence); an input watchdog reconnects
+   a socket that is open and anchored but has not acknowledged input for eight
+   seconds; a browser that says it is offline retries every five seconds rather
+   than waiting only for an `online` event iOS does not always raise.
+5. **Focus.** A closed `<dialog>` that stays in the page keeps the focus on its
+   own button, and a page whose focus is on the body swallows every key. Dialogs
+   now remove themselves and restore the focus in the call that ends them rather
+   than only in a `close` listener, the ⋯ menu hands the focus back, and the
+   session page has one rule: if a session is open and the focus has landed on
+   nothing, it belongs to the pane.
+
+`sw.js` was checked and left alone: it is network-first and stamps every shell
+address with the build, so it can neither serve an old script to a new page nor
+touch a WebSocket.
