@@ -1249,12 +1249,31 @@ function showKeyBar(on) {
   if (state.term) state.term.refit();
 }
 
+// renameRow takes the new name of a session into the list and, when it is the
+// one on screen, into the header. No animation: a row quietly having a better
+// name is not an event.
+function renameRow(id, title) {
+  if (!id || !title) return;
+  const session = sessionOf(id);
+  if (!session || session.title === title) return;
+  session.title = title;
+  if (state.current && state.current.id === id) {
+    state.current.title = title;
+    dom.sessionTitle.textContent = title;
+  }
+  renderList();
+}
+
 function showSize(cols, rows) {
   dom.termSize.hidden = false;
   dom.termSize.textContent = cols + '×' + rows;
 }
 
 function onControl(sessionId, frame) {
+  // A session that names itself does it while another one is being watched,
+  // so this frame is about whichever session it names and not about the one
+  // this socket is attached to.
+  if (frame.t === 'title') { renameRow(frame.id, frame.title); return; }
   if (!state.current || state.current.id !== sessionId) return;
   switch (frame.t) {
     case 'hello':

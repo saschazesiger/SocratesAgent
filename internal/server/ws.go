@@ -1505,6 +1505,19 @@ func (s *Server) onSessionActivity(sessionID string, a termux.Activity) {
 		"sessions": map[string]termux.Activity{sessionID: a},
 	}
 	s.broadcastAll(func(*termViewer) any { return frame })
+	// The first turn that finishes is what gives a session its name.
+	s.titles.observe(sessionID, a.State)
+}
+
+// onSessionTitle tells every open socket that a session has a new name.
+//
+// It goes to every socket rather than to the session's own viewers because
+// the name is in the sidebar of every browser, and the session that has just
+// named itself is usually not the one being looked at. It is the smallest
+// frame that could carry it: the row and the header both take a string.
+func (s *Server) onSessionTitle(sessionID, title string) {
+	frame := map[string]any{"t": "title", "id": sessionID, "title": title}
+	s.broadcastAll(func(*termViewer) any { return frame })
 }
 
 // emitAgent carries one step of an operator run to the viewers of its session.

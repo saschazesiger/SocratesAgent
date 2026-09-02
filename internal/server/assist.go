@@ -1047,3 +1047,216 @@ func joinNote(note string, guards []string) string {
 	}
 	return note + " " + joined
 }
+
+/* ---------------------------------------------------------- the title run */
+
+// What naming a session costs and how far it may go.
+const (
+	// titleScreenLines is what the namer is shown. It is the operator's
+	// screen: the first answer of a coding harness is long, and the question
+	// that produced it is usually above the fold.
+	titleScreenLines = 200
+	// titleTimeout bounds the whole run. Nobody is waiting for it - it is a
+	// sidebar row renaming itself - so it fails silently rather than late.
+	titleTimeout = 20 * time.Second
+	// titleMaxRunes is the longest name that still reads as a name in a
+	// sidebar row on a phone.
+	titleMaxRunes = 60
+	// titleMaxTokens is a handful of words. The model is asked for three to
+	// seven, and a ceiling stops a paragraph being paid for.
+	titleMaxTokens = 60
+)
+
+// titleDriver names a session once, the first time it has answered anything.
+//
+// The moment is the first committed edge out of `busy`: the harness has said
+// something, so there is a subject on the screen to name it after. It happens
+// whether or not anybody is looking, because the point of it is the sidebar of
+// the browser that is looking at a different session.
+//
+// It is once per session and the once is persisted (store.TitleAuto), so a
+// server restart does not rename a session that has already been named; a name
+// the user typed or a rename they made (store.TitleUser) is never touched.
+type titleDriver struct {
+	srv *Server
+
+	mu sync.Mutex
+	// seen is the last committed state per session, which is where the edge
+	// out of busy is found: the callback carries the new state and not the old.
+	seen map[string]termux.State
+	// live is the run in flight per session, so that two edges cannot start
+	// two runs and deleting a session can stop the one it has.
+	live map[string]context.CancelFunc
+}
+
+func newTitleDriver(s *Server) *titleDriver {
+	return &titleDriver{srv: s, seen: map[string]termux.State{}, live: map[string]context.CancelFunc{}}
+}
+
+// observe takes every committed activity change and starts the title run on
+// the first edge out of busy. It returns at once: the detector's tick is a
+// tick, and it is never made to wait for a gateway.
+func (d *titleDriver) observe(sessionID string, state termux.State) {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	prev, known := d.seen[sessionID]
+	d.seen[sessionID] = state
+	_, running := d.live[sessionID]
+	// An edge needs a previous state: a session first seen while it is already
+	// idle has never been watched working, and there is no answer on its
+	// screen that this server saw arrive.
+	if !known || running || prev != termux.StateBusy || state == termux.StateBusy {
+		d.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), titleTimeout)
+	d.live[sessionID] = cancel
+	d.mu.Unlock()
+
+	go func() {
+		defer func() {
+			cancel()
+			d.mu.Lock()
+			delete(d.live, sessionID)
+			d.mu.Unlock()
+		}()
+		d.run(ctx, sessionID)
+	}()
+}
+
+// forget drops what is remembered about a session and stops a run that is
+// still going. A model naming a row that no longer exists is harmless; writing
+// its answer into a deleted session's row is not.
+func (d *titleDriver) forget(sessionID string) {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	cancel := d.live[sessionID]
+	delete(d.live, sessionID)
+	delete(d.seen, sessionID)
+	d.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// run is the whole of it: read the screen, ask for a name, store it, and tell
+// every open browser. Every way out of it is silent - there is no request to
+// answer and no button that was pressed.
+func (d *titleDriver) run(ctx context.Context, sessionID string) {
+	row, err := d.srv.store.GetSession(sessionID)
+	if err != nil || row.TitleSource != "" {
+		return
+	}
+	// A shell session is a directory and a prompt. There is nothing on its
+	// screen that a name could be about, and `cd` is not a subject.
+	if row.Harness == config.HarnessShell {
+		return
+	}
+	settings := d.srv.Settings()
+	key := strings.TrimSpace(settings.OpenRouter.APIKey)
+	if key == "" {
+		// Not configured is not a fault: the placeholder name stays, and the
+		// session is named the first time it answers after a key is added.
+		return
+	}
+	model := strings.TrimSpace(settings.OpenRouter.AgentModel)
+	if model == "" {
+		model = config.DefaultAgentModel
+	}
+	screen, err := d.srv.manager.CapturePane(ctx, sessionID, titleScreenLines)
+	if err != nil || strings.TrimSpace(screen) == "" {
+		return
+	}
+
+	temperature := 0.3
+	client := openrouter.New(settings.OpenRouter.BaseURL, key)
+	res, err := client.Chat(ctx, openrouter.ChatRequest{
+		Model:       model,
+		Messages:    []openrouter.Message{{Role: "user", Content: titlePrompt(row.Harness, screen)}},
+		Temperature: &temperature,
+		MaxTokens:   titleMaxTokens,
+	}, nil)
+	// The attempt is what is spent, not the answer: whatever came back, this
+	// session has had its one go. A model id that does not exist would
+	// otherwise be paid for again at the end of every turn, for ever.
+	if err != nil {
+		if ctx.Err() == nil {
+			_ = d.srv.store.MarkSessionTitled(sessionID)
+		}
+		return
+	}
+	title := cleanTitle(res.Content)
+	if title == "" {
+		_ = d.srv.store.MarkSessionTitled(sessionID)
+		return
+	}
+	if err := d.srv.store.SetAutoSessionTitle(sessionID, title); err != nil {
+		return
+	}
+	d.srv.onSessionTitle(sessionID, title)
+}
+
+// titlePrompt is the naming instruction, screen included.
+//
+// The language is the screen's and not the voice setting's, which is the one
+// place these prompts differ: a title is read, not spoken, and a German
+// conversation with an English name on it would be a name for nobody.
+func titlePrompt(harness, screen string) string {
+	return "Below is the screen of a terminal running " + harnessLabel(harness) +
+		". Give this session a title: 3 to 7 words saying what it is about, so that somebody " +
+		"scanning a list of sessions knows which one this is. Write it in the language the " +
+		"person on the screen is evidently writing in; if that is unclear, write it in English. " +
+		"Answer with the title and nothing else: no quotation marks, no full stop at the end, " +
+		"no markdown, no explanation.\nScreen:\n" + screen
+}
+
+// cleanTitle takes a name out of whatever the model answered with. Empty is a
+// refusal, and the caller keeps the name the session already had.
+func cleanTitle(text string) string {
+	text = strings.TrimSpace(text)
+	// A fenced answer is the commonest way this instruction is disobeyed.
+	if strings.HasPrefix(text, "```") {
+		if end := strings.Index(text[3:], "```"); end >= 0 {
+			text = text[3 : 3+end]
+		} else {
+			text = text[3:]
+		}
+		if nl := strings.IndexByte(text, '\n'); nl >= 0 && !strings.Contains(text[:nl], " ") {
+			text = text[nl+1:] // the language tag of the fence
+		}
+	}
+	// One line, whatever else came with it.
+	if nl := strings.IndexAny(text, "\r\n"); nl >= 0 {
+		text = text[:nl]
+	}
+	text = strings.NewReplacer("**", "", "*", "", "`", "", "#", "").Replace(text)
+	text = strings.Join(strings.Fields(text), " ")
+	text = trimTitleEdges(text)
+	if runes := []rune(text); len(runes) > titleMaxRunes {
+		cut := string(runes[:titleMaxRunes])
+		if space := strings.LastIndexByte(cut, ' '); space > titleMaxRunes/2 {
+			cut = cut[:space]
+		}
+		text = trimTitleEdges(cut)
+	}
+	return text
+}
+
+// trimTitleEdges takes the quotes and the punctuation off, in as many passes
+// as it takes: a quoted answer that also ends in a full stop leaves the
+// closing quote behind the stop, and one pass would keep the opening one.
+func trimTitleEdges(text string) string {
+	for {
+		trimmed := strings.Trim(text, " \t\"'“”‘’«»")
+		trimmed = strings.TrimRight(trimmed, " .!,;:")
+		trimmed = strings.TrimSpace(trimmed)
+		if trimmed == text {
+			return trimmed
+		}
+		text = trimmed
+	}
+}

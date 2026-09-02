@@ -62,6 +62,8 @@ type Server struct {
 	// agents owns those runs: one per session at a time, in a goroutine that
 	// outlives the request that started it and the browser that asked for it.
 	agents *agentDriver
+	// titles names a session once, the first time it has answered anything.
+	titles *titleDriver
 
 	mux *http.ServeMux
 
@@ -111,6 +113,9 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	cfg.OnExit = s.onSessionExit
 	cfg.OnSize = s.onSessionSize
 	cfg.OnActivity = s.onSessionActivity
+	// The namer is built before the manager, because the manager is what
+	// calls into it.
+	s.titles = newTitleDriver(s)
 	manager, err := termux.New(st, cfg)
 	if err != nil {
 		return nil, err
