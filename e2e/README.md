@@ -112,11 +112,11 @@ scenario. Deleting `e2e/out/` is always safe.
 | `typeandsee` | keystrokes reach the pane, output comes back in order, and the journal on disk holds the same bytes |
 | `reloadkeepsscreen` | type, reload: the same tab, the same session, the same screen, and typing still works |
 | `pages` | `/`, `/admin`, `/login` and `/setup` are clean at 390×844 and 1280×720, and the sheet is a bottom sheet on one and a dialog on the other |
-| `harnesses` | all four session types start and are seen in the browser, each with its own mark and its detail behind an "i" |
+| `harnesses` | all four session types start and are seen in the browser, each with its own mark and its detail behind **Info** in the row menu |
 | `sessionlist` | rename, archive, unarchive and delete — and the working directory survives the delete |
-| `exitoverlay` | `/exit 7` raises the overlay with its status behind the "i", and **Restart** brings the session back |
+| `exitoverlay` | `/exit 7` raises the overlay with its status in a plain line under it, and **Restart** brings the session back |
 | `webglrenders` | the shipped renderer paints the terminal |
-| `keybar` | at 390×844 the key bar sends the right bytes, a sticky `Ctrl` turns the next letter into a control code, and the line input sends a whole line with one `\r` |
+| `keybar` | a touch-only phone gets no key bar and a desk does; asked for, it sends the right bytes, a sticky `Ctrl` turns the next letter into a control code, and the line input sends a whole line with one `\r` |
 | `dictation` | the microphone records, the server transcribes through a stubbed gateway, and the words land in `#lineInput` — unsent |
 | `offlineonce` | a whole command typed with the network off arrives **exactly once** when it comes back, the lost connection is visible while it is gone, and the app shell still opens offline |
 | `sigtermreattach` | the server is killed mid-session and restarted; the pane still holds what was typed and the session is running |
@@ -134,7 +134,7 @@ scenario. Deleting `e2e/out/` is always safe.
 | `createopencode` | OpenCode gets a port and a password of its own, and the discoverer reads the session id over its authenticated HTTP server |
 | `rebootresume` | the tmux server is killed behind Socrates' back: the row goes to `needs_resume`, opening it relaunches with **--resume**, and the banner says so once and stays away after it is dismissed |
 | `lighttheme` | the theme Codex was told to wear, the `theme=light` it read back through tmux, the white pane, and all sixteen ANSI colours drawn at 4.5:1 or better |
-| `design` | white surfaces, a mark wherever a program is named, technical strings only behind an "i", and an animation that does not restart when a row re-renders |
+| `design` | white surfaces, a mark wherever a program is named, technical strings only in **Info**, and an animation that does not restart when a row re-renders |
 | `livesession` | one real session against the real Claude Code CLI (gated) |
 
 That is every row of the specification's table. `lighttheme` measures the

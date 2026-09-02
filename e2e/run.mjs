@@ -374,6 +374,29 @@ async function pages() {
       const marks = await s.page.$$eval('#nsHarness .seg .agent-mark', (nodes) => nodes.map((n) => n.dataset.agent));
       ok(marks.join(',') === 'shell,claude,codex,opencode',
         `the sheet offers all four harnesses, each with its mark at ${tag}`, marks.join(',') || 'none');
+
+      // Nothing on the sheet is hover-only any more: a choice is a mark and a
+      // name, and the prose that explained the choice is gone with it.
+      const bare = await s.page.evaluate(() => ({
+        tips: document.querySelectorAll('#newSessionSheet .tip').length,
+        advanced: !!document.getElementById('nsAdvanced'),
+        prose: (/Advanced|runs with the options|resumed by the session|launched with its workspace|password-protected/i
+          .exec(document.getElementById('newSessionSheet').textContent) || [''])[0],
+      }));
+      ok(bare.tips === 0 && !bare.advanced && bare.prose === '',
+        `the sheet has no "i", no Advanced and no explanations at ${tag}`, JSON.stringify(bare));
+
+      // A row of choices is one control: equal parts that together are the
+      // width of the row.
+      const seg = await s.page.evaluate(() => {
+        const row = document.getElementById('nsDir');
+        const parts = [...row.querySelectorAll('.seg')].map((n) => n.getBoundingClientRect().width);
+        return { row: row.getBoundingClientRect().width, parts };
+      });
+      const equal = seg.parts.every((w) => Math.abs(w - seg.parts[0]) <= 1);
+      const fills = Math.abs(seg.parts.reduce((a, b) => a + b, 0) - seg.row) <= 2 + seg.parts.length;
+      ok(seg.parts.length > 0 && equal && fills,
+        `the working-directory choices are equal and fill the row at ${tag}`, JSON.stringify(seg));
       await shot(s.page, 'pages-sheet-' + tag);
       await s.page.click('#nsCancel');
 
@@ -450,25 +473,35 @@ async function harnesses() {
     // the list this time.
     const rows = await s.page.$$eval('#sessionList .chat-item', (nodes) => nodes.map((n) => ({
       mark: (n.querySelector('.agent-mark') || { dataset: {} }).dataset.agent,
-      dot: (n.querySelector('.dot') || {}).className,
+      dots: n.querySelectorAll('.dot').length,
+      tips: n.querySelectorAll('.tip').length,
       words: n.querySelector('.label').textContent,
     })));
     ok(rows.length === 4, 'all four sessions are in the list', rows.length + ' rows');
     ok(rows.every((r) => r.mark), 'every row carries the mark of what it runs',
       rows.map((r) => r.mark).join(','));
-    ok(rows.every((r) => /green/.test(r.dot)), 'every session is running',
-      rows.map((r) => r.dot.replace('dot ', '')).join(','));
-    // §E.10 rule 3: the technical detail is behind an "i", never in the words.
+    // A row is a mark, a name and its menu. The state dot said nothing that
+    // the mark and the words do not, and the "i" moved into the menu.
+    ok(rows.every((r) => r.dots === 0 && r.tips === 0),
+      'no row carries a state dot or an "i"',
+      rows.map((r) => r.dots + '/' + r.tips).join(','));
+    // §E.10 rule 3: the technical detail is behind Info, never in the words.
     ok(rows.every((r) => !r.words.includes('/')), 'no row spells out a path in its words',
       rows.map((r) => r.words).join(' | '));
 
-    const detail = await s.page.evaluate(() => {
-      const row = document.querySelector('#sessionList .chat-item');
-      const bubble = row.querySelector('.tip-bubble');
-      return { hidden: getComputedStyle(bubble).visibility, text: bubble.textContent };
-    });
-    ok(detail.hidden === 'hidden' && detail.text.includes('/'),
-      'the working directory is in the bubble, drawn only on hover', JSON.stringify(detail));
+    // Info is where the facts of a session are: one dialog, opened from the
+    // row's own menu.
+    await s.page.click('#sessionList .chat-item .act');
+    await s.page.click('.menu-item:has-text("Info")');
+    await s.page.waitForSelector('dialog.modal .facts', { timeout: 5000 });
+    const detail = await s.page.$eval('dialog.modal', (n) => ({
+      title: n.querySelector('.modal-title').textContent,
+      facts: [...n.querySelectorAll('.fact')].map((f) => f.textContent),
+    }));
+    ok(detail.facts.some((f) => f.includes('/')),
+      'the working directory is in the Info dialog', JSON.stringify(detail));
+    await s.page.click('dialog.modal .modal-actions .btn');
+    await s.page.waitForSelector('dialog.modal', { state: 'detached', timeout: 5000 });
 
     await shot(s.page, 'harnesses');
     ok(unexpected(s.errors).length === 0, 'no console errors',
@@ -575,21 +608,21 @@ async function exitoverlay() {
       const card = document.querySelector('#termOverlay .overlay-card');
       return {
         words: card.querySelector('.overlay-title').textContent,
-        bubble: (card.querySelector('.tip-bubble') || {}).textContent || '',
-        bubbleShown: card.querySelector('.tip-bubble')
-          ? getComputedStyle(card.querySelector('.tip-bubble')).visibility : 'none',
+        detail: (card.querySelector('.overlay-detail') || {}).textContent || '',
+        tips: card.querySelectorAll('.tip').length,
         buttons: [...card.querySelectorAll('.overlay-actions .btn')].map((b) => b.textContent),
       };
     });
     ok(/The session ended/.test(overlay.words), 'the overlay says the session ended', oneLine(overlay.words));
-    ok(/Exit status 7/.test(overlay.bubble) && overlay.bubbleShown === 'hidden',
-      'the exit status is behind the "i", not in the sentence', JSON.stringify(overlay));
+    ok(/Exit status 7/.test(overlay.detail) && overlay.tips === 0,
+      'the exit status is a plain line under it, and there is no "i" left',
+      JSON.stringify(overlay));
     ok(overlay.buttons.join(',') === 'Restart,Delete', 'the overlay offers Restart and Delete',
       overlay.buttons.join(','));
     await shot(s.page, 'exitoverlay');
 
-    const dot = await s.page.$eval('#sessionList .chat-item .dot', (n) => n.className);
-    ok(/amber/.test(dot), 'the row says the session ended', dot);
+    const said = await s.page.$eval('#sessionList .chat-item .row-mark', (n) => n.title);
+    ok(said === 'Ended', 'the row says the session ended', said);
 
     await s.page.click('#termRestart');
     await s.page.waitForFunction(() => {
@@ -1047,6 +1080,63 @@ async function keybar() {
     await open(s);
     await startSession(s.page, 'shell');
     await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+
+    // The bar stands in for the keys a keyboard has. This context is a phone -
+    // touch only, a coarse pointer, no hover - so it is not drawn until it is
+    // asked for, and the line input and the microphone are what is on screen.
+    await wait(400);
+    const untouched = await s.page.evaluate(() => ({
+      bar: document.getElementById('keybar').hidden,
+      composer: !document.getElementById('composer').hidden,
+      hover: matchMedia('(hover: hover) and (pointer: fine)').matches,
+    }));
+    ok(untouched.bar && untouched.composer && !untouched.hover,
+      'a touch-only device gets the line input and no key bar', JSON.stringify(untouched));
+
+    // The rule itself, as a function: every case it is meant to decide.
+    const decided = await s.page.evaluate(async () => {
+      const mod = await import('/static/js/keybar.js');
+      const one = (env) => mod.keyboardLikely(env);
+      return {
+        phone: one({ pointerFine: false, platform: 'Linux armv8l', touchPoints: 5 }),
+        desk: one({ pointerFine: true, platform: 'Linux x86_64', touchPoints: 0 }),
+        ipad: one({ pointerFine: false, platform: 'MacIntel', touchPoints: 5 }),
+        typedOn: one({ pointerFine: false, platform: 'Linux armv8l', touchPoints: 5, seen: true }),
+        physical: mod.isPhysicalKeyEvent({ isTrusted: true, key: 'a', code: 'KeyA', keyCode: 65 }),
+        soft: mod.isPhysicalKeyEvent({ isTrusted: true, key: 'Unidentified', code: '', keyCode: 229 }),
+      };
+    });
+    ok(!decided.phone && decided.desk && decided.ipad && decided.typedOn
+      && decided.physical && !decided.soft,
+      'the rule: no phone, every pointer, an iPad, and anything typed on',
+      JSON.stringify(decided));
+
+    // A desk is the other half of the same rule, and it is a context of its
+    // own: a mouse that can hover, and no touch at all.
+    const desk = await s.browser.newContext({
+      viewport: { width: 1280, height: 720 },
+      colorScheme: 'light',
+    });
+    await desk.addCookies(await s.context.cookies());
+    const deskPage = await desk.newPage();
+    const openId = await s.page.evaluate(() => location.hash.slice(1));
+    await deskPage.goto(s.url + '/#' + openId, { waitUntil: 'domcontentloaded' });
+    await deskPage.waitForSelector('#term .xterm', { timeout: 20000 });
+    await deskPage.waitForSelector('#keybar:not([hidden])', { timeout: 10000 })
+      .catch(() => {});
+    const atDesk = await deskPage.evaluate(() => ({
+      bar: !document.getElementById('keybar').hidden,
+      hover: matchMedia('(hover: hover) and (pointer: fine)').matches,
+    }));
+    ok(atDesk.bar && atDesk.hover, 'a device with a pointer that hovers gets it without asking',
+      JSON.stringify(atDesk));
+    await deskPage.close();
+    await desk.close();
+
+    // The rest of this scenario is what the bar does once it is up, and on a
+    // phone the session menu is what puts it there.
+    await s.page.click('#sessionMenu');
+    await s.page.click('.menu-item:has-text("Show key bar")');
     await s.page.waitForSelector('#keybar:not([hidden])', { timeout: 10000 });
 
     const keys = await s.page.$$eval('#keybar .key', (nodes) => nodes.map((n) => n.dataset.key));
@@ -1936,21 +2026,26 @@ async function createclaude() {
       'and the row knows it is holding one', row.cli_session_state);
 
     // §E.10 rule 2 and 3: the header names the model beside the mark of what
-    // runs it, and the path is behind the "i".
+    // runs it, and nothing else - the path is in Info, from the same menu.
     const badge = await s.page.evaluate(() => {
       const host = document.getElementById('sessionHarness');
       return {
         mark: (host.querySelector('.agent-mark') || { dataset: {} }).dataset.agent,
         model: (host.querySelector('.b-model') || {}).textContent,
-        bubble: (host.querySelector('.tip-bubble') || {}).textContent || '',
-        bubbleShown: host.querySelector('.tip-bubble')
-          ? getComputedStyle(host.querySelector('.tip-bubble')).visibility : 'none',
+        tips: host.querySelectorAll('.tip').length,
       };
     });
-    ok(badge.mark === 'claude' && badge.model === 'haiku',
-      'the header badge carries the mark and the model', JSON.stringify(badge));
-    ok(badge.bubble.includes(row.workdir) && badge.bubbleShown === 'hidden',
-      'and the working directory only in the bubble', badge.bubbleShown + ' ' + oneLine(badge.bubble));
+    ok(badge.mark === 'claude' && badge.model === 'haiku' && badge.tips === 0,
+      'the header badge carries the mark and the model, and nothing else',
+      JSON.stringify(badge));
+    await s.page.click('#sessionMenu');
+    await s.page.click('.menu-item:has-text("Info")');
+    await s.page.waitForSelector('dialog.modal .facts', { timeout: 5000 });
+    const facts = await s.page.$$eval('dialog.modal .fact', (nodes) => nodes.map((n) => n.textContent));
+    ok(facts.some((f) => f === row.workdir),
+      'and the working directory is one line of Info', oneLine(facts.join(' · ')));
+    await s.page.click('dialog.modal .modal-actions .btn');
+    await s.page.waitForSelector('dialog.modal', { state: 'detached', timeout: 5000 });
     await shot(s.page, 'createclaude');
 
     // The program ends and is started again from the browser. A restart is a
@@ -2802,24 +2897,24 @@ async function design() {
     ok(hidden.workdir && hidden.tmux && hidden.title,
       'the workdir and the tmux name are behind the "i", and the name is what is read',
       JSON.stringify(hidden));
-    const inTip = await s.page.$$eval('#sessionList .tip-bubble', (nodes) =>
+    // The facts are in one place, and that place is the Info item of the
+    // row's own menu.
+    await s.page.click(rowSel(id) + ' .act');
+    await s.page.click('.menu-item:has-text("Info")');
+    await s.page.waitForSelector('dialog.modal .facts', { timeout: 5000 });
+    const inInfo = await s.page.$$eval('dialog.modal .fact', (nodes) =>
       nodes.map((n) => n.textContent).join(' '));
-    ok(inTip.includes(row.workdir), 'and the "i" is where the workdir actually is',
-      oneLine(inTip));
+    ok(inInfo.includes(row.workdir), 'and Info is where the workdir actually is',
+      oneLine(inInfo));
+    await s.page.click('dialog.modal .modal-actions .btn');
+    await s.page.waitForSelector('dialog.modal', { state: 'detached', timeout: 5000 });
 
-    // Rule 4 - motion is subtle, and it does not restart. The live dot pulses;
-    // a list that re-renders must update the row it already has rather than
-    // build a new one, or the pulse jumps back to its beginning on every poll.
-    const dotSelector = '#sessionList .chat-item[data-id="' + id + '"] .dot';
-    await wait(500);
-    const before = await s.page.evaluate((sel) => {
-      const dot = document.querySelector(sel);
-      dot.closest('.chat-item').dataset.stamp = 'before';
-      const anim = dot && dot.getAnimations()[0];
-      return anim ? { time: anim.currentTime, duration: anim.effect.getTiming().duration } : null;
-    }, dotSelector);
-    ok(!!before && before.duration <= 2000, 'the live dot carries one subtle animation',
-      JSON.stringify(before));
+    // Rule 4 - motion is subtle, and it does not restart. A list that
+    // re-renders must update the row it already has rather than build a new
+    // one, or every mark on it starts again on every poll.
+    await s.page.evaluate((sel) => {
+      document.querySelector(sel).dataset.stamp = 'before';
+    }, rowSel(id));
 
     const renamed = row.title + ' renamed';
     await s.context.request.patch(s.url + '/api/sessions/' + id, { data: { title: renamed } });
@@ -2832,17 +2927,11 @@ async function design() {
       [...document.querySelectorAll('#sessionList .chat-item .label')].some((n) => n.textContent === want),
     renamed, { timeout: 20000 });
     const after = await s.page.evaluate((sel) => {
-      const dot = document.querySelector(sel);
-      const anim = dot && dot.getAnimations()[0];
-      return {
-        time: anim ? Number(anim.currentTime) : -1,
-        sameRow: dot.closest('.chat-item').dataset.stamp === 'before',
-      };
-    }, dotSelector);
-    ok(after.time > Number(before.time) && after.sameRow,
-      'and a re-render of its row does not restart it',
-      Math.round(Number(before.time)) + ' ms -> ' + Math.round(after.time) + ' ms, '
-      + (after.sameRow ? 'the same row' : 'a new row'));
+      const node = document.querySelector(sel);
+      return { sameRow: !!node && node.dataset.stamp === 'before' };
+    }, rowSel(id));
+    ok(after.sameRow, 'and a rename is drawn into the row that is already there',
+      after.sameRow ? 'the same row' : 'a new row');
 
     // Rule 4 again, on the mark that says a session is working. It is the
     // agent's own mark with a hairline ring around it, one faint arc on white,
@@ -2856,6 +2945,27 @@ async function design() {
       ring ? ring.colour : 'no ring');
     const beat = ring ? Math.round(parseFloat(ring.motion) * 1000) : 0;
     ok(beat >= 120 && beat <= 900, 'and it turns at the app\u2019s own pace', beat + ' ms');
+
+    // And it keeps turning through a re-render: the ring is drawn on the mark
+    // the row already has, so a list refresh does not start it again.
+    const spunBefore = await s.page.evaluate((sel) => {
+      const mark = document.querySelector(sel + ' .row-mark');
+      const anim = mark ? mark.getAnimations({ subtree: true })[0] : null;
+      return anim ? Number(anim.currentTime) : -1;
+    }, rowSel(id));
+    await s.context.request.patch(s.url + '/api/sessions/' + id, { data: { title: renamed + ' again' } });
+    await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await s.page.waitForFunction((want) =>
+      [...document.querySelectorAll('#sessionList .chat-item .label')].some((n) => n.textContent === want),
+    renamed + ' again', { timeout: 20000 });
+    const spunAfter = await s.page.evaluate((sel) => {
+      const mark = document.querySelector(sel + ' .row-mark');
+      const anim = mark ? mark.getAnimations({ subtree: true })[0] : null;
+      return anim ? Number(anim.currentTime) : -1;
+    }, rowSel(id));
+    ok(spunBefore >= 0 && spunAfter > spunBefore,
+      'and a re-render of its row does not restart it',
+      Math.round(spunBefore) + ' ms -> ' + Math.round(spunAfter) + ' ms');
 
     // Turning decoration off must not turn off the one thing that says work is
     // still happening, so the ring is drawn complete and still instead.
@@ -2969,9 +3079,12 @@ const rowActivity = (page, id) => page.evaluate((sel) => {
     waiting: !!mark && mark.classList.contains('waiting'),
     unread: row.classList.contains('unread'),
     active: row.classList.contains('active'),
-    dot: (row.querySelector('.dot') || {}).className || '',
+    dots: row.querySelectorAll('.dot').length,
+    said: mark ? mark.title : '',
     weight: label ? getComputedStyle(label).fontWeight : '',
-    ring: ring ? { colour: ring.borderTopColor, motion: ring.animationDuration, name: ring.animationName } : null,
+    ring: ring
+      ? { colour: ring.borderTopColor, motion: ring.animationDuration, name: ring.animationName }
+      : null,
   };
 }, rowSel(id));
 
@@ -3083,8 +3196,8 @@ const activityopencode = () => activityFor('opencode');
 const activityshell = () => activityFor('shell');
 
 // A permission prompt is the one state that may sit for an hour: the person it
-// is waiting for is driving. So it is drawn differently from working - a ring
-// that does not turn and an amber dot - and it does not time out.
+// is waiting for is driving. So it is drawn differently from working - an amber
+// ring that does not turn - and it does not time out.
 async function activitywaiting() {
   const s = await start({ viewport: { width: 1280, height: 720 } });
   let asking = null;
@@ -3108,8 +3221,14 @@ async function activitywaiting() {
 
     const asked = await awaitRow(s.page, id, (r) => r.waiting, 20000);
     ok(asked.ok, 'a permission prompt draws a ring that does not turn', took(asked));
-    ok(!asked.seen || asked.seen.dot.includes('amber'), 'and turns the state dot amber',
-      asked.seen ? asked.seen.dot : 'no row');
+    // The amber that used to be a dot beside the name is the ring itself: the
+    // one colour a row carries, on the mark it belongs to.
+    ok(!asked.seen || (asked.seen.ring && asked.seen.ring.colour === 'rgb(184, 129, 26)'),
+      'and the ring, not a dot, is what goes amber',
+      asked.seen && asked.seen.ring ? asked.seen.ring.colour : 'no ring');
+    ok(!asked.seen || (asked.seen.dots === 0 && asked.seen.said === 'Needs an answer'),
+      'the row has no dot, and its mark says what it is doing',
+      asked.seen ? asked.seen.dots + ' dots, ' + asked.seen.said : 'no row');
     ok(!asked.seen || !asked.seen.ring || asked.seen.ring.name === 'none',
       'the waiting ring carries no animation at all',
       asked.seen && asked.seen.ring ? asked.seen.ring.name : 'no ring');
@@ -3121,7 +3240,7 @@ async function activitywaiting() {
     // rule exists for, so it is measured rather than reasoned about.
     await wait(34000);
     const still = await rowActivity(s.page, id);
-    ok(!!still && still.waiting && still.dot.includes('amber'),
+    ok(!!still && still.waiting && still.ring && still.ring.colour === 'rgb(184, 129, 26)',
       'and thirty-four silent seconds later it is still waiting', JSON.stringify(still));
 
     ok(unexpected(s.errors).length === 0, 'no console errors',
@@ -3603,7 +3722,7 @@ const ALL = [
   ['pages', 'every page is clean at a phone and at a desk', pages],
   ['harnesses', 'all four session types start and are seen in the browser', harnesses],
   ['sessionlist', 'rename, archive, unarchive and delete', sessionlist],
-  ['exitoverlay', 'a pane that ends, its status behind the "i", and Restart', exitoverlay],
+  ['exitoverlay', 'a pane that ends, its status under the sentence, and Restart', exitoverlay],
   ['webglrenders', 'the shipped renderer paints the terminal', webglrenders],
   ['keybar', 'the key bar sends the right bytes and the line input sends whole lines', keybar],
   ['dictation', 'the microphone writes a draft into the line input, unsent', dictation],
@@ -3627,7 +3746,7 @@ const ALL = [
   ['activity-codex', 'Codex working, finishing, and a name that goes bold', activitycodex],
   ['activity-opencode', 'OpenCode working, finishing, and a name that goes bold', activityopencode],
   ['activity-shell', 'a shell with something running in it, and the row that says so', activityshell],
-  ['activity-waiting', 'a permission prompt: a still ring, an amber dot, and no timeout', activitywaiting],
+  ['activity-waiting', 'a permission prompt: a still amber ring, and no timeout', activitywaiting],
   ['activity-fallback', 'a harness that hangs, and the row that leaves busy anyway', activityfallback],
   ['unread', 'bold when nobody saw it, gone when the row is opened or typed into', unread],
   ['session-title', 'a session that names itself the first time it answers', sessiontitle],
