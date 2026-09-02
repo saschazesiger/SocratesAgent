@@ -98,6 +98,11 @@ type Manager struct {
 	hookLn       net.Listener
 	closed       bool
 
+	// locks serialises everything that relaunches one session, and watchers
+	// holds the cancel of its detached session-id watcher.
+	locks    map[string]*sync.Mutex
+	watchers map[string]context.CancelFunc
+
 	// discoverCtx ends every detached session-id watcher when the manager is
 	// closed. The watchers are patient by design - a quarter of an hour each -
 	// and none of them may outlive the store it would write to.
@@ -131,7 +136,13 @@ func New(st *store.Store, cfg Config) (*Manager, error) {
 			cfg.SocratesBin = exe
 		}
 	}
-	m := &Manager{st: st, cfg: cfg, live: map[string]*liveSession{}, missed: map[string]int{}}
+	m := &Manager{
+		st: st, cfg: cfg,
+		live:     map[string]*liveSession{},
+		missed:   map[string]int{},
+		locks:    map[string]*sync.Mutex{},
+		watchers: map[string]context.CancelFunc{},
+	}
 	m.discoverCtx, m.discoverStop = context.WithCancel(context.Background())
 
 	bin := cfg.TmuxBin
@@ -311,6 +322,12 @@ func (m *Manager) Create(ctx context.Context, spec Spec) (*store.Session, error)
 	}
 	if row.ID != spec.ID {
 		// The client had already created this one over a link that dropped.
+		// The working directory this request made on the way here belongs to
+		// nobody, so it goes back: os.Remove only removes it while it is
+		// empty, which is the only state it can be in this early.
+		if spec.WorkdirMode == store.WorkdirDynamic && spec.Plan.Cwd != row.Workdir {
+			_ = os.Remove(spec.Plan.Cwd)
+		}
 		return row, nil
 	}
 
@@ -337,6 +354,12 @@ func cliStateFor(plan harnesses.LaunchPlan) string {
 	}
 }
 
+// ErrStillRunning is the refusal to replace a session whose pane is alive. It
+// is a refusal and not a failure: the row is left exactly as it was, and the
+// caller answers 409 rather than putting a working terminal behind an error
+// overlay.
+var ErrStillRunning = errors.New("the session is still running; it will not be replaced")
+
 // Relaunch starts a session's program again under the name its row already
 // carries: the reboot case, where the row survived and the tmux server did
 // not, and the restart-from-the-exit-overlay case, where the tmux session is
@@ -351,6 +374,11 @@ func (m *Manager) Relaunch(ctx context.Context, row *store.Session, plan harness
 		return err
 	}
 	if err := m.clearDeadSession(ctx, row.TmuxName); err != nil {
+		if errors.Is(err, ErrStillRunning) {
+			// Nothing was touched and nothing is wrong: the caller asked to
+			// replace a terminal that is working.
+			return err
+		}
 		_ = m.st.SetSessionState(row.ID, store.StateFailed, -1, Stderr(err))
 		return err
 	}
@@ -377,7 +405,7 @@ func (m *Manager) clearDeadSession(ctx context.Context, tmuxName string) error {
 		return err
 	}
 	if strings.TrimSpace(out) != "1" {
-		return fmt.Errorf("the tmux session %s is still running; it will not be replaced", tmuxName)
+		return fmt.Errorf("%w: %s", ErrStillRunning, tmuxName)
 	}
 	_, err = m.tmux.Run(ctx, "kill-session", "-t", tmuxName)
 	if err != nil && !noSuchTarget(err) && !serverGone(err) {
@@ -772,5 +800,8 @@ func (m *Manager) Delete(ctx context.Context, sessionID string) error {
 	delete(m.live, sessionID)
 	delete(m.missed, sessionID)
 	m.mu.Unlock()
+	// The watcher would otherwise keep looking for a conversation id for
+	// another quarter of an hour and then write it to a row that is gone.
+	m.forgetSession(sessionID)
 	return os.RemoveAll(SessionDir(m.cfg.DataDir, sessionID))
 }

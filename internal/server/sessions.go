@@ -28,6 +28,30 @@ const createTimeout = 60 * time.Second
 // terminal is more of it than any editor will open.
 const journalDownloadMax = 16 << 20
 
+// The shapes every route in this file answers with, in one place because
+// D.9 lists the routes and not their bodies:
+//
+//	GET    /api/sessions            {"sessions":[<session>…], "rev":<int>}
+//	POST   /api/sessions            201 {"session":<session>}
+//	                                201 {"session":<session>,"error":"…"} when the
+//	                                    tmux commands failed: the row exists, it
+//	                                    is `failed` and carries tmux's own words
+//	                                200 {"session":<session>} for a repeat of a
+//	                                    request that already made one
+//	GET    /api/sessions/{id}       {"session":<session>}
+//	PATCH  /api/sessions/{id}       {"session":<session>}
+//	DELETE /api/sessions/{id}       {"ok":true,"workdir":"…","workdir_kept":true}
+//	POST   …/archive, …/resume,
+//	       …/restart, …/ack-resume  {"session":<session>}
+//	                                409 {"error":"…"} when a restart was asked
+//	                                    for on a session that is still running
+//	GET    …/journal                the raw bytes, as an attachment
+//	every route                     4xx/5xx {"error":"…"}
+//
+// <session> is store.Session as it serialises, plus the three fields
+// sessionView adds: cli_session_state, and after a resume resume_fresh and
+// resumed_from.
+//
 // handleListSessions answers the session list. scope=all includes the archived
 // ones, which is what the list's own switch asks for.
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
@@ -37,7 +61,40 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions, "rev": s.store.Rev()})
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": s.views(sessions), "rev": s.store.Rev()})
+}
+
+// sessionView is a session as the API hands it over: the stored row, plus
+// what the browser needs and the row does not serialise.
+//
+// cli_session_state is here because "this conversation is gone" is something
+// the session list shows in its technical detail, and resume_fresh because a
+// resume that had to start a new conversation is otherwise byte for byte a
+// resume that continued the old one - and §C.8 requires the banner to tell
+// them apart.
+type sessionView struct {
+	*store.Session
+	CLISessionState string `json:"cli_session_state"`
+	ResumeFresh     bool   `json:"resume_fresh,omitempty"`
+	ResumedFrom     string `json:"resumed_from,omitempty"`
+}
+
+func (s *Server) view(row *store.Session) sessionView {
+	v := sessionView{Session: row, CLISessionState: row.CLISessionState}
+	if row.Resumed {
+		if note, ok := s.manager.ResumeNoteOf(row.ID); ok {
+			v.ResumeFresh, v.ResumedFrom = note.Fresh, note.From
+		}
+	}
+	return v
+}
+
+func (s *Server) views(rows []store.Session) []sessionView {
+	out := make([]sessionView, 0, len(rows))
+	for i := range rows {
+		out = append(out, s.view(&rows[i]))
+	}
+	return out
 }
 
 // createSessionBody is what the new-session sheet posts.
@@ -71,7 +128,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// answer with the session it made, whatever the machine looks like now.
 	if clientID := strings.TrimSpace(body.ClientID); clientID != "" {
 		if existing, err := s.store.SessionByClientID(clientID); err == nil {
-			writeJSON(w, http.StatusOK, map[string]any{"session": existing})
+			writeJSON(w, http.StatusOK, map[string]any{"session": s.view(existing)})
 			return
 		} else if !errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusInternalServerError, err.Error())
@@ -95,6 +152,14 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if entry, known := settings.Harnesses.Entry(harnessID); known && !entry.Enabled {
 		writeError(w, http.StatusBadRequest, h.Label()+" is switched off in the dashboard")
+		return
+	}
+
+	if err := checkSize(body.Cols, body.Rows); err != nil {
+		// Before the row, before the directory: a size that cannot be a
+		// terminal is the client's mistake, and it must not cost a failed
+		// session and an empty workspace directory to find that out.
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -149,10 +214,38 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		// The row exists and carries tmux's own words in fail_reason. The
 		// session belongs in the list with its failure showing and a Try again
 		// button, rather than disappearing into a status code.
-		writeJSON(w, http.StatusCreated, map[string]any{"session": row, "error": err.Error()})
+		writeJSON(w, http.StatusCreated, map[string]any{"session": s.view(row), "error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"session": row})
+	if row.ID != id {
+		// Two identical requests raced and this one lost: the store answered
+		// with the session the other made, and nothing was created here.
+		writeJSON(w, http.StatusOK, map[string]any{"session": s.view(row)})
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"session": s.view(row)})
+}
+
+// The bounds a client-supplied terminal size has to be inside. Zero means the
+// sheet did not measure one and the stored default applies; anything else has
+// to be a size tmux will accept, because a window it refuses is a session that
+// fails at creation with the client's own number in it.
+const (
+	minTerminalSize = 10
+	maxTerminalSize = 1000
+)
+
+func checkSize(cols, rows int) error {
+	for _, v := range [2]int{cols, rows} {
+		if v == 0 {
+			continue
+		}
+		if v < minTerminalSize || v > maxTerminalSize {
+			return fmt.Errorf("a terminal of %dx%d is not a size; each side has to be between %d and %d",
+				cols, rows, minTerminalSize, maxTerminalSize)
+		}
+	}
+	return nil
 }
 
 // sessionTitle is the name a session is listed under. The browser sends one;
@@ -190,7 +283,7 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"session": row})
+	writeJSON(w, http.StatusOK, map[string]any{"session": s.view(row)})
 }
 
 func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
@@ -289,18 +382,22 @@ func (s *Server) ensure(w http.ResponseWriter, r *http.Request, restart bool) {
 	} else {
 		next, err = s.manager.Ensure(ctx, row.ID)
 	}
-	if err != nil {
-		// A refusal to replace a session whose pane is still alive is a
-		// conflict and not a fault: the terminal the caller asked to restart
-		// is running.
-		code := http.StatusInternalServerError
-		if strings.Contains(err.Error(), "still running") {
-			code = http.StatusConflict
-		}
-		writeError(w, code, err.Error())
+	switch {
+	case errors.Is(err, termux.ErrStillRunning):
+		// Not a fault: the terminal the caller asked to replace is working,
+		// and its row was left exactly as it was.
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	case err != nil && next != nil:
+		// The relaunch failed and the row says why. It belongs in the list
+		// with its overlay, the same as a create that could not start.
+		writeJSON(w, http.StatusOK, map[string]any{"session": s.view(next), "error": err.Error()})
+		return
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"session": next})
+	writeJSON(w, http.StatusOK, map[string]any{"session": s.view(next)})
 }
 
 // handleAckResume lowers the "resumed after restart" flag once the banner has
@@ -314,6 +411,8 @@ func (s *Server) handleAckResume(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// The banner and what it said go together.
+	s.manager.ClearResumeNote(row.ID)
 	s.answerWithSession(w, row.ID)
 }
 
@@ -346,5 +445,5 @@ func (s *Server) answerWithSession(w http.ResponseWriter, id string) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"session": row})
+	writeJSON(w, http.StatusOK, map[string]any{"session": s.view(row)})
 }

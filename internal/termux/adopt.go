@@ -158,6 +158,11 @@ func (m *Manager) adopt(ctx context.Context, row *store.Session, p pane) {
 	if row.State != store.StateRunning {
 		_ = m.st.SetSessionState(row.ID, store.StateRunning, row.ExitStatus, "")
 	}
+	// A session that outlived the Socrates which launched it still has no
+	// conversation id of its own, and the watcher that was looking for one
+	// died with that process. Started again here, a Codex or OpenCode session
+	// can still be resumed after the next reboot.
+	m.RearmCLIWatch(row)
 }
 
 // recover takes in a session of ours that has no row.
@@ -293,6 +298,13 @@ func (m *Manager) applyPanes(rows []store.Session, panes map[string]pane) {
 			m.markExited(row, p.deadStatus)
 		default:
 			m.clearMissing(row.ID)
+			if row.State == store.StateStarting {
+				// The pane is alive and the row never caught up - the last
+				// write of a create that failed after tmux had done its part.
+				// Left alone, the next viewer waits ten seconds and then
+				// writes "failed" over a working terminal.
+				_ = m.st.SetSessionState(row.ID, store.StateRunning, -1, "")
+			}
 			if row.State == store.StateExited {
 				// The pane is alive and the row says it is not. The pane is
 				// the authority: a stale hook, from a session relaunched
