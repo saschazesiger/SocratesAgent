@@ -40,14 +40,24 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
-	var body struct {
+	// The decode starts from the live document, not from a zero value. A
+	// section the request leaves out - an older dashboard, a curl call, a
+	// field this page has never heard of - keeps what it has; decoded into a
+	// zero value it would arrive with every switch off, and Normalize does not
+	// put switches back. That is how Shell would vanish from the picker and
+	// Codex would come up blocked on its trust prompt, with nothing logged.
+	body := struct {
 		Settings config.Settings `json:"settings"`
-	}
+	}{Settings: s.Settings()}
 	if !readJSON(w, r, &body) {
 		return
 	}
 	next := body.Settings
 	next.Normalize()
+	if err := next.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := s.saveSettings(next); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

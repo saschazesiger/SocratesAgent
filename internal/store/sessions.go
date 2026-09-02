@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -136,13 +137,22 @@ func scanSession(row interface{ Scan(...any) error }) (*Session, error) {
 // making a second one. The row is filled in on the way through, so the caller
 // holds what was actually stored.
 func (s *Store) CreateSession(sess *Session) error {
+	// An options snapshot that is not JSON would be accepted here and then
+	// break the encoding of the whole session list, not just its own row.
+	if len(sess.Options) > 0 && !json.Valid(sess.Options) {
+		return errors.New("session options are not valid JSON")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if sess.CreatedAt == 0 {
 		sess.CreatedAt = now()
 	}
 	sess.UpdatedAt = sess.CreatedAt
+	// Nothing has been attached to yet and nothing has been resumed, whatever
+	// the caller's struct says: these three are the row's to set, and the
+	// caller has to be left holding what was actually stored.
 	sess.Archived, sess.ArchivedAt = false, 0
+	sess.Resumed, sess.LastAttached = false, 0
 	if sess.State == "" {
 		sess.State = StateStarting
 	}
@@ -179,7 +189,7 @@ func (s *Store) CreateSession(sess *Session) error {
 	if err != nil {
 		return err
 	}
-	s.rev.Add(1)
+	s.bump()
 	return nil
 }
 
@@ -244,7 +254,7 @@ func (s *Store) update(id, query string, args ...any) error {
 	if n, err := res.RowsAffected(); err == nil && n == 0 {
 		return ErrNotFound
 	}
-	s.rev.Add(1)
+	s.bump()
 	return nil
 }
 
@@ -268,10 +278,12 @@ func (s *Store) SetSessionCLI(id, cliID, cliState string) error {
 
 // SetSessionSize remembers the size the window was last set to, so a session
 // opened again in a browser that has not measured itself yet comes back the
-// size it was.
+// size it was. A size with no area is refused rather than ignored: a caller
+// that computed one has a bug, and silently writing nothing is how it stays
+// hidden.
 func (s *Store) SetSessionSize(id string, cols, rows int) error {
 	if cols <= 0 || rows <= 0 {
-		return nil
+		return fmt.Errorf("session size %dx%d is not a terminal", cols, rows)
 	}
 	return s.update(id, `cols = ?, rows = ?`, cols, rows)
 }
@@ -314,6 +326,6 @@ func (s *Store) DeleteSession(id string) error {
 	if n, err := res.RowsAffected(); err == nil && n == 0 {
 		return ErrNotFound
 	}
-	s.rev.Add(1)
+	s.bump()
 	return nil
 }

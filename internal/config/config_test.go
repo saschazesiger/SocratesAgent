@@ -237,3 +237,49 @@ func TestModelPicksAreNormalized(t *testing.T) {
 		t.Errorf("an empty list became %#v", s.Harnesses.Claude.Models)
 	}
 }
+
+// The four textarea fields are JSON a person types, and Normalize cannot
+// repair them. Saving is where a typo has to be refused, so that it is an
+// error next to the field rather than a session that fails to launch an hour
+// later with a message from a program the person never saw.
+func TestValidateRefusesWhatNormalizeCannotRepair(t *testing.T) {
+	base := func() Settings {
+		s := Default()
+		s.Normalize()
+		return s
+	}
+	fresh := base()
+	if err := fresh.Validate(); err != nil {
+		t.Fatalf("a fresh installation does not validate: %v", err)
+	}
+	cases := map[string]func(*Settings){
+		"claude.settings_overrides": func(s *Settings) { s.Harnesses.Claude.SettingsOverrides = "{not json" },
+		"opencode.permission_json":  func(s *Settings) { s.Harnesses.OpenCode.PermissionJSON = `{"bash":}` },
+		"opencode.config_content":   func(s *Settings) { s.Harnesses.OpenCode.ConfigContent = "nope" },
+		"opencode.tui_config":       func(s *Settings) { s.Harnesses.OpenCode.TUIConfig = "[" },
+		// Every override reaches Codex as one -c argument, and Codex is
+		// launched with --strict-config: an entry that is not an assignment is
+		// a session that refuses to start.
+		"codex.config_overrides": func(s *Settings) {
+			s.Harnesses.Codex.ConfigOverrides = []string{"tui.theme=\"light-gray\"", "not-an-assignment"}
+		},
+	}
+	for name, break_ := range cases {
+		s := base()
+		break_(&s)
+		s.Normalize()
+		if err := s.Validate(); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+
+	// Valid JSON and a proper assignment go through untouched.
+	s := base()
+	s.Harnesses.Claude.SettingsOverrides = `{"cleanupPeriodDays": 5}`
+	s.Harnesses.OpenCode.PermissionJSON = `{"*":"ask"}`
+	s.Harnesses.Codex.ConfigOverrides = []string{`tui.theme="light-gray"`}
+	s.Normalize()
+	if err := s.Validate(); err != nil {
+		t.Errorf("a valid document was refused: %v", err)
+	}
+}

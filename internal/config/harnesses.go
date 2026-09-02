@@ -1,6 +1,10 @@
 package config
 
-import "strings"
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+)
 
 // This file is the option catalogue: one struct per harness, every field a
 // setting the admin dashboard exposes, and nothing else. The launchers turn
@@ -509,4 +513,37 @@ func normalizePicks(in []ModelPick) []ModelPick {
 		out = append(out, ModelPick{ID: id, Effort: NormalizeEffort(p.Effort)})
 	}
 	return out
+}
+
+// validate checks the fields a person types free-form text into and Normalize
+// cannot repair. They are checked where the document is saved so that a typo
+// is an error next to the field that has it, rather than a session that fails
+// to launch an hour later with a message from a program the person never saw.
+func (h HarnessSettings) validate() error {
+	for _, f := range []struct {
+		name  string
+		value string
+	}{
+		{"harnesses.claude.settings_overrides", h.Claude.SettingsOverrides},
+		{"harnesses.opencode.permission_json", h.OpenCode.PermissionJSON},
+		{"harnesses.opencode.config_content", h.OpenCode.ConfigContent},
+		{"harnesses.opencode.tui_config", h.OpenCode.TUIConfig},
+	} {
+		if f.value == "" {
+			continue
+		}
+		if !json.Valid([]byte(f.value)) {
+			return fmt.Errorf("%s is not valid JSON", f.name)
+		}
+	}
+	// Every config override reaches Codex as one -c argument, and Codex is
+	// launched with --strict-config: an entry that is not an assignment is a
+	// session that refuses to start.
+	for _, o := range h.Codex.ConfigOverrides {
+		key, _, ok := strings.Cut(o, "=")
+		if !ok || strings.TrimSpace(key) == "" {
+			return fmt.Errorf("harnesses.codex.config_overrides: %q is not a key=value setting", o)
+		}
+	}
+	return nil
 }

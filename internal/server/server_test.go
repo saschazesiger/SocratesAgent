@@ -424,3 +424,77 @@ func TestStripANSI(t *testing.T) {
 		}
 	}
 }
+
+// Saving settings starts from the document that is live, not from a zero
+// value. A body that leaves a section out - an older dashboard, a curl call, a
+// field the page has never heard of - keeps what it has; decoded into a zero
+// value it would arrive with every switch off, Normalize does not put switches
+// back, and Shell would silently vanish from the picker while Codex came up
+// blocked on its trust prompt.
+func TestSettingsPutKeepsTheSectionsItWasNotSent(t *testing.T) {
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+
+	body := `{"settings":{"openrouter":{"title_model":"openai/gpt-5"}}}`
+	res, saved := env.do(t, env.client, "PUT", "/api/settings", body)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("save failed: %d", res.StatusCode)
+	}
+	settings := saved["settings"].(map[string]any)
+	if settings["openrouter"].(map[string]any)["title_model"] != "openai/gpt-5" {
+		t.Fatalf("the field that was sent was not stored: %#v", settings["openrouter"])
+	}
+	harnesses := settings["harnesses"].(map[string]any)
+	for _, check := range []struct {
+		harness string
+		key     string
+	}{
+		{"shell", "enabled"},
+		{"shell", "login"},
+		{"claude", "enabled"},
+		{"claude", "pin_light_theme"},
+		{"codex", "trust_workdir"},
+		{"codex", "no_alt_screen"},
+		{"opencode", "disable_models_fetch"},
+	} {
+		if harnesses[check.harness].(map[string]any)[check.key] != true {
+			t.Errorf("%s.%s was turned off by a request that never mentioned it", check.harness, check.key)
+		}
+	}
+	if settings["terminal"].(map[string]any)["webgl"] != true {
+		t.Error("the terminal settings were cleared")
+	}
+	if settings["workspace"].(map[string]any)["allow_custom"] != true {
+		t.Error("the workspace settings were cleared")
+	}
+
+	// And a switch that is sent as off stays off: keeping what was not sent is
+	// not the same as ignoring what was.
+	body = `{"settings":{"harnesses":{"shell":{"enabled":false,"login":true}}}}`
+	_, saved = env.do(t, env.client, "PUT", "/api/settings", body)
+	shell := saved["settings"].(map[string]any)["harnesses"].(map[string]any)["shell"].(map[string]any)
+	if shell["enabled"] != false {
+		t.Errorf("a switch that was turned off came back on: %#v", shell)
+	}
+}
+
+// A JSON textarea with a typo in it is a save-time error, not a launch-time
+// surprise, and the document that is live is left alone.
+func TestSettingsPutRefusesInvalidJSONFields(t *testing.T) {
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+
+	body := `{"settings":{"harnesses":{"opencode":{"permission_json":"{not json"}}}}`
+	res, data := env.do(t, env.client, "PUT", "/api/settings", body)
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid JSON was accepted: %d", res.StatusCode)
+	}
+	if data["error"] == nil {
+		t.Error("the refusal does not say what is wrong")
+	}
+	_, current := env.do(t, env.client, "GET", "/api/settings", "")
+	opencode := current["settings"].(map[string]any)["harnesses"].(map[string]any)["opencode"].(map[string]any)
+	if opencode["permission_json"] != "" {
+		t.Errorf("the refused value was stored anyway: %#v", opencode["permission_json"])
+	}
+}

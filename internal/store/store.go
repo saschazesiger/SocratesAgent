@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,7 +32,10 @@ const SchemaVersion = 3
 type Store struct {
 	db  *sql.DB
 	rev atomic.Int64
-	mu  sync.Mutex // serialises writes; SQLite has a single writer anyway
+	// revMark is the number the database has been told the counter may run up
+	// to. It is guarded by mu, like every other write.
+	revMark int64
+	mu      sync.Mutex // serialises writes; SQLite has a single writer anyway
 }
 
 const schema = `
@@ -102,7 +106,62 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db}, nil
+	st := &Store{db: db}
+	seed := seedRev(db)
+	st.rev.Store(seed)
+	st.revMark = seed
+	return st, nil
+}
+
+// revKey holds the revision the counter has been reserved up to, and
+// revCheckpoint is the size of a reservation.
+const (
+	revKey        = "rev_high_water"
+	revCheckpoint = 1024
+)
+
+// seedRev starts the revision counter above every number this database has
+// already handed out. The counter has to be monotonic across a restart, or a
+// browser that comes back holding a revision - the phone that lost signal in a
+// car, which is the case this app is built for - would be told that nothing has
+// changed since a number the server is about to hand out for the second time.
+//
+// Three floors, and the largest wins. Wall clock time makes an ordinary restart
+// land far ahead of the run before it. The newest row covers a clock that went
+// backwards. And the reserved mark covers the rest: it is written down before
+// the numbers below it are handed out, so it is above everything the run that
+// crashed could ever have used - including a run that wrote a thousand
+// revisions inside one millisecond.
+func seedRev(db *sql.DB) int64 {
+	seed := time.Now().UnixMilli()
+	var newest sql.NullInt64
+	if err := db.QueryRow(`SELECT MAX(updated_at) FROM sessions`).Scan(&newest); err == nil &&
+		newest.Valid && newest.Int64 > seed {
+		seed = newest.Int64
+	}
+	var mark int64
+	if err := db.QueryRow(`SELECT CAST(value AS INTEGER) FROM kv WHERE key = ?`, revKey).Scan(&mark); err == nil &&
+		mark > seed {
+		seed = mark
+	}
+	return seed
+}
+
+// bump moves the revision on. When it reaches the number the database was told
+// about, it reserves the next block of revCheckpoint before handing any of them
+// out - so the stored mark is never behind what a crash could have used, and
+// the cost of that guarantee is one statement per thousand writes.
+//
+// It talks to the database directly rather than through SetKV, because every
+// caller already holds the write lock.
+func (s *Store) bump() int64 {
+	v := s.rev.Add(1)
+	if v >= s.revMark {
+		s.revMark = v + revCheckpoint
+		_, _ = s.db.Exec(`INSERT INTO kv(key, value) VALUES(?, ?)
+			ON CONFLICT(key) DO UPDATE SET value = excluded.value`, revKey, strconv.FormatInt(s.revMark, 10))
+	}
+	return v
 }
 
 // migrate brings the file at path to SchemaVersion. The version lives in
@@ -115,6 +174,13 @@ func migrate(db *sql.DB, path string) error {
 	}
 	if version == SchemaVersion {
 		return nil
+	}
+	// A file from a newer build is not a legacy file. Creating the tables it
+	// already has would do nothing and rewriting the version would hide the
+	// mismatch, leaving this build to run against a schema it cannot know.
+	if version > SchemaVersion {
+		return fmt.Errorf("the database is at schema %d and this build understands %d: "+
+			"it was written by a newer Socrates", version, SchemaVersion)
 	}
 
 	// A pre rewrite database is recognised by the table the rewrite removes.
@@ -273,6 +339,11 @@ func backup(db *sql.DB, path string) error {
 		return err
 	}
 	if _, err := db.Exec(`VACUUM INTO ?`, dest); err != nil {
+		// A backup that failed half way is worse than none: it is a file
+		// somebody will find, believe and act on.
+		if rmErr := os.Remove(dest); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+			return fmt.Errorf("%w (and the partial backup at %s could not be removed: %v)", err, dest, rmErr)
+		}
 		return err
 	}
 	log.Printf("store: migrating to schema %d; the previous database was copied to %s", SchemaVersion, dest)
@@ -321,8 +392,9 @@ func txHasColumn(tx *sql.Tx, table, column string) (bool, error) {
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
 
-// Rev returns the current revision. It counts writes, so a client that holds a
-// number knows whether anything at all has changed since it looked.
+// Rev returns the current revision. It counts writes and only ever rises,
+// across restarts included, so a client that holds a number knows whether
+// anything at all has changed since it looked.
 func (s *Store) Rev() int64 { return s.rev.Load() }
 
 func now() int64 { return time.Now().UnixMilli() }

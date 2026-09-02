@@ -341,6 +341,16 @@ func (s *Settings) normalizeTerminal(d Settings) {
 	}
 }
 
+// Validate reports what is wrong with a settings document that Normalize
+// cannot put right on its own. Normalize is total by design - it always
+// produces a usable document - so this is where a person's typing is refused
+// instead of quietly discarded, and it is what the dashboard answers 400 with.
+//
+// Call it after Normalize: the two together are what saving a document means.
+func (s *Settings) Validate() error {
+	return s.Harnesses.validate()
+}
+
 // PublicURL is the address the tunnel publishes, when it is known upfront.
 func (t TunnelSettings) PublicURL() string {
 	if t.Hostname == "" {

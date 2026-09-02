@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -507,5 +508,210 @@ func TestFreshDatabaseIsAtTheCurrentVersion(t *testing.T) {
 	}
 	if _, err := os.Stat(path + ".pre-v3.bak"); !os.IsNotExist(err) {
 		t.Error("a fresh database was backed up")
+	}
+}
+
+// The revision has to be monotonic across a restart. A browser that comes back
+// holding a number - the phone that lost signal in a car - must never be told
+// that nothing has changed since a number the server is about to hand out for
+// the second time.
+func TestRevSurvivesAReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "socrates.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateSession(newSession("a1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateSessionTitle("a1", "x"); err != nil {
+		t.Fatal(err)
+	}
+	before := st.Rev()
+	st.Close()
+
+	again, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer again.Close()
+	if again.Rev() < before {
+		t.Fatalf("the revision went backwards over a restart: %d -> %d", before, again.Rev())
+	}
+	// And it keeps counting from there rather than from zero.
+	if err := again.UpdateSessionTitle("a1", "y"); err != nil {
+		t.Fatal(err)
+	}
+	if again.Rev() <= before {
+		t.Fatalf("a write after the restart did not pass the old revision: %d", again.Rev())
+	}
+}
+
+// An options snapshot that is not JSON would be stored happily and then break
+// the encoding of the whole session list, not just its own row.
+func TestCreateSessionRefusesInvalidOptions(t *testing.T) {
+	st := openTest(t)
+	sess := newSession("a1")
+	sess.Options = json.RawMessage(`{not json`)
+	if err := st.CreateSession(sess); err == nil {
+		t.Fatal("invalid options were accepted")
+	}
+	if _, err := st.GetSession("a1"); err != ErrNotFound {
+		t.Fatalf("a refused session was stored anyway: %v", err)
+	}
+	// The whole list still encodes, which is the property being protected.
+	sess.Options = json.RawMessage(`{"ok":true}`)
+	if err := st.CreateSession(sess); err != nil {
+		t.Fatal(err)
+	}
+	list, err := st.ListSessions(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := json.Marshal(list); err != nil {
+		t.Fatalf("the session list does not encode: %v", err)
+	}
+}
+
+// The caller has to be left holding what was actually stored, not what it
+// asked for: a session is created attached to nobody and resumed never.
+func TestCreateSessionOverwritesTheFieldsTheRowOwns(t *testing.T) {
+	st := openTest(t)
+	sess := newSession("a1")
+	sess.Resumed = true
+	sess.LastAttached = 5
+	sess.Archived, sess.ArchivedAt = true, 5
+	sess.ExitStatus = 3
+	if err := st.CreateSession(sess); err != nil {
+		t.Fatal(err)
+	}
+	if sess.Resumed || sess.LastAttached != 0 || sess.Archived || sess.ArchivedAt != 0 || sess.ExitStatus != -1 {
+		t.Fatalf("the caller's struct disagrees with the row: %#v", sess)
+	}
+	stored, err := st.GetSession("a1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Resumed != sess.Resumed || stored.LastAttached != sess.LastAttached ||
+		stored.Archived != sess.Archived || stored.ExitStatus != sess.ExitStatus {
+		t.Fatalf("stored = %#v, caller holds = %#v", stored, sess)
+	}
+}
+
+// A size with no area is a caller that computed one wrongly. Writing nothing
+// and reporting success is how that stays hidden, and every other write on a
+// session that is gone says so.
+func TestSetSessionSizeRefusesNonsense(t *testing.T) {
+	st := openTest(t)
+	if err := st.CreateSession(newSession("a1")); err != nil {
+		t.Fatal(err)
+	}
+	for _, size := range [][2]int{{0, 40}, {120, 0}, {-1, -1}} {
+		if err := st.SetSessionSize("a1", size[0], size[1]); err == nil {
+			t.Errorf("%dx%d was accepted", size[0], size[1])
+		}
+	}
+	got, _ := st.GetSession("a1")
+	if got.Cols != DefaultCols || got.Rows != DefaultRows {
+		t.Fatalf("a refused size was written anyway: %dx%d", got.Cols, got.Rows)
+	}
+	if err := st.SetSessionSize("gone", 100, 30); err != ErrNotFound {
+		t.Fatalf("sizing a session that does not exist = %v", err)
+	}
+}
+
+// A file written by a newer build is not a legacy file. Rewriting its version
+// down would leave this build running against a schema it cannot know.
+func TestOpenRefusesANewerSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "socrates.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`PRAGMA user_version = 99`); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	if _, err := Open(path); err == nil {
+		t.Fatal("a database from a newer build was opened anyway")
+	} else if !strings.Contains(err.Error(), "newer Socrates") {
+		t.Fatalf("error = %v", err)
+	}
+	// And the version it was carrying is still there for that newer build.
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var version int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 99 {
+		t.Errorf("user_version = %d, want it left alone at 99", version)
+	}
+}
+
+// A backup that cannot be written stops the migration: the statement after it
+// drops the only copy of the old transcripts. Nothing misleading is left
+// behind either - a file called .pre-v3.bak has to be a database or not exist.
+func TestAFailedBackupStopsTheMigration(t *testing.T) {
+	path := buildV2(t)
+	// A non-empty directory in the backup's place is a destination that can
+	// neither be cleared nor written, which is what a full disk looks like
+	// from here.
+	blocked := path + ".pre-v3.bak"
+	if err := os.MkdirAll(filepath.Join(blocked, "in-the-way"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(path); err == nil {
+		t.Fatal("the migration ran without a backup")
+	}
+	// The database still holds everything, so the next start can try again.
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var chats int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM chats`).Scan(&chats); err != nil || chats != 1 {
+		t.Fatalf("the old data was touched: %d rows (%v)", chats, err)
+	}
+	db.Close()
+
+	if err := os.RemoveAll(blocked); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("the retry failed: %v", err)
+	}
+	defer st.Close()
+	if _, err := os.Stat(blocked); err != nil {
+		t.Fatalf("the retry wrote no backup: %v", err)
+	}
+}
+
+// A stale or half written backup from an earlier attempt is replaced, not
+// added to: there is one file with that name and it is the current one.
+func TestAStaleBackupIsReplaced(t *testing.T) {
+	path := buildV2(t)
+	dest := path + ".pre-v3.bak"
+	if err := os.WriteFile(dest, []byte("not a database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	old, err := sql.Open("sqlite", "file:"+dest+"?mode=ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.Close()
+	var title string
+	if err := old.QueryRow(`SELECT title FROM chats WHERE id = 'c1'`).Scan(&title); err != nil {
+		t.Fatalf("the stale file was not replaced by a database: %v", err)
 	}
 }
