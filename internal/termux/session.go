@@ -45,6 +45,20 @@ func (s *liveSession) promote(v *Viewer) {
 	s.viewers = append(s.viewers, v)
 }
 
+// reclaim puts a viewer back at the head of the queue without touching tmux,
+// and reports whether it could: only a window that is already exactly this
+// size can be taken over silently.
+func (m *Manager) reclaim(v *Viewer, cols, rows int) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	live := m.live[v.SessionID]
+	if live == nil || live.cols != cols || live.rows != rows {
+		return false
+	}
+	live.promote(v)
+	return true
+}
+
 func (s *liveSession) remove(v *Viewer) {
 	for i, existing := range s.viewers {
 		if existing == v {
@@ -145,6 +159,41 @@ func (v *Viewer) Resize(ctx context.Context, cols, rows int) error {
 	}
 	return v.m.own(ctx, v)
 }
+
+// Retake makes this viewer the one the session is sized to again, after its
+// socket came back inside the grace.
+//
+// It exists because resize-window is not free: tmux repaints the whole window
+// for every attached client, so re-issuing it at a size the window is already
+// wearing turns a reconnect - which is meant to be a pure gap in a byte stream
+// - into a full redraw and a visible flash. A viewer that comes back at a
+// different size, because the phone was rotated while it was away, resizes for
+// real.
+func (v *Viewer) Retake(ctx context.Context, cols, rows int) error {
+	if cols <= 0 || rows <= 0 {
+		return nil
+	}
+	v.mu.Lock()
+	if v.closed || v.ended {
+		v.mu.Unlock()
+		return ErrClosed
+	}
+	same := v.cols == cols && v.rows == rows
+	v.mu.Unlock()
+	if same && v.m.reclaim(v, cols, rows) {
+		return nil
+	}
+	return v.Resize(ctx, cols, rows)
+}
+
+// Idle says that the socket driving this viewer has gone, while the terminal
+// itself is kept for the ninety seconds a reconnect has to come back in.
+//
+// It is the moment ownership of the window size moves on, and that moment is
+// the socket and not the expiry: a phone that drove out of coverage must not
+// pin a laptop's window to sixty columns for a minute and a half. A viewer
+// that comes back re-takes ownership like any other attaching one.
+func (v *Viewer) Idle() { v.m.forget(v) }
 
 // Close detaches this viewer and lets the session carry on without it.
 //

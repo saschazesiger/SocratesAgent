@@ -115,7 +115,11 @@ func (s *Server) startLogin(w http.ResponseWriter, r *http.Request) error {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		// Strict rather than Lax: the WebSocket handshake carries this cookie
+		// and is checked for origin, and no second CSRF token is worth the
+		// reconnect it would break. The only visible effect is that following
+		// a link from another site lands on the login page.
+		SameSite: http.SameSiteStrictMode,
 		Secure:   r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"),
 		MaxAge:   int(sessionTTL.Seconds()),
 	})

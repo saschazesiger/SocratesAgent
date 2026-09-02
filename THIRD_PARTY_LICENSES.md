@@ -10,7 +10,7 @@ it.
 Three groups, and they are legally different:
 
 - **Linked in** — Go modules compiled into the `socrates` binary. All of them
-  are MIT or BSD-3-Clause, which is why a Socrates binary can be MIT.
+  are MIT, BSD-3-Clause or ISC, which is why a Socrates binary can be MIT.
 - **Started as a child process** — the voice and `cloudflared`. Separate
   executables and shared libraries, downloaded at runtime or baked into the
   image, never linked into anything. One of them, espeak-ng, is GPL-3.0.
@@ -37,6 +37,7 @@ them from the sources named here.
 | `modernc.org/memory` | BSD-3-Clause | <https://gitlab.com/cznic/memory> |
 | `github.com/dustin/go-humanize` | MIT, © Dustin Sallings | <https://github.com/dustin/go-humanize> |
 | `github.com/google/uuid` | BSD-3-Clause, © Google | <https://github.com/google/uuid> |
+| `github.com/coder/websocket` | ISC, © Coder Technologies | <https://github.com/coder/websocket> — the WebSocket the terminal is carried over |
 | `github.com/creack/pty` | MIT, © Keith Rarick | <https://github.com/creack/pty> — the pseudo terminals the browser watches tmux through |
 | `github.com/remyoudompheng/bigfft` | BSD-3-Clause, © The Go Authors | <https://github.com/remyoudompheng/bigfft> |
 | `github.com/mattn/go-isatty` | MIT, © Yasuhiro Matsumoto | <https://github.com/mattn/go-isatty> |

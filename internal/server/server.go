@@ -38,6 +38,14 @@ type Server struct {
 	dataDir  string
 	localURL string
 
+	// hub is every browser tab the transport currently remembers, including
+	// the ones whose socket has dropped and whose terminal is in its grace.
+	hub *termHub
+	// pingEvery and pingTimeout are the transport's watchdog, set once here so
+	// that the tests can run it in milliseconds rather than in minutes.
+	pingEvery   time.Duration
+	pingTimeout time.Duration
+
 	mu       sync.RWMutex
 	settings config.Settings
 
@@ -45,6 +53,9 @@ type Server struct {
 
 	loginMu   sync.Mutex
 	loginFail map[string]*attempt
+	// wsRate is the per address ceiling on WebSocket handshakes, guarded by
+	// loginMu because it is the same kind of defence.
+	wsRate map[string]*attempt
 }
 
 type attempt struct {
@@ -56,9 +67,13 @@ type attempt struct {
 // its own files, including a cloudflared it downloads itself.
 func New(st *store.Store, dataDir string) (*Server, error) {
 	s := &Server{
-		store:     st,
-		dataDir:   dataDir,
-		loginFail: map[string]*attempt{},
+		store:       st,
+		dataDir:     dataDir,
+		hub:         newTermHub(),
+		pingEvery:   defaultPingEvery,
+		pingTimeout: defaultPingTimeout,
+		loginFail:   map[string]*attempt{},
+		wsRate:      map[string]*attempt{},
 	}
 
 	settings := config.Default()
@@ -75,6 +90,11 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	// The manager plans a resume of its own accord after a reboot, so it reads
 	// the live settings rather than the copy it was built with.
 	cfg.Settings = s.Settings
+	// A pane that dies and a window that changes size are facts about the
+	// substrate; the frames that carry them to a browser are the transport's,
+	// which is why the Manager is handed two functions rather than a socket.
+	cfg.OnExit = s.onSessionExit
+	cfg.OnSize = s.onSessionSize
 	manager, err := termux.New(st, cfg)
 	if err != nil {
 		return nil, err
@@ -264,6 +284,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/sessions/{id}/restart", s.auth(s.handleRestartSession))
 	mux.HandleFunc("POST /api/sessions/{id}/ack-resume", s.auth(s.handleAckResume))
 	mux.HandleFunc("GET /api/sessions/{id}/journal", s.auth(s.handleJournal))
+	mux.HandleFunc("GET /api/sessions/{id}/ws", s.auth(s.handleSessionWS))
 
 	// The harness catalogue: what can be started, and where.
 	mux.HandleFunc("GET /api/harnesses", s.auth(s.handleHarnesses))
@@ -368,7 +389,9 @@ func readJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 }
 
 // sameOrigin is a lightweight CSRF guard for state changing requests. The
-// session cookie is SameSite=Lax, so this is a second line of defence.
+// session cookie is SameSite=Strict, so this is a second line of defence; the
+// WebSocket handshake has the same check inside websocket.Accept, which is
+// where it has to be because a GET is not covered here.
 func sameOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
