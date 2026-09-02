@@ -1,6 +1,12 @@
 # Socrates rewrite — binding implementation specification
 
-**Revision 3** (2026-09-02). Supersedes revisions 1 and 2 in full.
+**Revision 4** (2026-09-02). Supersedes revisions 1, 2 and 3 in full.
+
+- **rev 4** (2026-09-02) — the line composer under the pane is gone, the key bar is off by default
+  on every device and turned on from the session menu, one chat with dictation replaces Auto mode,
+  and the session list is grouped by day with a chime and a notification when a session stops
+  working. Passages changed by it carry `<!-- rev 4 -->`; §E.6 here and §D of
+  `docs/design/ACTIVITY.md` are the detail.
 
 Status: **binding**. Written 2026-09-02 for Opus implementer agents who have not seen the
 conversation that produced it, and for a Fable reviewer who holds every work package against it.
@@ -27,7 +33,7 @@ Repo: `/root/SocratesAgent`, module `github.com/saschazesiger/SocratesAgent`, Go
 - [B. Data model](#b-data-model) — the `sessions` name clash, the clean-cut migration, schema, kv keys, the journal
 - [C. Harness launchers](#c-harness-launchers) — the white-background strategy per CLI, working directories, argv/env/config per harness, session-id discovery, resume, the full admin option catalogue
 - [D. Transport protocol](#d-transport-protocol) — frames, sequence numbers, PTY reuse and takeover, the ring-pulling writer, exactly-once input and its bound, auth
-- [E. Frontend](#e-frontend) — files, vendored xterm.js, page structure, the terminal theme, mobile key bar, service worker, design rules as acceptance criteria
+- [E. Frontend](#e-frontend) — files, vendored xterm.js, page structure, the terminal theme, the key bar, service worker, design rules as acceptance criteria
 - [F. Admin](#f-admin) — tmux status and installer, workspace, terminal behaviour, per-harness option groups, voice, tunnel, diagnostics, password
 - [G. Deletion and keep lists](#g-deletion-and-keep-lists)
 - [H. Testing](#h-testing) — Go tests against real tmux, the PTY fake CLIs, 20 e2e scenarios, CI
@@ -1759,9 +1765,10 @@ is stated here rather than glossed over.
 
 - Every input frame carries `input_seq`, a per-viewer counter. **It is not persisted anywhere.**
   The server is the authority on what it has seen, and it tells the client on every `hello`.
-- Unacknowledged frames are held in an in-memory list. The **line input** field additionally keeps
-  its text in `localStorage` (`socrates.term.<sessionId>.draft`) until it is acked — a half-typed
-  keystroke is not worth persisting across a page kill, a composed line is.
+- Unacknowledged frames are held in an in-memory list. <!-- rev 4 --> Nothing outlives the page:
+  the line composer that kept its text in `localStorage` (`socrates.term.<sessionId>.draft`) until
+  it was acked went with the composer itself (§E.6), and a half-typed keystroke was never worth
+  persisting across a page kill.
 - **On every `hello`, the client resets its counter to `input_ack` and renumbers its held frames
   contiguously from `input_ack + 1`**, in their original order, before sending anything. Frames
   with an old `seq <= input_ack` are dropped first, so what remains is exactly the set the server
@@ -1781,8 +1788,9 @@ is stated here rather than glossed over.
   - **`viewer_fresh: true`** — the server has no memory of this viewer (the grace expired, or
     Socrates restarted), so `input_ack` is 0 and it cannot tell a resend from new input. The client
     **must not** blindly resend: held raw keystrokes are **discarded** with a toast —
-    *"N keystrokes may not have been delivered."* — and unacked line-input text is put **back into
-    `#lineInput`** for the user to send deliberately. Nothing is duplicated; the user is told.
+    *"N keystrokes may not have been delivered."* <!-- rev 4 --> The toast is the whole of it:
+    there is no composer left to put an unacked line back into. Nothing is duplicated; the user is
+    told.
 
 ### Server side
 
@@ -1900,7 +1908,7 @@ internal/web/static/
     harnesses.js             was agents.js: catalogue + the new-session sheet
     session.js               NEW: the page entry — sidebar, terminal, transport
     term.js                  NEW: xterm.js wiring, theme, addons, fit
-    keybar.js                NEW: the mobile key bar and line input
+    keybar.js                NEW: the key bar, off until the session menu asks for it
     voice.js                 kept verbatim
     admin.js                 rewritten for the new sections
     markdown.js              DELETED (no transcript any more)
@@ -1945,6 +1953,11 @@ downloaded files are **committed**; the target exists for upgrades, and CI never
 recording that `vendor/LICENSE-xterm` carries the text. This is a legal obligation, not
 bookkeeping: shipping the binary ships those files.
 
+<!-- rev 4 --> Four modules have joined that directory since, all of them ACTIVITY.md's and all of
+them in the service-worker `SHELL`: `assist.js` (the status and the ticker), `chat.js` (the panel,
+which is why the `DELETED` above no longer holds), `daygroups.js` (the sidebar's day buckets) and
+`notify.js` (the chime and the notification). The README carries the measured precache size.
+
 ## E.2 Page structure — index.html
 
 ```html
@@ -1977,15 +1990,8 @@ bookkeeping: shipping the binary ships those files.
         <div class="term-notice" id="termNotice" hidden></div>     <!-- resumed / resized-by-other -->
       </div>
 
+      <!-- rev 4: hidden until the session menu asks for it, on every device. -->
       <div class="keybar" id="keybar" hidden></div>
-      <form class="composer" id="composer">
-        <input id="lineInput" class="input" type="text"
-               autocorrect="off" autocapitalize="none" autocomplete="off" spellcheck="false"
-               enterkeyhint="send" placeholder="Type a line…">
-        <button class="icon-btn" id="micBtn" type="button">…</button>
-        <span class="rec-time" id="recTime"></span>
-        <button class="btn primary" id="sendLine" type="submit">Send</button>
-      </form>
     </main>
   </div>
 
@@ -2006,6 +2012,12 @@ bookkeeping: shipping the binary ships those files.
 The classic `<script>` tags come **before** the module script, so the globals (`Terminal`,
 `FitAddon`, `Unicode11Addon`, `WebLinksAddon`, `ClipboardAddon`, `WebglAddon`) exist when
 `term.js` runs. They are not ESM; do not try to `import` them.
+
+<!-- rev 4 --> **There is nothing under the pane but the key bar.** The `<form class="composer">`
+above — `#lineInput`, `#micBtn`, `#recTime`, `#sendLine` — is removed on every device (§E.6). What
+the header and the stage have gained instead belongs to ACTIVITY.md: `#statusBtn` and `#agentBtn`
+beside the title (§D.2), `#soundBtn` and `#notifyBtn` for this device (§D.6), and `#chatPanel`
+beside the terminal (§D.3).
 
 `stampedRef` in `embed.go` rewrites `src="/static/…"` and `href="/static/…"` to carry `?v=`, so
 the vendor files get the same immutable caching as everything else, with no change to `embed.go`.
@@ -2167,14 +2179,23 @@ While `body.conn-lost` is set, `#termWrap` gets `.stale`: opacity 0.55 and a
 `cursor: not-allowed`. The terminal is **not** made read-only — typed characters are queued and
 delivered on reconnect (§D.6) — but the user must see that what is on screen is old.
 
-## E.6 Mobile: key bar and line input — `keybar.js`
+## E.6 The key bar — `keybar.js`
 
 ```js
 export function mountKeyBar(host, term, socket)
+export function keyBarWanted()
+export function setKeyBarWanted(on)
 ```
 
-Rendered only when `matchMedia('(pointer: coarse)').matches` or the viewport is under 900 px
-wide; toggleable from the session menu on any device.
+<!-- rev 4 --> **It is off until it is asked for, on every device.** `keyBarWanted()` reads
+`localStorage['socrates.term.keybar']`, which is absent until the session menu's **Show key bar**
+writes it, and `setKeyBarWanted()` is the only writer; the menu item reads **Hide key bar** while
+the bar is up. Nothing else decides — no `matchMedia('(pointer: coarse)')`, no viewport width, no
+`hover`/`pointer: fine` pair, no platform string and no keystroke seen. A bar that guessed was
+wrong on the two devices that matter most, a tablet in a case and a laptop with a touch screen,
+and being wrong about it means either a row of buttons nobody wanted or the missing keys nowhere
+to be found. One tap in the ⋯ menu is cheaper than either, and the answer is remembered for this
+device.
 
 Keys, one row, horizontally scrollable, each `button.key[data-send]`:
 
@@ -2197,27 +2218,33 @@ Sticky `Ctrl`/`Alt`: tapping arms the modifier (`.on`), the next key press is tr
 locks it (`.lock`) until tapped again.
 
 **The `⌨` button must call `term.textarea.focus()` synchronously in a `touchend`/`click`
-listener, never after an `await`** — iOS will not raise the keyboard otherwise. This is why the
-line input is the primary path on phones.
+listener, never after an `await`** — iOS will not raise the keyboard otherwise. It is the whole of
+how a phone raises a keyboard now, so the synchronous call is load-bearing rather than a
+convenience.
 
-**Line input** (`#lineInput` in the composer): sends the whole line plus `\r` on submit, clears
-the field, and pushes the line through the same `input_seq` path. It exists to fight iOS
-autocorrect, which rewrites characters that have already been sent one at a time. Its value is
-persisted to `localStorage` on every input event (key
-`socrates.term.<sessionId>.draft`) so a reload or a crash does not lose a typed line — this is the
-same promise `chat.js` made for a draft message.
+<!-- rev 4 --> **There is no line composer.** `#lineInput`, `#micBtn`, its Send button, the
+pending-line list, the `socrates.term.<sessionId>.draft` drafts and the `viewer_fresh`
+line-restore (§D.6) are removed on every device. It existed to fight iOS autocorrect, which
+rewrites characters that have already been sent one at a time, and it cost the page a second
+field, a second microphone and a second promise about text nobody had sent yet. What a phone
+actually wants to say to a session it now says in words: the chat beside the terminal, with one
+input row for everyone — field, microphone, Send (ACTIVITY.md §D.3). Typing into the pane is the
+terminal's own path, unchanged, and the key bar supplies the keys a touch keyboard has not got.
 
-Dictation: `#micBtn` reuses `voice.js` unchanged — `new Recorder()`, `start()`, `stop()` →
-`{base64, format, seconds}` → `api('/api/voice/transcribe', {method:'POST', attempts:3,
-timeout:60000, body:{audio, format}})` → `{text}` → **inserted into `#lineInput`, not sent**. The
-user reviews and presses Send. `#recTime` shows `fmtClock(recorder.seconds)` on a 200 ms ticker,
-exactly as today. `describeMicError` provides the failure sentence.
+**Dictation lives in the chat, not here.** `voice.js` is still the recorder — `new Recorder()`,
+`start()`, `stop()` → `{base64, format, seconds}` → `api('/api/voice/transcribe', {method:'POST',
+attempts:3, timeout:60000, body:{audio, format}})` → `{text}` — but it is `chat.js` that calls it,
+through `dictateOnce`, and a running recording shows the two endings a recording has: **Send
+recording** and **Discard recording**, with the elapsed clock between them. `describeMicError`
+still provides the failure sentence.
 
-TTS stays in the codebase and stays configurable in admin (`speak`, `speechDeadline`,
-`fetchSpeech`, `plainSpeech`, `onSpeechError` all remain exported and reachable) but **nothing in
-`session.js` calls it**. `internal/server/voice.go` and `internal/piper` are untouched. A Go test
-and a JS-level assertion keep it from being dead-code-eliminated by a future cleanup: `voice.js`
-stays in the service-worker SHELL list and `embed_test.go` keeps asserting it.
+<!-- rev 4 --> **TTS is wired in, and the page is what calls it.** `speak()` reads the answer to a
+question that was dictated (posted with `auto: true`) and reads any assistant bubble on a
+double-tap; a typed question is answered in writing only. It refuses while a recording is open and
+a starting recording silences it, so the microphone and the voice are never both live
+(ACTIVITY.md §D.3). It is still never given the pane — a pane is a program, not an answer.
+`internal/server/voice.go` and `internal/piper` are untouched, `voice.js` stays in the
+service-worker SHELL list and `embed_test.go` keeps asserting it.
 
 ## E.7 Overlays and notices
 
@@ -2253,6 +2280,13 @@ Delete uses `confirmDialog({danger:true})` and its body says the working directo
 
 Motion: rows fade in over 120 ms with `--ease`; the state dot pulses only while `running` and
 only when `!body.stale` (the existing `body.stale` rule already pauses `.chat-item .dot`).
+
+<!-- rev 4 --> The rows are **grouped by day** — Today, Yesterday, This week, This month, Older,
+by `updated_at` in the browser's own local calendar (`daygroups.js`), a group with nothing in it
+not drawn at all — because a phone's call list is read that way: what is being worked on today,
+and history under it. A session that finishes while nobody is looking at the list says so instead
+(ACTIVITY.md §D.6): a chime and a browser notification, each behind its own header switch for this
+device.
 
 ## E.9 Service worker
 
@@ -2696,8 +2730,8 @@ on the command line select a subset, `finish()` prints the table. Always
 | 2 | `typeandsee` | keystrokes reach the pane and output comes back; the journal holds the same bytes | WP6 |
 | 3 | `reloadkeepsscreen` | type, reload, the same screen returns without a full clear | WP6 |
 | 4 | `pages` | `/`, `/admin`, `/login`, `/setup` are clean (no console errors) at 390×844 and 1280×720 | WP6 |
-| 5 | `keybar` | at 390×844 the key bar is visible; `Esc`, `^C`, arrows and the sticky `Ctrl` send the right bytes; the line input sends a whole line with one `\r` | WP7 |
-| 6 | `dictation` | with `mockOpenRouter`, the mic records, transcribes, and the text lands **in `#lineInput`, unsent** | WP7 |
+| 5 | `keybar` | <!-- rev 4 --> no device gets the bar unasked; **Show key bar** in the session menu puts it up and the answer survives a reload; `Esc`, `^C`, arrows and the sticky `Ctrl` send the right bytes | WP7 |
+| 6 | `chat-dictate` | <!-- rev 4 --> with `mockOpenRouter`, the microphone in the chat panel records and offers **Send recording** and **Discard recording**; a sent one is transcribed, submitted with `auto:true` and answered out loud, a discarded one costs nothing. Replaces `dictation`, which typed into a field that no longer exists | ACTIVITY.md |
 | 7 | `offlineonce` | offline, type 20 characters, online: each appears **exactly once** in the pane and in `journal.raw` | WP7 |
 | 8 | `sigtermreattach` | `SIGTERM` the server mid-session, restart on the same port and data dir, reattach; the pane still holds what was typed and the state is `running` | WP7 |
 | 9 | `takeover` | open the same session in a second tab with the same `viewer` id; the first socket closes within 1 s and the second one works | WP7 |
@@ -2714,6 +2748,11 @@ on the command line select a subset, `finish()` prints the table. Always
 | 20 | `recoveredsession` | create a `soc_*` session by hand on the socket, restart Socrates, assert it appears as "Recovered session" and was **not** killed | WP9b |
 | 21 | `lighttheme` | the fake's banner reads `theme=light`; the terminal's computed background is `rgb(255,255,255)`; every colour in `LIGHT_THEME` has ≥ 4.5:1 contrast against white; a screenshot of a real Codex session is inspected by eye to confirm `tui.theme` applied | WP10 |
 | 22 | `design` | white surfaces, one `agentMark` per harness reference, every version/path string only inside a `.tip-bubble`, and no animation restarting on a re-render (`getAnimations()[0].currentTime` across a state change) | WP10 |
+
+<!-- rev 4 --> The table is this revision's twenty-two; `ALL` in `e2e/run.mjs` is the live list,
+and the scenarios ACTIVITY.md added — `daygroups`, `notify`, `chat-text`, `chat-dictate`,
+`no-overlap`, `session-title`, the `activity-*` set, `status-*` and `agent-run` — are specified
+there. `audio-mode` and `dictation` were deleted with the controls they exercised.
 
 `liveclaude` is kept, gated on `SOCRATES_LIVE_AGENTS=1`, and becomes `livesession`: start a real
 Claude Code session, type `/status`, assert something rendered, delete it. It must not spend tokens
@@ -2937,12 +2976,14 @@ Delete `chat.js`, `markdown.js`, `models.js`.
 
 ### WP7 — Mobile, offline and resilience
 **Depends on:** WP6.
-**Scope:** `js/keybar.js`, the composer and line input, dictation wiring, the overlays
-(`#termOverlay`), the draft persistence, the `.stale` treatment, the `viewer_fresh` client
-behaviour and its toast, the precache measurement.
+**Scope:** <!-- rev 4 --> `js/keybar.js` and its `localStorage` preference, the overlays
+(`#termOverlay`), the `.stale` treatment, the `viewer_fresh` client behaviour and its toast, the
+precache measurement. The composer, the line input, the dictation wiring in it and the draft
+persistence were in this package's scope in revisions 1–3 and are now removed (§E.6); dictation
+belongs to the chat panel (ACTIVITY.md §D.3).
 **Acceptance**
-- Scenarios `keybar`, `dictation`, `offlineonce`, `sigtermreattach`, `takeover`, `exitoverlay`
-  pass.
+- Scenarios `keybar`, `offlineonce`, `sigtermreattach`, `takeover`, `exitoverlay` pass, and
+  `chat-dictate` in place of `dictation`.
 - `offlineonce` is the centrepiece: it must prove exactly-once delivery, not merely that something
   arrived.
 - The precache size is measured and written into the README.
@@ -3033,7 +3074,7 @@ overlay conventions.
 | J19 | **A too-old tmux passes as healthy.** The conf needs 3.3 (`allow-passthrough`, `remain-on-exit-format`) and 3.2 (`-e`, `extended-keys`); on 3.2a the conf errors, the start-up guard falls back to a minimal conf, and sessions launch without their environment while the admin page says "ok". | The floor is **3.3** in `requireTmux`, the `/api/tmux` response and the admin state (§F.1), with the reason recorded there. 3.3a is verified to do everything load-bearing [V]. |
 | J7 | **A systemd or Docker restart kills the tmux server** with it, turning every restart into a reboot. | `deploy/socrates.service` with `KillMode=process`, `systemd-run --scope` where available, a SIGCHLD reaper at PID 1, `tini` in the image, and the README stating that a container restart is the reboot path. `TestSessionSurvivesManagerKill` proves the survival property (§A.12). |
 | J8 | **xterm.js behaviour was never tested in a browser during research**; everything in `tmux-xterm.md` §5 beyond versions and file layout is [A]. | WP6's acceptance is browser-level, and `lighttheme` measures the computed background rather than trusting an option name. `allowProposedApi: true` is required for unicode11 and its absence throws loudly. |
-| J9 | **iOS will not raise the keyboard** unless focus happens inside a real user-gesture handler [A]. | The line input is the primary path on phones (DECISIONS.md), and the `⌨` button's `focus()` call is synchronous inside `touchend`/`click`. A code comment says why, so a future refactor cannot make it async. |
+| J9 | **iOS will not raise the keyboard** unless focus happens inside a real user-gesture handler [A]. | <!-- rev 4 --> The `⌨` button of the key bar is the path, and its `focus()` call is synchronous inside `touchend`/`click`. A code comment says why, so a future refactor cannot make it async. The line input that used to be the primary path on phones is gone (§E.6); what a phone would have typed into it, it asks the chat instead. |
 | J10 | **iOS drops WebGL contexts** when a tab backgrounds [A]. | `onContextLoss` disposes the addon and falls back to the DOM renderer; the addon is loaded in a `try/catch`. |
 | J11 | **`extended-keys` / `modifyOtherKeys` interop between tmux 3.6 and xterm.js 6 is untested.** | Default `extended_keys` to **off**; it is an admin switch with a warning, not a default. `CODEX_TUI_DISABLE_KEYBOARD_ENHANCEMENT=1` is the escape hatch for Codex. |
 | J12 | **The clean cut destroys existing chats.** | A `socrates.db.pre-v3.bak` copy is written first and its path logged. DECISIONS.md chose the clean cut explicitly; this makes it reversible by hand. |

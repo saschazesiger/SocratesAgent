@@ -58,6 +58,12 @@ password guards the lot.
   session is doing or what to do next, in writing or by holding the microphone,
   and it answers — or drives the terminal for you and says so in the same
   thread. A question you spoke is answered out loud.
+- **Told when a session stops working.** The list is grouped by day — Today,
+  Yesterday, This week, This month, Older — so the sessions being worked on are
+  at the top. And when any of them goes from busy to finished, or to waiting for
+  an answer, a chime plays and the browser puts up a notification — including
+  for the session you are not looking at. Two toggles in the header, one for the
+  sound and one for the notifications, remembered on this device.
 - **Reachable from anywhere, without opening a port.** A managed Cloudflare
   tunnel publishes the local server: a throwaway `trycloudflare.com` address in
   one click, or your own hostname with a tunnel token. `cloudflared` is
@@ -287,8 +293,10 @@ Two deployment shapes follow from that:
   <img src="docs/screenshot-phone.png" alt="A session on a phone: the pane and the key bar under it" width="300">
 </p>
 
-The session list is a drawer and the sheet is a bottom sheet. Under the pane
-there is the one thing a touch keyboard cannot do on its own:
+The session list is a drawer, grouped by day and read the way a call list is
+read — today's sessions first, history under them — and the sheet is a bottom
+sheet. Under the pane there is the one thing a touch keyboard cannot do on its
+own:
 
 - **The key bar** — `Esc`, `Tab`, `Ctrl`, `Alt`, the four arrows, `⏎`, `^C`,
   `^D`, `^Z`, paste and a keyboard toggle. `Ctrl` and `Alt` are sticky: tap to
@@ -314,8 +322,10 @@ you are holding has a keyboard.
   both voices by itself, and the Docker image has them baked in. On macOS it
   installs nothing and says so: those builds ship without the libraries their
   own binary loads, so `brew install piper` once and Socrates picks it up.
-  **It is not wired into a terminal session** — a pane is a program, not an
-  answer — so what the dashboard offers today is the installation itself, the
+  It reads the answers in the chat panel: a question you dictated is answered
+  out loud, and any answer can be read again by double-tapping it. **It is not
+  wired into a terminal session** — a pane is a program, not an answer — so
+  what the dashboard offers besides the voice is the installation itself, the
   language, the speaking rate and a **Test voice output** button.
 - **Spoken language** is one setting, English or Deutsch, and it picks both the
   language a recording is transcribed into and the installed voice.

@@ -55,6 +55,10 @@ These are binding. The design spec must implement them; it may add detail but no
   voice: dictation must be fully working (mic button transcribes via OpenRouter and types the
   text into the terminal input field), TTS/piper stays in the codebase for a future integration
   (not wired into the terminal UI, but must still build and be configurable in admin).
+  - **Superseded 2026-09-02** (the dictation clause only): there is no terminal input field to
+    type into. The microphone is in the chat panel and its transcript is sent as a question. TTS
+    is wired to that chat — a dictated question is answered out loud — and still not to the pane.
+    See "Revised with the owner" below.
 - Design rules: all-white, agent marks (logos.js), technical detail hover-only, subtle motion.
 
 ## Delete
@@ -68,6 +72,9 @@ These are binding. The design spec must implement them; it may add detail but no
 - Mobile: key bar (Esc, Tab, Ctrl, Alt, arrows, Enter, Ctrl-C, Ctrl-D, paste) plus a line input
   field that sends whole lines (fights autocorrect) with dictation button; direct typing in the
   terminal also works.
+  - **Superseded 2026-09-02**: the line input and its dictation button are removed on every
+    device, and the key bar is off until the session menu asks for it. Direct typing in the
+    terminal is unchanged. See "Revised with the owner" below.
 - Transport: one WebSocket per viewer, binary frames, seq numbers, resize messages, ping/pong
   watchdog.
 
@@ -77,3 +84,35 @@ These are binding. The design spec must implement them; it may add detail but no
   packages go back to Opus with the review. Final integrated verification by Fable: real browser,
   all four session types with fake CLIs on PATH, Socrates restart mid-session, browser offline
   and back, multi-viewer, reboot-resume simulation.
+
+## Revised with the owner (2026-09-02, after the first build was used on a phone)
+
+Binding like the rest. These supersede the bullets marked **Superseded 2026-09-02** above; the
+superseded text stays where it is, because the history is the reason.
+
+- **No line input under the terminal.** The composer, its microphone, its Send button, the pending
+  lines and the drafts it kept are gone on every device. It existed to fight autocorrect by
+  holding a whole line, and it cost the page a second field, a second microphone and a promise
+  about text nobody had sent yet. Single keys go into the pane; a whole sentence goes to the chat.
+- **The key bar is off by default on every device, and turned on from the ⋯ session menu**
+  ("Show key bar" / "Hide key bar"), with the answer remembered per device. No media query, no
+  viewport width, no platform string and no keystroke seen decides it: guessing was wrong on a
+  tablet in a case and on a laptop with a touch screen. Touch/keyboard device detection is
+  removed with it.
+- **One chat for everyone, with dictation in it.** One input row: text field, microphone, Send.
+  A question that was dictated is answered out loud; a typed one is answered in writing. Any
+  answer can be read out afterwards by double-tapping it, and the same gesture stops it. A running
+  recording shows exactly the two endings it has: **Send recording** and **Discard recording**.
+  While a recording is open nothing is spoken, and starting one silences a voice already reading.
+- **Auto mode is gone** — the switch, the audio bar, and the summary spoken on every transition
+  out of busy. Being read to is a property of a question, not a mode a device is in, and unasked
+  speech in a car is worse than silence. The header keeps two buttons: **Summarize this session**
+  and **Ask the agent**.
+- **Notifications and sound: two header toggles, per device.** When any session goes from busy to
+  idle or waiting, a chime (Web Audio, no audio file to fetch) and a browser notification. Sound
+  defaults on; notifications default off, because they cannot be honoured without asking and
+  asking unprompted is how a page gets blocked for good.
+- **The session list is grouped by day** — Today, Yesterday, This week, This month, Older — by
+  when each session was last used, in the browser's own local calendar rather than the server's.
+
+Detail: `docs/design/DESIGN.md` §E.6 and §E.8 (revision 4), and `docs/design/ACTIVITY.md` §D.

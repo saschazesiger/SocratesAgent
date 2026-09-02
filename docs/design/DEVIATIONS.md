@@ -1388,3 +1388,21 @@ else in it was checked and left alone.
    design: an answer landing after the delete wrote `chat.<id>` back, and
    nothing would ever have removed it again. `chatDriver.append` now drops a
    message for a session that is no longer in the store.
+
+## The controls those entries argue about are gone (2026-09-02)
+
+A closing note rather than a deviation. The line composer under the pane, the
+rule that decided by itself where the key bar was drawn, and Auto mode — the
+entries around lines 1194, 1257 and 1349–1364 above, and every other passage
+here that reasons about `#lineInput`, a draft that survives a reload,
+`keyboardLikely`, or a switch that has to stay usable offline — describe
+controls that were **removed on 2026-09-02**.
+
+They stay where they are because they are the reasoning that led to the
+removal, not because they still hold. What is true now: there is no line input
+on any device, the key bar is off until the ⋯ session menu asks for it and the
+answer is remembered per device, and being read to is a property of a question
+rather than a mode the page is in.
+
+`docs/design/ACTIVITY.md` §D.2, §D.3, §D.4 and §D.6 say what is there instead,
+and `docs/design/DESIGN.md` §E.6 (revision 4) is the binding text.
