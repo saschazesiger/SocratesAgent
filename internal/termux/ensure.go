@@ -152,6 +152,7 @@ func (m *Manager) resume(ctx context.Context, row *store.Session) (*store.Sessio
 		CLISession: strings.TrimSpace(row.CLISessionID),
 		Settings:   m.cfg.Settings(),
 		DataDir:    m.cfg.DataDir,
+		Logf:       m.logf,
 	}
 	if row.CLISessionState == store.CLILost {
 		req.CLISession = ""

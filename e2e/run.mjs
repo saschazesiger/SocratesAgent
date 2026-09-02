@@ -798,9 +798,20 @@ async function touchscroll() {
 // exit** - because a dynamic workspace directory is one it has never been
 // opened in and nothing had marked it trusted. The pane was full of text and
 // the row said `running`, and the session was unusable. So this asserts on the
-// two things that tell a started Claude Code from a stopped one: its own
-// banner, and the absence of that question.
-const CLAUDE_TRUST_QUESTION = 'Accessing workspace';
+// things that tell a started Claude Code from a stopped one: its own banner,
+// and the absence of every full-screen question that can stand in front of it.
+//
+// The other two screens of the same shape are asserted with it. They are not
+// bugs Socrates can fix - a fresh HOME has to be signed in by hand - but they
+// are the same failure to a person, so a run on a machine that was never
+// logged in says which one it stopped on instead of "something was rendered".
+// "Detected a custom API key" is a bug Socrates can fix, and does: the pane's
+// ANTHROPIC_API_KEY is emptied so an ambient key cannot stop a session.
+const CLAUDE_BLOCKING_SCREENS = [
+  'Accessing workspace',        // the workspace-trust question
+  'Detected a custom API key',  // an ambient ANTHROPIC_API_KEY
+  'Choose the text style',      // first-run onboarding
+];
 
 async function livesession() {
   const s = await start({ viewport: { width: 1280, height: 720 }, live: true });
@@ -815,9 +826,10 @@ async function livesession() {
     ok(text.trim().length > 0, 'the real CLI rendered something in the browser', oneLine(text));
     ok(started, 'Claude Code reached its own prompt in a directory it has never seen',
       oneLine(text.split('\n').find((l) => l.includes('Claude Code v')) || text));
-    ok(!text.includes(CLAUDE_TRUST_QUESTION),
-      'and was not stopped by the workspace-trust question, whose answer is "No, exit"',
-      text.includes(CLAUDE_TRUST_QUESTION) ? 'the trust screen is on the pane' : 'no trust screen');
+    const blocked = CLAUDE_BLOCKING_SCREENS.filter((question) => text.includes(question));
+    ok(blocked.length === 0,
+      'and no full-screen question stood in front of it - trust, an ambient API key, or onboarding',
+      blocked.join(', ') || 'none of ' + CLAUDE_BLOCKING_SCREENS.length);
     await typeLine(s.page, '/status');
     await wait(4000);
     const after = await screen(s.page);

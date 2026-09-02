@@ -72,4 +72,19 @@ type PlanRequest struct {
 	CLISession string
 	Settings   config.Settings
 	DataDir    string
+	// Logf is the caller's log, for the one thing a plan does that can fail
+	// without stopping the launch: pinning Claude Code's global config, whose
+	// failure costs the session its trust entry and therefore its prompt. It
+	// may be nil - the tests build requests by hand - so it is only ever
+	// reached through PlanRequest.logf.
+	Logf func(format string, args ...any)
+}
+
+// logf is the nil-safe form. A plan built without a log is silent, which is
+// what a test wants and what production never is.
+func (r PlanRequest) logf(format string, args ...any) {
+	if r.Logf == nil {
+		return
+	}
+	r.Logf(format, args...)
 }

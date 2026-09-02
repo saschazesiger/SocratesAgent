@@ -112,8 +112,11 @@ func (c Codex) plan(req PlanRequest, lead []string) (LaunchPlan, error) {
 // with it in a directory it had never seen opens with no trust picker.
 //
 // The path is quoted the way TOML quotes a basic string, which is what JSON
-// does too, character for character.
+// does too, character for character. It is the resolved path, because Codex
+// looks the entry up under the working directory it reads back from the
+// process - see resolvedCwd.
 func trustLevelOverride(cwd string) string {
+	cwd = resolvedCwd(cwd)
 	return "projects={" + tomlString(cwd) + "={trust_level=" + tomlString("trusted") + "}}"
 }
 

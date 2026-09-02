@@ -193,6 +193,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		Effort:    strings.TrimSpace(body.Effort),
 		Settings:  settings,
 		DataDir:   s.dataDir,
+		Logf:      log.Printf,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())

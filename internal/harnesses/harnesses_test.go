@@ -408,6 +408,146 @@ func TestClaudeGlobalConfigTrustsWithNoFileAtAll(t *testing.T) {
 	}
 }
 
+// Claude Code refuses --dangerously-skip-permissions as root -
+// `--dangerously-skip-permissions cannot be used with root/sudo privileges for
+// security reasons`, exit 1, the pane dead before it is looked at - unless
+// IS_SANDBOX is "1". The pane's environment is built here and not inherited,
+// so it has to be set here; a server whose own environment happened to carry
+// it would otherwise be the only one that worked.
+func TestClaudeSandboxMarkerForRoot(t *testing.T) {
+	l := newLab(t)
+	plan := l.plan(Claude{})
+	if os.Geteuid() == 0 {
+		if plan.Env["IS_SANDBOX"] != "1" {
+			t.Errorf("as root the pane would die on --dangerously-skip-permissions: IS_SANDBOX = %q",
+				plan.Env["IS_SANDBOX"])
+		}
+		return
+	}
+	// A normal account has no such check, and claiming a sandbox there would
+	// be a statement about a machine nobody asked us about.
+	if _, set := plan.Env["IS_SANDBOX"]; set {
+		t.Errorf("IS_SANDBOX was set for a session that is not root: %q", plan.Env["IS_SANDBOX"])
+	}
+}
+
+// A key exported into Socrates' own environment reaches the pane through tmux
+// and stops the session on "Detected a custom API key … ❯ No (recommended)".
+// Verified against 2.1.258: an empty value is read as no key at all.
+func TestClaudeClearsAnAmbientAPIKey(t *testing.T) {
+	l := newLab(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-not-a-real-key")
+	plan := l.plan(Claude{})
+	value, set := plan.Env["ANTHROPIC_API_KEY"]
+	if !set || value != "" {
+		t.Errorf("the pane would be asked about an ambient API key: %q (set: %v)", value, set)
+	}
+}
+
+// Claude Code looks the trust entry up under the working directory it reads
+// back from the process, which has no symlinks in it. An entry written under
+// the name Socrates was given is one the binary never asks about.
+func TestClaudeTrustsTheResolvedWorkingDirectory(t *testing.T) {
+	l := newLab(t)
+	real := filepath.Join(l.home, "real-work")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(l.home, "linked-work")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	l.cwd = link
+
+	path := claudeGlobalConfigPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	l.plan(Claude{})
+
+	if entry := claudeProjectEntry(t, path, real); entry["hasTrustDialogAccepted"] != true {
+		t.Errorf("the resolved directory is not trusted: %v", entry)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	projects, _ := doc["projects"].(map[string]any)
+	if _, found := projects[link]; found {
+		t.Errorf("an entry was written under the symlink, which nothing looks up: %v", projects)
+	}
+}
+
+// The same for Codex, whose trust override is a command-line argument keyed
+// the same way.
+func TestCodexTrustsTheResolvedWorkingDirectory(t *testing.T) {
+	l := newLab(t)
+	real := filepath.Join(l.home, "real-work")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(l.home, "linked-work")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	l.cwd = link
+	plan := l.plan(Codex{})
+	want := "projects={" + tomlString(real) + "={trust_level=" + tomlString("trusted") + "}}"
+	if !has(plan.Argv, "-c", want) {
+		t.Errorf("Codex was told to trust the symlink rather than the directory: %v", plan.Argv)
+	}
+}
+
+// An interrupted first run leaves a zero-byte ~/.claude.json behind. It is not
+// JSON, and treating it as broken would cost every session on that machine its
+// trust entry for ever.
+func TestClaudeGlobalConfigTreatsAnEmptyFileAsMissing(t *testing.T) {
+	l := newLab(t)
+	path := claudeGlobalConfigPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("  \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := pinClaudeGlobalConfig(path, l.cwd); err != nil {
+		t.Fatalf("an empty file was treated as broken: %v", err)
+	}
+	if entry := claudeProjectEntry(t, path, l.cwd); entry["hasTrustDialogAccepted"] != true {
+		t.Errorf("the directory is not trusted: %v", entry)
+	}
+}
+
+// A file that is JSON but not a shape this understands is reported rather than
+// half-rewritten, and the caller writes the reason to the log.
+func TestClaudeGlobalConfigReportsAFileItCannotChange(t *testing.T) {
+	l := newLab(t)
+	path := claudeGlobalConfigPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("not json at all"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := pinClaudeGlobalConfig(path, l.cwd); err == nil {
+		t.Error("a file that could not be parsed was reported as pinned")
+	}
+	if err := os.WriteFile(path, []byte(`{"projects":"not an object"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := pinClaudeGlobalConfig(path, l.cwd); err == nil {
+		t.Error(`a "projects" that is not an object was reported as pinned`)
+	}
+	raw, _ := os.ReadFile(path)
+	if string(raw) != `{"projects":"not an object"}` {
+		t.Errorf("the file was rewritten anyway: %s", raw)
+	}
+}
+
 func claudeProjectEntry(t *testing.T, path, cwd string) map[string]any {
 	t.Helper()
 	raw, err := os.ReadFile(path)

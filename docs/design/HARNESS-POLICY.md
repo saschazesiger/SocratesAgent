@@ -59,6 +59,22 @@ Command line, in order:
   (`claude --help`). Not `--permission-mode bypassPermissions`, which is the
   same thing said less plainly, and not `--allow-dangerously-skip-permissions`,
   which only makes the bypass *available* rather than active.
+  - As root it is refused: `--dangerously-skip-permissions cannot be used with
+    root/sudo privileges for security reasons`, exit 1, and the pane is dead
+    before anybody reads it. The binary's condition is
+    `getuid() === 0 && IS_SANDBOX !== "1" && !CLAUDE_CODE_BUBBLEWRAP`, so
+    **`IS_SANDBOX=1` is in the pane's environment whenever Socrates is running
+    as root** — which the shipped Docker image is. It is not set for any other
+    uid: no such check applies there, and the variable would be a claim about a
+    machine nobody asked about. The pane's environment is built rather than
+    inherited, so this cannot be left to whatever the server was started from.
+- **`ANTHROPIC_API_KEY` is set to the empty string** in the pane. A key
+  exported into Socrates' own environment would otherwise reach the session
+  through tmux and stop it on `Detected a custom API key in your environment …
+  ❯ No (recommended)`. Every Socrates session is a signed-in Claude Code, which
+  is what the settings file and the global config are written for; an ambient
+  key is not part of that. tmux's `new-session -e` has no "unset", and an empty
+  value is read by the binary as no key at all (verified against 2.1.258).
 - `--effort` takes `low medium high xhigh max`. `minimal` and `ultra` are
   levels other harnesses name and this flag rejects, so they are filtered out
   rather than passed through.
@@ -75,7 +91,8 @@ Command line, in order:
     `legacy_global_config`, so a person who once turned Remote Control on by
     hand has a stored preference that would start it again with no flag at all.
 
-Working-directory trust: **`projects[<cwd>].hasTrustDialogAccepted: true`** in
+Working-directory trust: **`projects[<realpath of cwd>].hasTrustDialogAccepted:
+true`** in
 the same global config, written before the pane opens, creating the entry when
 Claude Code has never been run in that directory — which for a dynamic
 workspace directory is every single time. Without it 2.1.258 opens on a
@@ -87,6 +104,13 @@ tool permissions and is decided after it, and the settings file has no key for
 it. This is Claude Code's counterpart of the
 `projects={"<cwd>"={trust_level="trusted"}}` override Codex is given below;
 both were verified against the shipped binaries.
+
+Both entries are keyed by the **resolved** working directory — symlinks gone.
+Each program looks the entry up under the directory it reads back from its own
+process, which the kernel has already resolved, so a workspace root reached
+through a link (`/tmp` on macOS, a linked projects directory, a home that is a
+symlink) would otherwise be trusted under a name neither program ever asks
+about.
 
 Generated settings file (`<session dir>/claude-settings.json`, mode 0600):
 

@@ -175,6 +175,9 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 		if extra, ok := harnessStateCheck(id); ok {
 			results = append(results, extra)
 		}
+		if id == config.HarnessClaude && agent.Installed {
+			results = append(results, claudeSignInCheck())
+		}
 	}
 
 	// OpenRouter. Since Socrates became a harness this key answers nothing but
@@ -367,6 +370,28 @@ func harnessStateCheck(id string) (checkResult, bool) {
 		return row, true
 	}
 	return checkResult{}, false
+}
+
+// claudeSignInCheck is whether Claude Code has been through its own first run
+// here. Socrates starts the program; it does not log it in, and it cannot skip
+// the questions that come before a prompt. Without this the dashboard shows a
+// row of green for a machine on which every session opens on "Choose the text
+// style" or on the sign-in screen.
+func claudeSignInCheck() checkResult {
+	onboarded, account := harnesses.ClaudeSignIn()
+	row := checkResult{Name: "Claude Code sign-in"}
+	switch {
+	case onboarded && account != "":
+		row.OK, row.Summary, row.Detail = true, "signed in", account
+	case onboarded:
+		row.OK, row.Summary = true, "first run done"
+		row.Detail = "No account is stored, so this installation is using an API key or a third-party provider."
+	default:
+		row.Summary = "not signed in yet"
+		row.Detail = "Run `claude` once in a shell on this machine, as this user, and answer its first-run questions. " +
+			"A session started before that opens on them instead of on a prompt."
+	}
+	return row
 }
 
 // tunnelCheck is the remote-access row, unchanged in substance from the one

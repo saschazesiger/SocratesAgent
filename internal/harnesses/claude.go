@@ -1,8 +1,11 @@
 package harnesses
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -113,13 +116,44 @@ func (c Claude) plan(req PlanRequest, lead []string, id string) (LaunchPlan, err
 	// would take it from the pane as well as from the program.
 	env["CLAUDE_CODE_DISABLE_TERMINAL_TITLE"] = "1"
 	env["CLAUDE_CODE_NO_FLICKER"] = "1"
+	// --dangerously-skip-permissions refuses to run as root:
+	// `--dangerously-skip-permissions cannot be used with root/sudo
+	// privileges for security reasons`, and the pane is dead before the user
+	// can read it. The binary's condition is
+	// `getuid() === 0 && IS_SANDBOX !== "1" && !CLAUDE_CODE_BUBBLEWRAP` [BIN],
+	// so the variable is what says "this root is a container's root". Socrates
+	// in its own Docker image is exactly that, and it is the deployment the
+	// product ships. It is set only when the process really is root, because a
+	// normal account has no such check and IS_SANDBOX would then be a claim
+	// about a machine nobody asked us about.
+	//
+	// The pane's environment is built here rather than inherited, so this is
+	// not a variable Socrates' own environment can be relied on to carry: a
+	// server started from a login shell that happened to export IS_SANDBOX
+	// would work and the same server started by systemd would not.
+	if os.Geteuid() == 0 {
+		env["IS_SANDBOX"] = "1"
+	}
+	// A key exported into Socrates' own environment would otherwise reach the
+	// pane through tmux and stop the session on `Detected a custom API key …
+	// ❯ No (recommended)`. Every Socrates session is a logged-in Claude Code,
+	// which is the policy the settings file and the global config are written
+	// for; an ambient key is not part of it. tmux has no "unset" in
+	// new-session, so it is set to nothing, which the binary reads as absent.
+	env["ANTHROPIC_API_KEY"] = ""
 
 	settings, err := claudeSettings(env)
 	if err != nil {
 		return LaunchPlan{}, err
 	}
 
-	pinClaudeGlobalConfig(claudeGlobalConfigPath(), req.Cwd)
+	if err := pinClaudeGlobalConfig(claudeGlobalConfigPath(), req.Cwd); err != nil {
+		// Not a launch failure: the pane opens and shows Claude Code's own
+		// words, which is more use than a create that refuses with these. The
+		// log is where the reason for a session that stopped on the workspace
+		// question is written down.
+		req.logf("claude: could not pin the global configuration for session %s: %v", req.SessionID, err)
+	}
 
 	return LaunchPlan{
 		Argv:       argv,
@@ -183,6 +217,33 @@ func (Claude) VerifyCLISession(ctx context.Context, req PlanRequest) (bool, erro
 		return false, err
 	}
 	return len(matches) > 0, nil
+}
+
+// ClaudeSignIn is what the dashboard needs to say whether Claude Code has been
+// through its own first run on this machine: the onboarding questions answered
+// and an account stored.
+//
+// Nothing Socrates passes can skip either. A session started before them opens
+// on "Choose the text style that looks best with your terminal" or on the
+// sign-in screen, which is a full pane of Claude Code's own words and a
+// session that cannot be used - the same failure shape as the workspace
+// question, and the same thing the dashboard should say out loud rather than
+// showing a green row beside it.
+func ClaudeSignIn() (onboarded bool, account string) {
+	raw, err := os.ReadFile(claudeGlobalConfigPath())
+	if err != nil {
+		return false, ""
+	}
+	var doc struct {
+		HasCompletedOnboarding bool `json:"hasCompletedOnboarding"`
+		OAuthAccount           struct {
+			EmailAddress string `json:"emailAddress"`
+		} `json:"oauthAccount"`
+	}
+	if json.Unmarshal(raw, &doc) != nil {
+		return false, ""
+	}
+	return doc.HasCompletedOnboarding, strings.TrimSpace(doc.OAuthAccount.EmailAddress)
 }
 
 // DiscoverModels returns the curated list; see claude_models.go.
@@ -269,8 +330,8 @@ func claudeGlobalConfigPath() string {
 // failure is still not a launch failure - the pane opens and says what is
 // wrong with it, which is more use than a create that refuses with the same
 // sentence - but it is no longer only cosmetic: without the trust entry the
-// session opens on the workspace question, so a failure is worth reading in
-// the log rather than swallowing.
+// session opens on the workspace question, so the error is returned and the
+// caller writes it to the log.
 //
 // It is a side effect of building a plan rather than of starting the pane, and
 // Claude Code writes the same file under a lock of its own. A write that lands
@@ -279,19 +340,32 @@ func claudeGlobalConfigPath() string {
 // rather than turned into a lock protocol against a file format nobody has
 // documented; what the session then shows is Claude Code's own question, not a
 // silent failure.
-func pinClaudeGlobalConfig(path, cwd string) {
+func pinClaudeGlobalConfig(path, cwd string) error {
 	if path == "" {
-		return
+		return errors.New("there is no home directory to write Claude Code's global configuration in")
 	}
+	// Claude Code keys the entry by `process.cwd()`, which is the resolved
+	// path: a directory reached through a symlink - /tmp on macOS, a linked
+	// workspace root, a home that is a link - would otherwise get an entry
+	// under a name the binary never looks up, and the session would open on
+	// the trust question with the entry sitting right there in the file.
+	cwd = resolvedCwd(cwd)
 	doc := map[string]any{}
 	raw, err := os.ReadFile(path)
 	switch {
 	case err == nil:
-		if json.Unmarshal(raw, &doc) != nil {
-			return
+		// A file with nothing in it is a file Claude Code has not written yet
+		// - an interrupted first run leaves one - and it is not JSON. Treating
+		// it as missing is what stops one zero-byte file costing every session
+		// its trust entry for ever.
+		if len(bytes.TrimSpace(raw)) == 0 {
+			break
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			return fmt.Errorf("%s is not JSON this can safely change: %w", path, err)
 		}
 	case !os.IsNotExist(err):
-		return
+		return err
 	}
 	changed := false
 	if doc["theme"] != "light" {
@@ -309,59 +383,55 @@ func pinClaudeGlobalConfig(path, cwd string) {
 			// file this code does not understand, and replacing it would
 			// throw away whatever it is. Nothing is written in that case.
 			if _, present := doc["projects"]; present {
-				projects = nil
-			} else {
-				projects = map[string]any{}
-				doc["projects"] = projects
-				changed = true
+				return fmt.Errorf(`%s has a "projects" that is not an object, so the working directory cannot be trusted from here`, path)
 			}
+			projects = map[string]any{}
+			doc["projects"] = projects
+			changed = true
 		}
-		if projects != nil {
-			entry, ok := projects[cwd].(map[string]any)
-			if !ok {
-				if _, present := projects[cwd]; !present {
-					entry = map[string]any{}
-					projects[cwd] = entry
-					changed = true
-				}
+		entry, ok := projects[cwd].(map[string]any)
+		if !ok {
+			if _, present := projects[cwd]; present {
+				return fmt.Errorf("%s has a project entry for %s that is not an object", path, cwd)
 			}
-			if entry != nil {
-				if entry["hasTrustDialogAccepted"] != true {
-					entry["hasTrustDialogAccepted"] = true
-					changed = true
-				}
-				if entry["remoteControlAtStartup"] != false {
-					entry["remoteControlAtStartup"] = false
-					changed = true
-				}
-			}
+			entry = map[string]any{}
+			projects[cwd] = entry
+			changed = true
+		}
+		if entry["hasTrustDialogAccepted"] != true {
+			entry["hasTrustDialogAccepted"] = true
+			changed = true
+		}
+		if entry["remoteControlAtStartup"] != false {
+			entry["remoteControlAtStartup"] = false
+			changed = true
 		}
 	}
 	if !changed {
-		return
+		return nil
 	}
 	out, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
-		return
+		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".claude.json.*")
 	if err != nil {
-		return
+		return err
 	}
 	name := tmp.Name()
 	defer func() { _ = os.Remove(name) }()
 	if _, err := tmp.Write(out); err != nil {
 		_ = tmp.Close()
-		return
+		return err
 	}
 	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
-		return
+		return err
 	}
 	if err := tmp.Close(); err != nil {
-		return
+		return err
 	}
-	_ = os.Rename(name, path)
+	return os.Rename(name, path)
 }
 
 // pick takes the session's own choice when there is one, and the dashboard's
