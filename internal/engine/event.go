@@ -2,10 +2,9 @@ package engine
 
 import "github.com/saschazesiger/SocratesAgent/internal/store"
 
-// Event is the envelope pushed to the browser over SSE. It is unchanged from
-// the version before the rewrite, deliberately: chat.js switches on exactly
-// these types, and the offline story - "highest revision seen means everything
-// up to here is mine" - is built on them.
+// Event is the envelope pushed to the browser over SSE. chat.js switches on
+// exactly these types, and the offline story - "highest revision seen means
+// everything up to here is mine" - is built on them.
 //
 // Type is one of "step", "step_removed", "message", "run", "chat", plus the
 // two the HTTP layer synthesises ("ready", "resync") and the heartbeat

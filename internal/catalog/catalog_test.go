@@ -90,7 +90,7 @@ func TestDiscoveryReportsWhatIsInstalledAndWhatIsNot(t *testing.T) {
 	if !claude.Static {
 		t.Error("the curated list is not marked static")
 	}
-	if len(claude.Models) != 4 || claude.DefaultModel != "sonnet" {
+	if len(claude.Models) != 8 || claude.DefaultModel != "sonnet" {
 		t.Fatalf("models = %#v (default %q)", claude.Models, claude.DefaultModel)
 	}
 	if !claude.HasEffort {
@@ -116,19 +116,23 @@ func TestDiscoveryReportsWhatIsInstalledAndWhatIsNot(t *testing.T) {
 
 // Every effort a picker can offer has to be one the CLI understands, so the
 // list is filtered on the way out rather than trusted.
-func TestEffortsAreFilteredToTheIntersection(t *testing.T) {
+// Every level an agent names is offered, in order - Claude's five here - and
+// has_effort follows from there.
+func TestEffortsAreWhatTheAgentNames(t *testing.T) {
 	onlyClaude(t)
 	c := New(newStore(), settingsFn(config.Default()))
 	snap := c.Refresh(context.Background())
 	claude, _ := snap.Agent("claude")
+	if !claude.HasEffort {
+		t.Fatal("claude lost its effort control")
+	}
 	for _, m := range claude.Models {
-		for _, e := range m.Efforts {
-			switch e {
-			case config.EffortLow, config.EffortMedium, config.EffortHigh:
-			default:
-				t.Fatalf("model %s offers effort %q, which is not one of the three", m.ID, e)
-			}
+		if got := strings.Join(m.Efforts, ","); got != "low,medium,high,xhigh,max" {
+			t.Errorf("model %s offers %q", m.ID, got)
 		}
+	}
+	if got := strings.Join(claude.AllEfforts(), ","); got != "low,medium,high,xhigh,max" {
+		t.Errorf("AllEfforts = %q", got)
 	}
 }
 
@@ -286,7 +290,7 @@ func TestARequestThatGivesUpDoesNotPoisonTheCatalogue(t *testing.T) {
 	if !claude.Installed || claude.Version != "claude 9.9.9-slow" {
 		t.Fatalf("the second request did not get a finished discovery: %#v", claude)
 	}
-	if len(claude.Models) != 4 {
+	if len(claude.Models) != 8 {
 		t.Fatalf("models = %#v", claude.Models)
 	}
 	if claude.Error != "" {
@@ -325,7 +329,49 @@ func TestARefreshThatIsAbandonedStillFinishes(t *testing.T) {
 			}
 		}
 	}
-	if a := mustAgent(t, c.Get(context.Background()), "claude"); !a.Installed || len(a.Models) != 4 {
+	if a := mustAgent(t, c.Get(context.Background()), "claude"); !a.Installed || len(a.Models) != 8 {
 		t.Fatalf("the refresh did not finish behind the request: %#v", a)
+	}
+}
+
+// The dashboard's short list is overlaid on the discovery: a known id keeps
+// what the agent said about it, an unknown one is offered as typed, the first
+// one is the default, and the whole thing takes effect without a refresh.
+func TestPicksOverlayTheDiscovery(t *testing.T) {
+	onlyClaude(t)
+	settings := config.Default()
+	settings.Agents.Claude.Models = []config.ModelPick{
+		{ID: "haiku", Effort: config.EffortHigh},
+		{ID: "some-new-alias"},
+	}
+	c := New(newStore(), settingsFn(settings))
+	claude := mustAgent(t, c.Refresh(context.Background()), "claude")
+	if len(claude.Models) < 4 {
+		t.Fatalf("the full list is still reported: %d models", len(claude.Models))
+	}
+	if len(claude.Picks) != 2 {
+		t.Fatalf("picks = %#v", claude.Picks)
+	}
+	haiku := claude.Picks[0]
+	if haiku.ID != "haiku" || haiku.Label != "Haiku" || haiku.DefaultEffort != "high" || !haiku.Default {
+		t.Errorf("a known pick lost what the agent said about it: %#v", haiku)
+	}
+	if len(haiku.Efforts) != 5 {
+		t.Errorf("haiku efforts = %v", haiku.Efforts)
+	}
+	typed := claude.Picks[1]
+	if typed.ID != "some-new-alias" || typed.Label != "some-new-alias" || typed.Default || typed.DefaultEffort != "" {
+		t.Errorf("a typed pick = %#v", typed)
+	}
+	if len(typed.Efforts) != 5 {
+		t.Errorf("a typed pick offers what the agent's models offer, got %v", typed.Efforts)
+	}
+
+	// Changing the list changes the answer without a discovery.
+	settings.Agents.Claude.Models = nil
+	c.settings = settingsFn(settings)
+	claude = mustAgent(t, c.Get(context.Background()), "claude")
+	if len(claude.Picks) != 0 {
+		t.Errorf("an emptied list still reports %#v", claude.Picks)
 	}
 }

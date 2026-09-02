@@ -46,9 +46,9 @@
 // normally sits on the port a user's own `opencode serve` would want; nothing
 // breaks either way, because the port is read back off the startup line.
 //
-// GET /api/model answers 200 with an empty list for about a second after the
-// server is healthy, while providers resolve their credentials, so Discover
-// polls rather than asking once.
+// GET /config/providers answers 200 with an empty list for about a second
+// after the server is healthy, while providers resolve their credentials, so
+// Discover polls rather than asking once.
 package opencode
 
 import (
@@ -75,8 +75,8 @@ func init() {
 		DefaultModel:  "",
 		DefaultEffort: "",
 		HasEffort:     true,
-		Notes: "Socrates shows the models OpenCode reports as connected and does not change your " +
-			"opencode.json. OpenRouter models need a provider override in this OpenCode release.",
+		Notes: "Socrates shows every model of every provider OpenCode has credentials for - the " +
+			"same list as OpenCode's own picker - and does not change your opencode.json.",
 		New:      func() harness.Adapter { return newAdapter() },
 		Discover: Discover,
 	})

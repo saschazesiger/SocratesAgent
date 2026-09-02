@@ -725,7 +725,7 @@ func TestEveryRequestIsAuthenticated(t *testing.T) {
 	}
 }
 
-func TestDiscoverListsTheConnectedModels(t *testing.T) {
+func TestDiscoverListsEveryConnectedProvidersModels(t *testing.T) {
 	dir := fakes.Build(t)
 	t.Setenv("PATH", fakes.PathWith(dir))
 	t.Setenv("FAKE_SCRIPT", "")
@@ -739,12 +739,22 @@ func TestDiscoverListsTheConnectedModels(t *testing.T) {
 	if cat.Static {
 		t.Errorf("the OpenCode catalogue is discovered, not curated")
 	}
-	if len(cat.Models) != 2 {
-		t.Fatalf("want two models, got %+v", cat.Models)
+	// Two providers: the free one with two models, and a second one with one
+	// active model and one deprecated. /api/model alone would have shown the
+	// first provider only.
+	if len(cat.Models) != 3 {
+		t.Fatalf("want three models, got %+v", cat.Models)
 	}
 	byID := map[string]harness.Model{}
 	for _, m := range cat.Models {
 		byID[m.ID] = m
+		// The providers answer carries the API key; nothing of it may reach
+		// the catalogue.
+		for _, field := range []string{m.ID, m.Label, m.Hint, m.Group} {
+			if strings.Contains(field, "sk-fake") {
+				t.Fatalf("the API key leaked into the catalogue: %+v", m)
+			}
+		}
 	}
 	thinker, ok := byID["opencode|fake-thinker"]
 	if !ok {
@@ -757,6 +767,16 @@ func TestDiscoverListsTheConnectedModels(t *testing.T) {
 	if strings.Join(thinker.Efforts, ",") != "low,medium,high" {
 		t.Errorf("efforts = %v", thinker.Efforts)
 	}
+	// The per-provider "default" map is not a default for the install, so no
+	// entry is flagged.
+	for _, m := range cat.Models {
+		if m.Default {
+			t.Errorf("a model is flagged as default: %+v", m)
+		}
+	}
+	if thinker.Hint != "fake-thinker · 200k ctx" {
+		t.Errorf("hint = %q", thinker.Hint)
+	}
 	plain, ok := byID["opencode|fake-plain"]
 	if !ok {
 		t.Fatalf("no opencode|fake-plain in %+v", cat.Models)
@@ -764,6 +784,54 @@ func TestDiscoverListsTheConnectedModels(t *testing.T) {
 	// F-13: and the empty array form, which a map-only decoder chokes on.
 	if len(plain.Efforts) != 0 {
 		t.Errorf("a model with no variants reported efforts %v", plain.Efforts)
+	}
+	fast, ok := byID["fakerouter|acme/fast-1"]
+	if !ok {
+		t.Fatalf("the second provider's model is missing from %+v", cat.Models)
+	}
+	if fast.Group != "fakerouter" || fast.Label != "Fast One" {
+		t.Errorf("fast = %+v", fast)
+	}
+	if strings.Join(fast.Efforts, ",") != "low,high" {
+		t.Errorf("fast efforts = %v", fast.Efforts)
+	}
+	if fast.Hint != "acme/fast-1 · 1M ctx · $0.25/M" {
+		t.Errorf("fast hint = %q", fast.Hint)
+	}
+	if _, ok := byID["fakerouter|acme/old-1"]; ok {
+		t.Errorf("a deprecated model is offered: %+v", cat.Models)
+	}
+	// Sorted by provider, then id, so the picker is stable across loads.
+	for i := 1; i < len(cat.Models); i++ {
+		a, b := cat.Models[i-1], cat.Models[i]
+		if a.Group > b.Group || (a.Group == b.Group && a.ID > b.ID) {
+			t.Errorf("catalogue is not sorted: %s before %s", a.ID, b.ID)
+		}
+	}
+}
+
+func TestDiscoverFallsBackToTheModelListWithoutTheProvidersRoute(t *testing.T) {
+	// A server before /config/providers still answers /api/model.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/model":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"data":[{"id":"big-pickle","providerID":"opencode","name":"Big Pickle","variants":[]}]}`)
+		default:
+			w.WriteHeader(404)
+			fmt.Fprint(w, `{"_tag":"NotFoundError","message":"`+r.URL.Path+`"}`)
+		}
+	}))
+	defer srv.Close()
+	cli := newClient(srv.URL, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	models, err := connectedModels(ctx, cli)
+	if err != nil {
+		t.Fatalf("connectedModels: %v", err)
+	}
+	if len(models) != 1 || models[0].ID != "opencode|big-pickle" || models[0].Label != "Big Pickle" {
+		t.Errorf("models = %+v", models)
 	}
 }
 

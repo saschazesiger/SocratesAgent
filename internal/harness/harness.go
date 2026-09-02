@@ -61,7 +61,7 @@ type Adapter interface {
 type Spec struct {
 	Agent     string   `json:"agent"`            // "claude" | "codex" | "opencode"
 	Model     string   `json:"model"`            // agent-native model id, never an OpenRouter id
-	Effort    string   `json:"effort,omitempty"` // "" | "low" | "medium" | "high"
+	Effort    string   `json:"effort,omitempty"` // "" or a level the model reports: low … max for Claude, per model for Codex and OpenCode
 	Cwd       string   `json:"cwd"`              // absolute working directory for this chat
 	ChatID    string   `json:"chat_id"`
 	ChatTitle string   `json:"chat_title,omitempty"` // cosmetic, for `claude --name`

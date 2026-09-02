@@ -147,6 +147,12 @@ export function combobox(options = {}) {
     active = filtered.findIndex((item) => item.value === current);
     isOpen = true;
     list.hidden = false;
+    // The list is as tall as the screen below the field allows, and scrolls
+    // inside itself beyond that. On a phone with the keyboard up a fixed
+    // height ran past the bottom of the sheet, and the options down there
+    // could only be reached by scrolling the sheet under the list.
+    const room = window.innerHeight - input.getBoundingClientRect().bottom - 16;
+    list.style.maxHeight = Math.max(140, Math.min(300, room)) + 'px';
     input.setAttribute('aria-expanded', 'true');
     render();
     if (active >= 0) setActive(active);

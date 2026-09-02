@@ -128,11 +128,6 @@ func main() {
 	}()
 
 	srv.StartTunnelIfEnabled()
-	// A user who upgrades in place still has term-host processes from the
-	// previous version running interactive agent TUIs. Nothing in the new
-	// Manager ever visits that directory, so they would keep running forever;
-	// this sweeps them once and then the directory is gone.
-	agenthost.SweepLegacyTerminals(*dataDir)
 	// Agent hosts come back before the runs are recovered, so a turn that is
 	// genuinely still running is adopted rather than marked interrupted.
 	adopted := srv.ResumeAgents()

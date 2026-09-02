@@ -14,14 +14,31 @@ import { combobox } from './combobox.js';
 
 const CACHE_KEY = 'socrates.agents';
 
-// The three levels every agent with an effort mechanism understands, plus the
-// one that means "whatever the model would do on its own".
-const EFFORTS = [
-  { value: '', label: 'Default' },
-  { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'high', label: 'High' },
-];
+// How a level reads on a button. A level nobody here has heard of is shown
+// as the agent spells it: the agent named it, so the agent takes it.
+const EFFORT_LABELS = {
+  '': 'Default', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High',
+  xhigh: 'X-High', max: 'Max', ultra: 'Ultra',
+};
+
+export function effortLabel(value) {
+  return EFFORT_LABELS[value] || value;
+}
+
+// effortsFor is the levels to offer: the chosen model's own list, or - before
+// a model is chosen, or for one the agent has not reported - every level any
+// of the agent's models offers. The levels differ between agents (Claude Code
+// goes up to max, Codex to xhigh, OpenCode names them per model), so there is
+// no fixed row.
+export function effortsFor(agentId, modelId) {
+  const model = modelOf(agentId, modelId);
+  if (model && model.efforts && model.efforts.length) return model.efforts;
+  const found = agent(agentId);
+  if (!found) return [];
+  const all = [];
+  for (const m of found.models || []) for (const e of m.efforts || []) if (!all.includes(e)) all.push(e);
+  return all;
+}
 
 let cached = null;      // the agents array, whatever its provenance
 let fromStorage = false; // whether what we have is last visit's copy
@@ -97,12 +114,20 @@ export function stale() {
   return fromStorage;
 }
 
+// offered is what the sheet shows for one agent: the short list from the
+// dashboard when there is one, otherwise everything the agent reported. The
+// dashboard itself always works from the full list.
+export function offered(agentId) {
+  const found = agent(agentId);
+  if (!found) return [];
+  if (found.picks && found.picks.length) return found.picks;
+  return found.models || [];
+}
+
 // modelItems is the combobox's view of one agent's models: the id is the
 // value, because that is what the server is given.
 export function modelItems(agentId) {
-  const found = agent(agentId);
-  if (!found) return [];
-  return (found.models || []).map((model) => ({
+  return offered(agentId).map((model) => ({
     value: model.id,
     label: model.label || model.id,
     hint: model.hint || '',
@@ -112,16 +137,16 @@ export function modelItems(agentId) {
 
 // modelOf finds one model entry, so the effort control can ask what it offers.
 export function modelOf(agentId, modelId) {
-  const found = agent(agentId);
-  if (!found) return null;
-  return (found.models || []).find((m) => m.id === modelId) || null;
+  return offered(agentId).find((m) => m.id === modelId) || null;
 }
 
-// defaultModelFor is what the picker starts on: what the agent says is its
-// default, or the entry that flags itself as one.
+// defaultModelFor is what the picker starts on: the first of the dashboard's
+// short list, else what the agent says is its default, else the entry that
+// flags itself as one.
 export function defaultModelFor(agentId) {
   const found = agent(agentId);
   if (!found) return '';
+  if (found.picks && found.picks.length) return found.picks[0].id;
   if (found.default_model) return found.default_model;
   const flagged = (found.models || []).find((m) => m.default);
   return flagged ? flagged.id : '';
@@ -188,16 +213,6 @@ export async function openNewChatSheet() {
     agentRow.append(button);
   }
 
-  effortRow.innerHTML = '';
-  for (const level of EFFORTS) {
-    const button = segButton(level.label, level.value);
-    button.addEventListener('click', () => {
-      pick.effort = level.value;
-      pressed(effortRow, pick.effort);
-    });
-    effortRow.append(button);
-  }
-
   modelHost.innerHTML = '';
   const picker = combobox({
     value: '',
@@ -205,6 +220,10 @@ export async function openNewChatSheet() {
     placeholder: 'sonnet',
     onChange: (value) => {
       pick.model = value.trim();
+      // A model brings its own starting effort - the one set for it in the
+      // dashboard, or the agent's - the same as when the agent is switched.
+      const model = modelOf(pick.agent, pick.model);
+      if (model) pick.effort = model.default_effort || '';
       renderEffort();
       renderHint();
     },
@@ -215,21 +234,24 @@ export async function openNewChatSheet() {
   // is the model's own answer, and has_effort only decides whether the control
   // can be shown before one is chosen.
   function renderEffort() {
-    const entry = agent(pick.agent);
-    const model = modelOf(pick.agent, pick.model);
-    const efforts = model ? (model.efforts || []) : [];
-    const show = efforts.length > 0 || (!model && entry && entry.has_effort);
-    effortField.hidden = !show;
-    if (!show) {
+    const efforts = effortsFor(pick.agent, pick.model);
+    effortField.hidden = efforts.length === 0;
+    if (!efforts.length) {
       pick.effort = '';
-      pressed(effortRow, '');
+      effortRow.innerHTML = '';
       return;
     }
-    for (const button of effortRow.querySelectorAll('.seg')) {
-      const value = button.dataset.value;
-      button.disabled = value !== '' && efforts.length > 0 && !efforts.includes(value);
+    if (pick.effort && !efforts.includes(pick.effort)) pick.effort = '';
+    // The row is the model's own list, so it is rebuilt for every model.
+    effortRow.innerHTML = '';
+    for (const value of ['', ...efforts]) {
+      const button = segButton(effortLabel(value), value);
+      button.addEventListener('click', () => {
+        pick.effort = value;
+        pressed(effortRow, pick.effort);
+      });
+      effortRow.append(button);
     }
-    if (pick.effort && efforts.length && !efforts.includes(pick.effort)) pick.effort = '';
     pressed(effortRow, pick.effort);
   }
 

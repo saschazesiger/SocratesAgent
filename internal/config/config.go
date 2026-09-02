@@ -73,8 +73,7 @@ func LanguageName(code string) string { return spokenLanguages[NormalizeLanguage
 
 // NormalizeLanguage maps whatever is in the settings document onto one of the
 // two languages. A regional tag such as "de-CH" counts as its base language,
-// and anything else - including an empty field and the "auto" that older
-// versions wrote - becomes the default.
+// and anything else - an empty field included - becomes the default.
 func NormalizeLanguage(code string) string {
 	c := strings.ToLower(strings.TrimSpace(code))
 	if i := strings.IndexAny(c, "-_"); i > 0 {
@@ -120,36 +119,39 @@ type AgentSettings struct {
 	WorkspaceRoot string `json:"workspace_root"`
 }
 
-// The reasoning effort levels Socrates offers. They are the three every
-// harness that has an effort mechanism at all understands: Claude Code accepts
-// low, medium, high, xhigh and max, Codex accepts those plus minimal and
-// ultra, and OpenCode names its effort "variants" low, medium and high. The
-// closed set is therefore the intersection, so that a level chosen in the
-// dashboard can never be one the program refuses.
+// The reasoning effort levels. Each agent names its own - Claude Code takes
+// low, medium, high, xhigh and max, Codex reports a list per model, OpenCode
+// names its effort "variants" per model - and the picker offers exactly what
+// the chosen model reports. This list is only what a settings document may
+// carry at all; whether a model takes a level is that model's answer.
 //
 // EffortDefault - the empty string - means "do not say anything about it" and
 // leaves the program on whatever it would have chosen for itself.
 const (
 	EffortDefault = ""
+	EffortMinimal = "minimal"
 	EffortLow     = "low"
 	EffortMedium  = "medium"
 	EffortHigh    = "high"
+	EffortXHigh   = "xhigh"
+	EffortMax     = "max"
+	EffortUltra   = "ultra"
 )
 
+// KnownEfforts is every level above, from least to most.
+var KnownEfforts = []string{EffortMinimal, EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax, EffortUltra}
+
 // NormalizeEffort maps whatever is in the settings document onto one of the
-// levels above. Anything else - a typo, a level only one program knows, an
-// empty field - becomes the program's own default, which is always safe.
+// known levels. Anything else - a typo, an empty field - becomes the
+// program's own default, which is always safe.
 func NormalizeEffort(level string) string {
-	switch strings.ToLower(strings.TrimSpace(level)) {
-	case EffortLow:
-		return EffortLow
-	case EffortMedium:
-		return EffortMedium
-	case EffortHigh:
-		return EffortHigh
-	default:
-		return EffortDefault
+	level = strings.ToLower(strings.TrimSpace(level))
+	for _, known := range KnownEfforts {
+		if level == known {
+			return known
+		}
 	}
+	return EffortDefault
 }
 
 // AgentsSettings is what the user decides about the three programs Socrates
@@ -170,6 +172,21 @@ type AgentEntry struct {
 	// ExtraArgs is appended to the command line, for the one flag a person
 	// turns out to need and this app did not think of.
 	ExtraArgs []string `json:"extra_args,omitempty"`
+	// Models is the person's own short list: the models the new-chat sheet
+	// offers for this agent, in this order, each with the effort it starts
+	// on. Empty means "offer everything the agent reports", which is what a
+	// fresh installation wants and what a four-hundred-entry OpenRouter list
+	// does not.
+	Models []ModelPick `json:"models,omitempty"`
+}
+
+// ModelPick is one entry of that short list. The id is in the agent's own
+// naming, picked from the discovered list or typed in - a typed one is not
+// checked against anything here, because the discovery may simply be older
+// than the model.
+type ModelPick struct {
+	ID     string `json:"id"`
+	Effort string `json:"effort,omitempty"` // one of the effort levels above, "" = the model's own
 }
 
 // Entry returns the settings for one agent id, and whether it is a known one.
@@ -254,8 +271,8 @@ func (s *Settings) Normalize() {
 	if strings.TrimSpace(s.Voice.STTPrompt) == "" {
 		s.Voice.STTPrompt = d.Voice.STTPrompt
 	}
-	// A rate of zero is what an older document that never had the setting
-	// carries, and a negative one is nothing at all.
+	// A rate of zero is a field the admin form left behind, and a negative one
+	// is nothing at all.
 	if s.Voice.TTSRate <= 0 {
 		s.Voice.TTSRate = 1
 	}
@@ -279,12 +296,14 @@ func (s *Settings) Normalize() {
 	}
 }
 
-// normalizeAgents does the little there is to do: trim the two strings a
-// person can type. Whether an agent is actually there is not a setting - it is
-// a fact about the machine, and /api/agents is what reports it.
+// normalizeAgents does the little there is to do: trim the strings a person
+// can type, and keep the model list to one entry per id with an effort the
+// agents understand. Whether an agent is actually there is not a setting - it
+// is a fact about the machine, and /api/agents is what reports it.
 func (s *Settings) normalizeAgents() {
 	for _, e := range []*AgentEntry{&s.Agents.Claude, &s.Agents.Codex, &s.Agents.OpenCode} {
 		e.Binary = strings.TrimSpace(e.Binary)
+		e.Models = normalizePicks(e.Models)
 		args := e.ExtraArgs[:0]
 		for _, a := range e.ExtraArgs {
 			if a = strings.TrimSpace(a); a != "" {
@@ -341,4 +360,21 @@ func DefaultWorkspaceRoot() string {
 		return v
 	}
 	return filepath.Join(DataDir(), "workspaces")
+}
+
+// normalizePicks trims every id, drops the empty ones and the repeats (the
+// first occurrence wins, so the order a person arranged survives), and maps
+// every effort onto a level the agents understand.
+func normalizePicks(in []ModelPick) []ModelPick {
+	var out []ModelPick
+	seen := map[string]bool{}
+	for _, p := range in {
+		id := strings.TrimSpace(p.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, ModelPick{ID: id, Effort: NormalizeEffort(p.Effort)})
+	}
+	return out
 }

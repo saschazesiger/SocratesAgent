@@ -52,8 +52,23 @@ type Agent struct {
 	DefaultEffort string          `json:"default_effort"`
 	Static        bool            `json:"static"`
 	Models        []harness.Model `json:"models"`
-	Notes         string          `json:"notes"`
-	Error         string          `json:"error"`
+	// Picks is the person's own short list from the dashboard, in their
+	// order, each entry filled in from Models where the id is known. Empty
+	// means the sheet offers Models instead.
+	Picks []harness.Model `json:"picks"`
+	Notes string          `json:"notes"`
+	Error string          `json:"error"`
+}
+
+// AllEfforts is every effort level any of this agent's models offers, in
+// order: what a model the agent has not reported can be offered, since there
+// is nothing narrower to go on.
+func (a Agent) AllEfforts() []string {
+	var all []string
+	for _, m := range a.Models {
+		all = append(all, m.Efforts...)
+	}
+	return harness.OrderEfforts(all)
 }
 
 // Model returns one model of this agent by its id.
@@ -261,19 +276,41 @@ func (c *Catalog) probeAll(ctx context.Context) Snapshot {
 }
 
 // withSettings overlays the parts of an entry that are a setting rather than a
-// discovery, so switching an agent off in the dashboard takes effect without
-// spawning anything.
+// discovery, so switching an agent off or changing the short list in the
+// dashboard takes effect without spawning anything.
 func (c *Catalog) withSettings(snap Snapshot) Snapshot {
 	settings := c.settings()
 	out := Snapshot{RefreshedAt: snap.RefreshedAt, Agents: make([]Agent, 0, len(snap.Agents))}
 	for _, a := range snap.Agents {
-		if entry, ok := settings.Agents.Entry(a.ID); ok {
-			a.Enabled = entry.Enabled
-		}
 		if a.Models == nil {
 			a.Models = []harness.Model{}
 		}
+		a.Picks = []harness.Model{}
+		if entry, ok := settings.Agents.Entry(a.ID); ok {
+			a.Enabled = entry.Enabled
+			a.Picks = Picks(a, entry.Models)
+		}
 		out.Agents = append(out.Agents, a)
+	}
+	return out
+}
+
+// Picks fills the dashboard's short list in from what the agent reported: a
+// known id keeps its label, hint and effort levels, and an id the agent has
+// not reported - typed in, or newer than the discovery - is offered as it was
+// typed, with every effort level when the agent has an effort mechanism at
+// all, because there is nothing to narrow it down with. The first entry is
+// the default, so the sheet starts on it.
+func Picks(a Agent, picks []config.ModelPick) []harness.Model {
+	out := make([]harness.Model, 0, len(picks))
+	for i, p := range picks {
+		m, known := a.Model(p.ID)
+		if !known {
+			m = harness.Model{ID: p.ID, Label: p.ID, Hint: "typed in the dashboard", Efforts: a.AllEfforts()}
+		}
+		m.DefaultEffort = p.Effort
+		m.Default = i == 0
+		out = append(out, m)
 	}
 	return out
 }
@@ -321,7 +358,7 @@ func discoverOne(ctx context.Context, desc harness.Descriptor, entry config.Agen
 	// been chosen; once one is, that model's own list decides.
 	a.HasEffort = false
 	for i := range a.Models {
-		a.Models[i].Efforts = harness.FilterEfforts(a.Models[i].Efforts)
+		a.Models[i].Efforts = harness.OrderEfforts(a.Models[i].Efforts)
 		if len(a.Models[i].Efforts) > 0 {
 			a.HasEffort = true
 		}

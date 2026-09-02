@@ -693,7 +693,7 @@ func TestCloseIsIdempotentAndClosesEvents(t *testing.T) {
 	}
 }
 
-// FK-16: the effort list arrives in its object form and xhigh is filtered out.
+// FK-16: the effort list arrives in its object form, and every level the model names is kept.
 func TestDiscoverReadsTheModelList(t *testing.T) {
 	dir := fakes.Build(t)
 	t.Setenv("PATH", fakes.PathWith(dir))
@@ -711,8 +711,8 @@ func TestDiscoverReadsTheModelList(t *testing.T) {
 	if first.ID != "gpt-5.4-mini" || first.Label != "GPT-5.4-Mini" || !first.Default {
 		t.Errorf("first model = %+v", first)
 	}
-	if strings.Join(first.Efforts, ",") != "low,medium,high" {
-		t.Errorf("efforts = %v, want the low/medium/high intersection", first.Efforts)
+	if strings.Join(first.Efforts, ",") != "low,medium,high,xhigh" {
+		t.Errorf("efforts = %v, want every level the model names", first.Efforts)
 	}
 	if first.DefaultEffort != "medium" {
 		t.Errorf("default effort = %q", first.DefaultEffort)

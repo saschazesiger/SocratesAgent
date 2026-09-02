@@ -117,10 +117,9 @@ func parseModels(raw json.RawMessage) (harness.Catalog, error) {
 		if label == "" {
 			label = m.ID
 		}
-		efforts := harness.FilterEfforts(effortsOf(m.SupportedReasoningEfforts))
-		// An effort the picker offers must be one this model accepts, so a
-		// default outside the low/medium/high intersection - "xhigh" is a
-		// real one - is not carried over.
+		efforts := harness.OrderEfforts(effortsOf(m.SupportedReasoningEfforts))
+		// The default is carried over when it is one of the levels the model
+		// lists, and medium stands in when the list does not name it.
 		def := ""
 		for _, e := range efforts {
 			if e == m.DefaultReasoningEffort {

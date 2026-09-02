@@ -241,26 +241,6 @@ func TestReplayBelowTheTrimPointIsRefused(t *testing.T) {
 	}
 }
 
-// The sweep is the only place the previous version's wire format is still
-// spoken, and it exists so an upgrade does not leave detached terminal hosts
-// running forever.
-func TestSweepLegacyTerminalsRemovesTheDirectory(t *testing.T) {
-	data := t.TempDir()
-	dir := filepath.Join(data, "terminals", "term_abc")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "spec.json"), []byte(`{"id":"term_abc"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	SweepLegacyTerminals(data)
-	if _, err := os.Stat(filepath.Join(data, "terminals")); !os.IsNotExist(err) {
-		t.Fatalf("the legacy directory survived the sweep: %v", err)
-	}
-	// It is safe to run on an installation that never had one.
-	SweepLegacyTerminals(t.TempDir())
-}
-
 // Closing a session that is mid-turn ends the host rather than leaving it
 // lingering, because whoever asked has already seen the answer.
 func TestCloseEndsAHangingTurn(t *testing.T) {

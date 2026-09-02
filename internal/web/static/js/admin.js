@@ -262,11 +262,103 @@ function agentCard(agent, refreshing) {
     ),
     agent.error ? el('div', { class: 'agent-note bad', text: agent.error }) : null,
     agent.notes ? el('div', { class: 'agent-note', text: agent.notes }) : null,
+    modelList(agent),
     el('div', { class: 'grid-2' },
       field('Binary path', binary, 'Leave it empty to look the program up on PATH, which is what a normal installation wants.'),
       field('Extra arguments', args, 'Appended to every command line, for the one flag this app did not think of.'),
     ),
     el('div', { class: 'row' }, refresh),
+  );
+}
+
+// modelList is the person's own short list for one agent: the models the
+// new-chat sheet offers, in this order, each with the effort it starts on.
+// An entry is picked from what the agent reported or typed in as it is; an
+// empty list means the sheet offers everything the agent reported.
+//
+// The list lives in the settings object like every other field on this page
+// and is written by Save - so a picked model is not a request to the server,
+// and an unsaved change is reverted by leaving, the same as everywhere else.
+function modelList(agent) {
+  const path = 'agents.' + agent.id + '.models';
+  const picks = () => (agentSetting(agent.id, 'models', []) || []).map((p) => ({ id: p.id, effort: p.effort || '' }));
+  const known = (id) => (agent.models || []).find((m) => m.id === id) || null;
+
+  const rows = el('div', { class: 'model-list' });
+  function render() {
+    rows.innerHTML = '';
+    const list = picks();
+    if (!list.length) {
+      rows.append(el('div', { class: 'hint', text: 'No short list - the new-chat sheet offers every model '
+        + agent.label + ' reports.' }));
+      return;
+    }
+    list.forEach((pick, index) => {
+      const model = known(pick.id);
+      // The levels are the model's own; a model the agent has not reported
+      // gets every level any of the agent's models offers.
+      const efforts = agents.effortsFor(agent.id, pick.id);
+      const effort = el('select', { class: 'select sm', 'aria-label': 'Default effort for ' + pick.id });
+      for (const value of ['', ...efforts]) {
+        effort.append(el('option', { value, text: agents.effortLabel(value) }));
+      }
+      effort.value = efforts.includes(pick.effort) ? pick.effort : '';
+      effort.hidden = !efforts.length;
+      effort.addEventListener('change', () => {
+        const next = picks();
+        next[index].effort = effort.value;
+        setPath(settings, path, next);
+      });
+      const remove = el('button', {
+        class: 'btn sm', type: 'button', text: 'Remove', 'aria-label': 'Remove ' + pick.id,
+        onclick: () => { setPath(settings, path, picks().filter((_, i) => i !== index)); render(); },
+      });
+      rows.append(el('div', { class: 'model-row' },
+        el('div', { class: 'model-name' },
+          el('div', { text: model ? (model.label || pick.id) : pick.id }),
+          el('div', { class: 'hint mono', text: model ? (model.hint || pick.id) : pick.id + ' · typed in, not on the list ' + agent.label + ' reports' }),
+        ),
+        effort, remove,
+      ));
+    });
+  }
+
+  const picker = combobox({
+    value: '',
+    placeholder: agent.static ? 'sonnet' : 'pick from the list, or type a model id',
+    items: () => (agent.models || []).map((m) => ({ value: m.id, label: m.label || m.id, hint: m.hint || '', group: m.group || '' })),
+    onChange: () => {},
+  });
+  const input = picker.node.querySelector('input');
+  const add = () => {
+    const id = input.value.trim();
+    if (!id) return;
+    const list = picks();
+    if (list.some((p) => p.id === id)) {
+      toast(id + ' is on the list already.');
+      return;
+    }
+    const model = known(id);
+    list.push({ id, effort: model && model.default_effort ? model.default_effort : '' });
+    setPath(settings, path, list);
+    picker.setValue('', false);
+    render();
+  };
+  input.addEventListener('keydown', (event) => {
+    // Enter with the list closed adds what is typed; with the list open the
+    // combobox takes the highlighted entry first, and a second Enter adds it.
+    if (event.key === 'Enter' && picker.node.querySelector('.combo-list').hidden) {
+      event.preventDefault();
+      add();
+    }
+  });
+  render();
+  return el('div', { class: 'field model-picks' },
+    el('label', { text: 'Models offered in the chat' }),
+    rows,
+    el('div', { class: 'model-add' }, picker.node, el('button', { class: 'btn sm', type: 'button', text: 'Add', onclick: add })),
+    el('div', { class: 'hint', text: 'Pick from what ' + agent.label + ' reports or type an id, and set the effort a new chat starts on. '
+      + 'Only these appear in the new-chat sheet; leave the list empty to offer all of them.' }),
   );
 }
 

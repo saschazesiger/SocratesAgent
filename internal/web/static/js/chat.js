@@ -26,7 +26,6 @@ const dom = {
   agentBadge: $('chatAgent'),
   archivedTag: $('chatArchived'),
   composer: $('composer'),
-  composerLegacy: $('composerLegacy'),
   input: $('input'),
   sendBtn: $('sendBtn'),
   micBtn: $('micBtn'),
@@ -68,12 +67,10 @@ const state = {
   // What was remembered is read in init, once the page is there to show it.
   view: 'chat',
   // What this chat is bound to, as the header shows it: the agent's name, the
-  // model's name, whether the binding still works on this machine, and whether
-  // this is a transcript from before Socrates talked to agents directly.
+  // model's name, and whether the binding still works on this machine.
   agentLabel: '',
   modelLabel: '',
   agentOK: true,
-  legacy: false,
   // What the new chat sheet decided, for a chat that does not exist yet. It
   // travels in the payload of every queued message that has no chat id, so a
   // chat typed into while offline is created with its agent when the message
@@ -340,7 +337,6 @@ function adoptCreatedChat(chat, item) {
   updateArchivedMark();
   state.effectiveWorkspace = '';
   state.rev = 0;
-  state.legacy = false;
   state.agentOK = true;
   paintAgentBadge();
   dom.chatSettings.hidden = false;
@@ -386,7 +382,7 @@ function bindUI() {
   });
   dom.viewSlider.addEventListener('click', (event) => {
     const stop = event.target.closest('.stop');
-    if (stop && stop.getAttribute('aria-disabled') !== 'true') setView(stop.dataset.view);
+    if (stop) setView(stop.dataset.view);
   });
   // One knob on one slider is one radio group, and a radio group is driven
   // with the arrow keys.
@@ -395,9 +391,7 @@ function bindUI() {
       : event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 0;
     if (!step) return;
     event.preventDefault();
-    const stops = [...dom.viewSlider.querySelectorAll('.stop')]
-      .filter((stop) => stop.getAttribute('aria-disabled') !== 'true');
-    if (!stops.length) return;
+    const stops = [...dom.viewSlider.querySelectorAll('.stop')];
     const at = stops.findIndex((stop) => stop.dataset.view === state.view);
     const stop = stops[(Math.max(at, 0) + step + stops.length) % stops.length];
     setView(stop.dataset.view);
@@ -880,7 +874,6 @@ async function startNewChat() {
   disconnect();
   state.chatId = null;
   state.chat = null;
-  state.legacy = false;
   state.agentOK = true;
   state.agentLabel = '';
   state.modelLabel = '';
@@ -896,7 +889,6 @@ async function startNewChat() {
   dom.chatPanel.hidden = true;
   setBusy(false);
   paintAgentBadge();
-  updateComposerMode();
   showEmptyState();
   renderChatList();
   resetAutoScreen('Tap the microphone and speak');
@@ -905,18 +897,10 @@ async function startNewChat() {
 }
 
 // paintAgentBadge is the one line in the header that says what this chat is
-// bound to. A chat with no agent - a transcript from before the rewrite - says
-// so instead, and one whose agent has since been removed is marked.
+// bound to. A chat whose agent has since been removed is marked.
 function paintAgentBadge() {
   const badge = dom.agentBadge;
   if (!badge) return;
-  if (state.legacy) {
-    badge.hidden = false;
-    badge.className = 'agent-badge warn';
-    badge.replaceChildren(el('span', { class: 'b-model', text: 'No agent' }));
-    badge.title = 'This chat was made before Socrates talked to agents directly.';
-    return;
-  }
   const binding = state.chat && state.chat.agent
     ? { agent: state.chat.agent, model: state.chat.model, effort: state.chat.effort }
     : state.pendingBinding;
@@ -955,23 +939,6 @@ function paintAgentBadge() {
     : full + ' — ' + agentLabel + ' is not available on this machine any more.';
 }
 
-// updateComposerMode swaps the composer for one sentence on a chat that can
-// never be answered again. Nothing is queued from there, so the outbox never
-// sees a message that can only ever fail.
-//
-// Hands free goes with it. Audio mode is a microphone and nothing else, so on
-// a chat that cannot be answered it is a button that would record, spend a
-// transcription and then be told no - which is a worse way of saying no than
-// not offering it.
-function updateComposerMode() {
-  setClass(document.body, 'legacy-chat', state.legacy);
-  if (dom.composerLegacy) dom.composerLegacy.hidden = !state.legacy;
-  const auto = dom.viewSlider.querySelector('.stop[data-view="auto"]');
-  if (auto) auto.setAttribute('aria-disabled', state.legacy ? 'true' : 'false');
-  if (state.legacy && state.view === 'auto') setView('chat', { silent: true });
-  updateMicState();
-}
-
 async function openChat(id, options = {}) {
   // Before the early return: tapping the chat that is already open is still
   // someone saying they are done with the list.
@@ -994,9 +961,8 @@ async function openChat(id, options = {}) {
   state.agentLabel = '';
   state.modelLabel = '';
   state.agentOK = true;
-  state.legacy = false;
   paintAgentBadge();
-  updateComposerMode();
+  updateMicState();
   location.hash = id;
 
   let data;
@@ -1025,10 +991,9 @@ async function openChat(id, options = {}) {
   state.agentLabel = data.agent_label || '';
   state.modelLabel = data.model_label || '';
   state.agentOK = data.agent_ok !== false;
-  state.legacy = !!data.legacy;
   state.pendingBinding = null;
   paintAgentBadge();
-  updateComposerMode();
+  updateMicState();
   state.rev = data.rev || 0;
   dom.title.textContent = data.chat.title || 'New chat';
   writeValue(titleKey(id), data.chat.title || '');
@@ -1552,13 +1517,6 @@ function toggleChatPanel() {
 // conversation itself resumes, so this is not a way of starting over.
 const binding = { picker: null, model: '', effort: '' };
 
-const EFFORT_LEVELS = [
-  { value: '', label: 'Default' },
-  { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'high', label: 'High' },
-];
-
 function buildBindingFields() {
   if (!dom.panelModel || binding.picker) return;
   binding.picker = combobox({
@@ -1571,32 +1529,37 @@ function buildBindingFields() {
     },
   });
   dom.panelModel.append(binding.picker.node);
-  for (const level of EFFORT_LEVELS) {
-    const button = el('button', {
-      class: 'seg', type: 'button', 'data-value': level.value, 'aria-pressed': 'false',
-    }, el('span', { class: 'seg-label', text: level.label }));
-    button.addEventListener('click', () => {
-      binding.effort = level.value;
-      renderPanelEffort();
-    });
-    dom.panelEffort.append(button);
-  }
 }
 
+// renderPanelEffort draws the effort row for the model in the field: the
+// levels are that model's own, so the row is rebuilt whenever the model
+// changes rather than drawn once and greyed out.
 function renderPanelEffort() {
   if (!dom.panelEffort) return;
-  const model = agents.modelOf(state.chat ? state.chat.agent : '', binding.model);
-  const efforts = model ? (model.efforts || []) : [];
-  const entry = state.chat ? agents.agent(state.chat.agent) : null;
-  const show = efforts.length > 0 || (!model && entry && entry.has_effort);
-  dom.panelEffort.hidden = !show;
+  const agentId = state.chat ? state.chat.agent : '';
+  const efforts = agents.effortsFor(agentId, binding.model);
+  dom.panelEffort.hidden = efforts.length === 0;
   if (binding.effort && efforts.length && !efforts.includes(binding.effort)) binding.effort = '';
+  const levels = ['', ...efforts];
+  const drawn = [...dom.panelEffort.querySelectorAll('.seg')].map((b) => b.dataset.value);
+  if (drawn.join('\u0000') !== levels.join('\u0000')) {
+    dom.panelEffort.innerHTML = '';
+    for (const value of levels) {
+      const button = el('button', {
+        class: 'seg', type: 'button', 'data-value': value, 'aria-pressed': 'false',
+      }, el('span', { class: 'seg-label', text: agents.effortLabel(value) }));
+      button.addEventListener('click', () => {
+        binding.effort = value;
+        renderPanelEffort();
+      });
+      dom.panelEffort.append(button);
+    }
+  }
   for (const button of dom.panelEffort.querySelectorAll('.seg')) {
     const on = button.dataset.value === binding.effort;
     button.classList.toggle('on', on);
     button.setAttribute('aria-pressed', on ? 'true' : 'false');
-    button.disabled = state.busy
-      || (button.dataset.value !== '' && efforts.length > 0 && !efforts.includes(button.dataset.value));
+    button.disabled = state.busy;
   }
 }
 
@@ -1605,7 +1568,7 @@ function renderPanelEffort() {
 function fillBindingFields() {
   if (!dom.panelBinding) return;
   const chat = state.chat;
-  const usable = !!(chat && chat.agent) && !state.legacy;
+  const usable = !!(chat && chat.agent);
   dom.panelBinding.hidden = !usable;
   if (!usable) return;
   buildBindingFields();
@@ -1639,7 +1602,7 @@ function saveChatSettings() {
   // The model and the effort only travel when they actually changed: a PATCH
   // that names them closes the chat's agent session, and a Save that only
   // renamed the chat has no business doing that.
-  const bound = !!chat.agent && !state.legacy && !dom.panelBinding.hidden;
+  const bound = !!chat.agent && !dom.panelBinding.hidden;
   if (bound && binding.model && binding.model !== chat.model) body.model = binding.model;
   if (bound && (binding.effort || '') !== (chat.effort || '')) body.effort = binding.effort;
   chat.title = title;
@@ -1952,10 +1915,9 @@ function updateSendButton() {
 // The microphone follows the run: there is nothing to say into it while
 // Socrates is still working.
 function updateMicState() {
-  const blocked = state.busy || state.legacy;
-  setClass(dom.autoMic, 'busy', blocked);
-  dom.autoMic.disabled = blocked;
-  dom.micBtn.disabled = blocked;
+  setClass(dom.autoMic, 'busy', state.busy);
+  dom.autoMic.disabled = state.busy;
+  dom.micBtn.disabled = state.busy;
   updateAutoBusy();
 }
 
@@ -1981,12 +1943,6 @@ async function stopRun() {
 function submitText(raw) {
   const text = (raw || '').trim();
   if (!text || state.busy) return;
-  // A chat with no agent can never be answered, so nothing is queued from it:
-  // the outbox must never hold a message that can only ever fail.
-  if (state.legacy) {
-    toast('This chat was made before Socrates talked to agents directly. Start a new chat.');
-    return;
-  }
   // The binding the sheet produced is what makes a chat that does not exist
   // yet creatable later, offline included.
   if (!state.chatId && !state.pendingBinding) {

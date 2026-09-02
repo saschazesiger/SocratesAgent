@@ -126,6 +126,9 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /api/model", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"data": models()})
 	})
+	mux.HandleFunc("GET /config/providers", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, providers())
+	})
 	mux.HandleFunc("POST /api/session", s.createSession)
 	mux.HandleFunc("GET /api/session/active", s.activeSessions)
 	mux.HandleFunc("POST /api/session/{id}/model", s.setModel)
@@ -834,6 +837,64 @@ func models() []any {
 		},
 	}
 }
+
+// providers is GET /config/providers: the list OpenCode's own picker is built
+// from. Like the real server it carries the resolved API key in options - the
+// discovery must decode around it - and, unlike /api/model, it lists every
+// provider with credentials, not only the free one. The second provider
+// carries a deprecated model, which a picker must not offer.
+func providers() map[string]any {
+	byID := map[string]any{}
+	for _, m := range models() {
+		entry := m.(map[string]any)
+		entry["status"] = "active"
+		entry["cost"] = map[string]any{"input": 0, "output": 0}
+		entry["limit"] = map[string]any{"context": 200000, "output": 32000}
+		byID[entry["id"].(string)] = entry
+	}
+	return map[string]any{
+		"providers": []any{
+			map[string]any{
+				"id": "opencode", "name": "OpenCode Zen", "source": "api",
+				"env":     []any{"OPENCODE_API_KEY"},
+				"options": map[string]any{"apiKey": FakeAPIKey},
+				"models":  byID,
+			},
+			map[string]any{
+				"id": "fakerouter", "name": "Fake Router", "source": "api",
+				"env":     []any{"FAKEROUTER_API_KEY"},
+				"options": map[string]any{"apiKey": FakeAPIKey, "headers": map[string]any{"X-Title": "opencode"}},
+				"models": map[string]any{
+					"acme/fast-1": map[string]any{
+						"id": "acme/fast-1", "providerID": "fakerouter", "family": "fast",
+						"name":   "Fast One",
+						"status": "active",
+						"cost":   map[string]any{"input": 0.25, "output": 1.0},
+						"limit":  map[string]any{"context": 1000000, "output": 8000},
+						"variants": map[string]any{
+							"low":  map[string]any{"reasoning": map[string]any{"effort": "low"}},
+							"high": map[string]any{"reasoning": map[string]any{"effort": "high"}},
+						},
+					},
+					"acme/old-1": map[string]any{
+						"id": "acme/old-1", "providerID": "fakerouter", "family": "old",
+						"name":     "Old One",
+						"status":   "deprecated",
+						"variants": map[string]any{},
+					},
+				},
+			},
+		},
+		"default": map[string]any{
+			"opencode":   "fake-thinker",
+			"fakerouter": "acme/fast-1",
+		},
+	}
+}
+
+// FakeAPIKey is the plaintext secret /config/providers hands out. A test that
+// finds it anywhere outside that endpoint has found a leak.
+const FakeAPIKey = "sk-fake-do-not-leak-0123456789"
 
 func sleep(done <-chan struct{}, ms int) bool {
 	if ms <= 0 {

@@ -91,9 +91,14 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL
 );
+-- The unique indexes are what make a retried request idempotent: the same
+-- client id can only ever produce one chat and one message.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chats_client ON chats(client_id) WHERE client_id <> '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_client ON messages(chat_id, client_id) WHERE client_id <> '';
+CREATE INDEX IF NOT EXISTS idx_messages_rev ON messages(chat_id, rev);
 `
 
-// Open opens (and migrates) the database at path.
+// Open opens the database at path, creating it if it is not there.
 func Open(path string) (*Store, error) {
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -112,11 +117,7 @@ func Open(path string) (*Store, error) {
 	db.SetConnMaxLifetime(0)
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
-	}
-	if err := migrate(db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
+		return nil, fmt.Errorf("create schema: %w", err)
 	}
 	s := &Store{db: db}
 	// The revision counter has to start above everything already written, or a
@@ -127,77 +128,6 @@ func Open(path string) (*Store, error) {
 		s.rev.Store(maxRev.Int64)
 	}
 	return s, nil
-}
-
-// migrate adds what came after the first release. CREATE TABLE IF NOT EXISTS
-// leaves an existing table alone, so every column added later has to be
-// applied to databases that are already out there.
-func migrate(db *sql.DB) error {
-	for _, add := range []struct{ table, column, definition string }{
-		{"chats", "client_id", "TEXT NOT NULL DEFAULT ''"},
-		{"chats", "archived_at", "INTEGER NOT NULL DEFAULT 0"},
-		{"messages", "rev", "INTEGER NOT NULL DEFAULT 0"},
-		{"messages", "client_id", "TEXT NOT NULL DEFAULT ''"},
-		// A chat is bound to one agent when it is created. Every chat that
-		// exists before this migration gets the empty string, which is what
-		// makes it a read-only transcript: there is no CLI that saw the half
-		// of the conversation a different mechanism produced.
-		{"chats", "agent", "TEXT NOT NULL DEFAULT ''"},
-		{"chats", "model", "TEXT NOT NULL DEFAULT ''"},
-		{"chats", "effort", "TEXT NOT NULL DEFAULT ''"},
-		{"chats", "agent_session", "TEXT NOT NULL DEFAULT ''"},
-		{"chats", "host_dir", "TEXT NOT NULL DEFAULT ''"},
-		{"chats", "host_seq", "INTEGER NOT NULL DEFAULT 0"},
-	} {
-		has, err := hasColumn(db, add.table, add.column)
-		if err != nil {
-			return err
-		}
-		if has {
-			continue
-		}
-		if _, err := db.Exec("ALTER TABLE " + add.table + " ADD COLUMN " + add.column + " " + add.definition); err != nil {
-			return err
-		}
-	}
-	// The orchestrator kept a transcript in the provider's own format so it
-	// could send the whole tool-calling history back. There is no
-	// orchestrator, so there is nothing to send.
-	if _, err := db.Exec(`DROP TABLE IF EXISTS llm_messages`); err != nil {
-		return err
-	}
-	// The unique indexes are what make a retried request idempotent: the same
-	// client id can only ever produce one chat and one message.
-	_, err := db.Exec(`
-CREATE UNIQUE INDEX IF NOT EXISTS idx_chats_client ON chats(client_id) WHERE client_id <> '';
-CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_client ON messages(chat_id, client_id) WHERE client_id <> '';
-CREATE INDEX IF NOT EXISTS idx_messages_rev ON messages(chat_id, rev);
-`)
-	return err
-}
-
-func hasColumn(db *sql.DB, table, column string) (bool, error) {
-	rows, err := db.Query("PRAGMA table_info(" + table + ")")
-	if err != nil {
-		return false, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var (
-			cid        int
-			name, typ  string
-			notNull    int
-			defaultVal sql.NullString
-			pk         int
-		)
-		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultVal, &pk); err != nil {
-			return false, err
-		}
-		if name == column {
-			return true, rows.Err()
-		}
-	}
-	return false, rows.Err()
 }
 
 // Close closes the database.
@@ -643,12 +573,9 @@ func (s *Store) RecoverRuns(except ...string) error {
 	defer s.mu.Unlock()
 	ts := now()
 	notIn, args := excludeClause("id", except)
-	// 'waiting_input' is gone as a state, but databases written by older
-	// versions still hold runs that were parked in it. They are recovered here
-	// like any other run that never finished.
-	runArgs := append([]any{RunInterrupted, ts}, args...)
+	runArgs := append([]any{RunInterrupted, ts, RunRunning}, args...)
 	if _, err := s.db.Exec(`UPDATE runs SET status = ?, error = 'Server restarted while this run was in progress.', updated_at = ?
-		WHERE status IN ('running','waiting_input')`+notIn, runArgs...); err != nil {
+		WHERE status = ?`+notIn, runArgs...); err != nil {
 		return err
 	}
 	stepNotIn, stepArgs := excludeClause("run_id", except)

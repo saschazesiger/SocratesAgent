@@ -1,7 +1,6 @@
 package store
 
 import (
-	"database/sql"
 	"encoding/json"
 	"path/filepath"
 	"strings"
@@ -283,47 +282,6 @@ func TestStepIDsReportWhatIsLeft(t *testing.T) {
 	ids, err := st.StepIDs("c1")
 	if err != nil || len(ids) != 1 || ids[0] != "s2" {
 		t.Fatalf("step ids = %#v (%v)", ids, err)
-	}
-}
-
-// Databases created before these columns existed have to keep working.
-func TestMigrationAddsColumnsToAnOldDatabase(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "old.db")
-	old, err := sql.Open("sqlite", "file:"+path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := old.Exec(`
-CREATE TABLE chats (id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', workspace TEXT NOT NULL DEFAULT '',
-  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
-CREATE TABLE messages (id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, run_id TEXT NOT NULL DEFAULT '',
-  role TEXT NOT NULL, content TEXT NOT NULL, seq INTEGER NOT NULL, created_at INTEGER NOT NULL);
-INSERT INTO chats VALUES ('c1', 'Old chat', '', 1, 1);
-INSERT INTO messages VALUES ('m1', 'c1', '', 'user', 'from before', 1, 1);
-`); err != nil {
-		t.Fatal(err)
-	}
-	old.Close()
-
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("opening an old database must migrate it, got: %v", err)
-	}
-	defer st.Close()
-	chat, err := st.GetChat("c1")
-	if err != nil || chat.Title != "Old chat" {
-		t.Fatalf("chat = %#v (%v)", chat, err)
-	}
-	msgs, err := st.ListMessages("c1")
-	if err != nil || len(msgs) != 1 || msgs[0].Content != "from before" {
-		t.Fatalf("messages = %#v (%v)", msgs, err)
-	}
-	// The new columns are usable straight away.
-	if err := st.AddMessage(&Message{ID: "m2", ChatID: "c1", Role: "user", Content: "after", ClientID: "k"}); err != nil {
-		t.Fatalf("writing with the new columns: %v", err)
-	}
-	if found, err := st.MessageByClientID("c1", "k"); err != nil || found.ID != "m2" {
-		t.Fatalf("lookup after migration = %#v (%v)", found, err)
 	}
 }
 

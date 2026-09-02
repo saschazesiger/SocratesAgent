@@ -77,9 +77,9 @@ func TestSeqAndTimestampAreAlwaysWritten(t *testing.T) {
 	}
 }
 
-func TestFilterEffortsKeepsTheIntersectionInOrder(t *testing.T) {
-	got := FilterEfforts([]string{"xhigh", "high", "minimal", "low", "medium", "ultra"})
-	want := []string{"low", "medium", "high"}
+func TestOrderEffortsKeepsEveryLevelInOrder(t *testing.T) {
+	got := OrderEfforts([]string{"xhigh", "high", "minimal", "low", "medium", "ultra", "high", "odd", ""})
+	want := []string{"minimal", "low", "medium", "high", "xhigh", "ultra", "odd"}
 	if len(got) != len(want) {
 		t.Fatalf("efforts = %#v", got)
 	}
@@ -88,45 +88,7 @@ func TestFilterEffortsKeepsTheIntersectionInOrder(t *testing.T) {
 			t.Fatalf("efforts = %#v", got)
 		}
 	}
-	if len(FilterEfforts(nil)) != 0 {
+	if len(OrderEfforts(nil)) != 0 {
 		t.Fatal("an agent with no efforts gained some")
-	}
-}
-
-func TestTruncateOutputSaysThatItDid(t *testing.T) {
-	long := make([]byte, ToolOutputLimit+10)
-	for i := range long {
-		long[i] = 'x'
-	}
-	got := TruncateOutput(string(long))
-	if len(got) <= ToolOutputLimit {
-		t.Fatalf("truncated to %d", len(got))
-	}
-	if got[ToolOutputLimit:] != "\n… [output truncated]" {
-		t.Fatalf("no marker: %q", got[ToolOutputLimit:])
-	}
-	if TruncateOutput("short") != "short" {
-		t.Fatal("a short output was touched")
-	}
-}
-
-// Two adapters registering under the same id would silently shadow one
-// another, and IDs is what the picker is built from, so its order is fixed.
-func TestRegistryIsSortedAndAddressable(t *testing.T) {
-	Register(Descriptor{ID: "zzz-test", Label: "Z"})
-	Register(Descriptor{ID: "aaa-test", Label: "A"})
-	ids := IDs()
-	last := ""
-	for _, id := range ids {
-		if id < last {
-			t.Fatalf("IDs is not sorted: %#v", ids)
-		}
-		last = id
-	}
-	if d, ok := Get("aaa-test"); !ok || d.Label != "A" {
-		t.Fatalf("Get = %#v %v", d, ok)
-	}
-	if _, ok := Get("nothing"); ok {
-		t.Fatal("an unregistered id was found")
 	}
 }

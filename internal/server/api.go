@@ -118,10 +118,6 @@ func (s *Server) handleGetChat(w http.ResponseWriter, r *http.Request) {
 		"agent_label":         agentLabel,
 		"model_label":         modelLabel,
 		"agent_ok":            agentOK,
-		// A chat from before Socrates talked to agents directly is a
-		// transcript, not a conversation: there is no CLI that saw the half of
-		// it a different mechanism produced.
-		"legacy": chat.Agent == "",
 	})
 }
 
@@ -268,9 +264,6 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, engine.ErrShuttingDown):
 			writeError(w, http.StatusServiceUnavailable,
 				"Socrates is restarting - your message will be sent in a moment")
-		case errors.Is(err, engine.ErrNoAgent):
-			writeError(w, http.StatusUnprocessableEntity,
-				"this chat was made before Socrates talked to agents directly - start a new chat")
 		case errors.Is(err, store.ErrNotFound):
 			writeError(w, http.StatusNotFound, "chat not found")
 		default:

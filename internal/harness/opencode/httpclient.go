@@ -465,21 +465,53 @@ func (c *client) active(ctx context.Context, session string) (bool, error) {
 	return running, nil
 }
 
-// modelEntry is one row of GET /api/model: the models whose provider actually
-// resolved credentials at boot.
+// modelEntry is one model as the server describes it, on GET /api/model and
+// inside GET /config/providers alike.
 type modelEntry struct {
 	ID         string          `json:"id"`
 	ProviderID string          `json:"providerID"`
 	Name       string          `json:"name"`
 	Family     string          `json:"family"`
+	Status     string          `json:"status"` // "active", "deprecated", ... ; empty on /api/model
 	Variants   json.RawMessage `json:"variants"`
+	Cost       struct {
+		Input  float64 `json:"input"` // dollars per million input tokens
+		Output float64 `json:"output"`
+	} `json:"cost"`
+	Limit struct {
+		Context int64 `json:"context"`
+	} `json:"limit"`
+}
+
+// providerEntry is one connected provider on GET /config/providers. The
+// answer also carries each provider's options - the resolved API key among
+// them - which is why this struct has no field for them: the decoder drops
+// what it is not asked for, and the key never gets past this function.
+type providerEntry struct {
+	ID     string                `json:"id"`
+	Name   string                `json:"name"`
+	Models map[string]modelEntry `json:"models"`
+}
+
+// providers asks GET /config/providers: every provider that resolved
+// credentials, with its whole model list. This is the list OpenCode's own
+// picker is built from. GET /api/model is not it - measured against 1.17.13
+// it names only the models of the free "opencode" provider, whatever else is
+// connected.
+func (c *client) providers(ctx context.Context) ([]providerEntry, error) {
+	var out struct {
+		Providers []providerEntry `json:"providers"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/config/providers", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Providers, nil
 }
 
 func (c *client) models(ctx context.Context) ([]modelEntry, error) {
 	var out struct {
 		Data []modelEntry `json:"data"`
 	}
-	// GET /config/providers is never called: it returns the plaintext API key.
 	if err := c.do(ctx, http.MethodGet, "/api/model", nil, &out); err != nil {
 		return nil, err
 	}

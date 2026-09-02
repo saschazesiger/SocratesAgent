@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
+	"github.com/saschazesiger/SocratesAgent/internal/harness/fakes"
 	"github.com/saschazesiger/SocratesAgent/internal/piper"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 
@@ -787,6 +788,68 @@ func TestCreateChatValidatesItsBinding(t *testing.T) {
 	}
 }
 
+// The dashboard's short list is the first word on the model: its first entry
+// is what a chat without a model gets, and an id on it is accepted as typed
+// even against a discovered list that does not have it - the discovery may be
+// older than the model.
+func TestCreateChatFollowsTheShortList(t *testing.T) {
+	t.Setenv("PATH", fakes.PathWith(fakes.Build(t)))
+	t.Setenv("FAKE_SCRIPT", "")
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+	// A discovered catalogue, so codex's list is a real one.
+	_, discovered := env.do(t, env.client, "POST", "/api/agents/refresh", "")
+	var codexModels int
+	for _, a := range discovered["agents"].([]any) {
+		if entry := a.(map[string]any); entry["id"] == "codex" {
+			codexModels = len(entry["models"].([]any))
+		}
+	}
+	if codexModels == 0 {
+		t.Fatalf("the fake codex reported no models: %#v", discovered)
+	}
+	res, _ := env.do(t, env.client, "POST", "/api/chats", `{"agent":"codex","model":"not-yet-discovered"}`)
+	if res.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("an unknown model on a discovered list = %d, want 422", res.StatusCode)
+	}
+
+	settings := env.settings(t)
+	settings["agents"].(map[string]any)["codex"].(map[string]any)["models"] = []any{
+		map[string]any{"id": "not-yet-discovered", "effort": "high"},
+	}
+	env.saveSettings(t, settings)
+
+	_, listed := env.do(t, env.client, "GET", "/api/agents", "")
+	for _, a := range listed["agents"].([]any) {
+		entry := a.(map[string]any)
+		if entry["id"] != "codex" {
+			continue
+		}
+		picks, _ := entry["picks"].([]any)
+		if len(picks) != 1 {
+			t.Fatalf("picks = %#v", entry["picks"])
+		}
+		pick := picks[0].(map[string]any)
+		if pick["id"] != "not-yet-discovered" || pick["default_effort"] != "high" || pick["default"] != true {
+			t.Errorf("pick = %#v", pick)
+		}
+		if got := len(entry["models"].([]any)); got != codexModels {
+			t.Errorf("the full list shrank to %d", got)
+		}
+	}
+
+	_, created := env.do(t, env.client, "POST", "/api/chats", `{"agent":"codex"}`)
+	chat := created["chat"].(map[string]any)
+	if chat["model"] != "not-yet-discovered" {
+		t.Fatalf("a chat without a model did not get the first pick: %#v", chat)
+	}
+	_, typed := env.do(t, env.client, "POST", "/api/chats", `{"agent":"codex","model":"not-yet-discovered","effort":"high"}`)
+	c := typed["chat"].(map[string]any)
+	if c["model"] != "not-yet-discovered" || c["effort"] != "high" {
+		t.Fatalf("a picked model was refused: %#v", typed)
+	}
+}
+
 // The idempotency key answers before any validation runs: a chat that already
 // exists is an answer, whatever the settings have since become.
 func TestCreateChatIsIdempotentBeforeItValidates(t *testing.T) {
@@ -810,34 +873,8 @@ func TestCreateChatIsIdempotentBeforeItValidates(t *testing.T) {
 	}
 }
 
-// A chat that predates the rewrite is a read-only transcript: the API says so
-// with 422, which the Outbox marks failed and offers a retry for, rather than
-// with 409, which it would retry forever behind a message that is not true.
-func TestALegacyChatIsReadOnly(t *testing.T) {
-	noAgentsOnPATH(t)
-	env := newEnv(t)
-	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
-	if err := env.store.CreateChat(&store.Chat{ID: "chat_legacy", Title: "From before"}); err != nil {
-		t.Fatal(err)
-	}
-
-	_, snapshot := env.do(t, env.client, "GET", "/api/chats/chat_legacy", "")
-	if snapshot["legacy"] != true || snapshot["agent_ok"] != false {
-		t.Fatalf("a legacy chat was not marked as one: %#v", snapshot)
-	}
-
-	res, body := env.do(t, env.client, "POST", "/api/chats/chat_legacy/messages", `{"text":"hello"}`)
-	if res.StatusCode != http.StatusUnprocessableEntity {
-		t.Fatalf("sending into a legacy chat = %d, want 422", res.StatusCode)
-	}
-	if detail, _ := body["error"].(string); !strings.Contains(detail, "start a new chat") {
-		t.Errorf("the refusal should say what to do instead, got %q", detail)
-	}
-}
-
 // The model may change between turns; the agent never. A different agent is a
-// different conversation, and there is no CLI that saw the first half of this
-// one.
+// different conversation.
 func TestPatchChangesTheModelButNeverTheAgent(t *testing.T) {
 	noAgentsOnPATH(t)
 	env := newEnv(t)
@@ -875,9 +912,6 @@ func TestChatSnapshotDescribesItsBinding(t *testing.T) {
 	_, snapshot := env.do(t, env.client, "GET", "/api/chats/"+id, "")
 	if snapshot["agent_label"] != "Claude Code" {
 		t.Errorf("agent_label = %#v", snapshot["agent_label"])
-	}
-	if snapshot["legacy"] != false {
-		t.Errorf("a new chat was called legacy: %#v", snapshot["legacy"])
 	}
 	if _, ok := snapshot["model_label"]; !ok {
 		t.Error("no model_label in the snapshot")

@@ -8,12 +8,9 @@
 //
 // See e2e/README.md for what it needs and where the artefacts land.
 
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
 import {
   start, setup, shot, ok, scenario, skipScenario, finish, ensureNav, wait,
-  REPO, OUT, PASSWORD, LONG_SCRIPT, LIVE,
+  PASSWORD, LONG_SCRIPT, LIVE,
 } from './harness.mjs';
 
 // The one console error this environment produces on its own: a machine
@@ -109,40 +106,19 @@ const serverView = (page, id) => page.evaluate(async (chatId) => {
   };
 }, id);
 
-// Unbinding a chat's agent is the one thing no endpoint can do, and on purpose
-// (§6.3): a different agent is a different conversation. So a chat that
-// predates the rewrite is made the only way it can exist - in the database.
-const LEGACY_TOOL = `package main
-
-import (
-	"database/sql"
-	"fmt"
-	"os"
-
-	_ "modernc.org/sqlite"
-)
-
-func main() {
-	db, err := sql.Open("sqlite", "file:"+os.Args[1]+"?_pragma=busy_timeout(5000)")
-	if err != nil {
-		panic(err)
-	}
-	defer db.Close()
-	if _, err := db.Exec("UPDATE chats SET agent='', model='', effort='' WHERE id=?", os.Args[2]); err != nil {
-		panic(err)
-	}
-	fmt.Println("unbound", os.Args[2])
-}
-`;
-
-function unbind(dbPath, id) {
-  const dir = join(OUT, 'legacytool');
-  mkdirSync(dir, { recursive: true });
-  const src = join(dir, 'main.go');
-  writeFileSync(src, LEGACY_TOOL);
-  // Run from the repository so the module's own modernc.org/sqlite is used,
-  // but from a file outside it so nothing is written into the worktree.
-  return execFileSync('go', ['run', src, dbPath, id], { cwd: REPO }).toString();
+// The browser is offline exactly when the switch has to be thrown, so it is
+// thrown from Node instead - over the session cookie the page is holding, so
+// this is the same PUT /api/settings the admin dashboard sends.
+async function switchOffTheAgent(s, chatId) {
+  const cookie = (await s.context.cookies()).map((c) => c.name + '=' + c.value).join('; ');
+  const headers = { cookie, 'content-type': 'application/json' };
+  const { chat } = await (await fetch(s.url + '/api/chats/' + chatId, { headers })).json();
+  const { settings } = await (await fetch(s.url + '/api/settings', { headers })).json();
+  settings.agents[chat.agent].enabled = false;
+  const res = await fetch(s.url + '/api/settings',
+    { method: 'PUT', headers, body: JSON.stringify({ settings }) });
+  const saved = await res.json();
+  return saved.settings.agents[chat.agent].enabled === false ? chat.agent : '';
 }
 
 // --------------------------------------------------------------- 1. newchat
@@ -1102,99 +1078,13 @@ async function queuedchatbeside() {
   } finally { await s.stop(); }
 }
 
-// --------------------------------------------------------------- 15. legacy
-
-async function legacy() {
-  const s = await start();
-  try {
-    await setup(s.page, s.url);
-    await openSheetAndStart(s.page, {});
-    await send(s.page, 'Run the tests.');
-    await s.page.waitForSelector('.msg.assistant', { timeout: 25000 });
-    await idle(s.page);
-    const id = await s.page.evaluate(() => location.hash.slice(1));
-    ok(/unbound/.test(unbind(join(s.data, 'socrates.db'), id)), 'the chat was unbound in the database', id);
-
-    // A reload, not a goto: the page is already at this hash, so a goto would
-    // be a same-document navigation and the page would keep what it knows.
-    await s.page.reload({ waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('#composerLegacy:not([hidden])', { timeout: 15000 });
-
-    const shape = await s.page.evaluate(() => ({
-      legacyLine: document.getElementById('composerLegacy').textContent.trim(),
-      composerShown: getComputedStyle(document.getElementById('composer')).display !== 'none',
-      badge: document.getElementById('chatAgent').textContent,
-      badgeWarn: document.getElementById('chatAgent').classList.contains('warn'),
-      messages: document.querySelectorAll('.msg').length,
-    }));
-    ok(shape.legacyLine === 'This chat was made before Socrates talked to agents directly. Start a new chat.',
-      'the composer is replaced by the one sentence', shape.legacyLine);
-    ok(shape.composerShown === false, 'the composer itself is gone', 'display none = ' + !shape.composerShown);
-    ok(shape.badge === 'No agent' && shape.badgeWarn, 'the header says the chat has no agent', shape.badge);
-    ok(shape.messages >= 2, 'the transcript still renders', shape.messages + ' messages');
-
-    // §8.2: the composer, the mic button and the Audio stop are replaced, not
-    // merely styled out. A microphone that records, spends a transcription and
-    // is then told no is a worse way of saying no than not offering it.
-    const handsFree = await s.page.evaluate(() => ({
-      stop: document.querySelector('.view-slider .stop[data-view="auto"]').getAttribute('aria-disabled'),
-      autoMic: document.getElementById('autoMic').disabled,
-      chatMic: document.getElementById('micBtn').disabled,
-    }));
-    ok(handsFree.stop === 'true', 'the Audio stop is disabled on a legacy chat', 'aria-disabled=' + handsFree.stop);
-    ok(handsFree.autoMic && handsFree.chatMic, 'both microphones are dead', JSON.stringify(handsFree));
-    // Playwright refuses to click an aria-disabled control - as a screen
-    // reader would - so the tap is dispatched by hand to prove the handler
-    // refuses it too, not just the browser's actionability check. The arrow
-    // key is the other way into the view slider.
-    await s.page.dispatchEvent('.view-slider .stop[data-view="auto"]', 'click');
-    await wait(250);
-    const afterClick = await s.page.evaluate(() => document.body.classList.contains('auto'));
-    await s.page.focus('.view-slider .stop[data-view="chat"]');
-    await s.page.keyboard.press('ArrowRight');
-    await wait(300);
-    const afterKey = await s.page.evaluate(() => document.body.classList.contains('auto'));
-    ok(!afterClick && !afterKey, 'neither a dispatched tap nor the arrow key opens hands free',
-      JSON.stringify({ afterClick, afterKey }));
-
-    // A chat that was left in the Audio view before it became legacy: the
-    // remembered view has to be overridden.
-    await s.page.evaluate((chatId) => localStorage.setItem('socrates.view.' + chatId, 'auto'), id);
-    await s.page.reload({ waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('#composerLegacy:not([hidden])', { timeout: 15000 });
-    await wait(400);
-    const remembered = await s.page.evaluate(() => ({
-      auto: document.body.classList.contains('auto'),
-      micDisabled: document.getElementById('autoMic').disabled,
-      stopAria: document.querySelector('.view-slider .stop[data-view="auto"]').getAttribute('aria-disabled'),
-    }));
-    ok(!remembered.auto && remembered.micDisabled && remembered.stopAria === 'true',
-      'a remembered Audio view is overridden and the mic stays dead', JSON.stringify(remembered));
-    await shot(s.page, 'legacy');
-
-    ok(unexpected(s.errors).length === 0, 'no unexpected console errors', unexpected(s.errors).join(' | ') || '0');
-
-    // Nothing may be queued from here, so the endpoint's own refusal is the
-    // backstop and it must be the permanent one. The 422 it answers with is a
-    // console error of this probe's own making, so it is asserted last.
-    const status = await s.page.evaluate(async (chatId) => {
-      const res = await fetch('/api/chats/' + chatId + '/messages', {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text: 'hello', client_id: 'e2e-legacy' }),
-      });
-      return { code: res.status, body: (await res.json()).error };
-    }, id);
-    ok(status.code === 422, 'the server refuses a message permanently, not with a 409', String(status.code));
-    ok(/before Socrates talked to agents/.test(status.body), 'and says why in one sentence', status.body);
-  } finally { await s.stop(); }
-}
-
-// ------------------------------------------------------------ 16. legacy422
+// ------------------------------------------------------------ 15. refused422
 
 // The only way the outbox can meet a 422: a message queued while offline, and
-// the chat unbound underneath it before it could be sent. A permanent refusal
-// must stop the retry loop dead rather than hammer the endpoint forever.
-async function legacy422() {
+// the agent it is bound to switched off underneath it before it could be sent.
+// A permanent refusal must stop the retry loop dead rather than hammer the
+// endpoint forever.
+async function refused422() {
   const s = await start();
   try {
     await setup(s.page, s.url);
@@ -1208,7 +1098,8 @@ async function legacy422() {
     await wait(300);
     await send(s.page, 'And commit it.');
     await s.page.waitForSelector('.msg.user.pending', { timeout: 5000 });
-    ok(/unbound/.test(unbind(join(s.data, 'socrates.db'), id)), 'the chat was unbound while the message waited', id);
+    const off = await switchOffTheAgent(s, id);
+    ok(off !== '', 'the chat\'s agent was switched off while the message waited', off || 'the PUT did not take');
 
     let posts = 0;
     s.page.on('request', (r) => {
@@ -1227,33 +1118,35 @@ async function legacy422() {
       posts + ' posts over ' + (Date.now() - t0) + ' ms');
     ok(shape.stuck === 1 && shape.retryBtn, 'the message is shown as failed with a Try again offered',
       JSON.stringify(shape.line.trim()));
-    ok(/before Socrates talked to agents/.test(shape.line), 'the failure line carries the server sentence',
-      shape.line.trim().slice(0, 90));
-    await shot(s.page, 'legacy422-failed');
+    ok(/is not available on this machine any more/.test(shape.line),
+      'the failure line carries the server sentence', shape.line.trim().slice(0, 90));
+    await shot(s.page, 'refused422-failed');
 
+    // §8.2: a binding that no longer works is marked in the header rather than
+    // left to look healthy, and the composer stays - the agent can be switched
+    // back on, which is the difference between this and a chat that is over.
     posts = 0;
     await s.page.reload({ waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('#composerLegacy:not([hidden])', { timeout: 15000 });
+    await s.page.waitForSelector('#chatAgent.warn', { timeout: 15000 });
     await wait(8000);
     const after = await s.page.evaluate(() => ({
       composerShown: getComputedStyle(document.getElementById('composer')).display !== 'none',
-      legacyLine: document.getElementById('composerLegacy').textContent.trim(),
-      badge: document.getElementById('chatAgent').textContent,
       warn: document.getElementById('chatAgent').classList.contains('warn'),
+      title: document.getElementById('chatAgent').title,
       busy: document.body.classList.contains('busy'),
     }));
-    ok(!after.composerShown && after.legacyLine.startsWith('This chat was made before'),
-      'after a reload the composer is replaced', after.legacyLine);
-    ok(after.badge === 'No agent' && after.warn, 'the badge says No agent', after.badge);
+    ok(after.warn && /is not available on this machine any more/.test(after.title),
+      'after a reload the header marks the dead binding and says why', after.title);
+    ok(after.composerShown, 'the composer is still there', 'display != none');
     ok(posts <= 1, 'a reload does not start a retry loop', posts + ' posts in 8 s after the reload');
     ok(!after.busy, 'the page is not left looking busy', 'busy=' + after.busy);
-    await shot(s.page, 'legacy422-reload');
+    await shot(s.page, 'refused422-reload');
     const bad = unexpected(s.errors, OFFLINE_NOISE).filter((e) => !/422/.test(e));
     ok(bad.length === 0, 'no console errors beyond the 422 and the offline requests', bad.join(' | ') || '0');
   } finally { await s.stop(); }
 }
 
-// ----------------------------------------------------------- 17. sheetphone
+// ------------------------------------------------------------ 16. sheetphone
 
 // The sheet on a phone with the keyboard up: 390x500 is the worst case it has
 // to survive, and the combobox has to open inside it without being clipped.
@@ -1288,15 +1181,25 @@ async function sheetphone() {
     const list = await s.page.evaluate(() => {
       const el = document.querySelector('#ncModel .combo-list');
       const sheet = document.getElementById('newChatSheet').getBoundingClientRect();
+      const box = el ? el.getBoundingClientRect() : null;
       const opts = [...document.querySelectorAll('#ncModel .combo-option')].map((n) => n.getBoundingClientRect().toJSON());
-      const visible = opts.filter((o) => o.bottom <= sheet.bottom && o.top >= sheet.top && o.bottom <= innerHeight);
-      return { hidden: el ? el.hidden : null, options: opts.length, visible: visible.length };
+      return {
+        hidden: el ? el.hidden : null, options: opts.length,
+        // The list box itself has to sit inside the sheet and the screen;
+        // whatever does not fit scrolls inside it rather than running off
+        // the bottom, where it could only be reached by scrolling the sheet
+        // under the list.
+        fits: !!box && box.bottom <= sheet.bottom + 1 && box.bottom <= innerHeight + 1 && box.top >= sheet.top - 1,
+        scrolls: !!el && el.scrollHeight > el.clientHeight + 1,
+        lastReachable: !!el && opts.length > 0 && opts[opts.length - 1].bottom - el.scrollHeight + el.clientHeight <= (box ? box.bottom : 0) + 1,
+        box: box && { top: Math.round(box.top), bottom: Math.round(box.bottom) }, vh: innerHeight,
+      };
     });
     await shot(s.page, 'sheetphone-combobox');
-    ok(list.hidden === false && list.options === 4, 'the model list opens with four models',
+    ok(list.hidden === false && list.options === 8, 'the model list opens with eight models',
       JSON.stringify({ hidden: list.hidden, options: list.options }));
-    ok(list.visible === list.options, 'every option is visible, not clipped by the sheet or the viewport',
-      `${list.visible} of ${list.options}`);
+    ok(list.fits, 'the list box sits inside the sheet and the screen, and scrolls inside itself beyond that',
+      JSON.stringify({ box: list.box, vh: list.vh, scrolls: list.scrolls }));
 
     await s.page.keyboard.press('Escape');
     await wait(200);
@@ -1316,7 +1219,7 @@ async function sheetphone() {
   } finally { await s.stop(); }
 }
 
-// ---------------------------------------------------------------- 18. admin
+// ----------------------------------------------------------------- 17. admin
 
 async function admin() {
   const s = await start();
@@ -1329,7 +1232,7 @@ async function admin() {
     await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
     await s.page.waitForSelector('.agent-card', { timeout: 15000 });
     await s.page.evaluate(() => { document.querySelector('.agent-card').dataset.old = '1'; });
-    const buttons = await s.page.$$eval('.agent-card button', (n) => n.map((b) => b.textContent));
+    const buttons = await s.page.$$eval('.agent-card button', (n) => n.map((b) => b.textContent).filter((t) => /Refresh/.test(t)));
     await s.page.click('.agent-card button:has-text("Refresh models")');
     await s.page.waitForFunction(() => !document.querySelector('.agent-card[data-old]'), null, { timeout: 20000 });
     await s.page.waitForSelector('.agent-card button:has-text("Refresh models")', { timeout: 20000 });
@@ -1342,12 +1245,12 @@ async function admin() {
     ok(refreshes === 1, 'one POST /api/agents/refresh per tap', refreshes + ' requests');
     ok(cards.length === 3, 'the card re-rendered with three agents', cards.map((c) => c.label).join(','));
     ok(cards.every((c) => c.on), 'all three are enabled by default', cards.map((c) => c.on).join(','));
-    ok(/4 models · curated/.test(cards[0].facts), "Claude's list says it is curated", cards[0].facts);
+    ok(/8 models · curated/.test(cards[0].facts), "Claude's list says it is curated", cards[0].facts);
     ok(buttons.length === 3, 'one Refresh button per agent', buttons.join(','));
 
     // The switch is written into the settings object and survives a save.
     await s.page.click('.agent-card:nth-child(3) label.switch');
-    await s.page.fill('.agent-card:nth-child(3) input[type=text] >> nth=1', '--foo "bar baz"');
+    await s.page.fill('.agent-card:nth-child(3) .grid-2 input[type=text] >> nth=1', '--foo "bar baz"');
     await s.page.click('#saveTop');
     await wait(1500);
     const saved = await s.page.evaluate(async () => (await (await fetch('/api/settings')).json()).settings.agents);
@@ -1382,7 +1285,90 @@ async function admin() {
   } finally { await s.stop(); }
 }
 
-// ---------------------------------------------------------------- 19. pages
+// ------------------------------------------------------------- 17b. modellist
+
+// The dashboard's short list: a model picked from what the agent reports and
+// one typed in, each with an effort, saved - and then the new-chat sheet
+// offers exactly those two, starting on the first with its effort.
+async function modellist() {
+  const s = await start();
+  try {
+    await setup(s.page, s.url);
+    await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('.agent-card', { timeout: 15000 });
+    const card = '.agent-card:nth-child(1)';
+    const before = await s.page.$eval(card + ' .model-list', (n) => n.textContent);
+    ok(/offers every model/.test(before), 'an empty short list says the sheet offers everything', before);
+
+    // One from the list, with the mouse on the combobox.
+    await pickModel(s.page, card + ' .model-add', 'haiku');
+    await s.page.click(card + ' .model-add button:has-text("Add")');
+    await s.page.waitForSelector(card + ' .model-row', { timeout: 5000 });
+    // Claude's own top level, which the old low/medium/high row never offered.
+    const levels = await s.page.$$eval(card + ' .model-row:nth-child(1) select option', (n) => n.map((o) => o.value));
+    ok(levels.join(',') === ',low,medium,high,xhigh,max', 'the effort select lists every level Claude names', levels.join(','));
+    await s.page.selectOption(card + ' .model-row:nth-child(1) select', 'max');
+    // One typed, taken with Enter.
+    await s.page.fill(card + ' .model-add input', 'my-new-alias');
+    await s.page.keyboard.press('Escape');
+    await s.page.keyboard.press('Enter');
+    await s.page.waitForFunction((sel) => document.querySelectorAll(sel + ' .model-row').length === 2, card, { timeout: 5000 });
+    const rows = await s.page.$$eval(card + ' .model-row', (nodes) => nodes.map((n) => ({
+      name: n.querySelector('.model-name div').textContent,
+      hint: n.querySelector('.model-name .hint').textContent,
+      effort: n.querySelector('select').value,
+    })));
+    ok(rows[0].name === 'Haiku' && rows[0].effort === 'max', 'the picked model keeps its label and takes the effort', JSON.stringify(rows[0]));
+    ok(rows[1].name === 'my-new-alias' && /typed in/.test(rows[1].hint), 'the typed model is offered as typed and says so', JSON.stringify(rows[1]));
+    await shot(s.page, 'modellist-admin');
+
+    await s.page.click('#saveTop');
+    await wait(1500);
+    const saved = await s.page.evaluate(async () => (await (await fetch('/api/settings')).json()).settings.agents.claude.models);
+    ok(JSON.stringify(saved) === JSON.stringify([{ id: 'haiku', effort: 'max' }, { id: 'my-new-alias' }]),
+      'the list was saved in order with its efforts', JSON.stringify(saved));
+    const facts = await s.page.$eval(card + ' .agent-facts', (n) => n.textContent);
+    ok(/8 models/.test(facts), 'the card still counts the full list', facts);
+
+    // The sheet offers the two, and starts on the first with its effort.
+    await s.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#newChat', { timeout: 15000 });
+    await ensureNav(s.page);
+    await s.page.click('#newChat');
+    await s.page.waitForSelector('#newChatSheet[open]');
+    const preset = await s.page.evaluate(() => ({
+      model: document.querySelector('#ncModel input').value,
+      effort: document.querySelector('#ncEffort .seg.on') && document.querySelector('#ncEffort .seg.on').dataset.value,
+    }));
+    ok(preset.model === 'haiku' && preset.effort === 'max', 'the sheet starts on the first pick at its effort', JSON.stringify(preset));
+    const segs = await s.page.$$eval('#ncEffort .seg', (n) => n.map((b) => b.dataset.value));
+    ok(segs.join(',') === ',low,medium,high,xhigh,max', 'the sheet offers every level the model names', segs.join(','));
+    await s.page.click('#ncModel input');
+    await s.page.waitForSelector('#ncModel .combo-option', { timeout: 5000 });
+    const offered = await s.page.$$eval('#ncModel .combo-option', (n) => n.map((x) => x.textContent));
+    ok(offered.length === 2 && /Haiku/.test(offered[0]) && /my-new-alias/.test(offered[1]),
+      'the sheet offers the short list and nothing else', offered.join(' | '));
+    await shot(s.page, 'modellist-sheet');
+    await s.page.locator('#ncModel .combo-option', { hasText: /my-new-alias/ }).click();
+    await s.page.click('#ncStart');
+    await s.page.waitForSelector('#newChatSheet[open]', { state: 'detached', timeout: 5000 }).catch(() => {});
+    // The chat is created with its first message, so one is sent.
+    await send(s.page, 'Hello');
+    const created = await s.page.waitForFunction(() => location.hash.length > 1, null, { timeout: 20000 })
+      .then(() => true).catch(() => false);
+    await s.page.waitForSelector('.msg.assistant', { timeout: 25000 }).catch(() => {});
+    await idle(s.page).catch(() => {});
+    const chat = created ? await s.page.evaluate(async () => {
+      const id = location.hash.slice(1);
+      return (await (await fetch('/api/chats/' + id)).json()).chat;
+    }) : null;
+    ok(chat && chat.model === 'my-new-alias' && (chat.effort || '') === '', 'a typed pick is accepted by the server, at the effort the sheet showed',
+      chat ? JSON.stringify({ model: chat.model, effort: chat.effort }) : 'no chat was created');
+    ok(unexpected(s.errors).length === 0, 'no unexpected console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+// ----------------------------------------------------------------- 18. pages
 
 async function pages() {
   for (const viewport of [{ width: 390, height: 844 }, { width: 1440, height: 900 }]) {
@@ -1457,7 +1443,7 @@ async function pages() {
   }
 }
 
-// ----------------------------------------------------------- 20. modelpick
+// ------------------------------------------------------------- 19. modelpick
 
 // This scenario picks a model with the mouse, and it exists because that used
 // to throw the chat away. `combobox.js` takes an option on **mousedown** ("the
@@ -1534,7 +1520,7 @@ async function modelpick() {
   } finally { await s.stop(); }
 }
 
-// ----------------------------------------------------------- 21. liveclaude
+// ------------------------------------------------------------ 20. liveclaude
 
 // The one scenario that talks to a real CLI. Gated exactly like the Go live
 // tests (§10.2): SOCRATES_LIVE_AGENTS=1 and the binary on PATH, skipped
@@ -1624,10 +1610,10 @@ const ALL = [
   ['blankchat', 'a chat that does not exist yet is still the chat you are looking at', blankchat],
   ['queuedchat', 'a chat started offline survives a reload and is created once', queuedchat],
   ['queuedchatbeside', 'the same, beside a chat that already exists', queuedchatbeside],
-  ['legacy', 'a chat from before the rewrite is a transcript, not a conversation', legacy],
-  ['legacy422', 'a queued message for a legacy chat fails once, without a retry loop', legacy422],
+  ['refused422', 'a queued message an agent can no longer take fails once, without a retry loop', refused422],
   ['sheetphone', 'the sheet at 390x500, with the keyboard up', sheetphone],
   ['admin', 'the Agents card, refresh, save and diagnostics', admin],
+  ['modellist', 'the short list in the dashboard is what the sheet offers', modellist],
   ['pages', 'every page is clean at a phone and at a desk', pages],
   ['modelpick', 'a model tapped in the new-chat sheet is the model the chat gets', modelpick],
   ['liveclaude', 'one real turn against the real Claude Code CLI', liveclaude, { live: true }],

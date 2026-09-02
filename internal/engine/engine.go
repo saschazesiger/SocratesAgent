@@ -28,9 +28,6 @@ import (
 // refusal the browser retries on its own, so nothing permanent may share it.
 var ErrBusy = errors.New("this chat is still working on the previous message")
 
-// ErrNoAgent is a chat from before Socrates talked to agents directly.
-var ErrNoAgent = errors.New("this chat has no agent")
-
 // ErrShuttingDown is returned while Socrates is letting go of its hosts. The
 // HTTP server is still draining for a few seconds, and a message that arrived
 // in that window must wait for the restart rather than start a second host
@@ -232,9 +229,6 @@ func (e *Engine) Start(turn Turn) (*store.Run, error) {
 	chat, err := e.Store.GetChat(chatID)
 	if err != nil {
 		return nil, err
-	}
-	if chat.Agent == "" {
-		return nil, ErrNoAgent
 	}
 	if existing, err := e.Store.MessageByClientID(chatID, turn.ClientID); err == nil {
 		if run, err := e.Store.GetRun(existing.RunID); err == nil {

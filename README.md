@@ -229,12 +229,27 @@ disappears from the picker.
 | **OpenCode** | `opencode serve` on a loopback port it picks itself, HTTP for calls and SSE for events | per session, `provider/model` | as the model's *variant* |
 
 **Where the models come from.** Codex and OpenCode are asked: Socrates reads
-`model/list` and `GET /api/model` and shows what that installation actually has.
-Claude Code has no such command, so Socrates ships a curated list — Opus, Sonnet,
-Haiku, Fable — and the picker's field also accepts anything you type, so a new
-alias works the day Anthropic ships it without waiting for a Socrates release. A
-model id Claude does not know comes back as a normal failed turn with Claude's
+Codex's `model/list` and OpenCode's `GET /config/providers` - every provider with
+working credentials and its whole model list, the same list OpenCode's own picker
+shows - and offers what that installation actually has.
+Claude Code has no such command, so Socrates ships a curated list of the
+documented aliases — Opus, Sonnet, Haiku, Fable, Best, Opus plan and the 1M
+variants — and the picker's field also accepts anything you type, so a new alias
+works the day Anthropic ships it without waiting for a Socrates release. A model
+id Claude does not know comes back as a normal failed turn with Claude's
 own message in it.
+
+**Effort levels are the agent's own.** Claude Code takes low, medium, high,
+xhigh and max; Codex reports a list per model, xhigh included; OpenCode names
+its "variants" per model. The effort row offers exactly what the chosen model
+reports, and the server refuses a level the model does not name.
+
+**Your own short list.** Four hundred OpenRouter models is a list to search,
+not to choose from. The Agents card in the dashboard has a short list per agent:
+pick a model from what the agent reports or type an id, give each one the effort
+a new chat starts on, and save. The new-chat sheet then offers exactly that list,
+starting on its first entry, and an id you typed is accepted as typed. An empty
+list offers everything the agent reports.
 
 **Changing the model.** Allowed between turns, never during one. Socrates closes
 the chat's agent host and opens a new one on the new model; the agent's own
@@ -266,11 +281,6 @@ The failure is not loud: OpenCode sends nothing at all on that path, so the turn
 ends with *"the agent produced no answer"* rather than with the real error. The
 same warning is on the OpenCode entry in the picker, which is where you will see
 it before spending a turn finding out.
-
-**Chats from before this version are read-only.** A conversation whose earlier
-half was produced by the old orchestrator cannot be handed to a CLI that never
-saw it. The transcript stays and stays readable; the composer says so in one
-sentence and asks you to start a new chat.
 
 ## Choosing models
 

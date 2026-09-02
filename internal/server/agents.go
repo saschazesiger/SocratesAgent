@@ -47,6 +47,19 @@ func (s *Server) resolveBinding(ctx context.Context, agentID, model, effort stri
 	if !inSettings || !entry.Enabled {
 		return "", "", "", fmt.Errorf("%s is switched off in the dashboard", desc.Label)
 	}
+	// The dashboard's short list comes first: its first entry is the default,
+	// and an id on it is accepted as typed. The person put it there on
+	// purpose, and the discovery it is missing from may simply be older than
+	// the model.
+	picked := false
+	if model == "" && len(entry.Models) > 0 {
+		model = entry.Models[0].ID
+	}
+	for _, p := range entry.Models {
+		if p.ID == model {
+			picked = true
+		}
+	}
 
 	// The catalogue is consulted, never waited for: a chat created offline and
 	// delivered later must not be refused because a discovery has not run.
@@ -67,7 +80,7 @@ func (s *Server) resolveBinding(ctx context.Context, agentID, model, effort stri
 	}
 
 	checked := false
-	if haveCatalogue && !agent.Static && len(agent.Models) > 0 {
+	if !picked && haveCatalogue && !agent.Static && len(agent.Models) > 0 {
 		// A discovered list is a real list of what this installation can run,
 		// so an id that is not in it is a mistake worth catching here rather
 		// than mid-turn.
@@ -83,8 +96,14 @@ func (s *Server) resolveBinding(ctx context.Context, agentID, model, effort stri
 	// A curated list - Claude's - is a convenience, not a whitelist: the CLI
 	// validates the id itself and reports a bad one as a clean run error, and
 	// a new alias should work the day it ships without a Socrates release.
+	// The same goes for an id on the dashboard's short list. The effort is
+	// still held to what the model reports when the model is known, because
+	// the levels differ between agents and a wrong one is a wasted turn.
 	if !checked {
 		effort = config.NormalizeEffort(effort)
+		if entry, ok := agent.Model(model); haveCatalogue && ok && effort != "" && !hasEffort(entry.Efforts, effort) {
+			return "", "", "", fmt.Errorf("%s does not offer %q on %s", desc.Label, effort, model)
+		}
 	}
 	return agentID, model, config.NormalizeEffort(effort), nil
 }
@@ -101,9 +120,6 @@ func hasEffort(list []string, want string) bool {
 // describeBinding is what the chat header shows: the agent's name, the model's
 // name, and whether the binding still works on this machine.
 func (s *Server) describeBinding(chat *store.Chat) (string, string, bool) {
-	if chat.Agent == "" {
-		return "", "", false
-	}
 	desc, known := harness.Get(chat.Agent)
 	label := chat.Agent
 	if known {
@@ -140,9 +156,6 @@ func (s *Server) agentUnavailable(chatID string) (string, bool) {
 		// Not found is the engine's answer to give, with its own status code.
 		return "", true
 	}
-	if chat.Agent == "" {
-		return "", true // ErrNoAgent, with its own sentence
-	}
 	desc, known := harness.Get(chat.Agent)
 	label := chat.Agent
 	if known {
@@ -176,11 +189,6 @@ func (s *Server) changeModel(w http.ResponseWriter, r *http.Request, chat *store
 	}
 	if nextModel == chat.Model && config.NormalizeEffort(nextEffort) == chat.Effort {
 		return true
-	}
-	if chat.Agent == "" {
-		writeError(w, http.StatusUnprocessableEntity,
-			"this chat was made before Socrates talked to agents directly - start a new chat")
-		return false
 	}
 	// The same rule as sending, and for the same reason: a change that lands
 	// in the shutdown drain window would pass the busy check, clear host_dir,

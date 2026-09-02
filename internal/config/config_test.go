@@ -1,10 +1,6 @@
 package config
 
-import (
-	"encoding/json"
-	"strings"
-	"testing"
-)
+import "testing"
 
 func TestNormalizeFillsDefaults(t *testing.T) {
 	s := Settings{}
@@ -98,73 +94,8 @@ func TestNormalizeDefaultsTheLanguage(t *testing.T) {
 	}
 }
 
-// The settings document of an installation that is upgraded carries every
-// provider Socrates ever read an answer out loud with: an endpoint of its own,
-// an OpenRouter voice model with its voice, and a whole Google section with a
-// service account key in it. Not one of those keys has a field left to land
-// in, and that is the point: encoding/json drops what it does not recognise,
-// so the document loads, keeps the two settings that survived - the spoken
-// language and the speaking rate - and is written back without the rest.
-//
-// This is the upgrade path, and it is the test that matters most here: a
-// document that fails to load is an installation that will not start.
-func TestNormalizeDropsEverythingTheOldProvidersNeeded(t *testing.T) {
-	document := []byte(`{
-		"openrouter": {"api_key": "sk-or", "chat_model": "anthropic/claude-sonnet-4.5"},
-		"google": {"credentials": "{\"type\":\"service_account\"}", "base_url": "https://texttospeech.googleapis.com"},
-		"voice": {
-			"language": "de",
-			"stt_prompt": "Transcribe it.",
-			"tts_rate": 1.25,
-			"speak_in_auto_mode": true,
-			"tts_provider": "google",
-			"tts_model": "deepgram/aura-2",
-			"tts_voice": "aura-2-thalia-en",
-			"google_voice": "de-DE-Chirp3-HD-Charon",
-			"tts_base_url": "https://api.openai.com/v1",
-			"tts_api_key": "sk-openai",
-			"stt_provider": "endpoint",
-			"stt_base_url": "https://api.openai.com/v1",
-			"stt_api_key": "sk-openai",
-			"stt_model": "whisper-1"
-		}
-	}`)
-	var s Settings
-	if err := json.Unmarshal(document, &s); err != nil {
-		t.Fatalf("a settings document from the previous version does not load: %v", err)
-	}
-	s.Normalize()
-
-	if s.Voice.Language != LanguageDE {
-		t.Fatalf("language = %q", s.Voice.Language)
-	}
-	if s.Voice.TTSRate != 1.25 {
-		t.Fatalf("rate = %v", s.Voice.TTSRate)
-	}
-	if s.Voice.STTPrompt != "Transcribe it." || s.OpenRouter.APIKey != "sk-or" {
-		t.Fatalf("the rest of the document was not kept: %#v", s)
-	}
-
-	// Nothing of the old shape may reach the dashboard, or the database, again
-	// - including the Google credentials, which are a private key nobody has a
-	// use for any more.
-	encoded, err := json.Marshal(s)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, gone := range []string{
-		"tts_provider", "tts_model", "tts_voice", "google_voice", `"google":`, "chat_model",
-		"tts_base_url", "tts_api_key", "stt_provider", "stt_base_url", "stt_api_key", "stt_model",
-		"service_account", "sk-openai",
-	} {
-		if strings.Contains(string(encoded), gone) {
-			t.Fatalf("%s is still written: %s", gone, encoded)
-		}
-	}
-}
-
-// There are two languages and no third state, so everything else - including
-// the "auto" an older version wrote - has to land on one of them.
+// There are two languages and no third state, so everything else has to land
+// on one of them.
 func TestNormalizeLanguage(t *testing.T) {
 	cases := map[string]string{
 		"de":       LanguageDE,
@@ -174,7 +105,6 @@ func TestNormalizeLanguage(t *testing.T) {
 		"en":       LanguageEN,
 		"en-GB":    LanguageEN,
 		"":         DefaultLanguage,
-		"auto":     DefaultLanguage,
 		"fr":       DefaultLanguage,
 		"deutsch":  DefaultLanguage,
 		"-":        DefaultLanguage,
@@ -189,5 +119,32 @@ func TestNormalizeLanguage(t *testing.T) {
 		if LanguageName(in) == "" {
 			t.Errorf("%q has no name", in)
 		}
+	}
+}
+
+// The model short list keeps the order a person arranged, drops repeats and
+// blanks, and maps every effort onto a level the agents understand.
+func TestModelPicksAreNormalized(t *testing.T) {
+	var s Settings
+	s.Normalize()
+	s.Agents.OpenCode.Models = []ModelPick{
+		{ID: " openai|gpt-5.6 ", Effort: "HIGH"},
+		{ID: "", Effort: "low"},
+		{ID: "opencode|big-pickle", Effort: "bogus"},
+		{ID: "openai|gpt-5.6", Effort: "low"},
+	}
+	s.Normalize()
+	got := s.Agents.OpenCode.Models
+	if len(got) != 2 {
+		t.Fatalf("picks = %#v", got)
+	}
+	if got[0] != (ModelPick{ID: "openai|gpt-5.6", Effort: EffortHigh}) {
+		t.Errorf("first pick = %#v", got[0])
+	}
+	if got[1] != (ModelPick{ID: "opencode|big-pickle", Effort: EffortDefault}) {
+		t.Errorf("second pick = %#v", got[1])
+	}
+	if s.Agents.Claude.Models != nil {
+		t.Errorf("an empty list became %#v", s.Agents.Claude.Models)
 	}
 }

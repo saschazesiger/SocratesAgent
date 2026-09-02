@@ -518,18 +518,6 @@ func TestSendWhileShuttingDownIsRefused(t *testing.T) {
 	}
 }
 
-// A chat that predates the rewrite has no agent, and there is no CLI that saw
-// the half of the conversation a different mechanism produced.
-func TestALegacyChatHasNoAgent(t *testing.T) {
-	env := newEnv(t)
-	if err := env.store.CreateChat(&store.Chat{ID: "c_legacy"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := env.engine.Start(Turn{ChatID: "c_legacy", Text: "hi", ClientID: "k1"}); err != ErrNoAgent {
-		t.Fatalf("send to a legacy chat = %v, want ErrNoAgent", err)
-	}
-}
-
 // The stub adapters return "not implemented yet" from Start, and that has to
 // reach the transcript as a plain run error rather than a chat that hangs.
 func TestAnAgentThatCannotStartFailsTheRun(t *testing.T) {

@@ -1,6 +1,6 @@
 # The end-to-end suite
 
-Twenty-one scenarios that drive the real `socrates` binary through a real browser.
+Twenty scenarios that drive the real `socrates` binary through a real browser.
 Each one boots a server on its own port with its own temporary data directory,
 completes setup the way a person would, and then asserts against what the page
 actually shows — printing the value it measured beside every verdict.
@@ -174,8 +174,7 @@ scenario. Deleting `e2e/out/` is always safe.
 | `blankchat` | a chat that does not exist yet survives a reload and stays the chat you are looking at |
 | `queuedchat` | a chat started offline survives a reload and is created once, with its binding |
 | `queuedchatbeside` | the same, beside a chat that already exists — and nothing leaks into it |
-| `legacy` | a chat from before the rewrite is a transcript: no composer, no microphone, no Audio view, and a 422 from the endpoint |
-| `legacy422` | a queued message for a legacy chat fails once and never retries |
+| `refused422` | a queued message whose agent was switched off underneath it fails once and never retries |
 | `sheetphone` | the sheet at 390x500 with the keyboard up, combobox and focus trap included |
 | `admin` | the Agents card, refresh, save and the diagnostics rows |
 | `pages` | every page is clean, at a phone and at a desk |
