@@ -220,11 +220,16 @@ func exitStatus(status, signal string) int {
 func (m *Manager) paneIsDead(tmuxName string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := m.tmux.Run(ctx, "display-message", "-p", "-t", tmuxName, "-F", "#{pane_dead}")
+	state, err := m.paneStateOf(ctx, tmuxName)
 	if err != nil {
-		return noSuchTarget(err) || serverGone(err)
+		// tmux could not be asked. The safe answer is the one that refuses to
+		// replace a terminal that may well be working.
+		return false
 	}
-	return strings.TrimSpace(out) == "1"
+	// A session that is not there any more is as dead as a pane gets: there is
+	// nothing to protect and nothing to keep a restart or a delete from doing
+	// its work.
+	return state != paneLive
 }
 
 func (m *Manager) markExited(row *store.Session, status int) {

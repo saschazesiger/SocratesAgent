@@ -738,3 +738,61 @@ func TestConcurrentViewers(t *testing.T) {
 		t.Fatalf("%d viewers left registered", n)
 	}
 }
+
+// TestPaneStateTellsTheThreeCasesApart is the fix for the reboot blocker,
+// pinned at the level it went wrong.
+//
+// tmux 3.6 answers `display-message -p -t <missing> -F '#{pane_dead}'` with
+// success and an empty line rather than with an error. Folded into "is the
+// pane dead?", that empty line read as "no, so the session is still running" -
+// and a session that did not exist at all then refused its own relaunch and
+// its own deletion. The three answers must stay apart.
+func TestPaneStateTellsTheThreeCasesApart(t *testing.T) {
+	l := newLab(t)
+	ctx := context.Background()
+
+	live := l.create(shellSpec(t.TempDir()))
+	dead := l.create(shellSpec(t.TempDir(), "/bin/sh", "-c", "exit 4"))
+	waitFor(t, 10*time.Second, "the second program to exit", func() bool {
+		got, err := l.store.GetSession(dead.ID)
+		return err == nil && got.State == store.StateExited
+	})
+
+	for _, c := range []struct {
+		what string
+		name string
+		want paneState
+	}{
+		{"a running program", live.TmuxName, paneLive},
+		{"a program that exited", dead.TmuxName, paneDead},
+		{"a session that is not there", TmuxName("0123456789abcdef0123456789abcdef"), paneMissing},
+		{"no session name at all", "", paneMissing},
+	} {
+		got, err := l.paneStateOf(ctx, c.name)
+		if err != nil {
+			t.Fatalf("%s: %v", c.what, err)
+		}
+		if got != c.want {
+			t.Fatalf("%s: paneStateOf = %d, want %d", c.what, got, c.want)
+		}
+		if wantDead := c.want != paneLive; l.paneIsDead(c.name) != wantDead {
+			t.Fatalf("%s: paneIsDead = %t, want %t", c.what, !wantDead, wantDead)
+		}
+	}
+
+	// And with the whole server gone, everything is missing - the reboot case.
+	if _, err := l.tmux.Run(ctx, "kill-server"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := l.paneStateOf(ctx, live.TmuxName)
+	if err != nil {
+		t.Fatalf("after the server was killed: %v", err)
+	}
+	if got != paneMissing {
+		t.Fatalf("with no tmux server the pane state is %d, want missing", got)
+	}
+	// Which is what lets a relaunch go ahead rather than answering 409.
+	if err := l.clearDeadSession(ctx, live.TmuxName); err != nil {
+		t.Fatalf("clearDeadSession on a session that is gone: %v", err)
+	}
+}

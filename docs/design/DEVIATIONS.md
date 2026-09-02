@@ -879,3 +879,17 @@ cleared as soon as the server says what it became.
 hover-only; the notice had no place for one. `notice()` now takes the facts and
 renders the same "i" the overlays use, so "Resumed after a restart." keeps the
 conversation it came back on behind it rather than in the line.
+
+**WP9b / §C.8 — a missing tmux session is not a running one (the WP9a
+blocker).** After a reboot only the first session could be resumed. The first
+resume starts the tmux server again, and from that moment every session still
+waiting has a live server with no session of its own in it - and tmux 3.6
+answers `display-message -p -t <missing> -F '#{pane_dead}'` with **success and
+an empty line** [V] rather than with an error. Read as "pane_dead is not 1",
+that meant "still running": `clearDeadSession` refused the relaunch, the API
+answered 409, and the session sat under "Resuming after a restart…" for ever.
+`clearDeadSession` now asks `has-session` first, which fails properly on a
+target that is not there, and `paneIsDead` treats an empty answer as a session
+that is gone. `TestRebootResumesEverySession` resumes two sessions after a
+killed server - two is the smallest number that can show it - and
+`rebootresume` now creates two and resumes both in the browser.

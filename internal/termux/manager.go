@@ -402,22 +402,76 @@ func (m *Manager) Relaunch(ctx context.Context, row *store.Session, plan harness
 	return m.st.SetSessionState(row.ID, store.StateRunning, -1, "")
 }
 
-// clearDeadSession removes the husk a previous run left behind: with
-// remain-on-exit on, an exited program leaves its tmux session in place with a
-// dead pane, and `new-session` under the same name would be refused as a
-// duplicate.
-func (m *Manager) clearDeadSession(ctx context.Context, tmuxName string) error {
+// paneState is what tmux can say about the session behind one row.
+type paneState int
+
+const (
+	// paneMissing: there is no such tmux session, or no server at all. It is
+	// the reboot case, and the case after a relaunch that failed.
+	paneMissing paneState = iota
+	// paneDead: the session is there and the program in it has exited, which
+	// is what remain-on-exit leaves behind.
+	paneDead
+	// paneLive: the session is there and its program is running. It is the
+	// only one of the three that may refuse anything.
+	paneLive
+)
+
+// paneStateOf asks tmux what has become of one session.
+//
+// The three answers are kept apart on purpose, because two of the mistakes
+// that cost this product a working reboot came from folding them together.
+// `display-message -p -t <missing> -F '#{pane_dead}'` answers with **success
+// and an empty line** on tmux 3.6 [V] rather than with an error: read as
+// "pane_dead is not 1" that means "still running", so a session that was not
+// there at all refused its own relaunch with 409 and refused to be deleted.
+// has-session is asked first because its answer for a missing target is
+// unambiguous on every version.
+func (m *Manager) paneStateOf(ctx context.Context, tmuxName string) (paneState, error) {
 	if tmuxName == "" {
-		return nil
+		return paneMissing, nil
+	}
+	if _, err := m.tmux.Run(ctx, "has-session", "-t", tmuxName); err != nil {
+		if noSuchTarget(err) || serverGone(err) {
+			return paneMissing, nil
+		}
+		return paneMissing, err
 	}
 	out, err := m.tmux.Run(ctx, "display-message", "-p", "-t", tmuxName, "-F", "#{pane_dead}")
 	if err != nil {
 		if noSuchTarget(err) || serverGone(err) {
-			return nil // Nothing to clear, which is the reboot case.
+			return paneMissing, nil
 		}
+		return paneMissing, err
+	}
+	switch strings.TrimSpace(out) {
+	case "1":
+		return paneDead, nil
+	case "":
+		// The session went between the two questions, or this tmux answers a
+		// target it cannot find without saying so.
+		return paneMissing, nil
+	}
+	return paneLive, nil
+}
+
+// clearDeadSession removes the husk a previous run left behind: with
+// remain-on-exit on, an exited program leaves its tmux session in place with a
+// dead pane, and `new-session` under the same name would be refused as a
+// duplicate. A session that is not there needs no clearing, which is what a
+// reboot and a failed relaunch both look like.
+func (m *Manager) clearDeadSession(ctx context.Context, tmuxName string) error {
+	if tmuxName == "" {
+		return nil
+	}
+	state, err := m.paneStateOf(ctx, tmuxName)
+	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(out) != "1" {
+	switch state {
+	case paneMissing:
+		return nil
+	case paneLive:
 		return fmt.Errorf("%w: %s", ErrStillRunning, tmuxName)
 	}
 	_, err = m.tmux.Run(ctx, "kill-session", "-t", tmuxName)

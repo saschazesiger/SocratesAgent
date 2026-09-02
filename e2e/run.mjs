@@ -2003,6 +2003,11 @@ async function rebootresume() {
     await useDomRenderer(s);
     await open(s);
 
+    // Two sessions, because one cannot show what this scenario was extended
+    // for: the first resume starts the tmux server again, and every session
+    // after it used to be refused as "the session is still running".
+    const shellId = await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
     const claudeId = await startWithModel(s.page, 'claude', 'Sonnet');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
     ok(/FAKE claude/.test(await journalOf(s, claudeId)), 'the session is up',
@@ -2021,6 +2026,8 @@ async function rebootresume() {
     const waiting = await waitForState(s, claudeId, ['needs_resume'], 40000);
     ok(waiting.state === 'needs_resume',
       'the session is waiting to be resumed, not running and not dead', waiting.state);
+    const waitingShell = await waitForState(s, shellId, ['needs_resume'], 40000);
+    ok(waitingShell.state === 'needs_resume', 'and so is the one behind it', waitingShell.state);
 
     // The reload. Opening the session is what resumes it, and the resume is
     // the whole of the handshake - so what the pane says while it waits is
@@ -2085,6 +2092,19 @@ async function rebootresume() {
     await typeLine(s.page, 'hello again');
     ok(await awaitScreen(s.page, 'you said: hello again', 25000),
       'and the session that came back is one that works', oneLine(await screen(s.page)));
+
+    // And now the session behind it. Resuming the first one started the tmux
+    // server again, which is what used to make this one answer 409 and sit
+    // under "Resuming after a restart…" for ever.
+    await s.page.goto(s.url + '/#' + shellId, { waitUntil: 'domcontentloaded' });
+    const behind = await waitForState(s, shellId, ['running'], 40000);
+    ok(behind.state === 'running', 'the second session resumes as well as the first',
+      behind.state + (behind.fail_reason ? ' - ' + behind.fail_reason : ''));
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const alive = 'again-' + Math.random().toString(36).slice(2, 8);
+    await typeLine(s.page, 'echo ' + alive);
+    ok(await awaitScreen(s.page, alive, 25000), 'and it is a session that works',
+      oneLine(await screen(s.page)));
 
     ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
       unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');

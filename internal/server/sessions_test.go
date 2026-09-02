@@ -1036,3 +1036,102 @@ func TestStartingRowWithALivePaneIsPromoted(t *testing.T) {
 		t.Fatalf("a live pane left the row at %v", got["state"])
 	}
 }
+
+// TestRebootResumesEverySession is the blocker WP9a found: after a reboot only
+// the first session could be resumed.
+//
+// The first resume starts the tmux server again, and from that moment the
+// sessions still waiting have a live server with no session of their own in
+// it. tmux 3.6 answers `display-message -p -t <missing> -F '#{pane_dead}'`
+// with success and an empty line rather than with an error, which read as
+// "the pane is not dead" and therefore "the session is still running": every
+// resume after the first was refused with 409 and left sitting under
+// "Resuming after a restart…". Two sessions is the smallest number that can
+// show it, so this test uses two.
+func TestRebootResumesEverySession(t *testing.T) {
+	e := newSessionEnv(t)
+	var ids []string
+	for _, name := range []string{"first", "second"} {
+		res, session := e.create(fmt.Sprintf(
+			`{"harness":"shell","workdir_mode":"custom","workdir":%q}`,
+			filepath.Join(e.work, name)))
+		if res.StatusCode != http.StatusCreated {
+			t.Fatalf("create %s: %d %#v", name, res.StatusCode, session)
+		}
+		ids = append(ids, sessionID(t, session))
+	}
+
+	// The reboot takes both of them, and both are declared before either is
+	// opened - which is what a person coming back to a rebooted machine finds.
+	if _, err := e.tmux("kill-server"); err != nil {
+		t.Fatalf("kill-server: %v", err)
+	}
+	ctx := context.Background()
+	e.srv.Sessions().Poll(ctx)
+	e.srv.Sessions().Poll(ctx)
+	for _, id := range ids {
+		e.waitForState(id, 10*time.Second, store.StateNeedsResume)
+	}
+
+	for i, id := range ids {
+		res, payload := e.do(t, e.client, "POST", "/api/sessions/"+id+"/resume", "")
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("resume %d: %d %#v", i, res.StatusCode, payload)
+		}
+		resumed, _ := payload["session"].(map[string]any)
+		if resumed["state"] != store.StateRunning {
+			t.Fatalf("session %d is %v after a resume (%v)", i, resumed["state"], resumed["fail_reason"])
+		}
+		if !e.hasTmuxSession(id) {
+			t.Fatalf("session %d has no tmux session after its resume", i)
+		}
+	}
+}
+
+// TestRestartAndDeleteWorkWhenTheTmuxSessionIsGone is the second half of the
+// same 3.6 answer, from the two buttons a person actually presses.
+//
+// A relaunch that failed leaves a row pointing at a tmux session that is not
+// there. "Try again" used to answer 409 - the missing target read as a live
+// pane - and Delete used to answer 500 for the same reason, which left the
+// session on screen with no button that did anything.
+func TestRestartAndDeleteWorkWhenTheTmuxSessionIsGone(t *testing.T) {
+	e := newSessionEnv(t)
+	// Two sessions, so that killing one leaves the server up: the case under
+	// test is a live server with no session of ours in it, not a reboot.
+	res, keep := e.create(fmt.Sprintf(
+		`{"harness":"shell","workdir_mode":"custom","workdir":%q}`, filepath.Join(e.work, "keep")))
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d %#v", res.StatusCode, keep)
+	}
+	res, session := e.create(fmt.Sprintf(
+		`{"harness":"shell","workdir_mode":"custom","workdir":%q}`, filepath.Join(e.work, "gone")))
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d %#v", res.StatusCode, session)
+	}
+	id := sessionID(t, session)
+	if out, err := e.tmux("kill-session", "-t", termux.TmuxName(id)); err != nil {
+		t.Fatalf("could not take the tmux session away: %v: %s", err, out)
+	}
+
+	res, payload := e.do(t, e.client, "POST", "/api/sessions/"+id+"/restart", "")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("restart: %d %#v", res.StatusCode, payload)
+	}
+	restarted, _ := payload["session"].(map[string]any)
+	if restarted["state"] != store.StateRunning {
+		t.Fatalf("after Try again the session is %v (%v)", restarted["state"], restarted["fail_reason"])
+	}
+
+	// And once more, deleted this time, from the same starting point.
+	if out, err := e.tmux("kill-session", "-t", termux.TmuxName(id)); err != nil {
+		t.Fatalf("could not take the tmux session away again: %v: %s", err, out)
+	}
+	res, payload = e.do(t, e.client, "DELETE", "/api/sessions/"+id, "")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("delete: %d %#v", res.StatusCode, payload)
+	}
+	if _, err := e.store.GetSession(id); err == nil {
+		t.Fatal("the row survived a delete that answered 200")
+	}
+}
