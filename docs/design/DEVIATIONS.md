@@ -1257,6 +1257,7 @@ Everything here is a deliberate departure from §E's text, not a defect in it.
    a physical key actually seen (`keyboardLikely`/`isPhysicalKeyEvent`, both
    pure and both asserted in `keybar`). A phone gets the line input and the
    microphone, and the session menu still turns the bar on anywhere.
+
 ## Input durability (2026-09-02)
 
 The report was "sometimes I can no longer type anything into the session": the
@@ -1352,3 +1353,26 @@ same three features with the middle one turned into a conversation.
    distinguishing "trivially safe" from "not" would have meant trusting a
    pointer media query with the one promise this mode makes. Leaving auto mode
    restores all three and refocuses the pane.
+
+## Review of the chat, the ticker and the Auto switch (2026-09-02)
+
+Three defects found reviewing the batch above, and fixed in place. Everything
+else in it was checked and left alone.
+
+1. **A "Thinking…" placeholder that never went away.** `chat.js` cleared it on
+   an assistant message arriving, and nowhere else - so a socket that dropped
+   between the question and the answer came back with the answer re-seeded from
+   `hello.chat` and the placeholder still under it, for the life of the tab.
+   `replace()` now settles it from the stored conversation: a history that ends
+   with an assistant turn is a history with no answer outstanding.
+2. **A dictated message lost in silence.** `submit()` returned without a word
+   when the socket was down or a question was already in flight. With a
+   keyboard that leaves the words in the field; with the microphone - auto
+   mode, a phone in a car - the words existed only in that call and went with
+   it. The message and the reason it did not go are now put in the log, which
+   is the rule the rest of the page's input already follows.
+3. **A deleted session's conversation could come back.** `handleDeleteSession`
+   calls `chats.forget`, but the goroutine that answers outlives the request by
+   design: an answer landing after the delete wrote `chat.<id>` back, and
+   nothing would ever have removed it again. `chatDriver.append` now drops a
+   message for a session that is no longer in the store.

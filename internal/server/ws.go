@@ -1624,9 +1624,8 @@ func (s *Server) emitStatus(sessionID, phase, text string) {
 	s.broadcast(sessionID, func(*termViewer) any { return frame })
 }
 
-// emitChat carries one message of a session's chat to its viewers. `live` says
-// the message is progress rather than history: it is shown and never stored,
-// so a reload does not replay a run keystroke by keystroke.
+// emitChat carries one message of a session's chat to its viewers, so that two
+// devices watching one session see the same conversation.
 func (s *Server) emitChat(sessionID string, msg map[string]any) {
 	frame := map[string]any{"t": "chat", "id": sessionID, "msg": msg}
 	s.broadcast(sessionID, func(*termViewer) any { return frame })
