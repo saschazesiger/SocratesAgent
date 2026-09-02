@@ -20,6 +20,7 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/server"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
+	"github.com/saschazesiger/SocratesAgent/internal/termux"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".
@@ -29,8 +30,17 @@ func main() {
 	log.SetFlags(log.Ldate | log.Ltime)
 
 	args := os.Args[1:]
-	if len(args) > 0 && args[0] == "serve" {
-		args = args[1:]
+	if len(args) > 0 {
+		switch args[0] {
+		case "serve":
+			args = args[1:]
+		case "journal-sink":
+			journalSink(args[1:])
+			return
+		case "tmux-hook":
+			tmuxHook(args[1:])
+			return
+		}
 	}
 
 	fs := flag.NewFlagSet("socrates", flag.ExitOnError)
@@ -114,6 +124,46 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpServer.Shutdown(ctx)
+}
+
+// journalSink is the sink tmux pipes a pane's output into. It is a subcommand
+// rather than `cat >> file` because a terminal user interface that redraws
+// continuously writes megabytes an hour, and the session it writes for is
+// never restarted: rotation has to happen while it runs or it never happens.
+func journalSink(args []string) {
+	fs := flag.NewFlagSet("journal-sink", flag.ExitOnError)
+	path := fs.String("path", "", "file to append the pane output to")
+	maxBytes := fs.Int64("max-bytes", termux.JournalMaxBytes, "rotate once the file passes this size")
+	keep := fs.Int("keep", termux.JournalKeep, "how many rotated files to keep")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
+	if *path == "" {
+		fmt.Fprintln(os.Stderr, "socrates journal-sink: -path is required")
+		os.Exit(2)
+	}
+	if err := termux.RunJournalSink(*path, *maxBytes, *keep); err != nil {
+		fmt.Fprintf(os.Stderr, "socrates journal-sink: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// tmuxHook carries one tmux event to the running Socrates. It is deliberately
+// silent and best effort: the server polls as well, so a hook that never
+// arrives costs a couple of seconds and never correctness.
+func tmuxHook(args []string) {
+	fs := flag.NewFlagSet("tmux-hook", flag.ExitOnError)
+	sock := fs.String("sock", "", "the Socrates hook socket")
+	event := fs.String("event", "", "the tmux hook that fired")
+	session := fs.String("session", "", "the tmux session it fired for")
+	status := fs.String("status", "", "the exit status, for pane-died")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
+	if *sock == "" || *event == "" {
+		os.Exit(2)
+	}
+	_ = termux.SendHook(*sock, termux.Hook{Event: *event, Session: *session, Status: *status})
 }
 
 func envOr(key, fallback string) string {

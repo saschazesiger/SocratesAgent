@@ -37,6 +37,7 @@ them from the sources named here.
 | `modernc.org/memory` | BSD-3-Clause | <https://gitlab.com/cznic/memory> |
 | `github.com/dustin/go-humanize` | MIT, © Dustin Sallings | <https://github.com/dustin/go-humanize> |
 | `github.com/google/uuid` | BSD-3-Clause, © Google | <https://github.com/google/uuid> |
+| `github.com/creack/pty` | MIT, © Keith Rarick | <https://github.com/creack/pty> — the pseudo terminals the browser watches tmux through |
 | `github.com/remyoudompheng/bigfft` | BSD-3-Clause, © The Go Authors | <https://github.com/remyoudompheng/bigfft> |
 | `github.com/mattn/go-isatty` | MIT, © Yasuhiro Matsumoto | <https://github.com/mattn/go-isatty> |
 | `github.com/ncruces/go-strftime` | MIT, © Nuno Cruces | <https://github.com/ncruces/go-strftime> |
