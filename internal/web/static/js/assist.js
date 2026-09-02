@@ -136,7 +136,11 @@ export function mountAssist(ctx) {
     const session = ctx.current();
     if (!session) return '';
     if (statusLine) return statusLine;
-    if (run && !run.done) {
+    if (run) {
+      // A finished run holds the window for a moment - `linger` is what lets
+      // go of it - because a line that vanished the instant it ended would be
+      // one nobody read.
+      if (run.done) return run.error ? 'The run stopped before it finished.' : 'The run finished.';
       const step = Math.max(1, Number(run.step) || 1);
       const said = String(run.action || '').trim() || PHASE_WORDS[run.phase] || 'working';
       return 'Step ' + step + ' · ' + said;
@@ -425,14 +429,9 @@ export function mountAssist(ctx) {
         summary: frame.summary || '', done: !!frame.done, error: frame.error || '',
       };
       chat.run(run);
-      if (run.done) {
-        // The words the run ended with are the chat's, which stores them; the
-        // ticker only says that it ended.
-        statusLine = '';
-        run = { ...run, action: run.error ? 'stopped' : 'done' };
-        chat.run(run);
-        linger('run');
-      }
+      // The words a run ended with are the chat's, which stores them; the
+      // ticker only says that it ended, and then gives the window back.
+      if (run.done) linger('run');
       paintTicker();
     },
 
