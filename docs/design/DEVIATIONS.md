@@ -421,3 +421,73 @@ answer is 200 rather than 201.
 **WP4 / §A.9 — a `starting` row over a live pane is promoted by the poll.** If the last write
 of a create does not land, the pane is alive and the row is behind; the poll now says so, and
 `Ensure`'s ten-second grace asks tmux before it writes `failed` over a working terminal.
+
+## WP6 — Frontend shell: page, terminal, transport
+
+**WP6 / §D.3, §D.4 — a returning viewer that sends `since=0` gets a fresh attach, not the
+whole ring.** `replayPoint` answered `since=0` by replaying the ring from its base, which is
+the ordinary page reload: the tab keeps its viewer id, its terminal is empty, and it asks for
+everything. That was wrong twice over. It replays the *whole session* rather than the current
+screen — the thing §A.6 and §D.3 exist to avoid — and it re-delivers the device-attribute
+queries tmux wrote on the first attach, which xterm.js answers a second time into a pane that
+never asked; the `reloadkeepsscreen` scenario caught it as `1;2c0;276;0c;24;80t432;672t`
+echoed by the shell, followed by a terminal that no longer took input. `since=0` from a viewer
+that is not brand new now takes the same path as a `since` the ring can no longer serve: the
+tmux client is replaced, the redraw is the screen, and `hello` says `replay_from: 0`. The
+first connect is unaffected — it passes `fresh` and its own attach is its redraw. This is a
+four-line change in WP5's `ws.go`.
+
+**WP6 / §E.4 — the palette ships as specified; what the `design` scenario can assert about it
+does not.** §E.4 states that every colour in `LIGHT_THEME` is ≥ 4.5:1 against `#ffffff`.
+Measured, eleven of its eighteen colours are not: `white` is 1.36:1, `brightGreen` 2.73:1,
+`brightYellow` 2.63:1, `yellow` 3.39:1, and so on — and a palette that did satisfy it would
+have no bright colours worth the name, because a 4.5:1 yellow on white is brown. The values
+are shipped exactly as §E.4 writes them, because they are a deliberate set and changing them
+is changing the design. What is actually load-bearing is `minimumContrastRatio: 4.5`, which
+re-derives a colour at draw time, and that is what `createshell` measures: it prints a line in
+ANSI white through the real pane and reads the colour the renderer actually drew
+(`rgb(116,116,117)`, 4.67:1). `contrast(a, b)` is exported from `term.js` as §E.4 requires.
+WP10's `design` scenario should assert the drawn colour, not the table.
+
+**WP6 / §E.9 — `keybar.js` is not yet in the service worker's `SHELL`.** The list is exactly
+the files this build ships. A precached path that does not exist would make `hasWholeShell()`
+permanently false, which stops the worker ever letting go of the previous build — the opposite
+of what the list is for. WP7 adds the file and the line together.
+
+**WP6 / §D.9, §E.4 — `GET /api/preferences` carries the terminal settings.** §B.5 has
+`terminal.scrollback`, `terminal.font_size` and `terminal.webgl`, §E.4 spends them, and no
+endpoint handed them to the page: `/api/settings` is the dashboard's and needs the whole
+document. §D.9 lists `/api/preferences` as "kept, updated content", so the three fields were
+added there. `session.js` reads them before it builds the terminal and falls back to the
+shipped defaults if the call fails.
+
+**WP6 / §G.1 — `models.js` was deleted and `admin.js` was touched, three hunks.** §G.1 says
+`models.js` is "folded into harnesses.js", but the two have nothing to do with each other:
+`models.js` is the *OpenRouter* catalogue behind the dashboard's two voice-model fields, and
+it read `GET /api/models`, which WP4 removed. It was dead. Deleting it would have left
+`admin.js` importing a missing module, which is a hard ESM error and would have failed the
+`pages` scenario on `/admin` — so `admin.js` now imports `harnesses.js` in place of
+`agents.js` and its two model comboboxes are searchable fields with no list until WP8 rebuilds
+that card. Nothing else in `admin.js` was changed.
+
+**WP6 / §E.2, §E.7 — the overlays and notices are built here rather than in WP7.** §E.2 puts
+`#termOverlay` and `#termNotice` in the page and WP7's scope names the overlays. A terminal
+whose pane has exited and says nothing at all is not a shippable first cut of the terminal, and
+the "resumed after a restart" notice is the only thing WP4's `resumed` flag and WP5's `notice`
+frame were built to reach. Both are implemented and covered by `exitoverlay`. WP7 keeps the
+`.stale` treatment, the draft persistence and the `viewer_fresh` toast, which are the parts
+that need the key bar and the line input.
+
+**WP6 / §E.1, §H.3 — `run.mjs` is the skeleton plus seven scenarios, and three of them are not
+in §H.3's table.** Scenarios 1-4 (`createshell`, `typeandsee`, `reloadkeepsscreen`, `pages`)
+are the ones WP6 owes. `harnesses` (all four session types started through the sheet, each
+showing the fake TUI's banner), `sessionlist` (rename, archive, unarchive, delete, and the
+working directory surviving) and `exitoverlay` (`/exit 7`, the status behind the "i", Restart)
+cover the rest of what this package builds and would otherwise ship unmeasured until WP9.
+`webglrenders` exists because every other scenario turns the WebGL renderer off in order to
+read the pane out of the DOM, and the shipped default must not be the untested path.
+`liveclaude` became `livesession` as §H.3 says.
+
+**WP6 / §H.2 — `e2e/harness.mjs` was touched, two selectors.** `setup()` waited for `#newChat`
+and `ensureNav()` names the drawer it opens; both now say `#newSession`. The boot, assert and
+leak machinery is unchanged.

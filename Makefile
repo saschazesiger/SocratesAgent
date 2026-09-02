@@ -62,6 +62,12 @@ e2e: build
 	fi
 	node e2e/run.mjs
 
+## vendor-xterm re-downloads the pinned xterm.js bundle set into
+## internal/web/static/vendor. The files it writes are committed, so this is
+## for an upgrade and never for a build: CI never runs it.
+vendor-xterm: ## re-download the pinned xterm.js bundle set
+	@bash scripts/vendor-xterm.sh
+
 docker:
 	docker build -t socrates:$(VERSION) .
 

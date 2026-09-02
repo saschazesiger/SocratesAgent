@@ -449,12 +449,13 @@ a { color: inherit; }
   white-space: nowrap;
 }
 
-/* What this chat is bound to: the agent, the model and the effort, in that
-   order. It is not a control - the binding is changed in the chat's own
-   settings - so it is the quietest thing in the bar that is still legible. */
+/* What this session runs: the harness's mark, the model, and everything else
+   behind the "i". It is not a control - a session is bound to its program for
+   its whole life - so it is the quietest thing in the bar that is still
+   legible. */
 .agent-badge {
-  /* It shrinks before the chat's own name does, and the name keeps a floor of
-     its own below - the binding is a caption, the title is what you are
+  /* It shrinks before the session's own name does, and the name keeps a floor
+     of its own below - the binding is a caption, the title is what you are
      looking for in a list of open tabs. */
   position: relative;
   flex: 0 1 auto;
@@ -475,621 +476,11 @@ a { color: inherit; }
   transition: border-color .16s var(--ease), box-shadow .16s var(--ease);
 }
 .agent-badge:hover { border-color: var(--line-strong); }
-.agent-badge > span:not(.badge-tip) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.agent-badge > span:not(.tip) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .agent-badge > .agent-mark { flex: none; }
-.agent-badge > .b-sep { flex: none; opacity: .6; margin: 0 -3px; }
-/* The agent's name, its build and the whole binding, drawn under the badge
-   only while it is hovered: the mark already says who, and the bar has no
-   room for a sentence. */
-.agent-badge .badge-tip {
-  position: fixed;
-  top: 0;
-  left: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 8px 11px;
-  border-radius: 10px;
-  background: var(--accent);
-  color: #fff;
-  font-size: 12px;
-  line-height: 1.4;
-  width: max-content;
-  max-width: min(300px, calc(100vw - 20px));
-  white-space: normal;
-  overflow-wrap: anywhere;
-  box-shadow: var(--shadow);
-  opacity: 0;
-  visibility: hidden;
-  transform: translate(calc(-50% + var(--tip-shift, 0px)), -4px);
-  transition: opacity .16s var(--ease), transform .16s var(--ease), visibility 0s linear .16s;
-  z-index: 20;
-  pointer-events: none;
-}
-.agent-badge:hover .badge-tip, .agent-badge:focus-visible .badge-tip, .agent-badge.open .badge-tip {
-  opacity: 1;
-  visibility: visible;
-  transform: translate(calc(-50% + var(--tip-shift, 0px)), 0);
-  transition-delay: 0s;
-}
-.agent-badge:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.agent-badge .badge-tip .b-agent { font-weight: 600; }
-.agent-badge .badge-tip .b-binding { opacity: .8; }
-.agent-badge .badge-tip .b-warn { color: #ffd28a; }
-/* The agent this chat needs is gone or switched off. Saying so here is the
-   only warning there is before the composer refuses the next message. */
-.agent-badge.warn {
-  color: #a5670f;
-  border-color: #f2d9a8;
-  background: #fdf7ea;
-}
-/* Two ways to use a chat, one at a time: the conversation, or hands free. The
-   knob is the only thing that moves, so where it sits is the whole answer to
-   "what am I looking at", and there is no second control to disagree with it.
-   The stops are as wide as their words rather than half the bar each, so the
-   knob is placed from the layout the browser actually made. */
-.view-slider {
-  position: relative;
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 2px;
-  border-radius: 999px;
-  background: var(--bg-hover);
-}
-.view-slider .knob {
-  position: absolute;
-  top: 2px;
-  left: 0;
-  height: calc(100% - 4px);
-  width: var(--knob-w, 0px);
-  transform: translateX(var(--knob-x, 0px));
-  border-radius: 999px;
-  background: var(--bg);
-  box-shadow: var(--shadow-sm);
-  pointer-events: none;
-}
-/* It only slides once it has been placed: the first measurement happens after
-   the first paint, and a knob gliding in from the left edge on load reads as
-   the page changing its mind. */
-.view-slider.placed .knob {
-  transition: transform .2s cubic-bezier(.3, .8, .4, 1), width .2s cubic-bezier(.3, .8, .4, 1);
-}
-.view-slider .stop {
-  position: relative;
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border: 0;
-  background: transparent;
-  border-radius: 999px;
-  padding: 6px 10px;
-  font: inherit;
-  font-size: 12.5px;
-  line-height: 1;
-  color: var(--text-soft);
-  white-space: nowrap;
-  cursor: pointer;
-  transition: color .12s ease;
-}
-.view-slider .stop:hover { color: var(--text); }
-.view-slider .stop[aria-checked="true"] { color: var(--text); font-weight: 550; }
-.view-slider .stop .ico { width: 15px; height: 15px; flex: none; }
+.agent-badge > .tip { flex: none; }
 .menu-btn { display: none; }
 
-.popover {
-  position: absolute;
-  top: 52px;
-  right: 16px;
-  width: min(400px, calc(100vw - 32px));
-  background: var(--bg);
-  border: 1px solid var(--line-strong);
-  border-radius: 16px;
-  box-shadow: var(--shadow);
-  padding: 18px 18px 14px;
-  z-index: 12;
-  /* Entrance animations run backwards-only wherever a bubble can be inside:
-     an animation that keeps filling keeps its transform on the element, and a
-     transformed ancestor is what a fixed bubble would be placed against. */
-  animation: rise .16s ease backwards;
-}
-.popover .field:last-of-type { margin-bottom: 14px; }
-
-/* ---------------------------------------------------------------- thread */
-
-.thread {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  scroll-behavior: smooth;
-  padding: 28px 20px 12px;
-}
-.thread-inner {
-  max-width: 720px;
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  padding-bottom: 20px;
-}
-
-.msg { animation: rise .22s ease both; }
-.msg.user {
-  align-self: flex-end;
-  max-width: 78%;
-  background: var(--bg-sunken);
-  padding: 11px 16px;
-  border-radius: 18px 18px 4px 18px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.msg.assistant { align-self: stretch; }
-
-.turn { display: flex; flex-direction: column; gap: 14px; }
-
-.empty {
-  margin: auto;
-  text-align: center;
-  padding: 8vh 0 0;
-  animation: rise .3s ease both;
-}
-.empty h2 {
-  font-size: 30px;
-  letter-spacing: -.035em;
-  font-weight: 600;
-  margin: 0 0 8px;
-}
-.empty p { color: var(--text-soft); margin: 0; }
-.empty-mark {
-  display: flex;
-  justify-content: center;
-  margin-bottom: 18px;
-  animation: pop .4s var(--ease) both;
-}
-.suggestions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: center;
-  margin-top: 26px;
-}
-.suggestions button {
-  border: 1px solid var(--line-strong);
-  background: var(--bg);
-  border-radius: 999px;
-  padding: 8px 14px;
-  font-size: 13.5px;
-  color: var(--text-soft);
-  cursor: pointer;
-  transition: background .14s ease, color .14s ease;
-}
-.suggestions button:hover { background: var(--bg-hover); color: var(--text); }
-
-/* --------------------------------------------------------- process view */
-
-.process {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  border-left: 2px solid var(--line);
-  padding-left: 16px;
-  margin-left: 2px;
-}
-.process:empty { display: none; }
-
-.step { animation: fade .2s ease both; font-size: 13.5px; }
-
-/* The row that says a run is still going. It sits at the end of the process
-   list and is the one thing on screen that is never absent while Socrates is
-   busy - between two steps there would otherwise be nothing to look at. */
-.working {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 6px 0;
-  font-size: 13.5px;
-  color: var(--text-soft);
-  animation: fade .2s ease both;
-}
-.thread-inner > .working {
-  border-left: 2px solid var(--line);
-  padding-left: 16px;
-  margin-left: 2px;
-}
-.working-dots {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  flex: none;
-  height: 15px;
-}
-.working-dots i {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--text-soft);
-  animation: wave 1.25s cubic-bezier(.45, 0, .55, 1) infinite;
-}
-.working-dots i:nth-child(2) { animation-delay: .16s; }
-.working-dots i:nth-child(3) { animation-delay: .32s; }
-.working-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.working-time {
-  margin-left: auto;
-  flex: none;
-  font-size: 12.5px;
-  color: var(--text-faint);
-  font-variant-numeric: tabular-nums;
-}
-.step > .head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 0;
-  color: var(--text-soft);
-  cursor: default;
-}
-.step.collapsible > .head { cursor: pointer; }
-.step.collapsible > .head:hover { color: var(--text); }
-.step > .head .name { font-weight: 500; }
-.step > .head .meta { color: var(--text-faint); font-size: 12.5px; }
-.step > .head .chev {
-  margin-left: auto;
-  color: var(--text-faint);
-  transition: transform .16s ease;
-  flex: none;
-}
-.step.open > .head .chev { transform: rotate(90deg); }
-.step > .body {
-  display: none;
-  padding: 2px 0 10px;
-  color: var(--text-soft);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.step.open > .body { display: block; }
-.step > .body.code {
-  font-family: var(--mono);
-  font-size: 12.5px;
-  background: var(--bg-sunken);
-  border-radius: var(--r-sm);
-  padding: 10px 12px;
-  max-height: 320px;
-  overflow: auto;
-  white-space: pre-wrap;
-}
-
-.step-icon {
-  width: 15px; height: 15px; flex: none;
-  display: grid; place-items: center;
-  color: var(--text-faint);
-}
-.step-icon svg { width: 14px; height: 14px; }
-.spinner {
-  width: 12px; height: 12px;
-  flex: none;
-  box-sizing: border-box;
-  border: 1.6px solid var(--line-strong);
-  border-top-color: var(--text-soft);
-  border-right-color: var(--text-soft);
-  border-radius: 50%;
-  transform-origin: 50% 50%;
-  will-change: transform;
-  animation: spin .8s linear infinite;
-}
-.step-icon .glyph { display: grid; place-items: center; }
-.tick { color: var(--green); }
-.cross { color: var(--red); }
-
-.step.text-step > .body, .step.text-step.open > .body { display: block; padding: 4px 0 8px; color: var(--text-soft); }
-
-
-/* A tool call, as a card. The head line is the whole story in one row - what
-   ran, on what, and how it went - and the output is what you open when the
-   story is not enough. */
-.step.tool-step > .head .tag {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--text-faint);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 1px 7px;
-  flex: none;
-}
-.step.tool-step > .head .name { flex: none; font-weight: 550; }
-.step.tool-step > .head .val {
-  min-width: 0;
-  flex: 1 1 auto;
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--text-soft);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.step.tool-step > .head .meta {
-  flex: none;
-  color: var(--red);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-.step.tool-step > .head .chev { margin-left: 0; }
-.tool-input {
-  display: none;
-  margin: 0 0 6px;
-  padding: 8px 12px;
-  border-radius: var(--r-sm);
-  background: var(--bg-sunken);
-  color: var(--text-faint);
-  font-family: var(--mono);
-  font-size: 11.5px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  max-height: 160px;
-  overflow: auto;
-}
-.step.tool-step.open > .tool-input:not([hidden]) { display: block; }
-
-/* What the turn cost. It is the last thing anyone reads and the first thing
-   they would rather not have shouting at them. */
-.step.usage-step {
-  color: var(--text-faint);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  padding: 2px 0 4px;
-}
-
-/* The agent saying something about itself. One line, quiet, never hidden. */
-.step.notice-step {
-  display: flex;
-  align-items: flex-start;
-  gap: 7px;
-  color: var(--text-soft);
-  font-size: 12.5px;
-  padding: 3px 0;
-}
-.step.notice-step .glyph { flex: none; color: var(--text-faint); margin-top: 1px; }
-.step.notice-step .glyph svg { width: 14px; height: 14px; display: block; }
-.step.notice-step .what { min-width: 0; overflow-wrap: anywhere; }
-
-.step.error-step {
-  border: 1px solid #f1dada;
-  background: #fdf7f7;
-  border-radius: var(--r);
-  padding: 12px 14px;
-  color: #a53535;
-  font-size: 13.5px;
-  margin: 6px 0;
-  white-space: pre-wrap;
-}
-
-/* rendered markdown */
-.md { overflow-wrap: anywhere; }
-.md > *:first-child { margin-top: 0; }
-.md > *:last-child { margin-bottom: 0; }
-.md p { margin: 0 0 12px; }
-.md h1, .md h2, .md h3 { letter-spacing: -.02em; margin: 20px 0 10px; line-height: 1.3; }
-.md h1 { font-size: 20px; }
-.md h2 { font-size: 17px; }
-.md h3 { font-size: 15.5px; }
-.md ul, .md ol { margin: 0 0 12px; padding-left: 22px; }
-.md li { margin: 3px 0; }
-.md code {
-  font-family: var(--mono);
-  font-size: .88em;
-  background: var(--bg-sunken);
-  padding: 1.5px 5px;
-  border-radius: 5px;
-}
-.md pre {
-  background: var(--bg-sunken);
-  border-radius: var(--r-sm);
-  padding: 12px 14px;
-  overflow-x: auto;
-  margin: 0 0 12px;
-}
-.md pre code { background: none; padding: 0; font-size: 12.5px; line-height: 1.55; }
-.md blockquote {
-  margin: 0 0 12px;
-  padding-left: 14px;
-  border-left: 2px solid var(--line-strong);
-  color: var(--text-soft);
-}
-.md a { color: var(--blue); text-decoration: none; }
-.md a:hover { text-decoration: underline; }
-.md hr { border: none; border-top: 1px solid var(--line); margin: 18px 0; }
-.md table { border-collapse: collapse; width: 100%; margin: 0 0 12px; font-size: 13.5px; display: block; overflow-x: auto; }
-.md th, .md td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; }
-
-/* -------------------------------------------------------------- composer */
-
-.composer-wrap {
-  flex: none;
-  padding: 8px 20px 20px;
-  background: linear-gradient(to bottom, rgba(255,255,255,0), var(--bg) 22%);
-}
-.composer {
-  max-width: 720px;
-  margin: 0 auto;
-  border: 1px solid var(--line-strong);
-  border-radius: 24px;
-  background: var(--bg);
-  box-shadow: 0 1px 2px rgba(16, 17, 20, .04), 0 4px 16px rgba(16, 17, 20, .05);
-  padding: 8px 8px 8px 18px;
-  display: flex;
-  align-items: flex-end;
-  gap: 8px;
-  transition: border-color .2s var(--ease), box-shadow .2s var(--ease);
-}
-.composer:focus-within {
-  border-color: #c3c4ca;
-  box-shadow: 0 1px 2px rgba(16, 17, 20, .04), 0 10px 30px rgba(16, 17, 20, .09);
-}
-.composer textarea {
-  flex: 1;
-  border: none;
-  outline: none;
-  resize: none;
-  background: none;
-  max-height: 200px;
-  padding: 9px 0;
-  line-height: 1.55;
-}
-.composer textarea::placeholder { color: var(--text-faint); }
-.composer .actions { display: flex; align-items: center; gap: 4px; padding-bottom: 1px; }
-.round-btn {
-  width: 36px; height: 36px;
-  border-radius: 50%;
-  border: none;
-  display: grid;
-  place-items: center;
-  cursor: pointer;
-  background: var(--bg-sunken);
-  color: var(--text);
-  transition: background .16s var(--ease), color .16s var(--ease), opacity .16s var(--ease), transform .16s var(--ease);
-  flex: none;
-}
-.round-btn:hover { background: #e8e8ea; }
-.round-btn:active { transform: scale(.92); }
-.round-btn svg { width: 17px; height: 17px; }
-.round-btn.send { background: var(--accent); color: #fff; }
-.round-btn.send:hover { background: #2b2d33; transform: scale(1.04); }
-.round-btn.send:active { transform: scale(.92); }
-/* The moment there is something to send, the button says so. */
-.round-btn.send:not(:disabled) { animation: pop .2s var(--ease) both; }
-.round-btn.send:disabled { background: var(--bg-sunken); color: var(--text-faint); cursor: not-allowed; }
-.round-btn.rec { background: var(--red); color: #fff; animation: pulse-rec 1.5s ease-in-out infinite; }
-.round-btn.rec:hover { background: #bd3838; }
-.composer .rec-time {
-  font-variant-numeric: tabular-nums;
-  font-size: 13px;
-  color: var(--red);
-  padding: 0 4px 0 2px;
-}
-.composer-note {
-  max-width: 720px;
-  margin: 8px auto 0;
-  text-align: center;
-  font-size: 11.5px;
-  color: var(--text-faint);
-}
-/* ------------------------------------------------------------ audio mode */
-
-.auto-screen { display: none; }
-body.auto .thread, body.auto .composer-wrap { display: none; }
-/* Audio mode is a focused, hands free surface: nothing but the top bar and the
-   screen itself. The sidebar is out of the flow while it has the pane, which
-   leaves the hands free screen the whole width. */
-body.auto .app { grid-template-columns: minmax(0, 1fr); }
-body.auto .sidebar { display: none; }
-body.auto .menu-btn { display: none; }
-body.auto .auto-screen {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 24px 32px 44px;
-  text-align: center;
-  gap: 22px;
-  overflow-y: auto;
-}
-
-.auto-status {
-  font-size: 17px;
-  color: var(--text-soft);
-  min-height: 26px;
-  letter-spacing: -.01em;
-}
-.auto-timer {
-  font-size: 44px;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -.04em;
-  color: var(--text);
-  font-weight: 300;
-}
-.mic-big {
-  width: 190px;
-  height: 190px;
-  border-radius: 50%;
-  border: none;
-  background: var(--accent);
-  color: #fff;
-  display: grid;
-  place-items: center;
-  cursor: pointer;
-  box-shadow: 0 12px 40px rgba(16, 17, 20, .16);
-  transition: transform .16s cubic-bezier(.3,.8,.4,1), background .16s ease;
-  flex: none;
-}
-.mic-big:hover { transform: scale(1.03); }
-.mic-big:active { transform: scale(.97); }
-.mic-big svg { width: 72px; height: 72px; }
-.mic-big.recording { background: var(--red); animation: pulse-rec 1.6s ease-in-out infinite; }
-.mic-big.busy { background: var(--bg-sunken); color: var(--text-faint); cursor: not-allowed; box-shadow: none; }
-.mic-big:disabled { cursor: not-allowed; }
-
-.auto-answer {
-  max-width: 1000px;
-  width: 100%;
-  font-size: clamp(22px, 3.4vw, 46px);
-  line-height: 1.25;
-  letter-spacing: -.03em;
-  font-weight: 450;
-  color: var(--text);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  animation: rise .3s ease both;
-}
-.auto-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
-
-/* Once there is something to read, the text takes the stage and the
-   microphone shrinks to a control at the bottom. */
-.auto-screen.answering { justify-content: center; gap: 18px; }
-.auto-screen.answering .auto-answer { order: 1; }
-.auto-screen.answering .auto-actions { order: 2; }
-.auto-screen.answering .auto-busy { order: 3; margin-top: 0; }
-.auto-screen.answering .auto-live { order: 3; }
-.auto-screen.answering .mic-big { order: 4; width: 104px; height: 104px; box-shadow: 0 6px 20px rgba(16,17,20,.14); }
-.auto-screen.answering .mic-big svg { width: 40px; height: 40px; }
-.auto-busy {
-  display: flex;
-  gap: 7px;
-  margin-top: 22px;
-}
-.auto-busy i {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--text-soft);
-  animation: wave 1.25s cubic-bezier(.45, 0, .55, 1) infinite;
-}
-.auto-busy i:nth-child(2) { animation-delay: .16s; }
-.auto-busy i:nth-child(3) { animation-delay: .32s; }
-
-.auto-live {
-  max-width: 760px;
-  width: 100%;
-  color: var(--text-faint);
-  font-size: 15px;
-  min-height: 22px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.auto-transcript {
-  max-width: 760px;
-  color: var(--text-soft);
-  font-size: 16px;
-  font-style: italic;
-}
 
 /* --------------------------------------------------------------- modal */
 
@@ -1461,10 +852,6 @@ body.auto .auto-screen {
   from { opacity: 0; transform: translateY(8px) scale(.98); }
   to { opacity: 1; transform: none; }
 }
-@keyframes wave {
-  0%, 70%, 100% { opacity: .28; transform: translateY(0); }
-  35% { opacity: 1; transform: translateY(-3px); }
-}
 @keyframes pulse-rec {
   0%, 100% { box-shadow: 0 0 0 0 rgba(207, 63, 63, .35); }
   50% { box-shadow: 0 0 0 14px rgba(207, 63, 63, 0); }
@@ -1475,12 +862,11 @@ body.auto .auto-screen {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
   .spinner, .chat-item .dot, .state-dot.starting, .state-dot.installing,
-  .working-dots i, .auto-busy i, .conn-dot {
+  .conn-dot {
     animation-duration: 2.4s !important;
   }
   .spinner { animation-name: pulse !important; }
-  .thread { scroll-behavior: auto; }
-  .tip-bubble, .agent-badge .badge-tip { transition: none !important; }
+  .tip-bubble { transition: none !important; }
 }
 
 /* -------------------------------------------------------------- mobile */
@@ -1519,19 +905,13 @@ body.auto .auto-screen {
     -webkit-tap-highlight-color: transparent;
   }
   body.nav-open .nav-scrim { opacity: 1; pointer-events: auto; }
-  /* Audio mode takes the sidebar out of the layout entirely, so a scrim left
-     over from it would darken the screen with nothing behind it. */
-  body.auto .nav-scrim { display: none; }
   .menu-btn { display: inline-flex; }
-  .thread { padding: 20px 14px 8px; }
-  .composer-wrap {
+  .composer {
     padding: 8px
              calc(12px + env(safe-area-inset-right, 0px))
-             calc(14px + env(safe-area-inset-bottom, 0px))
+             calc(10px + env(safe-area-inset-bottom, 0px))
              calc(12px + env(safe-area-inset-left, 0px));
   }
-  .msg.user { max-width: 88%; }
-  .mic-big { width: 156px; height: 156px; }
   .topbar {
     gap: 8px;
     padding: 0
@@ -1539,7 +919,6 @@ body.auto .auto-screen {
              0
              calc(12px + env(safe-area-inset-left, 0px));
   }
-  .mic-big svg { width: 60px; height: 60px; }
 }
 
 /* Two fields side by side need room for both. This is the admin page's own
@@ -1562,7 +941,7 @@ body.auto .auto-screen {
    and a zoomed page scrolls sideways. Only the widths a phone actually has,
    so a desktop window keeps the smaller, quieter type. */
 @media (max-width: 620px) {
-  .input, .select, .textarea, .combo-input, .composer textarea { font-size: 16px; }
+  .input, .select, .textarea, .combo-input { font-size: 16px; }
   .input.mono, .textarea.mono { font-size: 16px; }
 }
 
@@ -1579,23 +958,9 @@ body.auto .auto-screen {
 
 /* The narrowest screens in use. */
 @media (max-width: 420px) {
-  .thread { padding: 16px 12px 8px; }
   .admin-wrap { padding: 16px 12px calc(44px + env(safe-area-inset-bottom, 0px)); }
   .card { padding: 16px 14px; }
   .admin-foot .btn { flex: 1 1 auto; }
-}
-
-/* The slider sheds its words before the bar sheds anything else: the stop you
-   are on keeps its name, the other three are their icon. It is the one that
-   matters - the knob says where you are, and the word says what that is. */
-@container (max-width: 620px) {
-  .view-slider .stop .lbl { display: none; }
-  .view-slider .stop[aria-checked="true"] .lbl { display: inline; }
-}
-/* Narrower than any phone in portrait. Even the name goes, rather than the
-   bar wrapping onto a second line. */
-@container (max-width: 300px) {
-  .view-slider .stop[aria-checked="true"] .lbl { display: none; }
 }
 
 /* The top bar, measured against its own column. A title and three controls fit
@@ -1609,13 +974,11 @@ body.auto .auto-screen {
              0
              calc(10px + env(safe-area-inset-left, 0px));
   }
-  .view-slider .stop { padding: 6px 8px; }
-  /* Mobile first: the chat's name comes before the caption under it. The
-     agent is its mark and the mark stays; the effort is the first thing to
-     go, the model the second, and both are still in the bubble under a tap. */
+  /* Mobile first: the session's name comes before the caption beside it. The
+     harness is its mark and the mark stays; the model is what goes, and it is
+     still in the bubble under a tap. */
   .agent-badge { max-width: 40%; gap: 5px; padding: 0 8px 0 6px; }
-  .agent-badge > .b-effort,
-  .agent-badge > .b-model + .b-sep { display: none; }
+  .term-size { display: none; }
 }
 /* Narrower than this the title has room for one letter and an ellipsis that
    does not fit, which reads as a glitch rather than as a name. It keeps its
@@ -1637,9 +1000,216 @@ body.auto .auto-screen {
              calc(8px + env(safe-area-inset-left, 0px));
   }
   .topbar .icon-btn { width: 32px; height: 32px; }
-  .view-slider { gap: 0; }
-  .view-slider .stop { padding: 6px 7px; }
 }
+
+/* ------------------------------------------------------------- terminal */
+
+/* The pane takes the whole area under the top bar. It is white, like every
+   other surface here, and the only structure around it is a hairline. */
+.term-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: var(--bg);
+  padding: 10px 12px 12px;
+  overflow: hidden;
+  transition: opacity .2s var(--ease);
+}
+.term-host { width: 100%; height: 100%; }
+.term-host .xterm { height: 100%; }
+.term-host .xterm-viewport {
+  background: var(--bg) !important;
+  scrollbar-width: thin;
+}
+.term-host .xterm-screen { background: var(--bg); }
+
+/* The connection is down and what is on screen is old. The pane is not made
+   read only - what is typed is queued and delivered on reconnect - but nobody
+   should mistake an old screen for a live one. */
+.term-wrap.stale { opacity: .55; }
+.term-wrap.stale .xterm { cursor: not-allowed; }
+
+/* The size the pane is wearing. It is a number, so it is quiet, and it is
+   beside the name rather than inside it. */
+.term-size {
+  flex: none;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  font-family: var(--mono);
+}
+
+/* A thin line across the top of the pane: resumed after a restart, resized by
+   another viewer, redrawn after an outage. It never blocks the terminal and it
+   is always dismissible. */
+.term-notice {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  right: 12px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px 7px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  box-shadow: var(--shadow-sm);
+  font-size: 12.5px;
+  color: var(--text-soft);
+  animation: rise .16s var(--ease) both;
+}
+.term-notice .notice-text { flex: 1; min-width: 0; }
+.term-notice .notice-close { width: 26px; height: 26px; flex: none; }
+
+/* What blocks the pane: it ended, it could not start, or it is on its way
+   back. A card on white with a hairline, and the technical part behind an
+   "i" like everywhere else. */
+.term-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(255, 255, 255, .86);
+  animation: fade .16s var(--ease) both;
+}
+.overlay-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  max-width: 420px;
+  padding: 22px 24px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  background: var(--bg);
+  box-shadow: var(--shadow);
+  text-align: center;
+}
+.overlay-title {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 550;
+}
+.overlay-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+
+/* Nothing is open yet. */
+.term-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+  padding: 24px;
+}
+.empty-title { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -.02em; }
+.empty-body { margin: 0; color: var(--text-soft); font-size: 14px; }
+
+/* One turning mark, for the moment a session is being brought back. */
+.spinner {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--line-strong);
+  border-top-color: var(--text-soft);
+  animation: spin .9s linear infinite;
+}
+
+/* The line input and the key bar are WP7's; this is the shelf they land on, so
+   that adding them does not move the terminal. */
+.composer {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px 14px;
+  border-top: 1px solid var(--line);
+}
+.composer .input { flex: 1; min-width: 0; }
+.keybar {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  padding: 6px 12px;
+  overflow-x: auto;
+  border-top: 1px solid var(--line);
+  scrollbar-width: none;
+}
+
+/* ------------------------------------------------------- the session list */
+
+.list-empty {
+  padding: 18px 10px;
+  font-size: 13px;
+  color: var(--text-faint);
+}
+/* The state dot is the only colour in a row, and it beats only while the pane
+   is running and the connection is live - body.stale already stops it. */
+.chat-item .dot.green { background: var(--green); }
+.chat-item .dot.amber { background: var(--amber); animation: none; }
+.chat-item .dot.red { background: var(--red); animation: none; }
+.chat-item .dot.faint { background: var(--text-faint); animation: none; }
+.chat-item .row-mark { display: inline-flex; flex: none; }
+/* The "i" only appears where a pointer already is, so a row is a name and a
+   dot until somebody asks it for more. */
+.chat-item .row-tip { flex: none; opacity: 0; transition: opacity .16s var(--ease); }
+.chat-item:hover .row-tip, .chat-item.active .row-tip, .chat-item:focus-within .row-tip { opacity: .55; }
+.chat-item .row-tip:hover { opacity: 1; }
+@media (hover: none) {
+  .chat-item .row-tip { opacity: .45; }
+}
+
+/* The overflow menu a row and the header share. */
+.menu {
+  position: fixed;
+  z-index: 45;
+  min-width: 190px;
+  padding: 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r);
+  background: var(--bg);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  animation: rise .14s var(--ease) both;
+}
+.menu-item {
+  border: 0;
+  background: none;
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  color: var(--text);
+  cursor: pointer;
+}
+.menu-item:hover { background: var(--bg-hover); }
+.menu-item.danger { color: var(--red); }
+
+/* The advanced disclosure in the new session sheet. It holds the per session
+   overrides WP9a fills in; the element is here so that filling it in is not a
+   layout change. */
+.advanced { margin: 0 0 14px; }
+.advanced > summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-soft);
+  list-style: none;
+}
+.advanced > summary::-webkit-details-marker { display: none; }
+.advanced > summary::before { content: "▸ "; }
+.advanced[open] > summary::before { content: "▾ "; }
 
 /* ------------------------------------------------------------- combobox */
 
@@ -1817,67 +1387,12 @@ body.conn-lost .app,
 body.conn-lost .admin-page,
 body.conn-lost .auth { padding-top: var(--conn-bar-h, 40px); }
 
-/* While the stream is down, the live parts of the page stop pretending. The
-   thread is still readable - it is the last thing that got through, and that
-   is often exactly what the person wants to re-read - but the animations that
-   say "this is happening right now" stop. */
-body.stale .working-dots i,
-body.stale .auto-busy i,
+/* While the socket is down, the live parts of the page stop pretending. The
+   screen is still readable - it is the last thing that got through, and that
+   is often exactly what the person wants to read - but the animations that say
+   "this is happening right now" stop. */
 body.stale .spinner { animation-play-state: paused; opacity: .45; }
 body.stale .chat-item .dot { animation: none; opacity: .4; }
-
-.working.lost { color: var(--amber); align-items: flex-start; }
-.working.lost .working-dots i { animation: none; background: var(--amber); opacity: .5; }
-/* Losing the connection is the one thing this row must never abbreviate into
-   an ellipsis, so here it is allowed the second line it needs. */
-.working.lost .working-label { white-space: normal; overflow: visible; }
-
-/* --------------------------------------------------- messages in flight */
-
-/* A queued message looks like a sent one, because it will be. The line under
-   it is the difference, and it never disappears until the server has the
-   message. */
-.msg.user.pending { opacity: .72; }
-.msg.user.stuck { opacity: 1; box-shadow: inset 0 0 0 1px #f0d4d4; }
-.msg-state {
-  margin-top: 5px;
-  font-size: 11.5px;
-  color: var(--text-faint);
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: baseline;
-  white-space: normal;
-}
-.msg.user.stuck .msg-state { color: var(--red); }
-.msg-state .link {
-  border: 0;
-  background: none;
-  padding: 0;
-  color: inherit;
-  font-size: inherit;
-  text-decoration: underline;
-  cursor: pointer;
-}
-
-.empty.load-error h2 { color: var(--text); }
-.empty.load-error .btn { margin-top: 14px; }
-
-/* ------------------------------------------------- audio mode, offline */
-
-/* The hands free screen is read at a glance from behind a steering wheel, so
-   it gets the same message in a size that survives that. */
-.auto-offline {
-  max-width: 620px;
-  width: 100%;
-  padding: 12px 18px;
-  border-radius: var(--r);
-  background: #fbf1da;
-  color: #7a5a12;
-  font-size: clamp(15px, 3.6vw, 19px);
-  line-height: 1.4;
-}
-.auto-screen.answering .auto-offline { order: 0; }
 
 /* ------------------------------------------------------------ the marks */
 

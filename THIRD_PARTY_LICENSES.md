@@ -14,6 +14,10 @@ Three groups, and they are legally different:
 - **Started as a child process** — the voice and `cloudflared`. Separate
   executables and shared libraries, downloaded at runtime or baked into the
   image, never linked into anything. One of them, espeak-ng, is GPL-3.0.
+- **Shipped in the web assets** — the xterm.js terminal and its addons, MIT,
+  vendored as minified bundles under `internal/web/static/vendor/` and embedded
+  into the binary. Shipping the binary ships those files, so their notice
+  travels here.
 - **Along for the ride in the Docker image** — the base image, the handful of
   Debian packages installed on top of it, and the three agent CLIs.
 
@@ -155,3 +159,30 @@ modifies no part of them, and it carries none of their credentials.
 | `@anthropic-ai/claude-code` | proprietary — Anthropic's commercial terms, see the package's own README | <https://github.com/anthropics/claude-code> |
 | `@openai/codex` | Apache-2.0 | <https://github.com/openai/codex> |
 | `opencode-ai` | MIT | <https://github.com/anomalyco/opencode> |
+
+## Shipped in the web assets
+
+The terminal in the browser is [xterm.js](https://xtermjs.org/) and five of its
+addons, vendored as the minified UMD bundles the packages publish — no CDN, so
+the app loads with no network at all. They are embedded into the `socrates`
+binary by `//go:embed`, which means every copy of the binary is a copy of them.
+
+All six are **MIT**, © 2017-2019 The xterm.js authors,
+© 2014-2016 SourceLair Private Company and © 2012-2013 Christopher Jeffrey,
+as the file itself states. The full text is in
+[`internal/web/static/vendor/LICENSE-xterm`](internal/web/static/vendor/LICENSE-xterm),
+which is the licence file as `@xterm/xterm` publishes it and covers the addons
+from the same repository.
+
+| Package | Version | Licence | Registry |
+| --- | --- | --- | --- |
+| `@xterm/xterm` | 6.0.0 | MIT | <https://registry.npmjs.org/@xterm/xterm> |
+| `@xterm/addon-fit` | 0.11.0 | MIT | <https://registry.npmjs.org/@xterm/addon-fit> |
+| `@xterm/addon-unicode11` | 0.9.0 | MIT | <https://registry.npmjs.org/@xterm/addon-unicode11> |
+| `@xterm/addon-web-links` | 0.12.0 | MIT | <https://registry.npmjs.org/@xterm/addon-web-links> |
+| `@xterm/addon-webgl` | 0.19.0 | MIT | <https://registry.npmjs.org/@xterm/addon-webgl> |
+| `@xterm/addon-clipboard` | 0.2.0 | MIT | <https://registry.npmjs.org/@xterm/addon-clipboard> |
+
+The pin is `internal/web/static/vendor/VERSIONS` and `make vendor-xterm`
+re-downloads exactly that set, checking it against `vendor/SHA256SUMS`. The
+`.js.map` files the tarballs also carry are deliberately not shipped.

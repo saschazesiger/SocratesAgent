@@ -17,7 +17,7 @@ func TestVersionIsAShortStableHash(t *testing.T) {
 		t.Fatalf("hash is not stable: %q then %q", version, again)
 	}
 	// A changed file has to move every address that names it.
-	raw["js/chat.js"] = append(raw["js/chat.js"], byte('\n'))
+	raw["js/session.js"] = append(raw["js/session.js"], byte('\n'))
 	if changed := hashOf(raw); changed == version {
 		t.Fatal("a changed file left the version alone")
 	}
@@ -60,8 +60,8 @@ func TestModuleImportsAreStamped(t *testing.T) {
 	if seen == 0 {
 		t.Fatal("found no module imports at all, so this proves nothing")
 	}
-	if body := get(t, "/js/chat.js"); !strings.Contains(body, "from './api.js?v="+version+"'") {
-		t.Error("chat.js does not import api.js at a stamped address")
+	if body := get(t, "/js/session.js"); !strings.Contains(body, "from './api.js?v="+version+"'") {
+		t.Error("session.js does not import api.js at a stamped address")
 	}
 }
 
@@ -80,11 +80,11 @@ func TestServiceWorkerCarriesTheVersion(t *testing.T) {
 	}
 }
 
-// The offline shell is only whole if it holds the entire import graph the chat
-// page boots from. A module that is imported but not precached turns "open
-// Socrates in a tunnel" back into the browser's error page, which is the one
-// thing the worker exists to prevent - and it is the kind of omission a new
-// import makes silently.
+// The offline shell is only whole if it holds the entire import graph the
+// session page boots from. A module that is imported but not precached turns
+// "open Socrates in a tunnel" back into the browser's error page, which is the
+// one thing the worker exists to prevent - and it is the kind of omission a
+// new import makes silently.
 func TestServiceWorkerShellHoldsTheWholeChatImportGraph(t *testing.T) {
 	worker := string(assets["sw.js"])
 	relative := regexp.MustCompile(`from\s+["']\./([^"'?]+)`)
@@ -97,19 +97,19 @@ func TestServiceWorkerShellHoldsTheWholeChatImportGraph(t *testing.T) {
 		seen[name] = true
 		data, ok := assets["js/"+name]
 		if !ok {
-			t.Fatalf("chat.js's import graph names js/%s, which is not embedded", name)
+			t.Fatalf("session.js's import graph names js/%s, which is not embedded", name)
 		}
 		for _, m := range relative.FindAllStringSubmatch(string(data), -1) {
 			walk(m[1])
 		}
 	}
-	walk("chat.js")
+	walk("session.js")
 	if len(seen) < 5 {
 		t.Fatalf("walked only %d modules, so this proves nothing", len(seen))
 	}
 	for name := range seen {
 		if !strings.Contains(worker, "'/static/js/"+name+"'") {
-			t.Errorf("sw.js does not precache /static/js/%s, which the chat page imports", name)
+			t.Errorf("sw.js does not precache /static/js/%s, which the session page imports", name)
 		}
 	}
 	// The page itself and its stylesheet are what everything else hangs off.
@@ -120,14 +120,58 @@ func TestServiceWorkerShellHoldsTheWholeChatImportGraph(t *testing.T) {
 	}
 }
 
+// The terminal is vendored, not fetched from a CDN, so every file index.html
+// loads with a <script> or <link> tag has to be embedded, stamped and
+// precached. A vendored file that is not in SHELL is an app that cannot open
+// a terminal offline, which is most of what the offline story is for.
+func TestVendoredTerminalIsStampedAndPrecached(t *testing.T) {
+	rec := httptest.NewRecorder()
+	ServePage(rec, httptest.NewRequest(http.MethodGet, "/", nil), "index.html")
+	page := rec.Body.String()
+	worker := string(assets["sw.js"])
+
+	refs := regexp.MustCompile(`(?:src|href)="(/static/vendor/[^"?]+)\?v=([0-9a-f]{12})"`).FindAllStringSubmatch(page, -1)
+	if len(refs) < 7 {
+		t.Fatalf("index.html loads %d vendored files; the terminal is six scripts and a stylesheet", len(refs))
+	}
+	for _, ref := range refs {
+		if ref[2] != version {
+			t.Errorf("%s carries the stamp %s, not this build's %s", ref[1], ref[2], version)
+		}
+		if assets[strings.TrimPrefix(ref[1], "/static/")] == nil {
+			t.Errorf("%s is referenced but not embedded", ref[1])
+		}
+		if !strings.Contains(worker, "'"+ref[1]+"'") {
+			t.Errorf("sw.js does not precache %s, which index.html loads", ref[1])
+		}
+	}
+	// The maps are 1.9 MB for xterm alone and would be precached with
+	// everything else, so they are deliberately not shipped.
+	for name := range assets {
+		if strings.HasPrefix(name, "vendor/") && strings.HasSuffix(name, ".js.map") {
+			t.Errorf("%s is embedded; the source maps are not shipped", name)
+		}
+	}
+}
+
+// The chat modules went with the chat. A file that survived a deletion is how
+// a page ends up importing half a product.
+func TestTheChatModulesAreGone(t *testing.T) {
+	for _, name := range []string{"js/chat.js", "js/markdown.js", "js/models.js", "js/agents.js"} {
+		if assets[name] != nil {
+			t.Errorf("%s is still embedded", name)
+		}
+	}
+}
+
 // A stamped address names one exact version of one file and can never mean
 // anything else; an unstamped one has to be asked about every time.
 func TestStampedAssetsAreKeptUnstampedOnesRevalidated(t *testing.T) {
-	stamped := do(t, "/js/chat.js?v="+version)
+	stamped := do(t, "/js/session.js?v="+version)
 	if got := stamped.Header().Get("Cache-Control"); !strings.Contains(got, "immutable") {
 		t.Fatalf("stamped asset is not cacheable for good, got %q", got)
 	}
-	plain := do(t, "/js/chat.js")
+	plain := do(t, "/js/session.js")
 	if got := plain.Header().Get("Cache-Control"); got != "no-cache" {
 		t.Fatalf("unstamped asset must be revalidated, got %q", got)
 	}

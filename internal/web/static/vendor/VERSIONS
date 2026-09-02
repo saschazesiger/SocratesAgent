@@ -1,0 +1,13 @@
+# The xterm.js bundle set, pinned as a set: the addons carry no
+# peerDependencies field, so nothing but this file keeps them in step with the
+# core they were built against. `make vendor-xterm` reads it.
+#
+# package@version                file-in-tarball        vendored-as
+@xterm/xterm@6.0.0               lib/xterm.js           xterm.js
+@xterm/xterm@6.0.0               css/xterm.css          xterm.css
+@xterm/xterm@6.0.0               LICENSE                LICENSE-xterm
+@xterm/addon-fit@0.11.0          lib/addon-fit.js       addon-fit.js
+@xterm/addon-unicode11@0.9.0     lib/addon-unicode11.js addon-unicode11.js
+@xterm/addon-web-links@0.12.0    lib/addon-web-links.js addon-web-links.js
+@xterm/addon-webgl@0.19.0        lib/addon-webgl.js     addon-webgl.js
+@xterm/addon-clipboard@0.2.0     lib/addon-clipboard.js addon-clipboard.js

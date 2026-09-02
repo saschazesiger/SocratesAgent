@@ -275,7 +275,8 @@ export async function start(options = {}) {
   return s;
 }
 
-// setup drives the setup page the way a person would, and lands on the chat.
+// setup drives the setup page the way a person would, and lands on the session
+// page.
 export async function setup(page, url) {
   await page.goto(url + '/setup', { waitUntil: 'domcontentloaded' });
   await page.fill('#password', PASSWORD);
@@ -284,11 +285,11 @@ export async function setup(page, url) {
   await page.click('#submit');
   await page.waitForFunction(() => !location.pathname.startsWith('/setup'), null, { timeout: 25000 });
   await page.goto(url + '/', { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('#newChat', { timeout: 15000 });
+  await page.waitForSelector('#newSession', { timeout: 15000 });
 }
 
-// On a phone the chat list is a drawer and "New chat" lives in it. This is the
-// tap that gets to it, and a no-op on a window wide enough to show it.
+// On a phone the session list is a drawer and "New session" lives in it. This
+// is the tap that gets to it, and a no-op on a window wide enough to show it.
 export async function ensureNav(page) {
   const onScreen = () => page.evaluate(() => {
     const side = document.getElementById('sidebar');
@@ -299,7 +300,7 @@ export async function ensureNav(page) {
     await page.click('#menuBtn');
     await wait(320);
   }
-  if (!(await onScreen())) throw new Error('the chat list never came out');
+  if (!(await onScreen())) throw new Error('the session list never came out');
 }
 
 export function shot(page, name) {

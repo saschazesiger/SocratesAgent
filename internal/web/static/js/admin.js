@@ -4,8 +4,7 @@ import { api, el, toast, isOffline, errorMessage, setClass, onWake, infoTip } fr
 import { agentMark } from './logos.js';
 import { speak, speechKind } from './voice.js';
 import { combobox } from './combobox.js';
-import * as models from './models.js';
-import * as agents from './agents.js';
+import * as agents from './harnesses.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -28,12 +27,14 @@ function busyButton(button, on, label) {
 let settings = null;
 let defaults = null;
 
-// Everything that names a model is picked from the OpenRouter catalogue with a
-// searchable dropdown rather than typed into a text field, so none of them are
-// in FIELDS.
+// The two OpenRouter model ids are searchable fields rather than plain text
+// ones, so neither is in FIELDS. The catalogue that used to fill them came
+// from GET /api/models, which went with the chat API; WP8 rebuilds this card,
+// and until then they are what a combobox with no items is - a text field that
+// takes any id.
 const MODEL_PICKERS = [
-  ['orTranscribe', 'openrouter.transcribe_model', () => models.audio()],
-  ['orTitle', 'openrouter.title_model', () => models.chat()],
+  ['orTranscribe', 'openrouter.transcribe_model', () => []],
+  ['orTitle', 'openrouter.title_model', () => []],
 ];
 
 const FIELDS = [
@@ -159,15 +160,7 @@ function syncModelPickers() {
 
 async function loadModels() {
   const hint = $('modelsHint');
-  try {
-    await models.load();
-    if (hint) hint.textContent = models.count() + ' models loaded from OpenRouter. Type to search, or enter any id by hand.';
-  } catch (err) {
-    if (hint) {
-      hint.textContent = 'Could not load the model list (' + err.message +
-        '). The fields still accept a model id typed by hand.';
-    }
-  }
+  if (hint) hint.textContent = 'Enter any OpenRouter model id.';
 }
 
 /* ---------------------------------------------------------------- agents */

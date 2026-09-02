@@ -7,6 +7,7 @@
 <link rel="icon" href="/favicon.png">
 <link rel="apple-touch-icon" href="/static/img/logo.png">
 <link rel="stylesheet" href="/static/css/app.css">
+<link rel="stylesheet" href="/static/vendor/xterm.css">
 </head>
 <body>
 <div class="app">
@@ -16,17 +17,17 @@
         <img class="mark" src="/static/img/logo.png" alt="" width="24" height="24">
         Socrates
       </div>
-      <button class="btn new-chat" id="newChat">
+      <button class="btn new-chat" id="newSession">
         <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-        New chat
+        New session
       </button>
-      <!-- Archived chats stay out of the way until they are asked for. -->
-      <div class="scope" id="chatScope" role="group" aria-label="Which chats to show">
+      <!-- Archived sessions stay out of the way until they are asked for. -->
+      <div class="scope" id="sessionScope" role="group" aria-label="Which sessions to show">
         <button class="seg on" type="button" data-scope="active" aria-pressed="true">Active</button>
         <button class="seg" type="button" data-scope="all" aria-pressed="false">All</button>
       </div>
     </div>
-    <nav class="chat-list" id="chatList"></nav>
+    <nav class="chat-list" id="sessionList"></nav>
     <div class="side-foot">
       <a class="btn" href="/admin">
         <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 9 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></svg>
@@ -50,127 +51,94 @@
       <button class="icon-btn menu-btn" id="menuBtn" aria-label="Menu">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
       </button>
-      <div class="title" id="chatTitle">New chat</div>
-      <!-- Which agent answers in this chat, on which model, at which effort.
-           A chat is bound to one of them for its whole life, so the binding
-           belongs beside the name rather than inside a dialog. -->
-      <div class="agent-badge" id="chatAgent" hidden></div>
-      <!-- The sidebar may not be showing this chat at all, so the one place
-           that always says whether it is archived is the chat itself. -->
-      <span class="tag" id="chatArchived" hidden>Archived</span>
-      <button class="icon-btn" id="chatSettings" title="Chat settings" hidden>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+      <!-- Which program this session runs. A session is bound to one for its
+           whole life, so the binding belongs beside the name. -->
+      <div class="agent-badge" id="sessionHarness" hidden></div>
+      <!-- The name is edited where it is read: a click makes it editable and
+           Enter or leaving it commits. -->
+      <div class="title" id="sessionTitle">Socrates</div>
+      <span class="tag" id="sessionArchived" hidden>Archived</span>
+      <!-- The size the pane is actually wearing. It is a number nobody needs
+           until a second viewer disagrees about it, so the detail is behind
+           the "i" the script puts beside it. -->
+      <span class="term-size" id="termSize" hidden></span>
+      <button class="icon-btn" id="sessionMenu" title="Session actions" hidden aria-haspopup="true" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>
       </button>
-      <!-- Two ways to use a chat: read and type, or drive hands free. Only one
-           of them can have the pane, so it is one slider with one knob rather
-           than a pair of switches that could disagree about it. -->
-      <div class="view-slider" id="viewSlider" role="radiogroup" aria-label="How this chat is shown">
-        <span class="knob" aria-hidden="true"></span>
-        <button class="stop" type="button" role="radio" data-view="chat" aria-checked="true" title="Chat">
-          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14a3 3 0 0 1-3 3H8.5L4 20.5V6a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3z"/></svg>
-          <span class="lbl">Chat</span>
-        </button>
-        <button class="stop" type="button" role="radio" data-view="auto" aria-checked="false" title="Audio mode: hands free, spoken">
-          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
-          <span class="lbl">Audio</span>
-        </button>
-      </div>
     </header>
 
-    <div class="popover" id="chatPanel" hidden>
-      <div class="field">
-        <label for="panelTitle">Chat name</label>
-        <input class="input" type="text" id="panelTitle" placeholder="New chat">
-      </div>
-      <div class="field">
-        <label for="panelWorkspace">Working directory</label>
-        <input class="input mono" type="text" id="panelWorkspace" spellcheck="false">
-        <!-- The field is prefilled with the directory this chat is working in
-             right now, and follows it when it changes elsewhere. -->
-        <div class="hint mono" id="panelWorkspaceNow" hidden></div>
-        <div class="hint">Where this chat's commands run. Leave it empty to fall back to the chat's own folder, or point it at a project on this machine.</div>
-      </div>
-      <!-- The agent is fixed for the life of a chat - a different agent is a
-           different conversation - but the model it runs on and the effort it
-           runs at are not, as long as nothing is running. -->
-      <div class="field" id="panelBinding" hidden>
-        <label>Model</label>
-        <div id="panelModel"></div>
-        <div class="seg-row" id="panelEffort" role="group" aria-label="Reasoning effort" hidden></div>
-        <div class="hint" id="panelBindingHint"></div>
-      </div>
-      <div class="row" style="justify-content:flex-end">
-        <button class="btn sm" type="button" id="panelCancel">Cancel</button>
-        <button class="btn sm primary" type="button" id="panelSave">Save</button>
-      </div>
+    <div class="term-wrap" id="termWrap">
+      <div class="term-host" id="term"></div>
+      <!-- Blocks the terminal: it ended, it could not start, or it is coming
+           back after a reboot. -->
+      <div class="term-overlay" id="termOverlay" hidden></div>
+      <!-- Never blocks: resumed after a restart, resized by somebody else,
+           redrawn after a long outage. -->
+      <div class="term-notice" id="termNotice" hidden></div>
+      <!-- Before the first session exists there is nothing to attach to. -->
+      <div class="term-empty" id="termEmpty" hidden></div>
     </div>
 
-    <div class="thread" id="thread">
-      <div class="thread-inner" id="threadInner"></div>
-    </div>
-
-    <div class="composer-wrap">
-      <form class="composer" id="composer">
-        <textarea id="input" rows="1" placeholder="Message Socrates…" autocomplete="off"></textarea>
-        <div class="actions">
-          <span class="rec-time" id="recTime" hidden>0:00</span>
-          <button type="button" class="round-btn" id="micBtn" title="Speak">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
-          </button>
-          <button type="submit" class="round-btn send" id="sendBtn" title="Send" disabled>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
-          </button>
-        </div>
-      </form>
-      <div class="composer-note">Messages go straight to the agent this chat is bound to.</div>
-    </div>
-
-    <section class="auto-screen" id="autoScreen">
-      <div class="auto-status" id="autoStatus">Tap the microphone and speak</div>
-      <div class="auto-timer" id="autoTimer" hidden>0:00</div>
-      <div class="auto-transcript" id="autoTranscript" hidden></div>
-      <button class="mic-big" id="autoMic" title="Start listening">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+    <!-- The mobile key bar and the line input are WP7's. The elements are
+         here so that the layout they land in is the one that shipped. -->
+    <div class="keybar" id="keybar" hidden></div>
+    <form class="composer" id="composer" hidden>
+      <input id="lineInput" class="input" type="text"
+             autocorrect="off" autocapitalize="none" autocomplete="off" spellcheck="false"
+             enterkeyhint="send" placeholder="Type a line…">
+      <button class="icon-btn" id="micBtn" type="button" title="Speak" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
       </button>
-      <div class="auto-busy" id="autoBusy" hidden aria-label="Working">
-        <i></i><i></i><i></i>
-      </div>
-      <!-- Hands free means the person is driving. A lost connection has to be
-           readable at a glance, not hidden in a corner. -->
-      <div class="auto-offline" id="autoOffline" hidden role="status"></div>
-      <div class="auto-live" id="autoLive"></div>
-      <div class="auto-answer" id="autoAnswer" hidden></div>
-      <div class="auto-actions" id="autoActions" hidden>
-        <button class="btn" id="autoReplay">Read again</button>
-        <button class="btn" id="autoDetails">Show details</button>
-      </div>
-    </section>
+      <span class="rec-time" id="recTime" hidden>0:00</span>
+      <button class="btn primary" id="sendLine" type="submit">Send</button>
+    </form>
   </main>
 </div>
 
-<!-- The new chat sheet. A chat is bound to one agent, one model and one effort
-     for its whole life, so the binding is chosen before the first word rather
-     than guessed at and corrected afterwards. It is drawn from a catalogue
-     kept in local storage, so it works with no connection at all. -->
-<dialog class="sheet" id="newChatSheet" aria-label="Start a new chat">
-  <h2 class="sheet-title">Who should answer?</h2>
-  <div class="seg-row agents" id="ncAgent" role="group" aria-label="Agent"></div>
-  <div class="field">
+<!-- The new session sheet: which program, where it works, and what it runs on.
+     A session is bound to all three before it exists, so they are chosen once
+     rather than guessed at and corrected afterwards. -->
+<dialog class="sheet" id="newSessionSheet" aria-label="Start a new session">
+  <h2 class="sheet-title">What should this session run?</h2>
+  <div class="seg-row agents" id="nsHarness" role="group" aria-label="Harness"></div>
+  <div class="field" id="nsDirField">
+    <label>Working directory</label>
+    <div class="seg-row" id="nsDir" role="group" aria-label="Working directory"></div>
+    <input class="input mono" type="text" id="nsDirPath" spellcheck="false" hidden
+           autocorrect="off" autocapitalize="none" placeholder="/srv/projects/socrates">
+    <div class="hint mono" id="nsDirHint"></div>
+  </div>
+  <div class="field" id="nsModelField">
     <label>Model</label>
-    <div id="ncModel"></div>
+    <div id="nsModel"></div>
   </div>
-  <div class="field" id="ncEffortField" hidden>
+  <div class="field" id="nsEffortField" hidden>
     <label>Effort</label>
-    <div class="seg-row" id="ncEffort" role="group" aria-label="Reasoning effort"></div>
+    <div class="seg-row" id="nsEffort" role="group" aria-label="Reasoning effort"></div>
   </div>
-  <div class="hint" id="ncHint"></div>
+  <details class="advanced" id="nsAdvanced">
+    <summary>Advanced</summary>
+    <div class="hint" id="nsAdvancedBody">This session runs with the options set for its harness in the dashboard.</div>
+  </details>
+  <div class="hint" id="nsHint"></div>
   <div class="sheet-actions">
-    <button class="btn sm" type="button" id="ncCancel">Cancel</button>
-    <button class="btn sm primary" type="button" id="ncStart">Start chat</button>
+    <button class="btn sm" type="button" id="nsCancel">Cancel</button>
+    <button class="btn sm primary" type="button" id="nsStart">Start session</button>
   </div>
 </dialog>
 
 <div class="toasts" id="toasts"></div>
-<script type="module" src="/static/js/chat.js"></script>
+
+<!-- The vendored bundles are plain UMD scripts that define browser globals -
+     Terminal, FitAddon, Unicode11Addon, WebLinksAddon, ClipboardAddon,
+     WebglAddon - so they come before the module that uses them. They are not
+     ESM; nothing imports them. -->
+<script src="/static/vendor/xterm.js"></script>
+<script src="/static/vendor/addon-fit.js"></script>
+<script src="/static/vendor/addon-unicode11.js"></script>
+<script src="/static/vendor/addon-web-links.js"></script>
+<script src="/static/vendor/addon-clipboard.js"></script>
+<script src="/static/vendor/addon-webgl.js"></script>
+<script type="module" src="/static/js/session.js"></script>
 </body>
 </html>

@@ -19,13 +19,21 @@ func orLocal(url string) string {
 	return url
 }
 
-// handlePreferences exposes the few settings the chat page needs at runtime.
+// handlePreferences exposes the few settings the session page needs at
+// runtime. They are the ones the browser applies to itself - how the terminal
+// is drawn, and how the voice behaves - rather than the whole document, which
+// only the dashboard is allowed to read.
 func (s *Server) handlePreferences(w http.ResponseWriter, r *http.Request) {
 	settings := s.Settings()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"speak_in_auto_mode": settings.Voice.SpeakInAutoMode,
 		"speak_in_chat_mode": settings.Voice.SpeakInChatMode,
 		"language":           settings.Voice.Language,
+		"terminal": map[string]any{
+			"scrollback": settings.Terminal.Scrollback,
+			"font_size":  settings.Terminal.FontSize,
+			"webgl":      settings.Terminal.WebGL,
+		},
 	})
 }
 
