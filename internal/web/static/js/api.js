@@ -63,6 +63,29 @@ export function el(tag, attrs = {}, ...children) {
   return node;
 }
 
+// The page's answer to "the focus has ended up nowhere". A dialog cannot know
+// where a page would rather put it - the session page says the terminal, and
+// nothing else has an opinion - so it asks, and the default is to do nothing.
+//
+// It matters because a page whose focus is on the body swallows every key
+// silently: the terminal is still drawn, the socket is still live, and nothing
+// typed arrives anywhere.
+let focusFallback = () => {};
+
+/** setFocusFallback says where the focus goes when a dialog cannot put it back. */
+export function setFocusFallback(handler) { focusFallback = handler || (() => {}); }
+
+// restoreFocus puts the focus back on `was`, or asks the page where it should
+// go when `was` is gone or was never anything.
+export function restoreFocus(was) {
+  if (was && was.isConnected && was !== document.body && was !== document.documentElement
+    && typeof was.focus === 'function') {
+    was.focus();
+    return;
+  }
+  focusFallback();
+}
+
 // confirmDialog is the app's own version of window.confirm: same promise in,
 // same yes or no out, but it looks like the rest of Socrates, can say what the
 // button actually does, and does not freeze the page while it is open.
@@ -86,12 +109,23 @@ export function confirmDialog(options = {}) {
       el('div', { class: 'modal-actions' }, cancel, accept),
     );
 
+    // Where the focus was, so that it can go back there. A dialog that ends
+    // with the focus on a button of its own - which is what a dialog that is
+    // closed but left in the page does - is a page that answers no key at all,
+    // and the element it was taken from is very often the terminal, where
+    // every key matters.
+    const was = document.activeElement;
+    const dismiss = () => {
+      dialog.remove();
+      restoreFocus(was);
+    };
     let settled = false;
     const finish = (value) => {
       if (settled) return;
       settled = true;
       resolve(value);
       dialog.close();
+      dismiss();
     };
     cancel.addEventListener('click', () => finish(false));
     accept.addEventListener('click', () => finish(true));
@@ -105,7 +139,7 @@ export function confirmDialog(options = {}) {
     });
     dialog.addEventListener('close', () => {
       finish(false);
-      dialog.remove();
+      dismiss();
     });
 
     document.body.append(dialog);
