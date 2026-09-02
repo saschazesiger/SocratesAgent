@@ -132,19 +132,6 @@ func baseEnv(req PlanRequest) map[string]string {
 	}
 }
 
-// addExtraEnv applies the admin's raw KEY=VALUE list. The list was already
-// filtered for a usable name where it was saved; anything else is skipped
-// rather than turned into a variable with no name.
-func addExtraEnv(env map[string]string, entries []string) {
-	for _, e := range entries {
-		key, value, ok := strings.Cut(e, "=")
-		if !ok || strings.TrimSpace(key) == "" {
-			continue
-		}
-		env[strings.TrimSpace(key)] = value
-	}
-}
-
 // ---------------------------------------------------------------- binaries
 
 // resolveBinary turns the user's override, or the harness's default name, into
@@ -180,22 +167,6 @@ func flag(argv []string, name, value string) []string {
 		return argv
 	}
 	return append(argv, name, value)
-}
-
-// switchFlag appends a bare flag when it is on.
-func switchFlag(argv []string, name string, on bool) []string {
-	if !on {
-		return argv
-	}
-	return append(argv, name)
-}
-
-// repeated appends "--name value" once per value.
-func repeated(argv []string, name string, values []string) []string {
-	for _, v := range values {
-		argv = flag(argv, name, v)
-	}
-	return argv
 }
 
 // homeDir is where a CLI keeps its own state. It reads the environment rather

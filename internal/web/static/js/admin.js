@@ -5,14 +5,19 @@
 // an unsaved change is undone by leaving the page and a save is one request
 // that either succeeded or did not.
 //
-// The harness cards are not hand written. §C.9-C.12 of the specification is a
-// catalogue of options - a key, a control, the flag or variable it becomes -
-// and OPTIONS below is that catalogue in one place, so a new option is one
-// entry rather than a field, a reader, a writer and a paragraph of HTML.
+// The harness cards are not hand written: OPTIONS below is the catalogue of
+// what a program's card offers, so a new setting is one entry rather than a
+// field, a reader, a writer and a paragraph of HTML.
+//
+// That catalogue is deliberately four lines long. Until 2026-09-02 it held
+// some seventy options - permission modes, sandbox policies, remote control,
+// raw flag and environment textareas - and the owner reversed that: the
+// dashboard offers the basics, and every flag a session is started with is
+// fixed policy inside the app. What that policy is, and where each flag in it
+// was verified, is in docs/design/HARNESS-POLICY.md.
 
 import {
-  api, el, toast, isOffline, errorMessage, setClass, onWake, infoTip,
-  confirmDialog, LiveStream,
+  api, el, toast, isOffline, errorMessage, setClass, onWake, infoTip, LiveStream,
 } from './api.js';
 import { agentMark } from './logos.js';
 import { speak, speechKind } from './voice.js';
@@ -105,325 +110,32 @@ function setPath(object, path, value) {
 
 /* ------------------------------------------------------- the option catalogue */
 
-// A group is a disclosure inside a harness card. The order here is the order
-// they appear in; a group with no options for a harness is not drawn.
-const GROUP_ORDER = [
-  'Model & effort',
-  'Model & agent',
-  'Permissions & sandbox',
-  'Permissions',
-  'Providers',
-  'Isolation',
-  'Remote control',
-  'Session & prompt',
-  'Session',
-  'Extensions',
-  'Tools & features',
-  'Theme & terminal',
-  'Diagnostics',
-  'Advanced (raw)',
-];
-
-// The Codex themes the specification names, and OpenCode's verified built-in
-// list. Neither CLI validates a theme name, so a typo is a session that starts
-// and looks wrong - which is why both are closed lists with a way out.
-const CODEX_THEMES = ['light-gray', 'gruvbox-light', 'ocean-light', 'light-dark', 'gruvbox-dark'];
-// The built-in themes of OpenCode 1.17.13, read out of its own theme registry
-// rather than out of its documentation, which lists a third of them. `system`
-// is registered separately and is the one that follows the terminal.
-const OPENCODE_THEMES = ['opencode', 'system', 'aura', 'ayu', 'carbonfox', 'catppuccin',
-  'catppuccin-frappe', 'catppuccin-macchiato', 'cobalt2', 'cursor', 'dracula', 'everforest',
-  'flexoki', 'github', 'gruvbox', 'kanagawa', 'lucent-orng', 'material', 'matrix', 'mercury',
-  'monokai', 'nightowl', 'nord', 'one-dark', 'orng', 'osaka-jade', 'palenight', 'rosepine',
-  'solarized', 'synthwave84', 'tokyonight', 'vercel', 'vesper', 'zenburn'];
-
+// The effort levels each program's flag accepts. Neither list is the other:
+// --effort rejects "minimal", and Codex does not validate its value at all, so
+// a typo there would reach the model as configuration and be ignored.
 const CLAUDE_EFFORTS = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
 const CODEX_EFFORTS = ['', 'minimal', 'low', 'medium', 'high', 'xhigh'];
 
-// The raw groups every harness has, because every harness has the flag and the
-// variable this app did not think of.
-const RAW = [
-  { key: 'extra_args', label: 'Extra arguments', type: 'list', group: 'Advanced (raw)',
-    hint: 'Appended to the command line verbatim, separated by spaces.' },
-  { key: 'extra_env', label: 'Extra environment', type: 'lines', group: 'Advanced (raw)',
-    hint: 'One KEY=VALUE per line. A name that is not a valid variable name is dropped on save.' },
-];
-
+// What a program's card offers, besides the binary path and the model short
+// list that every card has. A session started without a choice of its own gets
+// these; everything else about the launch is policy, not a setting.
 const OPTIONS = {
-  shell: [
-    { key: 'login', label: 'Login shell', type: 'switch', group: 'Session',
-      hint: 'Starts the shell with -l, so the profile that sets up PATH and the prompt is read.' },
-    ...RAW,
-  ],
-
+  shell: [],
   claude: [
-    { key: 'default_model', label: 'Default model', type: 'model', group: 'Model & effort',
-      hint: '--model. A session started without a model of its own uses this one.' },
+    { key: 'default_model', label: 'Default model', type: 'model',
+      hint: 'A session started without a model of its own uses this one.' },
     { key: 'default_effort', label: 'Default effort', type: 'select', values: CLAUDE_EFFORTS,
-      group: 'Model & effort', hint: '--effort. Empty leaves Claude Code on its own default.' },
-    { key: 'autocompact', label: 'Autocompact', type: 'text', group: 'Model & effort',
-      placeholder: 'auto, or 200k',
-      hint: '--autocompact. Either the word auto or a context size between 100k and 1M.' },
-    { key: 'max_thinking_tokens', label: 'Max thinking tokens', type: 'int', min: 0,
-      group: 'Model & effort', hint: 'env MAX_THINKING_TOKENS. 0 leaves it unset.' },
-
-    { key: 'remote_control', label: 'Remote control', type: 'switch', group: 'Remote control',
-      confirm: (value) => value === true,
-      confirmTitle: 'Let a remote client drive this session?',
-      confirmBody: 'Claude Code opens a remote-control channel: whoever can reach it can send '
-        + 'prompts and see everything in the session, as if they were at this keyboard.',
-      confirmAgain: 'The channel is open for every Claude Code session started from now on, not '
-        + 'just this one. Turn it on?',
-      hint: '--remote-control.' },
-    { key: 'permission_mode', label: 'Permission mode', type: 'select',
-      values: ['unset', 'manual', 'acceptEdits', 'auto', 'plan', 'dontAsk', 'bypassPermissions'],
-      group: 'Permissions & sandbox',
-      // bypassPermissions is --dangerously-skip-permissions by another name -
-      // it is the value that makes the launcher suppress Claude Code's own
-      // safety dialog - so it is asked about exactly as the "Dangerous skip"
-      // below is.
-      confirm: (value) => value === 'bypassPermissions',
-      confirmTitle: 'Let Claude Code skip every permission prompt?',
-      confirmBody: 'bypassPermissions is the mode that asks about nothing: every edit, every '
-        + 'command and every network call happens without being approved, and Socrates answers '
-        + 'the safety dialog for it.',
-      confirmAgain: 'This applies to every Claude Code session started from now on. Say yes only '
-        + 'if this machine is one you would let a stranger type on.',
-      hint: '--permission-mode. "unset" leaves the flag off.' },
-    { key: 'skip_permissions', label: 'Dangerous skip', type: 'select',
-      values: [
-        { value: 'off', label: 'Off — the flag is never passed' },
-        { value: 'allow', label: 'Allow — the session may skip permission prompts' },
-        { value: 'force', label: 'Force — skip every permission prompt' },
-      ],
-      group: 'Permissions & sandbox', confirm: (value) => value !== 'off',
-      confirmTitle: 'Let Claude Code skip permission prompts?',
-      confirmBody: 'Every edit, every command and every network call happens without being asked '
-        + 'about. Only do this in a directory you are willing to lose.',
-      confirmAgain: 'This applies to every Claude Code session started from now on. Say yes only '
-        + 'if you would be content to lose everything under the working directory.',
-      hint: 'Off passes nothing; allow passes --allow-dangerously-skip-permissions; force passes '
-        + '--dangerously-skip-permissions.' },
-    { key: 'allowed_tools', label: 'Allowed tools', type: 'list', group: 'Permissions & sandbox',
-      hint: '--allowedTools, comma separated.' },
-    { key: 'disallowed_tools', label: 'Disallowed tools', type: 'list', group: 'Permissions & sandbox',
-      hint: '--disallowedTools, comma separated.' },
-    { key: 'tools', label: 'Tools', type: 'text', group: 'Permissions & sandbox',
-      hint: '--tools. Empty, the word default, or a list.' },
-    { key: 'setting_sources', label: 'Setting sources', type: 'multi',
-      values: ['user', 'project', 'local'], group: 'Permissions & sandbox',
-      hint: '--setting-sources. Which layers of the user’s own settings Claude Code reads.' },
-    { key: 'cleanup_period_days', label: 'Keep transcripts for', type: 'int', min: 1, max: 3650,
-      group: 'Permissions & sandbox', hint: 'Days, written as cleanupPeriodDays into the generated settings file.' },
-    { key: 'restricted', label: 'Restricted', type: 'switch', group: 'Permissions & sandbox', hint: '--restricted.' },
-    { key: 'safe_mode', label: 'Safe mode', type: 'switch', group: 'Permissions & sandbox', hint: '--safe-mode.' },
-    { key: 'bare', label: 'Bare', type: 'switch', group: 'Permissions & sandbox',
-      hint: '--bare. It forces API-key authentication, so a subscription login will not be used.' },
-
-    { key: 'add_dirs', label: 'Extra directories', type: 'lines', group: 'Permissions & sandbox',
-      hint: '--add-dir, one absolute path per line. They are also written as permissions.additionalDirectories.' },
-
-    { key: 'remote_control_name', label: 'Remote control name', type: 'text', group: 'Remote control',
-      hint: 'The name passed after --remote-control. Empty uses the session title.' },
-    { key: 'remote_control_prefix', label: 'Session name prefix', type: 'text', group: 'Remote control',
-      hint: 'env CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX.' },
-
-    { key: 'resume_mode', label: 'On resume', type: 'select',
-      values: [
-        { value: 'continue', label: 'Continue the conversation' },
-        { value: 'fork', label: 'Fork it, leaving the original as it was' },
-      ],
-      group: 'Session & prompt', hint: '--resume, with --fork-session for the second.' },
-    { key: 'agent', label: 'Agent', type: 'text', group: 'Session & prompt', hint: '--agent.' },
-    { key: 'append_system_prompt', label: 'Appended system prompt', type: 'textarea',
-      group: 'Session & prompt', hint: '--append-system-prompt.' },
-    { key: 'system_prompt_snapshot', label: 'System prompt snapshot', type: 'select',
-      values: ['on', 'off'], group: 'Session & prompt',
-      hint: '--system-prompt-snapshot. It only decides anything when a prompt is appended above.' },
-    { key: 'exclude_dynamic_prompt_sections', label: 'Exclude dynamic prompt sections',
-      type: 'switch', group: 'Session & prompt', hint: '--exclude-dynamic-system-prompt-sections.' },
-    { key: 'disable_slash_commands', label: 'Disable slash commands', type: 'switch',
-      group: 'Session & prompt', hint: '--disable-slash-commands.' },
-
-    { key: 'mcp_config', label: 'MCP configuration files', type: 'lines', group: 'Extensions',
-      hint: '--mcp-config, one path per line.' },
-    { key: 'strict_mcp_config', label: 'Strict MCP configuration', type: 'switch',
-      group: 'Extensions', hint: '--strict-mcp-config.' },
-    { key: 'plugin_dirs', label: 'Plugin directories', type: 'lines', group: 'Extensions',
-      hint: '--plugin-dir, one path per line.' },
-
-    { key: 'pin_light_theme', label: 'Pin the light theme', type: 'switch', group: 'Theme & terminal',
-      hint: 'Writes "theme":"light" into the global Claude Code preferences, so the pane matches the page.' },
-    { key: 'disable_terminal_title', label: 'Leave the terminal title alone', type: 'switch',
-      group: 'Theme & terminal', hint: 'env CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1.' },
-    { key: 'disable_mouse', label: 'Disable the mouse', type: 'switch', group: 'Theme & terminal',
-      hint: 'env CLAUDE_CODE_DISABLE_MOUSE=1.' },
-    { key: 'no_flicker', label: 'No flicker', type: 'switch', group: 'Theme & terminal',
-      hint: 'env CLAUDE_CODE_NO_FLICKER=1.' },
-    { key: 'force_sync_output', label: 'Force synchronous output', type: 'switch',
-      group: 'Theme & terminal', hint: 'env CLAUDE_CODE_FORCE_SYNC_OUTPUT=1.' },
-
-    { key: 'verbose', label: 'Verbose', type: 'switch', group: 'Diagnostics', hint: '--verbose.' },
-    { key: 'debug_filter', label: 'Debug filter', type: 'text', group: 'Diagnostics', hint: '-d <filter>.' },
-    { key: 'debug_file', label: 'Write a debug log', type: 'switch', group: 'Diagnostics',
-      hint: '--debug-file, into the session’s own directory.' },
-
-    { key: 'advisor', label: 'Advisor model', type: 'text', group: 'Advanced (raw)',
-      hint: '--advisor. Undocumented and absent from --help, so it lives here: it is offered '
-        + 'because it is in the shipped binary, and a wrong value is a session that will not start.' },
-    { key: 'settings_overrides', label: 'Settings overrides', type: 'json', group: 'Advanced (raw)',
-      hint: 'JSON, deep-merged into the generated settings file. Invalid JSON is refused when you save.' },
-    ...RAW,
+      hint: 'Empty leaves Claude Code on its own default.' },
   ],
-
   codex: [
-    { key: 'default_model', label: 'Default model', type: 'model', group: 'Model & effort', hint: '-m.' },
+    { key: 'default_model', label: 'Default model', type: 'model',
+      hint: 'A session started without a model of its own uses this one.' },
     { key: 'default_effort', label: 'Default effort', type: 'select', values: CODEX_EFFORTS,
-      group: 'Model & effort',
-      hint: '-c model_reasoning_effort. Codex does not check this value, so the list is closed here.' },
-    { key: 'model_reasoning_summary', label: 'Reasoning summary', type: 'select',
-      values: ['', 'auto', 'concise', 'detailed', 'none'], group: 'Model & effort',
-      hint: '-c model_reasoning_summary.' },
-    { key: 'model_verbosity', label: 'Verbosity', type: 'select', values: ['', 'low', 'medium', 'high'],
-      group: 'Model & effort', hint: '-c model_verbosity.' },
-    { key: 'personality', label: 'Personality', type: 'select', values: ['', 'none', 'friendly', 'pragmatic'],
-      group: 'Model & effort', hint: '-c personality.' },
-    { key: 'review_model', label: 'Review model', type: 'text', group: 'Model & effort',
-      hint: '-c review_model.' },
-
-    { key: 'sandbox', label: 'Sandbox', type: 'select',
-      values: ['read-only', 'workspace-write', 'danger-full-access'],
-      group: 'Permissions & sandbox',
-      confirm: (value) => value === 'danger-full-access',
-      confirmTitle: 'Give Codex the whole machine?',
-      confirmBody: 'danger-full-access is no sandbox at all: Codex may read and write anything '
-        + 'your user can, anywhere on this machine, and reach the network.',
-      confirmAgain: 'Nothing outside the working directory is protected any more. Are you sure?',
-      hint: '-s.' },
-    { key: 'approval', label: 'Approval policy', type: 'select',
-      values: ['on-request', 'on-failure', 'never'], group: 'Permissions & sandbox',
-      confirm: (value) => value === 'never',
-      confirmTitle: 'Let Codex run everything unasked?',
-      confirmBody: 'With never, Codex carries out every command it decides on - including the '
-        + 'ones it would normally stop and ask about - and nothing in the browser can refuse one.',
-      confirmAgain: 'This applies to every Codex session started from now on. Turn approvals off?',
-      hint: '-a. on-failure goes through -c approval_policy, because the flag itself rejects it.' },
-    { key: 'network_access', label: 'Network access', type: 'switch', group: 'Permissions & sandbox',
-      hint: '-c sandbox_workspace_write.network_access=true.' },
-    { key: 'writable_roots', label: 'Writable roots', type: 'lines', group: 'Permissions & sandbox',
-      hint: '-c sandbox_workspace_write.writable_roots, one path per line.' },
-    { key: 'add_dirs', label: 'Extra directories', type: 'lines', group: 'Permissions & sandbox',
-      hint: '--add-dir, one path per line.' },
-    { key: 'approve_for_me', label: 'Approve for me', type: 'switch', group: 'Permissions & sandbox',
-      hint: '--approve-for-me.' },
-    { key: 'bypass', label: 'Bypass approvals and sandbox', type: 'switch',
-      group: 'Permissions & sandbox', confirm: (value) => value === true,
-      confirmTitle: 'Turn the Codex sandbox off?',
-      confirmBody: 'Codex will run every command with your own rights and no approval. Only do '
-        + 'this in a directory you are willing to lose.',
-      confirmAgain: 'Neither the sandbox nor the approval prompt is left. Turn both off?',
-      hint: '--dangerously-bypass-approvals-and-sandbox.' },
-    { key: 'trust_workdir', label: 'Trust the working directory', type: 'switch',
-      group: 'Permissions & sandbox', warnWhenOff:
-        'With this off Codex opens on its trust picker and the session blocks until somebody '
-        + 'answers it in the pane.',
-      hint: '-c projects."<cwd>".trust_level="trusted". Leave it on unless you know why not.' },
-
-    { key: 'remote_addr', label: 'Remote address', type: 'text', group: 'Remote control',
-      placeholder: 'ws://…', hint: '--remote.' },
-    { key: 'remote_auth_token_env', label: 'Remote token variable', type: 'text',
-      group: 'Remote control',
-      hint: '--remote-auth-token-env. This is the name of an environment variable, not the token.' },
-
-    { key: 'web_search', label: 'Web search', type: 'switch', group: 'Tools & features', hint: '--search.' },
-    { key: 'features_enable', label: 'Features on', type: 'list', group: 'Tools & features',
-      hint: '--enable, comma separated. Run `codex features list` to see what there is; Codex '
-        + 'cannot validate these names.' },
-    { key: 'features_disable', label: 'Features off', type: 'list', group: 'Tools & features',
-      hint: '--disable, comma separated.' },
-    { key: 'hide_agent_reasoning', label: 'Hide reasoning', type: 'switch', group: 'Tools & features',
-      hint: '-c hide_agent_reasoning.' },
-    { key: 'show_raw_agent_reasoning', label: 'Show raw reasoning', type: 'switch',
-      group: 'Tools & features', hint: '-c show_raw_agent_reasoning.' },
-
-    { key: 'tui_theme', label: 'Theme', type: 'freeselect', values: CODEX_THEMES,
-      group: 'Theme & terminal', hint: '-c tui.theme. Any name Codex knows is accepted; it does not check it.' },
-    { key: 'no_alt_screen', label: 'No alternate screen', type: 'switch', group: 'Theme & terminal',
-      hint: '--no-alt-screen. It keeps the scrollback, which is what a web terminal wants.' },
-    { key: 'disable_keyboard_enhancement', label: 'Disable keyboard enhancement', type: 'switch',
-      group: 'Theme & terminal',
-      hint: 'env CODEX_TUI_DISABLE_KEYBOARD_ENHANCEMENT=1, for when keys misbehave through tmux.' },
-
-    { key: 'config_overrides', label: 'Configuration overrides', type: 'lines', group: 'Advanced (raw)',
-      hint: 'One key=value per line, each passed as its own -c. Codex is launched with '
-        + '--strict-config, so a wrong key here is a session that refuses to start.' },
-    ...RAW,
+      hint: 'Empty leaves Codex on its own default.' },
   ],
-
   opencode: [
-    { key: 'default_model', label: 'Default model', type: 'model', group: 'Model & agent',
-      hint: '-m provider/model. Everything after the first slash is the model id.' },
-    { key: 'small_model', label: 'Small model', type: 'text', group: 'Model & agent',
-      hint: 'config small_model, for the cheap work OpenCode does on the side.' },
-    { key: 'default_agent', label: 'Default agent', type: 'text', group: 'Model & agent',
-      hint: '--agent. An unknown name silently falls back to build.' },
-
-    { key: 'auto', label: 'Approve everything', type: 'switch', group: 'Permissions',
-      confirm: (value) => value === true,
-      confirmTitle: 'Approve everything OpenCode does?',
-      confirmBody: 'Every action not explicitly denied below runs without being asked about.',
-      confirmAgain: 'The permissions JSON below is then the only thing standing between OpenCode '
-        + 'and this machine. Approve everything else?',
-      hint: '--auto. Auto-approves everything not explicitly denied.' },
-    { key: 'permission_json', label: 'Permissions', type: 'json', group: 'Permissions',
-      placeholder: '{"*":"ask","bash":{"git *":"allow"}}',
-      hint: 'env OPENCODE_PERMISSION. Actions are ask, allow or deny. Invalid JSON is refused when you save.' },
-
-    { key: 'enabled_providers', label: 'Providers allowed', type: 'list', group: 'Providers',
-      hint: 'config enabled_providers, comma separated. An allowlist: empty means all of them.' },
-    { key: 'disabled_providers', label: 'Providers blocked', type: 'list', group: 'Providers',
-      hint: 'config disabled_providers, comma separated.' },
-
-    { key: 'pure', label: 'Pure', type: 'switch', group: 'Isolation', hint: '--pure.' },
-    { key: 'disable_project_config', label: 'Ignore project configuration', type: 'switch',
-      group: 'Isolation', hint: 'env OPENCODE_DISABLE_PROJECT_CONFIG=1.' },
-    { key: 'disable_models_fetch', label: 'Do not fetch the model list', type: 'switch',
-      group: 'Isolation',
-      hint: 'env OPENCODE_DISABLE_MODELS_FETCH=1. This is what lets OpenCode start with no network at all.' },
-
-    { key: 'resume_mode', label: 'On resume', type: 'select',
-      values: [
-        { value: 'continue', label: 'Continue the conversation' },
-        { value: 'fork', label: 'Fork it, leaving the original as it was' },
-      ],
-      group: 'Session', hint: '--session, with --fork for the second.' },
-    { key: 'share', label: 'Sharing', type: 'select', values: ['manual', 'auto', 'disabled'],
-      group: 'Session', hint: 'config share. Disabled is the default and the only one that publishes nothing.' },
-
-    { key: 'tui_theme', label: 'Theme', type: 'freeselect', values: OPENCODE_THEMES,
-      group: 'Theme & terminal',
-      hint: 'tui.json theme. The light or dark palette of it is chosen by the pane, not by the name.' },
-    { key: 'mini', label: 'Mini', type: 'switch', group: 'Theme & terminal',
-      hint: '--mini. Line-oriented instead of an alternate screen, which is easier on a phone.' },
-    { key: 'no_replay', label: 'No replay', type: 'switch', group: 'Theme & terminal',
-      requires: 'mini', hint: '--no-replay. Mini only.' },
-    { key: 'replay_limit', label: 'Replay limit', type: 'int', min: 0, group: 'Theme & terminal',
-      requires: 'mini', hint: '--replay-limit. Mini only; 0 leaves it unset.' },
-    { key: 'disable_mouse', label: 'Disable the mouse', type: 'switch', group: 'Theme & terminal',
-      hint: 'env OPENCODE_DISABLE_MOUSE=1.' },
-    { key: 'mouse', label: 'Mouse in the TUI', type: 'switch', group: 'Theme & terminal',
-      hint: 'tui.json mouse.' },
-    { key: 'attention', label: 'Attention sounds', type: 'switch', group: 'Theme & terminal',
-      hint: 'tui.json attention.enabled. A server has no business making desktop notification sounds.' },
-
-    { key: 'log_level', label: 'Log level', type: 'select', values: ['', 'DEBUG', 'INFO', 'WARN', 'ERROR'],
-      group: 'Diagnostics', hint: '--log-level. Empty leaves OpenCode on its own.' },
-
-    { key: 'config_content', label: 'Configuration', type: 'json', group: 'Advanced (raw)',
-      hint: 'JSON, deep-merged into OPENCODE_CONFIG_CONTENT.' },
-    { key: 'tui_config', label: 'TUI configuration', type: 'json', group: 'Advanced (raw)',
-      hint: 'JSON, deep-merged into the generated tui.json.' },
-    ...RAW,
+    { key: 'default_model', label: 'Default model', type: 'model',
+      hint: 'provider/model. A session started without a model of its own uses this one.' },
   ],
 };
 
@@ -779,32 +491,9 @@ function optionValue(id, key) {
   return getPath(defaults, optionPath(id, key));
 }
 
-// openGroups remembers which disclosures are open, per harness, so that a save
-// - which rebuilds every card from the settings the server normalised - does
-// not close them all and leave a phone scrolled somewhere else.
-function openGroups() {
-  const open = {};
-  for (const card of document.querySelectorAll('.harness-card')) {
-    const id = card.id.replace(/^harness-/, '');
-    open[id] = [...card.querySelectorAll('details.group[open]')].map((node) => node.dataset.group);
-  }
-  return open;
-}
-
-function restoreGroups(open) {
-  for (const [id, groups] of Object.entries(open || {})) {
-    for (const group of groups) {
-      const node = document.querySelector('#harness-' + id + ' details.group[data-group="'
-        + CSS.escape(group) + '"]');
-      if (node) node.open = true;
-    }
-  }
-}
-
 function renderHarnesses(status) {
   const host = $('harnessCards');
   if (!host) return;
-  const open = openGroups();
   host.innerHTML = '';
   const found = harnesses.list();
   if (!found.length) {
@@ -815,6 +504,10 @@ function renderHarnesses(status) {
         : (status || 'Socrates could not ask this machine which programs are installed.') })));
     return;
   }
+  host.append(el('p', { class: 'card-sub programs-lead',
+    text: 'Which programs a session can be, where each one lives, and what it starts on. '
+      + 'How they are started — permissions, sandbox, remote control, theme — is not a setting: '
+      + 'every session gets the same opinionated command line.' }));
   if (status && status !== 'loading' && status !== 'refreshing') {
     host.append(el('div', { class: 'hint', text: status }));
   } else if (harnesses.stale()) {
@@ -825,7 +518,6 @@ function renderHarnesses(status) {
     const harness = found.find((h) => h.id === id);
     if (harness) host.append(harnessCard(harness, status === 'refreshing'));
   }
-  restoreGroups(open);
   renderDefaultHarness();
 }
 
@@ -875,33 +567,17 @@ function harnessCard(harness, refreshing) {
       'Leave it empty to look the program up on PATH, which is what a normal installation wants.'),
   );
 
-  const built = new Map();
-  for (const group of GROUP_ORDER) {
-    const options = (OPTIONS[harness.id] || []).filter((option) => option.group === group);
-    if (!options.length) continue;
-    const body = el('div', { class: 'group-body' });
-    for (const option of options) {
-      const made = optionField(harness, option);
-      built.set(option.key, made);
-      body.append(made.node);
-    }
-    card.append(el('details', { class: 'group', 'data-group': group },
-      el('summary', { text: group }), body));
-  }
-  // A control that only means something while another one is on follows it:
-  // one listener per pair, on the card that owns both.
-  for (const made of built.values()) {
-    const master = made.requires && built.get(made.requires);
-    if (master) master.control.addEventListener('change', made.reflect);
-  }
+  // Two fields at most, so they sit in the card rather than behind a
+  // disclosure: a setting nobody can find is a setting nobody has.
+  for (const option of OPTIONS[harness.id] || []) card.append(optionField(harness, option));
   card.append(el('div', { class: 'row' }, refresh));
   card.append(el('div', { class: 'hint start-only', text: START_ONLY_NOTE }));
   return card;
 }
 
-// optionField turns one catalogue entry into the control the specification
-// names for it, with the flag or variable it maps to in the hint - that is
-// technical, and technical detail is what the hint is for.
+// optionField turns one catalogue entry into the control it names, with what
+// the value means in the hint - that is technical, and technical detail is
+// what the hint is for.
 function optionField(harness, option) {
   const id = 'opt-' + harness.id + '-' + option.key;
   const path = optionPath(harness.id, option.key);
@@ -911,82 +587,11 @@ function optionField(harness, option) {
   let control = null;
   let wrapper = null;
   switch (option.type) {
-    case 'switch': {
-      const box = el('input', { type: 'checkbox', id });
-      box.checked = !!value;
-      box.addEventListener('change', () => guard(option, box.checked, box, () => write(box.checked)));
-      wrapper = el('label', { class: 'switch' }, box, el('span', { class: 'track' }),
-        el('span', { text: option.label }));
-      control = box;
-      break;
-    }
-    case 'select':
-    case 'freeselect': {
+    case 'select': {
       control = el('select', { class: 'select', id });
-      const entries = option.values.map((v) => (typeof v === 'string' ? { value: v, label: v || '—' } : v));
-      // A free select keeps a value the CLI knows and this list does not, so
-      // that saving the page never quietly changes somebody's theme.
-      if (option.type === 'freeselect' && value && !entries.some((e) => e.value === value)) {
-        entries.push({ value, label: value + ' (typed in)' });
-      }
-      for (const entry of entries) control.append(el('option', { value: entry.value, text: entry.label }));
+      for (const v of option.values) control.append(el('option', { value: v, text: v || '—' }));
       control.value = value ?? '';
-      // The dialog below has to be able to put a refused choice back, and a
-      // select does not remember what it was before the change event.
-      control.dataset.previous = control.value;
-      control.addEventListener('change', () => guard(option, control.value, control, () => {
-        write(control.value);
-        control.dataset.previous = control.value;
-      }));
-      break;
-    }
-    case 'multi': {
-      wrapper = el('div', { class: 'multi', id });
-      const chosen = new Set(value || []);
-      for (const name of option.values) {
-        const box = el('input', { type: 'checkbox', id: id + '-' + name });
-        box.checked = chosen.has(name);
-        box.addEventListener('change', () => {
-          if (box.checked) chosen.add(name); else chosen.delete(name);
-          write(option.values.filter((v) => chosen.has(v)));
-        });
-        wrapper.append(el('label', { class: 'switch' }, box, el('span', { class: 'track' }),
-          el('span', { text: name })));
-      }
-      // A multi is a set of boxes with no single control behind it, so the
-      // group itself stands in for one.
-      control = wrapper;
-      break;
-    }
-    case 'int': {
-      control = el('input', { class: 'input', type: 'number', id, value: value ?? 0 });
-      if (option.min !== undefined) control.setAttribute('min', option.min);
-      if (option.max !== undefined) control.setAttribute('max', option.max);
-      control.addEventListener('input', () => write(Math.round(Number(control.value) || 0)));
-      break;
-    }
-    case 'list': {
-      control = el('input', {
-        class: 'input mono', type: 'text', id, spellcheck: 'false',
-        placeholder: option.placeholder || '',
-        value: (value || []).join(', '),
-      });
-      control.addEventListener('input', () => write(splitCommas(control.value)));
-      break;
-    }
-    case 'lines': {
-      control = el('textarea', { class: 'textarea mono', id, spellcheck: 'false',
-        placeholder: option.placeholder || '', value: (value || []).join('\n') });
-      control.addEventListener('input', () => write(splitLines(control.value)));
-      break;
-    }
-    case 'textarea':
-    case 'json': {
-      control = el('textarea', {
-        class: 'textarea' + (option.type === 'json' ? ' mono' : ''), id, spellcheck: 'false',
-        placeholder: option.placeholder || '', value: value || '',
-      });
-      control.addEventListener('input', () => write(control.value));
+      control.addEventListener('change', () => write(control.value));
       break;
     }
     case 'model': {
@@ -1013,73 +618,10 @@ function optionField(harness, option) {
     }
   }
 
-  const node = wrapper || control;
-  const hint = el('div', { class: 'hint', text: option.hint || '' });
-  const warning = el('div', { class: 'hint bad', hidden: true });
   const wrap = el('div', { class: 'field option', 'data-key': option.key, 'data-startonly': '1' });
-  // A switch carries its own label; everything else gets one above it.
-  if (option.type !== 'switch') wrap.append(el('label', { for: id, text: option.label }));
-  wrap.append(node, hint, warning);
-
-  // reflect is everything about this control that depends on another value:
-  // the red line under a switch that should not be off, and the greying out of
-  // a control whose master switch is off.
-  const reflect = () => {
-    if (option.warnWhenOff) {
-      const off = !control.checked;
-      warning.hidden = !off;
-      warning.textContent = off ? option.warnWhenOff : '';
-    }
-    if (option.requires) {
-      const on = !!optionValue(harness.id, option.requires);
-      setClass(wrap, 'disabled', !on);
-      control.disabled = !on;
-    }
-  };
-  reflect();
-  control.addEventListener('change', reflect);
-  return { node: wrap, control, reflect, requires: option.requires || '' };
-}
-
-// guard is the confirm-twice the specification asks for on the options that
-// hand a machine over: two dialogs, the second restating the consequence in
-// its own words rather than repeating the first. Twice, because the first one
-// is what a person taps through and the second is the one they read.
-//
-// A refusal at either step puts the control back exactly as it was, because a
-// switch that stays on after a refusal is a switch that lied.
-async function guard(option, value, control, apply) {
-  if (!option.confirm || !option.confirm(value)) {
-    apply();
-    return;
-  }
-  const previous = control.type === 'checkbox' ? !control.checked : (control.dataset.previous || '');
-  const revert = () => {
-    if (control.type === 'checkbox') control.checked = previous;
-    else control.value = previous;
-    control.dispatchEvent(new Event('change'));
-  };
-  const first = await confirmDialog({
-    title: option.confirmTitle,
-    body: option.confirmBody,
-    confirmLabel: 'I understand',
-    danger: true,
-  });
-  if (!first) {
-    revert();
-    return;
-  }
-  const second = await confirmDialog({
-    title: 'Once more, to be sure',
-    body: option.confirmAgain || option.confirmBody,
-    confirmLabel: 'Yes, turn it on',
-    danger: true,
-  });
-  if (!second) {
-    revert();
-    return;
-  }
-  apply();
+  wrap.append(el('label', { for: id, text: option.label }), wrapper || control,
+    el('div', { class: 'hint', text: option.hint || '' }));
+  return wrap;
 }
 
 // modelList is the person's own short list for one harness: the models the
@@ -1289,8 +831,6 @@ function splitArgs(value) {
   return out;
 }
 
-const splitCommas = (value) => value.split(',').map((part) => part.trim()).filter(Boolean);
-const splitLines = (value) => value.split('\n').map((part) => part.trim()).filter(Boolean);
 
 /* ------------------------------------------------------------- the voice */
 

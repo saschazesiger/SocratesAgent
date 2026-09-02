@@ -1960,45 +1960,10 @@ body.stale .chat-item .row-mark.busy::after { animation-play-state: paused; opac
   letter-spacing: -.01em;
 }
 
-/* An option group is a disclosure: shut, a harness card is four lines; open,
-   it is everything §C.9-C.12 offers. */
-details.group {
-  border-top: 1px solid var(--line);
-  padding: 2px 0;
-}
-details.group > summary {
-  cursor: pointer;
-  list-style: none;
-  padding: 11px 0;
-  font-size: 13.5px;
-  font-weight: 550;
-  color: var(--text-soft);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-details.group > summary::-webkit-details-marker { display: none; }
-details.group > summary::before {
-  content: '';
-  width: 6px;
-  height: 6px;
-  border-right: 1.5px solid currentColor;
-  border-bottom: 1.5px solid currentColor;
-  transform: rotate(-45deg);
-  transition: transform .16s var(--ease);
-  flex: none;
-}
-details.group[open] > summary::before { transform: rotate(45deg); }
-details.group > summary:hover { color: var(--text); }
-.group-body { padding: 4px 0 10px; }
-.group-body > .field:last-child { margin-bottom: 6px; }
-
-/* An option that only means something while another switch is on is greyed
-   rather than hidden: hiding it would make the setting unfindable. */
-.field.option.disabled { opacity: .45; }
-.field.option .hint.bad { color: var(--red); margin-top: 6px; }
-.field.option .textarea { min-height: 76px; }
-.multi { display: flex; flex-wrap: wrap; gap: 10px 20px; }
+/* A harness card offers a binary path, a model short list and at most two
+   defaults, so its options sit in the card itself rather than behind the
+   disclosures the seventy-option version needed. */
+.programs-lead { margin: 4px 2px 14px; }
 .hint.start-only { margin-top: 12px; color: var(--text-faint); }
 
 @media (max-width: 700px) {

@@ -39,6 +39,7 @@ These are binding. The design spec must implement them; it may add detail but no
   If install fails, a clear error with manual instructions. No PTY fallback.
 
 ## Admin (everything configurable)
+- **Superseded 2026-09-02 by "Admin (the basics only)" below.** Kept for the record.
 - Per harness, expose every meaningful launch option as a setting (research in
   ../research/*.md is the source of truth): default model, effort/reasoning, permission mode /
   dangerously-skip-permissions / approval policy / sandbox, remote control on/off, extra
@@ -48,6 +49,29 @@ These are binding. The design spec must implement them; it may add detail but no
   tunnel (keep), voice (keep), password (keep).
 - Per-session overrides of the harness options at creation time are allowed via an "advanced"
   disclosure but not required in v1 beyond model + directory.
+
+## Admin (the basics only) — 2026-09-02, supersedes the section above
+- The dashboard exposes **basic settings only**. Per harness: whether it is offered, the binary
+  path (discovered, overridable), the model short list, the default model, and the default
+  reasoning effort for Claude Code and Codex. Nothing else.
+- Everything that used to be a control — permission mode, dangerously-skip, sandbox, approval,
+  network access, writable roots, bypass, remote control and its name/prefix/address/token,
+  extra flags, extra env, extra directories, theme, the `CLAUDE_CODE_*` / `CODEX_*` /
+  `OPENCODE_*` toggles, the permission JSON, max thinking tokens, the settings and config
+  textareas — is **hard-coded** with opinionated defaults. The Go structs shrank accordingly and
+  the argv builders became fixed policy.
+- The fixed policy, and the binary-verified source of every flag in it, is
+  [HARNESS-POLICY.md](HARNESS-POLICY.md). In short: Claude Code always starts with
+  `--dangerously-skip-permissions` and Remote Control off (never `--remote-control`, plus
+  `disableRemoteControl` in the generated settings and `remoteControlAtStartup: false` in the
+  global config); Codex always `--dangerously-bypass-approvals-and-sandbox` and never `--remote`;
+  OpenCode allows every permission through `OPENCODE_PERMISSION` and the generated config;
+  Shell is a login shell.
+- Global settings are unchanged: workspace root, preset directories, default harness, tmux
+  status/installer, terminal behaviour, tunnel, voice, password, setup check, OpenRouter key and
+  models for dictation/Status/Agent.
+- Migration is "ignore the old keys": a stored document keeps decoding, the dead keys go nowhere,
+  and the next save drops them. No save is refused for a value that is no longer a setting.
 
 ## Keep
 - Auth/login/setup, admin, cloudflared tunnel, SQLite store (chats->sessions, kv, sessions),

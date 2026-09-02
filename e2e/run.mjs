@@ -12,7 +12,7 @@ import {
   start, setup, shot, ok, scenario, skipScenario, finish, ensureNav, wait,
   readFakeLog, killTmux, openRouterStub, sessionsOn, windowSize, scratchDir, PASSWORD, LIVE,
 } from './harness.mjs';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 // The one thing the harness cannot hand over: when a session was last used is
 // the store's own record of what happened to it, so `daygroups` writes it in
@@ -701,69 +701,41 @@ async function livesession() {
 
 /* ------------------------------------------------------- 10. adminoptions */
 
-// One option in every group of every harness, plus a preset directory: set it
-// in the page, save, reload, and find it all still there - then start a
-// session and read the flags the launcher actually built out of FAKE_LOG.
+// The whole of what a harness card offers: the binary path, the model short
+// list, and the model and effort a session starts on. Set it in the page,
+// save, reload, and find it still there - then start a session and read the
+// command line the launcher actually built out of FAKE_LOG.
 //
 // The controls are addressed by the id the dashboard derives from the storage
-// key, `opt-<harness>-<key>`, which is what makes this a table rather than a
-// hundred lines of clicking.
+// key, `opt-<harness>-<key>`.
 const ADMIN_OPTIONS = [
-  // shell: Session, Advanced (raw)
-  ['shell', 'login', 'switch', false],
-  ['shell', 'extra_args', 'text', '-x'],
-  // claude: every group it has
+  ['claude', 'default_model', 'text', 'opus'],
   ['claude', 'default_effort', 'select', 'high'],
-  ['claude', 'autocompact', 'text', '200k'],
-  ['claude', 'permission_mode', 'select', 'plan'],
-  ['claude', 'allowed_tools', 'text', 'Read, Write'],
-  ['claude', 'remote_control_prefix', 'text', 'socrates-'],
-  ['claude', 'agent', 'text', 'reviewer'],
-  ['claude', 'strict_mcp_config', 'switch', true],
-  ['claude', 'disable_mouse', 'switch', true],
-  ['claude', 'verbose', 'switch', true],
-  ['claude', 'settings_overrides', 'text', '{"env":{"SOCRATES_E2E":"1"}}'],
-  // codex: every group it has
+  ['codex', 'default_model', 'text', 'gpt-5.6-terra'],
   ['codex', 'default_effort', 'select', 'xhigh'],
-  ['codex', 'sandbox', 'select', 'read-only'],
-  ['codex', 'remote_auth_token_env', 'text', 'CODEX_TOKEN'],
-  ['codex', 'web_search', 'switch', true],
-  ['codex', 'tui_theme', 'select', 'ocean-light'],
-  ['codex', 'config_overrides', 'text', 'tools.web_search=true'],
-  // opencode: every group it has
-  ['opencode', 'small_model', 'text', 'openai/gpt-5-mini'],
-  ['opencode', 'permission_json', 'text', '{"*":"ask"}'],
-  ['opencode', 'enabled_providers', 'text', 'anthropic'],
-  ['opencode', 'pure', 'switch', true],
-  ['opencode', 'share', 'select', 'manual'],
-  ['opencode', 'tui_theme', 'select', 'nord'],
-  ['opencode', 'log_level', 'select', 'WARN'],
-  ['opencode', 'config_content', 'text', '{"theme":"nord"}'],
+  ['opencode', 'default_model', 'text', 'anthropic/claude-sonnet-4-5'],
 ];
 
-// Every disclosure is opened first: a control inside a shut <details> is not
-// something a person could type into either.
-const openGroups = (page) => page.$$eval('details.group', (nodes) => {
-  for (const node of nodes) node.open = true;
-});
-
-// The dangerous options confirm twice, and the second dialog is the one a
-// person actually reads. These drive the pair the way a person would.
-const dialogTitle = (page) => page.$eval('dialog.modal .modal-title', (n) => n.textContent)
-  .catch(() => '');
-const acceptDialog = (page) => page.click('dialog.modal .modal-actions button.danger');
-const cancelDialog = (page) => page.click('dialog.modal .modal-actions button:not(.danger)');
+// The flags every session of a program is started with, whatever anybody
+// configured, and the ones no session may ever carry. This is the browser-side
+// half of docs/design/HARNESS-POLICY.md.
+const FIXED_POLICY = {
+  claude: {
+    must: ['--dangerously-skip-permissions', '--settings'],
+    never: ['--remote-control', '--permission-mode', '--allow-dangerously-skip-permissions', '--verbose'],
+  },
+  codex: {
+    must: ['--strict-config', '--no-alt-screen', '--dangerously-bypass-approvals-and-sandbox'],
+    never: ['-s', '-a', '--remote', '--search'],
+  },
+  opencode: {
+    must: ['--port', '--hostname'],
+    never: ['--auto', '--pure', '--print-logs', '--log-level'],
+  },
+};
 
 async function setOption(page, [harness, key, kind, value]) {
   const selector = '#opt-' + harness + '-' + key;
-  if (kind === 'switch') {
-    // The checkbox itself is invisible by design - the switch a person sees
-    // and taps is the track beside it - so that is what is clicked.
-    if (await page.$eval(selector, (n) => n.checked) !== value) {
-      await page.click(selector + ' + .track');
-    }
-    return;
-  }
   if (kind === 'select') {
     await page.selectOption(selector, value);
     return;
@@ -771,10 +743,8 @@ async function setOption(page, [harness, key, kind, value]) {
   await page.fill(selector, value);
 }
 
-async function readOption(page, [harness, key, kind]) {
-  const selector = '#opt-' + harness + '-' + key;
-  if (kind === 'switch') return page.$eval(selector, (n) => n.checked);
-  return page.$eval(selector, (n) => n.value);
+async function readOption(page, [harness, key]) {
+  return page.$eval('#opt-' + harness + '-' + key, (n) => n.value);
 }
 
 async function adminoptions() {
@@ -786,9 +756,12 @@ async function adminoptions() {
 
     await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
     await s.page.waitForSelector('#harness-opencode', { timeout: 20000 });
-    await openGroups(s.page);
 
     for (const option of ADMIN_OPTIONS) await setOption(s.page, option);
+
+    // The binary path is the other thing a card offers, and it is the one an
+    // installation genuinely differs on.
+    await s.page.fill('#opt-shell-binary', '/bin/sh');
 
     // The preset row, typed the way a person types it.
     await s.page.click('#presetAdd');
@@ -798,40 +771,39 @@ async function adminoptions() {
     await s.page.selectOption('#windowSize', 'largest');
     await s.page.fill('#historyLimit', '31000');
 
-    // The verified built-in theme list, not the third of it the docs name.
-    const themes = await s.page.$$eval('#opt-opencode-tui_theme option', (ns) => ns.map((n) => n.value));
-    ok(['opencode', 'dracula', 'carbonfox', 'catppuccin-frappe', 'system'].every((t) => themes.includes(t)),
-      'the OpenCode theme list is the verified built-in one', themes.length + ' themes');
+    // Nothing the owner took out of the dashboard may still be in it: the page
+    // is the promise, and a leftover control is a promise the app breaks.
+    const withdrawn = await s.page.evaluate(() => [
+      'opt-claude-permission_mode', 'opt-claude-skip_permissions', 'opt-claude-remote_control',
+      'opt-claude-extra_args', 'opt-claude-extra_env', 'opt-claude-settings_overrides',
+      'opt-codex-sandbox', 'opt-codex-approval', 'opt-codex-bypass', 'opt-codex-remote_addr',
+      'opt-codex-config_overrides', 'opt-opencode-auto', 'opt-opencode-permission_json',
+      'opt-opencode-tui_theme', 'opt-shell-login',
+    ].filter((id) => document.getElementById(id)));
+    ok(withdrawn.length === 0, 'the dashboard offers no control the app no longer honours',
+      withdrawn.join(', ') || 'none of the 15 withdrawn controls is on the page');
 
     await s.page.click('#saveTop');
     await s.page.waitForSelector('.toast', { timeout: 15000 });
     await wait(400);
     await shot(s.page, 'admin-options');
 
-    // A save rebuilds the cards from what the server normalised, and must not
-    // close the group somebody was editing while it does.
-    const stillOpen = await s.page.$eval(
-      '#harness-claude details.group[data-group="Diagnostics"]', (n) => n.open);
-    ok(stillOpen, 'saving leaves the option group that was open, open', String(stillOpen));
-
     // The reload is the assertion: everything above has to come back out of
     // the database and into the same controls.
     await s.page.reload({ waitUntil: 'domcontentloaded' });
     await s.page.waitForSelector('#harness-opencode', { timeout: 20000 });
-    await openGroups(s.page);
 
     const wrong = [];
     for (const option of ADMIN_OPTIONS) {
       const got = await readOption(s.page, option);
-      const want = option[2] === 'text' ? String(option[3]) : option[3];
-      // A text list is stored as a list and shown joined, so "Read, Write"
-      // comes back as "Read, Write" and not as what was typed character for
-      // character. Comparing without the spaces is the honest test.
-      const same = String(got).replace(/\s/g, '') === String(want).replace(/\s/g, '');
-      if (!same) wrong.push(option[0] + '.' + option[1] + '=' + got + ' (want ' + want + ')');
+      if (String(got) !== String(option[3])) {
+        wrong.push(option[0] + '.' + option[1] + '=' + got + ' (want ' + option[3] + ')');
+      }
     }
-    ok(wrong.length === 0, 'every option in every group survived a save and a reload',
-      wrong.join(' | ') || ADMIN_OPTIONS.length + ' options');
+    const shellBinary = await s.page.$eval('#opt-shell-binary', (n) => n.value);
+    if (shellBinary !== '/bin/sh') wrong.push('shell.binary=' + shellBinary);
+    ok(wrong.length === 0, 'every setting a harness card offers survived a save and a reload',
+      wrong.join(' | ') || (ADMIN_OPTIONS.length + 1) + ' settings');
 
     const terminal = await s.page.evaluate(() => ({
       windowSize: document.getElementById('windowSize').value,
@@ -841,45 +813,6 @@ async function adminoptions() {
     ok(terminal.windowSize === 'largest' && terminal.history === '31000',
       'the terminal card round-trips too', JSON.stringify(terminal));
     ok(terminal.preset === preset, 'the preset directory was stored', terminal.preset);
-
-    // Confirm-twice, on an option that turns a sandbox off. Two dialogs, and a
-    // refusal at the second leaves the switch exactly as it was.
-    await s.page.click('#opt-codex-bypass + .track');
-    await s.page.waitForSelector('dialog.modal', { timeout: 5000 });
-    const firstTitle = await dialogTitle(s.page);
-    await acceptDialog(s.page);
-    await s.page.waitForFunction(
-      () => /Once more/.test(document.querySelector('dialog.modal .modal-title')?.textContent || ''),
-      null, { timeout: 5000 });
-    const secondTitle = await dialogTitle(s.page);
-    ok(/sandbox/i.test(firstTitle) && /Once more/i.test(secondTitle),
-      'a dangerous switch asks twice, and the second dialog is its own question',
-      firstTitle + ' → ' + secondTitle);
-    await cancelDialog(s.page);
-    await s.page.waitForSelector('dialog.modal', { state: 'detached', timeout: 5000 });
-    const bypass = await s.page.$eval('#opt-codex-bypass', (n) => n.checked);
-    ok(bypass === false, 'and cancelling the second dialog leaves it off', String(bypass));
-
-    // The two options the review found unguarded.
-    for (const [name, action] of [
-      ['danger-full-access', () => s.page.selectOption('#opt-codex-sandbox', 'danger-full-access')],
-      ['remote control', () => s.page.click('#opt-claude-remote_control + .track')],
-    ]) {
-      await action();
-      const asked = await s.page.waitForSelector('dialog.modal', { timeout: 5000 })
-        .then(() => true).catch(() => false);
-      ok(asked, name + ' asks before it is turned on', String(asked));
-      if (asked) {
-        await cancelDialog(s.page);
-        await s.page.waitForSelector('dialog.modal', { state: 'detached', timeout: 5000 });
-      }
-    }
-    const reverted = await s.page.evaluate(() => ({
-      sandbox: document.getElementById('opt-codex-sandbox').value,
-      remote: document.getElementById('opt-claude-remote_control').checked,
-    }));
-    ok(reverted.sandbox === 'read-only' && reverted.remote === false,
-      'and a refusal puts both back', JSON.stringify(reverted));
 
     // §E.10 rule 3, in the setup check: the row says a verdict, the path and
     // the version are behind its "i".
@@ -926,27 +859,33 @@ async function adminoptions() {
 
     const launches = readFakeLog(s.data).filter((entry) => entry.name === 'claude');
     const launch = launches[launches.length - 1] || { argv: [], env: {}, cwd: '' };
-    const argv = (launch.argv || []).join(' ');
-    const flags = [
-      // Not --effort: the sheet offers a model and an effort of its own, and
-      // the launcher is meant to prefer what the session was started with.
-      ['--autocompact 200k', argv.includes('--autocompact 200k')],
-      ['--permission-mode plan', argv.includes('--permission-mode plan')],
-      ['--allowedTools Read,Write', argv.includes('--allowedTools Read,Write')],
-      ['--agent reviewer', argv.includes('--agent reviewer')],
-      ['--strict-mcp-config', argv.includes('--strict-mcp-config')],
-      ['--verbose', argv.includes('--verbose')],
-    ];
-    const missing = flags.filter(([, present]) => !present).map(([flag]) => flag);
-    ok(missing.length === 0, 'the saved options reached the command line',
-      missing.join(', ') || argv.slice(0, 220));
-    ok((launch.env || {}).CLAUDE_CODE_DISABLE_MOUSE === '1',
-      'and a switch that is an environment variable reached the environment',
-      String((launch.env || {}).CLAUDE_CODE_DISABLE_MOUSE));
-    ok((launch.env || {}).CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX === 'socrates-',
-      'as did the one that is a prefix',
-      String((launch.env || {}).CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX));
+    const policy = FIXED_POLICY.claude;
+    const missing = policy.must.filter((flag) => !launch.argv.includes(flag));
+    ok(missing.length === 0, 'the fixed policy reached the command line',
+      missing.join(', ') || policy.must.join(' '));
+    const forbidden = policy.never.filter((flag) => launch.argv.includes(flag));
+    ok(forbidden.length === 0, 'and nothing the dashboard no longer offers reached it either',
+      forbidden.join(', ') || 'none of ' + policy.never.join(' '));
+    ok(launch.env.CLAUDE_CODE_NO_FLICKER === '1'
+      && launch.env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE === '1',
+      'the terminal environment is hard-coded, not configured',
+      JSON.stringify({ flicker: launch.env.CLAUDE_CODE_NO_FLICKER,
+        title: launch.env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE }));
+    ok(!('CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX' in (launch.env || {})),
+      'and the remote-control variable is not set at all',
+      String(launch.env.CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX));
     ok(launch.cwd === preset, 'the session was started in the preset directory', launch.cwd);
+
+    // The generated settings file is the other half of turning Remote Control
+    // off: the flag is never passed, and the key says so where the flag cannot.
+    const settingsPath = launch.argv[launch.argv.indexOf('--settings') + 1];
+    let claudeSettings = {};
+    try { claudeSettings = JSON.parse(readFileSync(settingsPath, 'utf8')); } catch { /* reported below */ }
+    ok(claudeSettings.disableRemoteControl === true
+      && claudeSettings.skipDangerousModePermissionPrompt === true,
+      'the generated settings file disables Remote Control and the bypass dialog',
+      JSON.stringify({ remote: claudeSettings.disableRemoteControl,
+        dialog: claudeSettings.skipDangerousModePermissionPrompt }));
 
     ok(unexpected(s.errors).length === 0, 'no console errors',
       unexpected(s.errors).join(' | ') || '0');
@@ -2421,7 +2360,7 @@ async function backpressure() {
 
     // What the pane printed, as the journal recorded it: the fake's own
     // numbering makes a hole impossible to miss.
-    const { readFileSync } = await import('node:fs');
+    // readFileSync is imported at the top of this file.
     const journal = join(s.data, 'sessions', id, 'journal.raw');
     let numbers = [];
     for (let i = 0; i < 40; i += 1) {
@@ -4905,7 +4844,7 @@ const ALL = [
   ['takeover', 'a second tab with the same viewer id takes the pane over', takeover],
   ['offlinerestart', 'a restart during an outage, a wake storm, and nothing lost in silence', offlinerestart],
   ['latehello', 'what is typed before a late hello is delivered, exactly once', latehello],
-  ['adminoptions', 'every harness option round-trips and reaches the command line', adminoptions],
+  ['adminoptions', 'the basics round-trip and the fixed policy reaches the command line', adminoptions],
   ['tmuxinstaller', 'the engine card, and an install that streams and survives a reload', tmuxinstaller],
   ['twoviewers', 'two devices on one session, and one notice about the size', twoviewers],
   ['backpressure', 'two hundred lines arrive whole, on screen and in the journal', backpressure],

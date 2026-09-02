@@ -70,10 +70,11 @@ password guards the lot.
   tunnel publishes the local server: a throwaway `trycloudflare.com` address in
   one click, or your own hostname with a tunnel token. `cloudflared` is
   downloaded for you if you do not have it.
-- **A dashboard for everything.** Whether tmux is there (and a one-click
-  installer if it is not), where sessions work, how the terminal behaves, every
-  flag each CLI is started with, voice, remote access, password and a setup
-  check.
+- **A dashboard for the things that differ.** Whether tmux is there (and a
+  one-click installer if it is not), where sessions work, how the terminal
+  behaves, which programs are offered and what they start on, voice, remote
+  access, password and a setup check. How each CLI is *started* is not a
+  setting: every session gets the same opinionated command line.
 - **Single binary.** Go plus embedded HTML/CSS/JS, SQLite for state, no build
   step, no CDN, no telemetry.
 
@@ -232,9 +233,9 @@ one is started as:
 
 | Session | Command line, in outline | Model | Effort |
 | --- | --- | --- | --- |
-| **Shell** | `$SHELL` (else `/bin/bash`, else `/bin/sh`), `-l` when "login shell" is on | — | — |
-| **Claude Code** | `claude --session-id <uuid> …`, resumed with `--resume <id>` | `--model` | `--effort` |
-| **Codex** | `codex --strict-config -C <dir> …`, resumed with `codex resume <id>` | `-m` | `-c model_reasoning_effort=…` |
+| **Shell** | `$SHELL -l` (else `/bin/bash`, else `/bin/sh`) | — | — |
+| **Claude Code** | `claude --session-id <uuid> --dangerously-skip-permissions --settings …`, resumed with `--resume <id>` | `--model` | `--effort` |
+| **Codex** | `codex --strict-config -C <dir> --no-alt-screen --dangerously-bypass-approvals-and-sandbox …`, resumed with `codex resume <id>` | `-m` | `-c model_reasoning_effort=…` |
 | **OpenCode** | `opencode --port <free port> --hostname 127.0.0.1 … <dir>`, resumed with `--session <id>` | `-m` | as the model's *variant* |
 
 **Where the models come from.** Codex and OpenCode are asked — `codex debug
@@ -252,13 +253,19 @@ already exist and are never created; `/`, `/etc`, `/usr`, `/bin`, `/sbin`,
 `/boot` and anything under `/proc`, `/sys` or `/dev` are refused. The rules are
 enforced by the server, not by the sheet.
 
-**Every flag is yours.** Each program's card in the dashboard is the whole
-surface of its command line, grouped and with the exact flag or environment
-variable in the hint under every control: permissions and sandboxing, providers,
-isolation, remote control, session and prompt, extensions, tools, theme and
-terminal, diagnostics, and raw extra flags, extra environment and config
-overrides. They all take effect for sessions started from then on — a running
-pane is never reconfigured behind your back.
+**The command line is not yours, on purpose.** Each program's card offers four
+things: whether it is offered at all, where its binary lives, the short list of
+models its picker shows, and the model and effort a session starts on. How the
+program is *started* is fixed: Claude Code with `--dangerously-skip-permissions`
+and Remote Control off, Codex with `--dangerously-bypass-approvals-and-sandbox`
+and never `--remote`, OpenCode with every permission allowed, Shell as a login
+shell — each with the light theme and the terminal environment a web pane needs.
+A permission prompt in a pane nobody is watching is a session that has stopped,
+and an option that can be set wrong is one that will be. The whole policy, with
+the version of each CLI it was verified against, is in
+[docs/design/HARNESS-POLICY.md](docs/design/HARNESS-POLICY.md). Model and effort
+take effect for sessions started from then on — a running pane is never
+reconfigured behind your back.
 
 ## What survives what
 
@@ -409,11 +416,13 @@ Socrates is built for a single trusted operator, and it runs the coding CLIs
 **unattended**. That is the point of it — nobody can tap "allow" from a car —
 and it is the thing to understand before you publish it.
 
-- **Unattended means unattended, if you say so.** The permission and sandbox
-  settings of each CLI are yours, in its card in the dashboard, with the flag
-  each one maps to written under it, and the dangerous ones ask twice before
-  they are saved. There are no approval cards in the pane's way; what the
-  program is allowed to do is what you configured before it started.
+- **Unattended means unattended, always.** All three coding CLIs are started
+  with their approvals and sandboxes bypassed, and that is not a setting you
+  can turn off. There are no approval cards in the pane's way, and nothing
+  stands between the program and the machine but the rights of the user running
+  Socrates. Run it where you would be content to let a program you did not
+  supervise type. The exact flags are in
+  [docs/design/HARNESS-POLICY.md](docs/design/HARNESS-POLICY.md).
 - **The programs run as the user that runs Socrates**, with that user's files,
   credentials and network. Access to the web interface is therefore access to
   that account — treat the password accordingly, and put Cloudflare Access in

@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestNormalizeFillsDefaults(t *testing.T) {
 	s := Settings{}
@@ -47,19 +50,21 @@ func TestHarnessesDefaultToEnabled(t *testing.T) {
 		if !entry.Enabled {
 			t.Errorf("%s is off by default", id)
 		}
-		if entry.Binary != "" || len(entry.ExtraArgs) != 0 || len(entry.ExtraEnv) != 0 {
+		if entry.Binary != "" || len(entry.Models) != 0 {
 			t.Errorf("%s ships with an override: %#v", id, entry)
 		}
 	}
 	if _, ok := s.Harnesses.Entry("invented"); ok {
 		t.Error("a harness nobody ships was reported as known")
 	}
-	// The switches that make these programs behave like a web terminal are on
-	// out of the box; nothing else has to be configured to get a usable screen.
-	if !s.Harnesses.Shell.Login || !s.Harnesses.Claude.PinLightTheme ||
-		!s.Harnesses.Codex.TrustWorkdir || !s.Harnesses.Codex.NoAltScreen ||
-		!s.Harnesses.OpenCode.DisableModelsFetch {
-		t.Errorf("a terminal default is off: %#v", s.Harnesses)
+	// What used to be a page of terminal switches is now fixed policy in the
+	// launchers, so a fresh document says nothing about a model or an effort
+	// either: a session that was started without a choice of its own gets the
+	// program's own default.
+	if s.Harnesses.Claude.DefaultModel != "" || s.Harnesses.Claude.DefaultEffort != "" ||
+		s.Harnesses.Codex.DefaultModel != "" || s.Harnesses.Codex.DefaultEffort != "" ||
+		s.Harnesses.OpenCode.DefaultModel != "" {
+		t.Errorf("a fresh installation ships with a model or an effort: %#v", s.Harnesses)
 	}
 }
 
@@ -73,19 +78,42 @@ func TestHarnessNormalizeTidiesWithoutFillingIn(t *testing.T) {
 		t.Error("Normalize turned a switch on by itself")
 	}
 	s.Harnesses.Claude.Binary = "  /usr/local/bin/claude  "
-	s.Harnesses.Claude.ExtraArgs = []string{" --debug ", "  "}
-	s.Harnesses.Claude.ExtraEnv = []string{" FOO=bar baz ", "=orphan", "not an assignment", "1BAD=x"}
+	s.Harnesses.Claude.DefaultModel = "  sonnet  "
 	s.Normalize()
 	if s.Harnesses.Claude.Binary != "/usr/local/bin/claude" {
 		t.Errorf("binary was not trimmed: %q", s.Harnesses.Claude.Binary)
 	}
-	if len(s.Harnesses.Claude.ExtraArgs) != 1 || s.Harnesses.Claude.ExtraArgs[0] != "--debug" {
-		t.Errorf("extra args were not trimmed: %#v", s.Harnesses.Claude.ExtraArgs)
+	if s.Harnesses.Claude.DefaultModel != "sonnet" {
+		t.Errorf("model was not trimmed: %q", s.Harnesses.Claude.DefaultModel)
 	}
-	// A variable with no usable name cannot be set, and a launch is the wrong
-	// place to find that out. The value keeps its space: it may be the point.
-	if len(s.Harnesses.Claude.ExtraEnv) != 1 || s.Harnesses.Claude.ExtraEnv[0] != "FOO=bar baz" {
-		t.Errorf("extra env = %#v", s.Harnesses.Claude.ExtraEnv)
+}
+
+// A stored document written before the dashboard was cut back is read without
+// complaint: the settings that are now fixed policy decode into nothing at
+// all, and what is left of the harness section survives untouched.
+func TestOldHarnessKeysAreIgnored(t *testing.T) {
+	old := []byte(`{"harnesses":{"claude":{"enabled":true,"binary":"/opt/claude",
+		"default_model":"sonnet","default_effort":"high","permission_mode":"plan",
+		"skip_permissions":"force","remote_control":true,"extra_args":["--verbose"],
+		"extra_env":["FOO=bar"],"settings_overrides":"{not json"},
+		"codex":{"enabled":true,"sandbox":"danger-full-access","approval":"never",
+		"remote_addr":"ws://example.test","config_overrides":["not-an-assignment"]},
+		"opencode":{"enabled":true,"auto":true,"permission_json":"[","tui_theme":"nord"},
+		"shell":{"enabled":true,"login":false}}}`)
+	s := Default()
+	if err := json.Unmarshal(old, &s); err != nil {
+		t.Fatalf("an old document would not decode: %v", err)
+	}
+	s.Normalize()
+	if err := s.Validate(); err != nil {
+		t.Fatalf("an old document was refused: %v", err)
+	}
+	if s.Harnesses.Claude.Binary != "/opt/claude" || s.Harnesses.Claude.DefaultModel != "sonnet" ||
+		s.Harnesses.Claude.DefaultEffort != "high" {
+		t.Errorf("the settings that are still settings were lost: %#v", s.Harnesses.Claude)
+	}
+	if !s.Harnesses.Shell.Enabled || !s.Harnesses.OpenCode.Enabled {
+		t.Errorf("a harness was turned off by the migration: %#v", s.Harnesses)
 	}
 }
 
@@ -93,36 +121,17 @@ func TestHarnessNormalizeTidiesWithoutFillingIn(t *testing.T) {
 // the API takes whatever is sent to it.
 func TestHarnessClosedListsFallBack(t *testing.T) {
 	s := Default()
-	s.Harnesses.Claude.PermissionMode = "whatever"
-	s.Harnesses.Claude.SkipPermissions = "yes please"
-	s.Harnesses.Claude.CleanupPeriodDays = 0
-	s.Harnesses.Codex.Sandbox = "off"
-	s.Harnesses.Codex.Approval = "untrusted"
 	s.Harnesses.Codex.DefaultEffort = "ludicrous"
-	s.Harnesses.OpenCode.Share = "everywhere"
-	s.Harnesses.OpenCode.LogLevel = "debug"
+	s.Harnesses.Claude.DefaultEffort = "ludicrous"
 	s.Terminal.WindowSize = "whatever"
 	s.Normalize()
-	if s.Harnesses.Claude.PermissionMode != "unset" || s.Harnesses.Claude.SkipPermissions != SkipPermissionsOff {
-		t.Errorf("claude permissions = %#v", s.Harnesses.Claude)
-	}
-	if s.Harnesses.Claude.CleanupPeriodDays != 90 {
-		t.Errorf("cleanup period = %d", s.Harnesses.Claude.CleanupPeriodDays)
-	}
-	if s.Harnesses.Codex.Sandbox != "workspace-write" || s.Harnesses.Codex.Approval != "on-request" {
-		t.Errorf("codex sandbox = %#v", s.Harnesses.Codex)
-	}
 	// Codex does not validate the effort itself, so a typo would reach the
 	// model as configuration and be quietly ignored.
 	if s.Harnesses.Codex.DefaultEffort != "" {
 		t.Errorf("codex effort = %q", s.Harnesses.Codex.DefaultEffort)
 	}
-	if s.Harnesses.OpenCode.Share != "disabled" {
-		t.Errorf("share = %q", s.Harnesses.OpenCode.Share)
-	}
-	// A level written in lower case is a spelling, not a different value.
-	if s.Harnesses.OpenCode.LogLevel != "DEBUG" {
-		t.Errorf("log level = %q", s.Harnesses.OpenCode.LogLevel)
+	if s.Harnesses.Claude.DefaultEffort != "" {
+		t.Errorf("claude effort = %q", s.Harnesses.Claude.DefaultEffort)
 	}
 	if s.Terminal.WindowSize != "manual" {
 		t.Errorf("window size = %q", s.Terminal.WindowSize)
@@ -238,83 +247,23 @@ func TestModelPicksAreNormalized(t *testing.T) {
 	}
 }
 
-// The four textarea fields are JSON a person types, and Normalize cannot
-// repair them. Saving is where a typo has to be refused, so that it is an
-// error next to the field rather than a session that fails to launch an hour
-// later with a message from a program the person never saw.
-func TestValidateRefusesWhatNormalizeCannotRepair(t *testing.T) {
-	base := func() Settings {
-		s := Default()
-		s.Normalize()
-		return s
-	}
-	fresh := base()
-	if err := fresh.Validate(); err != nil {
+// There is nothing left in the harness section for a person to type wrong.
+// Every field is a switch, a path, a model id or a value Normalize closes onto
+// a known list, so a fresh document and a filled-in one both validate.
+func TestHarnessSettingsAlwaysValidate(t *testing.T) {
+	s := Default()
+	s.Normalize()
+	if err := s.Validate(); err != nil {
 		t.Fatalf("a fresh installation does not validate: %v", err)
 	}
-	cases := map[string]func(*Settings){
-		"claude.settings_overrides": func(s *Settings) { s.Harnesses.Claude.SettingsOverrides = "{not json" },
-		"opencode.permission_json":  func(s *Settings) { s.Harnesses.OpenCode.PermissionJSON = `{"bash":}` },
-		"opencode.config_content":   func(s *Settings) { s.Harnesses.OpenCode.ConfigContent = "nope" },
-		"opencode.tui_config":       func(s *Settings) { s.Harnesses.OpenCode.TUIConfig = "[" },
-		// Every override reaches Codex as one -c argument, and Codex is
-		// launched with --strict-config: an entry that is not an assignment is
-		// a session that refuses to start.
-		"codex.config_overrides": func(s *Settings) {
-			s.Harnesses.Codex.ConfigOverrides = []string{"tui.theme=\"light-gray\"", "not-an-assignment"}
-		},
-	}
-	for name, break_ := range cases {
-		s := base()
-		break_(&s)
-		s.Normalize()
-		if err := s.Validate(); err == nil {
-			t.Errorf("%s was accepted", name)
-		}
-	}
-
-	// Valid JSON and a proper assignment go through untouched.
-	s := base()
-	s.Harnesses.Claude.SettingsOverrides = `{"cleanupPeriodDays": 5}`
-	s.Harnesses.OpenCode.PermissionJSON = `{"*":"ask"}`
-	s.Harnesses.Codex.ConfigOverrides = []string{`tui.theme="light-gray"`}
+	s.Harnesses.Claude.Binary = "/usr/local/bin/claude"
+	s.Harnesses.Claude.DefaultModel = "sonnet"
+	s.Harnesses.Claude.DefaultEffort = "high"
+	s.Harnesses.Codex.DefaultEffort = "xhigh"
+	s.Harnesses.OpenCode.DefaultModel = "anthropic/claude-sonnet-4-5"
 	s.Normalize()
 	if err := s.Validate(); err != nil {
-		t.Errorf("a valid document was refused: %v", err)
-	}
-}
-
-// The two fields WP1 left to WP8's controls. Both are free text in the
-// dashboard, so both are refused here rather than at launch, where the message
-// would arrive in a pane that is already gone.
-func TestAutocompactAndSettingSourcesAreValidated(t *testing.T) {
-	for _, ok := range []string{"", "auto", "AUTO", "100k", "200K", "1M", "0.5M"} {
-		s := Default()
-		s.Harnesses.Claude.Autocompact = ok
-		s.Normalize()
-		if err := s.Validate(); err != nil {
-			t.Errorf("autocompact %q was refused: %v", ok, err)
-		}
-	}
-	for _, bad := range []string{"lots", "99k", "2M", "200", "200 k", "-1k"} {
-		s := Default()
-		s.Harnesses.Claude.Autocompact = bad
-		s.Normalize()
-		if err := s.Validate(); err == nil {
-			t.Errorf("autocompact %q was accepted", bad)
-		}
-	}
-
-	s := Default()
-	s.Harnesses.Claude.SettingSources = []string{"user", "project", "local"}
-	s.Normalize()
-	if err := s.Validate(); err != nil {
-		t.Errorf("the three real setting sources were refused: %v", err)
-	}
-	s.Harnesses.Claude.SettingSources = []string{"user", "global"}
-	s.Normalize()
-	if err := s.Validate(); err == nil {
-		t.Error("an invented setting source was accepted")
+		t.Errorf("a filled-in document was refused: %v", err)
 	}
 }
 
