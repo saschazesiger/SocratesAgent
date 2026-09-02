@@ -83,6 +83,19 @@ const (
 	phaseError    = "error"
 )
 
+// The phases a spoken status reports while it is being made. Pressing Status
+// is a question to a model over a network, and until this existed the only
+// evidence that anything was happening was a button that had gone quiet. Each
+// one is broadcast to the session's viewers as it starts, so the ticker on
+// every device attached to this session shows the same line.
+const (
+	statusPhaseCapturing = "capturing"
+	statusPhaseAsking    = "asking"
+	statusPhaseSpeaking  = "speaking"
+	statusPhaseDone      = "done"
+	statusPhaseError     = "error"
+)
+
 /* ------------------------------------------------------------- the status */
 
 // handleSessionStatus says out loud what a terminal is doing.
@@ -109,8 +122,10 @@ func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), agentStatusTimeout)
 	defer cancel()
+	s.emitStatus(row.ID, statusPhaseCapturing, "Reading the screen")
 	screen, err := s.manager.CapturePane(ctx, row.ID, statusScreenLines)
 	if err != nil {
+		s.emitStatus(row.ID, statusPhaseError, "That screen could not be read.")
 		writeError(w, http.StatusBadRequest, "this session has no terminal to read: "+err.Error())
 		return
 	}
@@ -119,6 +134,7 @@ func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
 
 	temperature := 0.2
 	client := openrouter.New(settings.OpenRouter.BaseURL, settings.OpenRouter.APIKey)
+	s.emitStatus(row.ID, statusPhaseAsking, "Asking "+model)
 	res, err := client.Chat(ctx, openrouter.ChatRequest{
 		Model:       model,
 		Messages:    []openrouter.Message{{Role: "user", Content: statusPrompt(row.Harness, activity.State, language, screen)}},
@@ -127,14 +143,21 @@ func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
 	}, nil)
 	if err != nil {
 		code, message := modelProblem(err, model, "status")
+		s.emitStatus(row.ID, statusPhaseError, "That session could not be summarised.")
 		writeError(w, code, message)
 		return
 	}
 	text := plainStatus(res.Content)
 	if text == "" {
+		s.emitStatus(row.ID, statusPhaseError, "There was nothing to say about that screen.")
 		writeError(w, http.StatusBadGateway, "the model answered with nothing to say")
 		return
 	}
+	// The browser is about to hand this to Piper, so the phase is announced
+	// from here: the answer and the news that it is being read are one event,
+	// and a second round trip to say so would arrive after the voice did.
+	s.emitStatus(row.ID, statusPhaseSpeaking, "Speaking")
+	s.emitStatus(row.ID, statusPhaseDone, text)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"text":     text,
 		"language": language,
@@ -239,6 +262,10 @@ type agentRun struct {
 	// down so that the loop can tell "the user pressed Cancel" from "ten
 	// minutes are up".
 	reason string
+	// onEnd is called once, when the run stops, by whoever started it. The
+	// chat is the caller that has one: a run it asked for ends in a message in
+	// the conversation that asked for it.
+	onEnd func(summary, failure string)
 }
 
 // view is the run as the API and the WebSocket both carry it: the agent frame
@@ -403,6 +430,13 @@ func (d *agentDriver) update(run *agentRun, f func(*agentRun)) {
 // where it was going or stopped at a bound; failure set is a run that could
 // not carry on, and the page turns it into a toast.
 func (d *agentDriver) finish(run *agentRun, summary, note, failure string) {
+	run.mu.Lock()
+	already := run.done
+	onEnd := run.onEnd
+	run.mu.Unlock()
+	if !already && onEnd != nil {
+		defer onEnd(summary, failure)
+	}
 	d.update(run, func(r *agentRun) {
 		r.done, r.ended = true, time.Now()
 		r.action = ""

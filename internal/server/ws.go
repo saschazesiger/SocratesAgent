@@ -640,6 +640,11 @@ func helloFrame(s *Server, row *store.Session, viewer *termux.Viewer, tv *termVi
 		// WP2 fills it, and the page renders a run from hello, from the frame
 		// and from the REST route with one function either way.
 		"agent": s.agentSnapshot(row.ID),
+		// The conversation this session has had with the assistant. It is
+		// small, it is already in memory's reach, and carrying it here is what
+		// makes a phone that reloaded show the chat it was in the middle of
+		// without a request of its own.
+		"chat": s.chats.history(row.ID),
 	}
 }
 
@@ -1603,6 +1608,27 @@ func (s *Server) emitAgent(sessionID string, payload map[string]any) {
 	for key, value := range payload {
 		frame[key] = value
 	}
+	s.broadcast(sessionID, func(*termViewer) any { return frame })
+}
+
+// emitStatus carries one phase of a spoken status to the viewers of its
+// session.
+//
+// Pressing Status asks a model a question over a network, and until this frame
+// existed the only evidence of that was a button that had gone quiet. It goes
+// to the session's viewers rather than to every socket because it is about the
+// screen somebody is looking at, and because two phones on one session should
+// both see it.
+func (s *Server) emitStatus(sessionID, phase, text string) {
+	frame := map[string]any{"t": "status", "id": sessionID, "phase": phase, "text": text}
+	s.broadcast(sessionID, func(*termViewer) any { return frame })
+}
+
+// emitChat carries one message of a session's chat to its viewers. `live` says
+// the message is progress rather than history: it is shown and never stored,
+// so a reload does not replay a run keystroke by keystroke.
+func (s *Server) emitChat(sessionID string, msg map[string]any) {
+	frame := map[string]any{"t": "chat", "id": sessionID, "msg": msg}
 	s.broadcast(sessionID, func(*termViewer) any { return frame })
 }
 

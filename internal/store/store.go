@@ -472,6 +472,15 @@ func (s *Store) SetKV(key, value string) error {
 	return err
 }
 
+// DeleteKV removes a value, and says nothing when there was none: the callers
+// are cleanups after a session that may never have had one.
+func (s *Store) DeleteKV(key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM kv WHERE key = ?`, key)
+	return err
+}
+
 // GetJSON decodes a JSON value stored under key.
 func (s *Store) GetJSON(key string, out any) error {
 	v, err := s.GetKV(key)

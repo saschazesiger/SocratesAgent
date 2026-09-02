@@ -359,6 +359,8 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	// And a title run writing into a row that is being removed is the same
 	// kind of nothing-good.
 	s.titles.forget(row.ID)
+	// And the conversation about a screen that is about to stop existing.
+	s.chats.forget(row.ID)
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	if err := s.manager.Delete(ctx, row.ID); err != nil {

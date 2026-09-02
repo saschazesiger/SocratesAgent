@@ -64,6 +64,9 @@ type Server struct {
 	agents *agentDriver
 	// titles names a session once, the first time it has answered anything.
 	titles *titleDriver
+	// chats owns the conversation beside each terminal: what was said, and the
+	// goroutine that answers it after the request has gone.
+	chats *chatDriver
 
 	mux *http.ServeMux
 
@@ -126,6 +129,7 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	// The operator runs, and the one hook the transport needs to put a live
 	// run into hello and into GET .../agent from the same place.
 	s.agents = newAgentDriver(s)
+	s.chats = newChatDriver(s)
 	s.mu.Lock()
 	s.agentRunOf = s.agents.runView
 	s.mu.Unlock()
@@ -320,6 +324,8 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/sessions/{id}/agent", s.auth(s.handleAgentStart))
 	mux.HandleFunc("GET /api/sessions/{id}/agent", s.auth(s.handleAgentRun))
 	mux.HandleFunc("POST /api/sessions/{id}/agent/cancel", s.auth(s.handleAgentCancel))
+	mux.HandleFunc("GET /api/sessions/{id}/chat", s.auth(s.handleChatHistory))
+	mux.HandleFunc("POST /api/sessions/{id}/chat", s.auth(s.handleChatPost))
 	mux.HandleFunc("GET /api/sessions/{id}/journal", s.auth(s.handleJournal))
 	mux.HandleFunc("GET /api/sessions/{id}/ws", s.auth(s.handleSessionWS))
 
