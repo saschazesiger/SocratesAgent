@@ -124,6 +124,9 @@
             <div class="ticker-window" id="tickerWindow" role="status" aria-live="polite"></div>
           </div>
         </div>
+        <!-- The pane is held above its live bottom, in tmux's own copy mode.
+             One tap puts it back, and so does the next keystroke. -->
+        <button class="term-jump" id="termJump" type="button" hidden>Jump to live</button>
         <!-- Before the first session exists there is nothing to attach to. -->
         <div class="term-empty" id="termEmpty" hidden></div>
       </div>

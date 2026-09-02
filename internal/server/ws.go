@@ -212,6 +212,10 @@ type termConn struct {
 	// rather than the status this socket was about to close with.
 	quit     chan struct{}
 	quitOnce sync.Once
+	// leftCopyMode records that writing this frame took the pane out of copy
+	// mode, so that onInput can tell every viewer the pill is gone. The
+	// broadcast is deliberately not done under the viewer's lock.
+	leftCopyMode bool
 
 	// ctrl carries JSON control frames to the writer. It is small and
 	// deliberately so: a client that cannot take an acknowledgement is a
@@ -621,6 +625,9 @@ func parseSince(r *http.Request) uint64 {
 // everything the client does afterwards.
 func helloFrame(s *Server, row *store.Session, viewer *termux.Viewer, tv *termViewer, replayFrom uint64, fresh bool) map[string]any {
 	cols, rows := viewer.Size()
+	paneCtx, paneCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	pane := s.manager.PaneState(paneCtx, row.ID)
+	paneCancel()
 	tv.mu.Lock()
 	ack := tv.lastInput
 	tv.mu.Unlock()
@@ -633,6 +640,14 @@ func helloFrame(s *Server, row *store.Session, viewer *termux.Viewer, tv *termVi
 		"replay_from":  replayFrom,
 		"input_ack":    ack,
 		"viewer_fresh": fresh,
+		// Whether a viewer has left this pane scrolled back in tmux's copy
+		// mode. It is in the handshake because the pane is shared: a phone
+		// that reloads, or a laptop joining, has to draw the "Jump to live"
+		// pill over a pane that is not at its bottom.
+		"in_mode": pane.InMode,
+		// Whether this pane has any tmux history to move at all. A full-screen
+		// program has none, and its own view is what a finger has to scroll.
+		"wheel": pane.Wheel,
 		// Every running session's activity, not just this one's: the sidebar
 		// is drawn from a reconnect without a request of its own.
 		"activity": s.manager.Activities(),
@@ -1326,6 +1341,10 @@ func (e *protocolError) Error() string { return e.why }
 // replacing it - which is the one half of the promise that is absolute.
 func (c *termConn) onInput(payload []byte) error {
 	typed, err := c.writeInput(payload)
+	if c.leftCopyMode {
+		c.leftCopyMode = false
+		c.srv.onSessionMode(c.tv.sessionID, termux.PaneScroll{})
+	}
 	if typed {
 		// Typing at a session is the whole of having seen it. This is outside
 		// writeInput because clearing the mark ends in a broadcast, and a
@@ -1416,8 +1435,32 @@ func (c *termConn) writeInput(payload []byte) (bool, error) {
 	// for one, would type it into the pane in front of the next command.
 	keys, pasting := termux.StripReplies(body, tv.pasting)
 	tv.pasting = pasting
+	// A pane somebody scrolled back is in tmux's copy mode, and copy mode eats
+	// keystrokes: it reads them as its own commands and the program never sees
+	// them. Nothing typed may disappear that way, so the first real key after
+	// a scroll leaves copy mode first. A focus report is not a real key and
+	// does not: a tab coming back to the front must not throw away the place
+	// somebody scrolled to.
+	//
+	// The leaving and the writing happen under the session's scroll lock, held
+	// across both by the Manager, because between a check and a byte another
+	// device's finger can put the pane back into copy mode - and that byte
+	// would then be read as a copy-mode command.
 	if len(keys) > 0 {
-		if _, err := tv.viewer.Write(keys); err != nil {
+		write := func() error {
+			_, err := tv.viewer.Write(keys)
+			return err
+		}
+		var err error
+		if !onlyFocusReports(keys) && c.srv.manager.InCopyMode(tv.sessionID) {
+			ctx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
+			// Only a mode that really was left takes the pill off the pane.
+			c.leftCopyMode, err = c.srv.manager.LeaveCopyMode(ctx, tv.sessionID, write)
+			cancel()
+		} else {
+			err = write()
+		}
+		if err != nil {
 			// Nothing was written, so nothing is acknowledged: the client is
 			// told the last number that did reach the pane, which is the same
 			// "start again from here" a gap is answered with, and it renumbers
@@ -1465,6 +1508,9 @@ func (c *termConn) onControl(payload []byte) bool {
 		// diagnostics only, and it is a JSON number, so it is exact up to 2^53
 		// - a bound this counter would need years of a busy terminal to reach.
 		Seq uint64 `json:"seq"`
+		// Lines is how far a finger asked the pane's own history to move:
+		// positive back into it, negative towards the live bottom.
+		Lines int `json:"lines"`
 	}
 	if err := json.Unmarshal(payload, &frame); err != nil {
 		c.send(map[string]any{"t": "error", "message": "that control frame is not JSON", "fatal": false})
@@ -1495,10 +1541,47 @@ func (c *termConn) onControl(payload []byte) bool {
 		if err := json.Unmarshal(frame.ID, &id); err == nil && id != "" {
 			c.srv.manager.MarkRead(id)
 		}
+	case "scroll":
+		c.onScroll(frame.Lines)
+	case "jump":
+		c.onJump()
 	case "bye":
 		return true
 	}
 	return false
+}
+
+// onScroll moves the pane through tmux's own scrollback, which is the only
+// history that exists under every program: a full-screen TUI tracking the
+// mouse would swallow a wheel, and there is no xterm scrollback on an
+// alternate screen to move instead (termux/scroll.go).
+//
+// The answer goes to every viewer of the session rather than to this socket
+// alone, because the pane is one pane: a phone that scrolls it back has
+// scrolled it back for the laptop looking at the same session.
+func (c *termConn) onScroll(lines int) {
+	if lines < -10000 || lines > 10000 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
+	defer cancel()
+	pane, err := c.srv.manager.ScrollHistory(ctx, c.tv.sessionID, lines)
+	if err != nil {
+		log.Printf("session %s: could not scroll the history: %v", c.tv.sessionID, err)
+		return
+	}
+	c.srv.onSessionMode(c.tv.sessionID, pane)
+}
+
+// onJump is the "Jump to live" pill: whatever the pane was showing, it goes
+// back to the bottom and to whatever is happening on it now.
+func (c *termConn) onJump() {
+	ctx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
+	defer cancel()
+	if err := c.srv.manager.ExitCopyMode(ctx, c.tv.sessionID); err != nil {
+		log.Printf("session %s: could not leave copy mode: %v", c.tv.sessionID, err)
+	}
+	c.srv.onSessionMode(c.tv.sessionID, c.srv.manager.PaneState(ctx, c.tv.sessionID))
 }
 
 // onResize moves the window, which under the manual policy is the only thing
@@ -1542,6 +1625,14 @@ func (s *Server) onSessionSize(sessionID string, cols, rows int, owner string) {
 			by = "self"
 		}
 		return map[string]any{"t": "size", "cols": cols, "rows": rows, "by": by}
+	})
+}
+
+// onSessionMode tells every viewer whether the pane is held above its live
+// bottom, which is the whole of what the "Jump to live" pill knows.
+func (s *Server) onSessionMode(sessionID string, pane termux.PaneScroll) {
+	s.broadcast(sessionID, func(*termViewer) any {
+		return map[string]any{"t": "mode", "in_mode": pane.InMode, "wheel": pane.Wheel}
 	})
 }
 

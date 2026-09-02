@@ -2215,7 +2215,18 @@ and being wrong about it means either a row of buttons nobody wanted or the miss
 to be found. One tap in the ⋯ menu is cheaper than either, and the answer is remembered for this
 device.
 
-Keys, one row, horizontally scrollable, each `button.key[data-send]`:
+<!-- rev 5 --> **The bar wraps; it does not scroll.** This section said one
+horizontally scrollable row, and measured on a 390px phone that put seven of the fourteen keys —
+the arrows, `⏎`, `^C`, `^D`, `^Z`, `Paste` and `⌨` — off the right edge, in a bar whose scrollbar
+is hidden, with nothing on screen to say they were there. Half the bar, and the half a phone came
+for. It is `flex-wrap: wrap` instead, unconditionally: a row that fits does not wrap, so a desk
+still sees one row and no width has to be guessed at. Each key is at least 44×44 (§E.10).
+
+The order below is also the wrap: two rows of seven on a phone, with the four arrows kept together
+at the head of the second rather than split three-and-one across the fold, because the arrows are
+one control and a thumb should not have to hunt for the one that moves right.
+
+Keys, each `button.key[data-send]`:
 
 | label | sends |
 |---|---|
@@ -2223,10 +2234,10 @@ Keys, one row, horizontally scrollable, each `button.key[data-send]`:
 | `Tab` | `\t` |
 | `Ctrl` | sticky modifier (see below) |
 | `Alt` | sticky modifier |
-| `←` `↓` `↑` `→` | `\x1b[D` `\x1b[B` `\x1b[A` `\x1b[C` |
 | `⏎` | `\r` |
 | `^C` | `\x03` |
 | `^D` | `\x04` |
+| `←` `↓` `↑` `→` | `\x1b[D` `\x1b[B` `\x1b[A` `\x1b[C` |
 | `^Z` | `\x1a` |
 | `Paste` | `navigator.clipboard.readText()` then send, bracketed if the term asked for it |
 | `⌨` | `term.textarea.focus()` **synchronously inside the touchend/click handler** |

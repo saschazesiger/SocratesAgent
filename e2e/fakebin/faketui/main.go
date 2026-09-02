@@ -98,8 +98,29 @@ func main() {
 	out("> ")
 
 	line := make([]byte, 0, 256)
+	// esc collects one escape sequence at a time. Without it an SGR mouse
+	// report - which is what a wheel is, and what tmux forwards to a program
+	// that asked for one - would be typed into the prompt one character at a
+	// time as `[<64;40;12M`.
+	esc := make([]byte, 0, 32)
 	for chunk := range input {
 		for _, b := range chunk {
+			if len(esc) > 0 {
+				esc = append(esc, b)
+				if b >= '@' && b <= '~' && len(esc) > 2 {
+					if button, ok := sgrWheel(esc); ok {
+						altWheel(button == 64)
+					}
+					esc = esc[:0]
+				} else if len(esc) > 24 {
+					esc = esc[:0]
+				}
+				continue
+			}
+			if b == 0x1b {
+				esc = append(esc, b)
+				continue
+			}
 			switch b {
 			case '\r', '\n':
 				out("\r\n")
@@ -132,6 +153,66 @@ func main() {
 	restore()
 }
 
+// The alternate screen the fake wears for /alt: a document taller than the
+// pane, and where in it the window currently sits.
+const (
+	altLines = 200
+	altRows  = 12
+)
+
+var (
+	altOn  bool
+	altTop int
+)
+
+// drawAlt paints the window over the document, with the banner the older
+// scenarios look for kept at the top of it.
+func drawAlt() {
+	if altTop < 0 {
+		altTop = 0
+	}
+	if altTop > altLines-altRows {
+		altTop = altLines - altRows
+	}
+	out("\x1b[2J\x1b[H+----------------+\r\n|  ALTERNATE     |\r\n+----------------+\r\n")
+	for i := 0; i < altRows; i++ {
+		out("alt-%d\r\n", altTop+i+1)
+	}
+}
+
+// altWheel moves that window. Up the wheel is back through the document,
+// which is the direction a finger dragged down the glass asks for.
+func altWheel(up bool) {
+	if !altOn {
+		return
+	}
+	if up {
+		altTop -= 3
+	} else {
+		altTop += 3
+	}
+	drawAlt()
+}
+
+// sgrWheel reads an SGR mouse report and answers with its button when it is a
+// wheel: 64 is up, 65 is down. Anything else - a click, a drag, a release, a
+// sequence that is not a mouse report at all - is not ours.
+func sgrWheel(esc []byte) (int, bool) {
+	text := string(esc)
+	if !strings.HasPrefix(text, "\x1b[<") || (!strings.HasSuffix(text, "M") && !strings.HasSuffix(text, "m")) {
+		return 0, false
+	}
+	fields := strings.Split(text[3:len(text)-1], ";")
+	if len(fields) != 3 {
+		return 0, false
+	}
+	button, err := strconv.Atoi(fields[0])
+	if err != nil || (button != 64 && button != 65) {
+		return 0, false
+	}
+	return button, true
+}
+
 // handle runs one line of input and reports whether the program should exit.
 func handle(line string, session *sessionState) (bool, int) {
 	line = strings.TrimSpace(line)
@@ -150,7 +231,17 @@ func handle(line string, session *sessionState) (bool, int) {
 		}
 		return false, 0
 	case line == "/alt":
-		out("\x1b[?1049h\x1b[H+----------------+\r\n|  ALTERNATE     |\r\n+----------------+\r\n")
+		// The alternate screen, with mouse tracking on and a document of its
+		// own to scroll - which is what Codex and OpenCode are. It matters
+		// that the fake tracks the mouse: tmux keeps no history for an
+		// alternate screen (verified: copy-mode plus twenty scroll-up leaves
+		// the same three lines), so the only thing a finger can move there is
+		// the program's own view, and the wheel report is the only way to ask
+		// for it.
+		altOn = true
+		altTop = altLines - altRows
+		out("\x1b[?1049h\x1b[?1000h\x1b[?1006h")
+		drawAlt()
 		return false, 0
 	case line == "/id":
 		out("session %s\r\n", session.id)

@@ -1504,3 +1504,196 @@ through a 120-line history — about what the finger travelled — dragging up
 twice returns to the live bottom, and a tap in between moves nothing while
 still landing the focus in the pane. It then turns `terminal.mouse` off through
 the dashboard's own API and drags again, to hold the swallowed case where it is.
+
+## The phone audit: fifteen defects (2026-09-02)
+
+An audit of the app on an iPhone-shaped browser found fifteen defects, four of
+them things a phone simply could not do. What follows is what changed and, where
+the change contradicts something written earlier in this file, which entry it
+supersedes.
+
+**The finger no longer scrolls xterm at all — it scrolls tmux, over the control
+channel.** This supersedes *"The terminal takes a finger"* above in its
+mechanism, and keeps every one of its measurements about the gesture itself
+(the 8px slop, the `preventDefault`, the second finger, `dispose`).
+
+The old design turned a drag into the wheel a trackpad would have sent and let
+xterm decide what a wheel meant. That reads as one path and is three, and two of
+them do not reach any history:
+
+* with a program tracking the mouse — which is **every one of Claude Code,
+  Codex and OpenCode**, all three of them on the alternate screen as this
+  product launches them — the wheel becomes an SGR mouse report and is
+  forwarded to the program, which scrolls its own conversation or nothing;
+* with tmux's mouse off it becomes arrow keys, which walks a shell's history
+  onto the prompt (this is the case the old code swallowed);
+* and on an alternate screen there is no xterm scrollback to move in any case.
+
+Measured on a Claude Code session put on the alternate screen with `/alt`: two
+full-height drags left the pane **byte-identical**. On the three session types
+this product exists for, a finger reached nothing at all.
+
+So the drag is not the browser's to interpret. Which of two histories it moves
+is decided by the **server**, because the browser cannot tell: a tmux client
+draws every pane on the alternate screen and turns mouse tracking on for all of
+them, whatever the program inside is doing, so `buffer.active.type` and
+`modes.mouseTrackingMode` say the same thing for a shell and for Codex.
+
+* **A pane on the normal buffer** — **the Shell harness, and that is the whole
+  of the list.** `term.js` sends whole lines to `session.js`, which sends a
+  `{t:"scroll", lines}` control frame, and `internal/termux/scroll.go` runs
+  `copy-mode -e -H` and `send-keys -X -N n scroll-up` on the pane. That is
+  tmux's own history — the same one a person at a desk reaches with a prefix
+  and PageUp — and it works whatever the program thinks about the mouse and
+  whatever `terminal.mouse` is set to, because none of them is consulted. Copy
+  mode is entered with `-e` so that scrolling back down to the bottom leaves it
+  by itself, and with `-H` so that tmux does not paint its own position
+  indicator (below).
+* **A pane on the alternate screen** — **all three CLIs, Claude Code
+  included.** Codex and OpenCode obviously draw a full screen; Claude Code does
+  too *as this product launches it*, because the fixed policy sets
+  `CLAUDE_CODE_NO_FLICKER=1` (`internal/harnesses/claude.go`), and with it a
+  real `claude` is `alternate_on=1` and tracking the mouse from its idle prompt
+  onward. A bare `claude` without that variable stays on the normal buffer,
+  which is exactly why the first version of this entry got it wrong and said
+  Claude Code was a copy-mode session. It is not; only Shell is.
+  **tmux has no history for an alternate screen at all**, and this is a fact
+  about tmux rather than a choice: verified on 3.6, `copy-mode` followed by
+  twenty `scroll-up` leaves `capture-pane` returning the same three lines,
+  while `capture-pane -a` still holds the normal buffer underneath — tmux's
+  scrollback belongs to the normal buffer and the alternate screen is a window
+  over it with nothing above. The only thing that can scroll such a pane is the
+  program's own view, and a program that draws a full screen tracks the mouse
+  in order to be asked. So the drag becomes the wheel it asked for, which tmux
+  forwards to it as an SGR mouse report. With nobody tracking the mouse at all
+  there is nothing to send and nothing to move, and the drag is swallowed.
+
+  **One wheel event per line, not one per batch.** A mouse report has no
+  magnitude: `ESC [ < 64 ; 40 ; 12 M` says "the wheel turned up", once, whether
+  the event that produced it carried seventeen pixels or six hundred. The first
+  version of this dispatched one `WheelEvent` per fifty-millisecond batch with
+  the summed delta, and measured against a real Claude Code that moved the
+  transcript **two or three lines for a drag the length of the screen**. The
+  batch is unrolled instead — `Math.abs(lines)` events, one per line — so the
+  distance the finger travelled is the distance the program is asked for.
+
+The server answers "which of the two" from `#{alternate_on}`, in the handshake
+and again in the reply to every scroll, and the browser re-reads it for each
+batch of lines rather than once per drag — so a program that goes to the
+alternate screen half way through a gesture is followed within one batch
+(50ms) rather than at the next one.
+
+**tmux's own position indicator is hidden.** Copy mode paints `23:13 [40/464]`
+in yellow at the top right of the pane, which is the one thing on screen this
+product does not paint white and a direct contradiction of §E.10. `copy-mode
+-H` suppresses it; `-H` arrived in tmux 3.4, so on 3.3 — the supported floor —
+the indicator is shown. That is a visible deviation on one old version and it
+is the right trade against having no reachable scrollback at all. It is not
+worked around with `mode-style`, because `mode-style` is also the selection
+colour and a white-on-white selection would be worse than a yellow number.
+
+Consequences, stated plainly:
+
+* **The swallowed drag is no longer swallowed on the normal buffer.** With
+  `terminal.mouse` off a drag now scrolls tmux's history, because the tmux
+  setting has nothing to do with a command sent over the control channel. What
+  that entry was protecting — that a drag must never *type* anything — still
+  holds absolutely, and the `touchscroll` scenario still asserts it: it drags
+  back to the bottom and asserts the pane is what it was, character for
+  character. The swallow itself survives where it is still the only right
+  answer: an alternate screen with nobody tracking the mouse.
+* **Copy mode is a place a person can be without knowing it**: the screen is
+  still, new output does not appear, and every keystroke is read as a copy-mode
+  command instead of reaching the program. Two things answer that. A **Jump to
+  live** pill over the pane, raised by a `{t:"mode"}` frame the server
+  broadcasts to every viewer (the pane is shared, so the state is too); and the
+  server itself, which leaves copy mode on the first **real** keystroke — a
+  focus report is not one — before writing it, so that nothing typed is ever
+  lost even if the pill is never noticed. The flag is held in memory on the
+  Manager rather than asked of tmux, so a keystroke costs a map read.
+* **Momentum.** A drag that ends with the finger moving keeps moving and slows
+  down: a velocity from the last 120ms of samples, decayed 0.9 a frame for
+  about half a second, cancelled by the next touch. It travels by the same
+  route the drag did, so it works on both histories. Batched to at most one
+  batch every 50ms, because a drag at 60fps on a car's cell link may not be 60
+  control frames a second.
+
+  A glide **outlives the finger**, and that is a hazard of its own: type a key
+  while one is still running and the pane leaves copy mode for the keystroke —
+  correctly — and the next glide batch puts it straight back in, so the screen
+  jumps away from what was just typed and the pill comes back. A fifteen-step
+  drag glides, so this was every drag-then-type. `touchScroll` therefore
+  returns a `cancel()` alongside its disposer, and `TermSocket.sendInput` calls
+  it before every frame it sends — which covers the terminal's own keys, the
+  key bar, a paste, a dictated line and an operator run in one place, because
+  all of them go through that one method. The "Jump to live" pill calls it too.
+  The terminal ignores the call while it is itself dispatching mouse reports,
+  so a wheel-route drag does not stop itself.
+
+* **The fake TUI gained an alternate screen worth scrolling.** `e2e/fakebin`'s
+  `/alt` used to paint a three-line box and ignore everything; it now turns
+  mouse tracking on, keeps a two-hundred-line document and moves its window on
+  an SGR wheel report — which is what the three real CLIs do, and what the
+  `touchscroll-tui` scenario has to be able to measure.
+
+**`touch-action: pan-x pinch-zoom` became `touch-action: pan-x`** on
+`.term-host`, superseding that bullet of the entry above. `pinch-zoom` in the
+list leaves the browser's own double-tap-to-zoom armed, and xterm.js reads a
+double tap as "select the word under the finger": the word was selected and
+then the page jumped. Pinch itself is untouched — the viewport meta still
+permits it, and a two-finger gesture was never ours (any touch that is not the
+only one is handed straight back to the browser).
+
+The rest of the audit, briefly:
+
+* **The sheet could not be completed with the keyboard up.** `.sheet` and
+  `.modal` were `max-height: calc(100vh - 64px)`, and on iOS `100vh` does not
+  shrink for a keyboard — so `Start session` sat below the fold on the one
+  device the sheet is used from. Both are now sized from `var(--app-h, 100dvh)`,
+  which is the visual viewport `followViewport()` publishes, and
+  `.sheet-actions` is sticky to the sheet's padding edge so the two buttons stay
+  on screen while the body scrolls under them.
+* **Half the key bar started off screen.** Seven of fourteen keys — the arrows,
+  Enter, `^C`, `^D`, `^Z`, Paste and the keyboard button — were off the right
+  edge of a 390px phone in a bar with its scrollbar hidden, with nothing to say
+  they were there. The bar now wraps. Unconditionally: a row that fits does not
+  wrap, so a desk never sees a second row, and no width has to be guessed at.
+* **The key bar's order changed with its wrap.** Two rows of seven put the
+  arrows across the fold — `← ↓ ↑` at the end of one row and `→` at the start
+  of the next — and four arrows are one control, not four. `⏎ ^C ^D` moved up
+  to finish the first row and the arrows sit together at the head of the
+  second. DESIGN.md §E.6 carries a `rev 5` note; it still described one
+  scrollable row.
+* **Tap targets.** Twenty-odd controls were sized for a mouse — 24 to 38 pixels,
+  hit on a desk by hovering first. A block at the end of `app.css` raises all of
+  them to 44 CSS pixels under `(pointer: coarse)`. It is at the end of the file
+  on purpose: several are shrunk again by a later container query written for a
+  narrow pane, and a media query carries no specificity to beat one with — only
+  order does.
+* **iOS zoomed the page on every tap into the pane.** xterm's hidden helper
+  textarea inherits the terminal's font size, and a field under 16px zooms
+  Safari the moment it takes focus. It is pinned to 16px; nothing is drawn from
+  it.
+* **A phone in landscape is 844px wide**, so the 16px input rule keyed on
+  `max-width: 620px` missed it entirely — 36 fields on `/admin` and the chat
+  field were under 16px in the one orientation somebody fills a form in. The
+  rule is now keyed on the pointer as well.
+* **Tapping the session already open left the drawer over the terminal it had
+  just asked for.** `selectSession` returned before `closeNav()`. The drawer
+  closes and the address bar is corrected before the early return, because both
+  are true of the tap whatever it selected.
+* Day headers 10.5px → 12px on a coarse pointer; `100vw`/`100vh` → `dvw`/`dvh`;
+  `-webkit-tap-highlight-color: transparent` on every control rather than only
+  on `.key`; `overscroll-behavior: none` on `html, body`, so a drag that outruns
+  a pane cannot rubber-band the app or become a pull-to-refresh.
+
+Eight of the audit's scripts became e2e scenarios: `touchscroll-tui`,
+`scrollstate`, `momentum`, `sheetkeyboard`, `keybarreach`, `taptargets`,
+`landscapetype` and `drawerselect`.
+
+Two measurements the audit made are deliberately left alone. A link inside a
+sentence — `openrouter.ai/keys` and the three beside it on the dashboard — is a
+word rather than a button, and 44 pixels of it would be a hole in the
+paragraph. And xterm's helper textarea is an invisible one-character input that
+follows the cursor: nothing aims at it, the pane around it is the target, and
+its **font** is what mattered, which is now 16px.

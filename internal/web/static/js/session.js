@@ -506,6 +506,16 @@ class TermSocket {
    * server has acknowledged the bytes, `onLost` when they were discarded.
    */
   sendInput(data, opts = {}) {
+    // Every path that types goes through here - the terminal's own keys, the
+    // key bar, a paste, a dictated line, an operator run - which makes it the
+    // one place a scroll still in flight can be called off for all of them.
+    // A glide outlives the finger by half a second, and a glide that is still
+    // running when a key lands puts the pane back into the copy mode the
+    // keystroke has just taken it out of: the screen jumps away from what was
+    // typed and the pill comes back. The terminal ignores the call while it is
+    // itself producing mouse reports, so a wheel-route drag does not stop
+    // itself.
+    if (this.beforeInput) this.beforeInput();
     const bytes = typeof data === 'string' ? encoder.encode(data) : data;
     if (!bytes.length) return;
     this.inputSeq += 1;
@@ -559,6 +569,24 @@ class TermSocket {
     if (!cols || !rows) return;
     this.size = { cols, rows };
     this.write(JSON.stringify({ t: 'resize', cols, rows }));
+  }
+
+  /**
+   * scroll moves the pane through tmux's own history.
+   *
+   * It is a control frame rather than anything xterm does, because tmux's
+   * scrollback is the only history that exists under all four harnesses: a
+   * program tracking the mouse - which is all three CLIs - is handed a wheel
+   * as a mouse report and scrolls nothing the user asked for. See term.js.
+   */
+  scroll(lines) {
+    if (!lines) return;
+    this.write(JSON.stringify({ t: 'scroll', lines }));
+  }
+
+  /** jump puts the pane back at its live bottom, out of copy mode. */
+  jump() {
+    this.write(JSON.stringify({ t: 'jump' }));
   }
 
   /** lag reports the last output byte rendered, for the Diagnostics panel. */
@@ -615,6 +643,10 @@ const state = {
   pendingAttach: null,
   live: false,
   lostAt: 0,
+  // Whether a finger on this pane moves the program's own view rather than
+  // tmux's history. The server answers it, because a tmux client draws every
+  // pane on the alternate screen and the browser cannot tell the two apart.
+  paneWheel: false,
   loading: false,
   // Whether the last attempt to read the list reached Socrates at all. A page
   // that cannot ask must not answer "no sessions": that is a fact it does not
@@ -652,6 +684,7 @@ const state = {
 
 const dom = {};
 const ids = ['sidebar', 'navScrim', 'menuBtn', 'sideCollapse', 'newSession', 'sessionScope', 'sessionList',
+  'termJump',
   'activityLive', 'sessionHarness', 'sessionTitle', 'sessionArchived', 'termSize',
   'statusBtn', 'agentBtn', 'soundBtn', 'notifyBtn', 'sessionMenu',
   'stage', 'termWrap', 'term', 'termOverlay', 'termLines', 'termNotice',
@@ -1384,6 +1417,8 @@ function detach() {
   if (state.socket) { state.socket.stop(); state.socket = null; }
   if (state.term) { state.term.dispose(); state.term = null; }
   dom.term.innerHTML = '';
+  showJump(false);
+  state.paneWheel = false;
   setClass(dom.termWrap, 'stale', false);
   state.live = false;
   state.resuming = false;
@@ -1431,6 +1466,14 @@ function attach(session) {
       showSize(cols, rows);
       if (socketRef.socket) socketRef.socket.resize(cols, rows);
     },
+    // A finger on the pane scrolls tmux's history rather than xterm's, over
+    // the control channel: it is the only history that is there under a
+    // full-screen TUI, and the only one that is the same for every viewer.
+    onScroll: (lines) => { if (socketRef.socket) socketRef.socket.scroll(lines); },
+    // Whether this pane has any tmux history to move. Only the server can
+    // tell: a tmux client draws every pane on the alternate screen and tracks
+    // the mouse for all of them, so the browser cannot read it off xterm.
+    wheelPane: () => state.paneWheel,
     fitTo: dom.termWrap,
     scrollback: state.terminal.scrollback,
     fontSize: state.terminal.font_size,
@@ -1446,6 +1489,8 @@ function attach(session) {
     onStatus: (status) => onStatus(status),
   });
   socketRef.socket = socket;
+  // Anything typed calls off a scroll that is still gliding (see sendInput).
+  socket.beforeInput = () => { if (state.term) state.term.cancelScroll(); };
   state.socket = socket;
   state.keybar = mountKeyBar(dom.keybar, state.term.term, socket);
   showKeyBar(keyBarWanted());
@@ -1491,6 +1536,21 @@ function renameRow(id, title) {
   renderList();
 }
 
+/**
+ * showJump raises the one cue that a pane is not at its live bottom.
+ *
+ * Scrolling back puts the pane into tmux's copy mode, and copy mode is a place
+ * a person can be without knowing it: the screen is still, new output does not
+ * appear, and every key goes to copy mode rather than to the program. Two
+ * things answer that. This pill, which is the cue and the way out; and the
+ * server, which leaves copy mode by itself on the first real keystroke, so
+ * that nothing typed is ever lost even if the pill is never noticed.
+ */
+function showJump(on) {
+  if (!dom.termJump) return;
+  dom.termJump.hidden = !on;
+}
+
 function showSize(cols, rows) {
   dom.termSize.hidden = false;
   dom.termSize.textContent = cols + '×' + rows;
@@ -1506,6 +1566,11 @@ function onControl(sessionId, frame) {
     case 'hello':
       if (frame.session) applySession({ ...state.current, ...frame.session });
       if (frame.size) showSize(frame.size.cols, frame.size.rows);
+      // The pane is shared, so a reload or a second device has to find out it
+      // is looking at a pane somebody scrolled back - and which of the two
+      // histories a finger on it moves.
+      state.paneWheel = !!frame.wheel;
+      showJump(!!frame.in_mode);
       // A handshake carries every running session's activity and this
       // session's run, so a reconnect and a reload both re-draw the sidebar
       // and the progress line without asking for anything.
@@ -1532,6 +1597,10 @@ function onControl(sessionId, frame) {
       break;
     case 'chat':
       if (state.assist) state.assist.chatFrame(frame);
+      break;
+    case 'mode':
+      state.paneWheel = !!frame.wheel;
+      showJump(!!frame.in_mode);
       break;
     case 'state':
       replaceSession({ ...state.current, state: frame.state });
@@ -1602,11 +1671,16 @@ function updateStale() {
 function selectSession(id) {
   const session = sessionOf(id);
   if (!session) return;
-  if (state.current && state.current.id === id && state.socket) return;
+  // The drawer closes first, and the address bar is corrected first, because
+  // both are true of the tap whatever it turns out to have selected. Tapping
+  // the session that is already open used to return before either, so the one
+  // row a thumb is most likely to hit was the one row that left the list
+  // covering the terminal it had just asked for.
   markRead(id);
   state.wanted = id;
   location.hash = '#' + id;
   closeNav();
+  if (state.current && state.current.id === id && state.socket) return;
   if (state.pendingAttach) clearTimeout(state.pendingAttach);
   state.pendingAttach = setTimeout(() => {
     state.pendingAttach = null;
@@ -1753,6 +1827,18 @@ function wire() {
     if (document.body.classList.contains('nav-open')) closeNav(); else openNav();
   });
   dom.navScrim.addEventListener('click', closeNav);
+  if (dom.termJump) {
+    dom.termJump.addEventListener('click', () => {
+      // A glide still in flight would scroll the pane straight back off the
+      // bottom the pill has just asked for.
+      if (state.term) state.term.cancelScroll();
+      if (state.socket) state.socket.jump();
+      showJump(false);
+      if (state.term) state.term.focus();
+    });
+    // A thumb on the pill must not take the focus out of the pane.
+    dom.termJump.addEventListener('mousedown', (event) => event.preventDefault());
+  }
   if (dom.sideCollapse) {
     dom.sideCollapse.addEventListener('click', () => showSidebar(!sidebarCollapsed()));
   }
