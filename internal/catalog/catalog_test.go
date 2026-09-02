@@ -182,7 +182,7 @@ func TestTheEnabledSwitchIsReadFromSettingsNotFromTheCache(t *testing.T) {
 	if snap := c.Refresh(context.Background()); !mustAgent(t, snap, "claude").Enabled {
 		t.Fatal("claude is off by default")
 	}
-	settings.Agents.Claude.Enabled = false
+	settings.Harnesses.Claude.Enabled = false
 	cached, ok := c.Cached()
 	if !ok {
 		t.Fatal("nothing cached")
@@ -341,7 +341,7 @@ func TestARefreshThatIsAbandonedStillFinishes(t *testing.T) {
 func TestPicksOverlayTheDiscovery(t *testing.T) {
 	onlyClaude(t)
 	settings := config.Default()
-	settings.Agents.Claude.Models = []config.ModelPick{
+	settings.Harnesses.Claude.Models = []config.ModelPick{
 		{ID: "haiku", Effort: config.EffortHigh},
 		{ID: "some-new-alias"},
 	}
@@ -369,7 +369,7 @@ func TestPicksOverlayTheDiscovery(t *testing.T) {
 	}
 
 	// Changing the list changes the answer without a discovery.
-	settings.Agents.Claude.Models = nil
+	settings.Harnesses.Claude.Models = nil
 	c.settings = settingsFn(settings)
 	claude = mustAgent(t, c.Get(context.Background()), "claude")
 	if len(claude.Picks) != 0 {

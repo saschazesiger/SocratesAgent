@@ -285,7 +285,7 @@ func (c *Catalog) probeAll(ctx context.Context) Snapshot {
 		if !ok {
 			continue
 		}
-		entry, known := settings.Agents.Entry(id)
+		entry, known := settings.Harnesses.Entry(id)
 		if !known {
 			// An adapter with no settings entry is one this build registered
 			// for its own tests. It is not offered.
@@ -307,7 +307,7 @@ func (c *Catalog) withSettings(snap Snapshot) Snapshot {
 			a.Models = []harness.Model{}
 		}
 		a.Picks = []harness.Model{}
-		if entry, ok := settings.Agents.Entry(a.ID); ok {
+		if entry, ok := settings.Harnesses.Entry(a.ID); ok {
 			a.Enabled = entry.Enabled
 			a.Picks = Picks(a, entry.Models)
 		}
@@ -337,7 +337,7 @@ func Picks(a Agent, picks []config.ModelPick) []harness.Model {
 }
 
 // discoverOne asks one agent where it is, what version it is and what it can run.
-func discoverOne(ctx context.Context, desc harness.Descriptor, entry config.AgentEntry) Agent {
+func discoverOne(ctx context.Context, desc harness.Descriptor, entry config.Common) Agent {
 	a := Agent{
 		ID: desc.ID, Label: desc.Label, Enabled: entry.Enabled,
 		HasEffort: desc.HasEffort, DefaultModel: desc.DefaultModel,

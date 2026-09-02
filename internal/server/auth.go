@@ -76,7 +76,7 @@ func (s *Server) authenticated(r *http.Request) bool {
 	if err != nil {
 		return false
 	}
-	return s.store.ValidSession(c.Value)
+	return s.store.ValidLogin(c.Value)
 }
 
 // auth wraps an API handler with session and CSRF checks.
@@ -98,13 +98,16 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func (s *Server) startSession(w http.ResponseWriter, r *http.Request) error {
+// startLogin hands the browser a fresh cookie. The cookie is still called
+// socrates_session, because renaming a cookie signs everybody out and the
+// table it came from is the only thing that was renamed.
+func (s *Server) startLogin(w http.ResponseWriter, r *http.Request) error {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return err
 	}
 	token := hex.EncodeToString(raw)
-	if err := s.store.CreateSession(token, sessionTTL); err != nil {
+	if err := s.store.CreateLogin(token, sessionTTL); err != nil {
 		return err
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -241,7 +244,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.startSession(w, r); err != nil {
+	if err := s.startLogin(w, r); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -288,8 +291,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.noteLogin(ip, true)
-	_ = s.store.PurgeExpiredSessions()
-	if err := s.startSession(w, r); err != nil {
+	_ = s.store.PurgeExpiredLogins()
+	if err := s.startLogin(w, r); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -304,7 +307,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if c, err := r.Cookie(sessionCookie); err == nil {
-		_ = s.store.DeleteSession(c.Value)
+		_ = s.store.DeleteLogin(c.Value)
 	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -340,11 +343,11 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := s.store.DeleteAllSessions(); err != nil && !errors.Is(err, store.ErrNotFound) {
+	if err := s.store.DeleteAllLogins(); err != nil && !errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := s.startSession(w, r); err != nil {
+	if err := s.startLogin(w, r); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

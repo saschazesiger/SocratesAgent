@@ -1,14 +1,10 @@
 package server
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/openrouter"
@@ -21,14 +17,6 @@ func orLocal(url string) string {
 		return "http://127.0.0.1:8080"
 	}
 	return url
-}
-
-func randomHex(n int) string {
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		return "0000"
-	}
-	return hex.EncodeToString(b)
 }
 
 // handlePreferences exposes the few settings the chat page needs at runtime.
@@ -67,35 +55,6 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"settings": s.Settings()})
 }
 
-var (
-	modelsMu    sync.Mutex
-	modelsCache []openrouter.Model
-	modelsAt    time.Time
-	modelsKey   string
-)
-
-func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	settings := s.Settings()
-	modelsMu.Lock()
-	fresh := time.Since(modelsAt) < 10*time.Minute && modelsKey == settings.OpenRouter.APIKey && len(modelsCache) > 0
-	cached := modelsCache
-	modelsMu.Unlock()
-	if fresh {
-		writeJSON(w, http.StatusOK, map[string]any{"models": cached})
-		return
-	}
-	client := openrouter.New(settings.OpenRouter.BaseURL, settings.OpenRouter.APIKey)
-	models, err := client.Models(r.Context())
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	modelsMu.Lock()
-	modelsCache, modelsAt, modelsKey = models, time.Now(), settings.OpenRouter.APIKey
-	modelsMu.Unlock()
-	writeJSON(w, http.StatusOK, map[string]any{"models": models})
-}
-
 type checkResult struct {
 	Name   string `json:"name"`
 	OK     bool   `json:"ok"`
@@ -127,7 +86,7 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Workspace root
-	root := settings.Agent.WorkspaceRoot
+	root := settings.Workspace.Root
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		results = append(results, checkResult{Name: "Workspace", OK: false, Detail: err.Error()})
 	} else {
@@ -139,9 +98,6 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 			results = append(results, checkResult{Name: "Workspace", OK: true, Detail: root})
 		}
 	}
-
-	results = append(results, s.agentHostCheck())
-	results = append(results, s.agentChecks(r.Context(), settings)...)
 
 	// Remote access
 	installed, version, _ := s.tunnel.Probe()
@@ -210,19 +166,6 @@ func voiceCheck(voice piper.Status) checkResult {
 	default:
 		return checkResult{Name: "Text to speech", OK: false, Detail: voice.Detail}
 	}
-}
-
-// stripControl keeps a version banner on one readable line.
-func stripControl(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\t' {
-			return r
-		}
-		if r < 32 || r == 127 {
-			return -1
-		}
-		return r
-	}, StripANSI(s))
 }
 
 // escape sequence parser states.

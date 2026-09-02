@@ -8,16 +8,12 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
-	"github.com/saschazesiger/SocratesAgent/internal/catalog"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
-	"github.com/saschazesiger/SocratesAgent/internal/engine"
 	"github.com/saschazesiger/SocratesAgent/internal/piper"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/tunnel"
@@ -29,14 +25,10 @@ var Version = "dev"
 
 const settingsKey = "settings"
 
-// Server wires storage, the harness engine and the HTTP handlers together.
+// Server wires storage, the terminal sessions and the HTTP handlers together.
 type Server struct {
 	store  *store.Store
-	bus    *engine.Bus
-	engine *engine.Engine
 	tunnel *tunnel.Manager
-	hosts  *agenthost.Manager
-	agents *catalog.Catalog
 	voice  *piper.Engine
 
 	localURL string
@@ -60,7 +52,6 @@ type attempt struct {
 func New(st *store.Store, dataDir string) (*Server, error) {
 	s := &Server{
 		store:     st,
-		bus:       engine.NewBus(),
 		loginFail: map[string]*attempt{},
 	}
 
@@ -74,19 +65,6 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 		return nil, err
 	}
 
-	// Agent sessions run in their own processes, started by re-executing this
-	// binary, so that a turn in flight survives a restart of the web server.
-	self, err := os.Executable()
-	if err != nil {
-		return nil, fmt.Errorf("could not locate the Socrates binary: %w", err)
-	}
-	s.hosts, err = agenthost.NewManager(filepath.Join(dataDir, "agents"), self)
-	if err != nil {
-		return nil, err
-	}
-
-	s.agents = catalog.New(st, s.Settings)
-	s.engine = engine.New(st, s.bus, s.Settings, s.hosts)
 	s.tunnel = tunnel.New(s.Settings, s.LocalURL, filepath.Join(dataDir, "bin"))
 	s.voice = piper.New(filepath.Join(dataDir, "voice"))
 	s.installVoice()
@@ -185,23 +163,6 @@ func (s *Server) StartTunnelIfEnabled() {
 	log.Print("cloudflare tunnel: starting")
 }
 
-// ResumeAgents reconnects to the agent sessions that kept running while
-// Socrates was restarted and takes their turns back over. It returns the run
-// ids it claimed, so the caller can keep RecoverRuns off them.
-func (s *Server) ResumeAgents() []string {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	s.hosts.Restore(ctx)
-	s.hosts.Prune()
-	return s.engine.Adopt(ctx)
-}
-
-// DetachAgents lets go of the running sessions without stopping them, so a
-// restart does not interrupt work in progress. The engine is told first: a
-// subscription that ends because we dropped the socket is not a turn that
-// died, and mistaking one for the other orphans the turn.
-func (s *Server) DetachAgents() { s.engine.Detach() }
-
 // StopTunnel shuts the tunnel down, used on graceful shutdown.
 func (s *Server) StopTunnel() { s.tunnel.Stop() }
 
@@ -228,28 +189,11 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/login", s.handleLogin)
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
 
-	// Chats
-	mux.HandleFunc("GET /api/chats", s.auth(s.handleListChats))
-	mux.HandleFunc("POST /api/chats", s.auth(s.handleCreateChat))
-	mux.HandleFunc("GET /api/chats/{id}", s.auth(s.handleGetChat))
-	mux.HandleFunc("PATCH /api/chats/{id}", s.auth(s.handleUpdateChat))
-	mux.HandleFunc("DELETE /api/chats/{id}", s.auth(s.handleDeleteChat))
-	mux.HandleFunc("POST /api/chats/{id}/archive", s.auth(s.handleArchiveChat))
-	mux.HandleFunc("POST /api/chats/{id}/unarchive", s.auth(s.handleUnarchiveChat))
-	mux.HandleFunc("POST /api/chats/{id}/messages", s.auth(s.handleSendMessage))
-	mux.HandleFunc("POST /api/chats/{id}/stop", s.auth(s.handleStopRun))
-	mux.HandleFunc("GET /api/chats/{id}/events", s.auth(s.handleEvents))
-
-	// Agents: what is installed, and which models each one offers.
-	mux.HandleFunc("GET /api/agents", s.auth(s.handleAgents))
-	mux.HandleFunc("POST /api/agents/refresh", s.auth(s.handleAgentsRefresh))
-
 	// Admin
 	mux.HandleFunc("GET /api/settings", s.auth(s.handleGetSettings))
 	mux.HandleFunc("PUT /api/settings", s.auth(s.handlePutSettings))
 	mux.HandleFunc("POST /api/settings/password", s.auth(s.handleChangePassword))
 	mux.HandleFunc("GET /api/preferences", s.auth(s.handlePreferences))
-	mux.HandleFunc("GET /api/models", s.auth(s.handleModels))
 	mux.HandleFunc("POST /api/diagnostics", s.auth(s.handleDiagnostics))
 
 	// Cloudflare tunnel
