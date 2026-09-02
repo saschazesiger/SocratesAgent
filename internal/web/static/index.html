@@ -58,9 +58,9 @@
            Enter or leaving it commits. -->
       <div class="title" id="sessionTitle">Socrates</div>
       <span class="tag" id="sessionArchived" hidden>Archived</span>
-      <!-- The size the pane is actually wearing. It is a number nobody needs
-           until a second viewer disagrees about it, so the detail is behind
-           the "i" the script puts beside it. -->
+      <!-- The size the pane is actually wearing. It is two numbers and a
+           cross, quiet enough to sit beside the name, and it is hidden
+           altogether on a narrow screen. -->
       <span class="term-size" id="termSize" hidden></span>
       <button class="icon-btn" id="sessionMenu" title="Session actions" hidden aria-haspopup="true" aria-expanded="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>
@@ -79,8 +79,9 @@
       <div class="term-empty" id="termEmpty" hidden></div>
     </div>
 
-    <!-- The mobile key bar and the line input are WP7's. The elements are
-         here so that the layout they land in is the one that shipped. -->
+    <!-- The keys a phone keyboard does not have, and the field a whole line is
+         composed in before it is sent. keybar.js fills both in and decides
+         whether the key bar is wanted on this device. -->
     <div class="keybar" id="keybar" hidden></div>
     <form class="composer" id="composer" hidden>
       <input id="lineInput" class="input" type="text"

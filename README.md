@@ -132,6 +132,20 @@ writing a chat's title. The coding agents never go through it — each one talks
 its own provider with its own credentials, the same ones it uses in your
 terminal.
 
+### The app shell works with no network
+
+A service worker precaches everything the page is made of, so Socrates opens on
+a phone that has no signal: the shell, the terminal engine and the styles come
+from the cache, the connection bar says the truth about the network, and nothing
+old is presented as current. What you type while the connection is down is held
+and delivered, exactly once, when it comes back.
+
+Measured on this build, the precached shell is **1054 KB uncompressed and about
+334 KB over the wire** across 20 files — of which the vendored terminal
+(xterm.js and its five addons plus its stylesheet) is 788 KB uncompressed and
+206 KB compressed. Adding a file to `SHELL` in `internal/web/static/sw.js` adds
+to that number, and it is recorded here so that an addition is noticed.
+
 ## Requirements
 
 - **Go 1.25+** — only to build the binary.

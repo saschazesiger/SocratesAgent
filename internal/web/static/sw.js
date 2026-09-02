@@ -47,6 +47,7 @@ const SHELL = [
   '/static/js/api.js',
   '/static/js/session.js',
   '/static/js/term.js',
+  '/static/js/keybar.js',
   '/static/js/harnesses.js',
   '/static/js/logos.js',
   '/static/js/combobox.js',

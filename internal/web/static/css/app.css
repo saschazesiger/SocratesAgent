@@ -248,7 +248,10 @@ a { color: inherit; }
   display: grid;
   /* Two tracks: the chat list and the conversation. */
   grid-template-columns: 264px minmax(0, 1fr);
-  height: 100%;
+  /* --app-h is the visual viewport, which is the only height a phone with its
+     keyboard up tells the truth about; keybar.js keeps it current and it is
+     unset everywhere else. */
+  height: var(--app-h, 100%);
   overflow: hidden;
 }
 
@@ -334,14 +337,6 @@ a { color: inherit; }
   overflow-y: auto;
   padding: 4px 8px 12px;
   scrollbar-width: thin;
-}
-.chat-list .group-label {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--text-faint);
-  padding: 14px 8px 6px;
-  letter-spacing: .02em;
-  text-transform: uppercase;
 }
 .chat-item {
   display: flex;
@@ -1125,8 +1120,9 @@ a { color: inherit; }
   animation: spin .9s linear infinite;
 }
 
-/* The line input and the key bar are WP7's; this is the shelf they land on, so
-   that adding them does not move the terminal. */
+/* The line composer. A whole line is typed here and sent in one piece, which
+   is what stops a phone's autocorrect from rewriting characters a terminal has
+   already been given one at a time. */
 .composer {
   flex: none;
   display: flex;
@@ -1136,6 +1132,23 @@ a { color: inherit; }
   border-top: 1px solid var(--line);
 }
 .composer .input { flex: 1; min-width: 0; }
+/* The microphone is a toggle: while it is recording it says so, and the clock
+   beside it is the only moving thing on the shelf. */
+.composer .icon-btn.rec {
+  color: var(--red);
+  background: var(--bg-hover);
+  animation: pulse-rec 1.6s var(--ease) infinite;
+}
+.rec-time {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-soft);
+}
+
+/* The keys a phone keyboard does not have. One row, scrolled sideways with a
+   thumb, on white like everything else. */
 .keybar {
   flex: none;
   display: flex;
@@ -1144,7 +1157,31 @@ a { color: inherit; }
   overflow-x: auto;
   border-top: 1px solid var(--line);
   scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
 }
+.keybar::-webkit-scrollbar { display: none; }
+.key {
+  flex: none;
+  min-width: 42px;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--text-soft);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background .12s var(--ease), color .12s var(--ease), transform .12s var(--ease);
+}
+.key:hover { background: var(--bg-hover); color: var(--text); }
+.key:active { transform: scale(.94); }
+/* An armed modifier is filled, and a locked one keeps a ring, because "held
+   for the next key" and "held until I say otherwise" are different promises. */
+.key.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.key.lock { box-shadow: 0 0 0 2px var(--bg), 0 0 0 3px var(--accent); }
 
 /* ------------------------------------------------------- the session list */
 

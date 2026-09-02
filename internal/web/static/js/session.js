@@ -11,9 +11,9 @@
 //   * The overlays and notices: a pane that ended, a session that came back
 //     after a restart, a size somebody else chose.
 //
-// The mobile key bar, the line input and dictation are WP7's; the elements
-// they land in are already in the page and `#composer` stays hidden until it
-// is theirs.
+// The key bar, the line input and dictation live in keybar.js and are mounted
+// here, because they send through the same numbered input path everything else
+// does and there is exactly one of it per session.
 
 import {
   api, el, toast, infoTip, confirmDialog, errorMessage, isOffline,
@@ -23,6 +23,9 @@ import { connectionSource } from './net.js';
 import { agentMark } from './logos.js';
 import * as harnesses from './harnesses.js';
 import { createTerm } from './term.js';
+import {
+  mountKeyBar, mountComposer, keyBarWanted, setKeyBarWanted, followViewport,
+} from './keybar.js';
 
 /* ------------------------------------------------------------- transport */
 
@@ -114,7 +117,15 @@ class TermSocket {
     this.stopped = false;
     if (cols && rows) this.size = { cols, rows };
     if (!this.unwake) {
-      this.unwake = onWake(() => { if (!this.stopped && !this.isOpen()) this.reconnect(0); });
+      // The radio coming back, or the screen being looked at, is a better
+      // reason to try than any timer - and it starts the backoff again from
+      // the beginning, because what failed was the network being gone rather
+      // than this server refusing.
+      this.unwake = onWake(() => {
+        if (this.stopped || this.isOpen()) return;
+        this.attempt = 0;
+        this.reconnect(0);
+      });
     }
     this.open();
   }
@@ -261,10 +272,18 @@ class TermSocket {
 
     if (fresh && this.held.length) {
       // The server has no memory of this viewer, so it cannot tell a resend
-      // from new input. Nothing is duplicated, and the person is told.
+      // from new input. Nothing is duplicated, and the person is told: loose
+      // keystrokes are counted, and a composed line goes back into the field
+      // it was written in, unsent.
       const lost = this.held;
       this.held = [];
-      this.onControl({ t: 'input_lost', frames: lost });
+      const lines = [];
+      let keystrokes = 0;
+      for (const held of lost) {
+        if (held.text !== undefined) lines.push(held.text); else keystrokes += 1;
+        if (held.onLost) held.onLost();
+      }
+      this.onControl({ t: 'input_lost', keystrokes, lines });
     } else {
       // Renumbering is safe because the content is what matters: the numbers
       // exist only for dedupe, and hello carries the server's current
@@ -283,7 +302,12 @@ class TermSocket {
   }
 
   acked(seq) {
-    this.held = this.held.filter((f) => f.seq > seq);
+    const kept = [];
+    for (const held of this.held) {
+      if (held.seq > seq) { kept.push(held); continue; }
+      if (held.onDelivered) held.onDelivered();
+    }
+    this.held = kept;
   }
 
   startTimers() {
@@ -320,12 +344,23 @@ class TermSocket {
     try { this.ws.send(payload); return true; } catch { return false; }
   }
 
-  /** sendInput queues one piece of input and sends it if there is a socket. */
-  sendInput(data) {
+  /**
+   * sendInput queues one piece of input and sends it if there is a socket.
+   *
+   * `opts.text` marks the frame as a composed line rather than a keystroke,
+   * which is what decides its fate when the server turns out to have
+   * forgotten this viewer: keystrokes are counted and dropped, a line is
+   * handed back to the person who wrote it. `onDelivered` fires when the
+   * server has acknowledged the bytes, `onLost` when they were discarded.
+   */
+  sendInput(data, opts = {}) {
     const bytes = typeof data === 'string' ? encoder.encode(data) : data;
     if (!bytes.length) return;
     this.inputSeq += 1;
-    const entry = { seq: this.inputSeq, bytes, frame: inputFrame(this.inputSeq, bytes) };
+    const entry = {
+      seq: this.inputSeq, bytes, frame: inputFrame(this.inputSeq, bytes),
+      text: opts.text, onDelivered: opts.onDelivered, onLost: opts.onLost,
+    };
     this.held.push(entry);
     this.write(entry.frame);
   }
@@ -363,12 +398,21 @@ function writeSeq(bytes, at, value) {
 
 /* ------------------------------------------------------------- the page */
 
+// How long a tap waits to see whether it was the last one. Long enough to
+// swallow a run down the list, short enough that a single tap is not felt.
+const ATTACH_DEBOUNCE = 120;
+
 const state = {
   sessions: [],
   scope: 'active',
   current: null,      // the session row being shown
   socket: null,
   term: null,
+  keybar: null,
+  composer: null,
+  // The attach a rapid run of taps down the list has scheduled, so that the
+  // last session tapped is the only one a socket is opened for.
+  pendingAttach: null,
   live: false,
   lostAt: 0,
   loading: false,
@@ -384,7 +428,8 @@ const state = {
 const dom = {};
 const ids = ['sidebar', 'navScrim', 'menuBtn', 'newSession', 'sessionScope', 'sessionList',
   'sessionHarness', 'sessionTitle', 'sessionArchived', 'termSize', 'sessionMenu',
-  'termWrap', 'term', 'termOverlay', 'termNotice', 'termEmpty', 'composer', 'logout'];
+  'termWrap', 'term', 'termOverlay', 'termNotice', 'termEmpty', 'keybar', 'composer',
+  'lineInput', 'micBtn', 'recTime', 'logout'];
 for (const id of ids) dom[id] = document.getElementById(id);
 
 // The state dot is the only colour in a row, and each state has exactly one.
@@ -609,6 +654,11 @@ function openRowMenu(anchor, id) {
   closeMenu();
   const menu = el('div', { class: 'menu', role: 'menu' },
     item('Rename', () => renameSession(session)),
+    item(dom.keybar.hidden ? 'Show key bar' : 'Hide key bar', () => {
+      const on = dom.keybar.hidden;
+      setKeyBarWanted(on);
+      showKeyBar(on);
+    }),
     item(session.archived ? 'Unarchive' : 'Archive', () => archiveSession(session, !session.archived)),
     item('Download scrollback', () => downloadJournal(session)),
     item('Delete', () => deleteSession(session), 'danger'));
@@ -635,6 +685,8 @@ function closeMenu() {
 
 function showEmpty() {
   state.current = null;
+  dom.keybar.hidden = true;
+  dom.composer.hidden = true;
   dom.termEmpty.hidden = false;
   dom.termEmpty.innerHTML = '';
   dom.termEmpty.append(
@@ -752,6 +804,10 @@ async function restart(session) {
 }
 
 function detach() {
+  if (state.composer) { state.composer.dispose(); state.composer = null; }
+  if (state.keybar) { state.keybar.dispose(); state.keybar = null; }
+  dom.keybar.hidden = true;
+  dom.composer.hidden = true;
   if (state.socket) { state.socket.stop(); state.socket = null; }
   if (state.term) { state.term.dispose(); state.term = null; }
   dom.term.innerHTML = '';
@@ -772,7 +828,13 @@ function attach(session) {
 
   const socketRef = { socket: null };
   state.term = createTerm(dom.term, {
-    onData: (data) => { if (socketRef.socket) socketRef.socket.sendInput(data); },
+    // Everything typed on the device's own keyboard passes the key bar on its
+    // way out, because a sticky Ctrl has to reach the next ordinary key -
+    // which is the only way a phone can send Ctrl-C at all.
+    onData: (data) => {
+      if (!socketRef.socket) return;
+      socketRef.socket.sendInput(state.keybar ? state.keybar.apply(data) : data);
+    },
     onBinary: (data) => {
       if (!socketRef.socket) return;
       const bytes = new Uint8Array(data.length);
@@ -799,9 +861,31 @@ function attach(session) {
   });
   socketRef.socket = socket;
   state.socket = socket;
+  state.keybar = mountKeyBar(dom.keybar, state.term.term, socket);
+  state.composer = mountComposer({
+    form: dom.composer,
+    input: dom.lineInput,
+    mic: dom.micBtn,
+    recTime: dom.recTime,
+    sessionId: session.id,
+    socket,
+    term: state.term.term,
+  });
+  dom.composer.hidden = false;
+  dom.micBtn.hidden = false;
+  showKeyBar(keyBarWanted());
+
   const size = state.term.size();
   socket.start(size.cols, size.rows);
   state.term.focus();
+}
+
+// The key bar is what a phone is missing rather than a preference, so it comes
+// up on its own where the keys are not there - and the session menu can say
+// otherwise on any device.
+function showKeyBar(on) {
+  dom.keybar.hidden = !on;
+  if (state.term) state.term.refit();
 }
 
 function showSize(cols, rows) {
@@ -848,8 +932,14 @@ function onControl(sessionId, frame) {
       }
       break;
     case 'input_lost':
-      toast(frame.frames.length + ' keystroke' + (frame.frames.length === 1 ? '' : 's')
-        + ' may not have been delivered.', 'error');
+      if (frame.keystrokes) {
+        toast(frame.keystrokes + ' keystroke' + (frame.keystrokes === 1 ? '' : 's')
+          + ' may not have been delivered.', 'error');
+      }
+      if (frame.lines && frame.lines.length) {
+        if (state.composer) state.composer.restore(frame.lines);
+        toast('That line was not delivered — it is back in the field.', 'error');
+      }
       break;
     case 'error':
       toast(frame.message, 'error');
@@ -882,18 +972,31 @@ function updateStale() {
 
 /* --------------------------------------------------------------- routing */
 
+// A run of taps down the list is one decision, not six. Opening a socket per
+// tap leaves the last one queued behind five handshakes it no longer wants, so
+// the attach waits for the tapping to stop; the row highlights immediately,
+// which is what the tap was asking for.
 function selectSession(id) {
   const session = sessionOf(id);
   if (!session) return;
   if (state.current && state.current.id === id && state.socket) return;
   location.hash = '#' + id;
   closeNav();
-  attach(session);
+  if (state.pendingAttach) clearTimeout(state.pendingAttach);
+  state.pendingAttach = setTimeout(() => {
+    state.pendingAttach = null;
+    const fresh = sessionOf(id);
+    if (fresh) attach(fresh);
+  }, ATTACH_DEBOUNCE);
 }
 
 async function newSession() {
   const pick = await harnesses.openNewSessionSheet();
   if (!pick) return;
+  // On a phone the drawer is what "New session" was tapped in, and the thing
+  // being started is behind it. Leaving it open puts a list over the terminal
+  // that was just asked for.
+  closeNav();
   const size = state.term ? state.term.size() : { cols: 0, rows: 0 };
   try {
     const data = await api('/api/sessions', {
@@ -971,6 +1074,7 @@ function wire() {
 
 async function boot() {
   wire();
+  followViewport();
   state.loading = true;
   renderList();
   harnesses.load().catch(() => { /* the sheet says so when it is opened */ });

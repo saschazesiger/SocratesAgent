@@ -593,3 +593,78 @@ counter reaches in no lifetime.
 (`sessionView`, WP4), so the browser has one shape for a session; and the resume `notice` reads
 `Manager.ResumeNoteOf` rather than guessing from the row, so the banner and the session list
 cannot disagree.
+
+## WP7 — Mobile, offline and resilience
+
+**WP7 / §E.6 — `keybar.js` exports three things, not one.** §E.6 names
+`mountKeyBar(host, term, socket)`, and that function exists with that
+signature. The line input and the microphone it describes in the same section
+are a second control with its own lifetime, so they are `mountComposer({form,
+input, mic, recTime, sessionId, socket, term})`; and the visual-viewport
+handling §E asks for is `followViewport()`, mounted once for the page rather
+than once per session. `keyBarWanted()`/`setKeyBarWanted()` carry the "coarse
+pointer or under 900px, and toggleable from the session menu" rule so that
+`session.js` does not have to know it.
+
+**WP7 / §D.6 — the client's `input_lost` frame counts keystrokes and carries
+lines, instead of handing back raw frames.** §D.6 wants two different things
+done with what a `viewer_fresh` hello discards: keystrokes are counted into a
+toast, a composed line goes back into `#lineInput`. `sendInput` therefore takes
+an optional `{text, onDelivered, onLost}`, and the local `input_lost` control
+frame is `{keystrokes, lines}`. Nothing on the wire changed.
+
+**WP7 / §E.6 — the draft in localStorage is `{draft, pending}`, not a bare
+string.** §E.6 says the field's value is persisted on every input event and
+kept "until it is acked". Those are two different pieces of text once a line
+has been sent and not yet acknowledged, so the key holds both: `draft` is what
+is in the field, `pending` is what has been sent and not acknowledged. Both
+come back into the field on a reload, which is the promise the section makes.
+
+**WP7 / §H.3, §H.2 — `mockOpenRouter` cannot serve the dictation scenario, so
+`openRouterStub` was added beside it.** §H.3 says `dictation` runs "with
+`mockOpenRouter`". A Playwright route only sees the browser's own requests, and
+the transcription is not one: the browser posts the recording to
+`/api/voice/transcribe` and the **server** calls the gateway. The scenario
+therefore starts a small HTTP server, points `openrouter.base_url` at it - the
+field exists for exactly this, as `config.go` says - and asserts on the upload
+the server actually made. `mockOpenRouter` is left in place for a scenario that
+needs the browser side. `start()` also gained `args` and `permissions` so that
+Chromium can be given its own fake microphone; nothing else in the harness
+changed.
+
+**WP7 / §E.10, WP6 review F2 — dim (SGR 2) text is a known limitation of the
+white palette.** xterm.js applies SGR 2 as an opacity blend *after*
+`minimumContrastRatio` has re-derived the colour, so dim white lands at 2.61:1
+on the white page while normal intensity is correctly lifted above 4.5:1. There
+is no xterm option that reaches the dim path, and re-deriving it would mean
+patching the vendored bundle. Recorded rather than fixed: the load-bearing
+claim - that ordinary output is legible - holds and is measured by
+`createshell`.
+
+**WP7 / WP6 review F3, F4, F5 — the three minors this package inherited.** The
+`index.html` comment that claimed `#termSize` hid its detail behind an
+`infoTip` now describes what the code does (the size is two numbers, hidden
+under 720px); `selectSession` debounces by 120 ms so that a run of taps down
+the list opens one socket rather than six; and the unused `.chat-list
+.group-label` rule is gone.
+
+**WP7 / §E.2 — the drawer closes when a session is started.** Not a deviation
+so much as a defect the key bar scenario found: on a phone "New session" is
+tapped inside the drawer, and the drawer stayed open over the terminal the tap
+had just asked for. `newSession()` now closes it, exactly as `selectSession()`
+does.
+
+**WP7 / §E.5 — coming back online starts the backoff again.** Every retry
+attempted while `navigator.onLine` is false increments the attempt counter
+without opening a socket, so a long tunnel could leave the first attempt after
+the signal returns waiting up to fifteen seconds. The wake handler now resets
+the counter before reconnecting: what failed was the network being gone, not
+this server refusing.
+
+**WP7 / §E.9, §H.3 — the offline app shell is asserted inside `offlineonce`
+rather than in a scenario of its own.** §H.3's table has no scenario for the
+service worker, and the WP7 brief asks for one. `offlineonce` is already the
+scenario with the network switched off, so it ends by listing the precached
+entries (22, `keybar.js` among them) and reloading the page with no network at
+all: the shell opens, the terminal engine is there, and the connection bar is
+honest.

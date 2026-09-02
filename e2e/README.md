@@ -110,12 +110,27 @@ scenario. Deleting `e2e/out/` is always safe.
 | `sessionlist` | rename, archive, unarchive and delete — and the working directory survives the delete |
 | `exitoverlay` | `/exit 7` raises the overlay with its status behind the "i", and **Restart** brings the session back |
 | `webglrenders` | the shipped renderer paints the terminal |
+| `keybar` | at 390×844 the key bar sends the right bytes, a sticky `Ctrl` turns the next letter into a control code, and the line input sends a whole line with one `\r` |
+| `dictation` | the microphone records, the server transcribes through a stubbed gateway, and the words land in `#lineInput` — unsent |
+| `offlineonce` | a whole command typed with the network off arrives **exactly once** when it comes back, the lost connection is visible while it is gone, and the app shell still opens offline |
+| `sigtermreattach` | the server is killed mid-session and restarted; the pane still holds what was typed and the session is running |
+| `takeover` | a second tab with the same viewer id closes the first socket with 1012 and drives the session |
+| `adminoptions` | every harness option round-trips and reaches the command line |
+| `tmuxinstaller` | the engine card, and an install that streams and survives a reload |
 | `livesession` | one real session against the real Claude Code CLI (gated) |
 
-Scenarios 5–10 and 11–22 of the specification's table — the key bar, dictation,
-the offline and takeover paths, the admin options, the per-CLI creates, the
-multi-viewer and recovery cases — arrive with the work packages that build what
-they measure.
+Scenarios 13–22 of the specification's table — the per-CLI creates, the
+multi-viewer and recovery cases, the theme and design measurements — arrive with
+the work packages that build what they measure.
+
+## Dictation needs a microphone and a gateway
+
+`dictation` asks Chromium for its own fake microphone
+(`--use-fake-device-for-media-stream`) and points `openrouter.base_url` at a
+small HTTP stub the scenario starts. It has to be a real server rather than a
+Playwright route: the browser posts the recording to `/api/voice/transcribe`
+and the **server** is what calls the gateway, which a route in the page cannot
+see.
 
 ## Screenshots for the README
 

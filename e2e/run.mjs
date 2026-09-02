@@ -10,7 +10,7 @@
 
 import {
   start, setup, shot, ok, scenario, skipScenario, finish, ensureNav, wait,
-  readFakeLog, PASSWORD, LIVE,
+  readFakeLog, openRouterStub, PASSWORD, LIVE,
 } from './harness.mjs';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -586,6 +586,7 @@ async function livesession() {
   } finally { await s.stop(); }
 }
 
+
 /* ------------------------------------------------------- 10. adminoptions */
 
 // One option in every group of every harness, plus a preset directory: set it
@@ -831,6 +832,430 @@ async function tmuxinstaller() {
   } finally { await s.stop(); }
 }
 
+
+/* ------------------------------------------------------------ 12. keybar */
+
+// The keys a phone keyboard does not have, measured on the bytes that leave
+// the browser rather than on what the page looks like. `sentBytes` wraps
+// WebSocket.send before anything loads, so every input frame this suite
+// asserts on is the frame the server actually received.
+async function recordInput(page) {
+  await page.addInitScript(() => {
+    window.__sent = [];
+    const send = WebSocket.prototype.send;
+    WebSocket.prototype.send = function (data) {
+      if (data && data.byteLength !== undefined && typeof data !== 'string') {
+        const bytes = new Uint8Array(data.buffer ? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) : data);
+        // 0x02 is an input frame: kind, an eight byte sequence number, bytes.
+        if (bytes[0] === 2) {
+          window.__sent.push([...bytes.subarray(9)].map((b) => b.toString(16).padStart(2, '0')).join(''));
+        }
+      }
+      return send.call(this, data);
+    };
+  });
+}
+
+const sentBytes = (page) => page.evaluate(() => window.__sent.slice());
+
+async function keybar() {
+  const s = await start({ viewport: { width: 390, height: 844 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await recordInput(s.page);
+    await open(s);
+    await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+    await s.page.waitForSelector('#keybar:not([hidden])', { timeout: 10000 });
+
+    const keys = await s.page.$$eval('#keybar .key', (nodes) => nodes.map((n) => n.dataset.key));
+    ok(keys.join(',') === 'Escape,Tab,Control,Alt,Left,Down,Up,Right,Enter,Ctrl-C,Ctrl-D,Ctrl-Z,Paste,Keyboard',
+      'the key bar carries every key of §E.6, in order', keys.join(','));
+    const composer = await s.page.evaluate(() => ({
+      composer: !document.getElementById('composer').hidden,
+      mic: !document.getElementById('micBtn').hidden,
+      keybarTop: document.getElementById('keybar').getBoundingClientRect().top,
+      wrapBottom: document.getElementById('termWrap').getBoundingClientRect().bottom,
+    }));
+    ok(composer.composer && composer.mic, 'the line composer and its microphone are on screen at 390×844',
+      JSON.stringify(composer));
+    ok(composer.keybarTop >= composer.wrapBottom - 1, 'the key bar sits under the terminal, not over it',
+      Math.round(composer.keybarTop) + ' vs ' + Math.round(composer.wrapBottom));
+
+    // One key at a time, and the assertion is the byte. What a key adds is
+    // compared against the frames sent since it was tapped rather than
+    // against the last one, because the terminal answers tmux's questions -
+    // a window size report, a device attribute - on the same path.
+    const press = async (name) => {
+      const before = (await sentBytes(s.page)).length;
+      await s.page.click('#keybar .key[data-key="' + name + '"]');
+      await wait(150);
+      return (await sentBytes(s.page)).slice(before);
+    };
+    const sends = async (name, hex, what) => {
+      const added = await press(name);
+      ok(added.includes(hex), what, added.join(',') || 'nothing');
+    };
+    await sends('Escape', '1b', 'Esc sends 0x1b');
+    await sends('Up', '1b5b41', 'the up arrow sends ESC [ A');
+    await sends('Left', '1b5b44', 'the left arrow sends ESC [ D');
+    await sends('Ctrl-C', '03', '^C sends 0x03');
+    await sends('Tab', '09', 'Tab sends 0x09');
+
+    // The sticky modifier: arm it, then type an ordinary letter on the
+    // device's own keyboard. This is the only way a phone can send Ctrl-C to
+    // a program at all, so it is the one that matters most.
+    await s.page.click('#term .xterm-screen');
+    await s.page.click('#keybar .key[data-key="Control"]');
+    const armed = await s.page.$eval('#keybar .key[data-key="Control"]', (n) => n.className);
+    ok(/\bon\b/.test(armed) && !/\block\b/.test(armed), 'one tap arms Ctrl', armed);
+    const beforeCtrl = (await sentBytes(s.page)).length;
+    await s.page.keyboard.type('c');
+    await wait(200);
+    const afterCtrl = (await sentBytes(s.page)).slice(beforeCtrl);
+    ok(afterCtrl.includes('03'), 'the next letter typed is sent as Ctrl-C', afterCtrl.join(',') || 'nothing');
+    const disarmed = await s.page.$eval('#keybar .key[data-key="Control"]', (n) => n.className);
+    ok(!/\bon\b/.test(disarmed), 'and the modifier disarmed itself', disarmed);
+
+    // A second tap locks it, and a locked modifier keeps transforming.
+    await s.page.click('#keybar .key[data-key="Control"]');
+    await s.page.click('#keybar .key[data-key="Control"]');
+    const locked = await s.page.$eval('#keybar .key[data-key="Control"]', (n) => n.className);
+    ok(/\block\b/.test(locked), 'a second tap locks Ctrl', locked);
+    const beforeLock = (await sentBytes(s.page)).length;
+    await s.page.keyboard.type('ab');
+    await wait(200);
+    const two = (await sentBytes(s.page)).slice(beforeLock).filter((hex) => hex.length === 2);
+    ok(two.join(',') === '01,02', 'a locked Ctrl transforms every key after it', two.join(',') || 'nothing');
+    await s.page.click('#keybar .key[data-key="Control"]');
+    ok(!/\b(on|lock)\b/.test(await s.page.$eval('#keybar .key[data-key="Control"]', (n) => n.className)),
+      'a third tap puts it away', 'off');
+
+    // The line input: a whole line and exactly one carriage return, which is
+    // the point of it - a phone that autocorrects a line it has already sent
+    // one character at a time cannot be undone.
+    const marker = 'line-' + Math.random().toString(36).slice(2, 8);
+    const before = (await sentBytes(s.page)).length;
+    await s.page.fill('#lineInput', 'echo ' + marker);
+    await s.page.click('#sendLine');
+    await wait(300);
+    const after = (await sentBytes(s.page)).slice(before);
+    const decoded = after.map((hex) => hex.match(/../g).map((b) => String.fromCharCode(parseInt(b, 16))).join(''));
+    // Leaving the terminal for the field makes xterm report the focus change,
+    // which is a frame of its own and nothing to do with the line.
+    const lines = decoded.filter((d) => d.includes(marker));
+    ok(lines.length === 1 && lines[0] === 'echo ' + marker + '\r',
+      'the line input sends the whole line and one carriage return in one frame',
+      JSON.stringify(decoded));
+    ok(await awaitScreen(s.page, marker), 'and the shell ran it', oneLine(await screen(s.page)));
+    ok(await s.page.$eval('#lineInput', (n) => n.value) === '', 'the field is empty again', 'empty');
+
+    // The draft survives a reload, because a composed line is worth keeping
+    // and half a keystroke is not.
+    await s.page.fill('#lineInput', 'half a thought');
+    await s.page.dispatchEvent('#lineInput', 'input');
+    await wait(150);
+    await s.page.reload({ waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#lineInput', { timeout: 15000 });
+    await s.page.waitForFunction(() => document.getElementById('lineInput').value.length > 0,
+      null, { timeout: 10000 }).catch(() => {});
+    ok(await s.page.$eval('#lineInput', (n) => n.value) === 'half a thought',
+      'an unsent line is still in the field after a reload',
+      await s.page.$eval('#lineInput', (n) => n.value));
+
+    await shot(s.page, 'keybar');
+    ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
+      unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+/* --------------------------------------------------------- 13. dictation */
+
+// The microphone, end to end: Chromium's fake device records, the browser
+// posts the WAV to the server, the server asks the gateway - a stub, so this
+// costs nothing and needs no key - and the words land in the line input,
+// unsent. The last part is the requirement: dictation writes a draft, it does
+// not type into a shell.
+async function dictation() {
+  const stub = await openRouterStub({ text: 'list the files' });
+  const s = await start({
+    viewport: { width: 390, height: 844 },
+    permissions: ['microphone'],
+    args: [
+      '--use-fake-ui-for-media-stream',
+      '--use-fake-device-for-media-stream',
+      '--autoplay-policy=no-user-gesture-required',
+    ],
+  });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    // base_url exists so the app can be pointed at a mock; this is the mock.
+    const saved = await s.context.request.put(s.url + '/api/settings', {
+      data: { settings: { openrouter: { api_key: 'e2e-key', base_url: stub.url } } },
+    });
+    ok(saved.ok(), 'the gateway is pointed at the stub', saved.status() + ' ' + stub.url);
+
+    await recordInput(s.page);
+    await open(s);
+    await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+    await s.page.waitForSelector('#micBtn:not([hidden])', { timeout: 10000 });
+
+    await s.page.click('#micBtn');
+    await s.page.waitForSelector('#micBtn.rec', { timeout: 10000 });
+    await wait(1400);
+    const clock = await s.page.$eval('#recTime', (n) => ({ hidden: n.hidden, text: n.textContent }));
+    ok(!clock.hidden && /^\d+:\d\d$/.test(clock.text), 'the recording clock is running', JSON.stringify(clock));
+    await s.page.click('#micBtn');
+
+    await s.page.waitForFunction(() => document.getElementById('lineInput').value.includes('list the files'),
+      null, { timeout: 30000 });
+    const value = await s.page.$eval('#lineInput', (n) => n.value);
+    ok(value === 'list the files', 'the transcript landed in the line input', JSON.stringify(value));
+    ok(stub.calls.length >= 1 && stub.calls[0].bytes > 2000,
+      'the server uploaded the recording to the gateway',
+      JSON.stringify(stub.calls.map((c) => c.path + ' ' + c.bytes + 'B')));
+
+    // Unsent is the whole point: nothing went to the pane.
+    const sent = await sentBytes(s.page);
+    const typed = sent.map((hex) => hex.match(/../g).map((b) => String.fromCharCode(parseInt(b, 16))).join('')).join('');
+    ok(!typed.includes('list the files'), 'and nothing of it was sent to the terminal',
+      JSON.stringify(typed.slice(-40)));
+    ok(!(await screen(s.page)).includes('list the files'), 'the pane never saw it',
+      oneLine(await screen(s.page)).slice(-80));
+
+    // It is a draft like any other, so Send is what puts it in the shell.
+    await s.page.click('#sendLine');
+    await wait(400);
+    const after = await sentBytes(s.page);
+    const line = after.map((hex) => hex.match(/../g).map((b) => String.fromCharCode(parseInt(b, 16))).join('')).join('');
+    ok(line.includes('list the files\r'), 'pressing Send is what delivers it', JSON.stringify(line.slice(-30)));
+
+    await shot(s.page, 'dictation');
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally {
+    await s.stop();
+    await stub.close();
+  }
+}
+
+/* ------------------------------------------------------- 14. offlineonce */
+
+// The centrepiece. A phone in a car loses its network mid-sentence; §D.6
+// promises that nothing typed is lost and nothing arrives twice. So: type a
+// whole command with the network down, bring it back, and let the shell
+// itself count how many times the line ran. A duplicated keystroke would
+// break the command; a duplicated line would run it twice.
+async function offlineonce() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await recordInput(s.page);
+    await open(s);
+    const id = await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+
+    const tag = Math.random().toString(36).slice(2, 8);
+    await typeLine(s.page, 'cd "$(pwd)"; rm -f ' + tag + '.txt');
+    await wait(400);
+
+    await s.context.setOffline(true);
+    await s.page.evaluate(() => window.dispatchEvent(new Event('offline')));
+
+    // The connection is down and the page says so, rather than showing an old
+    // screen as if it were current.
+    await s.page.waitForFunction(() => document.body.classList.contains('conn-lost'),
+      null, { timeout: 20000 });
+    await s.page.waitForFunction(() => document.body.classList.contains('stale'),
+      null, { timeout: 20000 });
+    // The pane fades over 200ms, so the measurement waits for it rather than
+    // catching it half way.
+    await wait(400);
+    const lost = await s.page.evaluate(() => ({
+      bar: !!document.querySelector('.conn-bar'),
+      barText: (document.querySelector('.conn-bar') || {}).textContent || '',
+      stale: document.getElementById('termWrap').classList.contains('stale'),
+      opacity: getComputedStyle(document.getElementById('termWrap')).opacity,
+    }));
+    ok(lost.bar && lost.stale && Number(lost.opacity) < 1,
+      'the lost connection is visible and the screen is marked as old', JSON.stringify(lost));
+
+    // Twenty characters, typed one at a time into a terminal with no network.
+    const command = 'echo z >> ' + tag + '.txt';
+    ok(command.length === 20, 'the offline burst is twenty characters', String(command.length));
+    await s.page.click('#term .xterm-screen');
+    await s.page.keyboard.type(command, { delay: 25 });
+    await s.page.keyboard.press('Enter');
+    await wait(400);
+    const held = await s.page.evaluate(() => window.__sent.length);
+    ok(held >= 21, 'every keystroke was numbered and held', held + ' input frames sent so far');
+
+    await s.context.setOffline(false);
+    await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await s.page.waitForFunction(() => !document.body.classList.contains('conn-lost'),
+      null, { timeout: 45000 });
+    ok(true, 'the connection came back', 'conn-lost cleared');
+
+    // The shell counts. One line in the file is exactly-once; two is the bug
+    // this whole design exists to prevent, and none is a lost keystroke. The
+    // answer is printed with a label so that the echo of the command asking
+    // for it cannot be mistaken for the answer.
+    await wait(800);
+    await typeLine(s.page, 'echo COUNT=$(wc -l < ' + tag + '.txt)');
+    const counted = await s.page.waitForFunction(() => {
+      const rows = document.querySelector('#term .xterm-rows');
+      const found = rows && rows.innerText.match(/COUNT=(\d+)/);
+      return found ? found[1] : null;
+    }, null, { timeout: 25000 }).then((h) => h.jsonValue()).catch(() => 'no answer');
+    ok(counted === '1', 'the line typed offline ran exactly once', String(counted));
+
+    const text = await screen(s.page);
+    const onScreen = text.split(command).length - 1;
+    ok(onScreen === 1, 'the command appears on the screen exactly once', String(onScreen));
+
+    const res = await s.context.request.get(s.url + '/api/sessions/' + id + '/journal');
+    const journal = await res.text();
+    const inJournal = journal.split(command).length - 1;
+    ok(inJournal === 1, 'and exactly once in the journal on disk', String(inJournal));
+
+    // The app shell itself is offline-proof: the service worker has every
+    // file the page needs, so a reload with no network is still Socrates and
+    // is honest about the connection.
+    await s.page.evaluate(() => navigator.serviceWorker.ready);
+    const cached = await s.page.evaluate(async () => {
+      const names = await caches.keys();
+      const cache = await caches.open(names[0]);
+      const keys = await cache.keys();
+      return keys.map((r) => new URL(r.url).pathname);
+    });
+    ok(cached.includes('/static/js/keybar.js') && cached.includes('/static/js/session.js'),
+      'the key bar is part of the precached shell', cached.length + ' entries');
+    await s.context.setOffline(true);
+    await s.page.reload({ waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#newSession', { timeout: 20000 });
+    const offlineShell = await s.page.evaluate(() => ({
+      terminal: typeof window.Terminal === 'function',
+      bar: !!document.querySelector('.conn-bar'),
+    }));
+    ok(offlineShell.terminal, 'the app shell opened with no network at all', JSON.stringify(offlineShell));
+    await s.context.setOffline(false);
+
+    ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
+      unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+/* --------------------------------------------------- 15. sigtermreattach */
+
+// Socrates is restarted under the session's feet - an upgrade, a crash, a
+// supervisor - and the pane is not touched: tmux keeps it, the new server
+// re-adopts it, and the browser reattaches to the same screen.
+async function sigtermreattach() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    const id = await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+
+    const marker = 'kept-' + Math.random().toString(36).slice(2, 8);
+    await typeLine(s.page, 'echo ' + marker);
+    ok(await awaitScreen(s.page, marker), 'the marker is on screen before the restart',
+      oneLine(await screen(s.page)));
+
+    const outcome = await s.restart();
+    ok(outcome !== 'timeout', 'the server stopped on SIGTERM', JSON.stringify(outcome));
+
+    // No reload: the page is the one that was open, and its socket is the one
+    // that has to come back.
+    await s.page.waitForFunction(() => !document.body.classList.contains('conn-lost'),
+      null, { timeout: 40000 });
+    ok(await awaitScreen(s.page, marker, 30000), 'the pane still holds what was typed',
+      oneLine(await screen(s.page)));
+
+    const list = await s.context.request.get(s.url + '/api/sessions');
+    const row = ((await list.json()).sessions || []).find((one) => one.id === id);
+    ok(row && row.state === 'running', 'and the session is running again', row && row.state);
+
+    const again = marker + '-after';
+    await typeLine(s.page, 'echo ' + again);
+    ok(await awaitScreen(s.page, again, 25000), 'typing works after the reattach',
+      oneLine(await screen(s.page)));
+
+    await shot(s.page, 'sigtermreattach');
+    ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
+      unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+/* ---------------------------------------------------------- 16. takeover */
+
+// The ordinary mobile failure is not a clean close: the old socket is half
+// open and the server does not know yet. A second handshake carrying the same
+// viewer id therefore takes the pane over at once, rather than leaving a
+// terminal that looks connected and does nothing for forty seconds.
+async function takeover() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await s.page.addInitScript(() => {
+      window.__closed = [];
+      window.WebSocket = new Proxy(window.WebSocket, {
+        construct(target, args) {
+          const ws = new target(...args);
+          ws.addEventListener('close', (event) => window.__closed.push(event.code));
+          return ws;
+        },
+      });
+    });
+    await open(s);
+    const id = await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+    const viewer = await s.page.evaluate(() => sessionStorage.getItem('socrates.viewer'));
+    ok(!!viewer, 'the first tab has a viewer id', viewer);
+    await s.page.evaluate(() => { window.__closed.length = 0; });
+
+    // A second tab that claims to be the same tab. This is what a reconnect
+    // over a half open socket looks like from the server's side.
+    const second = await s.context.newPage();
+    await second.addInitScript((v) => { sessionStorage.setItem('socrates.viewer', v); }, viewer);
+    await second.goto(s.url + '/#' + id, { waitUntil: 'domcontentloaded' });
+    await second.waitForSelector('#term .xterm', { timeout: 20000 });
+
+    const closedAt = Date.now();
+    await s.page.waitForFunction(() => window.__closed.length > 0, null, { timeout: 3000 })
+      .catch(() => {});
+    const closed = await s.page.evaluate(() => window.__closed.slice());
+    ok(closed.length > 0 && Date.now() - closedAt < 3000,
+      'the first socket was closed by the takeover', JSON.stringify(closed));
+    ok(closed.includes(1012), 'with 1012, Service Restart', JSON.stringify(closed));
+
+    // The first tab goes away, as it would when a phone gives up on it, and
+    // the tab that took the pane over has it.
+    await s.page.close();
+    const marker = 'took-' + Math.random().toString(36).slice(2, 8);
+    await second.click('#term .xterm-screen');
+    await second.keyboard.type('echo ' + marker);
+    await second.keyboard.press('Enter');
+    const seen = await second.waitForFunction((want) => {
+      const rows = document.querySelector('#term .xterm-rows');
+      return !!rows && rows.innerText.includes(want);
+    }, marker, { timeout: 25000 }).then(() => true).catch(() => false);
+    ok(seen, 'and the second tab drives the session',
+      oneLine(await second.evaluate(() => document.querySelector('#term .xterm-rows').innerText)));
+
+    s.page = second;
+    ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
+      unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 // -------------------------------------------------------------------- run
 
 const ALL = [
@@ -842,6 +1267,11 @@ const ALL = [
   ['sessionlist', 'rename, archive, unarchive and delete', sessionlist],
   ['exitoverlay', 'a pane that ends, its status behind the "i", and Restart', exitoverlay],
   ['webglrenders', 'the shipped renderer paints the terminal', webglrenders],
+  ['keybar', 'the key bar sends the right bytes and the line input sends whole lines', keybar],
+  ['dictation', 'the microphone writes a draft into the line input, unsent', dictation],
+  ['offlineonce', 'a line typed with no network arrives exactly once', offlineonce],
+  ['sigtermreattach', 'a restarted server reattaches to the pane that kept running', sigtermreattach],
+  ['takeover', 'a second tab with the same viewer id takes the pane over', takeover],
   ['adminoptions', 'every harness option round-trips and reaches the command line', adminoptions],
   ['tmuxinstaller', 'the engine card, and an install that streams and survives a reload', tmuxinstaller],
   ['livesession', 'one real session against the real Claude Code CLI', livesession, { live: true }],

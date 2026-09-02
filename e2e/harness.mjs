@@ -13,6 +13,7 @@
 // then the fakes stay off PATH and the real, logged-in CLIs are used.
 
 import { chromium } from '/opt/browser-testing/node_modules/playwright-core/index.mjs';
+import { createServer } from 'node:http';
 import { spawn, execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -176,6 +177,37 @@ export async function mockOpenRouter(context, { text = 'hello from the microphon
 }
 
 /**
+ * openRouterStub is the same fixed answer, served over HTTP.
+ *
+ * The browser never calls OpenRouter: it posts the recording to
+ * /api/voice/transcribe and the *server* calls the gateway. A Playwright route
+ * cannot see that request, so a scenario that only mocked the browser would
+ * either need a real key or fail on a 401. `openrouter.base_url` exists for
+ * exactly this - config.go says so - and this is a gateway to point it at.
+ *
+ * It answers both routes Transcribe can take: /chat/completions for an audio
+ * capable chat model and /audio/transcriptions for a dedicated one.
+ */
+export async function openRouterStub({ text = 'hello from the microphone' } = {}) {
+  const calls = [];
+  const server = createServer((req, res) => {
+    let size = 0;
+    req.on('data', (chunk) => { size += chunk.length; });
+    req.on('end', () => {
+      calls.push({ path: req.url, bytes: size });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ text, choices: [{ message: { content: text } }] }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const url = 'http://127.0.0.1:' + server.address().port;
+  return {
+    url, calls, text,
+    close: () => new Promise((resolve) => server.close(resolve)),
+  };
+}
+
+/**
  * start boots a server, a browser and a page. The caller completes setup with
  * setup(); every scenario ends by awaiting stop().
  */
@@ -190,13 +222,19 @@ export async function start(options = {}) {
   const spawned = spawnServer({ data, port, live, env: options.env });
   await waitForHealth(url);
 
-  const browser = await chromium.launch({ executablePath: CHROME, args: ['--no-sandbox'] });
+  const browser = await chromium.launch({
+    executablePath: CHROME,
+    // A dictation scenario needs a microphone, and this machine has none, so
+    // it asks Chromium for its own: a generated tone, granted without a
+    // prompt. Nothing else changes for the scenarios that do not ask.
+    args: ['--no-sandbox', ...(options.args || [])],
+  });
   const context = await browser.newContext({
     viewport: options.viewport || { width: 390, height: 844 },
     // The app has one palette, and it is the light one. Saying so keeps a
     // machine whose Chromium defaults to dark from rendering anything else.
     colorScheme: options.colorScheme || 'light',
-    permissions: [],
+    permissions: options.permissions || [],
   });
   const page = await context.newPage();
   const errors = [];
