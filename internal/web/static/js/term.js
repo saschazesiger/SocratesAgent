@@ -58,6 +58,38 @@ export function contrast(a, b) {
  * onResize is called with (cols, rows) after every fit that actually changed
  * the size, and never with a zero.
  */
+/**
+ * measurePane answers what a terminal in `host` would be, without leaving one
+ * behind.
+ *
+ * The new-session sheet needs it. A session is created with a size, and the
+ * first viewer's attach then sets the window to what the pane really is - so
+ * a size nobody measured means the first thing that happens to a new session
+ * is a resize. A tmux window that shrinks reflows, and on 3.6 that pushes the
+ * program's first wrapped line into the scrollback before anybody has read it:
+ * the banner a CLI prints on start-up loses its head. Measured here, the
+ * create and the attach ask for the same thing and nothing moves.
+ */
+export function measurePane(host, opts = {}) {
+  const term = new Terminal({
+    allowProposedApi: true,
+    fontFamily: MONO,
+    fontSize: opts.fontSize || 14,
+    lineHeight: 1.15,
+    theme: LIGHT_THEME,
+  });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  let size = { cols: 0, rows: 0 };
+  try {
+    term.open(host);
+    fit.fit();
+    size = { cols: term.cols, rows: term.rows };
+  } catch { /* an unmeasurable pane leaves the choice to the server */ }
+  try { term.dispose(); } catch { /* it was never opened */ }
+  return size;
+}
+
 export function createTerm(host, opts = {}) {
   const term = new Terminal({
     allowProposedApi: true,           // unicode11 throws without it

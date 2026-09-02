@@ -16,7 +16,7 @@ import { chromium } from '/opt/browser-testing/node_modules/playwright-core/inde
 import { createServer } from 'node:http';
 import { createServer as createSocketServer } from 'node:net';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, mkdirSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -46,7 +46,12 @@ const litter = new Set();
 const servers = new Set();
 
 function scratchDir(prefix) {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
+  // Resolved, because on macOS os.tmpdir() is /var/folders/..., a symlink to
+  // /private/var/... The server reports the paths it made as real ones, and a
+  // scenario comparing them against this would be comparing two spellings of
+  // the same directory.
+  let dir = mkdtempSync(join(tmpdir(), prefix));
+  try { dir = realpathSync(dir); } catch { /* the unresolved name still works */ }
   litter.add(dir);
   return dir;
 }

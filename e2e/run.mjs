@@ -132,6 +132,20 @@ async function focusTerm(page, timeout = 5000) {
 
 const oneLine = (text) => text.replace(/\s+/g, ' ').trim().slice(0, 200);
 
+// firstRow is the topmost line the pane is showing. It is the assertion that
+// catches a window that was resized under the program: tmux reflows on a
+// shrink, and on 3.6 that puts the head of the first wrapped line into the
+// scrollback, so what is left at the top is the middle of a sentence.
+const firstRow = (page) => page.evaluate(() => {
+  const rows = document.querySelector('#term .xterm-rows');
+  if (!rows) return '';
+  for (const row of rows.children) {
+    const text = row.innerText.replace(/\u00a0/g, ' ').trimEnd();
+    if (text.trim()) return text;
+  }
+  return '';
+});
+
 /* --------------------------------------------------------- 1. createshell */
 
 // The sheet makes a Shell session, the pane comes up with a prompt in it, and
@@ -409,6 +423,14 @@ async function harnesses() {
       ['codex', 'FAKE codex'], ['opencode', 'FAKE opencode']]) {
       const session = await startSession(s.page, id);
       await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+      // The first line the program printed is still the first line on screen.
+      // A session created at a size nobody measured is resized by its own
+      // first viewer, and a tmux window that shrinks reflows: the head of the
+      // banner used to go into the scrollback before anybody had read it.
+      await awaitScreen(s.page, expect || '$', 20000);
+      const top = await firstRow(s.page);
+      ok(expect ? top.startsWith(expect) : /[$#>]\s*$/.test(top),
+        'what ' + id + ' printed first is what the pane shows first', top);
       if (expect) {
         // From the journal, not the screen: the banner is printed before the
         // first viewer has resized the window, so an attach redraw can reflow
@@ -2370,12 +2392,41 @@ async function backpressure() {
   try {
     await setup(s.page, s.url);
     await useDomRenderer(s);
+    await s.page.addInitScript(recordNotices);
+    // Everything the socket delivered, kept as it arrives. The page sets
+    // binaryType itself, so the listener takes an ArrayBuffer and decodes it
+    // whole: a frame header is not text and cannot match what is counted.
+    await s.page.addInitScript(() => {
+      window.__closed = [];
+      window.__rx = '';
+      const decoder = new TextDecoder();
+      window.WebSocket = new Proxy(window.WebSocket, {
+        construct(target, args) {
+          const ws = new target(...args);
+          ws.addEventListener('message', (event) => {
+            if (typeof event.data === 'string') window.__rx += event.data;
+            else if (event.data instanceof ArrayBuffer) {
+              window.__rx += decoder.decode(new Uint8Array(event.data));
+            }
+          });
+          ws.addEventListener('close', (event) => window.__closed.push(event.code));
+          return ws;
+        },
+      });
+    });
     await open(s);
     const id = await startSession(s.page, 'claude');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
     ok(await awaitScreen(s.page, 'FAKE claude'), 'the fake CLI is at its prompt',
       oneLine(await screen(s.page)));
 
+    // What the client ends up holding is the measure that matters: the ring
+    // is what a viewer reads from, and a reader that falls behind it is told
+    // so with a replay from zero. So the sockets are watched for a close and
+    // the notices for a redraw, and the pane's own scrollback is read back
+    // afterwards - not the journal, which the server writes whether or not a
+    // byte ever reached a browser.
+    await s.page.evaluate(() => { window.__notices = []; });
     await typeLine(s.page, '/spin');
     ok(await awaitScreen(s.page, 'spin 200', 40000), 'the last of the two hundred lines arrived',
       oneLine(await screen(s.page)));
@@ -2404,6 +2455,32 @@ async function backpressure() {
     ok(contiguous && shown[shown.length - 1] === 200,
       'the pane ends on line two hundred with no holes above it',
       shown.length ? shown[0] + '…' + shown[shown.length - 1] : 'nothing on screen');
+
+    // The ring and the socket measured from the far end: what the browser was
+    // actually sent. A viewer is sent a window, not a transcript - tmux
+    // repaints a pane that is producing faster than a client can draw, so
+    // neither the count nor the order of what crosses the wire is the
+    // product's promise, and asserting on them would be asserting on tmux's
+    // redraw. The promises are these three: the end of the burst arrived, the
+    // reader was never overrun by the ring - which the server answers with a
+    // replay from zero, and the page with the desync notice - and the socket
+    // carried it without being closed.
+    const delivered = await s.page.evaluate(() =>
+      [...(window.__rx || '').matchAll(/spin (\d+)/g)].map((m) => Number(m[1])));
+    ok(delivered.length > 0 && delivered[delivered.length - 1] === 200,
+      'the burst reached the browser over the socket, down to its last line',
+      delivered.length + ' lines, ending at ' + (delivered[delivered.length - 1] || 'nothing'));
+
+    // Nothing in that burst cost the viewer its place: a reader the ring had
+    // overrun would have been sent a replay from zero, and the page says so
+    // with the desync notice.
+    const redraws = await s.page.evaluate(() => (window.__notices || [])
+      .filter((n) => n.kind === 'desync'));
+    ok(redraws.length === 0, 'the viewer never fell behind the ring',
+      JSON.stringify(redraws));
+    const closes = await s.page.evaluate(() => (window.__closed || []).slice());
+    ok(closes.length === 0, 'and the socket carried it without being closed',
+      JSON.stringify(closes));
 
     await shot(s.page, 'backpressure');
     ok(unexpected(s.errors).length === 0, 'no console errors',

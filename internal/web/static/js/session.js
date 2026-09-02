@@ -22,7 +22,7 @@ import {
 import { connectionSource } from './net.js';
 import { agentMark } from './logos.js';
 import * as harnesses from './harnesses.js';
-import { createTerm } from './term.js';
+import { createTerm, measurePane } from './term.js';
 import {
   mountKeyBar, mountComposer, keyBarWanted, setKeyBarWanted, followViewport,
 } from './keybar.js';
@@ -1223,6 +1223,30 @@ function selectSession(id) {
   }, ATTACH_DEBOUNCE);
 }
 
+// measureNewPane is what the pane is about to be, measured before it exists.
+//
+// The size asked for at create is the size tmux gives the window, and the
+// first viewer's attach corrects it - so a size nobody measured means every
+// new session starts with a resize, and a tmux window that shrinks reflows:
+// on 3.6 the first wrapped line of the program's banner goes into the
+// scrollback before it has been read. The chrome is put into the state the
+// attach will leave it in - the composer up, the key bar where this device
+// wants one - so that what is measured is the pane the session will get.
+function measureNewPane() {
+  const composerWas = dom.composer.hidden;
+  const keybarWas = dom.keybar.hidden;
+  // The real bar, because its height is its buttons. Nothing is wired to it:
+  // it exists for the length of one measurement.
+  const bar = mountKeyBar(dom.keybar, null, null);
+  dom.composer.hidden = false;
+  dom.keybar.hidden = !keyBarWanted();
+  const size = measurePane(dom.term, { fontSize: state.terminal.font_size });
+  bar.dispose();
+  dom.composer.hidden = composerWas;
+  dom.keybar.hidden = keybarWas;
+  return size;
+}
+
 async function newSession() {
   const pick = await harnesses.openNewSessionSheet();
   if (!pick) return;
@@ -1230,7 +1254,7 @@ async function newSession() {
   // being started is behind it. Leaving it open puts a list over the terminal
   // that was just asked for.
   closeNav();
-  const size = state.term ? state.term.size() : { cols: 0, rows: 0 };
+  const size = state.term ? state.term.size() : measureNewPane();
   try {
     const data = await api('/api/sessions', {
       method: 'POST',

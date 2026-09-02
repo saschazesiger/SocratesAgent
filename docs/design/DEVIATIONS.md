@@ -1027,3 +1027,51 @@ still `.new-chat`. The rules are live and correctly retargeted, so this is a
 rename and nothing more; it would touch `app.css`, `index.html`, `session.js`
 and about forty selectors across `e2e/run.mjs`, in files two work packages were
 being reviewed in. It is recorded here rather than done blind at the end.
+
+**WP9b review F1 / §A.5, §E.3 — a session is created at the size the pane is
+about to be.** The sheet posted `cols: 0, rows: 0` whenever no terminal was on
+screen, which is every first session: the store's 120x40 became the window, and
+the first viewer's attach immediately resized it to what the pane really is. A
+tmux window that shrinks reflows, and on 3.6 that pushes the head of the
+program's first wrapped line into the scrollback before anybody has read it -
+the banner a CLI prints on start-up loses its first row, which is how
+`backpressure` failed five times out of five. `term.js` gained `measurePane`,
+which fits a throwaway terminal in the real host and disposes of it, and
+`newSession` measures with the chrome in the state the attach will leave it in
+(the composer up, the key bar where this device wants one). The first attach is
+now a same-size retake and nothing reflows. `harnesses` asserts, for all four
+session types, that what the program printed first is what the pane shows
+first.
+
+**WP9b review F2 — commit f92f43e swept about four hundred lines of WP9a's
+uncommitted `e2e/run.mjs` into a WP9b commit.** Three agents shared one
+worktree, and the staged copy of `run.mjs` that commit was built from was a
+snapshot older than WP9a's own work in the same file. Nothing was lost - the
+worktree kept every line, and WP9a's commits that followed carry them - and no
+history has been rewritten, because a rewrite would break every branch built on
+it. Recorded here because the commit's authorship of those lines is wrong, and
+because the lesson is the one that follows: in a shared worktree, stage by path
+and rebuild the file from `HEAD` plus your own edits rather than from an index
+somebody else is holding.
+
+**WP9b review F4 / §H.3 #18 — what `backpressure` may assert about the
+delivered stream.** A viewer is sent a window, not a transcript: tmux repaints
+a pane that is producing faster than a client can draw, so of two hundred lines
+about a hundred and eighty cross the wire, out of order where a repaint
+overlaps. Neither the count nor the order is the product's promise, so the
+scenario asserts the three things that are - the end of the burst reached the
+browser, the reader was never overrun by the ring (a `replay_from: 0` hello,
+which the page shows as the desync notice), and the socket carried it without
+being closed - alongside the journal, which does hold every line in order.
+
+**WP9b backlog — `TestTerminalSizeOwnership` and the 600 s package timeout.**
+Not reproduced: forty runs alone, then sixteen more with two `-race` runs of
+`internal/server` and `internal/termux` in parallel, all green. `termHub.release`
+was named in the one panic trace, but its only blocking call - the hand-over of
+the window through `Manager.own` - is bounded by a five second context, so it
+cannot be where six hundred seconds went. Under 2x load the package takes about
+eighty seconds against a budget that covers the whole binary; the conclusion is
+a package that ran long under whole-repo parallelism, not a deadlock. One later
+run did hit the timeout again while another agent's suite was running; the
+`tail -5` in use kept only the last lines, so the dump was lost. If it returns,
+capture the whole panic.
