@@ -195,6 +195,15 @@ async function createshell() {
     await typeLine(s.page, "printf '\\033[37mDIMWHITE\\033[0m\\n'");
     ok(await awaitScreen(s.page, 'DIMWHITE'), 'the pane printed a line in ANSI white',
       oneLine(await screen(s.page)));
+    // The wait above is satisfied by the *echo* of the command, which contains
+    // the word inside a longer default-styled run - so at that instant there
+    // may be no span whose whole text is DIMWHITE, and the measurement below
+    // would read "none" and fail. It is rare and it is the scenario's race,
+    // not the product's: what has to be waited for is the drawn span, not the
+    // characters.
+    await s.page.waitForFunction(() => [...document.querySelectorAll('#term .xterm-rows span')]
+      .some((n) => n.textContent.trim() === 'DIMWHITE'), null, { timeout: 10000 })
+      .catch(() => { /* the assertion below says so, with what it measured */ });
     const drawn = await s.page.evaluate(() => {
       const ratio = (rgb) => {
         const [r, g, b] = rgb.match(/\d+/g).map(Number).map((c) => {
@@ -1213,7 +1222,10 @@ async function keybar() {
     await s.page.waitForSelector('#keybar:not([hidden])', { timeout: 10000 });
 
     const keys = await s.page.$$eval('#keybar .key', (nodes) => nodes.map((n) => n.dataset.key));
-    ok(keys.join(',') === 'Escape,Tab,Control,Alt,Left,Down,Up,Right,Enter,Ctrl-C,Ctrl-D,Ctrl-Z,Paste,Keyboard',
+    // The order is §E.6's, and §E.6's order is the wrap: two rows of seven on
+    // a phone, with the four arrows together at the head of the second rather
+    // than split three-and-one across the fold.
+    ok(keys.join(',') === 'Escape,Tab,Control,Alt,Enter,Ctrl-C,Ctrl-D,Left,Down,Up,Right,Ctrl-Z,Paste,Keyboard',
       'the key bar carries every key of §E.6, in order', keys.join(','));
     const placed = await s.page.evaluate(() => ({
       keybarTop: document.getElementById('keybar').getBoundingClientRect().top,
@@ -5051,9 +5063,20 @@ async function touchscrolltui() {
     await f.drag(box.x, box.top, box.bottom);
     const altAfter = await screen(s.page);
     const topLine = (text) => Number((text.match(/^alt-(\d+)/m) || [0, 0])[1]);
-    ok(altAfter !== altBefore && topLine(altAfter) > 0 && topLine(altAfter) < topLine(altBefore),
-      'a finger on a full-screen TUI scrolls the program\'s own view',
-      'alt-' + topLine(altBefore) + ' -> alt-' + topLine(altAfter));
+    const travelled = topLine(altBefore) - topLine(altAfter);
+    // The distance, not the direction. A mouse report has no magnitude - it
+    // says "the wheel turned up", once - so a batch dispatched as a single
+    // WheelEvent carrying the whole delta moved a real Claude Code transcript
+    // two or three lines for a drag the length of the screen. The finger here
+    // travelled (bottom - top) pixels; at three document lines per report the
+    // program should move roughly that many lines, and the floor below is set
+    // well under it so the assertion is about "a screenful" rather than about
+    // the fake's own step.
+    const fingerLines = Math.round((box.bottom - box.top) / 17);
+    ok(topLine(altAfter) > 0 && travelled >= fingerLines,
+      'a finger on a full-screen TUI scrolls the program\'s own view about as far as it moved',
+      'alt-' + topLine(altBefore) + ' -> alt-' + topLine(altAfter)
+        + ' = ' + travelled + ' lines for a finger worth ' + fingerLines);
     ok(!/spin|\$ |> $/.test(altAfter.split('\n').slice(-1)[0] || ''),
       'and it typed nothing into it',
       oneLine(altAfter.split('\n').filter((l) => l.trim()).slice(-1)[0] || ''));
@@ -5094,6 +5117,13 @@ async function scrollstate() {
     });
     ok(!pill.hidden && pill.text === 'Jump to live',
       'a pane scrolled back raises the pill that says so', JSON.stringify(pill));
+    // tmux paints its own position indicator - `23:13 [40/464]` - in yellow at
+    // the top right of a pane in copy mode, which is the one thing on screen
+    // this product does not paint white (§E.10). `copy-mode -H` suppresses it.
+    const scrolled = await screen(s.page);
+    ok(!/\[\d+\/\d+\]/.test(scrolled),
+      'and tmux does not paint its own position indicator over the white pane',
+      oneLine(scrolled.split('\n').filter((l) => l.trim())[0] || ''));
     await shot(s.page, 'scrollstate-pill');
 
     await s.page.tap('#termJump');
@@ -5102,6 +5132,25 @@ async function scrollstate() {
       oneLine((await screen(s.page)).split('\n').filter((l) => l.trim()).slice(-1)[0] || ''));
     ok(await s.page.evaluate(() => document.getElementById('termJump').hidden),
       'and the pill goes with it');
+
+    // A glide outlives the finger. Type while one is still running and the
+    // pane leaves copy mode for the keystroke - and the next glide batch used
+    // to put it straight back in, so the screen jumped away from what had just
+    // been typed and the pill came back. A flick, then a line, with no pause.
+    await f.drag(box.x, box.top, box.bottom, 6, 4);
+    await typeLine(s.page, 'echo RACE');
+    ok(await awaitScreen(s.page, 'RACE', 8000),
+      'a line typed while the glide is still running reaches the shell',
+      oneLine((await screen(s.page)).split('\n').filter((l) => l.trim()).slice(-2).join(' | ')));
+    await wait(900);
+    const settledAfterRace = await s.page.evaluate(() => ({
+      pill: !document.getElementById('termJump').hidden,
+      last: [...document.querySelectorAll('#term .xterm-rows > div')]
+        .map((n) => n.innerText.trim()).filter(Boolean).slice(-2).join(' | '),
+    }));
+    ok(!settledAfterRace.pill,
+      'and the glide does not put the pane back into copy mode behind it',
+      JSON.stringify(settledAfterRace));
 
     // And the half that works whether or not the pill was ever noticed.
     await f.drag(box.x, box.top, box.bottom);
@@ -5254,6 +5303,19 @@ async function keybarreach() {
     const portrait = await measure(s, 'portrait');
     ok(portrait.rows === 2, 'portrait: the bar wraps to two rows rather than hiding half of itself',
       portrait.rows + ' rows');
+    // Four arrows are one control, and a wrap that puts three at the end of a
+    // row and the fourth at the start of the next makes a thumb hunt for the
+    // one that moves right.
+    const arrows = await s.page.evaluate(() => {
+      const rowOf = (k) => Math.round(k.getBoundingClientRect().top);
+      const keys = [...document.querySelectorAll('#keybar .key')];
+      const four = ['Left', 'Down', 'Up', 'Right'].map((name) =>
+        keys.find((k) => k.dataset.key === name));
+      return { rows: [...new Set(four.map(rowOf))].length,
+        order: four.map((k) => keys.indexOf(k)).join(',') };
+    });
+    ok(arrows.rows === 1, 'portrait: and the four arrows sit together on one row',
+      JSON.stringify(arrows));
     await shot(s.page, 'keybar-portrait');
 
     await s.page.setViewportSize({ width: 844, height: 390 });

@@ -103,11 +103,15 @@ type Manager struct {
 	// scrolled holds the sessions a viewer has left in tmux copy mode, so the
 	// input path can leave it before a keystroke disappears into it (scroll.go).
 	scrolled map[string]bool
-	// scrollMu serialises the copy-mode commands, so that two fingers on two
-	// devices cannot interleave a copy-mode with a send-keys -X.
-	scrollMu sync.Mutex
-	hookLn   net.Listener
-	closed   bool
+	// scrollLocks serialises the copy-mode commands per session, so that two
+	// fingers on two devices cannot interleave a copy-mode with a send-keys -X,
+	// and so that a keystroke cannot slip between the check for copy mode and
+	// the byte. One lock per session rather than one for all of them: the
+	// handshake reads the pane's state, and a global lock would put every
+	// reconnect behind one slow session (scroll.go).
+	scrollLocks map[string]*sync.Mutex
+	hookLn      net.Listener
+	closed      bool
 
 	// locks serialises everything that relaunches one session, and watchers
 	// holds the cancel of its detached session-id watcher.
@@ -157,12 +161,13 @@ func New(st *store.Store, cfg Config) (*Manager, error) {
 	}
 	m := &Manager{
 		st: st, cfg: cfg,
-		live:     map[string]*liveSession{},
-		missed:   map[string]int{},
-		scrolled: map[string]bool{},
-		locks:    map[string]*sync.Mutex{},
-		watchers: map[string]context.CancelFunc{},
-		plans:    map[string]harnesses.LaunchPlan{},
+		live:        map[string]*liveSession{},
+		missed:      map[string]int{},
+		scrolled:    map[string]bool{},
+		scrollLocks: map[string]*sync.Mutex{},
+		locks:       map[string]*sync.Mutex{},
+		watchers:    map[string]context.CancelFunc{},
+		plans:       map[string]harnesses.LaunchPlan{},
 	}
 	m.act = newActivity(m)
 	m.discoverCtx, m.discoverStop = context.WithCancel(context.Background())
@@ -913,6 +918,7 @@ func (m *Manager) Delete(ctx context.Context, sessionID string) error {
 	delete(m.live, sessionID)
 	delete(m.missed, sessionID)
 	delete(m.scrolled, sessionID)
+	delete(m.scrollLocks, sessionID)
 	m.mu.Unlock()
 	// The watcher would otherwise keep looking for a conversation id for
 	// another quarter of an hour and then write it to a row that is gone.

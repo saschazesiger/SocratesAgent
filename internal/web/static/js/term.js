@@ -95,6 +95,17 @@ export function measurePane(host, opts = {}) {
 // pane as the click it is.
 const TOUCH_SLOP = 8;
 
+// How often a drag is allowed to turn into traffic. A finger at sixty frames a
+// second would otherwise be sixty batches a second on the link this product
+// exists for; twenty is smooth and is a third of that.
+const SCROLL_BATCH_MS = 50;
+
+// The pixel delta each synthesised wheel event carries on the mouse-report
+// route. Anything under 50 is damped to 30% by xterm before it decides whether
+// the event is worth a report at all; the magnitude itself is discarded by the
+// report, so the only thing this number has to do is clear that threshold.
+const WHEEL_DELTA = 60;
+
 /**
  * touchScroll makes a finger scroll the pane, and returns the way to undo it.
  *
@@ -105,43 +116,42 @@ const TOUCH_SLOP = 8;
  * moved nothing at all, and the scrollback of a session was unreachable from
  * the device this product is used from.
  *
- * The obvious repair - synthesise the wheel a trackpad would have sent - reads
- * as one path and is three, two of them wrong. A wheel is xterm's to interpret,
- * and what it decides depends on the program: with the mouse tracked, which is
- * what Claude Code, Codex and OpenCode all turn on, it becomes an SGR mouse
- * report and goes to the program, which scrolls its own conversation or
- * nothing at all; with tmux's mouse off it becomes arrow keys, which walks a
- * shell's history onto the prompt; and on an alternate screen there is no
- * xterm scrollback to move in any case. On the three session types this
- * product exists for, a finger therefore reached nothing.
+ * There are two histories a pane can have, and only one of them is tmux's.
+ * Which one this pane has is decided by the **server**, because xterm cannot
+ * tell: a tmux client draws every pane on the alternate screen and turns mouse
+ * tracking on for all of them, whatever the program inside is doing, so
+ * `buffer.active.type` and `modes.mouseTrackingMode` read the same for a shell
+ * and for Claude Code. `wheelPane()` is what the server answered from
+ * `#{alternate_on}`.
  *
- * Which history a drag moves is decided once per drag, and it is the **server**
- * that knows: xterm cannot tell, because a tmux client draws every pane on the
- * alternate screen and tracks the mouse for every one of them, whatever the
- * program inside is doing. `wheelPane()` is what the server said.
+ * A **pane on the normal buffer** is the Shell harness, and that is the whole
+ * of the list. The drag goes to the server as a `scroll` control frame and
+ * moves tmux's own copy mode - the same history a person at a desk reaches
+ * with a prefix and PageUp - which works whatever the program thinks about the
+ * mouse and whatever `terminal.mouse` is set to, because none of them is
+ * consulted.
  *
- * With a **pane on the normal buffer** - a shell, and Claude Code, which
- * writes its conversation into the ordinary scrollback rather than over it -
- * the drag goes to the server as a `scroll` control frame and moves tmux's own
- * copy mode. That is the same history a person at a desk reaches with a prefix
- * and PageUp, and it works whatever the program thinks about the mouse and
- * whatever `terminal.mouse` is set to, because none of them is consulted.
- *
- * With a **pane on the alternate screen** - a full-screen TUI, which is Codex
- * and OpenCode - tmux has no history at all: verified, `copy-mode` plus twenty
- * `scroll-up` leaves `capture-pane` returning the same three lines, because
- * tmux's scrollback belongs to the normal buffer and the alternate screen is a
- * window over it with nothing above. The only thing that can scroll there is
- * the program's own view, and a program that draws a full screen tracks the
- * mouse in order to be asked - so the drag becomes the wheel it asked for,
- * which tmux forwards to it as a mouse report. With nobody tracking the mouse
- * at all there is nothing to send and nothing to move, and the drag is
- * swallowed, as it always was.
+ * A **pane on the alternate screen** is all three CLIs. Codex and OpenCode
+ * draw a full screen; Claude Code is one too **as this product launches it**,
+ * because the fixed policy sets `CLAUDE_CODE_NO_FLICKER=1`
+ * (`internal/harnesses/claude.go`) and with it claude takes the alternate
+ * screen and tracks the mouse from its idle prompt onward. A bare `claude`
+ * without that variable stays on the normal buffer, which is why this was easy
+ * to get wrong. tmux keeps no history for an alternate screen - verified,
+ * `copy-mode` plus twenty `scroll-up` leaves `capture-pane` returning the same
+ * three lines, because tmux's scrollback belongs to the normal buffer and the
+ * alternate screen is a window over it with nothing above. The only thing that
+ * can scroll there is the program's own view, and a program that draws a full
+ * screen tracks the mouse in order to be asked - so the drag becomes the wheel
+ * it asked for, which tmux forwards to it as a mouse report. With nobody
+ * tracking the mouse at all there is nothing to send and nothing to move, and
+ * the drag is swallowed, as it always was.
  *
  * Momentum is the other half of the gesture: a phone that stops dead the
  * instant a finger leaves the glass does not read as scrolling. The last
  * moves give a velocity, and it is decayed frame by frame for about half a
- * second, cancelled by the next touch.
+ * second, cancelled by the next touch - and by the next keystroke, which is
+ * what `cancel()` is for.
  */
 function touchScroll(host, term, onScroll, wheelPane) {
   // Which history this drag is moving, decided when it starts so that the
@@ -153,7 +163,11 @@ function touchScroll(host, term, onScroll, wheelPane) {
     if (onScroll && !(wheelPane && wheelPane())) return 'tmux';
     return term.modes.mouseTrackingMode === 'none' ? 'none' : 'wheel';
   };
+  // The route the current batch is taking. It is not settled once per drag:
+  // emit() asks again for every batch, because a program that goes to the
+  // alternate screen changes the answer half way through a gesture.
   let path = 'none';
+  let emitting = false;   // inside emit's own dispatch, so cancel() ignores it
   let id = null;          // the finger being followed, or none
   let originY = 0;        // where it went down, for the slop
   let lastY = 0;          // where it was last seen, for the delta
@@ -173,11 +187,26 @@ function touchScroll(host, term, onScroll, wheelPane) {
     return h > 2 ? h : 17;
   };
 
-  // send batches whole lines. A drag at sixty frames a second would otherwise
-  // be sixty control frames a second on a link that is the reason this product
-  // exists; a batch every fifty milliseconds is smooth and is twenty.
   // emit is the one place a measured number of lines becomes movement, so the
   // glide and the drag travel by exactly the same route.
+  //
+  // On the wheel route it is one event per line, and deliberately not one
+  // event carrying the whole distance. A program tracking the mouse is sent a
+  // mouse *report* per wheel event, and a report has no magnitude:
+  // `ESC [ < 64 ; 40 ; 12 M` says "the wheel turned up", once, whether the
+  // event carried seventeen pixels or six hundred. One batched event every
+  // fifty milliseconds therefore moved a Claude Code transcript two or three
+  // lines for a drag the length of the screen - measured. So the batch is
+  // unrolled, and the distance the finger travelled is the distance the
+  // program is asked for.
+  //
+  // WHEEL_DELTA is why the events are not one line tall. xterm decides whether
+  // a wheel event is worth a report in `consumeWheelEvent`, and that function
+  // damps a pixel delta under 50 to **thirty per cent** before accumulating it
+  // - a trackpad's inertia is meant to be gentler than a notched wheel - so a
+  // one-line event is worth 0.3 of a line and only every fourth one produces a
+  // report. Measured: 37 events, 11 reports. Over 50 there is no damping, the
+  // magnitude is thrown away by the report anyway, and one event is one line.
   const emit = (lines) => {
     // Asked again for every batch rather than once for the drag: a program
     // that goes to the alternate screen changes the answer, and the server
@@ -189,16 +218,35 @@ function touchScroll(host, term, onScroll, wheelPane) {
     const screen = host.querySelector('.xterm-screen');
     if (!screen) return;
     const box = screen.getBoundingClientRect();
+    const step = lineHeight();
+    // Big enough that xterm neither damps it nor rounds it away, whatever the
+    // font size is. What it is worth is one report either way.
+    const delta = Math.max(WHEEL_DELTA, step * 2);
+    const clientX = Math.round(box.left + box.width / 2);
+    const clientY = Math.round(box.top + box.height / 2);
     // A finger moving down brings earlier lines down with it, which is a wheel
-    // turned up.
-    screen.dispatchEvent(new WheelEvent('wheel', {
-      deltaY: -lines * lineHeight(),
-      deltaMode: 0,
-      clientX: Math.round(box.left + box.width / 2),
-      clientY: Math.round(box.top + box.height / 2),
-      bubbles: true,
-      cancelable: true,
-    }));
+    // turned up. The cap is a guard against a pathological batch rather than a
+    // policy: a whole screen is more than one batch ever holds.
+    const count = Math.min(Math.abs(lines), 120);
+    const up = lines > 0;
+    // What this dispatch produces is the terminal answering a gesture, not
+    // somebody typing, so cancel() must not read it as a keystroke and call
+    // off the very glide that is producing it.
+    emitting = true;
+    try {
+      for (let i = 0; i < count; i += 1) {
+        screen.dispatchEvent(new WheelEvent('wheel', {
+          deltaY: up ? -delta : delta,
+          deltaMode: 0,
+          clientX,
+          clientY,
+          bubbles: true,
+          cancelable: true,
+        }));
+      }
+    } finally {
+      emitting = false;
+    }
   };
 
   const flush = () => {
@@ -212,11 +260,32 @@ function touchScroll(host, term, onScroll, wheelPane) {
   const schedule = () => {
     if (Math.abs(pending) < 1) return;
     const since = Date.now() - sentAt;
-    if (since >= 50) { flush(); return; }
-    if (!flushTimer) flushTimer = setTimeout(flush, 50 - since);
+    if (since >= SCROLL_BATCH_MS) { flush(); return; }
+    if (!flushTimer) flushTimer = setTimeout(flush, SCROLL_BATCH_MS - since);
   };
 
   const stopGlide = () => { if (glide) { cancelAnimationFrame(glide); glide = null; } };
+
+  /**
+   * cancel calls the whole gesture off, including whatever is still in flight.
+   *
+   * It exists because of what a glide is: a scroll that outlives the finger.
+   * Type a key while one is still running and the pane leaves copy mode for
+   * the keystroke - correctly - and the next glide batch puts it straight back
+   * in, so the screen jumps away from what was just typed and the pill comes
+   * back. A drag as ordinary as fifteen steps glides, so this was every
+   * drag-then-type.
+   *
+   * Everything that puts input into the pane calls it: the terminal's own
+   * keystrokes, the key bar, a paste, a dictated line, an operator run, and
+   * the "Jump to live" pill.
+   */
+  const cancel = () => {
+    if (emitting) return;
+    stopGlide();
+    pending = 0;
+    if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+  };
 
   // A drag that ends with the finger moving keeps moving, and slows down.
   // 0.9 a frame is about half a second of travel at sixty frames a second,
@@ -260,7 +329,6 @@ function touchScroll(host, term, onScroll, wheelPane) {
     // A second finger is a pinch, and a pinch is the browser's.
     if (ev.touches.length !== 1) { id = null; return; }
     id = ev.touches[0].identifier;
-    path = pathFor();
     originY = lastY = ev.touches[0].clientY;
     samples.push({ t: performance.now(), y: originY });
     scrolling = false;
@@ -298,13 +366,16 @@ function touchScroll(host, term, onScroll, wheelPane) {
   host.addEventListener('touchmove', move, { passive: false });
   host.addEventListener('touchend', end, { passive: true });
   host.addEventListener('touchcancel', end, { passive: true });
-  return () => {
-    stopGlide();
-    if (flushTimer) clearTimeout(flushTimer);
-    host.removeEventListener('touchstart', start);
-    host.removeEventListener('touchmove', move);
-    host.removeEventListener('touchend', end);
-    host.removeEventListener('touchcancel', end);
+  return {
+    cancel,
+    dispose() {
+      stopGlide();
+      if (flushTimer) clearTimeout(flushTimer);
+      host.removeEventListener('touchstart', start);
+      host.removeEventListener('touchmove', move);
+      host.removeEventListener('touchend', end);
+      host.removeEventListener('touchcancel', end);
+    },
   };
 }
 
@@ -345,7 +416,7 @@ export function createTerm(host, opts = {}) {
   }
 
   // A finger, which xterm 6 does nothing with on its own.
-  const unwireTouch = touchScroll(host, term, opts.onScroll || null, opts.wheelPane || null);
+  const touch = touchScroll(host, term, opts.onScroll || null, opts.wheelPane || null);
 
   // The hidden textarea is a text field like any other as far as a phone is
   // concerned, and a terminal is the one place autocorrect must never reach.
@@ -367,6 +438,10 @@ export function createTerm(host, opts = {}) {
   // event it was in the middle of - and a page that has thrown once must still
   // deliver the next keystroke.
   const guarded = (handler) => (data) => {
+    // Anything typed calls the gesture off first. A glide outlives the finger,
+    // and a glide still running when a key lands puts the pane straight back
+    // into the copy mode the keystroke had just taken it out of.
+    touch.cancel();
     try { handler(data); } catch (err) { console.error('terminal input', err); }
   };
   if (opts.onData) term.onData(guarded(opts.onData));
@@ -426,9 +501,18 @@ export function createTerm(host, opts = {}) {
     write: (data) => term.write(data),
     /** reset is the full repaint a `replay_from: 0` hello asks for. */
     reset: () => { term.reset(); last = { cols: 0, rows: 0 }; },
+    /**
+     * cancelScroll calls off a scroll gesture that is still in flight.
+     *
+     * Everything that puts input into this pane from outside the terminal -
+     * the key bar, a paste, a dictated line, an operator run - goes through
+     * the socket rather than through xterm, so the socket calls this before
+     * every frame it sends. The pill calls it too.
+     */
+    cancelScroll: () => touch.cancel(),
     focus: () => term.focus(),
     dispose() {
-      unwireTouch();
+      touch.dispose();
       observer.disconnect();
       if (viewport) {
         viewport.removeEventListener('resize', refit);

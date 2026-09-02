@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Scrolling the pane's history, from the browser.
@@ -50,15 +51,19 @@ type PaneScroll struct {
 	// while `capture-pane -a` still holds the normal buffer underneath. The
 	// only thing that can scroll such a pane is the program's own view, and a
 	// program that draws a full screen is tracking the mouse in order to be
-	// asked - which is what Codex and OpenCode do.
+	// asked - which is what all three CLIs do. Claude Code is one of them as
+	// this product launches it: the fixed policy sets CLAUDE_CODE_NO_FLICKER=1
+	// (harnesses/claude.go), and with it claude takes the alternate screen and
+	// tracks the mouse from its idle prompt onward. Only the Shell harness is
+	// on the normal buffer.
 	Wheel bool
 }
 
 // PaneState answers both questions without moving anything. The handshake
 // asks it, so that the first drag of a session already takes the right route.
 func (m *Manager) PaneState(ctx context.Context, sessionID string) PaneScroll {
-	m.scrollMu.Lock()
-	defer m.scrollMu.Unlock()
+	unlock := m.lockScroll(sessionID)
+	defer unlock()
 	name := m.tmuxNameOf(sessionID)
 	if name == "" {
 		return PaneScroll{}
@@ -75,8 +80,8 @@ func (m *Manager) PaneState(ctx context.Context, sessionID string) PaneScroll {
 // Positive lines go back into the history, negative lines return towards the
 // live bottom.
 func (m *Manager) ScrollHistory(ctx context.Context, sessionID string, lines int) (PaneScroll, error) {
-	m.scrollMu.Lock()
-	defer m.scrollMu.Unlock()
+	unlock := m.lockScroll(sessionID)
+	defer unlock()
 	name := m.tmuxNameOf(sessionID)
 	if name == "" {
 		return PaneScroll{}, nil
@@ -98,7 +103,7 @@ func (m *Manager) ScrollHistory(ctx context.Context, sessionID string, lines int
 		if lines < 0 {
 			return PaneScroll{Wheel: wheel}, nil
 		}
-		if _, err := m.tmux.Run(ctx, "copy-mode", "-e", "-t", name); err != nil {
+		if _, err := m.tmux.Run(ctx, append(m.copyModeArgs(), "-t", name)...); err != nil {
 			return PaneScroll{}, err
 		}
 		m.setCopyMode(sessionID, true)
@@ -131,25 +136,95 @@ func (m *Manager) ScrollHistory(ctx context.Context, sessionID string, lines int
 // and what the first keystroke after a scroll does, and it is a no-op when
 // nothing has been scrolled.
 func (m *Manager) ExitCopyMode(ctx context.Context, sessionID string) error {
-	m.scrollMu.Lock()
-	defer m.scrollMu.Unlock()
+	unlock := m.lockScroll(sessionID)
+	defer unlock()
+	_, err := m.leaveCopyMode(ctx, sessionID)
+	return err
+}
+
+// LeaveCopyMode takes the pane out of copy mode for a keystroke and then runs
+// write, with the session's scroll lock held across both.
+//
+// The lock is the point. Checking whether the pane is in copy mode and then
+// writing the byte are two steps, and between them another device's finger can
+// run a whole copy-mode command: the check says "live", the scroll says "in
+// mode", and the keystroke lands in copy mode and is read as one of its
+// commands. Holding the lock across the pair closes that window, and it is
+// per session, so one pane's tmux call cannot delay another pane's keystroke.
+//
+// write is always called, whether or not there was a mode to leave. The first
+// result is whether the pane actually left copy mode, which is what decides
+// whether every viewer is told the pill is gone - a failed cancel must not
+// take the pill off a pane that is still held above its bottom.
+func (m *Manager) LeaveCopyMode(ctx context.Context, sessionID string, write func() error) (bool, error) {
+	unlock := m.lockScroll(sessionID)
+	defer unlock()
+	left, err := m.leaveCopyMode(ctx, sessionID)
+	if err != nil {
+		m.logf("session %s: could not leave copy mode to type: %v", sessionID, err)
+	}
+	return left, write()
+}
+
+// leaveCopyMode is the body of both, and expects the session's lock to be held.
+func (m *Manager) leaveCopyMode(ctx context.Context, sessionID string) (bool, error) {
 	if !m.inCopyMode(sessionID) {
-		return nil
+		return false, nil
 	}
 	name := m.tmuxNameOf(sessionID)
 	if name == "" {
 		m.setCopyMode(sessionID, false)
-		return nil
+		return true, nil
 	}
-	m.setCopyMode(sessionID, false)
 	if _, err := m.tmux.Run(ctx, "send-keys", "-t", name, "-X", "cancel"); err != nil {
 		if noSuchTarget(err) || serverGone(err) ||
 			strings.Contains(strings.ToLower(Stderr(err)), "not in a mode") {
-			return nil
+			// There is no mode there to be in; the flag was stale.
+			m.setCopyMode(sessionID, false)
+			return true, nil
 		}
-		return err
+		// The pane is still in copy mode as far as anybody knows, so the flag
+		// stays up and so does the pill.
+		return false, err
 	}
-	return nil
+	m.setCopyMode(sessionID, false)
+	return true, nil
+}
+
+// copyModeArgs is how this tmux is asked to enter copy mode.
+//
+// -e leaves the mode by itself at the bottom, so dragging up until the pane
+// stops moving is a complete gesture. -H hides tmux's own position indicator -
+// `23:13 [40/464]` in yellow, top right - which is the one thing on screen
+// this product does not paint white (DESIGN.md E.10). It arrived in tmux 3.4;
+// on 3.3 the indicator is shown, which is a visible deviation on that one
+// version and better than no scrollback at all.
+func (m *Manager) copyModeArgs() []string {
+	args := []string{"copy-mode", "-e"}
+	if !m.TmuxVersion().Less(3, 4) {
+		args = append(args, "-H")
+	}
+	return args
+}
+
+// lockScroll takes this session's scroll lock and answers with its release.
+//
+// Per session rather than one global lock: PaneState runs a tmux subprocess on
+// every handshake, and a global lock would put every reconnect in the queue
+// behind one slow session's pane.
+func (m *Manager) lockScroll(sessionID string) func() {
+	m.mu.Lock()
+	lock := m.scrollLocks[sessionID]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		if m.scrollLocks == nil {
+			m.scrollLocks = map[string]*sync.Mutex{}
+		}
+		m.scrollLocks[sessionID] = lock
+	}
+	m.mu.Unlock()
+	lock.Lock()
+	return lock.Unlock
 }
 
 // InCopyMode reports whether this session was left scrolled back by a viewer.

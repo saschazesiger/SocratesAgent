@@ -17,18 +17,25 @@ import { el, toast, setClass } from './api.js';
 
 // The keys a phone keyboard does not have, in the order a thumb wants them.
 // `send` is the bytes; a key with `mod` is a sticky modifier instead.
+//
+// The order is also the wrap. On a phone the bar is two rows of seven, and the
+// four arrows are one control rather than four: split across the fold - three
+// at the end of one row and the fourth at the start of the next - a thumb has
+// to hunt for the one that moves right. So the arrows are kept together at the
+// head of the second row, and the seven keys that are each their own thing
+// take the first.
 const KEYS = [
   { label: 'Esc', send: '\x1b', name: 'Escape' },
   { label: 'Tab', send: '\t', name: 'Tab' },
   { label: 'Ctrl', mod: 'ctrl', name: 'Control' },
   { label: 'Alt', mod: 'alt', name: 'Alt' },
+  { label: '⏎', send: '\r', name: 'Enter' },
+  { label: '^C', send: '\x03', name: 'Ctrl-C' },
+  { label: '^D', send: '\x04', name: 'Ctrl-D' },
   { label: '←', send: '\x1b[D', name: 'Left' },
   { label: '↓', send: '\x1b[B', name: 'Down' },
   { label: '↑', send: '\x1b[A', name: 'Up' },
   { label: '→', send: '\x1b[C', name: 'Right' },
-  { label: '⏎', send: '\r', name: 'Enter' },
-  { label: '^C', send: '\x03', name: 'Ctrl-C' },
-  { label: '^D', send: '\x04', name: 'Ctrl-D' },
   { label: '^Z', send: '\x1a', name: 'Ctrl-Z' },
   { label: 'Paste', paste: true, name: 'Paste' },
   { label: '⌨', keyboard: true, name: 'Keyboard' },

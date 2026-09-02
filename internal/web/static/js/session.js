@@ -506,6 +506,16 @@ class TermSocket {
    * server has acknowledged the bytes, `onLost` when they were discarded.
    */
   sendInput(data, opts = {}) {
+    // Every path that types goes through here - the terminal's own keys, the
+    // key bar, a paste, a dictated line, an operator run - which makes it the
+    // one place a scroll still in flight can be called off for all of them.
+    // A glide outlives the finger by half a second, and a glide that is still
+    // running when a key lands puts the pane back into the copy mode the
+    // keystroke has just taken it out of: the screen jumps away from what was
+    // typed and the pill comes back. The terminal ignores the call while it is
+    // itself producing mouse reports, so a wheel-route drag does not stop
+    // itself.
+    if (this.beforeInput) this.beforeInput();
     const bytes = typeof data === 'string' ? encoder.encode(data) : data;
     if (!bytes.length) return;
     this.inputSeq += 1;
@@ -1479,6 +1489,8 @@ function attach(session) {
     onStatus: (status) => onStatus(status),
   });
   socketRef.socket = socket;
+  // Anything typed calls off a scroll that is still gliding (see sendInput).
+  socket.beforeInput = () => { if (state.term) state.term.cancelScroll(); };
   state.socket = socket;
   state.keybar = mountKeyBar(dom.keybar, state.term.term, socket);
   showKeyBar(keyBarWanted());
@@ -1817,6 +1829,9 @@ function wire() {
   dom.navScrim.addEventListener('click', closeNav);
   if (dom.termJump) {
     dom.termJump.addEventListener('click', () => {
+      // A glide still in flight would scroll the pane straight back off the
+      // bottom the pill has just asked for.
+      if (state.term) state.term.cancelScroll();
       if (state.socket) state.socket.jump();
       showJump(false);
       if (state.term) state.term.focus();

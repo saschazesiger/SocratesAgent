@@ -2127,6 +2127,9 @@ body.stale .chat-item .row-mark.busy::after { animation-play-state: paused; opac
      given the same size as every other field rather than an exception to
      remember. */
   .switch input { font-size: 16px; }
+  /* The one control drawn over the pane, and the only way back to the bottom
+     for anybody who does not think to type. */
+  .term-jump { height: 44px; }
   .scope .seg { min-height: 44px; padding: 7px 12px; }
 
   /* A day header on a phone is read at arm's length in a moving car. 10.5px

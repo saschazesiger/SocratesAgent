@@ -1522,8 +1522,9 @@ xterm decide what a wheel meant. That reads as one path and is three, and two of
 them do not reach any history:
 
 * with a program tracking the mouse — which is **every one of Claude Code,
-  Codex and OpenCode** — the wheel becomes an SGR mouse report and is forwarded
-  to the program, which scrolls its own conversation or nothing;
+  Codex and OpenCode**, all three of them on the alternate screen as this
+  product launches them — the wheel becomes an SGR mouse report and is
+  forwarded to the program, which scrolls its own conversation or nothing;
 * with tmux's mouse off it becomes arrow keys, which walks a shell's history
   onto the prompt (this is the case the old code swallowed);
 * and on an alternate screen there is no xterm scrollback to move in any case.
@@ -1538,20 +1539,28 @@ draws every pane on the alternate screen and turns mouse tracking on for all of
 them, whatever the program inside is doing, so `buffer.active.type` and
 `modes.mouseTrackingMode` say the same thing for a shell and for Codex.
 
-* **A pane on the normal buffer** — a shell, and Claude Code, which writes its
-  conversation into the ordinary scrollback rather than over it. `term.js`
-  sends whole lines to `session.js`, which sends a `{t:"scroll", lines}`
-  control frame, and `internal/termux/scroll.go` runs `copy-mode -e` and
-  `send-keys -X -N n scroll-up` on the pane. That is tmux's own history — the
-  same one a person at a desk reaches with a prefix and PageUp — and it works
-  whatever the program thinks about the mouse and whatever `terminal.mouse` is
-  set to, because none of them is consulted. Copy mode is entered with `-e` so
-  that scrolling back down to the bottom leaves it by itself.
-* **A pane on the alternate screen** — a full-screen TUI, which is Codex and
-  OpenCode. **tmux has no history there at all**, and this is a fact about tmux
-  rather than a choice: verified on 3.6, `copy-mode` followed by twenty
-  `scroll-up` leaves `capture-pane` returning the same three lines, while
-  `capture-pane -a` still holds the normal buffer underneath — tmux's
+* **A pane on the normal buffer** — **the Shell harness, and that is the whole
+  of the list.** `term.js` sends whole lines to `session.js`, which sends a
+  `{t:"scroll", lines}` control frame, and `internal/termux/scroll.go` runs
+  `copy-mode -e -H` and `send-keys -X -N n scroll-up` on the pane. That is
+  tmux's own history — the same one a person at a desk reaches with a prefix
+  and PageUp — and it works whatever the program thinks about the mouse and
+  whatever `terminal.mouse` is set to, because none of them is consulted. Copy
+  mode is entered with `-e` so that scrolling back down to the bottom leaves it
+  by itself, and with `-H` so that tmux does not paint its own position
+  indicator (below).
+* **A pane on the alternate screen** — **all three CLIs, Claude Code
+  included.** Codex and OpenCode obviously draw a full screen; Claude Code does
+  too *as this product launches it*, because the fixed policy sets
+  `CLAUDE_CODE_NO_FLICKER=1` (`internal/harnesses/claude.go`), and with it a
+  real `claude` is `alternate_on=1` and tracking the mouse from its idle prompt
+  onward. A bare `claude` without that variable stays on the normal buffer,
+  which is exactly why the first version of this entry got it wrong and said
+  Claude Code was a copy-mode session. It is not; only Shell is.
+  **tmux has no history for an alternate screen at all**, and this is a fact
+  about tmux rather than a choice: verified on 3.6, `copy-mode` followed by
+  twenty `scroll-up` leaves `capture-pane` returning the same three lines,
+  while `capture-pane -a` still holds the normal buffer underneath — tmux's
   scrollback belongs to the normal buffer and the alternate screen is a window
   over it with nothing above. The only thing that can scroll such a pane is the
   program's own view, and a program that draws a full screen tracks the mouse
@@ -1559,11 +1568,29 @@ them, whatever the program inside is doing, so `buffer.active.type` and
   forwards to it as an SGR mouse report. With nobody tracking the mouse at all
   there is nothing to send and nothing to move, and the drag is swallowed.
 
+  **One wheel event per line, not one per batch.** A mouse report has no
+  magnitude: `ESC [ < 64 ; 40 ; 12 M` says "the wheel turned up", once, whether
+  the event that produced it carried seventeen pixels or six hundred. The first
+  version of this dispatched one `WheelEvent` per fifty-millisecond batch with
+  the summed delta, and measured against a real Claude Code that moved the
+  transcript **two or three lines for a drag the length of the screen**. The
+  batch is unrolled instead — `Math.abs(lines)` events, one per line — so the
+  distance the finger travelled is the distance the program is asked for.
+
 The server answers "which of the two" from `#{alternate_on}`, in the handshake
 and again in the reply to every scroll, and the browser re-reads it for each
 batch of lines rather than once per drag — so a program that goes to the
 alternate screen half way through a gesture is followed within one batch
 (50ms) rather than at the next one.
+
+**tmux's own position indicator is hidden.** Copy mode paints `23:13 [40/464]`
+in yellow at the top right of the pane, which is the one thing on screen this
+product does not paint white and a direct contradiction of §E.10. `copy-mode
+-H` suppresses it; `-H` arrived in tmux 3.4, so on 3.3 — the supported floor —
+the indicator is shown. That is a visible deviation on one old version and it
+is the right trade against having no reachable scrollback at all. It is not
+worked around with `mode-style`, because `mode-style` is also the selection
+colour and a white-on-white selection would be worse than a yellow number.
 
 Consequences, stated plainly:
 
@@ -1588,8 +1615,20 @@ Consequences, stated plainly:
   down: a velocity from the last 120ms of samples, decayed 0.9 a frame for
   about half a second, cancelled by the next touch. It travels by the same
   route the drag did, so it works on both histories. Batched to at most one
-  frame every 50ms, because a drag at 60fps on a car's cell link may not be 60
+  batch every 50ms, because a drag at 60fps on a car's cell link may not be 60
   control frames a second.
+
+  A glide **outlives the finger**, and that is a hazard of its own: type a key
+  while one is still running and the pane leaves copy mode for the keystroke —
+  correctly — and the next glide batch puts it straight back in, so the screen
+  jumps away from what was just typed and the pill comes back. A fifteen-step
+  drag glides, so this was every drag-then-type. `touchScroll` therefore
+  returns a `cancel()` alongside its disposer, and `TermSocket.sendInput` calls
+  it before every frame it sends — which covers the terminal's own keys, the
+  key bar, a paste, a dictated line and an operator run in one place, because
+  all of them go through that one method. The "Jump to live" pill calls it too.
+  The terminal ignores the call while it is itself dispatching mouse reports,
+  so a wheel-route drag does not stop itself.
 
 * **The fake TUI gained an alternate screen worth scrolling.** `e2e/fakebin`'s
   `/alt` used to paint a three-line box and ignore everything; it now turns
@@ -1619,6 +1658,12 @@ The rest of the audit, briefly:
   edge of a 390px phone in a bar with its scrollbar hidden, with nothing to say
   they were there. The bar now wraps. Unconditionally: a row that fits does not
   wrap, so a desk never sees a second row, and no width has to be guessed at.
+* **The key bar's order changed with its wrap.** Two rows of seven put the
+  arrows across the fold — `← ↓ ↑` at the end of one row and `→` at the start
+  of the next — and four arrows are one control, not four. `⏎ ^C ^D` moved up
+  to finish the first row and the arrows sit together at the head of the
+  second. DESIGN.md §E.6 carries a `rev 5` note; it still described one
+  scrollable row.
 * **Tap targets.** Twenty-odd controls were sized for a mouse — 24 to 38 pixels,
   hit on a desk by hovering first. A block at the end of `app.css` raises all of
   them to 44 CSS pixels under `(pointer: coarse)`. It is at the end of the file

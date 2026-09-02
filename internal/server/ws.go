@@ -1441,16 +1441,26 @@ func (c *termConn) writeInput(payload []byte) (bool, error) {
 	// a scroll leaves copy mode first. A focus report is not a real key and
 	// does not: a tab coming back to the front must not throw away the place
 	// somebody scrolled to.
-	if len(keys) > 0 && !onlyFocusReports(keys) && c.srv.manager.InCopyMode(tv.sessionID) {
-		ctx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
-		if err := c.srv.manager.ExitCopyMode(ctx, tv.sessionID); err != nil {
-			log.Printf("session %s: could not leave copy mode to type: %v", tv.sessionID, err)
-		}
-		cancel()
-		c.leftCopyMode = true
-	}
+	//
+	// The leaving and the writing happen under the session's scroll lock, held
+	// across both by the Manager, because between a check and a byte another
+	// device's finger can put the pane back into copy mode - and that byte
+	// would then be read as a copy-mode command.
 	if len(keys) > 0 {
-		if _, err := tv.viewer.Write(keys); err != nil {
+		write := func() error {
+			_, err := tv.viewer.Write(keys)
+			return err
+		}
+		var err error
+		if !onlyFocusReports(keys) && c.srv.manager.InCopyMode(tv.sessionID) {
+			ctx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
+			// Only a mode that really was left takes the pill off the pane.
+			c.leftCopyMode, err = c.srv.manager.LeaveCopyMode(ctx, tv.sessionID, write)
+			cancel()
+		} else {
+			err = write()
+		}
+		if err != nil {
 			// Nothing was written, so nothing is acknowledged: the client is
 			// told the last number that did reach the pane, which is the same
 			// "start again from here" a gap is answered with, and it renumbers
