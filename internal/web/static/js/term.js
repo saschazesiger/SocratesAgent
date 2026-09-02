@@ -105,33 +105,146 @@ const TOUCH_SLOP = 8;
  * moved nothing at all, and the scrollback of a session was unreachable from
  * the device this product is used from.
  *
- * A drag is therefore turned into the wheel events a trackpad would have sent,
- * dispatched on the screen element, which is where a real wheel lands. What a
- * wheel then means is xterm's own decision and not ours: with tmux tracking the
- * mouse - the default - it is a mouse report, and tmux scrolls its own history
- * in copy mode; a program tracking the mouse itself is handed the same report;
- * and a plain buffer scrolls xterm's own scrollback. One path, and the same one
- * a desk with a real wheel already takes.
+ * The obvious repair - synthesise the wheel a trackpad would have sent - reads
+ * as one path and is three, two of them wrong. A wheel is xterm's to interpret,
+ * and what it decides depends on the program: with the mouse tracked, which is
+ * what Claude Code, Codex and OpenCode all turn on, it becomes an SGR mouse
+ * report and goes to the program, which scrolls its own conversation or
+ * nothing at all; with tmux's mouse off it becomes arrow keys, which walks a
+ * shell's history onto the prompt; and on an alternate screen there is no
+ * xterm scrollback to move in any case. On the three session types this
+ * product exists for, a finger therefore reached nothing.
  *
- * The pixels are passed through as they were measured, so the screen follows
- * the finger at the speed a trackpad would have moved it.
+ * Which history a drag moves is decided once per drag, and it is the **server**
+ * that knows: xterm cannot tell, because a tmux client draws every pane on the
+ * alternate screen and tracks the mouse for every one of them, whatever the
+ * program inside is doing. `wheelPane()` is what the server said.
  *
- * The one case a finger is not given to xterm is `scrollable` below.
+ * With a **pane on the normal buffer** - a shell, and Claude Code, which
+ * writes its conversation into the ordinary scrollback rather than over it -
+ * the drag goes to the server as a `scroll` control frame and moves tmux's own
+ * copy mode. That is the same history a person at a desk reaches with a prefix
+ * and PageUp, and it works whatever the program thinks about the mouse and
+ * whatever `terminal.mouse` is set to, because none of them is consulted.
+ *
+ * With a **pane on the alternate screen** - a full-screen TUI, which is Codex
+ * and OpenCode - tmux has no history at all: verified, `copy-mode` plus twenty
+ * `scroll-up` leaves `capture-pane` returning the same three lines, because
+ * tmux's scrollback belongs to the normal buffer and the alternate screen is a
+ * window over it with nothing above. The only thing that can scroll there is
+ * the program's own view, and a program that draws a full screen tracks the
+ * mouse in order to be asked - so the drag becomes the wheel it asked for,
+ * which tmux forwards to it as a mouse report. With nobody tracking the mouse
+ * at all there is nothing to send and nothing to move, and the drag is
+ * swallowed, as it always was.
+ *
+ * Momentum is the other half of the gesture: a phone that stops dead the
+ * instant a finger leaves the glass does not read as scrolling. The last
+ * moves give a velocity, and it is decayed frame by frame for about half a
+ * second, cancelled by the next touch.
  */
-function touchScroll(host, term) {
-  // What a wheel is worth here. On an alternate screen with nobody tracking the
-  // mouse - a tmux pane with `mouse off` - xterm has no scrollback of its own to
-  // move and turns a wheel into arrow keys instead. That is a fair reading of a
-  // deliberate turn of a wheel in `less`; it is not a fair reading of a drag,
-  // which is how a phone scrolls everything. It would answer the gesture by
-  // walking the shell's history onto the prompt. So the drag is swallowed: it
-  // scrolls nothing, exactly as it did before any of this, and it types nothing.
-  const scrollable = () => term.buffer.active.type !== 'alternate'
-    || term.modes.mouseTrackingMode !== 'none';
+function touchScroll(host, term, onScroll, wheelPane) {
+  // Which history this drag is moving, decided when it starts so that the
+  // glide after it cannot change its mind half way.
+  //   'tmux'  - the server scrolls tmux's copy mode
+  //   'wheel' - the program's own view, through the mouse report it asked for
+  //   'none'  - there is nothing to scroll, and the drag is swallowed
+  const pathFor = () => {
+    if (onScroll && !(wheelPane && wheelPane())) return 'tmux';
+    return term.modes.mouseTrackingMode === 'none' ? 'none' : 'wheel';
+  };
+  let path = 'none';
   let id = null;          // the finger being followed, or none
   let originY = 0;        // where it went down, for the slop
   let lastY = 0;          // where it was last seen, for the delta
   let scrolling = false;  // past the slop: the drag is ours
+  let pending = 0;        // lines asked for and not yet sent
+  let sentAt = 0;         // when the last batch went, for the throttle
+  let flushTimer = null;
+  let glide = null;       // the momentum animation
+  const samples = [];     // {t, y} of the last moves, for the velocity
+
+  // A line, in pixels. Asked of the pane rather than of a private field, so a
+  // font-size change is picked up without anything having to be told.
+  const lineHeight = () => {
+    const screen = host.querySelector('.xterm-screen');
+    const rows = term.rows || 24;
+    const h = screen ? screen.clientHeight / rows : 0;
+    return h > 2 ? h : 17;
+  };
+
+  // send batches whole lines. A drag at sixty frames a second would otherwise
+  // be sixty control frames a second on a link that is the reason this product
+  // exists; a batch every fifty milliseconds is smooth and is twenty.
+  // emit is the one place a measured number of lines becomes movement, so the
+  // glide and the drag travel by exactly the same route.
+  const emit = (lines) => {
+    // Asked again for every batch rather than once for the drag: a program
+    // that goes to the alternate screen changes the answer, and the server
+    // says so in the reply to the first batch. Re-reading it here is what
+    // makes the rest of the same drag land the right way round.
+    path = pathFor();
+    if (path === 'tmux') { onScroll(lines); return; }
+    if (path !== 'wheel') return;
+    const screen = host.querySelector('.xterm-screen');
+    if (!screen) return;
+    const box = screen.getBoundingClientRect();
+    // A finger moving down brings earlier lines down with it, which is a wheel
+    // turned up.
+    screen.dispatchEvent(new WheelEvent('wheel', {
+      deltaY: -lines * lineHeight(),
+      deltaMode: 0,
+      clientX: Math.round(box.left + box.width / 2),
+      clientY: Math.round(box.top + box.height / 2),
+      bubbles: true,
+      cancelable: true,
+    }));
+  };
+
+  const flush = () => {
+    if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+    const whole = pending > 0 ? Math.floor(pending) : Math.ceil(pending);
+    if (!whole) return;
+    pending -= whole;
+    sentAt = Date.now();
+    emit(whole);
+  };
+  const schedule = () => {
+    if (Math.abs(pending) < 1) return;
+    const since = Date.now() - sentAt;
+    if (since >= 50) { flush(); return; }
+    if (!flushTimer) flushTimer = setTimeout(flush, 50 - since);
+  };
+
+  const stopGlide = () => { if (glide) { cancelAnimationFrame(glide); glide = null; } };
+
+  // A drag that ends with the finger moving keeps moving, and slows down.
+  // 0.9 a frame is about half a second of travel at sixty frames a second,
+  // which is what a phone's own lists feel like.
+  const startGlide = () => {
+    stopGlide();
+    const now = performance.now();
+    const recent = samples.filter((s) => now - s.t < 120);
+    if (recent.length < 2) return;
+    const first = recent[0];
+    const last = recent[recent.length - 1];
+    const dt = last.t - first.t;
+    if (dt <= 0) return;
+    let velocity = (last.y - first.y) / dt;   // pixels per millisecond
+    if (Math.abs(velocity) < 0.15) return;
+    if (Math.abs(velocity) > 6) velocity = Math.sign(velocity) * 6;
+    let previous = now;
+    const step = (t) => {
+      const dtms = Math.min(t - previous, 40);
+      previous = t;
+      pending += (velocity * dtms) / lineHeight();
+      schedule();
+      velocity *= 0.9 ** (dtms / 16.7);
+      if (Math.abs(velocity) < 0.02) { glide = null; flush(); return; }
+      glide = requestAnimationFrame(step);
+    };
+    glide = requestAnimationFrame(step);
+  };
 
   const followed = (touches) => {
     for (const touch of touches) if (touch.identifier === id) return touch;
@@ -139,10 +252,17 @@ function touchScroll(host, term) {
   };
 
   const start = (ev) => {
+    // A finger on a pane that is still gliding stops it, the way it does
+    // everywhere else on a phone.
+    stopGlide();
+    pending = 0;
+    samples.length = 0;
     // A second finger is a pinch, and a pinch is the browser's.
     if (ev.touches.length !== 1) { id = null; return; }
     id = ev.touches[0].identifier;
+    path = pathFor();
     originY = lastY = ev.touches[0].clientY;
+    samples.push({ t: performance.now(), y: originY });
     scrolling = false;
   };
 
@@ -154,29 +274,23 @@ function touchScroll(host, term) {
     scrolling = true;
     const dy = touch.clientY - lastY;
     lastY = touch.clientY;
+    samples.push({ t: performance.now(), y: touch.clientY });
+    if (samples.length > 8) samples.shift();
     // Whatever this drag turns out to scroll, it is not the page: taken before
     // the browser can rubber-band, and before a release can synthesise the
     // mouse events of a tap the pane would send on to the program.
     if (ev.cancelable) ev.preventDefault();
-    if (!dy || !scrollable()) return;
-    const screen = host.querySelector('.xterm-screen');
-    if (!screen) return;
-    // A finger moving down brings earlier lines down with it, which is a wheel
-    // turned up. The delta is in CSS pixels, which is what a line of it is
-    // worth to xterm.
-    screen.dispatchEvent(new WheelEvent('wheel', {
-      deltaY: -dy,
-      deltaMode: 0,
-      clientX: touch.clientX,
-      clientY: touch.clientY,
-      bubbles: true,
-      cancelable: true,
-    }));
+    if (!dy) return;
+    // A finger moving down brings earlier lines down with it, which is a step
+    // back into whichever history this drag is moving.
+    pending += dy / lineHeight();
+    schedule();
   };
 
   const end = (ev) => {
     if (id === null || !followed(ev.changedTouches)) return;
     id = null;
+    if (scrolling) { flush(); startGlide(); }
     scrolling = false;
   };
 
@@ -185,6 +299,8 @@ function touchScroll(host, term) {
   host.addEventListener('touchend', end, { passive: true });
   host.addEventListener('touchcancel', end, { passive: true });
   return () => {
+    stopGlide();
+    if (flushTimer) clearTimeout(flushTimer);
     host.removeEventListener('touchstart', start);
     host.removeEventListener('touchmove', move);
     host.removeEventListener('touchend', end);
@@ -229,11 +345,17 @@ export function createTerm(host, opts = {}) {
   }
 
   // A finger, which xterm 6 does nothing with on its own.
-  const unwireTouch = touchScroll(host, term);
+  const unwireTouch = touchScroll(host, term, opts.onScroll || null, opts.wheelPane || null);
 
   // The hidden textarea is a text field like any other as far as a phone is
   // concerned, and a terminal is the one place autocorrect must never reach.
   if (term.textarea) {
+    // Sixteen pixels, whatever the terminal is set to. iOS Safari zooms the
+    // whole page in when a field under 16px takes focus, and this field takes
+    // focus every time somebody taps the pane to type - so a 14px terminal
+    // meant a zoomed, sideways-scrolling page on every single tap. Nothing is
+    // drawn from this element; it is xterm's hidden input.
+    term.textarea.style.fontSize = '16px';
     term.textarea.setAttribute('autocorrect', 'off');
     term.textarea.setAttribute('autocapitalize', 'none');
     term.textarea.setAttribute('autocomplete', 'off');

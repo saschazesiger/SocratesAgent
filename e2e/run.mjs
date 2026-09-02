@@ -761,13 +761,11 @@ async function touchscroll() {
     ok(/^mark-120/m.test(bottom), 'and dragging back up returns to the live bottom of the pane',
       oneLine(bottom.split('\n').filter((l) => l.trim()).slice(-1)[0] || ''));
 
-    // And the one gesture that is deliberately swallowed. With tmux's mouse
-    // turned off in the dashboard there is no mouse report to send and no
-    // scrollback of xterm's own to move - a pane under tmux is an alternate
-    // screen - so a wheel is arrow keys, which is a fair reading of a wheel
-    // deliberately turned in `less` and a terrible one of the gesture a phone
-    // scrolls everything with. A drag must not walk the shell's history onto
-    // the prompt.
+    // With tmux's mouse turned off in the dashboard. A drag is a command on
+    // the control channel now, not a mouse report, so the tmux setting has
+    // nothing to do with it and the history is still reachable - but the thing
+    // that setting used to protect still holds absolutely: a drag must never
+    // walk the shell's history onto the prompt.
     const off = await s.context.request.put(s.url + '/api/settings', {
       data: { settings: { terminal: { webgl: false, mouse: false } } },
     });
@@ -777,8 +775,16 @@ async function touchscroll() {
       null, { timeout: 10000 });
     const settled = await screen(s.page);
     await drag(box.top, box.bottom);
+    const moved = await screen(s.page);
+    ok(moved !== settled, 'with tmux\'s mouse off a drag still reaches the history',
+      oneLine(moved.split('\n').filter((l) => l.trim())[0] || ''));
+    // And the whole of what turning the mouse off used to protect: a drag must
+    // never walk the shell's history onto the prompt. Back at the bottom, the
+    // pane is what it was, character for character.
+    await drag(box.bottom, box.top);
+    await drag(box.bottom, box.top);
     const quiet = await screen(s.page);
-    ok(quiet === settled, 'with no mouse to report to, a drag scrolls nothing and types nothing',
+    ok(quiet === settled, 'and it typed nothing on the way',
       oneLine(quiet.split('\n').filter((l) => l.trim()).slice(-1)[0] || ''));
 
     await cdp.detach();
@@ -4937,6 +4943,486 @@ async function daygroups() {
   } finally { await s.stop(); }
 }
 
+/* ------------------------------------------------ 8c. the phone audit
+
+   Eight scenarios out of the audit of this app on an iPhone-shaped browser.
+   Every one of them was a script that reproduced a defect before it was
+   fixed; they are here so that it stays fixed. `docs/design/DEVIATIONS.md`
+   records what each one found. */
+
+// finger drives Chrome's own touch pipeline over CDP, so `touch-action` and
+// any gesture the browser might have claimed are part of what is proved. A
+// synthesised touch event in the page would prove neither.
+function finger(cdp) {
+  return {
+    async drag(x, from, to, steps = 15, stepMs = 16) {
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y: from }] });
+      for (let i = 1; i <= steps; i += 1) {
+        const y = Math.round(from + ((to - from) * i) / steps);
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y }] });
+        await wait(stepMs);
+      }
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await wait(350);
+    },
+  };
+}
+
+// paneBox is where a finger may land on the pane without touching its edges.
+const paneBox = (page) => page.$eval('#term .xterm-screen', (n) => {
+  const r = n.getBoundingClientRect();
+  return {
+    x: Math.round(r.x + r.width / 2),
+    top: Math.round(r.y + 60),
+    bottom: Math.round(r.bottom - 60),
+  };
+});
+
+// smallTargets returns every control on screen under 44x44 CSS pixels, which
+// is Apple's own floor for something a finger has to hit.
+//
+// Two things are deliberately not counted. xterm's helper textarea is an
+// invisible one-character input that follows the cursor - nothing aims at it,
+// the pane around it is the target - and a link inside a sentence is a word,
+// not a button: making one 44px tall would put a hole in the paragraph.
+const smallTargets = (page) => page.evaluate(() => {
+  const out = [];
+  for (const el of document.querySelectorAll('button, a, input, select, textarea, [role="button"], summary, .switch')) {
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) continue;
+    const st = getComputedStyle(el);
+    if (st.visibility === 'hidden' || st.display === 'none' || st.pointerEvents === 'none') continue;
+    if (r.bottom < 0 || r.top > innerHeight || r.right < 0 || r.left > innerWidth) continue;
+    if (el.classList.contains('xterm-helper-textarea')) continue;
+    if (el.tagName === 'A' && el.closest('.hint, .card-sub, p')) continue;
+    if (r.width < 44 || r.height < 44) {
+      out.push((el.id || el.className.toString().split(' ')[0] || el.tagName.toLowerCase())
+        + ' ' + Math.round(r.width) + 'x' + Math.round(r.height));
+    }
+  }
+  return out;
+});
+
+// A full-screen TUI, which is what this product is carried on a phone for.
+//
+// tmux keeps no scrollback for an alternate screen - its history belongs to
+// the normal buffer - so the only thing a finger can move there is the
+// program's own view, and the program tracks the mouse in order to be asked.
+// The server is what knows which of the two a pane is, and it says so in the
+// handshake and again after every scroll; the browser cannot tell, because a
+// tmux client draws every pane on the alternate screen and tracks the mouse
+// for all of them.
+async function touchscrolltui() {
+  const s = await start({ viewport: { width: 390, height: 844 }, touch: true });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    await startSession(s.page, 'claude');
+    await s.page.waitForSelector('#term .xterm', { timeout: 30000 });
+    await wait(1500);
+
+    const cdp = await s.context.newCDPSession(s.page);
+    const f = finger(cdp);
+
+    // First on the normal buffer, where tmux's own history is what moves.
+    await typeLine(s.page, '/spin');
+    ok(await awaitScreen(s.page, 'spin 200'), 'the fake filled the pane past its bottom',
+      oneLine(await screen(s.page)));
+    let box = await paneBox(s.page);
+    const before = await screen(s.page);
+    await f.drag(box.x, box.top, box.bottom);
+    const back = await screen(s.page);
+    ok(back !== before && /spin \d+/.test(back),
+      'a finger on a normal-buffer session moves tmux\'s own history',
+      oneLine(back.split('\n').filter((l) => l.trim())[0] || ''));
+    ok(await s.page.evaluate(() => !document.getElementById('termJump').hidden),
+      'and the pane says it is no longer live');
+    await s.page.tap('#termJump');
+    await wait(600);
+
+    // Then on the alternate screen, which is what Codex and OpenCode draw.
+    await typeLine(s.page, '/alt');
+    ok(await awaitScreen(s.page, 'ALTERNATE'), 'the fake went to the alternate screen',
+      oneLine(await screen(s.page)));
+    await wait(600);
+    box = await paneBox(s.page);
+    const altBefore = await screen(s.page);
+    await f.drag(box.x, box.top, box.bottom);
+    const altAfter = await screen(s.page);
+    const topLine = (text) => Number((text.match(/^alt-(\d+)/m) || [0, 0])[1]);
+    ok(altAfter !== altBefore && topLine(altAfter) > 0 && topLine(altAfter) < topLine(altBefore),
+      'a finger on a full-screen TUI scrolls the program\'s own view',
+      'alt-' + topLine(altBefore) + ' -> alt-' + topLine(altAfter));
+    ok(!/spin|\$ |> $/.test(altAfter.split('\n').slice(-1)[0] || ''),
+      'and it typed nothing into it',
+      oneLine(altAfter.split('\n').filter((l) => l.trim()).slice(-1)[0] || ''));
+
+    await cdp.detach();
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+// Scrolling back puts the pane in tmux's copy mode, and copy mode is a place a
+// person can be without knowing it: the screen is still and every keystroke is
+// read as one of its own commands. Two things answer that, and both are here.
+async function scrollstate() {
+  const s = await start({ viewport: { width: 390, height: 844 }, touch: true });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+    await typeLine(s.page, 'i=1; while [ $i -le 300 ]; do echo "mark-$i"; i=$((i+1)); done');
+    ok(await awaitScreen(s.page, 'mark-300', 25000), 'the shell printed past the bottom',
+      oneLine(await screen(s.page)));
+    await wait(500);
+
+    const cdp = await s.context.newCDPSession(s.page);
+    const f = finger(cdp);
+    const box = await paneBox(s.page);
+    ok(await s.page.evaluate(() => document.getElementById('termJump').hidden),
+      'a live pane says nothing about being live');
+
+    await f.drag(box.x, box.top, box.bottom);
+    const pill = await s.page.evaluate(() => {
+      const el = document.getElementById('termJump');
+      const r = el.getBoundingClientRect();
+      return { hidden: el.hidden, text: el.textContent, w: Math.round(r.width), h: Math.round(r.height) };
+    });
+    ok(!pill.hidden && pill.text === 'Jump to live',
+      'a pane scrolled back raises the pill that says so', JSON.stringify(pill));
+    await shot(s.page, 'scrollstate-pill');
+
+    await s.page.tap('#termJump');
+    await wait(800);
+    ok(await awaitScreen(s.page, 'mark-300', 5000), 'tapping it returns to the live bottom',
+      oneLine((await screen(s.page)).split('\n').filter((l) => l.trim()).slice(-1)[0] || ''));
+    ok(await s.page.evaluate(() => document.getElementById('termJump').hidden),
+      'and the pill goes with it');
+
+    // And the half that works whether or not the pill was ever noticed.
+    await f.drag(box.x, box.top, box.bottom);
+    await wait(300);
+    await typeLine(s.page, 'echo AFTERSCROLL');
+    ok(await awaitScreen(s.page, 'AFTERSCROLL', 8000),
+      'a command typed after a scroll leaves copy mode by itself and reaches the shell',
+      oneLine(await screen(s.page)));
+    ok(await s.page.evaluate(() => document.getElementById('termJump').hidden),
+      'and the pane is live again');
+
+    await cdp.detach();
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+// A flick is not a drag that stopped. A phone that halts the instant the
+// finger leaves the glass does not read as scrolling at all.
+async function momentum() {
+  const s = await start({ viewport: { width: 390, height: 844 }, touch: true });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+    await typeLine(s.page, 'i=1; while [ $i -le 400 ]; do echo "mark-$i"; i=$((i+1)); done');
+    ok(await awaitScreen(s.page, 'mark-400', 25000), 'the shell printed four hundred lines',
+      oneLine(await screen(s.page)));
+    await wait(500);
+
+    const cdp = await s.context.newCDPSession(s.page);
+    const f = finger(cdp);
+    const box = await paneBox(s.page);
+    const top = (text) => Number((text.match(/^mark-(\d+)/m) || [0, 0])[1]);
+
+    // A fast flick: few steps, no time between them.
+    await f.drag(box.x, box.top, box.bottom, 6, 4);
+    const atRelease = top(await screen(s.page));
+    await wait(900);
+    const afterGlide = top(await screen(s.page));
+    ok(atRelease > 0 && afterGlide > 0 && afterGlide < atRelease,
+      'a flick keeps travelling after the finger has left the glass',
+      'mark-' + atRelease + ' -> mark-' + afterGlide);
+
+    // And a finger put back down stops it, the way it does everywhere else.
+    await f.drag(box.x, box.top, box.bottom, 6, 4);
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: box.x, y: box.top }] });
+    await wait(60);
+    const caught = top(await screen(s.page));
+    await wait(700);
+    const still = top(await screen(s.page));
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    ok(still === caught, 'and a finger put back down stops it',
+      'mark-' + caught + ' -> mark-' + still);
+
+    await cdp.detach();
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+// The new-session sheet with the on-screen keyboard up. iOS does not shrink
+// 100vh for a keyboard, so a sheet sized by it kept its own Start button below
+// the fold on the one device the sheet is used from - and a sheet that cannot
+// be completed is a product that cannot be started.
+async function sheetkeyboard() {
+  // 390x450 is about what an iPhone's visual viewport becomes with the
+  // keyboard up, and it is the viewport the sheet has to fit into.
+  const s = await start({ viewport: { width: 390, height: 450 }, touch: true });
+  try {
+    await setup(s.page, s.url);
+    await open(s);
+    await ensureNav(s.page);
+    await s.page.click('#newSession');
+    await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 10000 });
+    await wait(500);
+
+    const box = await s.page.evaluate(() => {
+      const sheet = document.querySelector('#newSessionSheet');
+      const startBtn = document.getElementById('nsStart');
+      const r = sheet.getBoundingClientRect();
+      const b = startBtn.getBoundingClientRect();
+      return {
+        sheetTop: Math.round(r.top), sheetBottom: Math.round(r.bottom),
+        startTop: Math.round(b.top), startBottom: Math.round(b.bottom),
+        innerH: innerHeight,
+        scrollable: sheet.scrollHeight > sheet.clientHeight,
+        maxHeight: getComputedStyle(sheet).maxHeight,
+      };
+    });
+    ok(box.sheetBottom <= box.innerH + 1 && box.sheetTop >= 0,
+      'the sheet fits inside the viewport the keyboard left', JSON.stringify(box));
+    ok(box.startBottom <= box.innerH && box.startTop >= 0,
+      'and Start session is on screen without scrolling for it',
+      'start ' + box.startTop + '..' + box.startBottom + ' of ' + box.innerH);
+    await shot(s.page, 'sheet-keyboard');
+
+    // And it still starts a session from there.
+    await s.page.click('#nsHarness .seg[data-value="shell"]');
+    await wait(200);
+    await s.page.click('#nsStart');
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    ok(true, 'and the session it started opened');
+
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+// Seven of the key bar's fourteen keys used to start off the right edge of a
+// 390px phone, in a bar whose scrollbar is hidden, with nothing to say they
+// were there - and the seven it hid were the arrows, Enter, ^C, ^D, ^Z, Paste
+// and the keyboard button.
+async function keybarreach() {
+  const measure = async (s, label) => {
+    const bar = await s.page.evaluate(() => {
+      const b = document.getElementById('keybar');
+      const keys = [...b.querySelectorAll('.key')];
+      return {
+        rows: new Set(keys.map((k) => Math.round(k.getBoundingClientRect().top))).size,
+        offScreen: keys.filter((k) => {
+          const r = k.getBoundingClientRect();
+          return r.right > innerWidth + 1 || r.bottom > innerHeight + 1 || r.left < -1;
+        }).map((k) => k.dataset.key),
+        smallest: Math.min(...keys.map((k) => Math.round(k.getBoundingClientRect().height))),
+        count: keys.length,
+      };
+    });
+    ok(bar.count === 14 && bar.offScreen.length === 0,
+      label + ': every key on the bar is on screen', JSON.stringify(bar));
+    ok(bar.smallest >= 44, label + ': and every one of them is a 44px target',
+      bar.smallest + 'px');
+    return bar;
+  };
+
+  const s = await start({ viewport: { width: 390, height: 844 }, touch: true });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+    await s.page.evaluate(() => localStorage.setItem('socrates.term.keybar', 'on'));
+    await s.page.reload({ waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#keybar .key', { timeout: 15000 });
+    await wait(800);
+
+    const portrait = await measure(s, 'portrait');
+    ok(portrait.rows === 2, 'portrait: the bar wraps to two rows rather than hiding half of itself',
+      portrait.rows + ' rows');
+    await shot(s.page, 'keybar-portrait');
+
+    await s.page.setViewportSize({ width: 844, height: 390 });
+    await wait(700);
+    await measure(s, 'landscape');
+    await shot(s.page, 'keybar-landscape');
+
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+// Every control a finger has to hit, on the two pages a phone spends its time
+// on. They were all sized for a mouse - 24 to 38 pixels, hit on a desk by
+// hovering first.
+async function taptargets() {
+  const s = await start({ viewport: { width: 390, height: 844 }, touch: true });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+    await wait(600);
+
+    ok((await smallTargets(s.page)).length === 0, 'the session page has no control under 44x44',
+      (await smallTargets(s.page)).join(', ') || 'all 44 or more');
+
+    // Six 44px buttons and a name have to fit across 390 pixels. When they do
+    // not the column scrolls sideways under them and what goes off the left
+    // edge is the button that opens the session list, which is the one thing
+    // on the bar a phone cannot do without.
+    const bar = await s.page.evaluate(() => {
+      const top = document.querySelector('.topbar');
+      const app = document.querySelector('.app');
+      return { scrollW: top.scrollWidth, clientW: top.clientWidth, appScrollLeft: app.scrollLeft,
+        menuLeft: Math.round(document.getElementById('menuBtn').getBoundingClientRect().left) };
+    });
+    ok(bar.scrollW <= bar.clientW && bar.appScrollLeft === 0 && bar.menuLeft >= 0,
+      'and the top bar fits its column rather than pushing a button off the edge',
+      JSON.stringify(bar));
+
+    await ensureNav(s.page);
+    await wait(400);
+    ok((await smallTargets(s.page)).length === 0, 'nor does the session list',
+      (await smallTargets(s.page)).join(', ') || 'all 44 or more');
+
+    await s.page.click('#newSession');
+    await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 10000 });
+    await wait(400);
+    ok((await smallTargets(s.page)).length === 0, 'nor does the new session sheet',
+      (await smallTargets(s.page)).join(', ') || 'all 44 or more');
+    await s.page.click('#nsCancel');
+    await wait(300);
+
+    await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#saveTop', { timeout: 15000 });
+    await wait(1500);
+    const admin = await s.page.evaluate(() => {
+      const out = [];
+      for (const el of document.querySelectorAll('button, select, input[type=text], input[type=number], input[type=password], .switch, .switch .track')) {
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        const floor = el.classList.contains('track') ? 32 : 44;
+        if (r.height < floor) {
+          out.push((el.id || el.className.toString().split(' ')[0]) + ' ' + Math.round(r.height));
+        }
+      }
+      return out;
+    });
+    ok(admin.length === 0, 'and neither does the dashboard, switches included',
+      admin.slice(0, 10).join(', ') || 'all big enough');
+    await shot(s.page, 'taptargets-admin');
+
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+// A phone held in landscape is 844px wide, so every rule keyed on a phone's
+// portrait width missed it - which is the one orientation somebody fills a
+// form in. A field under 16px zooms iOS Safari the moment it takes focus, and
+// a zoomed page scrolls sideways.
+async function landscapetype() {
+  const s = await start({ viewport: { width: 844, height: 390 }, touch: true });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+
+    const small = (page) => page.evaluate(() => {
+      const out = [];
+      for (const el of document.querySelectorAll('input, textarea, select')) {
+        const st = getComputedStyle(el);
+        if (st.display === 'none' || st.visibility === 'hidden') continue;
+        const size = parseFloat(st.fontSize);
+        if (size < 16) out.push((el.id || el.className.toString().split(' ')[0] || el.type) + ' ' + size);
+      }
+      return out;
+    });
+
+    await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#saveTop', { timeout: 15000 });
+    await wait(1500);
+    ok((await small(s.page)).length === 0,
+      'no field on the dashboard is under 16px in landscape',
+      (await small(s.page)).slice(0, 8).join(', ') || 'all 16 or more');
+
+    await open(s);
+    await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+    await s.page.click('#agentBtn');
+    await s.page.waitForSelector('#chatText', { timeout: 10000 });
+    await wait(400);
+    ok((await small(s.page)).length === 0,
+      'nor is the chat field, nor xterm\'s own hidden input',
+      (await small(s.page)).slice(0, 8).join(', ') || 'all 16 or more');
+    const helper = await s.page.$eval('#term .xterm-helper-textarea',
+      (n) => getComputedStyle(n).fontSize);
+    ok(parseFloat(helper) >= 16,
+      'the terminal\'s helper textarea is 16px, so tapping the pane does not zoom the page', helper);
+
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+// The drawer, and the row a thumb is most likely to hit: the session that is
+// already open. It used to leave the list covering the terminal it had just
+// been asked for.
+async function drawerselect() {
+  const s = await start({ viewport: { width: 390, height: 844 }, touch: true });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    await startSession(s.page, 'shell');
+    const first = await s.page.evaluate(() => location.hash.slice(1));
+    await startSession(s.page, 'shell');
+    const second = await s.page.evaluate(() => location.hash.slice(1));
+    await wait(600);
+
+    const drawer = () => s.page.evaluate(() =>
+      Math.round(document.getElementById('sidebar').getBoundingClientRect().left));
+
+    await ensureNav(s.page);
+    await wait(400);
+    await s.page.tap(`#sessionList .chat-item[data-id="${first}"]`);
+    await wait(900);
+    ok(await drawer() < -10 && await s.page.evaluate(() => location.hash.slice(1)) === first,
+      'tapping another session switches to it and closes the drawer',
+      'hash=' + await s.page.evaluate(() => location.hash.slice(1)) + ' drawer=' + await drawer());
+
+    await ensureNav(s.page);
+    await wait(400);
+    await s.page.tap(`#sessionList .chat-item[data-id="${first}"]`);
+    await wait(900);
+    ok(await drawer() < -10,
+      'and tapping the session that is already open closes it too',
+      'drawer=' + await drawer());
+    ok(await s.page.evaluate(() => location.hash.slice(1)) === first,
+      'with the address bar still naming it', second ? 'not ' + second : '');
+    await shot(s.page, 'drawer-select');
+
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 // -------------------------------------------------------------------- run
 
 const ALL = [
@@ -4950,6 +5436,14 @@ const ALL = [
   ['exitoverlay', 'a pane that ends, its status under the sentence, and Restart', exitoverlay],
   ['webglrenders', 'the shipped renderer paints the terminal', webglrenders],
   ['touchscroll', 'a finger scrolls the pane, and a tap is still a tap', touchscroll],
+  ['touchscroll-tui', 'a finger on a full-screen TUI, and on the history under it', touchscrolltui],
+  ['scrollstate', 'a pane scrolled back says so, and swallows nothing typed into it', scrollstate],
+  ['momentum', 'a flick keeps travelling, and a finger put back down stops it', momentum],
+  ['sheetkeyboard', 'the new session sheet with the keyboard up', sheetkeyboard],
+  ['keybarreach', 'every key on the bar is on screen and 44px', keybarreach],
+  ['taptargets', 'no control on a phone is smaller than a finger', taptargets],
+  ['landscapetype', 'a phone in landscape keeps the type a phone needs', landscapetype],
+  ['drawerselect', 'the drawer closes for the session already open', drawerselect],
   ['keybar', 'no device gets the key bar unasked, and asked for it sends the right bytes', keybar],
   ['offlineonce', 'a line typed with no network arrives exactly once', offlineonce],
   ['sigtermreattach', 'a restarted server reattaches to the pane that kept running', sigtermreattach],

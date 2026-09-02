@@ -54,6 +54,11 @@
 html, body {
   height: 100%;
   margin: 0;
+  /* Nothing here scrolls the page: the shell is exactly the height of the
+     viewport and every list scrolls inside itself. Without this a drag that
+     starts on a pane and outruns it rubber-bands the whole app, and on a
+     phone a downward one is a pull-to-refresh that throws the session away. */
+  overscroll-behavior: none;
 }
 
 body {
@@ -219,6 +224,10 @@ a { color: inherit; }
   box-shadow: var(--shadow-sm);
   transition: transform .18s cubic-bezier(.3, .8, .4, 1);
 }
+/* A switch inside a field is still a switch. `.field label` is more specific
+   than `.switch`, so the label went back to `display: block` and its track
+   drew as an inline box 338 pixels wide and 18 tall, with the knob adrift. */
+.field label.switch { display: inline-flex; }
 .switch input:checked + .track { background: var(--accent); }
 .switch input:checked + .track::after { transform: translateX(16px); }
 
@@ -595,7 +604,12 @@ a { color: inherit; }
   background: var(--bg);
   color: var(--text);
   padding: 22px 24px 18px;
-  width: min(420px, calc(100vw - 32px));
+  width: min(420px, calc(100dvw - 32px));
+  /* The visual viewport, not the layout one: on iOS 100vh does not shrink
+     when the keyboard comes up, so a dialog sized by it puts its buttons
+     under the keyboard. --app-h is what followViewport() publishes. */
+  max-height: calc(var(--app-h, 100dvh) - 64px);
+  overflow: auto;
   margin: auto;
   animation: pop .16s cubic-bezier(.3, .8, .4, 1) backwards;
 }
@@ -639,14 +653,20 @@ a { color: inherit; }
    a small dialog in the middle. Either way it is short enough to answer with
    two taps and get on with typing. */
 .sheet {
+  --sheet-pad: 22px;
   border: 0;
-  padding: 22px;
+  padding: var(--sheet-pad);
   border-radius: 18px;
   background: var(--bg);
   box-shadow: var(--shadow);
   color: var(--text);
-  width: min(440px, calc(100vw - 32px));
-  max-height: calc(100vh - 64px);
+  width: min(440px, calc(100dvw - 32px));
+  /* The visual viewport rather than the layout one. On iOS the keyboard does
+     not shrink 100vh at all, so a sheet sized by it kept "Start session"
+     below the fold on every phone that had one up - which is every phone,
+     because the sheet's own directory field raises it. --app-h is the height
+     the person can actually see, published by followViewport(). */
+  max-height: calc(var(--app-h, 100dvh) - 64px);
   overflow: auto;
   animation: pop .22s var(--ease) backwards;
 }
@@ -657,11 +677,21 @@ a { color: inherit; }
   font-weight: 600;
   letter-spacing: -.015em;
 }
+/* The sheet scrolls; its two buttons do not. A sheet that is taller than a
+   phone with its keyboard up is the normal case rather than the exceptional
+   one, and "Start session" below the fold is a sheet that cannot be
+   completed. Sticky to the sheet's own padding edge, so it sits on the white
+   rather than over the field under it. */
 .sheet-actions {
+  position: sticky;
+  bottom: calc(-1 * var(--sheet-pad, 22px));
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 20px;
+  margin: 20px calc(-1 * var(--sheet-pad, 22px)) calc(-1 * var(--sheet-pad, 22px));
+  padding: 12px var(--sheet-pad, 22px);
+  background: var(--bg);
+  border-top: 1px solid var(--line);
 }
 .sheet .field { margin-bottom: 16px; }
 .sheet .hint { min-height: 1em; }
@@ -740,7 +770,11 @@ a { color: inherit; }
     max-width: none;
     margin: auto auto 0;
     border-radius: 18px 18px 0 0;
-    padding-bottom: calc(22px + env(safe-area-inset-bottom, 0px));
+  }
+  /* The home indicator's room goes under the buttons rather than under the
+     scrolling body, which would otherwise leave a white band below them. */
+  .sheet .sheet-actions {
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
   }
 }
 
@@ -767,7 +801,7 @@ a { color: inherit; }
   animation: rise .2s ease both;
   /* Centred on the viewport, so anything wider than the screen would hang off
      both edges at once. */
-  max-width: min(420px, calc(100vw - 24px));
+  max-width: min(420px, calc(100dvw - 24px));
 }
 .toast.error { background: #b53a3a; }
 
@@ -1079,9 +1113,11 @@ a { color: inherit; }
 }
 
 /* Under 16px a phone browser zooms the page the moment a field takes focus,
-   and a zoomed page scrolls sideways. Only the widths a phone actually has,
-   so a desktop window keeps the smaller, quieter type. */
-@media (max-width: 620px) {
+   and a zoomed page scrolls sideways. Keyed on the pointer rather than on the
+   width: a phone held in landscape is 844px wide and would have kept the
+   small type, which is exactly the orientation somebody fills a form in. A
+   desktop window keeps the smaller, quieter type. */
+@media (max-width: 620px), (pointer: coarse) {
   .input, .select, .textarea, .combo-input { font-size: 16px; }
   .input.mono, .textarea.mono { font-size: 16px; }
 }
@@ -1167,13 +1203,47 @@ a { color: inherit; }
    told not to take the vertical axis for a pan of the page - term.js turns the
    drag into the wheel xterm understands. Pinch is deliberately left out of the
    list: zooming stays where somebody needs it. */
-.term-host { width: 100%; height: 100%; touch-action: pan-x pinch-zoom; }
+/* pan-x, and deliberately not pinch-zoom. A double tap in xterm.js selects
+   the word under the finger, and a `pinch-zoom` touch-action leaves the
+   browser's own double-tap-to-zoom armed on the same gesture: the word is
+   selected and then the page jumps. Pinch itself is unaffected - the viewport
+   meta still permits it, and a two-finger gesture is never ours (term.js
+   drops any touch that is not the only one). See DEVIATIONS.md. */
+.term-host { width: 100%; height: 100%; touch-action: pan-x; }
 .term-host .xterm { height: 100%; }
 .term-host .xterm-viewport {
   background: var(--bg) !important;
   scrollbar-width: thin;
 }
 .term-host .xterm-screen { background: var(--bg); }
+
+/* The pane is held above its live bottom. It is the only thing on screen that
+   says so, so it is a word rather than a glyph - and it is the way back, so it
+   is a tap target rather than a label. White like everything else, one
+   hairline, and out of the way of the last line of the pane. */
+.term-jump {
+  position: absolute;
+  left: 50%;
+  bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  z-index: 6;
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
+  padding: 0 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--text-soft);
+  font: inherit;
+  font-size: 13px;
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  animation: rise .16s var(--ease) both;
+}
+.term-jump:hover { background: var(--bg-hover); color: var(--text); }
+.term-jump:active { transform: translateX(-50%) scale(.97); }
 
 /* The connection is down and what is on screen is old. The pane is not made
    read only - what is typed is queued and delivered on reconnect - but nobody
@@ -1304,11 +1374,16 @@ a { color: inherit; }
   animation: spin .9s linear infinite;
 }
 
-/* The keys a phone keyboard does not have. One row, scrolled sideways with a
-   thumb, on white like everything else. */
+/* The keys a phone keyboard does not have, on white like everything else.
+   They wrap: a single scrolling row put seven of the fourteen off the right
+   edge of a 390px phone with nothing to say they were there, and the seven it
+   hid were the arrows, Enter, ^C, ^D, ^Z, Paste and the keyboard - which is
+   to say the half a phone came for. Wrapping is unconditional because a row
+   that fits does not wrap, so a desk never sees a second row. */
 .keybar {
   flex: none;
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   /* The bar is the bottom of the page, so it is what keeps its buttons clear
      of the home bar and of a rounded corner. */
@@ -1316,7 +1391,6 @@ a { color: inherit; }
            calc(12px + env(safe-area-inset-right, 0px))
            calc(6px + env(safe-area-inset-bottom, 0px))
            calc(12px + env(safe-area-inset-left, 0px));
-  overflow-x: auto;
   border-top: 1px solid var(--line);
   scrollbar-width: none;
   -webkit-overflow-scrolling: touch;
@@ -2005,3 +2079,75 @@ body.stale .chat-item .row-mark.busy::after { animation-play-state: paused; opac
    whether it worked, for a page that was reloaded after it finished. */
 .install-result { margin-top: 12px; }
 .install-result.bad { color: var(--red); }
+
+
+/* ------------------------------------------------- touch targets
+
+   A finger is about 9mm across and lands where it lands; a mouse lands where
+   it was aimed. Every control below was sized for the second one - 24 to 38
+   pixels, hit on a desk by hovering first - and this block is what a phone
+   needs from all of them: 44 CSS pixels, which is Apple's own floor and the
+   number the audit measures against.
+
+   It is at the end of the file on purpose. Several of these controls are
+   shrunk again by a later container query written for a narrow pane, and a
+   media query carries no extra specificity to beat one with - only order
+   does. Nothing here applies to a mouse. */
+
+@media (pointer: coarse) {
+  .btn, .btn.sm, .auth .btn, .side-foot .btn { height: 44px; }
+  /* The top bar is a flex row, so a button with a width and no `flex` is a
+     button the row is free to squeeze - which is how six 44px icons measured
+     35 across. */
+  .topbar .icon-btn { flex: none; }
+  .icon-btn, .topbar .icon-btn { width: 44px; height: 44px; }
+  .chat-item .act { width: 44px; height: 44px; }
+  .key { min-width: 44px; height: 44px; }
+  .menu-item { min-height: 44px; display: flex; align-items: center; }
+  .combo-option { min-height: 44px; justify-content: center; }
+  .combo-toggle { width: 44px; }
+  .combo-input { padding-right: 46px; }
+  .term-notice .notice-close { width: 44px; height: 44px; }
+  /* The glyph stays 15px; what grows is the invisible area around it. */
+  .tip-mark { width: 44px; height: 44px; }
+  /* Two numbers and a cross, read at arm's length in a moving car. */
+  .term-size { font-size: 12px; }
+  .conn-retry { min-height: 44px; padding: 0 16px; }
+  .seg-row .seg { min-height: 44px; }
+  /* The switch is the whole label - the track, the words beside it and the
+     space between them - because that is what a thumb aims at. */
+  .switch { min-height: 44px; }
+  /* The track is the part a thumb aims at, and 38x22 is a mouse's target. */
+  .switch .track { width: 52px; height: 32px; }
+  .switch .track::after { width: 26px; height: 26px; margin: 3px; }
+  .switch input:checked + .track::after { transform: translateX(20px); }
+  .select, .input, .combo-input { min-height: 44px; }
+  /* The real checkbox behind a switch is invisible and untappable - the label
+     is the target - but a phone reads a field under 16px and zooms, so it is
+     given the same size as every other field rather than an exception to
+     remember. */
+  .switch input { font-size: 16px; }
+  .scope .seg { min-height: 44px; padding: 7px 12px; }
+
+  /* A day header on a phone is read at arm's length in a moving car. 10.5px
+     is not read at all. */
+  .chat-group { font-size: 12px; }
+
+  /* A phone paints a grey box over whatever a finger touches, a fifth of a
+     second after it has already responded, which reads as lag. The key bar
+     had this and nothing else did. */
+  button, a, [role="button"], .key, .menu-item, .combo-option, .switch, summary {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+/* Six 44px buttons, a mark and a name do not fit across 390 pixels with the
+   spacing a desk uses and a name that refuses to go under 5.5em: measured, the
+   bar was 408 wide in a 390 column, and what went off the left edge was the
+   button that opens the session list. The name gives up the room, because a
+   name that is shortened is still a name and a button that is off screen is
+   not a button. Under 345px the rule further up hides it outright. */
+@media (pointer: coarse) and (max-width: 440px) {
+  .topbar { gap: 4px; }
+  .topbar .title { min-width: 3em; }
+}

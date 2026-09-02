@@ -40,7 +40,11 @@ A suite that needed three logged-in accounts would not be a suite, so
 what the product now runs. It prints a banner naming itself, its working
 directory, its `--model` and the background colour it was told about, echoes
 every line back as `you said: …`, and understands `/exit <n>`, `/spin`, `/alt`
-and `/id`. It also writes the same state files the real binaries write and
+and `/id`. `/alt` is a real alternate screen rather than a picture of one: it
+turns mouse tracking on and keeps a two-hundred-line document it scrolls on a
+wheel report, the way the three real TUIs do, because a program's own view is
+the only thing a finger can move on a pane tmux keeps no history for. It also
+writes the same state files the real binaries write and
 refuses the same way they refuse, so the discovery and resume paths are
 exercised rather than mocked.
 
@@ -114,7 +118,15 @@ gitignored. Deleting `e2e/out/` is always safe.
 | `sessionlist` | rename, archive, unarchive and delete — and the working directory survives the delete |
 | `exitoverlay` | `/exit 7` raises the overlay with its status in a plain line under it, and **Restart** brings the session back |
 | `webglrenders` | the shipped renderer paints the terminal |
-| `touchscroll` | a finger dragged down the pane reaches what scrolled off it, a drag back up returns to the live bottom, a tap is still the tap that puts the keyboard on the pane, and with tmux's mouse off the drag types nothing |
+| `touchscroll` | a finger dragged down the pane reaches what scrolled off it, a drag back up returns to the live bottom, a tap is still the tap that puts the keyboard on the pane, and with tmux's mouse off the drag still reaches the history and still types nothing |
+| `touchscroll-tui` | the two histories a finger can move: tmux's own on a normal-buffer session, and a full-screen TUI's own view on the alternate screen, where tmux has none |
+| `scrollstate` | a pane scrolled back says so with **Jump to live**, the pill puts it back, and a command typed after a scroll leaves copy mode by itself rather than disappearing into it |
+| `momentum` | a flick keeps travelling after the finger has left the glass, and a finger put back down stops it |
+| `sheetkeyboard` | the new session sheet at 390×450 — the viewport an on-screen keyboard leaves — with **Start session** on screen and a session started from there |
+| `keybarreach` | all fourteen keys of the bar on screen and 44px, wrapped to two rows in portrait and one in landscape |
+| `taptargets` | no control on the session page, the list, the sheet or the dashboard is smaller than a finger |
+| `landscapetype` | a phone in landscape is 844px wide and still gets 16px fields, xterm's hidden input included |
+| `drawerselect` | tapping the session that is already open closes the drawer over the terminal it asked for |
 | `keybar` | no device gets the key bar until the ⋯ menu asks for it, on a phone or at a desk; asked for, it sends the right bytes, a sticky `Ctrl` turns the next letter into a control code, and a physical keystroke does not take it away again |
 | `offlineonce` | a whole command typed with the network off arrives **exactly once** when it comes back, the lost connection is visible while it is gone, and the app shell still opens offline |
 | `sigtermreattach` | the server is killed mid-session and restarted; the pane still holds what was typed and the session is running |
