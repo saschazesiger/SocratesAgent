@@ -339,7 +339,7 @@ export function mountAssist(ctx) {
         run = null;
         chat.runGone();
         paintTicker();
-          toast('That run is no longer running.');
+        toast('That run is no longer running.');
       }
     },
   };

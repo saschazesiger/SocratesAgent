@@ -147,6 +147,8 @@ scenario. Deleting `e2e/out/` is always safe.
 | `typeafteroutage` | a cut socket, a locked phone, and a pane that still takes keystrokes |
 | `typekeepsfocus` | a dialog, the ⋯ menu and two sessions: the keys still land in the pane |
 | `design` | white surfaces, a mark wherever a program is named, technical strings only in **Info**, and an animation that does not restart when a row re-renders |
+| `daygroups` | the session list read by day: Today, Yesterday, This week, This month, Older — a header only over a group with something in it, and a row that keeps its element when it moves to another day |
+| `notify` | a session that stops working while nobody is looking: one chime and one notification named after it, a speaker and a bell in the header that each turn one of them off and are remembered on this device, and nothing fired for a handshake replay |
 | `livesession` | one real session against the real Claude Code CLI (gated) |
 
 `lighttheme` measures the
