@@ -231,6 +231,10 @@ export async function start(options = {}) {
   });
   const context = await browser.newContext({
     viewport: options.viewport || { width: 390, height: 844 },
+    // A phone is a coarse pointer, and the key bar decides whether it is
+    // wanted by asking. Without this the mobile package's own rule is never
+    // the one under test, and every key is clicked rather than tapped.
+    ...(options.touch ? { hasTouch: true, isMobile: true } : {}),
     // The app has one palette, and it is the light one. Saying so keeps a
     // machine whose Chromium defaults to dark from rendering anything else.
     colorScheme: options.colorScheme || 'light',

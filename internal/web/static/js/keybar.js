@@ -16,7 +16,7 @@
 // transcribes, and the text lands in the field *unsent*. Nothing here speaks;
 // the text-to-speech half of voice.js stays exported and unused, as §E.6 says.
 
-import { api, el, toast, fmtClock, isOffline, errorMessage, setClass } from './api.js';
+import { api, el, toast, fmtClock, isOffline, setClass } from './api.js';
 import { Recorder, describeMicError } from './voice.js';
 
 /* ---------------------------------------------------------- the key bar */
@@ -41,6 +41,13 @@ const KEYS = [
 ];
 
 const KEYBAR_PREF = 'socrates.term.keybar';
+
+// What a modifier may be applied to: one printable character, which is what a
+// key on a keyboard produces. An escape sequence is a report or a reply, and a
+// longer string is a paste or an input-method commit.
+function isTypedKey(data) {
+  return [...data].length === 1 && data.charCodeAt(0) >= 0x20 && data.charCodeAt(0) !== 0x7f;
+}
 
 /**
  * keyBarWanted is whether this device gets the key bar without being asked.
@@ -96,18 +103,25 @@ export function mountKeyBar(host, term, socket) {
     paint();
   };
 
-  /** apply transforms one piece of typed input by whatever is armed. */
+  /**
+   * apply transforms one typed key by whatever modifier is armed.
+   *
+   * xterm's data channel carries more than keys: focus in and out reports,
+   * the replies to the device-attribute and size questions tmux asks on every
+   * attach, and whole pasted or composed strings. None of those is "the next
+   * key", and treating them as one is how tapping the keyboard button ate the
+   * Ctrl that had just been armed - the focus-in report got it - and how a
+   * locked Alt corrupted every reply the terminal sent. So anything that is
+   * not a single printable character passes through untouched, and leaves the
+   * modifier armed for the key the person is about to press.
+   */
   const apply = (data) => {
     if (!armed.size || typeof data !== 'string' || !data) return data;
+    if (!isTypedKey(data)) return data;
     let out = data;
     if (armed.has('ctrl')) {
-      const code = out.charCodeAt(0);
       // Ctrl of a printable key is that key's low five bits: `c` is 0x03.
-      if (out.length === 1 && code >= 0x40 && code <= 0x7f) {
-        out = String.fromCharCode(code & 0x1f);
-      } else if (out.length === 1 && code >= 0x20 && code < 0x40) {
-        out = String.fromCharCode(code & 0x1f);
-      }
+      out = String.fromCharCode(out.charCodeAt(0) & 0x1f);
       if (armed.get('ctrl') === 'on') armed.delete('ctrl');
     }
     if (armed.has('alt')) {
@@ -116,6 +130,16 @@ export function mountKeyBar(host, term, socket) {
     }
     paint();
     return out;
+  };
+
+  // consume spends whatever is armed for one key, for a key-bar action that
+  // sends bytes of its own. A locked modifier stays locked.
+  const consume = () => {
+    let changed = false;
+    for (const mod of ['ctrl', 'alt']) {
+      if (armed.get(mod) === 'on') { armed.delete(mod); changed = true; }
+    }
+    if (changed) paint();
   };
 
   const send = (bytes) => { if (socket) socket.sendInput(bytes); };
@@ -131,7 +155,7 @@ export function mountKeyBar(host, term, socket) {
       buttons.set(key.mod, button);
       button.addEventListener('click', () => toggle(key.mod));
     } else if (key.paste) {
-      button.addEventListener('click', () => paste(term, send));
+      button.addEventListener('click', () => { consume(); paste(term, send); });
     } else if (key.keyboard) {
       // Synchronously, inside the handler: iOS raises the keyboard for a
       // focus() that a tap caused and for nothing else, and an `await`
@@ -149,6 +173,8 @@ export function mountKeyBar(host, term, socket) {
   paint();
   return {
     apply,
+    /** clear disarms everything, for a bar that is being put away. */
+    clear() { if (armed.size) { armed.clear(); paint(); } },
     /** armedNow is what the scenarios and the bar itself read back. */
     armedNow: () => [...armed.entries()].map(([mod, state]) => mod + ':' + state).join(','),
     dispose() { host.innerHTML = ''; armed.clear(); buttons.clear(); },
@@ -202,9 +228,15 @@ function writeDraft(sessionId, value) {
  */
 export function mountComposer({ form, input, mic, recTime, sessionId, socket, term }) {
   const stored = readDraft(sessionId);
-  const pending = [...stored.pending];
-  input.value = [...pending, stored.draft].filter(Boolean).join(' ');
+  // What was in flight when the tab died is not in flight any more: no socket
+  // holds it, and the server was never told about it twice. So it comes back
+  // as an ordinary draft in the field, and the pending list starts empty -
+  // otherwise a line sent after a reload stays in storage for ever and is
+  // handed back on every later reload of the same session.
+  const pending = [];
+  input.value = [...stored.pending, stored.draft].filter(Boolean).join(' ');
   const save = () => writeDraft(sessionId, { draft: input.value, pending });
+  save();
 
   const recorder = new Recorder();
   let ticker = null;
@@ -278,9 +310,12 @@ export function mountComposer({ form, input, mic, recTime, sessionId, socket, te
       save();
       input.focus();
     } catch (err) {
+      // The status line and the gateway's own words are not a sentence
+      // anybody can act on, and §E.10 keeps technical strings out of what is
+      // shown. The mic is still there and the recording can be repeated.
       toast(isOffline(err)
         ? 'No connection — that recording could not be transcribed.'
-        : errorMessage(err), 'error');
+        : 'The recording could not be transcribed. Try again.', 'error');
     } finally {
       mic.disabled = false;
     }

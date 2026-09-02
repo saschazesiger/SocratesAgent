@@ -115,6 +115,7 @@ scenario. Deleting `e2e/out/` is always safe.
 | `offlineonce` | a whole command typed with the network off arrives **exactly once** when it comes back, the lost connection is visible while it is gone, and the app shell still opens offline |
 | `sigtermreattach` | the server is killed mid-session and restarted; the pane still holds what was typed and the session is running |
 | `takeover` | a second tab with the same viewer id closes the first socket with 1012 and drives the session |
+| `offlinerestart` | the server is restarted inside an outage and the phone wakes with `online`, `focus` and `visibilitychange` at once: one handshake, and nothing typed is lost in silence |
 | `adminoptions` | every harness option round-trips and reaches the command line |
 | `tmuxinstaller` | the engine card, and an install that streams and survives a reload |
 | `livesession` | one real session against the real Claude Code CLI (gated) |

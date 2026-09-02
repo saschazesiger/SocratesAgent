@@ -46,6 +46,12 @@ const PING_EVERY = 15000;
 const PING_TIMEOUT = 10000;
 const PING_OFFSET = 7000;
 
+// How long a socket may stay open without being told `hello`, and how long a
+// burst of wake events is gathered into one attempt. A phone raises `online`,
+// `visibilitychange` and `focus` in the same tick.
+const HELLO_TIMEOUT = 10000;
+const WAKE_COALESCE = 60;
+
 /**
  * viewerId is this tab's identity for as long as the tab lives.
  *
@@ -98,9 +104,23 @@ class TermSocket {
     // and held is every frame the server has not acknowledged.
     this.inputSeq = 0;
     this.held = [];
+    // anchored says whether this socket has heard its `hello` yet. Until it
+    // has, the counter is whatever the last connection left behind and the
+    // server's is something else entirely, so input is held rather than sent:
+    // a frame numbered below the server's `lastInputSeq` is discarded there as
+    // a resend, and the keystroke is gone without a word. hello renumbers what
+    // is held from `input_ack + 1` and releases it, which is the same rule
+    // §D.6 states for a reconnect - it simply has to hold for the first
+    // connection too.
+    this.anchored = false;
 
     this.pingTimer = null;
     this.pingDeadline = null;
+    // helloDeadline is the guard against a socket that opens and is never
+    // spoken to: the ping watchdog only starts once `hello` has arrived, so
+    // without this a silent server parks the page on "Reconnecting…" for ever.
+    this.helloDeadline = null;
+    this.wakeTimer = null;
     this.pingId = 0;
     this.lagTimer = null;
     this.lastLag = 0;
@@ -121,14 +141,38 @@ class TermSocket {
       // reason to try than any timer - and it starts the backoff again from
       // the beginning, because what failed was the network being gone rather
       // than this server refusing.
-      this.unwake = onWake(() => {
-        if (this.stopped || this.isOpen()) return;
-        this.attempt = 0;
-        this.reconnect(0);
-      });
+      //
+      // A phone regaining signal raises `online`, `visibilitychange` and
+      // `focus` within a few milliseconds of each other, so the storm is
+      // coalesced into one attempt, and a handshake that is already in flight
+      // is left alone: tearing down a CONNECTING socket abandons a viewer
+      // slot the server has already begun to fill, and the second handshake
+      // is then refused while the first is cleaned up.
+      this.unwake = onWake(() => this.resume());
     }
     this.open();
   }
+
+  /**
+   * resume is a wake: the network came back, or the screen was looked at.
+   *
+   * It is deliberately conservative. A socket that is open, or one that is
+   * still shaking hands, is already the best answer to "try again"; only a
+   * socket that is waiting out a backoff is worth interrupting, and a burst of
+   * wake events is one interruption.
+   */
+  resume() {
+    if (this.stopped || this.connecting() || this.isOpen()) return;
+    if (this.wakeTimer) return;
+    this.wakeTimer = setTimeout(() => {
+      this.wakeTimer = null;
+      if (this.stopped || this.connecting() || this.isOpen()) return;
+      this.attempt = 0;
+      this.reconnect(0);
+    }, WAKE_COALESCE);
+  }
+
+  connecting() { return !!this.ws && this.ws.readyState === WebSocket.CONNECTING; }
 
   stop() {
     this.stopped = true;
@@ -145,7 +189,9 @@ class TermSocket {
 
   close() {
     if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
+    if (this.wakeTimer) { clearTimeout(this.wakeTimer); this.wakeTimer = null; }
     this.stopTimers();
+    this.anchored = false;
     if (this.ws) {
       const ws = this.ws;
       this.ws = null;
@@ -155,6 +201,7 @@ class TermSocket {
   }
 
   stopTimers() {
+    if (this.helloDeadline) { clearTimeout(this.helloDeadline); this.helloDeadline = null; }
     if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; }
     if (this.pingDeadline) { clearTimeout(this.pingDeadline); this.pingDeadline = null; }
     if (this.lagTimer) { clearInterval(this.lagTimer); this.lagTimer = null; }
@@ -192,7 +239,16 @@ class TermSocket {
     }
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
-    ws.onopen = () => { this.attempt = 0; };
+    ws.onopen = () => {
+      this.attempt = 0;
+      // An open socket is not a working one. Nothing on this connection means
+      // anything until `hello` arrives, so it is given a deadline of its own.
+      if (this.helloDeadline) clearTimeout(this.helloDeadline);
+      this.helloDeadline = setTimeout(() => {
+        this.helloDeadline = null;
+        this.reconnect();
+      }, HELLO_TIMEOUT);
+    };
     ws.onmessage = (event) => this.receive(event.data);
     ws.onerror = () => { /* onclose carries the outcome */ };
     ws.onclose = () => {
@@ -259,6 +315,7 @@ class TermSocket {
   }
 
   hello(frame) {
+    if (this.helloDeadline) { clearTimeout(this.helloDeadline); this.helloDeadline = null; }
     const ack = Number(frame.input_ack) || 0;
     const fresh = !!frame.viewer_fresh;
     // A replay from zero means the server could not fill the gap and attached
@@ -269,31 +326,40 @@ class TermSocket {
     // client's own counter never survives a connect.
     this.held = this.held.filter((f) => f.seq > ack);
     this.inputSeq = ack;
+    // From here the counter means what the server means by it, so input may
+    // go out again.
+    this.anchored = true;
 
-    if (fresh && this.held.length) {
+    if (fresh) {
       // The server has no memory of this viewer, so it cannot tell a resend
-      // from new input. Nothing is duplicated, and the person is told: loose
-      // keystrokes are counted, and a composed line goes back into the field
-      // it was written in, unsent.
-      const lost = this.held;
-      this.held = [];
-      const lines = [];
-      let keystrokes = 0;
-      for (const held of lost) {
-        if (held.text !== undefined) lines.push(held.text); else keystrokes += 1;
-        if (held.onLost) held.onLost();
+      // from new input - but only for frames that have actually been on a
+      // wire. What was typed while this socket was still shaking hands has
+      // never left the tab, and a first attach is always `fresh`: those are
+      // new input, not resends, and discarding them would throw away every
+      // keystroke made between the socket opening and hello arriving.
+      const lost = this.held.filter((f) => f.sent);
+      this.held = this.held.filter((f) => !f.sent);
+      if (lost.length) {
+        // Nothing is duplicated, and the person is told: loose keystrokes are
+        // counted, and a composed line goes back into the field it was
+        // written in, unsent.
+        const lines = [];
+        let keystrokes = 0;
+        for (const held of lost) {
+          if (held.text !== undefined) lines.push(held.text); else keystrokes += 1;
+          if (held.onLost) held.onLost();
+        }
+        this.onControl({ t: 'input_lost', keystrokes, lines });
       }
-      this.onControl({ t: 'input_lost', keystrokes, lines });
-    } else {
-      // Renumbering is safe because the content is what matters: the numbers
-      // exist only for dedupe, and hello carries the server's current
-      // lastInputSeq rather than a stale batched ack.
-      for (const held of this.held) {
-        this.inputSeq += 1;
-        held.seq = this.inputSeq;
-        held.frame = inputFrame(held.seq, held.bytes);
-        this.write(held.frame);
-      }
+    }
+    // Renumbering is safe because the content is what matters: the numbers
+    // exist only for dedupe, and hello carries the server's current
+    // lastInputSeq rather than a stale batched ack.
+    for (const held of this.held) {
+      this.inputSeq += 1;
+      held.seq = this.inputSeq;
+      held.frame = inputFrame(held.seq, held.bytes);
+      held.sent = this.write(held.frame) || held.sent;
     }
 
     this.attempt = 0;
@@ -308,6 +374,20 @@ class TermSocket {
       if (held.onDelivered) held.onDelivered();
     }
     this.held = kept;
+    // An ack that leaves a hole in front of what is still held is the server
+    // refusing a gap (§D.6): it wrote nothing and it is saying where to start
+    // again. Renumbering from there and resending is the re-anchor it asks
+    // for; without it those frames would sit here unsent until the next
+    // connect, which is a keystroke lost while the socket is up.
+    if (kept.length && kept[0].seq > seq + 1) {
+      this.inputSeq = seq;
+      for (const held of kept) {
+        this.inputSeq += 1;
+        held.seq = this.inputSeq;
+        held.frame = inputFrame(held.seq, held.bytes);
+        held.sent = this.write(held.frame) || held.sent;
+      }
+    }
   }
 
   startTimers() {
@@ -360,9 +440,16 @@ class TermSocket {
     const entry = {
       seq: this.inputSeq, bytes, frame: inputFrame(this.inputSeq, bytes),
       text: opts.text, onDelivered: opts.onDelivered, onLost: opts.onLost,
+      // sent records whether these bytes have ever been on a wire, which is
+      // what decides their fate when the server turns out not to remember
+      // this viewer: only what was sent can be a resend.
+      sent: false,
     };
     this.held.push(entry);
-    this.write(entry.frame);
+    // Only a socket that has been anchored by its hello may send: before that
+    // the number on the frame means nothing to the server, and a number below
+    // its own is a keystroke silently thrown away.
+    if (this.anchored) entry.sent = this.write(entry.frame);
   }
 
   resize(cols, rows) {
@@ -416,6 +503,14 @@ const state = {
   live: false,
   lostAt: 0,
   loading: false,
+  // Whether the last attempt to read the list reached Socrates at all. A page
+  // that cannot ask must not answer "no sessions": that is a fact it does not
+  // have, and showing it as one is the failure this whole design is against.
+  reachable: true,
+  // The session the URL asks for. It outlives a failed list: an offline
+  // reload still knows which session this tab was looking at, and reopens it
+  // the moment the list can be read.
+  wanted: '',
   // The overflow menu a row or the header last opened, so a second one
   // replaces it rather than stacking on it.
   menu: null,
@@ -452,7 +547,10 @@ function renderList() {
   const wanted = state.sessions.filter((s) => state.scope === 'all' || !s.archived);
   if (!wanted.length) {
     host.innerHTML = '';
-    host.append(el('div', { class: 'list-empty', text: state.loading ? 'Loading…' : 'No sessions yet.' }));
+    let empty = 'No sessions yet.';
+    if (state.loading) empty = 'Loading…';
+    else if (!state.reachable) empty = 'Can\u2019t reach Socrates.';
+    host.append(el('div', { class: 'list-empty', text: empty }));
     return;
   }
   // The list is patched rather than rebuilt: taking a connected node out of
@@ -541,18 +639,42 @@ async function refreshList() {
       { attempts: 2, timeout: 12000 });
     state.sessions = data.sessions || [];
     state.loading = false;
+    state.reachable = true;
     if (state.current) {
       const fresh = sessionOf(state.current.id);
       if (fresh) applySession(fresh);
     }
     renderList();
+    // The tab was looking at a session before it lost the network, and the
+    // list is the first thing that can prove the session is still there. This
+    // is what makes an offline reload come back to the pane it was on -
+    // together with the line that was typed into it and never sent.
+    openWanted();
     return state.sessions;
   } catch (err) {
     state.loading = false;
+    state.reachable = false;
     renderList();
     if (!isOffline(err)) toast(errorMessage(err), 'error');
     return state.sessions;
   }
+}
+
+/**
+ * openWanted attaches the session this tab is meant to be on, if the list now
+ * has it and nothing is attached.
+ *
+ * This is the only place that attaches without being asked, and the guard is
+ * why: "New session" is clickable from the first line of boot, while the list
+ * is still being fetched, and a session started in that window has already
+ * been attached. Attaching it a second time would tear its terminal and its
+ * socket down under the person's fingers - the pane reset by the new hello,
+ * and the keystrokes in between reaching no socket at all.
+ */
+function openWanted() {
+  if (state.current || state.socket || state.pendingAttach) return;
+  const session = state.wanted && sessionOf(state.wanted);
+  if (session) attach(session);
 }
 
 /* ---------------------------------------------------- the session actions */
@@ -689,10 +811,19 @@ function showEmpty() {
   dom.composer.hidden = true;
   dom.termEmpty.hidden = false;
   dom.termEmpty.innerHTML = '';
+  // Unreachable is not empty. A page that could not read the list says so and
+  // keeps the session it was asked for, because the signal is what is
+  // missing - not the session.
+  const unreachable = !state.reachable;
   dom.termEmpty.append(
-    el('h2', { class: 'empty-title', text: 'No session open' }),
-    el('p', { class: 'empty-body', text: 'Start one and it opens here as a terminal.' }),
-    el('button', { class: 'btn primary', type: 'button', text: 'New session', onclick: newSession }),
+    el('h2', { class: 'empty-title', text: unreachable ? 'No connection' : 'No session open' }),
+    el('p', {
+      class: 'empty-body',
+      text: unreachable
+        ? 'This session opens again as soon as there is signal.'
+        : 'Start one and it opens here as a terminal.',
+    }),
+    unreachable ? null : el('button', { class: 'btn primary', type: 'button', text: 'New session', onclick: newSession }),
   );
   dom.sessionTitle.textContent = 'Socrates';
   dom.sessionHarness.hidden = true;
@@ -701,7 +832,7 @@ function showEmpty() {
   dom.sessionArchived.hidden = true;
   dom.termOverlay.hidden = true;
   dom.termNotice.hidden = true;
-  location.hash = '';
+  if (state.reachable) { state.wanted = ''; location.hash = ''; }
 }
 
 // applySession draws everything about a session that is not the pane itself.
@@ -885,6 +1016,9 @@ function attach(session) {
 // otherwise on any device.
 function showKeyBar(on) {
   dom.keybar.hidden = !on;
+  // A modifier armed on a bar nobody can see would transform the next key
+  // typed with nothing on screen to say why.
+  if (!on && state.keybar) state.keybar.clear();
   if (state.term) state.term.refit();
 }
 
@@ -980,6 +1114,7 @@ function selectSession(id) {
   const session = sessionOf(id);
   if (!session) return;
   if (state.current && state.current.id === id && state.socket) return;
+  state.wanted = id;
   location.hash = '#' + id;
   closeNav();
   if (state.pendingAttach) clearTimeout(state.pendingAttach);
@@ -1016,6 +1151,7 @@ async function newSession() {
     });
     replaceSession(data.session);
     if (data.error) toast(data.error, 'error');
+    state.wanted = data.session.id;
     location.hash = '#' + data.session.id;
     attach(data.session);
   } catch (err) {
@@ -1058,6 +1194,7 @@ function wire() {
   });
   window.addEventListener('hashchange', () => {
     const id = location.hash.replace(/^#/, '');
+    if (id) state.wanted = id;
     if (id && (!state.current || state.current.id !== id)) selectSession(id);
   });
   window.addEventListener('online', updateStale);
@@ -1075,6 +1212,9 @@ function wire() {
 async function boot() {
   wire();
   followViewport();
+  // Read before anything is fetched: on an offline reload this is the only
+  // thing the page knows about what it was doing.
+  state.wanted = location.hash.replace(/^#/, '');
   state.loading = true;
   renderList();
   harnesses.load().catch(() => { /* the sheet says so when it is opened */ });
@@ -1083,11 +1223,15 @@ async function boot() {
     if (prefs && prefs.terminal) state.terminal = { ...state.terminal, ...prefs.terminal };
   } catch { /* the defaults above are the shipped ones */ }
   await refreshList();
-  const wanted = location.hash.replace(/^#/, '');
-  const first = (wanted && sessionOf(wanted))
-    || state.sessions.find((s) => !s.archived)
-    || state.sessions[0];
-  if (first) attach(first); else showEmpty();
+  // A tab with no session in its URL opens the newest one. From here on
+  // `openWanted` is the only thing that attaches on its own, so there is one
+  // rule about when that is allowed and one place it lives.
+  if (!state.wanted || !sessionOf(state.wanted)) {
+    const first = state.sessions.find((s) => !s.archived) || state.sessions[0];
+    state.wanted = first ? first.id : state.wanted;
+  }
+  openWanted();
+  if (!state.current && !state.socket && !state.pendingAttach) showEmpty();
 }
 
 boot();

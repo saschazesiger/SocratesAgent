@@ -739,3 +739,63 @@ handshake for that tab waited in `takeOver` for a goroutine that did not
 exist: the third socket of a wake-up storm opened and was never spoken to.
 Those paths now go through one `abandon`, which marks the writer stopped,
 closes with 1013, and releases the viewer into its grace.
+
+## WP7 — the review's findings
+
+**WP7 review F1 / §E.5 — a wake is coalesced, a handshake in flight is left
+alone, and an open socket has a deadline of its own.** A phone regaining signal
+raises `online`, `focus` and `visibilitychange` in the same tick. The wake
+handler used to tear down whatever was there and reconnect, which abandoned a
+handshake the server had already begun to answer; the second handshake was then
+refused while the first was cleaned up, and the third could open and be told
+nothing at all - with the ping watchdog starting only at `hello`, the page sat
+behind "Reconnecting…" for ever. `resume()` now skips a socket that is
+`CONNECTING`, gathers a storm into one attempt (60 ms), and every open socket
+is given ten seconds to be told `hello` before it is given up on. The server
+half of that wedge was fixed separately in `internal/server/ws.go`.
+
+**WP7 review F2 / §E.9 — an offline page keeps the session it was on and says
+what it does not know.** A reload with no signal used to report "No sessions
+yet." (a fact the page cannot have), erase the session id from the URL and, when
+the signal returned, leave the person in front of an empty pane with the
+composer - and the line they had typed into it - hidden. The page now
+distinguishes "no sessions" from "could not ask": the list says
+"Can't reach Socrates.", the pane says "No connection", the id stays in the
+hash, and the first list that arrives reopens it. `openWanted()` is the only
+thing that attaches on its own, and the guard against attaching twice lives
+there and nowhere else.
+
+**WP7 review F3 / §E.6 — a modifier is applied to keys, not to what the
+terminal answers.** `onData` carries focus reports and the replies to the
+questions tmux asks on every attach. Treating those as "the next key" meant
+tapping the keyboard button spent the Ctrl that had just been armed - the
+focus-in report got it - and a locked Alt put an ESC in front of every reply.
+Only a single printable character is transformed now; everything else passes
+through and leaves the modifier armed.
+
+**WP7 review F4 / §E.6 — a restored line is a draft, not something in flight.**
+On mount, whatever was pending in storage goes into the field and the pending
+list starts empty. Nothing holds those bytes any more, so keeping them as
+"in flight" left a copy in `localStorage` for ever, handed back on every later
+reload of that session.
+
+**WP7 review F5, F6, F9 — the minors.** Paste spends a one-shot modifier and
+hiding the key bar disarms it; a transcription failure says "The recording
+could not be transcribed. Try again." instead of the gateway's status line; and
+the service worker's comment now says that its 807 KB / 206 KB is the vendored
+terminal alone, with the measurement for the whole list in the README.
+
+**WP7 review F7, F8 — what the scenarios measure.** `offlineonce`'s "held"
+assertion counted frames that had been handed to `WebSocket.send`, which held
+frames never are; it now asserts that nothing typed during the outage reached
+the pane at all, which is what "held" means from the outside. The mobile
+scenarios run at 390×844, and `start({touch:true})` gives Chromium a coarse
+pointer so `keyBarWanted()`'s own rule is the one under test. `offlinerestart`
+is new: an outage, a restart inside it, a real wake storm, and the rule that
+nothing may be lost in silence - every byte typed during the outage is either
+delivered exactly once or handed back with a toast.
+
+**WP7 review F1(b) — the handshake deadline is not covered by a scenario.** It
+needs a server that accepts a socket and never speaks, which cannot be arranged
+without changing `internal/server`. `offlinerestart` covers the path that used
+to reach it, and the deadline is the belt to that braces.
