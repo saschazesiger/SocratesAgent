@@ -398,9 +398,10 @@ function toBase64(bytes) {
 let currentAudio = null;
 let speakingFlag = false;
 
-// Socrates has one voice and it lives on the server, so a request that fails
-// leaves silence - and silence is indistinguishable from an answer that had
-// nothing to say. Whoever is waiting to be read to is told why instead.
+// Socrates has one voice and the server is what asks Google for it, so a
+// request that fails leaves silence - and silence is indistinguishable from an
+// answer that had nothing to say. Whoever is waiting to be read to is told why
+// instead.
 let errorListener = null;
 
 /**
@@ -408,8 +409,7 @@ let errorListener = null;
  * The session page is the one that takes it, because an answer it reads out by
  * itself has nowhere else to report from; the dashboard reads on a button
  * press and shows the failure at the button. It is called with the sentence
- * and the toast kind it should be shown as - '' for an install that is simply
- * not finished yet, 'error' for everything that actually went wrong.
+ * and the toast kind it should be shown as.
  */
 export function onSpeechError(fn) { errorListener = fn; }
 
@@ -423,10 +423,9 @@ function reportError(reason, kind) {
   try { errorListener(reason, kind); } catch { /* a notice must not break playback */ }
 }
 
-// speechError carries the sentence and how the page should show it. A voice
-// that is still downloading itself is ordinary first run progress, and telling
-// somebody in red that something failed, when nothing has, is how a first
-// start reads as a broken app.
+// speechError carries the sentence and how the page should show it. The kind
+// is kept as a field rather than assumed, so a reason that is a setup step
+// rather than a fault can still be shown as one.
 function speechError(message, kind) {
   const err = new Error(message);
   err.kind = kind;
@@ -452,19 +451,18 @@ export function stopSpeaking() {
 }
 
 // The deadline for one render, in milliseconds, from how much text it is. The
-// voice runs on this machine, so a long answer honestly takes longer than a
-// short one and a flat deadline hangs up on exactly the answers the server
-// rendered perfectly.
+// render happens at Google now, which is fast, but the request still crosses
+// a phone connection in a car: a long answer is a longer upload and a bigger
+// MP3 coming back, and a flat deadline hangs up on exactly the answers the
+// server rendered perfectly.
 //
-// The slope comes from measuring rather than from taste: German at rate 1.0 on
-// an x86 laptop renders 2,000 characters in 7.9 s, 4,000 in 16.0 s and 6,000
-// in 25.8 s, so a little over 4 ms per character. Four times that leaves room
-// for the ARM board this also runs on. The floor is the protection against a
-// request that never gets anywhere at all, which is the failure a short answer
-// really has.
+// The floor is the protection against a request that never gets anywhere at
+// all, which is the failure a short answer really has. The slope is generous
+// on purpose - it costs nothing when the network is fine and it is the whole
+// difference on a link that is not.
 //
-// The ceiling is not a limit on rendering and must not become one: it sits
-// just above the five minutes the server allows one render, so that timeout
+// The ceiling is not a limit on rendering and must not become one: it sits far
+// above the twenty seconds the server allows one render, so that timeout
 // always fires first and fails with a sentence saying what happened, instead
 // of the browser hanging up and telling the listener the voice did not answer.
 const SPEECH_MS_PER_CHAR = 16;
@@ -525,10 +523,11 @@ export async function fetchSpeech(text) {
       timeout: 0,
     });
   } catch (err) {
-    // 503 is the voice saying it is still installing itself, which is progress
-    // rather than a failure and is shown as such. The sentence is the server's
-    // own: while the voice is installing it carries how far it has got.
-    if (err instanceof HttpError) throw speechError(err.message, err.status === 503 ? '' : 'error');
+    // The server's own sentence is what is shown. A refusal from Google - the
+    // API not enabled on the project, a voice name that does not exist, a
+    // quota that ran out - arrives as a 400 with Google's words in it, and
+    // those words are the answer to what to do next.
+    if (err instanceof HttpError) throw speechError(err.message, 'error');
     throw speechError(err && err.name === 'AbortError'
       ? 'The voice did not answer within ' + Math.round(limit / 1000) + ' seconds.'
       : 'The server could not be reached, so nothing was read out loud.', 'error');

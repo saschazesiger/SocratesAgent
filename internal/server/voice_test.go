@@ -1,136 +1,86 @@
 package server
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/config"
-	"github.com/saschazesiger/SocratesAgent/internal/piper"
+	"github.com/saschazesiger/SocratesAgent/internal/googletts"
 )
 
-/* ------------------------------------------------------------ a fake piper */
+/* ------------------------------------------------------ a fake Google API */
 
-// requireShell skips where the stand in cannot run: it is a POSIX shell
-// script, the same one internal/piper uses to test its own rendering.
-func requireShell(t *testing.T) {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake piper is a POSIX shell script")
-	}
+// googleStub stands in for Google Cloud Text-to-Speech. It records the one
+// request it was sent - the key, the voice, the text, the rate - so a test can
+// ask what actually left this machine, and answers with base64 audio or with
+// whatever refusal the test asked for.
+type googleStub struct {
+	requests []map[string]any
+	keys     []string
+	status   int
+	answer   string
 }
 
-// fakePiper is a shell script that stands in for the binary. It writes down
-// the arguments and the text it was handed, so a test can ask what actually
-// reached piper, and prints a RIFF header, which is the only thing the engine
-// checks before calling the bytes audio.
-func fakePiper(record string) string {
-	return "#!/bin/sh\n" +
-		": > \"" + record + "/args\"\n" +
-		"for arg in \"$@\"; do printf '%s\\n' \"$arg\" >> \"" + record + "/args\"; done\n" +
-		"while IFS= read -r line || [ -n \"$line\" ]; do printf '%s\\n' \"$line\"; done > \"" + record + "/stdin\"\n" +
-		"printf 'RIFFxxxxWAVEfmt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'\n"
-}
-
-// installPiper lays out an installation where the engine looks for one that is
-// already there - piper/ beside voices/, exactly what the Docker image bakes
-// in - and returns the root to point SOCRATES_PIPER_DIR at, together with the
-// directory the stand in records into.
-//
-// The models are made the size the engine insists on by truncating an empty
-// file: it treats anything under a megabyte as a transfer that was cut short,
-// and a megabyte of real bytes per test would be a megabyte for nothing.
-func installPiper(t *testing.T, script string) (root, record string) {
+// newGoogleStub points the whole process at a stand in. googletts.New reads
+// the address per call, so setting it here is enough for every handler a test
+// reaches afterwards.
+func newGoogleStub(t *testing.T) *googleStub {
 	t.Helper()
-	root, record = t.TempDir(), t.TempDir()
-	binary := filepath.Join(root, "piper", "piper")
-	if runtime.GOOS == "windows" {
-		binary += ".exe"
-	}
-	// The espeak data is part of being installed: piper names it on every
-	// command line, and the engine refuses a tree without it.
-	if err := os.MkdirAll(filepath.Join(root, "piper", "espeak-ng-data"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	voices := filepath.Join(root, "voices")
-	if err := os.MkdirAll(voices, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for _, voice := range []string{piper.VoiceEnglish, piper.VoiceGerman} {
-		model := filepath.Join(voices, voice+".onnx")
-		if err := os.WriteFile(model, nil, 0o644); err != nil {
-			t.Fatal(err)
+	stub := &googleStub{status: http.StatusOK}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		stub.keys = append(stub.keys, r.Header.Get("X-Goog-Api-Key"))
+		var body map[string]any
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		stub.requests = append(stub.requests, body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(stub.status)
+		answer := stub.answer
+		if answer == "" {
+			payload, _ := json.Marshal(map[string]any{
+				"audioContent": base64.StdEncoding.EncodeToString([]byte("ID3 pretend mp3")),
+			})
+			answer = string(payload)
 		}
-		if err := os.Truncate(model, 2<<20); err != nil {
-			t.Fatal(err)
-		}
-		config := `{"audio":{"sample_rate":22050},"espeak":{"voice":"` + voice + `"},"padding":"` +
-			strings.Repeat("x", 200) + `"}`
-		if err := os.WriteFile(model+".json", []byte(config), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return root, record
+		_, _ = io.WriteString(w, answer)
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv(googletts.EnvBaseURL, server.URL)
+	return stub
 }
 
-// installedVoice puts a piper where a server built in a test will find one.
-// Without it every such server starts pulling 150 MB off GitHub in the
-// background, because that is what a fresh installation does and what these
-// tests are emphatically not about. A test that has put a piper of its own in
-// place keeps it.
-func installedVoice(t *testing.T) {
+// last is the request the stub was sent most recently, flattened to the four
+// things a test asks about.
+func (g *googleStub) last(t *testing.T) (text, language, voice string, rate float64) {
 	t.Helper()
-	if os.Getenv(piper.EnvDir) != "" {
-		return
+	if len(g.requests) == 0 {
+		t.Fatal("Google was never called")
 	}
-	root, _ := installPiper(t, "#!/bin/sh\nexit 0\n")
-	t.Setenv(piper.EnvDir, root)
+	body := g.requests[len(g.requests)-1]
+	input, _ := body["input"].(map[string]any)
+	text, _ = input["text"].(string)
+	voiceBlock, _ := body["voice"].(map[string]any)
+	language, _ = voiceBlock["languageCode"].(string)
+	voice, _ = voiceBlock["name"].(string)
+	audio, _ := body["audioConfig"].(map[string]any)
+	rate, _ = audio["speakingRate"].(float64)
+	return text, language, voice, rate
 }
 
-// arguments is the command line the stand in was called with, one entry per
-// line the way it wrote them.
-func arguments(t *testing.T, record string) []string {
+// speakingEnv is a logged in server whose voice is the stand in above, with a
+// key saved the way the dashboard saves one.
+func speakingEnv(t *testing.T) (*testEnv, *googleStub) {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(record, "args"))
-	if err != nil {
-		t.Fatalf("the fake piper was never called: %v", err)
-	}
-	return strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
-}
-
-// after is the value of a flag, or "" when it was not passed at all.
-func after(args []string, flag string) string {
-	for i, arg := range args {
-		if arg == flag && i+1 < len(args) {
-			return args[i+1]
-		}
-	}
-	return ""
-}
-
-// speakingEnv is a server whose voice is the stand in piper, already set up
-// and logged in.
-func speakingEnv(t *testing.T) (*testEnv, string) {
-	t.Helper()
-	requireShell(t)
-	record := t.TempDir()
-	root, _ := installPiper(t, fakePiper(record))
-	t.Setenv(piper.EnvDir, root)
+	stub := newGoogleStub(t)
 	env := newEnv(t)
 	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
-	return env, record
+	env.configureVoice(t, map[string]any{"google_api_key": "a-google-key"})
+	return env, stub
 }
 
 // configureVoice saves a voice section through the public API, the same way
@@ -158,276 +108,212 @@ func (e *testEnv) speak(t *testing.T, body string) *http.Response {
 
 /* ------------------------------------------------------------------ speech */
 
-// The whole point of the change: an answer is read out loud by the piper on
-// this machine, and what comes back is audio rather than a hint that the
-// browser should say it itself.
-func TestSpeakRendersTheAnswerLocally(t *testing.T) {
-	env, record := speakingEnv(t)
+// The whole point: an answer comes back as audio the browser can play, and the
+// key never leaves this machine except in the header Google wants it in.
+func TestSpeakReturnsTheAudioGoogleRendered(t *testing.T) {
+	env, stub := speakingEnv(t)
 
 	res := env.speak(t, `{"text":"All done."}`)
+	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		t.Fatalf("speak failed: %d", res.StatusCode)
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("status = %d (%s)", res.StatusCode, body)
 	}
-	if got := res.Header.Get("Content-Type"); got != piper.ContentType {
+	if got := res.Header.Get("Content-Type"); got != googletts.ContentType {
 		t.Fatalf("content type = %q", got)
 	}
-	if got := res.Header.Get("Cache-Control"); got != "no-store" {
-		t.Fatalf("cache control = %q", got)
-	}
 	audio, _ := io.ReadAll(res.Body)
-	if len(audio) < 44 || string(audio[:4]) != "RIFF" {
-		t.Fatalf("the answer is not a WAV: %d bytes, %q", len(audio), audio)
+	if string(audio) != "ID3 pretend mp3" {
+		t.Fatalf("audio = %q", audio)
 	}
-	// The text has to arrive on piper's stdin, because that is the only way it
-	// gets read: an answer that is rendered without it is silence.
-	raw, err := os.ReadFile(filepath.Join(record, "stdin"))
-	if err != nil {
-		t.Fatalf("piper was handed no text: %v", err)
+	if len(stub.keys) != 1 || stub.keys[0] != "a-google-key" {
+		t.Fatalf("keys = %v", stub.keys)
 	}
-	if strings.TrimSpace(string(raw)) != "All done." {
-		t.Fatalf("piper was handed %q", raw)
+	text, language, voice, rate := stub.last(t)
+	if text != "All done." {
+		t.Errorf("text = %q", text)
+	}
+	if language != "en-US" || voice != googletts.DefaultVoiceEN {
+		t.Errorf("voice = %s / %s", language, voice)
+	}
+	if rate != 1 {
+		t.Errorf("rate = %v", rate)
 	}
 }
 
-// The spoken language is the one setting that decides which voice reads, so
-// switching it has to switch the model piper loads and nothing else.
+// The spoken language is the one setting that decides which voice reads, and a
+// voice name typed into the dashboard is what actually goes to Google.
 func TestSpeakUsesTheVoiceOfTheSpokenLanguage(t *testing.T) {
-	env, record := speakingEnv(t)
-	env.configureVoice(t, map[string]any{"language": "de"})
+	env, stub := speakingEnv(t)
 
-	if res := env.speak(t, `{"text":"Alles erledigt."}`); res.StatusCode != http.StatusOK {
-		t.Fatalf("speak failed: %d", res.StatusCode)
+	env.configureVoice(t, map[string]any{"language": "de"})
+	env.speak(t, `{"text":"Fertig."}`).Body.Close()
+	if _, language, voice, _ := stub.last(t); language != "de-DE" || voice != googletts.DefaultVoiceDE {
+		t.Fatalf("german = %s / %s", language, voice)
 	}
-	if got := after(arguments(t, record), "--model"); filepath.Base(got) != piper.VoiceGerman+".onnx" {
-		t.Fatalf("--model = %q, want the German voice", got)
+
+	env.configureVoice(t, map[string]any{"google_voice_de": "de-DE-Standard-F"})
+	env.speak(t, `{"text":"Fertig."}`).Body.Close()
+	if _, _, voice, _ := stub.last(t); voice != "de-DE-Standard-F" {
+		t.Fatalf("voice = %q", voice)
 	}
 
 	env.configureVoice(t, map[string]any{"language": "en"})
-	if res := env.speak(t, `{"text":"All done."}`); res.StatusCode != http.StatusOK {
-		t.Fatalf("speak failed: %d", res.StatusCode)
-	}
-	if got := after(arguments(t, record), "--model"); filepath.Base(got) != piper.VoiceEnglish+".onnx" {
-		t.Fatalf("--model = %q, want the English voice", got)
+	env.speak(t, `{"text":"Done."}`).Body.Close()
+	if _, language, voice, _ := stub.last(t); language != "en-US" || voice != googletts.DefaultVoiceEN {
+		t.Fatalf("english = %s / %s", language, voice)
 	}
 }
 
-// The speaking rate used to be a slider the server ignored. It reaches piper
-// as the length of a phoneme, which is the same idea upside down: twice the
-// rate is half the length.
+// The speaking rate reaches Google as speakingRate, and a rate outside what
+// the API accepts is clamped rather than sent and refused.
 func TestSpeakPassesTheSpeakingRateOn(t *testing.T) {
-	env, record := speakingEnv(t)
-	env.configureVoice(t, map[string]any{"tts_rate": 2})
+	env, stub := speakingEnv(t)
 
-	if res := env.speak(t, `{"text":"All done."}`); res.StatusCode != http.StatusOK {
-		t.Fatalf("speak failed: %d", res.StatusCode)
-	}
-	if got := after(arguments(t, record), "--length_scale"); got != "0.5" {
-		t.Fatalf("--length_scale = %q", got)
+	env.configureVoice(t, map[string]any{"tts_rate": 1.5})
+	env.speak(t, `{"text":"All done."}`).Body.Close()
+	if _, _, _, rate := stub.last(t); rate != 1.5 {
+		t.Fatalf("rate = %v", rate)
 	}
 
-	// The normal rate is passed as no flag at all, which is what piper does
-	// with a voice left alone.
-	env.configureVoice(t, map[string]any{"tts_rate": 1})
-	if res := env.speak(t, `{"text":"All done."}`); res.StatusCode != http.StatusOK {
-		t.Fatalf("speak failed: %d", res.StatusCode)
-	}
-	if got := after(arguments(t, record), "--length_scale"); got != "" {
-		t.Fatalf("--length_scale = %q, want the voice's own pace", got)
+	env.configureVoice(t, map[string]any{"tts_rate": 99})
+	env.speak(t, `{"text":"All done."}`).Body.Close()
+	if _, _, _, rate := stub.last(t); rate != googletts.MaxRate {
+		t.Fatalf("rate = %v, want it clamped", rate)
 	}
 }
 
-// A piper that is there and does not work has to be reported. There is no
-// browser voice to fall back on any more, so a 200 with nothing playable in it
-// would be an answer that is silently never read.
-func TestSpeakReportsAVoiceThatCannotRender(t *testing.T) {
-	requireShell(t)
-	root, _ := installPiper(t, "#!/bin/sh\necho 'libonnxruntime.so.1.14.1: cannot open shared object file' >&2\nexit 1\n")
-	t.Setenv(piper.EnvDir, root)
+// Without a key nothing is sent and the page is told where the key goes. This
+// is the first run of every installation, so it has to read as a setup step
+// and not as a fault.
+func TestSpeakWithoutAKeySaysWhereToAddOne(t *testing.T) {
+	stub := newGoogleStub(t)
 	env := newEnv(t)
 	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
 
 	res, data := env.do(t, env.client, "POST", "/api/voice/speak", `{"text":"All done."}`)
-	if res.StatusCode != http.StatusInternalServerError {
+	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d (%v)", res.StatusCode, data)
 	}
 	message, _ := data["error"].(string)
-	if !strings.Contains(message, "could not be read out loud") ||
-		!strings.Contains(message, "cannot open shared object file") {
+	if !strings.Contains(message, "not configured") || !strings.Contains(message, "Admin") {
+		t.Fatalf("error = %q", message)
+	}
+	if len(stub.requests) != 0 {
+		t.Fatalf("a request went out anyway: %v", stub.requests)
+	}
+}
+
+// Google's own sentence is the answer. An API that was never enabled on the
+// project is the commonest first failure there is, and it comes with an
+// instruction in it - so it is passed through rather than replaced with "the
+// voice did not work".
+func TestSpeakPassesGooglesRefusalThrough(t *testing.T) {
+	env, stub := speakingEnv(t)
+	stub.status = http.StatusForbidden
+	stub.answer = `{"error":{"code":403,"message":"Cloud Text-to-Speech API has not been used in ` +
+		`project 42 before or it is disabled.","status":"PERMISSION_DENIED"}}`
+
+	res, data := env.do(t, env.client, "POST", "/api/voice/speak", `{"text":"All done."}`)
+	// A refusal that would come back identically on the next attempt is a 400,
+	// because the page retries a 502 three times before it says anything.
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d (%v)", res.StatusCode, data)
+	}
+	message, _ := data["error"].(string)
+	if !strings.Contains(message, "has not been used in project 42") {
 		t.Fatalf("error = %q", message)
 	}
 }
 
-// An installation that cannot be finished still has to be said out loud, and
-// the request cannot be what says it: no render waits for a download, so the
-// first press is told to come back and the reason arrives with the next one.
-// A page that only ever heard "still being installed" would wait for ever on a
-// platform where the install cannot work at all.
-func TestSpeakSaysWhyTheVoiceCouldNotBeInstalled(t *testing.T) {
-	t.Setenv(piper.EnvDir, "")
-	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "no such release", http.StatusNotFound)
-	}))
-	defer refusing.Close()
+// The API refuses more than 5000 bytes outright, and a status summary of a
+// full screen can be longer than that. It is cut here instead of turning into
+// an answer nobody hears.
+func TestSpeakTruncatesAnswersThatAreTooLongForTheAPI(t *testing.T) {
+	env, stub := speakingEnv(t)
 
-	engine := piper.New(t.TempDir())
-	engine.ReleaseURL, engine.VoicesURL = refusing.URL, refusing.URL
-	server := &Server{voice: engine}
-
-	// The first press starts the install and is answered immediately.
-	res, data := speakDirectly(t, context.Background(), server)
-	if res.Code != http.StatusServiceUnavailable {
-		t.Fatalf("the first press = %d (%v)", res.Code, data)
-	}
-
-	// It fails, on its own context rather than on the request's.
-	deadline := time.Now().Add(10 * time.Second)
-	for engine.Status().State != piper.StateFailed {
-		if time.Now().After(deadline) {
-			t.Fatalf("the install never finished: %#v", engine.Status())
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-
-	res, data = speakDirectly(t, context.Background(), server)
-	if res.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d (%v)", res.Code, data)
-	}
-	message, _ := data["error"].(string)
-	if !strings.Contains(message, "after the last attempt failed") || !strings.Contains(message, "404") {
-		t.Fatalf("error = %q, want the reason the install keeps failing", message)
-	}
-}
-
-// A fresh installation downloads 150 MB, and the first answer may well be
-// asked for while that is still happening. That is not a failure: the page
-// retries, so it is told to wait and how far the download has got - at once,
-// while somebody is still listening for it, rather than after the download.
-func TestSpeakAsksThePageToWaitWhileTheVoiceInstalls(t *testing.T) {
-	t.Setenv(piper.EnvDir, "")
-	// A download that never answers, so the install is still running when the
-	// request arrives.
-	blocked := make(chan struct{})
-	stalled := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-blocked
-	}))
-	defer func() { close(blocked); stalled.Close() }()
-
-	root, _ := installPiper(t, "#!/bin/sh\nexit 0\n")
-	// The binary is installed and the voices are not, which is what makes the
-	// install reach for the models rather than for a release archive that this
-	// platform may not even have.
-	if err := os.RemoveAll(filepath.Join(root, "voices")); err != nil {
-		t.Fatal(err)
-	}
-	engine := piper.New(root)
-	engine.VoicesURL = stalled.URL
-	go func() { _ = engine.Ensure(context.Background()) }()
-
-	deadline := time.Now().Add(10 * time.Second)
-	for !strings.Contains(engine.Status().Detail, "Downloading") {
-		if time.Now().After(deadline) {
-			t.Fatalf("the install never started: %#v", engine.Status())
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-
-	// The request behaves like a browser that is still there: its context is
-	// alive, and it has to be answered now. Waiting for the install would mean
-	// answering after the download, by which time the page has long given up
-	// and said the voice is broken.
-	server := &Server{voice: engine}
-	begin := time.Now()
-	res, data := speakDirectly(t, context.Background(), server)
-	if waited := time.Since(begin); waited > 2*time.Second {
-		t.Fatalf("the handler took %s to answer, it has to answer immediately", waited)
-	}
-	if res.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d (%v)", res.Code, data)
-	}
-	message, _ := data["error"].(string)
-	if !strings.Contains(message, "still being installed") || !strings.Contains(message, "Downloading") {
-		t.Fatalf("error = %q, want a sentence saying how far the install has got", message)
-	}
-
-	// The dashboard asks the same question through the status endpoint, and
-	// has to get the same answer rather than "not ready".
-	status := httptest.NewRecorder()
-	server.handleVoiceStatus(status, httptest.NewRequest(http.MethodGet, "/api/voice/status", nil))
-	var reported struct {
-		Voice piper.Status `json:"voice"`
-	}
-	if err := json.NewDecoder(status.Body).Decode(&reported); err != nil {
-		t.Fatal(err)
-	}
-	if reported.Voice.State != piper.StateInstalling || reported.Voice.Ready {
-		t.Fatalf("status = %#v", reported.Voice)
-	}
-}
-
-// speakDirectly asks a server built by hand to read something out loud. The
-// engines these tests need - one that cannot install, one that is halfway
-// through installing - cannot be reached through the settings, so the handler
-// is called with the server they belong to.
-func speakDirectly(t *testing.T, ctx context.Context, s *Server) (*httptest.ResponseRecorder, map[string]any) {
-	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/api/voice/speak", strings.NewReader(`{"text":"All done."}`))
-	res := httptest.NewRecorder()
-	s.handleSpeak(res, req.WithContext(ctx))
-	var decoded map[string]any
-	_ = json.Unmarshal(res.Body.Bytes(), &decoded)
-	return res, decoded
-}
-
-// The setup check has three answers to give and only one of them is "fix
-// something". An install that is still running must not be reported as a
-// broken voice: the person would go looking for a setting that does not exist
-// while the download they are waiting for is running.
-func TestTheSetupCheckTellsAnInstallFromAFailure(t *testing.T) {
-	ready := voiceCheck(piper.Status{
-		Ready: true, State: piper.StateReady,
-		Detail: "Piper is ready, using the copy Socrates installed at /data/voice/piper/piper.",
-		Voices: []string{piper.VoiceEnglish, piper.VoiceGerman},
-	})
-	if !ready.OK || !strings.Contains(ready.Detail, "/data/voice/piper/piper") ||
-		!strings.Contains(ready.Detail, piper.VoiceGerman) {
-		t.Fatalf("ready = %#v", ready)
-	}
-
-	installing := voiceCheck(piper.Status{
-		State:  piper.StateInstalling,
-		Detail: "Downloading the German voice… 42% (25.6 of 61.0 MB)",
-	})
-	if installing.OK || !strings.Contains(installing.Detail, "42%") {
-		t.Fatalf("installing = %#v", installing)
-	}
-
-	failed := voiceCheck(piper.Status{
-		State:  piper.StateFailed,
-		Detail: "Installing Piper failed, it is tried again the next time an answer is read out loud.",
-		Err:    "download Piper: 404",
-	})
-	if failed.OK || !strings.Contains(failed.Detail, "404") {
-		t.Fatalf("failed = %#v", failed)
-	}
-}
-
-// The setup check in the dashboard reports the voice, so the endpoint behind
-// it has to say what is installed and where it came from.
-func TestVoiceStatusReportsAReadyEngine(t *testing.T) {
-	env, _ := speakingEnv(t)
-
-	res, data := env.do(t, env.client, "GET", "/api/voice/status", "")
+	long := strings.Repeat("Dies ist ein Satz über Größen. ", 400)
+	body, _ := json.Marshal(map[string]any{"text": long})
+	res := env.speak(t, string(body))
+	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		t.Fatalf("status failed: %d", res.StatusCode)
+		t.Fatalf("status = %d", res.StatusCode)
 	}
-	voice, _ := data["voice"].(map[string]any)
-	if voice["ready"] != true || voice["state"] != piper.StateReady {
-		t.Fatalf("voice = %#v", voice)
+	text, _, _, _ := stub.last(t)
+	if len(text) == 0 || len(text) > googletts.MaxInputBytes {
+		t.Fatalf("Google was sent %d bytes", len(text))
 	}
-	// Both voices are installed or neither is: the language is a setting
-	// someone flips, and a flip that starts a download is a broken answer.
-	if voices, _ := voice["voices"].([]any); len(voices) != 2 {
-		t.Fatalf("voices = %#v", voice["voices"])
+	if !strings.HasSuffix(text, ".") {
+		t.Errorf("the text was cut mid sentence: %q", text[max(0, len(text)-40):])
+	}
+}
+
+// "Check key" is the one button that proves a key before anybody waits on an
+// answer, and it reports what Google said either way.
+func TestTheKeyCheckReportsWhatGoogleSaid(t *testing.T) {
+	env, stub := speakingEnv(t)
+
+	_, data := env.do(t, env.client, "POST", "/api/voice/check", "")
+	if data["ok"] != true {
+		t.Fatalf("check = %#v", data)
+	}
+	if len(stub.requests) != 1 {
+		t.Fatalf("requests = %d, the check makes exactly one", len(stub.requests))
+	}
+
+	stub.status = http.StatusForbidden
+	stub.answer = `{"error":{"code":403,"message":"API key not valid.","status":"PERMISSION_DENIED"}}`
+	_, data = env.do(t, env.client, "POST", "/api/voice/check", "")
+	if data["ok"] != false {
+		t.Fatalf("check = %#v", data)
+	}
+	if detail, _ := data["detail"].(string); !strings.Contains(detail, "API key not valid") {
+		t.Fatalf("detail = %#v", data["detail"])
+	}
+}
+
+// A key check with no key does not go to the network at all, and says the same
+// sentence the speak endpoint does.
+func TestTheKeyCheckWithoutAKeySaysSo(t *testing.T) {
+	stub := newGoogleStub(t)
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+
+	_, data := env.do(t, env.client, "POST", "/api/voice/check", "")
+	if data["ok"] != false {
+		t.Fatalf("check = %#v", data)
+	}
+	if detail, _ := data["detail"].(string); !strings.Contains(detail, "not configured") {
+		t.Fatalf("detail = %#v", data["detail"])
+	}
+	if len(stub.requests) != 0 {
+		t.Fatalf("a request went out anyway: %v", stub.requests)
+	}
+}
+
+// The setup check row must not cost anything: it is drawn every time the
+// dashboard opens, and a paid API call per draw would be a surprise on a bill.
+// What it can say for free is whether there is a key and whether the voice is
+// one of the free ones.
+func TestTheSetupCheckReportsTheKeyAndTheVoice(t *testing.T) {
+	missing := voiceCheck(config.VoiceSettings{Language: "en"})
+	if missing.OK || !strings.Contains(missing.Detail, "not configured") {
+		t.Fatalf("missing = %#v", missing)
+	}
+
+	standard := voiceCheck(config.VoiceSettings{
+		Language: "de", GoogleAPIKey: "k", GoogleVoiceDE: googletts.DefaultVoiceDE})
+	if !standard.OK || !strings.Contains(standard.Detail, googletts.DefaultVoiceDE) {
+		t.Fatalf("standard = %#v", standard)
+	}
+	if strings.Contains(standard.Detail, "free tier") {
+		t.Fatalf("a free voice was reported as outside the free tier: %#v", standard)
+	}
+
+	billed := voiceCheck(config.VoiceSettings{
+		Language: "en", GoogleAPIKey: "k", GoogleVoiceEN: "en-US-Neural2-C"})
+	if !billed.OK || !strings.Contains(billed.Detail, "outside the 4M-character free tier") {
+		t.Fatalf("billed = %#v", billed)
 	}
 }
 
@@ -470,7 +356,7 @@ func TestTranscribeNamesTheLanguageForATranscriptionModel(t *testing.T) {
 
 // The page reads the language out of the preferences, and nothing else about
 // the voice. There is no provider left to tell it about, and the speaking rate
-// is not its business either: the server hands the rate to piper itself, so a
+// is not its business either: the server hands the rate to Google itself, so a
 // page given one would only be carrying a number it cannot use.
 func TestPreferencesCarryTheLanguage(t *testing.T) {
 	env := newEnv(t)
@@ -479,7 +365,7 @@ func TestPreferencesCarryTheLanguage(t *testing.T) {
 	if prefs["language"] != config.DefaultLanguage {
 		t.Fatalf("language = %#v", prefs["language"])
 	}
-	for _, gone := range []string{"tts_provider", "tts_rate"} {
+	for _, gone := range []string{"tts_provider", "tts_rate", "speak_in_auto_mode"} {
 		if _, present := prefs[gone]; present {
 			t.Fatalf("%s is still offered to the page: %#v", gone, prefs)
 		}

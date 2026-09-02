@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/saschazesiger/SocratesAgent/internal/piper"
+	"github.com/saschazesiger/SocratesAgent/internal/googletts"
 )
 
 // The deadline a browser puts on one render decides which answers can be heard
@@ -35,14 +35,14 @@ func TestTheSpeechDeadlineGrowsWithTheText(t *testing.T) {
 		// four times what a render measures at.
 		{"a long paragraph", 2000, 32000},
 		{"a long answer", 4000, 64000},
-		// The longest text the server accepts is what Piper will read, and
+		// The longest text the server accepts is what Google will read, and
 		// the slope still applies there: the ceiling must not clip the answers
-		// this app really produces, or a slow board renders them and the page
+		// this app really produces, or a slow link renders them and the page
 		// hangs up anyway.
-		{"the longest answer accepted", piper.MaxTextRunes, piper.MaxTextRunes * 16},
+		{"the longest answer accepted", googletts.MaxInputBytes, googletts.MaxInputBytes * 16},
 		// The ceiling only catches a request that has gone nowhere at all. It
-		// sits above the five minutes the server allows one render, so the
-		// server's own timeout is what fires - and that one says what
+		// sits well above the twenty seconds the server allows one render, so
+		// the server's own timeout is what fires - and that one says what
 		// happened rather than blaming the connection.
 		{"longer than anything accepted", 100000, 330000},
 	}

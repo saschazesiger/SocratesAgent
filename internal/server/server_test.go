@@ -3,7 +3,6 @@ package server
 import (
 	"encoding/json"
 	"flag"
-	"fmt"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -14,22 +13,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/saschazesiger/SocratesAgent/internal/piper"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 )
 
-// TestMain puts a stand-in piper where every server built in this package will
-// find one, for the whole test binary rather than per test.
-//
-// It has to be process-wide. server.New starts the voice install on a
-// goroutine of its own - that is what stops a first answer from waiting on a
-// 150 MB download - and that goroutine outlives the test that started it. With
-// the environment set per test and restored by its cleanup, a goroutine
-// scheduled a moment late finds no installation, decides one is needed, and
-// downloads 145 MB into a data directory the test has already removed. A few
-// hundred of those fill a tmpfs and every build on the machine starts failing
-// for want of space.
+// TestMain dispatches the subcommands the terminal substrate calls this
+// binary as, and cleans up what the whole package shares.
 func TestMain(m *testing.M) {
 	// The test binary also stands in for the Socrates executable, because the
 	// Manager points tmux at os.Executable() for the journal sink and for the
@@ -43,59 +32,12 @@ func TestMain(m *testing.M) {
 			os.Exit(runTmuxHook(os.Args[2:]))
 		}
 	}
-	root, err := os.MkdirTemp("", "socrates-piper")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "test setup:", err)
-		os.Exit(1)
-	}
-	if err := bakePiper(root); err != nil {
-		fmt.Fprintln(os.Stderr, "test setup:", err)
-		os.RemoveAll(root)
-		os.Exit(1)
-	}
-	os.Setenv(piper.EnvDir, root)
 	code := m.Run()
-	os.RemoveAll(root)
 	// The fake CLI directory is shared by every test through a sync.Once, so
 	// no single test owns it and t.TempDir cannot remove it. Here is the one
 	// point at which the last test that needed it has finished.
 	removeFakeBin()
 	os.Exit(code)
-}
-
-// bakePiper writes the smallest tree the voice engine accepts as installed: a
-// binary that exits at once, the espeak data it names on every command line,
-// and both voices at a size that is not mistaken for a truncated download.
-func bakePiper(root string) error {
-	binary := filepath.Join(root, "piper", "piper")
-	if runtime.GOOS == "windows" {
-		binary += ".exe"
-	}
-	if err := os.MkdirAll(filepath.Join(root, "piper", "espeak-ng-data"), 0o755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(binary, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		return err
-	}
-	voices := filepath.Join(root, "voices")
-	if err := os.MkdirAll(voices, 0o755); err != nil {
-		return err
-	}
-	for _, voice := range []string{piper.VoiceEnglish, piper.VoiceGerman} {
-		model := filepath.Join(voices, voice+".onnx")
-		if err := os.WriteFile(model, nil, 0o644); err != nil {
-			return err
-		}
-		if err := os.Truncate(model, 2<<20); err != nil {
-			return err
-		}
-		config := `{"audio":{"sample_rate":22050},"espeak":{"voice":"` + voice + `"},"padding":"` +
-			strings.Repeat("x", 200) + `"}`
-		if err := os.WriteFile(model+".json", []byte(config), 0o644); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // runJournalSink and runTmuxHook are the two subcommands the substrate calls
@@ -142,7 +84,6 @@ type testEnv struct {
 
 func newEnv(t *testing.T) *testEnv {
 	t.Helper()
-	installedVoice(t)
 	// One root for the whole environment, taken first so that its removal is
 	// the last cleanup to run. Everything the server keeps on disk lives under
 	// it, and the cleanup registered below - which stops the server, the

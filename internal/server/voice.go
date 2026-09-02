@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/saschazesiger/SocratesAgent/internal/config"
+	"github.com/saschazesiger/SocratesAgent/internal/googletts"
 	"github.com/saschazesiger/SocratesAgent/internal/openrouter"
-	"github.com/saschazesiger/SocratesAgent/internal/piper"
 )
 
 // transcriptionHint is appended to the transcription instruction. A
@@ -95,10 +95,10 @@ func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"text": strings.TrimSpace(text)})
 }
 
-// handleSpeak reads an answer out loud with the Piper engine on this machine.
-// There is no provider to pick, no key to get wrong and nothing for the page
-// to fall back on, so a failure here is reported rather than swallowed: either
-// the audio comes back or the page is told why not.
+// handleSpeak reads an answer out loud with Google Cloud Text-to-Speech.
+// There is nothing for the page to fall back on, so a failure here is
+// reported rather than swallowed: either the audio comes back or the page is
+// told why not, in Google's own words where Google is the one refusing.
 func (s *Server) handleSpeak(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Text string `json:"text"`
@@ -111,52 +111,74 @@ func (s *Server) handleSpeak(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "no text was sent")
 		return
 	}
-	if runes := []rune(text); len(runes) > piper.MaxTextRunes {
-		// The engine trims to the same length itself. Doing it here as well is
-		// what keeps the browser's deadline, which grows with the length of
-		// the text it sent, honest about what it is waiting for.
-		text = string(runes[:piper.MaxTextRunes])
-	}
+	// The client truncates as well. Doing it here too is what keeps the
+	// browser's deadline, which grows with the length of the text it sent,
+	// honest about what it is waiting for.
+	text = googletts.Truncate(text)
+
 	settings := s.Settings()
-	audio, contentType, err := s.voice.Speak(r.Context(), text,
-		config.NormalizeLanguage(settings.Voice.Language), settings.Voice.TTSRate)
-	if err != nil {
-		if errors.Is(err, piper.ErrInstalling) {
-			// The first answer of a fresh installation lands here, and it is
-			// not a failure: 150 MB are on their way, this request started or
-			// joined them and the page retries. So this says how far they have
-			// got rather than what went wrong.
-			message := "The voice is still being installed, so this answer cannot be read out loud yet."
-			status := s.voice.Status()
-			switch {
-			case status.Err != "":
-				// An earlier attempt gave up and this one is the retry. Saying
-				// only "still being installed" would hide a reason that comes
-				// back every single time - no published build for this
-				// platform, say - behind a sentence that reads like patience
-				// will fix it.
-				message = "The voice is being installed again after the last attempt failed, " +
-					"so this answer cannot be read out loud yet. The last attempt said: " + status.Err
-			case status.State == piper.StateInstalling && status.Detail != "":
-				message += " " + status.Detail
-			}
-			writeError(w, http.StatusServiceUnavailable, message)
-			return
-		}
-		writeError(w, http.StatusInternalServerError,
-			"The answer could not be read out loud: "+err.Error())
+	language := config.NormalizeLanguage(settings.Voice.Language)
+	client := googletts.New(settings.Voice.GoogleAPIKey)
+	if !client.Configured() {
+		writeError(w, http.StatusBadRequest, notConfigured)
 		return
 	}
-	w.Header().Set("Content-Type", contentType)
+	audio, err := client.Synthesize(r.Context(), text, language,
+		settings.Voice.GoogleVoice(language), settings.Voice.TTSRate)
+	if err != nil {
+		status, message := speechFailure(err)
+		writeError(w, status, message)
+		return
+	}
+	w.Header().Set("Content-Type", googletts.ContentType)
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(audio)
 }
 
-// handleVoiceStatus reports what the voice is doing. It exists for the setup
-// check in the dashboard, which polls it while Piper installs itself: without
-// it an installation in progress is indistinguishable from a voice that is
-// simply broken, and the difference is the whole answer.
-func (s *Server) handleVoiceStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"voice": s.voice.Status()})
+// notConfigured is the one failure that is a setup step. It names the place
+// the key goes, because "not configured" without that is a dead end.
+const notConfigured = "Google Cloud Text-to-Speech is not configured. " +
+	"Add an API key in Admin → Voice."
+
+// speechFailure turns a render that did not happen into a status and a
+// sentence. A refusal Google blames on the request - the API not enabled, a
+// voice that does not exist, a quota that ran out - is reported as a 400 with
+// Google's message in it, because retrying it would fail identically and the
+// message is the whole answer. Everything else is the network between here and
+// Google, which is a 502.
+func speechFailure(err error) (int, string) {
+	if errors.Is(err, googletts.ErrNoKey) {
+		return http.StatusBadRequest, notConfigured
+	}
+	var refusal *googletts.APIError
+	if errors.As(err, &refusal) {
+		if refusal.Status >= 400 && refusal.Status < 500 {
+			return http.StatusBadRequest, refusal.Error()
+		}
+		return http.StatusBadGateway, refusal.Error()
+	}
+	return http.StatusBadGateway, "The answer could not be read out loud: " + err.Error()
+}
+
+// handleVoiceCheck is the dashboard's "Check key": it asks Google for the
+// voice list of the stored language, which needs the same API enabled and the
+// same key restriction as speaking does and renders nothing. It answers with
+// the same sentence a failed render would, so the two buttons never disagree
+// about what is wrong.
+func (s *Server) handleVoiceCheck(w http.ResponseWriter, r *http.Request) {
+	settings := s.Settings()
+	client := googletts.New(settings.Voice.GoogleAPIKey)
+	if !client.Configured() {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "detail": notConfigured})
+		return
+	}
+	if err := client.CheckKey(r.Context(), settings.Voice.Language); err != nil {
+		_, message := speechFailure(err)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "detail": message})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true,
+		"detail": "The key works: Google answered for " +
+			googletts.LanguageCode(settings.Voice.Language) + "."})
 }

@@ -79,6 +79,9 @@ const FIELDS = [
   ['agentMaxSteps', 'agent.max_steps', 'int'],
   ['voiceLanguage', 'voice.language'],
   ['sttPrompt', 'voice.stt_prompt'],
+  ['googleKey', 'voice.google_api_key'],
+  ['googleVoiceEn', 'voice.google_voice_en'],
+  ['googleVoiceDe', 'voice.google_voice_de'],
   ['ttsRate', 'voice.tts_rate', 'number'],
   ['tunnelMode', 'tunnel.mode'],
   ['tunnelToken', 'tunnel.token'],
@@ -94,7 +97,6 @@ const WINDOW_SIZE_HINTS = {
 };
 
 let tunnelTimer = null;
-let voiceTimer = null;
 let installHints = {};
 let localURL = '';
 
@@ -173,7 +175,6 @@ async function load() {
   refreshTmux();
   if (data.local_url) localURL = data.local_url;
   refreshTunnel();
-  refreshVoice();
   if (new URLSearchParams(location.search).get('welcome')) {
     showNotice('Welcome. Check the terminal engine below, add your OpenRouter key if you want to '
       + 'dictate, then head back to the sessions.', 'ok');
@@ -739,13 +740,19 @@ function bind() {
     $('tunnelLogToggle').textContent = log.hidden ? 'Show log' : 'Hide log';
     if (!log.hidden) refreshTunnel();
   });
+  $('checkVoiceKey').addEventListener('click', checkVoiceKey);
   $('testVoice').addEventListener('click', async () => {
-    // The server picks the voice from the language it has stored, so a
-    // language switched here and not saved yet would be read by the old voice.
-    // Saying so is better than sounding wrong.
+    // The server renders with what it has stored, so anything typed into this
+    // card and not saved yet would be read by the old settings. Saying so is
+    // better than sounding wrong, or than testing a key nobody saved.
     const saved = getPath(settings, 'voice.language') || 'en';
-    if ($('voiceLanguage').value !== saved) {
-      toast('Save first — the voice follows the language the server has stored.');
+    const unsaved = $('voiceLanguage').value !== saved ||
+      $('googleKey').value !== (getPath(settings, 'voice.google_api_key') || '') ||
+      $('googleVoiceEn').value !== (getPath(settings, 'voice.google_voice_en') || '') ||
+      $('googleVoiceDe').value !== (getPath(settings, 'voice.google_voice_de') || '') ||
+      Number($('ttsRate').value) !== Number(getPath(settings, 'voice.tts_rate'));
+    if (unsaved) {
+      toast('Save first — the test uses the voice settings the server has stored.');
       return;
     }
     const sample = saved === 'de'
@@ -755,10 +762,12 @@ function bind() {
     busyButton(button, true, 'Reading…');
     try {
       await speak(sample);
+      showVoiceStatus(true, 'The sample was rendered by Google and played here.');
     } catch (err) {
       // Every press answers, whether or not this reason has been seen before:
       // a button that stays silent the second time reads as a button that did
       // nothing at all.
+      showVoiceStatus(false, errorMessage(err));
       toast(errorMessage(err), speechKind(err));
     } finally {
       busyButton(button, false, 'Reading…');
@@ -834,74 +843,41 @@ function splitArgs(value) {
 
 /* ------------------------------------------------------------- the voice */
 
-const VOICE_LABEL = {
-  ready: 'Voice ready',
-  installing: 'Installing the voice…',
-  missing: 'Voice not installed',
-  failed: 'Voice failed',
-};
-
-// detailWithoutPath renders a sentence about the voice with the one thing in
-// it that is a machine detail - where the binary is - moved behind the "i".
-// The engine writes the path into its own sentence, because that sentence is
-// also a setup-check row; the page is where the design rule about technical
-// strings applies, so the split happens here rather than in the server.
-function detailWithoutPath(detail) {
-  const found = /(\s*)((?:[A-Za-z]:)?[\\/][^\s]*[\\/][^\s]*?)(\.?)(\s|$)/.exec(detail);
-  if (!found) return [el('span', { class: 'detail', text: detail })];
-  const path = found[2];
-  const before = detail.slice(0, found.index).replace(/\s+(at|in)$/, '').trimEnd();
-  const after = detail.slice(found.index + found[0].length).trim();
-  return [
-    el('span', { class: 'detail', text: [before, after].filter(Boolean).join(' ') }),
-    infoTip([path], { label: 'Where the voice is' }),
-  ];
-}
-
-// Everything after the dot is redrawn on every poll and the dot itself stays
-// put - one that is taken out of the page and put back every two seconds never
-// gets far enough into its animation to look like it is pulsing.
-function renderVoiceStatus(voice) {
+// The voice card has no state to poll: there is nothing installing and nothing
+// running here, only a key that either works at Google or does not. The two
+// buttons are what ask, and this line is where the answer lands - so it says
+// nothing at all until one of them has been pressed.
+function showVoiceStatus(ok, detail) {
   const host = $('voiceStatus');
+  host.hidden = false;
   let dot = host.querySelector(':scope > .state-dot');
   if (!dot) {
     dot = el('span', { class: 'state-dot' });
     host.prepend(dot);
   }
-  const state = voice.state || 'missing';
-  for (const name of Object.keys(VOICE_LABEL)) setClass(dot, name, state === name);
+  setClass(dot, 'ready', !!ok);
+  setClass(dot, 'failed', !ok);
   while (dot.nextSibling) dot.nextSibling.remove();
-
-  const parts = [el('span', { class: 'state-label', text: VOICE_LABEL[state] || state })];
-  if (voice.detail) {
-    parts.push(el('span', { class: 'sep', text: '·' }));
-    parts.push(...detailWithoutPath(voice.detail));
-  }
-  if (voice.error) {
-    parts.push(el('span', { class: 'sep', text: '·' }));
-    parts.push(el('span', { style: 'color:var(--red)', text: voice.error }));
-  }
-  host.append(...parts);
-
-  clearTimeout(voiceTimer);
-  // A voice that is ready stays ready, and one whose install failed will not
-  // repair itself while the page is open. Anything in between is still moving.
-  if (state !== 'ready' && state !== 'failed') voiceTimer = setTimeout(refreshVoice, 2000);
+  host.append(
+    el('span', { class: 'state-label', text: ok ? 'Voice ready' : 'Voice not working' }),
+    el('span', { class: 'sep', text: '·' }),
+    el('span', { class: 'detail', text: detail }),
+  );
 }
 
-async function refreshVoice() {
+// checkVoiceKey asks Google for the voice list of the stored language, which
+// is the cheapest thing that proves a key: it needs the same API enabled and
+// the same key restriction as speaking does, and it renders nothing.
+async function checkVoiceKey() {
+  const button = $('checkVoiceKey');
+  busyButton(button, true, 'Checking…');
   try {
-    const data = await api('/api/voice/status');
-    renderVoiceStatus((data && data.voice) || {});
+    const data = await api('/api/voice/check', { method: 'POST' });
+    showVoiceStatus(!!data.ok, data.detail || '');
   } catch (err) {
-    clearTimeout(voiceTimer);
-    // Like the tunnel: a poll that never arrived is the connection bar's
-    // business rather than a toast, but it must not stop the polling either.
-    if (isOffline(err)) {
-      voiceTimer = setTimeout(refreshVoice, 5000);
-      return;
-    }
-    toast(errorMessage(err), 'error');
+    showVoiceStatus(false, errorMessage(err));
+  } finally {
+    busyButton(button, false, 'Checking…');
   }
 }
 
@@ -1006,7 +982,6 @@ function renderTunnelStatus(status) {
 onWake(() => {
   if (document.visibilityState === 'hidden' || !settings) return;
   refreshTunnel();
-  refreshVoice();
   refreshTmux();
 });
 

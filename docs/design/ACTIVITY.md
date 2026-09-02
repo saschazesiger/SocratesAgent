@@ -2,6 +2,13 @@
 
 Extends `docs/design/DESIGN.md` §A/§B/§D/§E/§F; nothing here contradicts `DECISIONS.md`. Where this file and DESIGN.md differ, this file wins for the four features below. Everything marked **[V]** was verified on tmux 3.6 on this machine while writing this.
 
+> **Superseded (2026-09-02, branch `google-tts`):** the local Piper voice and
+> `internal/piper` are gone. Reading an answer out loud is now Google Cloud
+> Text-to-Speech (`internal/googletts`), called with an API key from
+> Admin → Voice; `GET /api/voice/status` was replaced by `POST
+> /api/voice/check`. Passages below that describe the local engine are
+> history.
+
 (a) per-session busy/idle in the sidebar with an unread mark; (b) a **Status** button that has a model describe the screen and Piper read it out; (c) an **Agent** button running a server-side operator loop that types into the pane; (d) an **Audio mode** for a phone in a car.
 
 ---

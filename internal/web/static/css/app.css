@@ -930,6 +930,32 @@ a { color: inherit; }
    set in the monospace the tunnel uses for its hostname and version. */
 .voice-status .detail { color: var(--text-faint); min-width: 0; overflow-wrap: anywhere; }
 
+/* The one place in the dashboard that explains something outside Socrates: how
+   to get the Google credential the voice needs. It is a list rather than a
+   paragraph because it is five things to do in order, and it is quiet - the
+   same faint text as a hint - because it is read once and then never again. */
+.setup-guide {
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--bg);
+  padding: 14px 16px;
+  margin-top: 18px;
+}
+.setup-guide > h3 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.setup-steps {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-faint);
+}
+.setup-steps li { margin-bottom: 7px; }
+.setup-steps li:last-child { margin-bottom: 0; }
+
 .log {
   font-family: var(--mono);
   font-size: 11.5px;

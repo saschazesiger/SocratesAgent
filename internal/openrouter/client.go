@@ -1,7 +1,7 @@
 // Package openrouter is a small client for the OpenRouter API: streaming chat
 // completions with tool calling, the model catalogue, and the transcription
-// half of voice mode. Reading an answer out loud is not here - that is Piper,
-// on this machine.
+// half of voice mode. Reading an answer out loud is not here - that is
+// internal/googletts.
 package openrouter
 
 import (

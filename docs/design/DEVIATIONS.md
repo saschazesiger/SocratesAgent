@@ -2,6 +2,13 @@
 
 Appended per work package: WP, spec section, what, why.
 
+> **Superseded (2026-09-02, branch `google-tts`):** the local Piper voice and
+> `internal/piper` are gone. Reading an answer out loud is now Google Cloud
+> Text-to-Speech (`internal/googletts`), called with an API key from
+> Admin → Voice; `GET /api/voice/status` was replaced by `POST
+> /api/voice/check`. Passages below that describe the local engine are
+> history.
+
 ## WP1 — Store, config and the migration
 
 **WP1 / §B.5, WP1 scope — the harness option catalogue is a second file in the same
