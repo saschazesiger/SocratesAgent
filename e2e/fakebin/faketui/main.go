@@ -47,6 +47,14 @@ func main() {
 	name := filepath.Base(os.Args[0])
 	args := os.Args[1:]
 
+	// Socrates asks a CLI two questions before it ever opens a pane: what
+	// version it is, and what it can run. Both are plain subprocesses with a
+	// pipe for a stdout, so they are answered here and the program exits
+	// without ever touching a terminal.
+	if code, handled := answerQuery(name, args); handled {
+		os.Exit(code)
+	}
+
 	restore := rawMode()
 	defer restore()
 
@@ -573,3 +581,104 @@ func valueOf(args []string, flag string) string {
 }
 
 func out(format string, args ...any) { fmt.Fprintf(os.Stdout, format, args...) }
+
+// ------------------------------------------------------------- the queries
+
+// fakeVersion is what every name reports for `--version`. It carries the word
+// "fake" on purpose: a version string in a screenshot or a dashboard should
+// never be mistaken for a real installation's.
+const fakeVersion = "0.0.0-fake"
+
+// answerQuery handles the non-interactive commands: `--version`, which all
+// three names answer, and the model listing, whose command and whose output
+// differ per CLI. Claude Code has no listing command at all - Socrates ships a
+// static list for it - so as claude nothing but the version is answered.
+//
+// It reports whether it handled the arguments; when it did, the caller exits
+// with the status it returns and no pane is ever opened.
+func answerQuery(name string, args []string) (int, bool) {
+	if len(args) > 0 && (args[0] == "--version" || args[0] == "-V") {
+		fmt.Printf("%s %s\n", name, fakeVersion)
+		return 0, true
+	}
+	switch {
+	case name == "codex" && len(args) >= 2 && args[0] == "debug" && args[1] == "models":
+		return codexModels(), true
+	case name == "opencode" && len(args) >= 1 && args[0] == "models":
+		return openCodeModels(hasFlag(args, "--json")), true
+	}
+	return 0, false
+}
+
+// codexModels prints the shape `codex debug models` prints: one document with
+// a models array, each entry carrying the slug, the display name, the levels
+// of reasoning it supports and the one it starts on.
+func codexModels() int {
+	type level struct {
+		Effort string `json:"effort"`
+	}
+	type entry struct {
+		Slug        string  `json:"slug"`
+		DisplayName string  `json:"display_name"`
+		Description string  `json:"description"`
+		Default     string  `json:"default_reasoning_level"`
+		Visibility  string  `json:"visibility"`
+		Priority    int     `json:"priority"`
+		Levels      []level `json:"supported_reasoning_levels"`
+	}
+	doc := struct {
+		Models []entry `json:"models"`
+	}{Models: []entry{
+		{Slug: "gpt-5.1-codex", DisplayName: "GPT-5.1 Codex", Description: "the fake's default",
+			Default: "medium", Visibility: "show", Priority: 1,
+			Levels: []level{{"low"}, {"medium"}, {"high"}, {"xhigh"}}},
+		{Slug: "gpt-5.1-codex-mini", DisplayName: "GPT-5.1 Codex mini", Description: "the small one",
+			Default: "low", Visibility: "show", Priority: 2,
+			Levels: []level{{"low"}, {"medium"}, {"high"}}},
+		// A hidden entry, because the parser is meant to drop it and nothing
+		// else in the suite would notice if it stopped.
+		{Slug: "gpt-5-internal", DisplayName: "internal", Default: "medium",
+			Visibility: "hide", Priority: 3, Levels: []level{{"medium"}}},
+	}}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	fmt.Println(string(raw))
+	return 0
+}
+
+// openCodeModels prints what `opencode models` prints: one provider/model id
+// per line. `--json` is answered too, with the array of objects a newer build
+// prints, so both halves of the discoverer are reachable from the suite.
+func openCodeModels(asJSON bool) int {
+	ids := []string{"opencode/big-pickle", "openai/gpt-5-mini", "anthropic/claude-sonnet-4-5"}
+	if !asJSON {
+		for _, id := range ids {
+			fmt.Println(id)
+		}
+		return 0
+	}
+	entries := make([]map[string]string, 0, len(ids))
+	for _, id := range ids {
+		provider, model, _ := strings.Cut(id, "/")
+		entries = append(entries, map[string]string{"id": model, "providerID": provider, "name": model})
+	}
+	raw, err := json.Marshal(entries)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	fmt.Println(string(raw))
+	return 0
+}
+
+func hasFlag(args []string, flag string) bool {
+	for _, a := range args {
+		if a == flag {
+			return true
+		}
+	}
+	return false
+}

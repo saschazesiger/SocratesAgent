@@ -52,15 +52,39 @@ async function open(s) {
 // startSession drives the sheet the way a person would and waits until the
 // session it made is the one on screen.
 async function startSession(page, harness) {
+  // The hash already names whatever session this tab is on, so the wait below
+  // is for it to become a different one: a second session started in the same
+  // tab is otherwise "finished" before it has begun, and the id handed back is
+  // the previous session's.
+  const was = await page.evaluate(() => location.hash.slice(1));
   await ensureNav(page);
   await page.click('#newSession');
   await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
   await page.waitForSelector('#nsHarness .seg[data-value="' + harness + '"]', { timeout: 10000 });
   await page.click('#nsHarness .seg[data-value="' + harness + '"]');
+  await pickModelIfNeeded(page);
   await page.click('#nsStart');
   await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
-  await page.waitForFunction(() => location.hash.length > 1, null, { timeout: 30000 });
+  await page.waitForFunction((before) => location.hash.length > 1 && location.hash.slice(1) !== before,
+    was, { timeout: 30000 });
   return page.evaluate(() => location.hash.slice(1));
+}
+
+// pickModelIfNeeded does what the sheet's own hint tells a person to do when
+// the chosen program does not name a default model: pick one. OpenCode is the
+// case - `opencode models` is a list of ids and nothing in it is marked - and
+// Start stays disabled until something is chosen, which is the design.
+async function pickModelIfNeeded(page) {
+  const stuck = await page.evaluate(() => {
+    const start = document.getElementById('nsStart');
+    const field = document.getElementById('nsModelField');
+    return !!start && start.disabled && !!field && !field.hidden;
+  });
+  if (!stuck) return;
+  await page.click('#nsModel .combo-input');
+  await page.waitForSelector('#nsModel .combo-option', { timeout: 5000 });
+  await page.click('#nsModel .combo-option');
+  await page.waitForFunction(() => !document.getElementById('nsStart').disabled, null, { timeout: 5000 });
 }
 
 // screen is what the terminal is showing, as text. The DOM renderer keeps one
@@ -383,13 +407,16 @@ async function harnesses() {
 
     for (const [id, expect] of [['shell', null], ['claude', 'FAKE claude'],
       ['codex', 'FAKE codex'], ['opencode', 'FAKE opencode']]) {
-      await startSession(s.page, id);
+      const session = await startSession(s.page, id);
       await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
       if (expect) {
-        ok(await awaitScreen(s.page, expect), id + ' started and printed its banner',
-          oneLine(await screen(s.page)));
-        ok(await awaitScreen(s.page, 'theme=light'),
-          id + ' was told the terminal is light', oneLine(await screen(s.page)));
+        // From the journal, not the screen: the banner is printed before the
+        // first viewer has resized the window, so an attach redraw can reflow
+        // it away while the record of it cannot be lost.
+        ok(await journalSays(s, session, expect), id + ' started and printed its banner',
+          oneLine(await journalOf(s, session)));
+        ok(await journalSays(s, session, 'theme=light'),
+          id + ' was told the terminal is light', oneLine(await journalOf(s, session)));
       } else {
         const marker = 'shell-' + Math.random().toString(36).slice(2, 8);
         await typeLine(s.page, 'echo ' + marker);
@@ -514,7 +541,12 @@ async function exitoverlay() {
     await open(s);
     const id = await startSession(s.page, 'claude');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    ok(await awaitScreen(s.page, 'FAKE claude'), 'the session is up', oneLine(await screen(s.page)));
+    // The banner is read out of the journal rather than off the screen: it is
+    // written before the first viewer has resized the window, so tmux's
+    // attach redraw can reflow it away, and this assertion failed that way
+    // intermittently.
+    ok(await journalSays(s, id, 'FAKE claude', 1), 'the session is up',
+      oneLine(await journalOf(s, id)));
 
     await typeLine(s.page, '/exit 7');
     await s.page.waitForSelector('#termOverlay .overlay-card', { timeout: 20000 });
@@ -543,8 +575,10 @@ async function exitoverlay() {
       const overlayNode = document.getElementById('termOverlay');
       return overlayNode && overlayNode.hidden;
     }, null, { timeout: 30000 });
-    ok(await awaitScreen(s.page, 'FAKE claude'), 'Restart brought the session back',
-      oneLine(await screen(s.page)));
+    // Twice now: the journal is one file across the restart, so the second
+    // banner is the proof that a second program was started into the pane.
+    ok(await journalSays(s, id, 'FAKE claude', 2), 'Restart brought the session back',
+      oneLine(await journalOf(s, id)));
     const row = await (await s.context.request.get(s.url + '/api/sessions/' + id)).json();
     ok(row.session.state === 'running', 'and the row is running again', row.session.state);
 
@@ -1584,7 +1618,7 @@ async function latehello() {
     await setup(s.page, s.url);
     await useDomRenderer(s);
     await open(s);
-    await startSession(s.page, 'shell');
+    const id = await startSession(s.page, 'shell');
     await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
 
     // Type first, so that the server has a `lastInputSeq` well above zero for
@@ -1592,8 +1626,15 @@ async function latehello() {
     // the page starts again at nothing while the server's does not.
     const tag = Math.random().toString(36).slice(2, 8);
     await typeLine(s.page, 'echo warm >> ' + tag + '.txt');
-    ok(await awaitScreen(s.page, 'warm'), 'the session has taken input before the reload',
-      oneLine(await screen(s.page)));
+    // The warm-up is read out of the journal, not off the screen. The line
+    // writes to a file, so the only thing the pane ever shows of it is the
+    // echo of the typed characters - and tmux's attach redraw can repaint the
+    // screen from the pane's own state before that echo has been rendered,
+    // which failed this assertion once in a full run. The journal is every
+    // byte the pane produced and no redraw can take it away.
+    const warmed = await journalHas(s, id, 'warm', 20000);
+    ok(warmed, 'the session has taken input before the reload',
+      warmed ? 'the journal carries the line' : oneLine(await journalOf(s, id)));
 
     // Every frame the server sends is held back for a second and a half, which
     // is what a bad line does to a handshake.
@@ -1675,6 +1716,32 @@ const argvOf = (entry) => (entry && entry.argv ? entry.argv.join(' ') : '');
 async function journalOf(s, id) {
   const res = await s.context.request.get(s.url + '/api/sessions/' + encodeURIComponent(id) + '/journal');
   return res.ok() ? res.text() : '';
+}
+
+// journalSays waits until the journal carries something at least `times`
+// over. Counting matters after a restart: the journal is one file for the life
+// of the session, so a banner that was already there proves nothing about the
+// program that has just been started into the pane.
+async function journalSays(s, id, needle, times = 1, timeout = 25000) {
+  const until = Date.now() + timeout;
+  for (;;) {
+    const text = await journalOf(s, id);
+    if (text.split(needle).length - 1 >= times) return true;
+    if (Date.now() > until) return false;
+    await wait(200);
+  }
+}
+
+// journalHas polls the journal until it carries something, which is the
+// deterministic form of "wait until the pane has done it": a screen can be
+// repainted by an attach, and the journal only ever grows.
+async function journalHas(s, id, needle, timeout = 20000) {
+  const until = Date.now() + timeout;
+  for (;;) {
+    if ((await journalOf(s, id)).includes(needle)) return true;
+    if (Date.now() > until) return false;
+    await wait(200);
+  }
 }
 
 // conversationOf asks the program itself which conversation it is in. The fake
@@ -2472,6 +2539,271 @@ async function recoveredsession() {
   } finally { await s.stop(); }
 }
 
+/* ----------------------------------------------------------- 22. lighttheme */
+
+// The white terminal, proved through the whole stack rather than in the
+// palette file: a CLI that asks the terminal what colour it is on gets "light"
+// back through tmux, the PTY and the WebSocket, the pane is painted #ffffff,
+// and every ANSI colour a program can emit is *drawn* legibly on it.
+//
+// The last part is the one worth being careful about. Eleven of LIGHT_THEME's
+// eighteen colours are not 4.5:1 against white and are not meant to be - a
+// yellow that is 4.5:1 on white is brown. What keeps them readable is
+// `minimumContrastRatio: 4.5`, which re-derives a colour at draw time, so the
+// assertion is on what the renderer actually painted, never on the table.
+async function lighttheme() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+
+    // Codex is the harness whose theme is a launch-time decision: Socrates
+    // writes `-c tui.theme=<name>` into its command line, and a theme name is
+    // not validated at config load, so the flag being built is only half the
+    // claim. The other half is the banner, which is what the program itself
+    // saw when it asked the terminal.
+    const id = await startWithModel(s.page, 'codex', null);
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+
+    const launch = lastLaunch(s, 'codex');
+    const theme = (launch.argv || []).find((arg) => arg.startsWith('tui.theme')) || '';
+    ok(/tui\.theme\s*=\s*"?\w/.test(theme), 'Codex was told which theme to wear', theme || 'no tui.theme');
+
+    const banner = await journalOf(s, id);
+    ok(/theme=light/.test(banner), 'and the program asked the terminal and was told "light"',
+      oneLine((/FAKE codex[^\r\n]*/.exec(banner) || [''])[0]));
+
+    const painted = await s.page.evaluate(() => {
+      const bg = (sel) => {
+        const node = document.querySelector(sel);
+        return node ? getComputedStyle(node).backgroundColor : 'missing';
+      };
+      return { viewport: bg('#term .xterm-viewport'), screen: bg('#term .xterm-screen') };
+    });
+    ok(painted.viewport === WHITE && painted.screen === WHITE,
+      'the pane is painted pure white', JSON.stringify(painted));
+
+    // The sixteen ANSI colours, printed by the program and measured where they
+    // landed. `/exit` first: the fake echoes input, and a pane running a shell
+    // is the only way to make a program emit arbitrary escape sequences.
+    await typeLine(s.page, '/exit 0');
+    await s.page.waitForSelector('#termOverlay:not([hidden])', { timeout: 20000 });
+    const shellId = await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+    ok(!!shellId, 'a shell beside it, to print with', shellId);
+
+    const words = [];
+    for (let code = 30; code <= 37; code += 1) words.push([code, 'C' + code]);
+    for (let code = 90; code <= 97; code += 1) words.push([code, 'C' + code]);
+    await typeLine(s.page, "printf '" + words.map(([code, word]) =>
+      '\\033[' + code + 'm' + word + '\\033[0m\\n').join('') + "'");
+    ok(await awaitScreen(s.page, 'C97', 20000), 'the pane printed all sixteen ANSI colours',
+      oneLine(await screen(s.page)));
+
+    const drawn = await s.page.evaluate((wanted) => {
+      const ratio = (rgb) => {
+        const [r, g, b] = rgb.match(/\d+/g).map(Number).map((c) => {
+          const v = c / 255;
+          return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+        });
+        return 1.05 / (0.2126 * r + 0.7152 * g + 0.0722 * b + 0.05);
+      };
+      const spans = [...document.querySelectorAll('#term .xterm-rows span')];
+      return wanted.map((word) => {
+        const node = spans.find((n) => n.textContent.trim() === word);
+        const colour = node ? getComputedStyle(node).color : 'none';
+        return { word, colour, ratio: node ? Math.round(ratio(colour) * 100) / 100 : 0 };
+      });
+    }, words.map(([, word]) => word));
+    const worst = drawn.reduce((low, one) => (one.ratio < low.ratio ? one : low), drawn[0]);
+    ok(drawn.every((one) => one.ratio >= 4.5),
+      'every one of them was drawn at 4.5:1 or better on the white page',
+      'worst: ' + worst.word + ' ' + worst.colour + ' = ' + worst.ratio + ':1');
+
+    // And the table itself, for the two values that are not re-derived: the
+    // ground the renderer paints on and the ink it writes with.
+    const table = await s.page.evaluate(async () => {
+      const mod = await import('/static/js/term.js');
+      const entries = Object.entries(mod.LIGHT_THEME).filter(([, v]) => /^#/.test(v));
+      return {
+        background: mod.LIGHT_THEME.background,
+        foreground: mod.contrast(mod.LIGHT_THEME.foreground, '#ffffff'),
+        count: entries.length,
+      };
+    });
+    ok(table.background === '#ffffff' && table.foreground > 15,
+      'the palette itself paints on white and writes in near black',
+      JSON.stringify({ ...table, foreground: Math.round(table.foreground * 10) / 10 }));
+
+    // The picture is the record of what the eye would confirm. A real Codex
+    // cannot be started here - it would spend tokens and needs an account - so
+    // what is on it is the fake wearing the same terminal.
+    await shot(s.page, 'lighttheme');
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+/* --------------------------------------------------------------- 23. design */
+
+// The four design laws of §E.10, measured rather than looked at: white
+// surfaces, a mark wherever a harness is named, technical strings only behind
+// an "i", and motion that does not restart when a list re-renders.
+async function design() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    const id = await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+    const row = await sessionRow(s, id);
+
+    // Rule 1 - every surface is the same white.
+    const surfaces = await s.page.evaluate(() => {
+      const bg = (sel) => {
+        const node = document.querySelector(sel);
+        return node ? getComputedStyle(node).backgroundColor : 'missing';
+      };
+      return {
+        body: bg('body'), sidebar: bg('.sidebar'), topbar: bg('.topbar'),
+        list: bg('#sessionList'), wrap: bg('.term-wrap'),
+        viewport: bg('#term .xterm-viewport'), screen: bg('#term .xterm-screen'),
+      };
+    });
+    // A transparent element is the white underneath it; what a design rule
+    // forbids is a fill of its own.
+    const white = (colour) => colour === WHITE || colour === 'rgba(0, 0, 0, 0)';
+    ok(Object.values(surfaces).every(white),
+      'every surface on the session page is the same white', JSON.stringify(surfaces));
+
+    // Rule 2 - a mark wherever a harness is named. The sheet names all four,
+    // the header names this session's, and the row in the list names it again.
+    await s.page.click('#newSession');
+    await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    const sheetMarks = await s.page.$$eval('#nsHarness .seg', (nodes) =>
+      nodes.map((n) => ({
+        harness: n.dataset.value,
+        mark: (n.querySelector('.agent-mark') || { dataset: {} }).dataset.agent || 'none',
+      })));
+    ok(sheetMarks.length === 4 && sheetMarks.every((one) => one.mark === one.harness),
+      'the sheet gives every harness its own mark', JSON.stringify(sheetMarks));
+    await s.page.keyboard.press('Escape');
+    await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 10000 })
+      .catch(() => {});
+
+    const marks = await s.page.evaluate((sessionId) => ({
+      header: (document.querySelector('#sessionHarness .agent-mark') || { dataset: {} }).dataset.agent,
+      row: (document.querySelector('#sessionList .chat-item[data-id="' + sessionId + '"] .agent-mark')
+        || { dataset: {} }).dataset.agent,
+    }), id);
+    ok(marks.header === 'shell' && marks.row === 'shell',
+      'and so do the header and the row in the list', JSON.stringify(marks));
+
+    // Rule 3 - technical strings are hover-only. The working directory, the
+    // tmux session name and the state word are facts about the machine; what
+    // the page shows in words is the session's name.
+    const visible = await s.page.evaluate(() => {
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      const parts = [];
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const host = node.parentElement;
+        if (!host || host.closest('.tip-bubble')) continue;
+        if (host.closest('#term')) continue;          // the pane is the program's, not the page's
+        if (!host.checkVisibility || !host.checkVisibility()) continue;
+        parts.push(node.textContent);
+      }
+      return parts.join(' ');
+    });
+    const hidden = {
+      workdir: !visible.includes(row.workdir),
+      tmux: !/soc_/.test(visible),
+      title: visible.includes(row.title),
+    };
+    ok(hidden.workdir && hidden.tmux && hidden.title,
+      'the workdir and the tmux name are behind the "i", and the name is what is read',
+      JSON.stringify(hidden));
+    const inTip = await s.page.$$eval('#sessionList .tip-bubble', (nodes) =>
+      nodes.map((n) => n.textContent).join(' '));
+    ok(inTip.includes(row.workdir), 'and the "i" is where the workdir actually is',
+      oneLine(inTip));
+
+    // Rule 4 - motion is subtle, and it does not restart. The live dot pulses;
+    // a list that re-renders must update the row it already has rather than
+    // build a new one, or the pulse jumps back to its beginning on every poll.
+    const dotSelector = '#sessionList .chat-item[data-id="' + id + '"] .dot';
+    await wait(500);
+    const before = await s.page.evaluate((sel) => {
+      const dot = document.querySelector(sel);
+      dot.closest('.chat-item').dataset.stamp = 'before';
+      const anim = dot && dot.getAnimations()[0];
+      return anim ? { time: anim.currentTime, duration: anim.effect.getTiming().duration } : null;
+    }, dotSelector);
+    ok(!!before && before.duration <= 2000, 'the live dot carries one subtle animation',
+      JSON.stringify(before));
+
+    const renamed = row.title + ' renamed';
+    await s.context.request.patch(s.url + '/api/sessions/' + id, { data: { title: renamed } });
+    // A wake is how the page is told to look again - the same event a phone
+    // sends when it comes back. Importing the module to call its own refresh
+    // would load a second copy of it under an unstamped URL and boot the whole
+    // application again, which really would rebuild the list.
+    await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await s.page.waitForFunction((want) =>
+      [...document.querySelectorAll('#sessionList .chat-item .label')].some((n) => n.textContent === want),
+    renamed, { timeout: 20000 });
+    const after = await s.page.evaluate((sel) => {
+      const dot = document.querySelector(sel);
+      const anim = dot && dot.getAnimations()[0];
+      return {
+        time: anim ? Number(anim.currentTime) : -1,
+        sameRow: dot.closest('.chat-item').dataset.stamp === 'before',
+      };
+    }, dotSelector);
+    ok(after.time > Number(before.time) && after.sameRow,
+      'and a re-render of its row does not restart it',
+      Math.round(Number(before.time)) + ' ms -> ' + Math.round(after.time) + ' ms, '
+      + (after.sameRow ? 'the same row' : 'a new row'));
+
+    // Rule 1 again, on the other page, and rule 2 on the admin cards.
+    await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('.harness-card', { timeout: 20000 });
+    const admin = await s.page.evaluate(() => {
+      const cards = [...document.querySelectorAll('.card')];
+      const fills = new Set(cards.map((c) => getComputedStyle(c).backgroundColor));
+      return {
+        fills: [...fills],
+        body: getComputedStyle(document.body).backgroundColor,
+        marks: [...document.querySelectorAll('.harness-card')].map((c) =>
+          (c.querySelector('.agent-mark') || { dataset: {} }).dataset.agent || 'none'),
+      };
+    });
+    ok(admin.body === WHITE && admin.fills.every(white),
+      'the dashboard is white too, cards included', JSON.stringify(admin.fills));
+    ok(admin.marks.length === 4 && admin.marks.every((m) => m !== 'none'),
+      'and every harness card carries its mark', JSON.stringify(admin.marks));
+
+    const paths = await s.page.evaluate(() => {
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      const parts = [];
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const host = node.parentElement;
+        if (!host || host.closest('.tip-bubble')) continue;
+        if (!host.checkVisibility || !host.checkVisibility()) continue;
+        parts.push(node.textContent);
+      }
+      return parts.join(' ');
+    });
+    ok(!/\/(usr|bin|tmp|home|root)\//.test(paths), 'and no binary path is written on it in words',
+      oneLine((/[^\s]*\/(usr|bin|tmp|home|root)\/[^\s]*/.exec(paths) || ['none'])[0]));
+
+    await shot(s.page, 'design');
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 // -------------------------------------------------------------------- run
 
 const ALL = [
@@ -2500,6 +2832,8 @@ const ALL = [
   ['createcodex', 'Codex is trusted where it works, and its conversation is found', createcodex],
   ['createopencode', 'OpenCode names its session over its own authenticated server', createopencode],
   ['rebootresume', 'a machine that rebooted, and the session that comes back with its conversation', rebootresume],
+  ['lighttheme', 'the white terminal, from the launch flag to the drawn pixel', lighttheme],
+  ['design', 'white surfaces, marks, hover-only detail and motion that does not restart', design],
   ['livesession', 'one real session against the real Claude Code CLI', livesession, { live: true }],
 ];
 

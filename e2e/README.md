@@ -44,6 +44,12 @@ and `/id`. It also writes the same state files the real binaries write and
 refuses the same way they refuse, so the discovery and resume paths are
 exercised rather than mocked.
 
+Before it opens a pane at all it answers the two questions Socrates asks a CLI
+as a plain subprocess: `--version`, under every name, and the model listing —
+`codex debug models` with the document Codex prints, `opencode models` (and
+`models --json`) with the ids OpenCode prints. Without those every fake would
+have an empty catalogue and the sheet's model picker would go untested.
+
 The Shell harness needs no fake at all: `/bin/sh` is the thing under test.
 
 Every CLI's own state — `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `XDG_DATA_HOME`,
@@ -116,13 +122,26 @@ scenario. Deleting `e2e/out/` is always safe.
 | `sigtermreattach` | the server is killed mid-session and restarted; the pane still holds what was typed and the session is running |
 | `takeover` | a second tab with the same viewer id closes the first socket with 1012 and drives the session |
 | `offlinerestart` | the server is restarted inside an outage and the phone wakes with `online`, `focus` and `visibilitychange` at once: one handshake, and nothing typed is lost in silence |
+| `latehello` | what is typed before a slow `hello` arrives is delivered, exactly once, and leaves nothing behind |
 | `adminoptions` | every harness option round-trips and reaches the command line |
 | `tmuxinstaller` | the engine card, and an install that streams and survives a reload |
+| `twoviewers` | two devices on one session: both see the same pane, and the size notice is shown once |
+| `backpressure` | two hundred lines printed as fast as they can be arrive whole, on screen and in the journal |
+| `deletekeepsdir` | delete kills the tmux session and removes the row, and leaves the work on disk |
+| `recoveredsession` | a `soc_*` tmux session with no row is taken in as "Recovered session", never killed |
+| `createclaude` | the sheet's model list is the catalogue's, the picked model and the `--session-id` reach Claude Code, and **Restart** resumes the conversation it already had — one press, one relaunch |
+| `createcodex` | Codex is launched with `--strict-config` and its working directory trusted in the same command line, and the conversation it writes on its first turn is discovered and resumed |
+| `createopencode` | OpenCode gets a port and a password of its own, and the discoverer reads the session id over its authenticated HTTP server |
+| `rebootresume` | the tmux server is killed behind Socrates' back: the row goes to `needs_resume`, opening it relaunches with **--resume**, and the banner says so once and stays away after it is dismissed |
+| `lighttheme` | the theme Codex was told to wear, the `theme=light` it read back through tmux, the white pane, and all sixteen ANSI colours drawn at 4.5:1 or better |
+| `design` | white surfaces, a mark wherever a program is named, technical strings only behind an "i", and an animation that does not restart when a row re-renders |
 | `livesession` | one real session against the real Claude Code CLI (gated) |
 
-Scenarios 13–22 of the specification's table — the per-CLI creates, the
-multi-viewer and recovery cases, the theme and design measurements — arrive with
-the work packages that build what they measure.
+That is every row of the specification's table. `lighttheme` measures the
+colours the renderer actually **drew** rather than the palette they came from:
+eleven of `LIGHT_THEME`'s eighteen values are deliberately not 4.5:1 against
+white, and what makes them legible is `minimumContrastRatio: 4.5`, which
+re-derives them at draw time.
 
 ## Dictation needs a microphone and a gateway
 
@@ -135,6 +154,9 @@ see.
 
 ## Screenshots for the README
 
-`node e2e/shots.mjs` regenerates the screenshots in `docs/`. It still drives the
-chat app and is rewritten with the rest of the documentation in WP10; it is not
-part of `make e2e`.
+`node e2e/shots.mjs` regenerates `docs/screenshot-session.png`,
+`docs/screenshot-phone.png` and `docs/screenshot-admin.png` — real sessions in a
+real browser, with the fake CLI standing in for the three programs.
+`docs/screenshot-tunnel.png` is hand-made and is not regenerated. It is not part
+of `make e2e`: the pictures are committed, so this is only run when they need
+redoing.
