@@ -16,7 +16,7 @@
 // does and there is exactly one of it per session.
 
 import {
-  api, el, toast, infoTip, confirmDialog, errorMessage, isOffline,
+  api, el, toast, infoTip, confirmDialog, errorMessage, isOffline, isBusyConflict,
   setClass, onWake, clientKey, CONNECTION_GRACE,
 } from './api.js';
 import { connectionSource } from './net.js';
@@ -525,6 +525,10 @@ const state = {
   // The overflow menu a row or the header last opened, so a second one
   // replaces it rather than stacking on it.
   menu: null,
+  // The session whose relaunch this tab has asked for and not yet been
+  // answered about. It is what keeps the pressed Restart pressed across a list
+  // refresh, and what stops a second press starting a second relaunch.
+  restarting: '',
   // Whether this tab is waiting for a session it opened to be relaunched.
   // §C.8's resume happens inside the handshake and the row says needs_resume
   // for the whole of it, so the pane's own overlay is the only place that
@@ -769,7 +773,9 @@ async function deleteSession(session) {
     }
     renderList();
     toast('Deleted. The working directory was kept.');
-  } catch (err) { toast(errorMessage(err), 'error'); }
+  } catch (err) {
+    toast(actionFailed(err, 'That session could not be deleted.'), 'error');
+  }
 }
 
 function downloadJournal(session) {
@@ -898,7 +904,7 @@ function drawOverlay(session) {
         el('p', { class: 'overlay-title' }, 'The session ended.',
           infoTip(['Exit status ' + session.exit_status], { label: 'Exit status', bubbleClass: 'mono' })),
         el('div', { class: 'overlay-actions' },
-          el('button', { class: 'btn primary', type: 'button', id: 'termRestart', text: 'Restart', onclick: () => restart(session) }),
+          actionButton(session, 'Restart', 'Restarting…'),
           el('button', { class: 'btn', type: 'button', text: 'Delete', onclick: () => deleteSession(session) })),
       );
       break;
@@ -909,7 +915,7 @@ function drawOverlay(session) {
             ? infoTip([session.fail_reason], { label: 'Why it failed', bubbleClass: 'mono' })
             : null),
         el('div', { class: 'overlay-actions' },
-          el('button', { class: 'btn primary', type: 'button', id: 'termRestart', text: 'Try again', onclick: () => restart(session) })),
+          actionButton(session, 'Try again', 'Trying again…')),
       );
       break;
     case 'resuming':
@@ -919,13 +925,29 @@ function drawOverlay(session) {
       show(
         el('p', { class: 'overlay-title', text: 'This session is not running.' }),
         el('div', { class: 'overlay-actions' },
-          el('button', { class: 'btn primary', type: 'button', text: 'Open', onclick: () => attach(session) })),
+          el('button', {
+            class: 'btn primary', type: 'button', text: 'Open',
+            onclick: () => { if (!state.resuming) attach(session); },
+          })),
       );
       break;
     default:
       host.hidden = true;
       host.innerHTML = '';
   }
+}
+
+// actionButton is the overlay's own button, drawn from `state.restarting` so
+// that a redraw in the middle of a relaunch keeps saying what is happening
+// instead of offering to start it again.
+function actionButton(session, label, busyLabel) {
+  const busy = state.restarting === session.id;
+  return el('button', {
+    class: 'btn primary', type: 'button', id: 'termRestart',
+    text: busy ? busyLabel : label,
+    disabled: busy,
+    onclick: () => restart(session),
+  });
 }
 
 // notice draws the thin line at the top of the pane. It never blocks and it is
@@ -944,27 +966,57 @@ function notice(kind, text, onDismiss, facts) {
     html: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
     onclick: () => { host.hidden = true; if (onDismiss) onDismiss(); },
   });
-  host.append(el('span', { class: 'notice-text', text }),
-    facts && facts.length ? infoTip(facts, { label: 'What was resumed', bubbleClass: 'mono' }) : null,
-    close);
+  // `host` is a plain element, and `ParentNode.append` writes a null argument
+  // into the line as the word "null" - only `el()` filters. So the tip is
+  // appended when there is one, and not otherwise.
+  host.append(el('span', { class: 'notice-text', text }));
+  if (facts && facts.length) host.append(infoTip(facts, { label: 'Details', bubbleClass: 'mono' }));
+  host.append(close);
   host.hidden = false;
   return host;
 }
 
+/**
+ * restart is the exit and failure overlays' button.
+ *
+ * The pressed state lives in `state.restarting` rather than on the button,
+ * because the button does not survive: the list refreshes on a wake and every
+ * fifteen seconds, and the row still says `exited` while the POST is in
+ * flight, so the card - and a fresh, enabled Restart with it - is redrawn
+ * under the finger that has just pressed it. A second press starts a second
+ * relaunch, and the loser of that race is a 409. So the flag is what
+ * `drawOverlay` reads, and it is also the guard: one relaunch per session at a
+ * time.
+ */
 async function restart(session) {
-  const button = document.getElementById('termRestart');
-  if (button) { button.disabled = true; button.textContent = 'Restarting…'; }
+  if (state.restarting === session.id) return;
+  state.restarting = session.id;
+  drawOverlay(session);
   try {
     const data = await api('/api/sessions/' + encodeURIComponent(session.id) + '/restart', {
       method: 'POST', attempts: 1, timeout: 60000,
     });
+    state.restarting = '';
     replaceSession(data.session);
-    if (data.error) toast(data.error, 'error');
+    // The reason is on the overlay, behind its "i". A toast that repeated it
+    // would put a path or a tmux name in visible text (§E.10 rule 3).
+    if (data.error) toast('The session could not start.', 'error');
     else attach(data.session);
   } catch (err) {
-    toast(errorMessage(err), 'error');
-    if (button) { button.disabled = false; button.textContent = 'Restart'; }
+    state.restarting = '';
+    toast(actionFailed(err, 'The session could not be started again.'), 'error');
+    drawOverlay(sessionOf(session.id) || session);
   }
+}
+
+// actionFailed is what a refused action says out loud. A lost connection says
+// so in its own words, because that is something the person can act on;
+// anything the server said is a sentence with a path or a tmux session name in
+// it, and those belong behind an "i" or nowhere.
+function actionFailed(err, sentence) {
+  if (isOffline(err)) return errorMessage(err);
+  if (isBusyConflict(err)) return 'That session is already running.';
+  return sentence;
 }
 
 function detach() {
@@ -1196,7 +1248,7 @@ async function newSession() {
       },
     });
     replaceSession(data.session);
-    if (data.error) toast(data.error, 'error');
+    if (data.error) toast('The session could not start.', 'error');
     state.wanted = data.session.id;
     location.hash = '#' + data.session.id;
     attach(data.session);

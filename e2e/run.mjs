@@ -1702,10 +1702,17 @@ async function startWithModel(page, harness, modelLabel) {
   await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
   await page.waitForSelector('#nsHarness .seg[data-value="' + harness + '"]', { timeout: 10000 });
   await page.click('#nsHarness .seg[data-value="' + harness + '"]');
-  if (modelLabel) {
+  // The model step is hidden for Shell and pre-filled for a harness that names
+  // a default. Where it is neither - OpenCode reports models and no default -
+  // the sheet waits for a choice, which is what a person would make.
+  const wantsModel = await page.$eval('#nsModelField', (n) => !n.hidden);
+  const chosen = await page.$eval('#nsModel .combo-input', (n) => n.value.trim());
+  if (wantsModel && (modelLabel || !chosen)) {
     await page.click('#nsModel .combo-input');
     await page.waitForSelector('#nsModel .combo-option', { timeout: 5000 });
-    await page.click('#nsModel .combo-option:has(.combo-label:text-is("' + modelLabel + '"))');
+    await page.click(modelLabel
+      ? '#nsModel .combo-option:has(.combo-label:text-is("' + modelLabel + '"))'
+      : '#nsModel .combo-option');
   }
   await page.click('#nsStart');
   await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
@@ -1858,7 +1865,42 @@ async function createclaude() {
 
     // The program ends and is started again from the browser. A restart is a
     // resume (§C.8), so the conversation it had is the conversation it gets.
-    const before = await endAndRestart(s, 'claude', 3);
+    //
+    // The relaunch is held for a moment on the wire, because the interesting
+    // part is what the page does while it waits: the list refreshes on a wake
+    // and every fifteen seconds, and the button that was just pressed must not
+    // come back offering to press it again. One press is one relaunch.
+    const before = launchesOf(s, 'claude').length;
+    let posts = 0;
+    await s.page.route('**/api/sessions/*/restart', async (route) => {
+      posts += 1;
+      await new Promise((done) => setTimeout(done, 2500));
+      await route.continue();
+    });
+    await typeLine(s.page, '/exit 3');
+    await s.page.waitForSelector('#termOverlay .overlay-card', { timeout: 25000 });
+    const ended = await s.page.$eval('#termOverlay .overlay-title', (n) => n.textContent);
+    ok(/The session ended/.test(ended), 'the overlay says the session ended', oneLine(ended));
+    await s.page.click('#termRestart');
+    await s.page.waitForFunction(() => {
+      const button = document.getElementById('termRestart');
+      return !!button && button.disabled;
+    }, null, { timeout: 8000 });
+    // A wake is what a phone does when it comes back, and it refreshes the
+    // list - with the row still saying `exited`, because the POST is in flight.
+    await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await wait(1200);
+    const pressed = await s.page.$eval('#termRestart',
+      (n) => ({ disabled: n.disabled, text: n.textContent.trim() }));
+    ok(pressed.disabled && /Restarting/.test(pressed.text),
+      'a list refresh in the middle does not un-press Restart', JSON.stringify(pressed));
+    await s.page.waitForFunction(() => {
+      const node = document.getElementById('termOverlay');
+      return node && node.hidden;
+    }, null, { timeout: 40000 });
+    await s.page.unroute('**/api/sessions/*/restart');
+    ok(posts === 1, 'and one press was one relaunch', posts + ' POSTs');
+
     ok(await awaitScreen(s.page, 'FAKE claude', 25000), 'Restart brought Claude Code back',
       oneLine(await screen(s.page)));
     const again = launchesOf(s, 'claude').slice(before);
@@ -1866,6 +1908,14 @@ async function createclaude() {
       'and it was resumed on the conversation it already had', argvOf(again[0]));
     const back = await sessionRow(s, id);
     ok(back.state === 'running', 'the row is running again', back.state);
+
+    // §E.7 again, and the whole line this time: a notice is one sentence and a
+    // close button, and the conversation it names is behind the "i" - never a
+    // second word in the line.
+    await s.page.waitForSelector('#termNotice:not([hidden])', { timeout: 20000 });
+    const line = await s.page.$eval('#termNotice', (n) => n.innerText.trim());
+    ok(line === 'Resumed after a restart.', 'the banner is that sentence and nothing else',
+      JSON.stringify(line));
 
     ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
       unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
@@ -2055,12 +2105,15 @@ async function rebootresume() {
       return {
         kind: host.dataset.kind,
         words: host.querySelector('.notice-text').textContent,
+        whole: host.innerText.trim(),
         bubble: bubble ? bubble.textContent : '',
         bubbleShown: bubble ? getComputedStyle(bubble).visibility : 'none',
       };
     });
     ok(banner.kind === 'resumed' && /Resumed after a restart/.test(banner.words),
       'the banner says the session was resumed', JSON.stringify(banner));
+    ok(banner.whole === 'Resumed after a restart.',
+      'and the line holds that sentence and nothing else', JSON.stringify(banner.whole));
     ok(!/could not be resumed/.test(banner.words),
       'and it does not claim the conversation was lost, because it was not', oneLine(banner.words));
     ok(banner.bubble.includes(conversation) && banner.bubbleShown === 'hidden',
@@ -2084,8 +2137,12 @@ async function rebootresume() {
     // notice, which is a different sentence about a different thing. What must
     // not come back is the resumed banner.
     const still = await s.page.$eval('#termNotice',
-      (n) => (n.hidden ? 'hidden' : n.dataset.kind));
-    ok(still !== 'resumed', 'and a reload does not show it again', still);
+      (n) => (n.hidden ? { kind: 'hidden', whole: '' } : { kind: n.dataset.kind, whole: n.innerText.trim() }));
+    ok(still.kind !== 'resumed', 'and a reload does not show it again', still.kind);
+    // A notice with nothing behind an "i" - the desync line has no facts - is
+    // the line and the close button, and no stray word from a null child.
+    ok(still.kind !== 'desync' || still.whole === 'Reconnected — the screen was redrawn.',
+      'a notice with no detail is still just its sentence', JSON.stringify(still.whole));
 
     // And the session is a working session, not a screen that came back: the
     // pane it was given is a new program, and it answers.
@@ -2186,6 +2243,12 @@ async function twoviewers() {
       JSON.stringify(notices));
     ok(notices.length === 1 && notices[0].text.includes(moved.replace('x', '×')),
       'and told which size it moved to', notices.length ? notices[0].text : 'nothing');
+    // The whole line, not only the part that carries the numbers: a notice is
+    // one sentence and a close button, and nothing else may creep into it.
+    ok(notices.length === 1
+      && notices[0].text === 'Another viewer resized this session to ' + moved.replace('x', '×') + '.',
+      'and the line holds that sentence and nothing else',
+      JSON.stringify(notices.length ? notices[0].text : ''));
     ok(await s.page.$eval('#termSize', (n) => n.textContent) === moved.replace('x', '×'),
       'the first viewer now shows the window the second one set',
       await s.page.$eval('#termSize', (n) => n.textContent));

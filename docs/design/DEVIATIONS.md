@@ -893,3 +893,41 @@ target that is not there, and `paneIsDead` treats an empty answer as a session
 that is gone. `TestRebootResumesEverySession` resumes two sessions after a
 killed server - two is the smallest number that can show it - and
 `rebootresume` now creates two and resumes both in the browser.
+
+## WP9a — the review's findings
+
+**WP9a review F1 / §E.7 — a notice appends its tip only when it has one.**
+`ParentNode.append` is not `el()`: a `null` argument is stringified, so every
+notice without facts - `resized` and `desync` among them - carried the word
+"null" beside its close button. The tip is appended in its own statement now,
+and `rebootresume`, `createclaude` and `twoviewers` read the **whole**
+`#termNotice` text and require it to equal §E.7's sentence exactly. Reading
+`.notice-text` alone is what let the defect through.
+
+**WP9a review F2 / §E.7 — a pressed Restart is a fact about the session, not
+about the button.** The list refreshes on a wake and every fifteen seconds, and
+the row still says `exited` while the POST is in flight, so the overlay was
+rebuilt with a fresh, enabled button under the finger that had just pressed it -
+and a second press was a second relaunch, a 409 and a toast. `state.restarting`
+now holds the session whose relaunch is in flight; `drawOverlay` draws the
+button from it and `restart()` refuses a second call for the same session. The
+needs_resume **Open** button ignores a press while `state.resuming` is set.
+`createclaude` holds the POST on the wire, forces a refresh with an `online`
+event, and asserts the button is still pressed and that one press was one POST.
+
+**WP9a review F3 / §E.10 rule 3 — a refusal is a sentence, not a server
+message.** A failed relaunch or create toasted the reason verbatim - a plan
+path, a tmux session name - while the same string sat correctly behind the
+overlay's "i". Those paths now toast "The session could not start."; a 409 says
+the session is already running, a delete that failed says so, and only a lost
+connection still speaks in its own words, because that is the one a person can
+act on.
+
+**WP9a review F4 — `e2e/README.md` lists the four scenarios**, and the sentence
+about rows 13-16 arriving later is gone.
+
+**Fix-up / §E.3 — the sheet waits for a model where the CLI names none.**
+OpenCode now reports models and no default, so `#nsStart` stays disabled until
+one is picked - correct behaviour, and it broke `createopencode`, which never
+chose one. `startWithModel` asks the sheet whether the step is shown and picks
+the first entry when nothing is pre-filled, which is what a person does.
