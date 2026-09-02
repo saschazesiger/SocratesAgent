@@ -276,22 +276,32 @@ export async function mockOpenRouter(context, { text = 'hello from the microphon
  *
  * It answers both routes Transcribe can take: /chat/completions for an audio
  * capable chat model and /audio/transcriptions for a dedicated one.
+ *
+ * `replies` is a queue for the one caller that needs a different answer every
+ * time: the operator loop asks the model again after every step, and a stub
+ * that repeated itself would drive the same keystroke until the run ran out of
+ * steps. Each completion takes the next entry; when the queue is empty the
+ * fixed `text` is the answer again, so a scenario only has to script the steps
+ * it cares about.
  */
-export async function openRouterStub({ text = 'hello from the microphone' } = {}) {
+export async function openRouterStub({ text = 'hello from the microphone', replies = [] } = {}) {
   const calls = [];
+  const queue = [...replies];
   const server = createServer((req, res) => {
     let size = 0;
     req.on('data', (chunk) => { size += chunk.length; });
     req.on('end', () => {
       calls.push({ path: req.url, bytes: size });
+      const completion = String(req.url || '').includes('chat/completions');
+      const answer = (completion && queue.length ? queue.shift() : text);
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ text, choices: [{ message: { content: text } }] }));
+      res.end(JSON.stringify({ text: answer, choices: [{ message: { content: answer } }] }));
     });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const url = 'http://127.0.0.1:' + server.address().port;
   return {
-    url, calls, text,
+    url, calls, text, replies: queue,
     close: () => new Promise((resolve) => server.close(resolve)),
   };
 }

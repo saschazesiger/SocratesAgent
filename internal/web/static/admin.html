@@ -158,6 +158,33 @@
       </div>
     </section>
 
+    <!-- Two models and two limits: what a session's screen is described with,
+         what drives it, and how far it is allowed to go on its own. -->
+    <section class="card" id="assistCard">
+      <h2>Status &amp; Agent</h2>
+      <p class="card-sub">Status has a model read the screen of a session and say what it is doing, in one or two sentences, which the voice above reads out loud. Agent lets a model type into the session for you: it looks at the screen, takes one small step, and looks again.</p>
+
+      <div class="field">
+        <label>Status model</label>
+        <div id="orStatus"></div>
+        <div class="hint">Asked for a sentence about a screen, so a fast, cheap model is the right one — google/gemini-2.5-flash is the default.</div>
+      </div>
+      <div class="field">
+        <label>Agent model</label>
+        <div id="orAgent"></div>
+        <div class="hint">This one has to read a terminal and decide which keys to press, which is a harder job than the one above.</div>
+      </div>
+      <div class="field">
+        <label class="switch"><input type="checkbox" id="agentAllowShell"><span class="track"></span><span>Let it drive a Shell session</span></label>
+        <div class="hint">With it off, Agent works only on the three coding programs. A shell takes whatever it is given, which is the point of a shell and the reason this switch exists.</div>
+      </div>
+      <div class="field">
+        <label for="agentMaxSteps">Steps per run</label>
+        <input class="input" type="number" id="agentMaxSteps" min="1" max="40">
+        <div class="hint">How many times one run may look at the screen and act on it before it stops by itself. Twelve is the default; a run can be stopped at any point from the session page.</div>
+      </div>
+    </section>
+
     <section class="card" id="tunnelCard">
       <h2>Remote access</h2>
       <p class="card-sub">Publish Socrates on the internet through a Cloudflare tunnel — no open port, no router configuration. It keeps serving on its local address either way, which is the address you point Cloudflare at.</p>

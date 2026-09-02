@@ -35,6 +35,22 @@
 
 [hidden] { display: none !important; }
 
+/* Said, never shown. The activity of a session is three marks in the sidebar,
+   which is nothing at all to a screen reader, so the same change is written
+   here in words - and only here. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 html, body {
   height: 100%;
   margin: 0;
@@ -112,6 +128,15 @@ a { color: inherit; }
 }
 .icon-btn:hover { background: var(--bg-hover); color: var(--text); }
 .icon-btn:active { transform: scale(.92); }
+/* Offline, a button that would fail says so by being unavailable rather than
+   by being pressed and answering nothing. */
+.icon-btn:disabled { opacity: .35; cursor: default; }
+.icon-btn:disabled:hover { background: transparent; color: var(--text-soft); }
+/* A mode that is on is filled, like an armed key on the key bar. */
+.icon-btn.on { background: var(--accent); color: var(--accent-text); }
+.icon-btn.on:hover { background: var(--accent); color: var(--accent-text); }
+/* While the voice is reading, the same button is the way to stop it. */
+.icon-btn.speaking { color: var(--text); background: var(--bg-hover); }
 .icon-btn svg { width: 17px; height: 17px; }
 
 /* ------------------------------------------------------------------ forms */
@@ -861,6 +886,12 @@ a { color: inherit; }
     animation-duration: 2.4s !important;
   }
   .spinner { animation-name: pulse !important; }
+  /* The ring is still the difference between working and finished, so it is
+     drawn - complete and still - rather than turned off. */
+  .chat-item .row-mark.busy::after {
+    animation: none !important;
+    border-top-color: var(--line);
+  }
   .tip-bubble { transition: none !important; }
 }
 
@@ -971,8 +1002,11 @@ a { color: inherit; }
   }
   /* Mobile first: the session's name comes before the caption beside it. The
      harness is its mark and the mark stays; the model is what goes, and it is
-     still in the bubble under a tap. */
-  .agent-badge { max-width: 40%; gap: 5px; padding: 0 8px 0 6px; }
+     still in the bubble under a tap. With Status, Agent and audio mode in the
+     bar the caption goes at this width rather than at 380, because a model id
+     squeezed to one letter is not a caption. */
+  .agent-badge { max-width: 40%; gap: 5px; padding: 0 5px; }
+  .agent-badge > .b-model { display: none; }
   .term-size { display: none; }
 }
 /* Narrower than this the title has room for one letter and an ellipsis that
@@ -983,10 +1017,7 @@ a { color: inherit; }
   .topbar .title { visibility: hidden; }
 }
 @container (max-width: 380px) {
-  /* Narrower still: only the mark is left, a round badge that opens with a
-     tap. */
-  .agent-badge > .b-model { display: none; }
-  .agent-badge { padding: 0 5px; }
+  /* Narrower still: the controls give up the last of their spacing. */
   .topbar {
     gap: 5px;
     padding: 0
@@ -1183,6 +1214,45 @@ a { color: inherit; }
 .key.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 .key.lock { box-shadow: 0 0 0 2px var(--bg), 0 0 0 3px var(--accent); }
 
+/* ------------------------------------------------------------ audio mode */
+
+/* A phone in a car. The terminal stays exactly where it is and simply gets
+   shorter; what is added is two buttons a thumb cannot miss, on white with a
+   hairline like everything else. */
+.audio-bar {
+  flex: none;
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+.audio-btn {
+  flex: 1;
+  min-height: 64px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 16px;
+  font-weight: 550;
+  letter-spacing: -.01em;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background .16s var(--ease), color .16s var(--ease), border-color .16s var(--ease);
+}
+.audio-btn:hover { background: var(--bg-hover); }
+.audio-btn:active { background: var(--bg-sunken); }
+.audio-btn:disabled { opacity: .4; cursor: default; }
+.audio-btn:disabled:hover { background: var(--bg); }
+/* Recording is the one state that has to be readable from a metre away. */
+.audio-btn.rec {
+  color: var(--red);
+  border-color: var(--red);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ------------------------------------------------------- the session list */
 
 .list-empty {
@@ -1196,7 +1266,28 @@ a { color: inherit; }
 .chat-item .dot.amber { background: var(--amber); animation: none; }
 .chat-item .dot.red { background: var(--red); animation: none; }
 .chat-item .dot.faint { background: var(--text-faint); animation: none; }
-.chat-item .row-mark { display: inline-flex; flex: none; }
+/* The activity of a row is drawn on the agent's own mark rather than beside
+   it: a hairline ring that turns while the harness is working, and stands
+   still while it is waiting for an answer. Nothing new is invented, and the
+   rule "a mark wherever a harness is named" still holds. */
+.chat-item .row-mark { display: inline-flex; flex: none; position: relative; }
+.chat-item .row-mark.busy::after,
+.chat-item .row-mark.waiting::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  pointer-events: none;
+}
+/* One faint arc on an otherwise even ring is the whole of the motion. */
+.chat-item .row-mark.busy::after {
+  border-top-color: var(--text-faint);
+  animation: spin 900ms linear infinite;
+}
+/* A name whose session finished something nobody has seen. The session being
+   looked at is never bold - the page never gives it the class. */
+.chat-item.unread .label { font-weight: 600; color: var(--text); }
 /* The "i" only appears where a pointer already is, so a row is a name and a
    dot until somebody asks it for more. */
 .chat-item .row-tip { flex: none; opacity: 0; transition: opacity .16s var(--ease); }
@@ -1429,6 +1520,9 @@ body.conn-lost .auth { padding-top: var(--conn-bar-h, 40px); }
    is often exactly what the person wants to read - but the animations that say
    "this is happening right now" stop. */
 body.stale .spinner { animation-play-state: paused; opacity: .45; }
+/* What is on screen is old, so the ring stops turning with everything else:
+   a spinner over a dead socket is a page claiming to know something. */
+body.stale .chat-item .row-mark.busy::after { animation-play-state: paused; opacity: .4; }
 body.stale .chat-item .dot { animation: none; opacity: .4; }
 
 /* ------------------------------------------------------------ the marks */

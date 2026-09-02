@@ -227,6 +227,64 @@ export class Recorder {
   }
 }
 
+/**
+ * dictateOnce records one utterance and hands back what was said.
+ *
+ * It exists because audio mode has no field to write a draft into: the words
+ * are the instruction, and the tap that stops the recording is the same tap
+ * that sends it. So the whole round trip - microphone, WAV, transcription - is
+ * one await, and `onReady` is how the caller gets hold of the stop: it is
+ * handed a function to call when the second tap arrives, and the promise
+ * resolves with the transcript after it.
+ *
+ * `onTime` is called with the seconds recorded so far, for a clock beside the
+ * button. Every failure arrives as one sentence a person can read, on
+ * `err.userMessage` as well as on `err.message`, exactly as Recorder's own do.
+ */
+export async function dictateOnce({ onTime, onReady } = {}) {
+  const recorder = new Recorder();
+  await recorder.start();
+  let ticker = null;
+  if (onTime) {
+    onTime(0);
+    ticker = setInterval(() => onTime(recorder.seconds), 200);
+  }
+  let stop = null;
+  const stopped = new Promise((resolve) => { stop = resolve; });
+  try {
+    if (onReady) onReady(stop);
+    await stopped;
+  } catch {
+    /* a caller that threw from onReady still gets its microphone back below */
+  }
+  let result = null;
+  try {
+    result = await recorder.stop();
+  } finally {
+    if (ticker) clearInterval(ticker);
+    if (onTime) onTime(0);
+  }
+  if (!result) throw micError('I did not hear anything.');
+  if (result.seconds < 0.4) throw micError('That was too short.');
+  const { request, NetworkError } = await network();
+  let data = null;
+  try {
+    // Transcription only reads the audio back as words, so retrying it costs a
+    // moment and loses nothing - which is what a bad line wants.
+    data = await request('/api/voice/transcribe', {
+      method: 'POST', attempts: 3, timeout: 60000,
+      body: { audio: result.base64, format: result.format },
+    });
+  } catch (err) {
+    throw micError(err instanceof NetworkError
+      ? 'No connection \u2014 that recording could not be transcribed.'
+      : 'The recording could not be transcribed. Try again.');
+  }
+  const text = String((data && data.text) || '').trim();
+  if (!text) throw micError('I did not catch that.');
+  return text;
+}
+
 function resample(samples, from, to) {
   if (from === to) return samples;
   const ratio = from / to;

@@ -52,6 +52,8 @@ let defaults = null;
 // something that does not happen.
 const MODEL_PICKERS = [
   ['orTranscribe', 'openrouter.transcribe_model'],
+  ['orStatus', 'openrouter.status_model'],
+  ['orAgent', 'openrouter.agent_model'],
 ];
 
 // FIELDS is every control that is one element and one path. Everything with a
@@ -68,6 +70,8 @@ const FIELDS = [
   ['mouseOn', 'terminal.mouse', 'bool'],
   ['extendedKeys', 'terminal.extended_keys', 'bool'],
   ['webgl', 'terminal.webgl', 'bool'],
+  ['agentAllowShell', 'agent.allow_shell', 'bool'],
+  ['agentMaxSteps', 'agent.max_steps', 'int'],
   ['voiceLanguage', 'voice.language'],
   ['sttPrompt', 'voice.stt_prompt'],
   ['ttsRate', 'voice.tts_rate', 'number'],
