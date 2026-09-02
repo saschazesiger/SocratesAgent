@@ -315,6 +315,15 @@ func TestChatIsDeletedWithItsSession(t *testing.T) {
 	if _, err := e.srv.store.GetKV(chatKey(e.id)); err == nil {
 		t.Fatal("the conversation outlived the session it was about")
 	}
+
+	// And an answer that was still being written when the session went does
+	// not bring it back. `forget` runs in the delete handler, the goroutine
+	// that answers outlives the request by design, and a row written after the
+	// cleanup would be one nothing ever removes again.
+	e.srv.chats.append(e.id, chatMessage{Role: "assistant", Text: "the run finished"})
+	if _, err := e.srv.store.GetKV(chatKey(e.id)); err == nil {
+		t.Fatal("a late answer wrote the conversation of a deleted session back")
+	}
 }
 
 // No key is the one thing this route refuses outright, and it refuses with the

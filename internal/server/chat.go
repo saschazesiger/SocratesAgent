@@ -103,6 +103,14 @@ func (d *chatDriver) append(sessionID string, msg chatMessage) chatMessage {
 		msg.TS = time.Now().UnixMilli()
 	}
 	d.mu.Lock()
+	// A deleted session took its conversation with it, and an answer still in
+	// flight when that happened must not write the row back: forget() has
+	// already run, nothing would ever remove it again, and the message is
+	// about a screen that no longer exists.
+	if _, err := d.srv.store.GetSession(sessionID); err != nil {
+		d.mu.Unlock()
+		return msg
+	}
 	stored := d.history(sessionID)
 	stored = append(stored, msg)
 	if len(stored) > chatKeepMessages {

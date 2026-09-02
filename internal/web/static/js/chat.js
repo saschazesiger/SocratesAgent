@@ -123,7 +123,27 @@ export function mountChat(ctx) {
   async function submit(raw, field) {
     const text = String(raw || '').trim();
     const session = ctx.current();
-    if (!text || !session || sending || !ctx.live()) return;
+    if (!text || !session) return;
+    // A dictated message has no field to stay in: the words exist only in this
+    // call, so a socket that went down while the microphone was running would
+    // take them with it, in silence. They are put in the log instead, with the
+    // reason they did not go - the same rule the rest of the page's input
+    // follows.
+    if (sending || !ctx.live()) {
+      messages = messages.concat([
+        { role: 'user', text, ts: Date.now() },
+        {
+          role: 'assistant',
+          text: ctx.live()
+            ? 'That was not sent: the question before it is still being answered.'
+            : 'That was not sent: this device has no connection. Ask again when it is back.',
+          failed: true,
+          ts: Date.now(),
+        },
+      ]);
+      render();
+      return;
+    }
     sending = true;
     thinking = true;
     if (field) field.value = '';
@@ -178,6 +198,13 @@ export function mountChat(ctx) {
     messages = Array.isArray(list) ? list.slice() : [];
     seen.clear();
     for (const msg of messages) seen.add(keyOf(msg));
+    // The stored conversation is the record, so it also settles whether an
+    // answer is still owed. Without this, a socket that dropped between the
+    // question and the answer came back with the answer in the log and the
+    // "Thinking…" placeholder still sitting under it, for ever: the frame that
+    // would have cleared it is the one the outage ate.
+    const last = messages[messages.length - 1];
+    if (last && last.role === 'assistant') thinking = false;
     render();
   }
 
