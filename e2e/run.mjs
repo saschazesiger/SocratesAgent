@@ -10,7 +10,7 @@
 
 import {
   start, setup, shot, ok, scenario, skipScenario, finish, ensureNav, wait,
-  PASSWORD, LONG_SCRIPT, LIVE,
+  PASSWORD, LIVE,
 } from './harness.mjs';
 
 // The one console error this environment produces on its own: a machine
@@ -600,7 +600,7 @@ async function stoptool() {
 // -------------------------------------------------------------- 8. dropconn
 
 async function dropconn() {
-  const s = await start({ script: LONG_SCRIPT });
+  const s = await start();
   try {
     await setup(s.page, s.url);
     await openSheetAndStart(s.page, {});
@@ -659,7 +659,7 @@ async function sigterm() {
   // §3.4 has SIGTERM leave the agent host running on purpose, and that is what
   // is being measured. stop() closes them at the very end, as it does for
   // every other scenario.
-  const s = await start({ script: LONG_SCRIPT });
+  const s = await start();
   try {
     await setup(s.page, s.url);
     await openSheetAndStart(s.page, {});

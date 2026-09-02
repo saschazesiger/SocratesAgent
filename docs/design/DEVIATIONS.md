@@ -132,3 +132,80 @@ WP2's file list does not name `install.go` and WP8's does. `ParseVersion`, `Bina
 `MinMajor`/`MinMinor` = 3.3 and `Version.OK` live in `tmux.go` for `requireTmux` and the
 Manager; the `/api/tmux` payload, the package-manager matrix and the SSE installer are left to
 WP8 to build on them.
+
+## WP3 — Harness launchers and the e2e fakes
+
+**WP3 / §C.6, §H.1 — the Codex trust override is an inline table, not a dotted key.** The
+spec (and the `TestCodexTrustLevelQuoting` it prescribes) require
+`-c projects."<cwd>".trust_level="trusted"`. Verified against codex-cli 0.152.0: that form is
+**rejected** whenever the path contains a dot - `codex exec --strict-config -c
+'projects."/a.d".trust_level="trusted"'` answers ``unknown configuration field
+`projects."/a.d"` `` - because the override parser splits on every `.` without respecting the
+quotes. `projects."/a b".trust_level` is accepted, so it is the dot and not the space. This is
+not an edge case: the default workspace root is `~/.socrates/workspaces`, so *every* dynamic
+working directory carries a dot and *every* Codex launch would have failed at start-up.
+Socrates therefore emits `-c projects={"<cwd>"={trust_level="trusted"}}`, which passes
+`--strict-config` with dots and spaces in the path, and which was confirmed by eye in a tmux
+pane: a Codex TUI started in a directory it had never seen opened with no trust picker. The
+test asserts the new string, with the same space-and-dot path.
+
+**WP3 / §C.13 — `codex debug models` has no `--json` flag; it already prints JSON.** The
+subcommand's own help says "Render the raw model catalog as JSON", and `--json` is an
+`unexpected argument`. The answer is `{"models":[{slug, display_name, description,
+default_reasoning_level, supported_reasoning_levels:[{effort,…}], visibility, priority, …}]}`;
+entries whose `visibility` is `hide` are dropped and the rest are ordered by `priority`, which
+is the order Codex itself offers them in.
+
+**WP3 / §C.13 — `opencode models --json` does not exist in 1.17.13 either.** It is still tried
+first, exactly as the section says, and anything that is not JSON falls through to parsing the
+plain listing, which is one `provider/model` per line. Consequently a model id in the catalogue
+is now `provider/model` - the id `-m` takes - and not the old adapter's `provider|model`.
+
+**WP3 / §C.0 — `DiscoverModels` cannot be nil on an interface, so the shell answers
+`ErrNoModels`.** The spec's struct-of-functions form allowed a nil `Discover`; the interface it
+also specifies does not. The catalogue treats that error as "there is no model step here"
+rather than as a failure. For the same reason `Descriptor.Notes` is gone: the one sentence the
+dashboard shows under each harness is presentation and now lives in `internal/catalog`.
+
+**WP3 / §C.1.5 — the TERM value is computed twice.** `harnesses.defaultTerm` is a copy of
+`termux.DefaultTerminal` (an `infocmp tmux-256color` probe behind a `sync.Once`). termux is
+built on this package, so it cannot be imported back, and moving the function here would have
+meant editing a WP2 file. The same applies to `sessionDir`, which mirrors `termux.SessionDir`.
+
+**WP3 / §C.1.2 — where Claude Code keeps its theme, verified from the binary rather than by
+running `/theme`.** 2.1.258 builds its global-configuration defaults as
+`{numStartups:0, installMethod:undefined, autoUpdates:undefined, theme:"dark", …, diffTool:
+"auto", autoConnectIde:false, …}` - the very keys `~/.claude.json` holds on this machine - and
+the same object is the one it logs about as `~/.claude.json`. So the key is `theme`, the
+shipped default is `dark`, and the pin is enabled. The file's path is **not** simply "inside
+the config directory": the binary computes it as
+`join(process.env.CLAUDE_CONFIG_DIR || homedir(), ".claude.json")`, so with the variable unset
+it is a sibling of `~/.claude` and with it set it is a child of what it names.
+`claudeGlobalConfigPath` does the same. It is read, changed by one key and written through a
+temporary file in the same directory; a failure is logged nowhere and fails nothing, because
+`COLORFGBG` is the lever that actually decides the palette.
+
+**WP3 / acceptance (a) and (b) — not performed.** Both require starting a real Claude Code and
+a real Codex session; the work package was commissioned with an explicit standing instruction
+never to start a real paid CLI session, which overrides the checklist. What was done instead,
+without a session: every flag this package emits was confirmed to exist in
+`claude --help` (2.1.258), `codex --help` (0.152.0) and `opencode --help` (1.17.13), and the
+whole generated Codex `-c` block was fed to `codex exec --strict-config` with a deliberate
+`socrates_bogus_top=1` appended - the only thing it rejected was the deliberate typo, which
+proves both that the generated overrides load and that `--strict-config` is doing its job.
+The `AskUserQuestion` round-trip of (b) is untested and stays open.
+
+**WP3 / §H.2 — `e2e/run.mjs` was touched, three lines.** Deleting the `SCRIPT` and
+`LONG_SCRIPT` exports, which §H.2 requires, would otherwise make the file fail to load: an
+ESM named import of a missing export is a hard error. The import and the two `script:`
+arguments are gone; nothing else in that file, which WP6-WP10 own, was changed.
+
+**WP3 / §H.2 — `s.stop()` sweeps `/api/sessions`, which WP4 has not built yet.** The sweep is
+already best-effort (its failure is reported, not thrown), so the harness is correct as soon
+as the endpoint exists and harmless until then. The leak assertion is the specified one: no
+`soc_*` session and no tmux server on `<data>/tmux.sock`.
+
+**WP3 / §H.2 — the OpenCode fake records its session on the first turn, like the Codex one.**
+§H.2 does not say when. Doing it at start-up would have made the discoverer's "the user has
+not typed anything yet" path - the one that leaves `cli_session_state='pending'` - unreachable
+from the suite, and it is not what the real TUI does either.

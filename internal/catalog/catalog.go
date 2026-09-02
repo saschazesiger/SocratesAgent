@@ -10,6 +10,7 @@ package catalog
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os/exec"
 	"strings"
@@ -17,7 +18,7 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/config"
-	"github.com/saschazesiger/SocratesAgent/internal/harness"
+	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
 )
 
 // cacheKey is where the last discovery is kept between restarts.
@@ -51,23 +52,23 @@ const DiscoveryBudget = 2 * time.Minute
 // is always present: an agent that is missing says so in `error` rather than
 // arriving half filled in.
 type Agent struct {
-	ID            string          `json:"id"`
-	Label         string          `json:"label"`
-	Enabled       bool            `json:"enabled"`
-	Installed     bool            `json:"installed"`
-	Path          string          `json:"path"`
-	Version       string          `json:"version"`
-	HasEffort     bool            `json:"has_effort"`
-	DefaultModel  string          `json:"default_model"`
-	DefaultEffort string          `json:"default_effort"`
-	Static        bool            `json:"static"`
-	Models        []harness.Model `json:"models"`
+	ID            string            `json:"id"`
+	Label         string            `json:"label"`
+	Enabled       bool              `json:"enabled"`
+	Installed     bool              `json:"installed"`
+	Path          string            `json:"path"`
+	Version       string            `json:"version"`
+	HasEffort     bool              `json:"has_effort"`
+	DefaultModel  string            `json:"default_model"`
+	DefaultEffort string            `json:"default_effort"`
+	Static        bool              `json:"static"`
+	Models        []harnesses.Model `json:"models"`
 	// Picks is the person's own short list from the dashboard, in their
 	// order, each entry filled in from Models where the id is known. Empty
 	// means the sheet offers Models instead.
-	Picks []harness.Model `json:"picks"`
-	Notes string          `json:"notes"`
-	Error string          `json:"error"`
+	Picks []harnesses.Model `json:"picks"`
+	Notes string            `json:"notes"`
+	Error string            `json:"error"`
 }
 
 // AllEfforts is every effort level any of this agent's models offers, in
@@ -78,17 +79,17 @@ func (a Agent) AllEfforts() []string {
 	for _, m := range a.Models {
 		all = append(all, m.Efforts...)
 	}
-	return harness.OrderEfforts(all)
+	return harnesses.OrderEfforts(all)
 }
 
 // Model returns one model of this agent by its id.
-func (a Agent) Model(id string) (harness.Model, bool) {
+func (a Agent) Model(id string) (harnesses.Model, bool) {
 	for _, m := range a.Models {
 		if m.ID == id {
 			return m, true
 		}
 	}
-	return harness.Model{}, false
+	return harnesses.Model{}, false
 }
 
 // Snapshot is the whole catalogue at one moment.
@@ -106,6 +107,16 @@ func (s Snapshot) Agent(id string) (Agent, bool) {
 		}
 	}
 	return Agent{}, false
+}
+
+// notes is the one sentence the dashboard shows under each harness. It lives
+// here rather than in the launcher because it is presentation: what the
+// program is for, in the words of the person choosing between four of them.
+var notes = map[string]string{
+	config.HarnessShell:    "A plain login shell in the session's working directory.",
+	config.HarnessClaude:   "Anthropic's Claude Code, resumed by the session id Socrates chooses for it.",
+	config.HarnessCodex:    "OpenAI's Codex TUI, launched with its workspace already trusted.",
+	config.HarnessOpenCode: "The OpenCode TUI, with its own HTTP server password-protected per session.",
 }
 
 // Store is the little of the database this package needs.
@@ -280,18 +291,12 @@ func (c *Catalog) discover() *discovery {
 func (c *Catalog) probeAll(ctx context.Context) Snapshot {
 	settings := c.settings()
 	snap := Snapshot{RefreshedAt: time.Now().UnixMilli(), Schema: cacheSchema}
-	for _, id := range harness.IDs() {
-		desc, ok := harness.Get(id)
-		if !ok {
-			continue
-		}
-		entry, known := settings.Harnesses.Entry(id)
+	for _, h := range harnesses.Registry() {
+		entry, known := settings.Harnesses.Entry(string(h.Kind()))
 		if !known {
-			// An adapter with no settings entry is one this build registered
-			// for its own tests. It is not offered.
 			continue
 		}
-		snap.Agents = append(snap.Agents, discoverOne(ctx, desc, entry))
+		snap.Agents = append(snap.Agents, discoverOne(ctx, h, entry))
 	}
 	return snap
 }
@@ -304,9 +309,9 @@ func (c *Catalog) withSettings(snap Snapshot) Snapshot {
 	out := Snapshot{RefreshedAt: snap.RefreshedAt, Schema: snap.Schema, Agents: make([]Agent, 0, len(snap.Agents))}
 	for _, a := range snap.Agents {
 		if a.Models == nil {
-			a.Models = []harness.Model{}
+			a.Models = []harnesses.Model{}
 		}
-		a.Picks = []harness.Model{}
+		a.Picks = []harnesses.Model{}
 		if entry, ok := settings.Harnesses.Entry(a.ID); ok {
 			a.Enabled = entry.Enabled
 			a.Picks = Picks(a, entry.Models)
@@ -322,12 +327,12 @@ func (c *Catalog) withSettings(snap Snapshot) Snapshot {
 // typed, with every effort level when the agent has an effort mechanism at
 // all, because there is nothing to narrow it down with. The first entry is
 // the default, so the sheet starts on it.
-func Picks(a Agent, picks []config.ModelPick) []harness.Model {
-	out := make([]harness.Model, 0, len(picks))
+func Picks(a Agent, picks []config.ModelPick) []harnesses.Model {
+	out := make([]harnesses.Model, 0, len(picks))
 	for i, p := range picks {
 		m, known := a.Model(p.ID)
 		if !known {
-			m = harness.Model{ID: p.ID, Label: p.ID, Hint: "typed in the dashboard", Efforts: a.AllEfforts()}
+			m = harnesses.Model{ID: p.ID, Label: p.ID, Hint: "typed in the dashboard", Efforts: a.AllEfforts()}
 		}
 		m.DefaultEffort = p.Effort
 		m.Default = i == 0
@@ -336,32 +341,39 @@ func Picks(a Agent, picks []config.ModelPick) []harness.Model {
 	return out
 }
 
-// discoverOne asks one agent where it is, what version it is and what it can run.
-func discoverOne(ctx context.Context, desc harness.Descriptor, entry config.Common) Agent {
+// discoverOne asks one harness where it is, what version it is and what it can
+// run.
+func discoverOne(ctx context.Context, h harnesses.Harness, entry config.Common) Agent {
+	id := string(h.Kind())
 	a := Agent{
-		ID: desc.ID, Label: desc.Label, Enabled: entry.Enabled,
-		HasEffort: desc.HasEffort, DefaultModel: desc.DefaultModel,
-		DefaultEffort: desc.DefaultEffort, Notes: desc.Notes,
-		Models: []harness.Model{},
+		ID: id, Label: h.Label(), Enabled: entry.Enabled,
+		Notes:  notes[id],
+		Models: []harnesses.Model{},
 	}
 	bin := strings.TrimSpace(entry.Binary)
 	if bin == "" {
-		bin = desc.Binary
+		bin = h.DefaultBinary()
 	}
 	path, err := exec.LookPath(bin)
 	if err != nil {
+		// A shell is never missing: the fallback chain ends at /bin/sh, and a
+		// machine without one has bigger problems than this catalogue.
+		if id == config.HarnessShell {
+			a.Installed, a.Path = true, bin
+			return a
+		}
 		a.Error = bin + " is not on this machine (nothing named that on PATH)"
 		return a
 	}
 	a.Installed = true
 	a.Path = path
-	a.Version = probeVersion(ctx, path, desc.VersionArgs)
+	a.Version = probeVersion(ctx, path, h.VersionArgs())
 
-	if desc.Discover == nil {
+	cat, err := h.DiscoverModels(ctx, path)
+	switch {
+	case errors.Is(err, harnesses.ErrNoModels):
 		return a
-	}
-	cat, err := desc.Discover(ctx, path)
-	if err != nil {
+	case err != nil:
 		// Installed, but its model list could not be read. The picker still
 		// offers it, and a typed id is accepted rather than refused.
 		a.Error = err.Error()
@@ -372,7 +384,7 @@ func discoverOne(ctx context.Context, desc harness.Descriptor, entry config.Comm
 }
 
 // applyCatalog puts what an adapter reported into the agent's entry.
-func applyCatalog(a *Agent, cat harness.Catalog) {
+func applyCatalog(a *Agent, cat harnesses.Catalog) {
 	a.Static = cat.Static
 	if cat.Notes != "" {
 		a.Notes = cat.Notes
@@ -385,7 +397,7 @@ func applyCatalog(a *Agent, cat harness.Catalog) {
 	// been chosen; once one is, that model's own list decides.
 	a.HasEffort = false
 	for i := range a.Models {
-		a.Models[i].Efforts = harness.OrderEfforts(a.Models[i].Efforts)
+		a.Models[i].Efforts = harnesses.OrderEfforts(a.Models[i].Efforts)
 		if len(a.Models[i].Efforts) > 0 {
 			a.HasEffort = true
 		}
@@ -396,22 +408,24 @@ func applyCatalog(a *Agent, cat harness.Catalog) {
 }
 
 // refreshStatic replaces a cached curated list with this build's. A static
-// Discover spawns nothing, so it is cheap enough to run on every load.
+// model list is read out of the binary rather than discovered, so it costs
+// nothing to rebuild on every load - and the cached copy would otherwise be
+// the previous build's list for as long as the cache is fresh.
 func refreshStatic(a *Agent) {
 	if !a.Static || !a.Installed {
 		return
 	}
-	desc, ok := harness.Get(a.ID)
-	if !ok || desc.Discover == nil {
+	h, ok := harnesses.Get(a.ID)
+	if !ok {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cat, err := desc.Discover(ctx, a.Path)
+	cat, err := h.DiscoverModels(ctx, a.Path)
 	if err != nil || !cat.Static {
 		return
 	}
-	a.DefaultModel = desc.DefaultModel
+	a.DefaultModel = ""
 	applyCatalog(a, cat)
 }
 

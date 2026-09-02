@@ -13,11 +13,7 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/config"
-	"github.com/saschazesiger/SocratesAgent/internal/harness"
-
-	_ "github.com/saschazesiger/SocratesAgent/internal/harness/claude"
-	_ "github.com/saschazesiger/SocratesAgent/internal/harness/codex"
-	_ "github.com/saschazesiger/SocratesAgent/internal/harness/opencode"
+	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
 )
 
 // memStore is the key/value half of the store, which is all this package uses.
@@ -53,7 +49,8 @@ func (m *memStore) SetJSON(key string, in any) error {
 
 // onlyClaude puts a fake `claude` on PATH and nothing else, so no test in this
 // package ever spawns a real coding agent: the two probes that would - codex
-// and opencode - have nothing to find.
+// and opencode - have nothing to find. The shell is still found, because it is
+// resolved by absolute path and is never missing.
 func onlyClaude(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
@@ -73,8 +70,14 @@ func TestDiscoveryReportsWhatIsInstalledAndWhatIsNot(t *testing.T) {
 	c := New(newStore(), settingsFn(config.Default()))
 	snap := c.Refresh(context.Background())
 
-	if len(snap.Agents) != 3 {
-		t.Fatalf("expected one entry per agent, got %d", len(snap.Agents))
+	if len(snap.Agents) != 4 {
+		t.Fatalf("expected one entry per harness, got %d", len(snap.Agents))
+	}
+	// The shell is the harness that is always there: no model list, no
+	// version probe worth the name, and never reported as missing.
+	shell, ok := snap.Agent("shell")
+	if !ok || !shell.Installed || len(shell.Models) != 0 {
+		t.Fatalf("shell = %#v (%v)", shell, ok)
 	}
 	claude, ok := snap.Agent("claude")
 	if !ok {
@@ -208,7 +211,7 @@ func TestAStaleCacheIsStillAnsweredImmediately(t *testing.T) {
 	go func() { done <- c.Get(context.Background()) }()
 	select {
 	case snap := <-done:
-		if len(snap.Agents) != 3 {
+		if len(snap.Agents) != 4 {
 			t.Fatalf("the stale answer was incomplete: %#v", snap)
 		}
 	case <-time.After(2 * time.Second):
@@ -403,7 +406,7 @@ func TestTheCacheIsNotTheOldBuildsAnswer(t *testing.T) {
 		if stale.Agents[i].ID != "claude" {
 			continue
 		}
-		stale.Agents[i].Models = []harness.Model{
+		stale.Agents[i].Models = []harnesses.Model{
 			{ID: "sonnet", Label: "Sonnet", Efforts: []string{"low", "medium", "high"}, Default: true},
 		}
 	}

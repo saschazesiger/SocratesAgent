@@ -1,27 +1,20 @@
-// The browser harness: one real `socrates` binary, one real server, one real
-// detached agent host per chat, and Playwright driving the page.
+// The browser harness: one real `socrates` binary, one real server, real tmux
+// sessions, and Playwright driving the page.
 //
-// Two things have to be arranged before a browser can see a turn.
-//
-//   * The turns. The three protocol adapters talk to real CLIs, and a suite
-//     that needed three logged-in accounts would not be a suite. So the three
-//     agent ids are pointed at `internal/agenthost/hosttest` - the scripted,
-//     in-process adapter - by a Go file that never enters the worktree:
-//     `go build -overlay` maps it in for the length of one build. A hard kill
-//     of this process cannot leave a stray file behind, which a generated
-//     source file in the tree could.
-//   * The catalogue. `/api/agents` reports an agent as installed only when its
-//     binary answers `--version`, so the three fake CLIs from
-//     `internal/harness/fakes` go on PATH under their real names. That is what
-//     the new-chat sheet and the dashboard's Agents card are drawn from.
+// One thing has to be arranged before a browser can see a session: the CLIs.
+// A suite that needed three logged-in accounts would not be a suite, so
+// `e2e/fakebin/faketui` is built once and linked onto PATH under all three
+// names. It is a terminal program, not a protocol speaker - which is what the
+// product now runs - and it writes the same state files the real ones write,
+// so the discovery and resume paths are exercised rather than mocked. The
+// Shell harness needs no fake at all: /bin/sh is the thing under test.
 //
 // With SOCRATES_LIVE_AGENTS=1 a scenario can ask for `live: true` instead, and
-// then it gets a plain build with no overlay and no fakes on PATH: the real
-// adapters against the real, logged-in CLI.
+// then the fakes stay off PATH and the real, logged-in CLIs are used.
 
 import { chromium } from '/opt/browser-testing/node_modules/playwright-core/index.mjs';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -45,117 +38,21 @@ const CHROME = process.env.SOCRATES_E2E_CHROME
 export const PASSWORD = 'socrates-e2e';
 export const LIVE = process.env.SOCRATES_LIVE_AGENTS === '1';
 
-// The turn every scenario gets unless it asks for another: a sentence, some
-// reasoning, a command, a subagent, a notice, a closing question and the
-// numbers. It is replayed identically on every turn of the chat.
-export const SCRIPT = JSON.stringify([
-  { do: 'text', text: 'Let me look at the tests first.' },
-  { do: 'sleep', ms: 700 },
-  { do: 'reason', text: 'The failing test is in the store package.' },
-  { do: 'tool', name: 'Bash', input: 'go test ./...', output: 'ok  github.com/example/store\n' },
-  { do: 'sleep', ms: 700 },
-  { do: 'subagent', input: 'check the docs', output: 'nothing to change' },
-  { do: 'notice', text: 'The model was restarted once.' },
-  { do: 'text', text: 'The tests pass. Shall I commit this?' },
-  { do: 'usage' },
-  { do: 'end', outcome: 'ok' },
-]);
-
-// A longer turn, for the scenarios that have to interrupt one: four cards with
-// real gaps between them, and a tool that exits non-zero.
-export const LONG_SCRIPT = JSON.stringify([
-  { do: 'text', text: 'Let me look at the tests first.' },
-  { do: 'sleep', ms: 1200 },
-  { do: 'tool', name: 'Bash', input: 'go test ./...', output: 'ok  github.com/example/store\n' },
-  { do: 'sleep', ms: 1500 },
-  { do: 'text', text: 'One more thing to check.' },
-  { do: 'sleep', ms: 1500 },
-  { do: 'subagent', input: 'check the docs', output: 'nothing to change' },
-  { do: 'sleep', ms: 1500 },
-  { do: 'tool', name: 'Bash', input: 'exit 3', output: 'boom\n', exit: 3 },
-  { do: 'text', text: 'The tests pass. Shall I commit this?' },
-  { do: 'usage' },
-  { do: 'end', outcome: 'ok' },
-]);
-
-// The overlay source. The wrapper exists for one scenario: hosttest's "tool"
-// step opens and closes its card in the same breath, so the only way to see a
-// tool card that is still running when Stop is pressed is to drop the
-// tool_finished of one named tool on its way out of the adapter.
-const ADAPTER_SRC = `// Built only by the e2e suite, through \`go build -overlay\`: this file never
-// exists in the repository. It points the three agent ids at the scripted test
-// adapter, so a browser run gets real turns out of a real agent-host process
-// without needing three logged-in CLIs.
-package main
-
-import (
-	"os"
-	"sync"
-
-	_ "github.com/saschazesiger/SocratesAgent/internal/agenthost/hosttest"
-	"github.com/saschazesiger/SocratesAgent/internal/harness"
-)
-
-// e2eWrap can drop the tool_finished of one named tool, which leaves its card
-// open until something else closes it.
-type e2eWrap struct {
-	harness.Adapter
-	drop string
-	once sync.Once
-	out  chan harness.Event
-}
-
-func (w *e2eWrap) Events() <-chan harness.Event {
-	w.once.Do(func() {
-		w.out = make(chan harness.Event, 64)
-		in := w.Adapter.Events()
-		go func() {
-			for ev := range in {
-				if w.drop != "" && ev.Kind == harness.KindToolFinished && ev.Tool != nil && ev.Tool.Name == w.drop {
-					continue
-				}
-				w.out <- ev
-			}
-			close(w.out)
-		}()
-	})
-	return w.out
-}
-
-func init() {
-	base, ok := harness.Get("test")
-	if !ok {
-		panic("the scripted adapter is not registered")
-	}
-	for _, id := range []string{"claude", "codex", "opencode"} {
-		d, found := harness.Get(id)
-		if !found {
-			continue
-		}
-		d.New = func() harness.Adapter {
-			return &e2eWrap{Adapter: base.New(), drop: os.Getenv("SOCRATES_E2E_DROP_FINISH")}
-		}
-		harness.Register(d)
-	}
-}
-`;
-
-function buildScripted() {
+// The three fake CLIs are one program under three names, built once per run.
+// The Go-overlay trick the old suite used is gone with the adapter registry it
+// pointed at: `socrates` is now built plainly.
+function buildFakes() {
   const dir = mkdtempSync(join(tmpdir(), 'socrates-e2e-'));
   const bin = join(dir, 'bin');
   mkdirSync(bin);
-  for (const name of ['claude', 'codex', 'opencode']) {
-    execFileSync('go', ['build', '-o', join(bin, name), './internal/harness/fakes/fake' + name], { cwd: REPO });
-  }
-  const src = join(dir, 'e2e_adapter.go');
-  writeFileSync(src, ADAPTER_SRC);
-  const overlay = join(dir, 'overlay.json');
-  writeFileSync(overlay, JSON.stringify({ Replace: { [join(REPO, 'zz_e2e_adapter.go')]: src } }));
-  execFileSync('go', ['build', '-overlay', overlay, '-o', join(dir, 'socrates'), '.'], { cwd: REPO });
+  const faketui = join(bin, 'faketui');
+  execFileSync('go', ['build', '-o', faketui, './e2e/fakebin/faketui'], { cwd: REPO });
+  for (const name of ['claude', 'codex', 'opencode']) symlinkSync(faketui, join(bin, name));
+  execFileSync('go', ['build', '-o', join(dir, 'socrates'), '.'], { cwd: REPO });
   return { dir, bin, exe: join(dir, 'socrates') };
 }
 
-// The live build is the shipped one: no overlay, no fakes, the real adapters.
+// The live build is the shipped one: no fakes on PATH, the real CLIs.
 function buildLive() {
   const dir = mkdtempSync(join(tmpdir(), 'socrates-e2e-live-'));
   execFileSync('go', ['build', '-o', join(dir, 'socrates'), '.'], { cwd: REPO });
@@ -164,8 +61,8 @@ function buildLive() {
 
 const builds = {};
 export function binaries(live = false) {
-  const key = live ? 'live' : 'scripted';
-  if (!builds[key]) builds[key] = live ? buildLive() : buildScripted();
+  const key = live ? 'live' : 'fake';
+  if (!builds[key]) builds[key] = live ? buildLive() : buildFakes();
   return builds[key];
 }
 
@@ -191,24 +88,32 @@ export async function waitForHealth(url, deadlineMs = 25000) {
 // Ports 5000-5099 are this machine's budget for browser runs.
 let nextPort = 5000;
 
-export function spawnServer({ data, port, script, live = false, env = {} }) {
+export function spawnServer({ data, port, live = false, env = {} }) {
   const { exe, bin } = binaries(live);
   const server = spawn(exe, ['-addr', '127.0.0.1:' + port, '-data', data], {
     env: {
       ...process.env,
       // A live run must find the real CLIs, so the fakes stay off its PATH.
       PATH: (bin ? bin + ':' : '') + process.env.PATH,
-      SOCRATES_TEST_SCRIPT: script || SCRIPT,
       SOCRATES_PIPER_DIR: VOICE_CACHE,
-      // Chats get their working directory under the run's own data directory.
-      // Without this the workspace root is derived from HOME, which a live run
-      // does not override - and a real agent turned loose in whatever HOME
-      // happens to be is both wrong and, when that directory does not exist,
-      // an exec failure that reads as "claude: no such file or directory".
+      // Sessions get their working directory under the run's own data
+      // directory. Without this the workspace root is derived from HOME, which
+      // a live run does not override - and a real agent turned loose in
+      // whatever HOME happens to be is both wrong and, when that directory
+      // does not exist, an exec failure that reads as "claude: no such file or
+      // directory".
       SOCRATES_WORKSPACE_ROOT: join(data, 'workspaces'),
-      // HOME points at the data directory so a scripted run cannot read or
-      // write the machine's real agent credentials. A live run needs them.
-      ...(live ? {} : { HOME: data }),
+      // Every CLI's own state goes under the run's data directory, so that a
+      // fake run can neither read nor write the machine's real credentials,
+      // transcripts or session databases - and so that a scenario can assert
+      // on what the fakes wrote.
+      ...(live ? {} : {
+        HOME: data,
+        CODEX_HOME: join(data, 'codex'),
+        XDG_DATA_HOME: join(data, 'xdg'),
+        CLAUDE_CONFIG_DIR: join(data, 'claude'),
+        FAKE_LOG: join(data, 'fake.log'),
+      }),
       ...env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -222,20 +127,47 @@ export function spawnServer({ data, port, script, live = false, env = {} }) {
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// hostsFor lists the agent-host processes still serving one data directory.
-function hostsFor(data) {
+// tmuxSock is the socket a run's server puts its tmux server on.
+export function tmuxSock(data) { return join(data, 'tmux.sock'); }
+
+// sessionsOn lists the tmux sessions still on a run's socket. A non-zero exit
+// means there is no server at all, which is the good case and not an error.
+export function sessionsOn(data) {
   try {
-    const out = execFileSync('pgrep', ['-f', '--', 'agent-host --dir ' + join(data, 'agents')]).toString();
+    const out = execFileSync('tmux', ['-S', tmuxSock(data), 'list-sessions', '-F', '#{session_name}'],
+      { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
     return out.split('\n').filter(Boolean);
   } catch {
-    return []; // pgrep exits 1 when nothing matches, which is the good case
+    return [];
   }
 }
 
-function pkill(pattern) {
+// killTmux is the backstop under the assertion: whatever was left behind does
+// not stay on the machine.
+export function killTmux(data) {
   try {
-    execFileSync('pkill', ['-f', '--', pattern]);
-  } catch { /* nothing left to kill is the good case */ }
+    execFileSync('tmux', ['-S', tmuxSock(data), 'kill-server'], { stdio: 'ignore' });
+  } catch { /* no server is the good case */ }
+}
+
+// readFakeLog returns every launch the fake CLIs recorded, newest last.
+export function readFakeLog(data) {
+  try {
+    return readFileSync(join(data, 'fake.log'), 'utf8')
+      .split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  } catch {
+    return [];
+  }
+}
+
+// mockOpenRouter answers every OpenRouter call with one fixed transcription,
+// so the dictation scenario needs no key and spends nothing.
+export async function mockOpenRouter(context, { text = 'hello from the microphone' } = {}) {
+  await context.route('**://*.openrouter.ai/**', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ text, choices: [{ message: { content: text } }] }),
+  }));
 }
 
 /**
@@ -250,7 +182,7 @@ export async function start(options = {}) {
   try { symlinkSync(VOICE_CACHE, join(data, 'voice')); } catch { /* best effort */ }
   const port = options.port || nextPort++;
   const url = 'http://127.0.0.1:' + port;
-  const spawned = spawnServer({ data, port, script: options.script, live, env: options.env });
+  const spawned = spawnServer({ data, port, live, env: options.env });
   await waitForHealth(url);
 
   const browser = await chromium.launch({ executablePath: CHROME, args: ['--no-sandbox'] });
@@ -285,56 +217,53 @@ export async function start(options = {}) {
     s.server.kill('SIGTERM');
     const outcome = await Promise.race([s.exited, wait(9000).then(() => 'timeout')]);
     if (outcome === 'timeout') { s.server.kill('SIGKILL'); await s.exited; }
-    const again = spawnServer({ data, port, script: options.script, live, env: { ...(options.env || {}), ...env } });
+    const again = spawnServer({ data, port, live, env: { ...(options.env || {}), ...env } });
     s.server = again.server; s.log = again.log; s.exited = again.exited;
     await waitForHealth(url);
     return outcome;
   };
 
-  // stop is where §10.3's rule is enforced. Killing the server is not enough:
-  // SIGTERM deliberately detaches the agent hosts (that is the feature the
-  // restart scenario tests), so a scenario that only kills `socrates serve`
-  // leaks one host process per chat it created. Deleting the chats is what
-  // closes them - and the count is asserted, not merely swept, so a scenario
-  // that starts leaking fails instead of quietly littering the machine.
+  // stop is where the leak rule is enforced. Killing the server is not
+  // enough: a Socrates restart deliberately leaves its tmux sessions running -
+  // that is the feature the reattach scenario tests - so a scenario that only
+  // kills the server leaks one tmux session per session it created. Deleting
+  // the sessions is what closes them, and what is left is asserted rather than
+  // merely swept, so a scenario that starts leaking fails instead of quietly
+  // littering the machine.
   s.stop = async () => {
-    const left = { chats: 'not checked', hosts: ['not checked'] };
+    const left = { sessions: 'not checked', tmux: ['not checked'] };
     try {
       await s.context.setOffline(false).catch(() => {});
       if (s.context.unrouteAll) await s.context.unrouteAll().catch(() => {});
       // The context's request object shares the page's cookies, so it is
       // already signed in - and it works when the page itself is wedged.
-      const listed = await s.context.request.get(url + '/api/chats?scope=all');
-      const chats = (await listed.json()).chats || [];
-      for (const chat of chats) {
-        await s.context.request.delete(url + '/api/chats/' + encodeURIComponent(chat.id)).catch(() => {});
+      const listed = await s.context.request.get(url + '/api/sessions?scope=all');
+      const sessions = (await listed.json()).sessions || [];
+      for (const session of sessions) {
+        await s.context.request.delete(url + '/api/sessions/' + encodeURIComponent(session.id)).catch(() => {});
       }
-      const after = await s.context.request.get(url + '/api/chats?scope=all');
-      left.chats = ((await after.json()).chats || []).length;
+      const after = await s.context.request.get(url + '/api/sessions?scope=all');
+      left.sessions = ((await after.json()).sessions || []).length;
     } catch (err) {
-      left.chats = 'sweep failed: ' + (err && err.message);
+      left.sessions = 'sweep failed: ' + (err && err.message);
     }
     await s.context.close().catch(() => {});
     await s.browser.close().catch(() => {});
     s.server.kill('SIGTERM');
     const gone = await Promise.race([s.exited, wait(8000).then(() => 'timeout')]);
     if (gone === 'timeout') s.server.kill('SIGKILL');
-    // A host that was closing as the server went down needs a moment to die.
+    // A pane that was closing as the server went down needs a moment to die.
     for (let i = 0; i < 20; i += 1) {
-      left.hosts = hostsFor(data);
-      if (left.hosts.length === 0) break;
+      left.tmux = sessionsOn(data);
+      if (left.tmux.length === 0) break;
       await wait(250);
     }
-    ok(left.chats === 0, 'the scenario left no chats behind', String(left.chats));
-    ok(left.hosts.length === 0, 'the scenario left no agent-host process behind',
-      left.hosts.length + ' processes' + (left.hosts.length ? ' (' + left.hosts.join(',') + ')' : ''));
-    // The backstop: whatever the assertion just found, it does not stay on the
-    // machine. Twice, because a host that was still starting when its server
-    // was killed is not in the process table on the first pass.
-    for (let i = 0; i < 2; i += 1) {
-      pkill('agent-host --dir ' + join(data, 'agents'));
-      await wait(250);
-    }
+    ok(left.sessions === 0, 'the scenario left no sessions behind', String(left.sessions));
+    ok(left.tmux.length === 0, 'the scenario left no tmux session and no tmux server behind',
+      left.tmux.length + ' sessions' + (left.tmux.length ? ' (' + left.tmux.join(',') + ')' : ''));
+    // The backstop: whatever the assertion just found does not stay on the
+    // machine.
+    killTmux(data);
     rmSync(data, { recursive: true, force: true });
   };
 
@@ -422,8 +351,6 @@ export function skipScenario(name, title, why) {
 
 /** finish sweeps anything the assertions did not catch and prints the totals. */
 export function finish() {
-  for (const key of Object.keys(builds)) pkill(builds[key].exe + ' agent-host');
-  pkill('agent-host --dir /tmp/socrates-data-');
   cleanupBuild();
   console.log('\n' + '-'.repeat(66));
   for (const sc of totals.scenarios) {
