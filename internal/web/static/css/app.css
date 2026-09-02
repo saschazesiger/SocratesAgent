@@ -138,6 +138,13 @@ a { color: inherit; }
 /* While the voice is reading, the same button is the way to stop it. */
 .icon-btn.speaking { color: var(--text); background: var(--bg-hover); }
 .icon-btn svg { width: 17px; height: 17px; }
+/* A switch whose two states are one drawing and the same drawing with a stroke
+   through it. Which of the two is shown is the button's own pressed state, so
+   there is nothing for a script to keep in step - and neither state is filled:
+   sound being on is the ordinary case, not a mode somebody armed. */
+.icon-btn.toggle .ico-off { display: none; }
+.icon-btn.toggle[aria-pressed="false"] .ico-on { display: none; }
+.icon-btn.toggle[aria-pressed="false"] .ico-off { display: block; }
 
 /* ------------------------------------------------------------------ forms */
 
