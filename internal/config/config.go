@@ -19,6 +19,23 @@ const (
 	DefaultOpenRouterBaseURL = openrouter.DefaultBaseURL
 	DefaultTranscribeModel   = "google/gemini-2.5-flash"
 	DefaultTitleModel        = "google/gemini-2.5-flash-lite"
+
+	// DefaultStatusModel describes a screen out loud: a short answer, several
+	// times a session, on a phone that is waiting for it. Fast and cheap wins,
+	// and it is the family that already transcribes here.
+	DefaultStatusModel = "google/gemini-2.5-flash"
+	// DefaultAgentModel drives the terminal. It has to read a TUI - a menu, a
+	// permission prompt, a half painted spinner - and answer with keystrokes,
+	// which is the one job in this app where a cheap model is a false economy.
+	DefaultAgentModel = "anthropic/claude-sonnet-5"
+
+	// DefaultAgentMaxSteps is how many look-decide-type rounds one operator run
+	// may take, and MinAgentMaxSteps/MaxAgentMaxSteps are what the dashboard
+	// may set it to: one step is a legitimate "press Enter for me", and past
+	// forty a run that is going nowhere is going nowhere expensively.
+	DefaultAgentMaxSteps = 12
+	MinAgentMaxSteps     = 1
+	MaxAgentMaxSteps     = 40
 )
 
 // Settings is the full configuration document.
@@ -29,6 +46,7 @@ type Settings struct {
 	Workspace  WorkspaceSettings  `json:"workspace"`
 	Terminal   TerminalSettings   `json:"terminal"`
 	Harnesses  HarnessSettings    `json:"harnesses"`
+	Agent      AgentSettings      `json:"agent"`
 }
 
 // OpenRouterSettings configures access to the OpenRouter API. Since Socrates
@@ -43,6 +61,31 @@ type OpenRouterSettings struct {
 	BaseURL         string `json:"base_url"`
 	TranscribeModel string `json:"transcribe_model"`
 	TitleModel      string `json:"title_model"`
+	// StatusModel reads a screen and says what it means; AgentModel reads the
+	// same screen and decides what to type. They are two settings rather than
+	// one because the first wants to be cheap and the second wants to be
+	// right, and nothing in the app validates either id: there is no
+	// catalogue endpoint left, so both are free text and a model that does not
+	// exist is only found out when OpenRouter refuses it.
+	StatusModel string `json:"status_model"`
+	AgentModel  string `json:"agent_model"`
+}
+
+// AgentSettings is the one policy lever the operator loop has, and the bound
+// on how long it may keep going.
+//
+// There is deliberately no blocklist of dangerous commands here: the loop
+// types into a terminal that already runs as this user, and a model that
+// wanted to could spell `rm -rf` across two actions. What is real is the
+// switch below, which keeps the operator away from a bare shell on a shared
+// deployment, and a run that is bounded, cancellable and visible step by step.
+type AgentSettings struct {
+	// AllowShell decides whether the operator may drive a Shell session at
+	// all. It is on by default, because a Socrates on a laptop is a Socrates
+	// with one user.
+	AllowShell bool `json:"allow_shell"`
+	// MaxSteps is how many rounds one run may take before it stops by itself.
+	MaxSteps int `json:"max_steps"`
 }
 
 // The languages Socrates speaks. There are two of them and there is no third
@@ -223,6 +266,8 @@ func Default() Settings {
 			BaseURL:         DefaultOpenRouterBaseURL,
 			TranscribeModel: DefaultTranscribeModel,
 			TitleModel:      DefaultTitleModel,
+			StatusModel:     DefaultStatusModel,
+			AgentModel:      DefaultAgentModel,
 		},
 		Voice: VoiceSettings{
 			Language:        DefaultLanguage,
@@ -249,6 +294,10 @@ func Default() Settings {
 			WebGL:        true,
 		},
 		Harnesses: DefaultHarnesses(),
+		Agent: AgentSettings{
+			AllowShell: true,
+			MaxSteps:   DefaultAgentMaxSteps,
+		},
 	}
 }
 
@@ -268,6 +317,17 @@ func (s *Settings) Normalize() {
 	if strings.TrimSpace(s.OpenRouter.TitleModel) == "" {
 		s.OpenRouter.TitleModel = d.OpenRouter.TitleModel
 	}
+	// The two models the Status button and the operator loop use. An empty
+	// field is a form that was never filled in, not a request for no model:
+	// without one the button would answer "pick a model" on a fresh install,
+	// which is a setup step nobody asked for.
+	if strings.TrimSpace(s.OpenRouter.StatusModel) == "" {
+		s.OpenRouter.StatusModel = d.OpenRouter.StatusModel
+	}
+	if strings.TrimSpace(s.OpenRouter.AgentModel) == "" {
+		s.OpenRouter.AgentModel = d.OpenRouter.AgentModel
+	}
+	s.normalizeAgent(d)
 	s.Voice.Language = NormalizeLanguage(s.Voice.Language)
 	if strings.TrimSpace(s.Voice.STTPrompt) == "" {
 		s.Voice.STTPrompt = d.Voice.STTPrompt
@@ -293,6 +353,20 @@ func (s *Settings) Normalize() {
 	if s.Tunnel.Mode == TunnelToken && s.Tunnel.Token == "" {
 		// A named tunnel without its token can never connect.
 		s.Tunnel.Enabled = false
+	}
+}
+
+// normalizeAgent bounds the operator loop. A zero is the number field of a
+// form that was left empty rather than a run that may take no steps, so it
+// takes the shipped default; anything above the ceiling is brought down to it.
+func (s *Settings) normalizeAgent(d Settings) {
+	switch {
+	case s.Agent.MaxSteps <= 0:
+		s.Agent.MaxSteps = d.Agent.MaxSteps
+	case s.Agent.MaxSteps < MinAgentMaxSteps:
+		s.Agent.MaxSteps = MinAgentMaxSteps
+	case s.Agent.MaxSteps > MaxAgentMaxSteps:
+		s.Agent.MaxSteps = MaxAgentMaxSteps
 	}
 }
 

@@ -59,6 +59,9 @@ type Server struct {
 	// installed by the loop that owns the runs, so that the transport can put
 	// a run into hello without knowing what a run is.
 	agentRunOf func(sessionID string) any
+	// agents owns those runs: one per session at a time, in a goroutine that
+	// outlives the request that started it and the browser that asked for it.
+	agents *agentDriver
 
 	mux *http.ServeMux
 
@@ -114,6 +117,13 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	}
 	s.manager = manager
 	s.catalog = catalog.New(st, s.Settings)
+
+	// The operator runs, and the one hook the transport needs to put a live
+	// run into hello and into GET .../agent from the same place.
+	s.agents = newAgentDriver(s)
+	s.mu.Lock()
+	s.agentRunOf = s.agents.runView
+	s.mu.Unlock()
 
 	s.tunnel = tunnel.New(s.Settings, s.LocalURL, filepath.Join(dataDir, "bin"))
 	s.voice = piper.New(filepath.Join(dataDir, "voice"))
@@ -300,6 +310,11 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/sessions/{id}/restart", s.auth(s.handleRestartSession))
 	mux.HandleFunc("POST /api/sessions/{id}/ack-resume", s.auth(s.handleAckResume))
 	mux.HandleFunc("POST /api/sessions/{id}/read", s.auth(s.handleMarkRead))
+	// What a terminal is doing, said out loud, and the operator that drives it.
+	mux.HandleFunc("POST /api/sessions/{id}/status", s.auth(s.handleSessionStatus))
+	mux.HandleFunc("POST /api/sessions/{id}/agent", s.auth(s.handleAgentStart))
+	mux.HandleFunc("GET /api/sessions/{id}/agent", s.auth(s.handleAgentRun))
+	mux.HandleFunc("POST /api/sessions/{id}/agent/cancel", s.auth(s.handleAgentCancel))
 	mux.HandleFunc("GET /api/sessions/{id}/journal", s.auth(s.handleJournal))
 	mux.HandleFunc("GET /api/sessions/{id}/ws", s.auth(s.handleSessionWS))
 

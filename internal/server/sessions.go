@@ -342,6 +342,9 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A run typing into a pane that is being torn down is the one way the
+	// operator could do something nobody asked for.
+	s.agents.cancel(row.ID, "the session was deleted")
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	if err := s.manager.Delete(ctx, row.ID); err != nil {
