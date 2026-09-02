@@ -4255,8 +4255,10 @@ async function typekeepsfocus() {
     await s.page.waitForSelector('.menu', { timeout: 10000 });
     // Taken by one of its own entries, which is how a menu usually goes: the
     // button that opened it keeps the focus, and the entry is the one whose
-    // only effect is on this device.
-    await s.page.click('.menu .menu-item:nth-child(2)');
+    // only effect is on this device. By its words, not its position: nth-child
+    // named Rename, which opens a dialog and swallows everything typed next -
+    // so this assertion has been measuring a rename since it was written.
+    await s.page.click('.menu .menu-item:has-text("key bar")');
     await s.page.waitForSelector('.menu', { state: 'detached', timeout: 10000 });
     const menuMark = 'menu-' + mark;
     await s.page.keyboard.type('echo ' + menuMark);
