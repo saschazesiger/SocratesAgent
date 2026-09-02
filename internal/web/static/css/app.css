@@ -1064,12 +1064,23 @@ a { color: inherit; }
 /* A thin line across the top of the pane: resumed after a restart, resized by
    another viewer, redrawn after an outage. It never blocks the terminal and it
    is always dismissible. */
-.term-notice {
+/* The stack of lines over the top of the pane: the notice, and under it the
+   ticker. It does not take the taps that fall between them - the terminal is
+   still under there and still has to be clickable. */
+.term-lines {
   position: absolute;
   top: 10px;
   left: 12px;
   right: 12px;
   z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.term-lines > * { pointer-events: auto; }
+
+.term-notice {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1257,6 +1268,247 @@ a { color: inherit; }
   border-color: var(--red);
   font-variant-numeric: tabular-nums;
 }
+
+/* Auto mode is a setting, so it wears a switch. The knob fills with the text
+   colour when it is on, which is the same "on" the dashboard's switches use,
+   and the word beside it is the only word in the top bar's row of marks. */
+.auto-switch {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text-soft);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: color .14s var(--ease), border-color .14s var(--ease);
+}
+.auto-switch:hover { color: var(--text); border-color: var(--line); }
+.auto-switch:disabled { opacity: .4; cursor: default; }
+.auto-switch .auto-word { letter-spacing: -.01em; }
+.auto-switch .auto-track {
+  position: relative;
+  display: block;
+  width: 44px;
+  height: 24px;
+  flex: none;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--bg);
+  transition: background .15s var(--ease), border-color .15s var(--ease);
+}
+.auto-switch .auto-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  background: var(--bg);
+  transition: transform .15s var(--ease), background .15s var(--ease), border-color .15s var(--ease);
+}
+.auto-switch[aria-checked="true"] { color: var(--text); }
+.auto-switch[aria-checked="true"] .auto-track { border-color: var(--text); }
+.auto-switch[aria-checked="true"] .auto-knob {
+  transform: translateX(20px);
+  background: var(--text);
+  border-color: var(--text);
+}
+@media (prefers-reduced-motion: reduce) {
+  .auto-switch .auto-track, .auto-switch .auto-knob { transition: none; }
+}
+
+/* --------------------------------------------------------------- the ticker */
+
+/* One line at a time of what is happening right now: a status being made, an
+   operator run taking a step, or - in auto mode - what the session is doing.
+   New lines rise into the window and the old one leaves upwards, the way a
+   departure board turns over, because on a phone in a car the movement is
+   what says something changed. */
+.term-ticker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  box-shadow: var(--shadow-sm);
+  font-size: 12.5px;
+  color: var(--text-soft);
+}
+.ticker-window {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 17px;
+  overflow: hidden;
+}
+.ticker-line {
+  position: absolute;
+  inset: 0;
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transform: translateY(0);
+  opacity: 1;
+  transition: transform .25s var(--ease), opacity .25s var(--ease);
+}
+.ticker-line.enter { transform: translateY(100%); opacity: 0; }
+.ticker-line.leave { transform: translateY(-100%); opacity: 0; }
+@media (prefers-reduced-motion: reduce) {
+  /* Nothing moves, and the swap is plain: the words are the news, not the
+     travel. */
+  .ticker-line { transition: none; }
+  .ticker-line.enter, .ticker-line.leave { transform: none; }
+  .ticker-line.leave { display: none; }
+}
+/* The spinner the Status button wears while its answer is being made. */
+.icon-btn.working svg { animation: spin 900ms linear infinite; }
+body.stale .icon-btn.working svg { animation-play-state: paused; }
+@media (prefers-reduced-motion: reduce) {
+  .icon-btn.working svg { animation: none; opacity: .5; }
+}
+
+/* ----------------------------------------------------------- the chat panel */
+
+/* The terminal and the conversation about it, side by side. */
+.stage {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+}
+.stage .term-wrap { min-width: 0; }
+
+.chat-panel {
+  flex: none;
+  width: 360px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border-left: 1px solid var(--line);
+}
+.chat-panel[hidden] { display: none; }
+.chat-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 48px;
+  padding: 0 8px 0 16px;
+  border-bottom: 1px solid var(--line);
+}
+.chat-head-title { flex: 1; font-size: 13.5px; font-weight: 560; letter-spacing: -.01em; }
+.chat-log {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  scrollbar-width: thin;
+}
+.chat-empty { color: var(--text-faint); font-size: 12.5px; line-height: 1.6; }
+/* Both sides are white with a hairline. Which of the two said it is said by
+   which edge it is on and by the weight, not by a colour. */
+.chat-msg {
+  max-width: 92%;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--bg);
+  font-size: 13.5px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.chat-msg.user { align-self: flex-end; border-color: var(--line-strong); }
+.chat-msg.assistant { align-self: flex-start; }
+.chat-msg.failed { border-color: var(--red); color: var(--red); }
+.chat-msg.thinking { color: var(--text-faint); }
+.chat-msg p { margin: 0 0 8px; }
+.chat-msg p:last-child { margin-bottom: 0; }
+.chat-msg code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--bg-sunken);
+}
+/* The run a message started: the steps it is on, and the way to stop it. */
+.chat-run {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-soft);
+}
+.chat-run .chat-run-line { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.chat-foot {
+  flex: none;
+  border-top: 1px solid var(--line);
+  padding: 10px 12px 14px;
+}
+.chat-compose { display: flex; align-items: center; gap: 8px; }
+.chat-compose .input { flex: 1; min-width: 0; }
+/* With auto mode on there is no field anywhere: the whole row is one
+   microphone, because the point is that no keyboard ever opens. */
+.chat-mic {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 64px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 16px;
+  font-weight: 550;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background .16s var(--ease), color .16s var(--ease), border-color .16s var(--ease);
+}
+.chat-mic:hover { background: var(--bg-hover); }
+.chat-mic:disabled { opacity: .4; cursor: default; }
+.chat-mic:disabled:hover { background: var(--bg); }
+.chat-mic.rec { color: var(--red); border-color: var(--red); font-variant-numeric: tabular-nums; }
+.chat-mic .ico { width: 22px; height: 22px; flex: none; }
+
+/* On a phone the chat is a sheet over the terminal rather than a column
+   beside it: 360px of chat and 30px of terminal would be neither. */
+@media (max-width: 860px) {
+  .chat-panel {
+    position: absolute;
+    inset: 0;
+    width: auto;
+    border-left: none;
+    z-index: 9;
+  }
+}
+
+/* Auto mode: nothing on this page may open a keyboard. The composer and the
+   key bar are not merely hidden, they are gone from the layout, and the chat
+   panel builds a microphone instead of a field. */
+body.audio-mode .composer,
+body.audio-mode .keybar { display: none !important; }
 
 /* ------------------------------------------------------- the session list */
 

@@ -1,31 +1,38 @@
-// Status, Agent and audio mode: the three things you can ask a session for
-// without typing into it.
+// Status, the ticker, auto mode and the chat: the things you can ask a session
+// for without typing into it.
 //
 // They are one module because they are one idea. A terminal is a picture, and
 // a picture is the one thing a phone in a car cannot use: Status turns the
-// screen into a sentence and reads it out loud, Agent turns a sentence back
-// into keystrokes, and audio mode is the layout where those two are the whole
-// interface and the terminal is merely still there, honest and shorter.
+// screen into a sentence and reads it out loud, the chat turns sentences back
+// into keystrokes, and auto mode is the layout where those two are the whole
+// interface - no field anywhere, not even the terminal's own - and the pane is
+// merely still there, honest and shorter.
 //
-// Everything here talks to the page through the handle `mountAssist` is given.
-// The sidebar, the socket and the frames stay in session.js; what lives here
-// is what the three buttons do, and the one rule that ties them together - in
-// audio mode, a session that stops working says so by itself.
+// The one line that says what is happening right now is here too, and there is
+// exactly one of it: a status being made, a run taking a step, or - in auto
+// mode, continuously - what the session is doing. A second indicator would be
+// a second thing to read at a traffic light.
 
 import { api, el, toast, setClass, errorMessage, isOffline, isBusyConflict } from './api.js';
-import { speak, stopSpeaking, onSpeechError, dictateOnce } from './voice.js';
+import { speak, stopSpeaking, onSpeechError } from './voice.js';
+import { label as harnessLabel } from './harnesses.js';
+import { mountChat } from './chat.js';
 
 // Per device, not per account: whether this phone is the one in the car is a
 // fact about the phone.
 const AUDIO_KEY = 'socrates.audio.mode';
 
-// How long a finished run stays on screen before it fades. Long enough to read
-// one sentence, short enough that it is gone before it is in the way.
-const DONE_LINGER = 6000;
+// How long a finished status or a finished run keeps the ticker before it goes
+// back to whatever is true underneath. Long enough to read one line.
+const TICKER_LINGER = 6000;
 
-// What a phase is called in the one line the progress notice gets. The
-// technical words - the phase itself, the run id, the model's note - go behind
-// the "i" beside it, like every other identifier on this page.
+// How long a leaving line is given to leave. It is the CSS transition plus a
+// frame, and it only decides when a detached element is removed.
+const TICKER_SWAP = 320;
+
+// What a phase of a run is called in the ticker. The technical words - the
+// phase itself, the run id, the model's note - are not on the page at all any
+// more; the chat message the run belongs to is where a run is looked at.
 const PHASE_WORDS = {
   thinking: 'thinking',
   acting: 'working',
@@ -34,12 +41,15 @@ const PHASE_WORDS = {
   error: 'stopped',
 };
 
-const path = (id, suffix) => '/api/sessions/' + encodeURIComponent(id) + suffix;
+// What a session is doing, as the ticker says it in auto mode. The harness
+// names itself, because "it" is not enough when three sessions are open.
+const ACTIVITY_WORDS = {
+  busy: ' is working',
+  idle: ' is idle',
+  waiting: ' is waiting for you',
+};
 
-function fmtClock(seconds) {
-  const whole = Math.max(0, Math.floor(seconds));
-  return Math.floor(whole / 60) + ':' + String(whole % 60).padStart(2, '0');
-}
+const path = (id, suffix) => '/api/sessions/' + encodeURIComponent(id) + suffix;
 
 // audioWanted is read before anything is mounted, because the class it decides
 // is a layout and a layout applied late is a terminal that resizes under the
@@ -49,14 +59,16 @@ export function audioWanted() {
 }
 
 /**
- * mountAssist wires the three buttons to one session page.
+ * mountAssist wires the header, the audio bar, the ticker and the chat to one
+ * session page.
  *
  * `ctx` is everything this module is not allowed to own:
- *   dom      the shared id map
- *   notice   session.js's one-line banner, (kind, text, onDismiss, facts, extra)
- *   refit    re-measure the pane after the layout changed
- *   current  the session on screen, or null
- *   live     whether the socket is up
+ *   dom       the shared id map
+ *   notice    session.js's one-line banner, (kind, text, onDismiss, facts, extra)
+ *   refit     re-measure the pane after the layout changed
+ *   current   the session on screen, or null
+ *   live      whether the socket is up
+ *   setTyping open or close the terminal's own field
  */
 export function mountAssist(ctx) {
   const { dom } = ctx;
@@ -77,10 +89,83 @@ export function mountAssist(ctx) {
   // Which utterance is the current one. See say().
   let sayGen = 0;
   let run = null;
-  let doneTimer = null;
-  let stopDictation = null;
+  // The line a status is currently putting in the ticker, and the timer that
+  // takes it away again once it has been read.
+  let statusLine = '';
+  let statusTimer = null;
+  let runTimer = null;
 
-  /* ------------------------------------------------------------ painting */
+  /* ------------------------------------------------------------ the ticker */
+
+  // One line at a time, the newest rising into the window and the old one
+  // leaving upwards. Under reduced motion the CSS turns this into a plain
+  // swap; the JavaScript is the same either way.
+  const ticker = (() => {
+    let current = null;
+    let shown = '';
+    return {
+      show(text) {
+        if (!text || text === shown) return;
+        shown = text;
+        dom.termTicker.hidden = false;
+        const line = el('span', { class: 'ticker-line enter', text });
+        dom.tickerWindow.append(line);
+        const previous = current;
+        current = line;
+        requestAnimationFrame(() => {
+          line.classList.remove('enter');
+          if (!previous) return;
+          previous.classList.add('leave');
+          setTimeout(() => previous.remove(), TICKER_SWAP);
+        });
+      },
+      hide() {
+        if (dom.termTicker.hidden) return;
+        dom.termTicker.hidden = true;
+        dom.tickerWindow.innerHTML = '';
+        current = null;
+        shown = '';
+      },
+    };
+  })();
+
+  // What the ticker should be saying, from what is true. There is one of these
+  // and it is the only writer: a status being made wins, then a run in
+  // progress, then - in auto mode only - the session's own state.
+  function tickerText() {
+    const session = ctx.current();
+    if (!session) return '';
+    if (statusLine) return statusLine;
+    if (run && !run.done) {
+      const step = Math.max(1, Number(run.step) || 1);
+      const said = String(run.action || '').trim() || PHASE_WORDS[run.phase] || 'working';
+      return 'Step ' + step + ' · ' + said;
+    }
+    if (!audio) return '';
+    const state = (ctx.activityOf(session.id) || {}).state || 'unknown';
+    const words = ACTIVITY_WORDS[state];
+    if (!words) return harnessLabel(session.harness) + ' is starting up';
+    return harnessLabel(session.harness) + words;
+  }
+
+  function paintTicker() {
+    const text = tickerText();
+    if (text) ticker.show(text); else ticker.hide();
+  }
+
+  // linger keeps a finished line up for a moment and then lets whatever is
+  // true underneath take the window back.
+  function linger(which) {
+    if (which === 'status') {
+      if (statusTimer) clearTimeout(statusTimer);
+      statusTimer = setTimeout(() => { statusTimer = null; statusLine = ''; paintTicker(); }, TICKER_LINGER);
+      return;
+    }
+    if (runTimer) clearTimeout(runTimer);
+    runTimer = setTimeout(() => { runTimer = null; run = null; paintTicker(); }, TICKER_LINGER);
+  }
+
+  /* ------------------------------------------------------------- painting */
 
   function paint() {
     const session = ctx.current();
@@ -91,14 +176,16 @@ export function mountAssist(ctx) {
     }
     if (dom.audioModeBtn) {
       dom.audioModeBtn.hidden = !session;
-      dom.audioModeBtn.setAttribute('aria-pressed', audio ? 'true' : 'false');
-      setClass(dom.audioModeBtn, 'on', audio);
+      dom.audioModeBtn.setAttribute('aria-checked', audio ? 'true' : 'false');
     }
     // The stop is the same button: what is being asked for while the voice is
     // reading is silence, and a second control for it is a second thing to
     // find on a screen nobody is looking at.
     if (dom.statusBtn) {
       setClass(dom.statusBtn, 'speaking', speaking);
+      // The spinner is the answer to "did that tap land?", and it is on the
+      // button that was tapped rather than somewhere else on the page.
+      setClass(dom.statusBtn, 'working', busyStatus);
       const label = speaking ? 'Stop reading' : 'Say what this is doing';
       dom.statusBtn.title = label;
       dom.statusBtn.setAttribute('aria-label', label);
@@ -110,12 +197,11 @@ export function mountAssist(ctx) {
     if (dom.audioBar) dom.audioBar.hidden = !audio || !session;
     if (dom.audioStatus) {
       dom.audioStatus.disabled = !usable && !speaking;
-      dom.audioStatus.textContent = speaking ? 'Stop' : (busyStatus ? 'Asking…' : 'Status');
+      dom.audioStatus.textContent = speaking ? 'Stop' : (busyStatus ? 'Asking' : 'Status');
     }
-    if (dom.audioAgent) {
-      dom.audioAgent.disabled = !usable && !stopDictation;
-      if (!stopDictation) dom.audioAgent.textContent = 'Agent';
-    }
+    if (dom.audioAgent) dom.audioAgent.disabled = !usable;
+    chat.live();
+    paintTicker();
   }
 
   /* -------------------------------------------------------------- status */
@@ -141,6 +227,10 @@ export function mountAssist(ctx) {
       return;
     }
     busyStatus = true;
+    // The first phase locally, before the request has even left: on a bad
+    // connection the server's own first frame is a second away, and a tap with
+    // nothing on screen reads as a tap that did not land.
+    setStatusPhase('capturing', 'Reading the screen');
     paint();
     // Whether this answer reached the voice at all. say()'s finally is the
     // one place a queued auto-status is drained, so an answer that is never
@@ -154,18 +244,35 @@ export function mountAssist(ctx) {
         method: 'POST', attempts: 1, timeout: 120000,
       });
       const text = String((data && data.text) || '').trim();
-      if (!text) { toast('There was nothing to say about that screen.'); return; }
+      if (!text) {
+        setStatusPhase('error', 'There was nothing to say about that screen.');
+        toast('There was nothing to say about that screen.');
+        return;
+      }
       ctx.notice('status', text, null, statusFacts(data || {}));
+      setStatusPhase('done', text);
       busyStatus = false;
       paint();
       if (spoken) { voiced = true; await say(text); }
     } catch (err) {
+      setStatusPhase('error', assistFailed(err, 'That session could not be summarised.'));
       toast(assistFailed(err, 'That session could not be summarised.'), 'error');
     } finally {
       if (!voiced) queuedAuto = false;
       busyStatus = false;
       paint();
     }
+  }
+
+  // setStatusPhase puts one phase of a status into the ticker. It is called
+  // from here and from the server's own frames, which is why "done" and
+  // "error" are the two that stop holding the window.
+  function setStatusPhase(phase, text) {
+    if (!text) return;
+    statusLine = text;
+    if (statusTimer) { clearTimeout(statusTimer); statusTimer = null; }
+    if (phase === 'done' || phase === 'error') linger('status');
+    paintTicker();
   }
 
   // say reads one line and keeps the button honest while it does. A failed
@@ -205,162 +312,32 @@ export function mountAssist(ctx) {
     paint();
   }
 
-  /* --------------------------------------------------------------- agent */
-
-  // promptFor is the one-field dialog the Agent button opens on a device with
-  // a keyboard. It is built the way renameSession's is - the app's own shape,
-  // not the browser's, which a phone renders as a system alert.
-  function promptFor() {
-    return new Promise((resolve) => {
-      const dialog = el('dialog', { class: 'modal' });
-      const input = el('input', {
-        class: 'input', type: 'text', placeholder: 'Pick the fastest model and send the prompt',
-      });
-      const cancel = el('button', { class: 'btn sm', type: 'button', text: 'Cancel' });
-      const accept = el('button', { class: 'btn sm primary', type: 'button', text: 'Run' });
-      dialog.append(
-        el('h2', { class: 'modal-title', text: 'What should it do?' }),
-        el('p', { class: 'modal-body', text: 'It reads the screen and types for you, one small step at a time. You can stop it at any point.' }),
-        el('div', { class: 'field' }, input),
-        el('div', { class: 'modal-actions' }, cancel, accept),
-      );
-      let settled = false;
-      const finish = (value) => {
-        if (settled) return;
-        settled = true;
-        resolve(value);
-        dialog.close();
-      };
-      accept.addEventListener('click', () => finish(input.value.trim() || null));
-      cancel.addEventListener('click', () => finish(null));
-      input.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter') { event.preventDefault(); finish(input.value.trim() || null); }
-      });
-      dialog.addEventListener('cancel', (event) => { event.preventDefault(); finish(null); });
-      dialog.addEventListener('close', () => { finish(null); dialog.remove(); });
-      document.body.append(dialog);
-      dialog.showModal();
-      input.focus();
-    });
-  }
-
-  async function startAgent(prompt) {
-    const session = ctx.current();
-    if (!session || !prompt) return;
-    try {
-      const data = await api(path(session.id, '/agent'), {
-        method: 'POST', attempts: 1, timeout: 30000, body: { prompt },
-      });
-      // The first frame may be a moment away, and a tap with nothing on screen
-      // reads as a tap that did not land. So the run starts here, from what
-      // the POST already knows.
-      setRun({
-        run_id: (data && data.run_id) || '', step: 1, phase: 'thinking',
-        action: '', note: '', prompt, summary: '', done: false, error: '',
-      });
-    } catch (err) {
-      toast(assistFailed(err, 'That run could not be started.'), 'error');
-    }
-  }
-
-  async function cancelAgent() {
-    const session = ctx.current();
-    if (!session) return;
-    try {
-      await api(path(session.id, '/agent/cancel'), { method: 'POST', attempts: 1, timeout: 15000 });
-    } catch (err) {
-      toast(assistFailed(err, 'That run could not be stopped.'), 'error');
-    }
-  }
-
-  function setRun(next) {
-    if (doneTimer) { clearTimeout(doneTimer); doneTimer = null; }
-    run = next;
-    renderRun();
-  }
-
-  // renderRun is the progress line: one sentence about the step it is on, a
-  // Cancel beside it, and the identifiers behind the "i".
-  function renderRun() {
-    if (!run) return;
-    const facts = [
-      run.run_id ? 'run ' + run.run_id : '',
-      run.phase ? 'phase ' + run.phase : '',
-      run.note || '',
-      run.prompt ? 'goal: ' + run.prompt : '',
-    ].filter(Boolean);
-
-    if (run.phase === 'error' || run.error) {
-      ctx.notice('agent', 'The run stopped before it finished.', null, facts);
-      toast(run.error || 'The run stopped before it finished.', 'error');
-      run = { ...run, done: true };
-      fadeSoon();
-      return;
-    }
-    if (run.done) {
-      const summary = String(run.summary || '').trim() || 'Done.';
-      ctx.notice('agent', summary, null, facts);
-      fadeSoon();
-      if (audio) say(summary);
-      return;
-    }
-    const step = Math.max(1, Number(run.step) || 1);
-    const said = String(run.action || '').trim() || PHASE_WORDS[run.phase] || 'working';
-    const cancel = el('button', {
-      class: 'btn sm', type: 'button', text: 'Cancel', onclick: () => cancelAgent(),
-    });
-    ctx.notice('agent', 'Step ' + step + ' · ' + said, null, facts, cancel);
-  }
-
-  function fadeSoon() {
-    if (doneTimer) clearTimeout(doneTimer);
-    doneTimer = setTimeout(() => {
-      doneTimer = null;
-      if (dom.termNotice && dom.termNotice.dataset.kind === 'agent') dom.termNotice.hidden = true;
-    }, DONE_LINGER);
-  }
-
   /* ---------------------------------------------------------- audio mode */
 
   function setAudio(on) {
     audio = !!on;
     try { localStorage.setItem(AUDIO_KEY, audio ? 'on' : 'off'); } catch { /* a private window still works */ }
     setClass(document.body, 'audio-mode', audio);
+    // The whole of the promise: with auto mode on, nothing on this page can
+    // open a keyboard - not the composer, not the key bar, and not the
+    // terminal's own hidden field. Leaving it gives all three back.
+    ctx.setTyping(!audio);
+    chat.audioChanged();
     paint();
     // The pane is not clipped by the bar above it, it is measured against it.
     ctx.refit();
   }
 
-  // The Agent button in audio mode records instead of asking: the words are
-  // the instruction, and a confirmation step is one tap too many for somebody
-  // who is driving. What was heard is shown in the progress line, so a
-  // misheard goal is visible rather than merely obeyed.
-  async function dictateAgent() {
-    if (stopDictation) {
-      const stop = stopDictation;
-      stopDictation = null;
-      stop();
-      return;
-    }
-    setClass(dom.audioAgent, 'rec', true);
-    dom.audioAgent.textContent = 'Stop';
-    try {
-      const text = await dictateOnce({
-        onTime: (secs) => {
-          if (stopDictation) dom.audioAgent.textContent = 'Stop · ' + fmtClock(secs);
-        },
-        onReady: (stop) => { stopDictation = stop; },
-      });
-      await startAgent(text);
-    } catch (err) {
-      toast((err && err.userMessage) || errorMessage(err), 'error');
-    } finally {
-      stopDictation = null;
-      setClass(dom.audioAgent, 'rec', false);
-      dom.audioAgent.textContent = 'Agent';
-      paint();
-    }
-  }
+  /* ----------------------------------------------------------- the chat */
+
+  const chat = mountChat({
+    dom,
+    current: () => ctx.current(),
+    live: () => ctx.live(),
+    audio: () => audio,
+    refit: () => ctx.refit(),
+    say: (text) => say(text),
+  });
 
   /* --------------------------------------------------------------- wiring */
 
@@ -369,29 +346,34 @@ export function mountAssist(ctx) {
       if (speaking) stopReading(); else runStatus();
     });
   }
-  if (dom.agentBtn) {
-    dom.agentBtn.addEventListener('click', async () => {
-      const prompt = await promptFor();
-      if (prompt) startAgent(prompt);
-    });
-  }
+  // The former Agent button. It opens the conversation rather than a one-field
+  // dialog, because "what should I do?" is a question and a question has an
+  // answer, not a form.
+  if (dom.agentBtn) dom.agentBtn.addEventListener('click', () => chat.open());
   if (dom.audioModeBtn) dom.audioModeBtn.addEventListener('click', () => setAudio(!audio));
   if (dom.audioStatus) {
     dom.audioStatus.addEventListener('click', () => {
       if (speaking) stopReading(); else runStatus();
     });
   }
-  if (dom.audioAgent) dom.audioAgent.addEventListener('click', () => dictateAgent());
+  // In the car the same panel is wanted with the microphone already running:
+  // opening it and then finding the button is two taps for one sentence.
+  if (dom.audioAgent) dom.audioAgent.addEventListener('click', () => chat.open({ dictate: true }));
 
   setClass(document.body, 'audio-mode', audio);
+  ctx.setTyping(!audio);
   paint();
 
   return {
     /** attached is a session becoming the one on screen, or nothing being. */
     attached() {
-      if (doneTimer) { clearTimeout(doneTimer); doneTimer = null; }
+      if (statusTimer) { clearTimeout(statusTimer); statusTimer = null; }
+      if (runTimer) { clearTimeout(runTimer); runTimer = null; }
       run = null;
+      statusLine = '';
       stopReading();
+      chat.attached();
+      ctx.setTyping(!audio);
       paint();
     },
 
@@ -401,32 +383,57 @@ export function mountAssist(ctx) {
     /**
      * activity is one committed change, already merged into the page's map.
      *
-     * The only thing this module does with it is audio mode's own rule: a
-     * session that stops working says what it did, and only the session being
-     * looked at - three of them talking over each other in a car is worse
-     * than silence, and they are all visible in the list anyway.
+     * Two things happen here. The ticker follows the attached session's state
+     * continuously while auto mode is on, and a session that stops working
+     * says what it did out loud - only the session being looked at, because
+     * three of them talking over each other in a car is worse than silence.
      */
     activity(id, next, prev) {
-      if (!audio) return;
       const session = ctx.current();
       if (!session || session.id !== id) return;
+      paintTicker();
+      if (!audio) return;
       // A run that is still typing owns this line and this voice: every step
       // of it ends in a busy-to-idle of the session, runStatus would refuse
-      // and overwrite the progress line with the refusal, and the sentence
-      // audio mode wants is the summary the run itself speaks when it ends.
+      // and overwrite the notice with the refusal, and the sentence audio mode
+      // wants is the summary the run itself posts when it ends.
       if (run && !run.done) return;
       if (!prev || prev.state !== 'busy' || next.state === 'busy') return;
       if (speaking || busyStatus) { queuedAuto = true; return; }
       runStatus();
     },
 
+    /** statusFrame is one phase of a status being made, from the server. */
+    statusFrame(frame) {
+      setStatusPhase(frame.phase || '', String(frame.text || '').trim());
+    },
+
+    /** chatFrame is one message of this session's conversation. */
+    chatFrame(frame) {
+      if (frame && frame.msg) chat.message(frame.msg);
+    },
+
+    /** helloChat is the conversation a fresh socket found. */
+    helloChat(list) { chat.history(list); },
+
     /** agentFrame is one phase change of the run on this session. */
     agentFrame(frame) {
-      setRun({
+      if (runTimer) { clearTimeout(runTimer); runTimer = null; }
+      run = {
         run_id: frame.run_id || '', step: frame.step || 0, phase: frame.phase || '',
         action: frame.action || '', note: frame.note || '', prompt: frame.prompt || '',
         summary: frame.summary || '', done: !!frame.done, error: frame.error || '',
-      });
+      };
+      chat.run(run);
+      if (run.done) {
+        // The words the run ended with are the chat's, which stores them; the
+        // ticker only says that it ended.
+        statusLine = '';
+        run = { ...run, action: run.error ? 'stopped' : 'done' };
+        chat.run(run);
+        linger('run');
+      }
+      paintTicker();
     },
 
     /**
@@ -440,7 +447,8 @@ export function mountAssist(ctx) {
       if (payload && payload.run_id) { this.agentFrame(payload); return; }
       if (run && !run.done) {
         run = null;
-        if (dom.termNotice && dom.termNotice.dataset.kind === 'agent') dom.termNotice.hidden = true;
+        chat.runGone();
+        paintTicker();
         toast('That run is no longer running.');
       }
     },
@@ -456,9 +464,9 @@ export function mountAssist(ctx) {
 function assistFailed(err, sentence) {
   if (isOffline(err)) return errorMessage(err);
   if (isBusyConflict(err)) return 'That session already has a run going.';
-  // A 400 from these two routes is the one case where the server's own words
-  // are the instruction - "open /admin and pick a model" - and there is
-  // nothing else the page could say instead.
+  // A 400 from these routes is the one case where the server's own words are
+  // the instruction - "open /admin and pick a model" - and there is nothing
+  // else the page could say instead.
   if (err && err.status === 400) return errorMessage(err);
   return sentence;
 }

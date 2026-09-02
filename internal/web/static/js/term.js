@@ -135,6 +135,28 @@ export function createTerm(host, opts = {}) {
     term.textarea.setAttribute('spellcheck', 'false');
   }
 
+  // Whether this terminal takes typing at all.
+  //
+  // In auto mode it does not: the promise of that mode is that no keyboard
+  // ever opens, and a tap on the pane is exactly what would open one - xterm
+  // moves the focus into its own hidden textarea, and a phone puts a keyboard
+  // under it. Output, scrolling, selection and every path that sends bytes
+  // from somewhere else are untouched; the one thing that stops is the field.
+  let typing = true;
+  if (term.textarea) {
+    term.textarea.addEventListener('focus', () => {
+      if (!typing) term.textarea.blur();
+    });
+  }
+  const setTyping = (on) => {
+    typing = on !== false;
+    const area = term.textarea;
+    if (!area) return;
+    area.readOnly = !typing;
+    area.tabIndex = typing ? 0 : -1;
+    if (!typing && document.activeElement === area) area.blur();
+  };
+
   // The one path everything typed takes. It is wrapped because an exception
   // thrown out of a listener leaves xterm's key handling half way through the
   // event it was in the middle of - and a page that has thrown once must still
@@ -199,7 +221,11 @@ export function createTerm(host, opts = {}) {
     write: (data) => term.write(data),
     /** reset is the full repaint a `replay_from: 0` hello asks for. */
     reset: () => { term.reset(); last = { cols: 0, rows: 0 }; },
-    focus: () => term.focus(),
+    focus: () => { if (typing) term.focus(); },
+    /** setTyping opens or closes the one field a terminal has. */
+    setTyping,
+    /** typing says whether this pane currently takes keystrokes. */
+    typing: () => typing,
     dispose() {
       observer.disconnect();
       if (viewport) {

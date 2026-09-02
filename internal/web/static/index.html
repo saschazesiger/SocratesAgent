@@ -72,27 +72,58 @@
       <button class="icon-btn" id="statusBtn" title="Say what this is doing" aria-label="Say what this is doing" hidden>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 0 1-8 8H5.5L4 21.5V12a8 8 0 1 1 16 0z"/></svg>
       </button>
-      <button class="icon-btn" id="agentBtn" title="Have it do something" aria-label="Have it do something" hidden>
+      <button class="icon-btn" id="agentBtn" title="What should I do?" aria-label="What should I do?" hidden>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M18.5 16.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></svg>
       </button>
-      <button class="icon-btn" id="audioModeBtn" title="Audio mode" aria-label="Audio mode" aria-pressed="false" hidden>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14v-2a8 8 0 0 1 16 0v2"/><path d="M4 14h2.5a1 1 0 0 1 1 1v3.5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1zM20 14h-2.5a1 1 0 0 0-1 1v3.5a1 1 0 0 0 1 1H19a1 1 0 0 0 1-1z"/></svg>
+      <!-- Auto mode is a state, not an action, so it is a switch and not a
+           pressed button: the knob says which way it is set without anybody
+           having to hover it. -->
+      <button class="auto-switch" id="audioModeBtn" type="button" role="switch" aria-checked="false"
+              title="Auto mode" hidden>
+        <span class="auto-word" aria-hidden="true">Auto</span>
+        <span class="auto-track"><span class="auto-knob"></span></span>
+        <span class="sr-only">Auto mode</span>
       </button>
       <button class="icon-btn" id="sessionMenu" title="Session actions" hidden aria-haspopup="true" aria-expanded="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>
       </button>
     </header>
 
-    <div class="term-wrap" id="termWrap">
-      <div class="term-host" id="term"></div>
-      <!-- Blocks the terminal: it ended, it could not start, or it is coming
-           back after a reboot. -->
-      <div class="term-overlay" id="termOverlay" hidden></div>
-      <!-- Never blocks: resumed after a restart, resized by somebody else,
-           redrawn after a long outage. -->
-      <div class="term-notice" id="termNotice" hidden></div>
-      <!-- Before the first session exists there is nothing to attach to. -->
-      <div class="term-empty" id="termEmpty" hidden></div>
+    <!-- The terminal and, beside it, the conversation about it. On a desk they
+         are two columns and the pane refits; on a phone the chat is a sheet
+         over the pane with a way out of it. -->
+    <div class="stage" id="stage">
+      <div class="term-wrap" id="termWrap">
+        <div class="term-host" id="term"></div>
+        <!-- Blocks the terminal: it ended, it could not start, or it is coming
+             back after a reboot. -->
+        <div class="term-overlay" id="termOverlay" hidden></div>
+        <!-- The two lines that may sit over the top of the pane: the notice,
+             which is dismissible and never blocks, and under it the ticker,
+             which is one line at a time of what is happening right now. -->
+        <div class="term-lines" id="termLines">
+          <div class="term-notice" id="termNotice" hidden></div>
+          <div class="term-ticker" id="termTicker" hidden>
+            <div class="ticker-window" id="tickerWindow" role="status" aria-live="polite"></div>
+          </div>
+        </div>
+        <!-- Before the first session exists there is nothing to attach to. -->
+        <div class="term-empty" id="termEmpty" hidden></div>
+      </div>
+
+      <!-- The chat with the agent. chat.js fills the log and builds the input
+           row, which is a text field with a keyboard and one large microphone
+           without one. -->
+      <aside class="chat-panel" id="chatPanel" hidden aria-label="Ask the agent">
+        <header class="chat-head">
+          <span class="chat-head-title">Ask</span>
+          <button class="icon-btn" id="chatClose" type="button" aria-label="Close the chat">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </header>
+        <div class="chat-log" id="chatLog"></div>
+        <div class="chat-foot" id="chatFoot"></div>
+      </aside>
     </div>
 
     <!-- Audio mode: the terminal stays where it is and simply gets shorter,

@@ -655,7 +655,9 @@ const dom = {};
 const ids = ['sidebar', 'navScrim', 'menuBtn', 'newSession', 'sessionScope', 'sessionList',
   'activityLive', 'sessionHarness', 'sessionTitle', 'sessionArchived', 'termSize',
   'statusBtn', 'agentBtn', 'audioModeBtn', 'sessionMenu',
-  'termWrap', 'term', 'termOverlay', 'termNotice', 'termEmpty',
+  'stage', 'termWrap', 'term', 'termOverlay', 'termLines', 'termNotice',
+  'termTicker', 'tickerWindow', 'termEmpty',
+  'chatPanel', 'chatLog', 'chatFoot', 'chatClose',
   'audioBar', 'audioStatus', 'audioAgent', 'keybar', 'composer',
   'lineInput', 'micBtn', 'recTime', 'logout'];
 for (const id of ids) dom[id] = document.getElementById(id);
@@ -1433,7 +1435,10 @@ function onControl(sessionId, frame) {
       // session's run, so a reconnect and a reload both re-draw the sidebar
       // and the progress line without asking for anything.
       mergeActivity(frame.activity);
-      if (state.assist) state.assist.helloAgent(frame.agent);
+      if (state.assist) {
+        state.assist.helloAgent(frame.agent);
+        state.assist.helloChat(frame.chat);
+      }
       if (!Number(frame.replay_from) && state.term) {
         state.term.reset();
         // Only worth saying when there was something to lose: a first attach
@@ -1446,6 +1451,12 @@ function onControl(sessionId, frame) {
       break;
     case 'agent':
       if (state.assist) state.assist.agentFrame(frame);
+      break;
+    case 'status':
+      if (state.assist) state.assist.statusFrame(frame);
+      break;
+    case 'chat':
+      if (state.assist) state.assist.chatFrame(frame);
       break;
     case 'state':
       replaceSession({ ...state.current, state: frame.state });
@@ -1701,6 +1712,10 @@ async function boot() {
     refit: () => { if (state.term) state.term.refit(); },
     current: () => state.current,
     live: () => state.live,
+    activityOf: (id) => state.activity.get(id) || null,
+    // Auto mode's one hard promise: with it on, the terminal's own hidden
+    // field takes no focus, so a tap on the pane cannot bring a keyboard up.
+    setTyping: (on) => { if (state.term) state.term.setTyping(on); },
   });
   followViewport();
   // Read before anything is fetched: on an offline reload this is the only
