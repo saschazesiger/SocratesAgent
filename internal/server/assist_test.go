@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/config"
+	"github.com/saschazesiger/SocratesAgent/internal/openrouter"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 )
 
@@ -429,6 +430,15 @@ func TestAgentRunDrivesThePane(t *testing.T) {
 	if !strings.Contains(calls[0].joined(), "Goal: create a file called operator-ran") {
 		t.Fatalf("the goal is missing:\n%s", calls[0].joined())
 	}
+	// The summary is read out loud by a voice with one language in it, so the
+	// prompt has to name that language; and every screen carries what the
+	// detector says about it, which is what tells a spinner from a hung prompt.
+	if !strings.Contains(calls[0].joined(), "Write summary and note in English") {
+		t.Fatalf("the operator was not told which language to summarise in:\n%s", calls[0].joined())
+	}
+	if !strings.HasPrefix(calls[0].last(), "The terminal is ") {
+		t.Fatalf("the screen came without the detector's state:\n%s", calls[0].last())
+	}
 	if !strings.Contains(calls[1].joined(), "touch operator-ran") {
 		t.Fatalf("the second step did not carry the first decision:\n%s", calls[1].joined())
 	}
@@ -744,5 +754,169 @@ func TestParseDecision(t *testing.T) {
 	}
 	if _, err := parseDecision("   "); err == nil {
 		t.Fatal("an empty answer parsed as a decision")
+	}
+}
+
+// A harness that exits under the run is the one ending nothing else reports.
+// With remain-on-exit on, tmux takes the keys of a dead pane without a word
+// and capture-pane still answers its frozen screen, so a run that only learns
+// from failed calls would sit in "waiting for the terminal" until the wall
+// clock ended it - six more screenfuls of tokens and ten minutes on a phone.
+func TestAgentEndsWhenThePaneDies(t *testing.T) {
+	e := newAssistEnv(t)
+	e.gw.script(`{"actions":[{"text":"exit"},{"key":"Enter"}],"done":false,"summary":"leaving"}`)
+	e.gw.always(`{"actions":[],"done":true,"summary":"this must never be asked"}`)
+
+	if res, payload := e.startRun("close the shell"); res.StatusCode != http.StatusAccepted {
+		t.Fatalf("start: %d %#v", res.StatusCode, payload)
+	}
+	began := time.Now()
+	run := e.awaitRun("ended", 60*time.Second, func(r map[string]any) bool { return r["done"] == true })
+	// Well inside the bounded unknown wait, which is what used to happen here.
+	if took := time.Since(began); took > 30*time.Second {
+		t.Fatalf("the dead pane took %s to be noticed", took)
+	}
+	if run["phase"] != phaseError {
+		t.Fatalf("a run whose pane died is %#v", run)
+	}
+	if failure, _ := run["error"].(string); !strings.Contains(failure, "gone") {
+		t.Fatalf("error = %q, want the terminal to be gone", failure)
+	}
+	// And it did not ask the model what to do about a screen nobody is behind.
+	if calls := e.gw.count(); calls != 1 {
+		t.Fatalf("the model was asked %d times, want one", calls)
+	}
+}
+
+// The ordinary reason to press Cancel: the run typed something that takes half
+// a minute and is now in its wait. The button has to reach it there and not
+// only in the model call.
+func TestAgentCancelReachesARunWaitingOnABusyTerminal(t *testing.T) {
+	e := newAssistEnv(t)
+	e.gw.script(`{"actions":[{"text":"sleep 30"},{"key":"Enter"}],"done":false,"summary":"waiting for it"}`)
+	e.gw.always(`{"actions":[],"done":true,"summary":"this must never be asked"}`)
+
+	if res, payload := e.startRun("start the long thing"); res.StatusCode != http.StatusAccepted {
+		t.Fatalf("start: %d %#v", res.StatusCode, payload)
+	}
+	// The wait is a real one: the pane is busy for half a minute.
+	deadline := time.Now().Add(30 * time.Second)
+	for e.srv.manager.ActivityOf(e.id).State != termux.StateBusy {
+		if time.Now().After(deadline) {
+			t.Fatalf("the terminal never became busy; it is %q", e.srv.manager.ActivityOf(e.id).State)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	e.awaitRun("waiting on the terminal", 30*time.Second, func(r map[string]any) bool {
+		step, _ := r["step"].(float64)
+		return step == 1 && r["phase"] == phaseWaiting
+	})
+
+	began := time.Now()
+	res, payload := e.do(t, e.client, "POST", "/api/sessions/"+e.id+"/agent/cancel", "")
+	if res.StatusCode != http.StatusOK || payload["cancelled"] != true {
+		t.Fatalf("cancel: %d %#v", res.StatusCode, payload)
+	}
+	run := e.awaitRun("cancelled", 10*time.Second, func(r map[string]any) bool { return r["done"] == true })
+	if took := time.Since(began); took > 5*time.Second {
+		t.Fatalf("the cancel took %s with the terminal busy", took)
+	}
+	if run["phase"] != phaseError {
+		t.Fatalf("a cancelled run is %#v", run)
+	}
+	if failure, _ := run["error"].(string); !strings.Contains(failure, "cancelled") {
+		t.Fatalf("error = %q", failure)
+	}
+}
+
+// Three interrupts in one run is a model fighting the terminal rather than
+// driving it. The guard counts them across steps, and the third one ends the
+// run rather than the step.
+func TestAgentStopsAfterThreeInterrupts(t *testing.T) {
+	e := newAssistEnv(t)
+	// The Enter is what makes each C-c the first of its step: two in a row are
+	// dropped by the other half of the same guard.
+	e.gw.always(`{"actions":[{"key":"Enter"},{"key":"C-c"}],"done":false,"summary":"interrupting again"}`)
+
+	if res, payload := e.startRun("interrupt everything"); res.StatusCode != http.StatusAccepted {
+		t.Fatalf("start: %d %#v", res.StatusCode, payload)
+	}
+	run := e.awaitRun("stopped", 90*time.Second, func(r map[string]any) bool { return r["done"] == true })
+	if run["phase"] != phaseError {
+		t.Fatalf("an interrupting run ends as %#v", run)
+	}
+	if failure, _ := run["error"].(string); !strings.Contains(failure, "interrupting") {
+		t.Fatalf("error = %q", failure)
+	}
+	if note, _ := run["note"].(string); !strings.Contains(note, "three interrupts") {
+		t.Fatalf("note = %q", note)
+	}
+	if step, _ := run["step"].(float64); step != 3 {
+		t.Fatalf("the run took %v steps, want three", run["step"])
+	}
+	if calls := e.gw.count(); calls != 3 {
+		t.Fatalf("the model was asked %d times, want three", calls)
+	}
+}
+
+// The wall clock is the bound on a run that is neither finished nor stuck on
+// the model: a build that never ends, a harness that never answers. It is a
+// driver field for the same reason keep is - the ending is worth a test and
+// ten minutes of waiting is not.
+func TestAgentRunsOutOfTime(t *testing.T) {
+	e := newAssistEnv(t)
+	e.srv.agents.setWall(2 * time.Second)
+	e.gw.always(`{"actions":[{"key":"Escape"}],"done":false,"summary":"still looking"}`)
+
+	if res, payload := e.startRun("look for ever"); res.StatusCode != http.StatusAccepted {
+		t.Fatalf("start: %d %#v", res.StatusCode, payload)
+	}
+	run := e.awaitRun("out of time", 60*time.Second, func(r map[string]any) bool { return r["done"] == true })
+	if run["phase"] != phaseError {
+		t.Fatalf("a run out of time is %#v", run)
+	}
+	failure, _ := run["error"].(string)
+	if !strings.Contains(failure, "ran out of time") || !strings.Contains(failure, "2s") {
+		t.Fatalf("error = %q, want the run's own clock named", failure)
+	}
+}
+
+// A key OpenRouter will not take is not a model that does not exist, and the
+// two send an owner to different halves of the dashboard.
+func TestAssistReportsARejectedKey(t *testing.T) {
+	e := newAssistEnv(t)
+	e.gw.refuse(http.StatusUnauthorized, "No auth credentials found")
+
+	res, payload := e.do(t, e.client, "POST", "/api/sessions/"+e.id+"/status", "")
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status with a rejected key = %d %#v", res.StatusCode, payload)
+	}
+	message, _ := payload["error"].(string)
+	if !strings.Contains(message, "rejected the API key") || !strings.Contains(message, "/admin") {
+		t.Fatalf("error = %q", message)
+	}
+	if strings.Contains(message, "unknown model") {
+		t.Fatalf("a bad key was reported as a bad model: %q", message)
+	}
+}
+
+// The trim keeps the system prompt and an odd tail, so that what follows the
+// system prompt is always a screen and never an answer to one the model can no
+// longer see.
+func TestTrimAgentHistoryKeepsTheScreenFirst(t *testing.T) {
+	messages := []openrouter.Message{{Role: "system", Content: "system"}}
+	for step := 1; step <= 8; step++ {
+		messages = trimAgentHistory(append(messages, openrouter.Message{
+			Role: "user", Content: fmt.Sprintf("screen %d", step)}))
+		if messages[0].Role != "system" {
+			t.Fatalf("step %d dropped the system prompt: %#v", step, messages[0])
+		}
+		if len(messages) > 1 && messages[1].Role != "user" {
+			t.Fatalf("step %d starts the tail with %q", step, messages[1].Role)
+		}
+		if last := messages[len(messages)-1]; last.Content != fmt.Sprintf("screen %d", step) {
+			t.Fatalf("step %d lost its own screen: %#v", step, last)
+		}
+		messages = append(messages, openrouter.Message{Role: "assistant", Content: "answer"})
 	}
 }

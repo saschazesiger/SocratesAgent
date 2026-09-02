@@ -388,6 +388,10 @@ func (s *Server) ensure(w http.ResponseWriter, r *http.Request, restart bool) {
 	var next *store.Session
 	var err error
 	if restart {
+		// A restart is an interaction with the terminal, and the operator run
+		// that was driving the pane being replaced has no business carrying on
+		// into the fresh harness that comes up under the same tmux name.
+		s.agents.cancel(row.ID, "the session was restarted")
 		next, err = s.manager.Restart(ctx, row.ID)
 	} else {
 		next, err = s.manager.Ensure(ctx, row.ID)

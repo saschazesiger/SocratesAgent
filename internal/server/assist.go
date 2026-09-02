@@ -196,9 +196,18 @@ func harnessLabel(id string) string {
 // most of all - is a 4xx and has to say which id and where to change it.
 // Nothing in this app validates a chat model id: there is no catalogue check
 // on save, so "unknown model" is a sentence the dashboard is the answer to,
-// not a bug report.
+// not a bug report. A key OpenRouter will not accept is the other half of
+// that: it arrives as the same 4xx and is the same walk to /admin, but the
+// model id is not what is wrong with it and saying so would send the owner
+// looking for a model that exists.
 func modelProblem(err error, model, kind string) (int, string) {
 	code := upstreamStatus(err)
+	var routed *openrouter.StatusError
+	if errors.As(err, &routed) &&
+		(routed.Status == http.StatusUnauthorized || routed.Status == http.StatusForbidden) {
+		return code, "OpenRouter rejected the API key - open /admin and check it. OpenRouter said: " +
+			err.Error()
+	}
 	if code == http.StatusBadRequest {
 		return code, fmt.Sprintf("unknown model %s - open /admin and pick a %s model. OpenRouter said: %s",
 			model, kind, err.Error())
@@ -267,10 +276,13 @@ type agentDriver struct {
 	// than a constant so that a test can ask what "afterwards" looks like
 	// without waiting two minutes for it.
 	keep time.Duration
+	// wall is the whole run's budget, for the same reason: a test that has to
+	// see a run run out of time cannot wait ten minutes for it.
+	wall time.Duration
 }
 
 func newAgentDriver(s *Server) *agentDriver {
-	return &agentDriver{srv: s, runs: map[string]*agentRun{}, keep: agentKeepDone}
+	return &agentDriver{srv: s, runs: map[string]*agentRun{}, keep: agentKeepDone, wall: agentMaxWall}
 }
 
 // setKeep changes how long a finished run is answered for. It exists so that a
@@ -279,6 +291,21 @@ func (d *agentDriver) setKeep(keep time.Duration) {
 	d.mu.Lock()
 	d.keep = keep
 	d.mu.Unlock()
+}
+
+// setWall changes the whole run's budget, and wallClock reads it. Same reason
+// as setKeep: the ending a ten minute clock produces is worth a test, and a
+// test that takes ten minutes is not.
+func (d *agentDriver) setWall(wall time.Duration) {
+	d.mu.Lock()
+	d.wall = wall
+	d.mu.Unlock()
+}
+
+func (d *agentDriver) wallClock() time.Duration {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.wall
 }
 
 // runView answers with the run of one session, or nil. It is what the server
@@ -304,7 +331,13 @@ func (d *agentDriver) runView(sessionID string) any {
 }
 
 // begin registers a run, or refuses because one is already going.
-func (d *agentDriver) begin(sessionID, prompt string) (*agentRun, bool) {
+//
+// The cancel comes in from the caller rather than being attached afterwards:
+// between the map entry and the field there would be a window in which Cancel
+// finds a live run with nothing to stop, records its reason and returns
+// false - and the run would then end ten minutes later claiming to have been
+// cancelled. Microseconds wide, and free to close.
+func (d *agentDriver) begin(sessionID, prompt string, cancel context.CancelFunc) (*agentRun, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if current, ok := d.runs[sessionID]; ok {
@@ -322,6 +355,7 @@ func (d *agentDriver) begin(sessionID, prompt string) (*agentRun, bool) {
 		started: time.Now().UnixMilli(),
 		phase:   phaseWaiting,
 		action:  "starting",
+		cancel:  cancel,
 	}
 	d.runs[sessionID] = run
 	return run, true
@@ -424,20 +458,20 @@ func (s *Server) handleAgentStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	run, started := s.agents.begin(row.ID, prompt)
+	// The run belongs to the server, not to this request: the whole point is
+	// that it keeps going with every browser closed. The context exists before
+	// the run does, so that a Cancel arriving in the same millisecond has
+	// something to cancel.
+	ctx, cancel := context.WithTimeout(context.Background(), s.agents.wallClock())
+	run, started := s.agents.begin(row.ID, prompt, cancel)
 	if !started {
+		cancel()
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"error": "this session is already being driven; cancel that run first",
 			"run":   run.view(),
 		})
 		return
 	}
-	// The run belongs to the server, not to this request: the whole point is
-	// that it keeps going with every browser closed.
-	ctx, cancel := context.WithTimeout(context.Background(), agentMaxWall)
-	run.mu.Lock()
-	run.cancel = cancel
-	run.mu.Unlock()
 	go func() {
 		defer cancel()
 		s.agents.drive(ctx, run, row.ID, row.Harness, settings)
@@ -488,8 +522,9 @@ func (d *agentDriver) drive(ctx context.Context, run *agentRun, sessionID, harne
 	}
 
 	messages := []openrouter.Message{{
-		Role:    "system",
-		Content: agentSystemPrompt(harnessLabel(harness), run.prompt),
+		Role: "system",
+		Content: agentSystemPrompt(harnessLabel(harness), run.prompt,
+			config.LanguageName(settings.Voice.Language)),
 	}}
 	carried := []string{}
 	interrupts := 0
@@ -513,6 +548,10 @@ func (d *agentDriver) drive(ctx context.Context, run *agentRun, sessionID, harne
 		d.update(run, func(r *agentRun) {
 			r.step, r.phase, r.action = step, phaseThinking, "reading the screen"
 		})
+		if d.terminalGone(sessionID) {
+			d.finish(run, "", "", errTerminalGone.Error())
+			return
+		}
 		screen, err := d.srv.manager.CapturePane(ctx, sessionID, agentScreenLines)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
@@ -523,7 +562,11 @@ func (d *agentDriver) drive(ctx context.Context, run *agentRun, sessionID, harne
 			return
 		}
 
-		prompt := "Screen:\n" + screen
+		// What the detector says, with the screen it says it about: a spinner
+		// and a hung prompt look alike in text, and the server already knows
+		// which one this is.
+		prompt := "The terminal is " + stateWords(d.srv.manager.ActivityOf(sessionID).State) +
+			".\nScreen:\n" + screen
 		if len(carried) > 0 {
 			prompt = "About your last step: " + strings.Join(carried, " ") + "\n\n" + prompt
 			carried = carried[:0]
@@ -567,8 +610,11 @@ func (d *agentDriver) drive(ctx context.Context, run *agentRun, sessionID, harne
 			// browser. It lowers the unread mark - the operator has seen the
 			// screen, so nobody has to - and it is what lets a `waiting` state
 			// whose prompt is off the screen be released by quiescence: the
-			// prompt was answered, and this is the record that it was.
-			d.srv.manager.NoteInput(sessionID)
+			// prompt was answered, and this is the record that it was. A pure
+			// wait answered nothing, so it says nothing.
+			if act.key.Text != "" || act.key.Name != "" {
+				d.srv.manager.NoteInput(sessionID)
+			}
 			d.update(run, func(r *agentRun) { r.phase, r.action = phaseActing, act.said })
 		}
 		carried = append(carried, notes...)
@@ -585,6 +631,12 @@ func (d *agentDriver) drive(ctx context.Context, run *agentRun, sessionID, harne
 			return
 		}
 
+		if step == maxSteps {
+			// Nothing looks at the screen after this step, so there is nothing
+			// to wait for: the cap is the news, and it should not arrive after
+			// a ten minute build whose result no one will read.
+			break
+		}
 		if err := d.waitForTurn(ctx, run, sessionID); err != nil {
 			d.finish(run, "", "", d.endReason(run, err))
 			return
@@ -598,6 +650,9 @@ func (d *agentDriver) drive(ctx context.Context, run *agentRun, sessionID, harne
 // endReason names the ending a context gave the run. Cancel and the wall clock
 // are both a dead context and they are not the same news.
 func (d *agentDriver) endReason(run *agentRun, err error) string {
+	if errors.Is(err, errTerminalGone) {
+		return errTerminalGone.Error()
+	}
 	run.mu.Lock()
 	reason := run.reason
 	run.mu.Unlock()
@@ -605,7 +660,7 @@ func (d *agentDriver) endReason(run *agentRun, err error) string {
 		return reason
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Sprintf("the run ran out of time after %s", agentMaxWall)
+		return fmt.Sprintf("the run ran out of time after %s", d.wallClock())
 	}
 	return "the run ended: " + err.Error()
 }
@@ -621,6 +676,11 @@ func (d *agentDriver) waitForTurn(ctx context.Context, run *agentRun, sessionID 
 	d.update(run, func(r *agentRun) { r.phase, r.action = phaseWaiting, "waiting for the terminal" })
 	if err := sleepFor(ctx, agentSettle); err != nil {
 		return err
+	}
+	// Before the bounded pause, because a dead pane is exactly the `unknown`
+	// this would otherwise spend 90 seconds waiting to become something.
+	if d.terminalGone(sessionID) {
+		return errTerminalGone
 	}
 	if d.srv.manager.ActivityOf(sessionID).State == termux.StateUnknown {
 		bounded, cancel := context.WithTimeout(ctx, agentUnknownWait)
@@ -659,6 +719,33 @@ func (d *agentDriver) awaitKnown(ctx context.Context, sessionID string) error {
 			}
 		}
 	}
+}
+
+// activitySourcePane is the detector's Source for "the pane is dead or gone".
+// It is spelled out rather than imported because it is part of the JSON the
+// browser reads, and that spelling is the contract.
+const activitySourcePane = "pane"
+
+// errTerminalGone is the ending of a run whose terminal stopped being one.
+var errTerminalGone = errors.New("the terminal is gone")
+
+// terminalGone answers whether there is still a terminal to drive.
+//
+// This is the one ending the loop cannot learn from a failed call. With
+// `remain-on-exit on` a dead pane takes send-keys without a word - exit 0, the
+// keys dropped - and answers capture-pane with the frozen screen plus a "Pane
+// is dead" line, so a run whose harness crashed or was told `exit` would look
+// exactly like a run whose terminal is thinking, and would spend the whole
+// wall clock saying "waiting for the terminal" on somebody's phone. What does
+// know is WP1's detector, which commits {unknown, "pane"} on the very next
+// tick, and the session row, which onSessionExit takes out of "running".
+func (d *agentDriver) terminalGone(sessionID string) bool {
+	if a := d.srv.manager.ActivityOf(sessionID); a.State == termux.StateUnknown &&
+		a.Source == activitySourcePane {
+		return true
+	}
+	row, err := d.srv.store.GetSession(sessionID)
+	return err != nil || row.State != store.StateRunning
 }
 
 func sleepFor(ctx context.Context, d time.Duration) error {
@@ -759,8 +846,14 @@ func stripFence(text string) string {
 
 // trimAgentHistory keeps the system prompt and the last few rounds. The
 // screens are the bulk of the conversation and they mostly repeat.
+//
+// The count is odd on purpose. The trim runs after the new screen has been
+// appended, so the tail alternates user, assistant, …, user: an even cut would
+// start it with an assistant turn - an answer to a screen the model can no
+// longer see, and a shape some providers reject outright straight after the
+// system prompt.
 func trimAgentHistory(messages []openrouter.Message) []openrouter.Message {
-	const keep = 2 * agentHistorySteps
+	const keep = 2*agentHistorySteps - 1
 	if len(messages) <= keep+1 {
 		return messages
 	}
@@ -772,9 +865,10 @@ func trimAgentHistory(messages []openrouter.Message) []openrouter.Message {
 // agentSystemPrompt is what the operator is told it is doing. The goal is part
 // of it rather than a message of its own, so that no later screen can look
 // like a new instruction.
-func agentSystemPrompt(label, goal string) string {
+func agentSystemPrompt(label, goal, language string) string {
 	return "You drive a terminal that runs " + label + ". You are given the last " +
-		fmt.Sprint(agentScreenLines) + " lines of the screen and a goal from the user. " +
+		fmt.Sprint(agentScreenLines) + " lines of the screen, what the terminal is doing, " +
+		"and a goal from the user. " +
 		"Answer with one JSON object and nothing else:\n" +
 		`{"actions":[…],"done":bool,"summary":"…","note":"…"}.` + "\n" +
 		`An action is {"text":"…"} to type characters, {"key":"NAME"} for one of ` +
@@ -785,7 +879,10 @@ func agentSystemPrompt(label, goal string) string {
 		fmt.Sprint(agentMaxActions) + " actions.\n" +
 		"The screen may show a menu, a model picker or a permission prompt; answer it the way the " +
 		"goal implies. Set done when the goal is reached or cannot be reached, and say why in " +
-		"summary.\nGoal: " + goal
+		"summary.\n" +
+		// summary is read out loud by a voice with one language in it, so an
+		// English sentence in a German voice is the worst of both.
+		"Write summary and note in " + language + ".\nGoal: " + goal
 }
 
 /* --------------------------------------------------------------- the keys */
