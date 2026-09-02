@@ -131,6 +131,11 @@ type Tmux struct {
 	// Supervisor, when set, wraps the command that may start the server so
 	// that the server outlives the Socrates process tree.
 	Supervisor Supervisor
+	// Env is added to the environment of every tmux command. The server
+	// inherits it from the command that starts it, and its hooks read two of
+	// its variables; putting it here rather than in os.Setenv keeps those out
+	// of every other child Socrates starts.
+	Env []string
 	// Logf is where the few things worth saying out loud go. Nil is quiet.
 	Logf func(format string, args ...any)
 }
@@ -146,9 +151,17 @@ func (t *Tmux) Run(ctx context.Context, args ...string) (string, error) {
 	return t.run(ctx, t.Bin, append([]string{"-S", t.Sock}, args...))
 }
 
-// RunStart executes the one command that may have to start the server, and so
-// is the only one that passes the generated configuration and the UTF-8 flag.
-// A later command on the same socket inherits both from the running server.
+// RunConf executes a command with the generated configuration and the UTF-8
+// flag, which only the command that starts the server actually needs. It is
+// used for `new-session` as belt and braces: should the server somehow not be
+// running, the session still gets our configuration rather than the user's.
+func (t *Tmux) RunConf(ctx context.Context, args ...string) (string, error) {
+	return t.run(ctx, t.Bin, append([]string{"-f", t.Conf, "-S", t.Sock, "-u"}, args...))
+}
+
+// RunStart executes the command that starts the server, and is the only one
+// the supervisor wraps: a transient scope per session create would be a bus
+// round trip for nothing.
 func (t *Tmux) RunStart(ctx context.Context, args ...string) (string, error) {
 	full := append([]string{"-f", t.Conf, "-S", t.Sock, "-u"}, args...)
 	if t.Supervisor != nil {
@@ -174,26 +187,45 @@ func (t *Tmux) run(ctx context.Context, bin string, args []string) (string, erro
 	// Never let tmux read from us, and never let a nested tmux refuse to run
 	// because it thinks it is already inside one.
 	cmd.Stdin = nil
-	cmd.Env = append(os.Environ(), "TMUX=")
+	cmd.Env = append(append(os.Environ(), "TMUX="), t.Env...)
 	if err := cmd.Run(); err != nil {
 		return stdout.String(), &Error{Args: args, Stderr: stderr.String(), Err: err}
 	}
 	return stdout.String(), nil
 }
 
-// Running reports whether a server is listening on our socket. A missing
-// socket file is the reboot case and is answered without running anything.
-func (t *Tmux) Running(ctx context.Context) bool {
+// Running reports whether a server is listening on our socket.
+//
+// A missing socket file is answered without running anything, and a server
+// that says it is not there is a no. Anything else - busy, refused, an answer
+// we could not read - is returned as an error rather than as a no, because
+// "there is no server" is the sentence that moves every session to
+// needs_resume, and it needs evidence rather than a failed command.
+func (t *Tmux) Running(ctx context.Context) (bool, error) {
 	if _, err := os.Stat(t.Sock); err != nil {
-		return false
+		return false, nil
 	}
-	_, err := t.Run(ctx, "list-sessions", "-F", "#{session_name}")
-	if err == nil {
-		return true
+	// An empty server answers list-sessions with exit 0 and nothing at all,
+	// so an empty answer is not an absent server.
+	if _, err := t.Run(ctx, "list-sessions", "-F", "#{session_name}"); err != nil {
+		if serverGone(err) {
+			return false, nil
+		}
+		return false, err
 	}
-	// An empty server answers "no server running on ..." too, and either way
-	// there is nothing of ours on it.
-	return false
+	return true, nil
+}
+
+// noSuchTarget reports whether tmux refused a command because the thing it
+// names is not there - including, on a server with no sessions at all, a
+// command that needs a current target.
+func noSuchTarget(err error) bool {
+	s := strings.ToLower(Stderr(err))
+	return strings.Contains(s, "no current target") ||
+		strings.Contains(s, "can't find session") ||
+		strings.Contains(s, "can't find pane") ||
+		strings.Contains(s, "can't find window") ||
+		strings.Contains(s, "no such target")
 }
 
 // Lines splits tmux's output into non-empty lines.
@@ -211,6 +243,11 @@ func Lines(out string) []string {
 // opposed to a command that the server refused.
 func serverGone(err error) bool {
 	s := strings.ToLower(Stderr(err))
+	if noSuchTarget(err) {
+		// A live server with no sessions left refuses a command that needs a
+		// target. That is an empty server, not an absent one.
+		return false
+	}
 	return strings.Contains(s, "no server running") ||
 		strings.Contains(s, "no such file or directory") ||
 		strings.Contains(s, "server exited unexpectedly") ||

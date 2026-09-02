@@ -7,7 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -306,12 +309,12 @@ func TestCreateFailureMarksRowFailed(t *testing.T) {
 	ctx := context.Background()
 	// Take the name first, the way a create retried after a partial failure
 	// would find it taken.
-	if _, err := l.tmux.RunStart(ctx, "new-session", "-d", "-s", TmuxName(spec.ID), "-c", dir, "--", "/bin/sh"); err != nil {
+	if _, err := l.tmux.RunConf(ctx, "new-session", "-d", "-s", TmuxName(spec.ID), "-c", dir, "--", "/bin/sh"); err != nil {
 		t.Fatal(err)
 	}
 	row, err := l.Create(ctx, spec)
 	if err == nil {
-		t.Fatal("creating a session in a directory that does not exist should fail")
+		t.Fatal("creating a session under a name tmux already has should fail")
 	}
 	if row == nil {
 		t.Fatal("the row must exist even when tmux refused, or the failure has nowhere to live")
@@ -372,7 +375,7 @@ func TestGlobalHooksFireForEverySession(t *testing.T) {
 	}
 	waitFor(t, 15*time.Second, "the session-closed hook to name its session", func() bool {
 		row, err := l.store.GetSession(closed.ID)
-		return err == nil && row.State != store.StateRunning && row.State != store.StateStarting
+		return err == nil && row.State == store.StateNeedsResume
 	})
 	if row, err := l.store.GetSession(died.ID); err != nil || row.ExitStatus != 5 {
 		t.Fatalf("the second hook disturbed the first session's row: %+v, %v", row, err)
@@ -444,5 +447,294 @@ func TestSessionSurvivesManagerKill(t *testing.T) {
 	}
 	if row.State != store.StateRunning {
 		t.Fatalf("after adoption the session is %q, want running", row.State)
+	}
+}
+
+// TestSignalKilledPaneIsReported: a pane killed by a signal has an *empty*
+// #{pane_dead_status} and a #{pane_dead_signal} instead. Unquoted, the empty
+// expansion would leave the hook's --status without a value and the subcommand
+// would exit on its own arguments - so a crash, the one death the fast
+// detector exists for, would only ever be noticed by the poll.
+func TestSignalKilledPaneIsReported(t *testing.T) {
+	exits := make(chan int, 4)
+	l := newLab(t, func(c *Config) {
+		c.OnExit = func(id string, status int) { exits <- status }
+	})
+	row := l.create(shellSpec(t.TempDir(), "/bin/sh", "-c", "kill -9 $$"))
+	select {
+	case status := <-exits:
+		if status != 128+9 {
+			t.Fatalf("the hook reported %d, want %d for a SIGKILL", status, 128+9)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no pane-died hook for a signal death; only the poll would have caught it")
+	}
+	got, err := l.store.GetSession(row.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != store.StateExited || got.ExitStatus != 128+9 {
+		t.Fatalf("the row is %q with status %d", got.State, got.ExitStatus)
+	}
+	// And the poll agrees, rather than overwriting it with "unknown".
+	l.Poll(context.Background())
+	if got, _ = l.store.GetSession(row.ID); got.ExitStatus != 128+9 {
+		t.Fatalf("the poll changed the status to %d", got.ExitStatus)
+	}
+}
+
+// TestAttachToMissingSessionFailsAtOnce: tmux answers "can't find session"
+// immediately, and retrying that for five seconds would make every attach to a
+// session that has just died cost five seconds.
+func TestAttachToMissingSessionFailsAtOnce(t *testing.T) {
+	l := newLab(t)
+	row := l.create(shellSpec(t.TempDir()))
+	ctx := context.Background()
+	if _, err := l.tmux.Run(ctx, "kill-session", "-t", row.TmuxName); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if _, err := l.Attach(ctx, row.ID, "", 80, 24); err == nil {
+		t.Fatal("attaching to a session that is gone should fail")
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("the failed attach took %s; it should be immediate", took)
+	}
+}
+
+// TestViewerEndingHandsTheSizeOn: a client detached from outside is gone as a
+// viewer straight away. Section A.7 passes ownership when the connection is
+// lost, and a pseudo terminal that ended is as lost as a socket that dropped -
+// waiting for somebody to call Close would pin a laptop's window at a phone's
+// size.
+func TestViewerEndingHandsTheSizeOn(t *testing.T) {
+	l := newLab(t)
+	row := l.create(shellSpec(t.TempDir()))
+	l.attach(row.ID, 100, 30)
+	phone := l.attach(row.ID, 60, 20)
+	size := func() string {
+		return l.tmuxOut("display-message", "-p", "-t", row.TmuxName, "-F", "#{window_width}x#{window_height}")
+	}
+	if got := size(); got != "60x20" {
+		t.Fatalf("the phone should own the size, window is %s", got)
+	}
+
+	// Somebody else detaches that client: the viewer never hears about it
+	// except as its pseudo terminal ending.
+	l.tmuxOut("detach-client", "-t", phone.TTY())
+	select {
+	case <-phone.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the viewer did not notice its client going away")
+	}
+	waitFor(t, 3*time.Second, "the size to be handed on", func() bool { return size() == "100x30" })
+	if n := len(l.Viewers(row.ID)); n != 1 {
+		t.Fatalf("%d viewers are still registered, want 1", n)
+	}
+	if _, err := phone.Write([]byte("x")); err == nil {
+		t.Fatal("writing to a viewer whose terminal ended should fail")
+	}
+	if err := phone.Close(); err != nil {
+		t.Fatalf("Close after the terminal ended: %v", err)
+	}
+}
+
+// TestStaleHookIsCorrectedByThePoll: the poll is the authority. A pane-died
+// that arrives after the session was relaunched under the same name must not
+// leave a running terminal behind the exit overlay.
+func TestStaleHookIsCorrectedByThePoll(t *testing.T) {
+	l := newLab(t)
+	row := l.create(shellSpec(t.TempDir()))
+
+	// A hook naming a session whose pane is alive is ignored outright.
+	l.HandleHook(Hook{Event: HookPaneDied, Session: row.TmuxName, Status: "1"})
+	if got, _ := l.store.GetSession(row.ID); got.State != store.StateRunning {
+		t.Fatalf("a hook for a live pane moved the row to %q", got.State)
+	}
+
+	// And if a row is exited while its pane is alive for any other reason, the
+	// poll puts it back.
+	if err := l.store.SetSessionState(row.ID, store.StateExited, 1, ""); err != nil {
+		t.Fatal(err)
+	}
+	l.Poll(context.Background())
+	got, err := l.store.GetSession(row.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != store.StateRunning {
+		t.Fatalf("the poll left a live session at %q", got.State)
+	}
+}
+
+// TestRelaunchAfterExit: restarting from the exit overlay is the resume path
+// with the state forced, and after an exit the tmux session is still there
+// with a dead pane in it. Without clearing that husk, new-session is refused
+// as a duplicate and pressing Restart produces a failed session.
+func TestRelaunchAfterExit(t *testing.T) {
+	l := newLab(t)
+	spec := shellSpec(t.TempDir(), "/bin/sh", "-c", "exit 3")
+	row := l.create(spec)
+	waitFor(t, 10*time.Second, "the program to exit", func() bool {
+		got, err := l.store.GetSession(row.ID)
+		return err == nil && got.State == store.StateExited
+	})
+	if err := l.store.SetSessionState(row.ID, store.StateNeedsResume, -1, ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err := l.store.GetSession(row.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := shellSpec(spec.Workdir, "/bin/sh")
+	if err := l.Relaunch(context.Background(), got, live.Plan); err != nil {
+		t.Fatalf("Relaunch over a session with a dead pane: %v", err)
+	}
+	if got, _ = l.store.GetSession(row.ID); got.State != store.StateRunning {
+		t.Fatalf("after Relaunch the session is %q: %s", got.State, got.FailReason)
+	}
+	v := l.attach(row.ID, 100, 30)
+	if _, err := v.Write([]byte("echo alive-again\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitForRing(t, v, 5*time.Second, "alive-again")
+
+	// A session that is still running is never replaced, even here.
+	if err := l.Relaunch(context.Background(), got, live.Plan); err == nil {
+		t.Fatal("Relaunch over a live pane should be refused")
+	}
+}
+
+// TestJournalRotatesUnderTmux is the rotation test with the real pipe-pane
+// behind it: a session that writes more than the limit while it runs, rotated
+// by the sink tmux started, with the pipe still open afterwards.
+func TestJournalRotatesUnderTmux(t *testing.T) {
+	l := newLab(t, func(c *Config) { c.JournalMaxBytes = 1 << 20; c.JournalKeep = 1 })
+	const line = "0123456789abcdefghijklmnopqrstuvwxyz"
+	row := l.create(shellSpec(t.TempDir(), "/bin/sh", "-c",
+		"yes "+line+" | head -c 3500000; printf '\\nEND-OF-BURST\\n'; sleep 60"))
+	journal := JournalPath(l.dataDir, row.ID)
+	waitFor(t, 60*time.Second, "the burst to reach the journal", func() bool {
+		data, err := TailJournal(l.dataDir, row.ID, 4096)
+		return err == nil && strings.Contains(string(data), "END-OF-BURST")
+	})
+
+	older, err := os.Stat(rotatedPath(journal, 1))
+	if err != nil {
+		t.Fatalf("nothing was rotated: %v", err)
+	}
+	current, err := os.Stat(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if older.Size() != 1<<20 || current.Size() > 1<<20 {
+		t.Fatalf("sizes are wrong: current %d, rotated %d", current.Size(), older.Size())
+	}
+	if _, err := os.Stat(rotatedPath(journal, 2)); err == nil {
+		t.Fatal("keep=1 should leave exactly one older file")
+	}
+	if got := l.tmuxOut("display-message", "-p", "-t", row.TmuxName, "-F", "#{pane_pipe}"); got != "1" {
+		t.Fatalf("pane_pipe is %q after a rotation; the sink was lost", got)
+	}
+
+	// Nothing is lost across the boundary: every line between the two files is
+	// whole.
+	oldBytes, err := os.ReadFile(rotatedPath(journal, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	newBytes, err := os.ReadFile(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	whole := strings.ReplaceAll(string(append(oldBytes, newBytes...)), "\r\n", "\n")
+	whole = whole[:strings.Index(whole, "END-OF-BURST")]
+	lines := strings.Split(strings.TrimSpace(whole), "\n")
+	for i, got := range lines[1 : len(lines)-1] {
+		if got != line {
+			t.Fatalf("line %d is broken across the rotation: %q", i, got)
+		}
+	}
+}
+
+// TestAttachDetachLeavesNothingBehind: a phone on a bad connection attaches
+// and detaches all day. Two hundred cycles must leave no goroutine, no file
+// descriptor and no tmux client behind.
+func TestAttachDetachLeavesNothingBehind(t *testing.T) {
+	l := newLab(t)
+	row := l.create(shellSpec(t.TempDir()))
+	ctx := context.Background()
+
+	openFDs := func() int {
+		entries, err := os.ReadDir("/proc/self/fd")
+		if err != nil {
+			t.Skip("this system does not expose /proc/self/fd")
+		}
+		return len(entries)
+	}
+	// One cycle first, so that everything lazily created exists before the
+	// numbers are taken.
+	v, err := l.Attach(ctx, row.ID, "warmup", 80, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Close(); err != nil {
+		t.Fatal(err)
+	}
+	goroutines, fds := runtime.NumGoroutine(), openFDs()
+
+	for i := 0; i < 200; i++ {
+		v, err := l.Attach(ctx, row.ID, "phone", 80, 24)
+		if err != nil {
+			t.Fatalf("cycle %d: %v", i, err)
+		}
+		if err := v.Close(); err != nil {
+			t.Fatalf("cycle %d: %v", i, err)
+		}
+	}
+	if n := len(l.Viewers(row.ID)); n != 0 {
+		t.Fatalf("%d viewers are still registered", n)
+	}
+	if clients := l.tmuxOut("list-clients", "-F", "#{client_tty}"); clients != "" {
+		t.Fatalf("tmux still has clients: %q", clients)
+	}
+	if now := runtime.NumGoroutine(); now > goroutines+4 {
+		t.Fatalf("goroutines went from %d to %d", goroutines, now)
+	}
+	if now := openFDs(); now > fds+4 {
+		t.Fatalf("file descriptors went from %d to %d", fds, now)
+	}
+}
+
+// TestConcurrentViewers: eight browsers attaching, resizing, typing and
+// leaving at once. The size bookkeeping and the viewer list are shared state,
+// and this is what says so under -race.
+func TestConcurrentViewers(t *testing.T) {
+	l := newLab(t)
+	row := l.create(shellSpec(t.TempDir()))
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for k := 0; k < 5; k++ {
+				v, err := l.Attach(ctx, row.ID, "viewer-"+strconv.Itoa(i), 80+i, 24+k)
+				if err != nil {
+					t.Errorf("attach: %v", err)
+					return
+				}
+				_ = v.Resize(ctx, 70+i, 20+k)
+				_, _ = v.Write([]byte("echo x\n"))
+				if err := v.Close(); err != nil {
+					t.Errorf("close: %v", err)
+					return
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+	if n := len(l.Viewers(row.ID)); n != 0 {
+		t.Fatalf("%d viewers left registered", n)
 	}
 }

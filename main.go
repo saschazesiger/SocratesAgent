@@ -157,13 +157,16 @@ func tmuxHook(args []string) {
 	event := fs.String("event", "", "the tmux hook that fired")
 	session := fs.String("session", "", "the tmux session it fired for")
 	status := fs.String("status", "", "the exit status, for pane-died")
+	signal := fs.String("signal", "", "the signal that killed the pane, when it was killed")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
 	if *sock == "" || *event == "" {
 		os.Exit(2)
 	}
-	_ = termux.SendHook(*sock, termux.Hook{Event: *event, Session: *session, Status: *status})
+	_ = termux.SendHook(*sock, termux.Hook{
+		Event: *event, Session: *session, Status: *status, Signal: *signal,
+	})
 }
 
 func envOr(key, fallback string) string {

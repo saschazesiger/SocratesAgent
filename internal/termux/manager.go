@@ -153,6 +153,7 @@ func New(st *store.Store, cfg Config) (*Manager, error) {
 		Supervisor: cfg.Supervisor,
 		Logf:       cfg.Logf,
 	}
+	m.tmux.Env = m.serverEnv()
 	return m, nil
 }
 
@@ -320,11 +321,21 @@ func cliStateFor(plan harnesses.LaunchPlan) string {
 	}
 }
 
-// Relaunch starts a session's program again in the tmux session it already
-// has a row for - the reboot case, where the row survived and the tmux server
-// did not.
+// Relaunch starts a session's program again under the name its row already
+// carries: the reboot case, where the row survived and the tmux server did
+// not, and the restart-from-the-exit-overlay case, where the tmux session is
+// still there with a dead pane in it.
+//
+// The second case is why this may kill a tmux session. It does not contradict
+// the rule that Socrates never kills one: the pane is already dead, there is
+// no running work to lose, and the user asked for this by pressing Restart. A
+// session whose pane is still alive is refused instead.
 func (m *Manager) Relaunch(ctx context.Context, row *store.Session, plan harnesses.LaunchPlan) error {
 	if err := m.unavailable; err != nil {
+		return err
+	}
+	if err := m.clearDeadSession(ctx, row.TmuxName); err != nil {
+		_ = m.st.SetSessionState(row.ID, store.StateFailed, -1, Stderr(err))
 		return err
 	}
 	if err := m.launch(ctx, row, plan); err != nil {
@@ -332,6 +343,31 @@ func (m *Manager) Relaunch(ctx context.Context, row *store.Session, plan harness
 		return err
 	}
 	return m.st.SetSessionState(row.ID, store.StateRunning, -1, "")
+}
+
+// clearDeadSession removes the husk a previous run left behind: with
+// remain-on-exit on, an exited program leaves its tmux session in place with a
+// dead pane, and `new-session` under the same name would be refused as a
+// duplicate.
+func (m *Manager) clearDeadSession(ctx context.Context, tmuxName string) error {
+	if tmuxName == "" {
+		return nil
+	}
+	out, err := m.tmux.Run(ctx, "display-message", "-p", "-t", tmuxName, "-F", "#{pane_dead}")
+	if err != nil {
+		if noSuchTarget(err) || serverGone(err) {
+			return nil // Nothing to clear, which is the reboot case.
+		}
+		return err
+	}
+	if strings.TrimSpace(out) != "1" {
+		return fmt.Errorf("the tmux session %s is still running; it will not be replaced", tmuxName)
+	}
+	_, err = m.tmux.Run(ctx, "kill-session", "-t", tmuxName)
+	if err != nil && !noSuchTarget(err) && !serverGone(err) {
+		return err
+	}
+	return nil
 }
 
 // launch does the tmux half of creating a session: the files, the session
@@ -397,15 +433,18 @@ func (m *Manager) writeSessionFiles(row *store.Session, plan harnesses.LaunchPla
 //
 // The server is started on its own rather than by the first session, so that
 // the hooks are in place before any pane can die - a program that exits at
-// once would otherwise die before anything was listening for it. This is also
-// the only command that passes -f, which is what keeps the user's own
-// tmux.conf out of our server.
+// once would otherwise die before anything was listening for it. That is also
+// why the fallback configuration has to keep exit-empty off: a server with no
+// session and that option on is gone before the hooks are set.
 func (m *Manager) ensureServer(ctx context.Context) error {
-	if m.tmux.Running(ctx) {
+	running, err := m.tmux.Running(ctx)
+	if err != nil {
+		return err
+	}
+	if running {
 		m.ensureHooks(ctx)
 		return nil
 	}
-	m.setServerEnv()
 	if _, err := m.tmux.RunStart(ctx, "start-server"); err != nil {
 		return err
 	}
@@ -419,7 +458,7 @@ func (m *Manager) ensureServer(ctx context.Context) error {
 // newSession runs the create, with the one guard that keeps a bad generated
 // option from making sessions impossible for ever: if the server refuses to
 // start, or dies as the session is made, the configuration is logged verbatim,
-// replaced with a minimal one and tried once more.
+// replaced with a minimal one, and the whole sequence is tried once more.
 func (m *Manager) newSession(ctx context.Context, row *store.Session, plan harnesses.LaunchPlan) error {
 	args := []string{"new-session", "-d", "-s", row.TmuxName,
 		"-x", strconv.Itoa(row.Cols), "-y", strconv.Itoa(row.Rows), "-c", plan.Cwd}
@@ -429,14 +468,15 @@ func (m *Manager) newSession(ctx context.Context, row *store.Session, plan harne
 	args = append(args, "--")
 	args = append(args, plan.Argv...)
 
-	if err := m.ensureServer(ctx); err != nil && !m.serverRefusedToStart(err) {
+	attempt := func() error {
+		if err := m.ensureServer(ctx); err != nil {
+			return err
+		}
+		_, err := m.tmux.RunConf(ctx, args...)
 		return err
 	}
-	_, err := m.tmux.RunStart(ctx, args...)
-	if err == nil {
-		return nil
-	}
-	if !m.serverRefusedToStart(err) {
+	err := attempt()
+	if err == nil || !m.serverRefusedToStart(err) {
 		return err
 	}
 	if conf, readErr := os.ReadFile(m.tmux.Conf); readErr == nil {
@@ -446,10 +486,7 @@ func (m *Manager) newSession(ctx context.Context, row *store.Session, plan harne
 		return err
 	}
 	m.logf("retrying with a minimal tmux configuration")
-	if serverErr := m.ensureServer(ctx); serverErr != nil {
-		return err
-	}
-	if _, retryErr := m.tmux.RunStart(ctx, args...); retryErr != nil {
+	if retryErr := attempt(); retryErr != nil {
 		return retryErr
 	}
 	return nil
@@ -564,7 +601,7 @@ func (m *Manager) Attach(ctx context.Context, sessionID, viewerID string, cols, 
 	}
 	go v.pump(&Responder{Foreground: DefaultForeground, Background: DefaultBackground, W: master})
 
-	if err := m.waitForClient(ctx, row.TmuxName, tty); err != nil {
+	if err := m.waitForClient(ctx, v, row.TmuxName, tty); err != nil {
 		_ = v.Close()
 		return nil, err
 	}
@@ -578,19 +615,27 @@ func (m *Manager) Attach(ctx context.Context, sessionID, viewerID string, cols, 
 
 // waitForClient waits until tmux agrees that our pseudo terminal is one of its
 // clients, which is also how we learn that the attach worked at all.
-func (m *Manager) waitForClient(ctx context.Context, tmuxName, tty string) error {
+//
+// It gives up at once on the two answers that will not change: a session that
+// is not there, and a client that has already exited. Retrying either for five
+// seconds would make every attach to a session that died a moment ago cost
+// five seconds.
+func (m *Manager) waitForClient(ctx context.Context, v *Viewer, tmuxName, tty string) error {
 	deadline := time.Now().Add(5 * time.Second)
 	var last error
 	for {
 		out, err := m.tmux.Run(ctx, "list-clients", "-t", tmuxName, "-F", "#{client_tty}")
-		if err == nil {
+		switch {
+		case err == nil:
 			for _, line := range Lines(out) {
 				if line == tty {
 					return nil
 				}
 			}
 			last = fmt.Errorf("tmux did not report a client on %s", tty)
-		} else {
+		case noSuchTarget(err), serverGone(err):
+			return err
+		default:
 			last = err
 		}
 		if time.Now().After(deadline) {
@@ -599,6 +644,12 @@ func (m *Manager) waitForClient(ctx context.Context, tmuxName, tty string) error
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-v.done:
+			// The attach itself ended: there is nothing to wait for.
+			if err := v.Err(); err != nil {
+				return err
+			}
+			return last
 		case <-time.After(25 * time.Millisecond):
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestConfIsApplied reads every generated option back out of a running server
@@ -109,7 +110,10 @@ func repoRoot(t *testing.T) string {
 // actually kills tmux, rather than with a made-up syntax error: a bad
 // generated option can never permanently stop sessions from being created.
 func TestBadConfFallsBack(t *testing.T) {
-	l := newLab(t)
+	exits := make(chan int, 4)
+	l := newLab(t, func(c *Config) {
+		c.OnExit = func(id string, status int) { exits <- status }
+	})
 	poison := "# poisoned by the test\nset -g window-size manual\n"
 	if err := os.WriteFile(l.ConfPath(), []byte(poison), 0o600); err != nil {
 		t.Fatal(err)
@@ -128,6 +132,75 @@ func TestBadConfFallsBack(t *testing.T) {
 	}
 	if l.tmuxOut("show", "-gv", "window-style") != "fg=#17181b,bg=#ffffff" {
 		t.Fatal("the fallback configuration must keep the white background")
+	}
+
+	// The fallback must keep the server alive when the last session goes.
+	// Socrates starts the server before the first session precisely so that
+	// the hooks exist before a pane can die, and a server with no session and
+	// exit-empty on is gone before they are set.
+	if got := l.tmuxOut("show", "-sv", "exit-empty"); got != "off" {
+		t.Fatalf("the fallback leaves exit-empty %q; the server dies with its last session", got)
+	}
+	// pane-died is listed by show-hooks -gw and session-closed by -g: they
+	// are set globally with the same command but live in different option
+	// sets, which is one more reason not to try to scope them per session.
+	if hooks := l.tmuxOut("show-hooks", "-gw"); !strings.Contains(hooks, "pane-died") {
+		t.Fatalf("the fallback lost the global pane-died hook:\n%s", hooks)
+	}
+	if hooks := l.tmuxOut("show-hooks", "-g"); !strings.Contains(hooks, "session-closed") {
+		t.Fatalf("the fallback lost the global session-closed hook:\n%s", hooks)
+	}
+
+	// And they work: nothing polls in this test, so the status can only have
+	// come from the hook.
+	l.create(shellSpec(dir, "/bin/sh", "-c", "exit 4"))
+	select {
+	case status := <-exits:
+		if status != 4 {
+			t.Fatalf("the hook reported %d, want 4", status)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no pane-died hook under the fallback configuration")
+	}
+}
+
+// TestConfFallbackWhenTheServerItselfIsRefused covers the other half of the
+// guard. The poisoned option that kills tmux does it on new-session; a
+// configuration the server will not come up with at all has to reach the
+// fallback too, and it only does if the retry starts from the server rather
+// than from the session.
+func TestConfFallbackWhenTheServerItselfIsRefused(t *testing.T) {
+	real := requireTmux(t)
+	dir := t.TempDir()
+	fail := filepath.Join(dir, "fail")
+	wrapper := filepath.Join(dir, "tmux")
+	script := "#!/bin/sh\n" +
+		"for a in \"$@\"; do\n" +
+		"  if [ \"$a\" = start-server ] && [ -f " + fail + " ]; then\n" +
+		"    rm -f " + fail + "\n" +
+		"    echo 'server exited unexpectedly' >&2\n" +
+		"    exit 1\n" +
+		"  fi\n" +
+		"done\n" +
+		"exec " + real + " \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fail, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l := newLab(t, func(c *Config) { c.TmuxBin = wrapper })
+
+	row := l.create(shellSpec(t.TempDir()))
+	if row.State != "running" {
+		t.Fatalf("the session is %q with %q; the guard should have retried", row.State, row.FailReason)
+	}
+	conf, err := os.ReadFile(l.ConfPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(conf), "was refused") {
+		t.Fatalf("the fallback configuration was never written:\n%s", conf)
 	}
 }
 

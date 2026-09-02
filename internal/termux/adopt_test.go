@@ -5,6 +5,7 @@ package termux
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -84,7 +85,7 @@ func TestOrphanSessionIsAdopted(t *testing.T) {
 	l.create(shellSpec(dir))
 	orphanID := NewID()
 	ctx := context.Background()
-	if _, err := l.tmux.RunStart(ctx, "new-session", "-d", "-s", TmuxName(orphanID), "-c", dir, "--", "/bin/sh"); err != nil {
+	if _, err := l.tmux.RunConf(ctx, "new-session", "-d", "-s", TmuxName(orphanID), "-c", dir, "--", "/bin/sh"); err != nil {
 		t.Fatal(err)
 	}
 	if err := l.Adopt(ctx); err != nil {
@@ -133,7 +134,8 @@ func TestAdoptDetectsReboot(t *testing.T) {
 	// directory, which survives a reboot - so its absence is not what a
 	// reboot looks like. What it looks like is a server that will not answer.
 	waitFor(t, 5*time.Second, "the tmux server to be gone", func() bool {
-		return !l.tmux.Running(ctx)
+		running, err := l.tmux.Running(ctx)
+		return err == nil && !running
 	})
 
 	next := l.newAdopter()
@@ -252,5 +254,97 @@ func TestDeleteKillsTheSessionAndKeepsTheDirectory(t *testing.T) {
 	// The working directory is not ours to throw away.
 	if _, err := statPath(dir); err != nil {
 		t.Fatalf("the working directory was deleted: %v", err)
+	}
+}
+
+// TestEmptyServerIsNotAReboot: with exit-empty off, a server that has lost its
+// last session stays up - and on it `list-panes -a` fails with "no current
+// target", because it is a command that needs one. Taking that for a failure
+// would make Adopt error out on a healthy server and leave the poll one tick
+// from declaring a reboot for as long as nobody had a session open.
+func TestEmptyServerIsNotAReboot(t *testing.T) {
+	l := newLab(t)
+	ctx := context.Background()
+	row := l.create(shellSpec(t.TempDir()))
+	if err := l.Delete(ctx, row.ID); err != nil {
+		t.Fatal(err)
+	}
+	running, err := l.tmux.Running(ctx)
+	if err != nil || !running {
+		t.Fatalf("the server should still be up with exit-empty off: %v, %v", running, err)
+	}
+	if err := l.Adopt(ctx); err != nil {
+		t.Fatalf("Adopt on a live, empty server returned an error: %v", err)
+	}
+	l.Poll(ctx)
+	l.Poll(ctx)
+	l.mu.Lock()
+	fails := l.pollFails
+	l.mu.Unlock()
+	if fails != 0 {
+		t.Fatalf("an empty server counted %d poll failures", fails)
+	}
+
+	// And a row that is mid-create while the server is empty stays that way:
+	// the window between writing the row and running new-session must not be
+	// a window in which the poll declares a reboot.
+	starting := &store.Session{
+		ID: NewID(), Harness: "shell", Workdir: l.dataDir, WorkdirMode: store.WorkdirCustom,
+		State: store.StateStarting,
+	}
+	starting.TmuxName = TmuxName(starting.ID)
+	if err := l.store.CreateSession(starting); err != nil {
+		t.Fatal(err)
+	}
+	l.Poll(ctx)
+	got, err := l.store.GetSession(starting.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != store.StateStarting {
+		t.Fatalf("one poll on an empty server moved a starting row to %q", got.State)
+	}
+}
+
+// TestPollSurvivesATransientFailure drives the whole poll through a tmux that
+// fails once, rather than the counter underneath it: one bad answer must not
+// flip every session to needs_resume.
+func TestPollSurvivesATransientFailure(t *testing.T) {
+	real := requireTmux(t)
+	dir := t.TempDir()
+	fail := filepath.Join(dir, "fail")
+	wrapper := filepath.Join(dir, "tmux")
+	script := "#!/bin/sh\n" +
+		"for a in \"$@\"; do\n" +
+		"  if [ \"$a\" = list-panes ] && [ -f " + fail + " ]; then\n" +
+		"    rm -f " + fail + "\n" +
+		"    echo 'the server is busy' >&2\n" +
+		"    exit 1\n" +
+		"  fi\n" +
+		"done\n" +
+		"exec " + real + " \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	l := newLab(t, func(c *Config) { c.TmuxBin = wrapper })
+	row := l.create(shellSpec(t.TempDir()))
+	ctx := context.Background()
+
+	if err := os.WriteFile(fail, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l.Poll(ctx)
+	if got, _ := l.store.GetSession(row.ID); got.State != store.StateRunning {
+		t.Fatalf("one failed poll moved the session to %q", got.State)
+	}
+	l.Poll(ctx) // The good answer clears the count.
+	l.mu.Lock()
+	fails := l.pollFails
+	l.mu.Unlock()
+	if fails != 0 {
+		t.Fatalf("a good poll left %d failures counted", fails)
+	}
+	if got, _ := l.store.GetSession(row.ID); got.State != store.StateRunning {
+		t.Fatalf("the session ended up %q", got.State)
 	}
 }

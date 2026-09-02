@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
@@ -19,6 +20,9 @@ type Hook struct {
 	Event   string `json:"event"`
 	Session string `json:"session"`
 	Status  string `json:"status"`
+	// Signal is set instead of Status when the program was killed rather than
+	// returning.
+	Signal string `json:"signal,omitempty"`
 }
 
 // The two events Socrates asks tmux for.
@@ -46,47 +50,68 @@ func HookSocketPath(dataDir string) string { return filepath.Join(dataDir, "hook
 // pane-died. Both hooks are set globally and once. A session scoped
 // session-closed hook never fires at all, and `set-hook -g -t <sess>` sets the
 // global one while ignoring the -t, so each call would replace the last.
+//
+// Every expansion is in double quotes inside the single quoted body, which
+// survives to the shell. A pane killed by a signal has an *empty*
+// #{pane_dead_status} and a #{pane_dead_signal} instead, and an unquoted empty
+// expansion would leave --status with no value, so the hook would exit on its
+// own arguments exactly when a program crashed.
 const (
 	paneDiedHook = `run-shell -b '"$` + EnvSocratesBin + `" tmux-hook --sock "$` + EnvHookSocket +
-		`" --event pane-died --session #{session_name} --status #{pane_dead_status}'`
+		`" --event pane-died --session "#{session_name}" --status "#{pane_dead_status}"` +
+		` --signal "#{pane_dead_signal}"'`
 	sessionClosedHook = `run-shell -b '"$` + EnvSocratesBin + `" tmux-hook --sock "$` + EnvHookSocket +
-		`" --event session-closed --session #{hook_session_name}'`
+		`" --event session-closed --session "#{hook_session_name}"'`
 )
 
-// setServerEnv puts the two paths the hooks read into the environment of the
-// tmux server we are about to start, or of the one already running.
-func (m *Manager) setServerEnv() {
-	_ = os.Setenv(EnvSocratesBin, m.cfg.SocratesBin)
-	_ = os.Setenv(EnvHookSocket, HookSocketPath(m.cfg.DataDir))
+// serverEnv is what the tmux server is started with. It reaches the hooks
+// because run-shell children inherit the server's environment; it is set on
+// the tmux commands rather than on the Socrates process, so that no other
+// child of ours carries it.
+func (m *Manager) serverEnv() []string {
+	return []string{
+		EnvSocratesBin + "=" + m.cfg.SocratesBin,
+		EnvHookSocket + "=" + HookSocketPath(m.cfg.DataDir),
+	}
 }
 
 // refreshServerEnv updates a running server, so that an upgrade that moved the
 // binary does not leave the hooks pointing at a path that is gone.
 func (m *Manager) refreshServerEnv(ctx context.Context) {
-	m.setServerEnv()
 	_, _ = m.tmux.Run(ctx, "set-environment", "-g", EnvSocratesBin, m.cfg.SocratesBin)
 	_, _ = m.tmux.Run(ctx, "set-environment", "-g", EnvHookSocket, HookSocketPath(m.cfg.DataDir))
 }
 
-// ensureHooks sets the two global hooks once per server.
+// ensureHooks sets the two global hooks once per server. "Once" means once
+// they are actually set: a server that died between being started and being
+// configured must not leave us believing it has hooks.
 func (m *Manager) ensureHooks(ctx context.Context) {
 	m.mu.Lock()
-	if m.hooksSet {
-		m.mu.Unlock()
+	done := m.hooksSet
+	m.mu.Unlock()
+	if done {
 		return
 	}
+	if !m.setHooks(ctx) {
+		return
+	}
+	m.mu.Lock()
 	m.hooksSet = true
 	m.mu.Unlock()
-	m.setHooks(ctx)
 }
 
-func (m *Manager) setHooks(ctx context.Context) {
+// setHooks reports whether both hooks are now in place.
+func (m *Manager) setHooks(ctx context.Context) bool {
+	ok := true
 	if _, err := m.tmux.Run(ctx, "set-hook", "-g", HookPaneDied, paneDiedHook); err != nil {
 		m.logf("could not set the tmux pane-died hook: %v", err)
+		ok = false
 	}
 	if _, err := m.tmux.Run(ctx, "set-hook", "-g", HookSessionClosed, sessionClosedHook); err != nil {
 		m.logf("could not set the tmux session-closed hook: %v", err)
+		ok = false
 	}
+	return ok
 }
 
 // listenHooks opens the socket the tmux-hook subcommand writes to. The socket
@@ -161,11 +186,13 @@ func (m *Manager) HandleHook(h Hook) {
 	}
 	switch h.Event {
 	case HookPaneDied:
-		status, err := strconv.Atoi(strings.TrimSpace(h.Status))
-		if err != nil {
-			status = -1
+		if !m.paneIsDead(row.TmuxName) {
+			// A hook that arrives after the session was relaunched under the
+			// same name would otherwise put a running terminal into the exit
+			// overlay. The pane is the authority.
+			return
 		}
-		m.markExited(row, status)
+		m.markExited(row, exitStatus(h.Status, h.Signal))
 	case HookSessionClosed:
 		if row.State == store.StateRunning || row.State == store.StateStarting {
 			// The tmux session is gone but the row is not: the program can be
@@ -173,6 +200,31 @@ func (m *Manager) HandleHook(h Hook) {
 			_ = m.st.SetSessionState(id, store.StateNeedsResume, row.ExitStatus, "")
 		}
 	}
+}
+
+// exitStatus turns what tmux reported into one number. A pane killed by a
+// signal has no status at all and a signal number instead, which is rendered
+// the way a shell renders it.
+func exitStatus(status, signal string) int {
+	if n, err := strconv.Atoi(strings.TrimSpace(status)); err == nil {
+		return n
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(signal)); err == nil && n > 0 {
+		return 128 + n
+	}
+	return -1
+}
+
+// paneIsDead asks tmux, and answers yes when there is no pane at all: a
+// session that has gone entirely is not a session that is still running.
+func (m *Manager) paneIsDead(tmuxName string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := m.tmux.Run(ctx, "display-message", "-p", "-t", tmuxName, "-F", "#{pane_dead}")
+	if err != nil {
+		return noSuchTarget(err) || serverGone(err)
+	}
+	return strings.TrimSpace(out) == "1"
 }
 
 func (m *Manager) markExited(row *store.Session, status int) {

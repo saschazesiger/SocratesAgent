@@ -74,10 +74,14 @@ type Viewer struct {
 	tty  string
 	ring *Ring
 
-	mu     sync.Mutex
-	cols   int
-	rows   int
+	mu   sync.Mutex
+	cols int
+	rows int
+	// closed is set by Close, ended by the pseudo terminal reaching its end.
+	// They are different: a client that tmux detached from outside has ended
+	// but still has a process to wait for and a file to close.
 	closed bool
+	ended  bool
 
 	done chan struct{}
 	err  error
@@ -110,9 +114,9 @@ func (v *Viewer) Err() error {
 // Write sends keystrokes to the pane.
 func (v *Viewer) Write(p []byte) (int, error) {
 	v.mu.Lock()
-	closed := v.closed
+	gone := v.closed || v.ended
 	v.mu.Unlock()
-	if closed {
+	if gone {
 		return 0, ErrClosed
 	}
 	return v.master.Write(p)
@@ -127,7 +131,7 @@ func (v *Viewer) Resize(ctx context.Context, cols, rows int) error {
 		return nil
 	}
 	v.mu.Lock()
-	if v.closed {
+	if v.closed || v.ended {
 		v.mu.Unlock()
 		return ErrClosed
 	}
@@ -183,6 +187,11 @@ func (v *Viewer) Close() error {
 
 // pump moves the pane's bytes into the ring, answering on the way the colour
 // questions tmux asks a client when it attaches.
+//
+// When the pseudo terminal ends - the ordinary case being that somebody
+// detached this client from outside - the viewer stops being a viewer at once:
+// it hands the window size on rather than holding a laptop's window at a phone
+// size until whoever owns the socket gets round to closing it.
 func (v *Viewer) pump(resp *Responder) {
 	defer close(v.done)
 	buf := make([]byte, 32*1024)
@@ -196,7 +205,12 @@ func (v *Viewer) pump(resp *Responder) {
 			if !errors.Is(err, io.EOF) && !v.closed {
 				v.err = err
 			}
+			wasClosed := v.closed
+			v.ended = true
 			v.mu.Unlock()
+			if !wasClosed {
+				v.m.forget(v)
+			}
 			return
 		}
 	}

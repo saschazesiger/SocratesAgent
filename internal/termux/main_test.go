@@ -57,10 +57,13 @@ func runHookHelper(args []string) int {
 	event := fs.String("event", "", "")
 	session := fs.String("session", "", "")
 	status := fs.String("status", "", "")
+	signal := fs.String("signal", "", "")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if err := SendHook(*sock, Hook{Event: *event, Session: *session, Status: *status}); err != nil {
+	if err := SendHook(*sock, Hook{
+		Event: *event, Session: *session, Status: *status, Signal: *signal,
+	}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}

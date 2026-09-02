@@ -3,7 +3,6 @@ package termux
 import (
 	"context"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -19,18 +18,25 @@ type pane struct {
 	currentPath string
 }
 
-const paneFormat = "#{session_name}|#{pane_dead}|#{pane_dead_status}|#{pane_pipe}|#{pane_current_path}"
+// The current path comes last because it is the one field that could contain
+// the separator; everything after it would be lost, and there is nothing
+// after it.
+const paneFormat = "#{session_name}|#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}|" +
+	"#{pane_pipe}|#{pane_current_path}"
 
 func parsePanes(out string) map[string]pane {
 	panes := map[string]pane{}
 	for _, line := range Lines(out) {
-		f := strings.SplitN(line, "|", 5)
-		if len(f) < 5 {
+		f := strings.SplitN(line, "|", 6)
+		if len(f) < 6 {
 			continue
 		}
-		p := pane{session: f[0], dead: f[1] == "1", deadStatus: -1, piped: f[3] == "1", currentPath: f[4]}
-		if n, err := strconv.Atoi(strings.TrimSpace(f[2])); err == nil {
-			p.deadStatus = n
+		p := pane{
+			session:     f[0],
+			dead:        f[1] == "1",
+			deadStatus:  exitStatus(f[2], f[3]),
+			piped:       f[4] == "1",
+			currentPath: f[5],
 		}
 		// One session, one window, one pane: a later line for the same session
 		// would only be a pane we did not make.
@@ -39,6 +45,24 @@ func parsePanes(out string) map[string]pane {
 		}
 	}
 	return panes
+}
+
+// listPanes asks the server for every pane it has.
+//
+// A live server that has lost its last session refuses `list-panes -a` with
+// "no current target" - it is a command that needs one. That is an empty
+// answer, not a failure: taking it for one would make Adopt error out on a
+// perfectly healthy server, and would leave the poll one tick away from
+// declaring a reboot for as long as nobody had a session open.
+func (m *Manager) listPanes(ctx context.Context) (map[string]pane, error) {
+	out, err := m.tmux.Run(ctx, "list-panes", "-a", "-F", paneFormat)
+	if err != nil {
+		if noSuchTarget(err) {
+			return map[string]pane{}, nil
+		}
+		return nil, err
+	}
+	return parsePanes(out), nil
 }
 
 // Adopt reconciles what tmux has with what the database says, and is run
@@ -56,7 +80,14 @@ func (m *Manager) Adopt(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if !m.tmux.Running(ctx) {
+	running, err := m.tmux.Running(ctx)
+	if err != nil {
+		// We could not tell. Leaving every row alone and letting the poll
+		// decide is the only safe answer: "there is no server" is the sentence
+		// that moves every session to needs_resume.
+		return err
+	}
+	if !running {
 		// Nothing is running, which after a reboot is the ordinary case and
 		// not an error. Everything the database thinks is alive is a candidate
 		// for resuming, and nothing is relaunched here: coming back from a
@@ -70,11 +101,10 @@ func (m *Manager) Adopt(ctx context.Context) error {
 	m.hooksSet = true
 	m.mu.Unlock()
 
-	out, err := m.tmux.Run(ctx, "list-panes", "-a", "-F", paneFormat)
+	panes, err := m.listPanes(ctx)
 	if err != nil {
 		return err
 	}
-	panes := parsePanes(out)
 
 	known := map[string]bool{}
 	for i := range rows {
@@ -211,7 +241,7 @@ func (m *Manager) Poll(ctx context.Context) {
 		m.markLost(rows)
 		return
 	}
-	out, err := m.tmux.Run(ctx, "list-panes", "-a", "-F", paneFormat)
+	panes, err := m.listPanes(ctx)
 	if err != nil {
 		if m.notePollFailure() {
 			m.markLost(rows)
@@ -219,7 +249,7 @@ func (m *Manager) Poll(ctx context.Context) {
 		return
 	}
 	m.notePollSuccess()
-	m.applyPanes(rows, parsePanes(out))
+	m.applyPanes(rows, panes)
 }
 
 // notePollFailure records one failed poll and reports whether that is now
@@ -243,12 +273,18 @@ func (m *Manager) notePollSuccess() {
 func (m *Manager) applyPanes(rows []store.Session, panes map[string]pane) {
 	for i := range rows {
 		row := &rows[i]
-		if row.State != store.StateRunning && row.State != store.StateStarting {
+		if row.State != store.StateRunning && row.State != store.StateStarting &&
+			row.State != store.StateExited {
 			continue
 		}
 		p, ok := panes[row.TmuxName]
 		switch {
 		case !ok:
+			if row.State == store.StateExited {
+				// A session that has gone entirely is not news about a row
+				// that already says its program ended.
+				continue
+			}
 			if m.noteMissing(row.ID) {
 				_ = m.st.SetSessionState(row.ID, store.StateNeedsResume, row.ExitStatus, "")
 			}
@@ -257,6 +293,13 @@ func (m *Manager) applyPanes(rows []store.Session, panes map[string]pane) {
 			m.markExited(row, p.deadStatus)
 		default:
 			m.clearMissing(row.ID)
+			if row.State == store.StateExited {
+				// The pane is alive and the row says it is not. The pane is
+				// the authority: a stale hook, from a session relaunched
+				// under the same name, must not leave a working terminal
+				// behind the exit overlay for ever.
+				_ = m.st.SetSessionState(row.ID, store.StateRunning, -1, "")
+			}
 		}
 	}
 }

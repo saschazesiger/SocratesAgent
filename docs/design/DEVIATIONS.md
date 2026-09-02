@@ -113,6 +113,20 @@ The obvious way to make `new-session` fail, a working directory that does not ex
 fail on tmux 3.6: it starts the session in the home directory instead. A name that is already
 taken is both a real failure mode (a create retried after a partial one) and a reliable one.
 
+**WP2 / §A.3 — the fallback configuration keeps `exit-empty off` and
+`destroy-unattached off`.** §A.3 lists four lines for the minimal conf. WP2's own deviation - an
+explicit `start-server` before the first session - is what makes `exit-empty off` load-bearing:
+a server started with no session exits at once without it, so the fallback would set its hooks on
+a server that was already gone and every pane death for the rest of the process would be seen
+only by the poll. `TestBadConfFallsBack` now asserts both hooks are in place after the fallback
+and that a session created afterwards reports its exit status with nothing polling.
+
+**WP2 / §A.3 — the hook bodies quote their expansions and carry `--signal`.** A pane killed by a
+signal has an *empty* `#{pane_dead_status}` and a `#{pane_dead_signal}` instead (verified on 3.6),
+so an unquoted expansion left `--status` without a value and the subcommand exited on its own
+arguments - exactly when a program crashed. The status is `128+signal` in that case, the way a
+shell reports it, in the hook and in the poll alike.
+
 **WP2 / §F.1 — version detection is in `tmux.go`; `install.go` is not part of this package.**
 WP2's file list does not name `install.go` and WP8's does. `ParseVersion`, `BinaryVersion`,
 `MinMajor`/`MinMinor` = 3.3 and `Version.OK` live in `tmux.go` for `requireTmux` and the
