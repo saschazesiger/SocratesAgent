@@ -181,7 +181,14 @@ type termConn struct {
 	wcancel context.CancelFunc
 	// stopped is closed when the writer has returned, so that a takeover can
 	// wait for the old socket to be quiet before the new one says hello.
-	stopped chan struct{}
+	stopped  chan struct{}
+	stopOnce sync.Once
+	// quit asks the writer to stop between frames. It is the graceful half of
+	// what wcancel does by force: cancelling the context a Write is blocked on
+	// makes the library abort the connection, and an aborted peer sees 1006
+	// rather than the status this socket was about to close with.
+	quit     chan struct{}
+	quitOnce sync.Once
 
 	// ctrl carries JSON control frames to the writer. It is small and
 	// deliberately so: a client that cannot take an acknowledgement is a
@@ -464,6 +471,7 @@ func (s *Server) serveTerminal(r *http.Request, conn *websocket.Conn, row *store
 		ctx: ctx, cancel: cancel,
 		wctx: wctx, wcancel: wcancel,
 		stopped: make(chan struct{}),
+		quit:    make(chan struct{}),
 		ctrl:    make(chan []byte, 32),
 		data:    make(chan struct{}, 1),
 		last:    make(chan farewell, 1),
@@ -486,10 +494,22 @@ func (s *Server) serveTerminal(r *http.Request, conn *websocket.Conn, row *store
 	}
 	sent, replayed := tv.replayPoint(ctx, s.manager, row, since, cols, rows, fresh)
 
+	// abandon is how every handshake that ends before the writer exists has to
+	// end: the writer that was never started is marked stopped, and the viewer
+	// is released into its grace. Returning without either is what strands a
+	// tab - the entry keeps a connection nothing is reading, and the next
+	// handshake for it waits for that connection's writer for ever.
+	abandon := func(err error, code websocket.StatusCode, reason string) error {
+		c.writerStopped()
+		c.shutdown(code, reason)
+		s.hub.release(tv, c)
+		return err
+	}
+
 	viewer := tv.current()
 	if viewer == nil {
-		_ = conn.Close(websocket.StatusInternalError, "the terminal could not be attached")
-		return errors.New("the viewer lost its terminal during the handshake")
+		return abandon(errors.New("the viewer lost its terminal during the handshake"),
+			websocket.StatusInternalError, "the terminal could not be attached")
 	}
 
 	// hello goes out before anything else can: it is the anchor the client
@@ -498,19 +518,19 @@ func (s *Server) serveTerminal(r *http.Request, conn *websocket.Conn, row *store
 	// cleared. Nothing writes to this socket yet, so these four are simply
 	// written where they stand.
 	if err := c.writeNow(helloFrame(s, row, viewer, tv, replayed, fresh)); err != nil {
-		return err
+		return abandon(err, websocket.StatusTryAgainLater, "this terminal could not be started")
 	}
 	if err := c.writeNow(map[string]any{"t": "state", "state": row.State}); err != nil {
-		return err
+		return abandon(err, websocket.StatusTryAgainLater, "this terminal could not be started")
 	}
 	if row.Resumed {
 		if err := c.writeNow(s.resumeNotice(row)); err != nil {
-			return err
+			return abandon(err, websocket.StatusTryAgainLater, "this terminal could not be started")
 		}
 	}
 	if row.State == store.StateExited {
 		if err := c.writeNow(map[string]any{"t": "exit", "status": row.ExitStatus, "at": row.UpdatedAt}); err != nil {
-			return err
+			return abandon(err, websocket.StatusTryAgainLater, "this terminal could not be started")
 		}
 	}
 
@@ -534,15 +554,16 @@ func (s *Server) serveTerminal(r *http.Request, conn *websocket.Conn, row *store
 	var protocol *protocolError
 	switch {
 	case c.taken.Load():
-		// The status was decided by whoever took this socket over.
+		// The status was decided by whoever took this socket over, and its
+		// writer was stopped there.
 	case errors.As(err, &protocol):
-		c.shutdown(websocket.StatusProtocolError, protocol.Error())
+		c.finish(websocket.StatusProtocolError, protocol.Error())
 	default:
-		c.shutdown(websocket.StatusNormalClosure, "")
+		c.finish(websocket.StatusNormalClosure, "")
 	}
+	<-c.stopped
 	wcancel()
 	cancel()
-	<-c.stopped
 
 	if (bye || errors.As(err, &protocol)) && !c.taken.Load() {
 		// A clean detach is the one case that does not deserve a grace: the
@@ -814,10 +835,9 @@ func (tv *termViewer) takeOver(c *termConn) {
 	// Only the writer is stopped synchronously, and the read side is left
 	// alone: cancelling it would tear the socket down before the 1012 could
 	// be written, and waiting for the close handshake would cost this
-	// handshake the two seconds the half-open case is all about.
-	previous.wcancel()
-	<-previous.stopped
-	previous.shutdown(websocket.StatusServiceRestart, "this terminal was taken over by a newer connection")
+	// handshake the two seconds the half-open case is all about. The writer
+	// is asked rather than cancelled for the same reason (see finish).
+	previous.finish(websocket.StatusServiceRestart, "this terminal was taken over by a newer connection")
 }
 
 // retake re-takes the window for a returning socket, under the lock that
@@ -914,7 +934,7 @@ func (c *termConn) ringLoop(viewer *termux.Viewer) {
 // ring rather than being pushed to, which is what makes a stalled phone cost a
 // fixed megabyte instead of an unbounded queue.
 func (c *termConn) writeLoop(sent uint64) {
-	defer close(c.stopped)
+	defer c.writerStopped()
 	acks := time.NewTicker(ackEvery)
 	defer acks.Stop()
 
@@ -952,6 +972,8 @@ func (c *termConn) writeLoop(sent uint64) {
 		select {
 		case <-c.wctx.Done():
 			return
+		case <-c.quit:
+			return
 		case payload := <-c.ctrl:
 			if err := c.writeFrame(websocket.MessageText, payload); err != nil {
 				c.fail(err)
@@ -963,6 +985,8 @@ func (c *termConn) writeLoop(sent uint64) {
 
 		select {
 		case <-c.wctx.Done():
+			return
+		case <-c.quit:
 			return
 		case payload := <-c.ctrl:
 			if err := c.writeFrame(websocket.MessageText, payload); err != nil {
@@ -1044,6 +1068,41 @@ func (c *termConn) tooSlow() {
 		c.wcancel()
 		c.cancel()
 	})
+}
+
+// stopWriter asks the writer to return between frames, without touching the
+// connection.
+func (c *termConn) stopWriter() { c.quitOnce.Do(func() { close(c.quit) }) }
+
+// writerStopped says that nothing will write to this socket again.
+//
+// The writer closes it on its way out, and a handshake that ends before the
+// writer was ever started closes it too. That second caller is the whole
+// reason it is a helper: a takeover waits here for the socket it is replacing,
+// and a socket whose hello could not be written would otherwise leave every
+// later handshake for that tab waiting for a goroutine that does not exist -
+// which is a viewer that can never be reached again.
+func (c *termConn) writerStopped() { c.stopOnce.Do(func() { close(c.stopped) }) }
+
+// finish ends this socket with a definite status, and is the only way a status
+// is ever definite.
+//
+// The writer is asked to stop and waited for before the close frame is
+// written, because cancelling the context a Write is blocked on makes the
+// library abort the connection: the peer would then see 1006 instead of the
+// 1002 or the 1012 this call exists to give it. Only a writer that cannot be
+// woken inside the close grace - one whose frame is genuinely stuck in a
+// socket nobody is reading - is cancelled, and that peer was being given up on
+// anyway.
+func (c *termConn) finish(code websocket.StatusCode, reason string) {
+	c.stopWriter()
+	select {
+	case <-c.stopped:
+	case <-time.After(closeHandshakeGrace):
+		c.wcancel()
+		<-c.stopped
+	}
+	c.shutdown(code, reason)
 }
 
 // shutdown ends this socket with a definite status. The first caller decides

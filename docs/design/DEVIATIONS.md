@@ -701,3 +701,41 @@ scenario with the network switched off, so it ends by listing the precached
 entries (22, `keybar.js` among them) and reloading the page with no network at
 all: the shell opens, the terminal engine is there, and the connection bar is
 honest.
+
+**Fix-up / §D.6 — `viewer_fresh` discards resends, not everything held.** The
+client threw away its whole held list whenever `hello` said `viewer_fresh`,
+and a first attach is always fresh. That is right for a frame that has been on
+a wire - the server cannot tell it from new input - and wrong for one that has
+never left the tab, which is simply input that has not gone yet. Each held
+frame now records whether it was ever written to a socket, and only those are
+discarded and reported.
+
+**Fix-up / §D.6 — the anchoring rule holds on the *first* connect too.** §D.6
+states the reset-and-renumber rule for a reconnect, and the client applied it
+that way: frames typed on a socket that was open but had not yet heard `hello`
+went out at whatever number the counter happened to be at. When the server
+still remembered that tab, every one of them below its `lastInputSeq` was
+discarded as a resend and the keystroke was gone without a word. The rule is
+now what the section's own wording says — nothing is sent until `hello` has
+anchored the counter — and the server's gap rejection is answered by
+renumbering and resending rather than by leaving those frames held until the
+next connect.
+
+**Fix-up / §D.3 — a socket is never torn down mid-frame to give it a status.**
+Both the takeover and the end of `serveTerminal` cancelled the writer's context
+and then wrote the close frame. Cancelling the context a `Write` is blocked on
+makes coder/websocket abort the connection, so the peer saw 1006 rather than
+the 1012 or 1002 it was being given - which is what made
+`TestTerminalMalformedFrameIsAProtocolError` fail under load. The writer is now
+asked to stop between frames and waited for before the close frame is written,
+and only a writer still stuck after the close grace is cancelled.
+
+**Fix-up / §D.1, WP7 review F1 — a handshake always answers.** Every early
+return of `serveTerminal` after the viewer was claimed - a terminal that went
+during the handshake, a `hello` that could not be written - returned without
+marking the writer stopped and without releasing the viewer. The writer for
+those sockets was never started, so `stopped` was never closed, and the next
+handshake for that tab waited in `takeOver` for a goroutine that did not
+exist: the third socket of a wake-up storm opened and was never spoken to.
+Those paths now go through one `abandon`, which marks the writer stopped,
+closes with 1013, and releases the viewer into its grace.

@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/saschazesiger/SocratesAgent/internal/store"
+	"github.com/saschazesiger/SocratesAgent/internal/termux"
 )
 
 // The transport is tested the way a browser uses it: a real WebSocket client
@@ -209,6 +211,32 @@ func (c *wsClient) waitCtrl(kind string) map[string]any {
 		return false
 	})
 	return found
+}
+
+// helloOrClose waits for whichever comes first: the socket's first control
+// frame, or the socket ending. It is how a test asks the question a client
+// asks - was I served, or was I told to come back - without failing on either.
+func (c *wsClient) helloOrClose(within time.Duration) (map[string]any, websocket.StatusCode, bool) {
+	deadline := time.After(within)
+	for {
+		c.mu.Lock()
+		if len(c.ctrl) > 0 {
+			frame := c.ctrl[0]
+			c.mu.Unlock()
+			return frame, 0, false
+		}
+		err := c.readErr
+		c.mu.Unlock()
+		if err != nil {
+			return nil, websocket.CloseStatus(err), false
+		}
+		select {
+		case <-c.woke:
+		case <-deadline:
+			return nil, 0, true
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
 }
 
 func (c *wsClient) screen() string {
@@ -1373,3 +1401,120 @@ func TestTerminalReconnectIsNotRateLimited(t *testing.T) {
 
 // clientIPOfTest is the address httptest clients connect from.
 const clientIPOfTest = "127.0.0.1"
+
+// TestTerminalEveryKeystrokeAfterHelloReachesThePane is the guard on the one
+// promise a terminal cannot bend: what was typed is what the pane ran.
+//
+// It types two hundred bytes one frame at a time, the way a keyboard does,
+// starting the instant hello arrives - which is the window the page used to
+// lose input in, because a second attach reset the counter the server had
+// already moved past and every frame below it was discarded as a resend. Every
+// byte is asserted twice over: on the pane through capture-pane, and in the
+// journal, which is what a reconnect and the download are read from.
+func TestTerminalEveryKeystrokeAfterHelloReachesThePane(t *testing.T) {
+	e := newSessionEnv(t)
+	// Wide enough that the echoed line is one row, so capture-pane compares
+	// what was typed rather than how tmux wrapped it.
+	id := e.shellSession(260, 30)
+
+	c := e.dialWS(id, "viewer=tab-a&cols=260&rows=30")
+	c.hello()
+
+	// echo + a space + the marker + Return is exactly two hundred bytes.
+	marker := strings.Repeat("abcdefghij", 19) + "0123"
+	line := "echo " + marker + "\r"
+	if len(line) != 200 {
+		t.Fatalf("the line is %d bytes, want 200", len(line))
+	}
+	for i := 0; i < len(line); i++ {
+		c.send(uint64(i+1), line[i:i+1])
+	}
+
+	// The pane ran it: the echo's own output line is the marker and nothing
+	// else, which no partial delivery can produce.
+	deadline := time.Now().Add(20 * time.Second)
+	pane := ""
+	for time.Now().Before(deadline) {
+		pane, _ = e.tmux("capture-pane", "-p", "-J", "-t", termux.TmuxName(id))
+		if strings.Contains(pane, "\n"+marker) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !strings.Contains(pane, "\n"+marker) {
+		t.Fatalf("the pane never ran the whole line; it shows:\n%s", pane)
+	}
+
+	// The server acknowledged every frame, so nothing is left held by a tab.
+	want := float64(len(line))
+	c.await("an input_ack for every keystroke", 20*time.Second, func() bool {
+		for _, frame := range c.ctrl {
+			if frame["t"] == "input_ack" && frame["seq"] == want {
+				return true
+			}
+		}
+		return false
+	})
+
+	// And the journal, which is the reconnect and the download, holds it too.
+	c.waitFor(marker)
+	res, err := e.client.Get(e.server.URL + "/api/sessions/" + id + "/journal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	journal, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(journal), marker) {
+		t.Fatalf("the journal is missing the line the pane ran (%d bytes)", len(journal))
+	}
+}
+
+// TestTerminalAHandshakeNeverStrandsTheViewer is the guard on the wake-up
+// storm: a phone coming back fires online and visibilitychange together, so
+// the first socket is abandoned while the server is still attaching its
+// terminal and two more arrive on top of it.
+//
+// Every one of them must end in something the client can act on - a hello, or
+// a close with a status it comes back on. A handshake that does neither is a
+// viewer nobody can ever reach again, which is what happened while a socket
+// that died before its writer existed left the next takeover waiting for a
+// goroutine that was never started.
+func TestTerminalAHandshakeNeverStrandsTheViewer(t *testing.T) {
+	e := newSessionEnv(t)
+	e.srv.hub.grace = time.Hour
+	id := e.shellSession(100, 30)
+
+	// The first socket goes without a word while the attach is still running.
+	e.dialWSRaw(id, "viewer=tab-a&cols=100&rows=30", nil).drop()
+
+	var live *wsClient
+	for attempt := 0; attempt < 20 && live == nil; attempt++ {
+		c := e.dialWS(id, "viewer=tab-a&cols=100&rows=30")
+		frame, status, silent := c.helloOrClose(15 * time.Second)
+		switch {
+		case silent:
+			t.Fatalf("handshake %d said nothing at all: the viewer is stranded", attempt)
+		case frame != nil:
+			if frame["t"] != "hello" {
+				t.Fatalf("handshake %d began with %v, not hello", attempt, frame)
+			}
+			live = c
+		case status == websocket.StatusTryAgainLater:
+			// "still being attached", or a hello that could not be written -
+			// both are statuses a client comes back on, which is the point.
+			time.Sleep(200 * time.Millisecond)
+		default:
+			t.Fatalf("handshake %d closed with %v, which no client retries on", attempt, status)
+		}
+	}
+	if live == nil {
+		t.Fatal("twenty handshakes in a row and none of them was served")
+	}
+
+	// And the viewer that was served is a working terminal, not a shell of one.
+	live.send(1, "echo stranded-no\r")
+	live.waitFor("stranded-no")
+}
