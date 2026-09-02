@@ -9,8 +9,9 @@
 // dashboard can ask for in one field.
 //
 // Only Standard voices are offered by default. They are the tier with four
-// million characters a month free; WaveNet, Neural2 and Studio voices sound
-// better and are billed from the first character.
+// million characters a month free; WaveNet and Neural2 voices sound better and
+// have a far smaller allowance of their own - a million characters a month,
+// Studio voices 100,000 bytes - and cost more per character beyond it.
 package googletts
 
 import (
@@ -124,9 +125,10 @@ func Truncate(text string) string {
 	return strings.TrimSpace(cut)
 }
 
-// lastSentenceEnd is the offset just past the last ".", "!" or "?" that is
-// followed by a space - the end of a sentence rather than a decimal point or
-// an abbreviation in the middle of one.
+// lastSentenceEnd is the offset just past the last ".", "!", "?", ":" or ";"
+// that is followed by a space - the end of a sentence, or of a clause long
+// enough to stop on, rather than a decimal point or an abbreviation in the
+// middle of one.
 func lastSentenceEnd(text string) int {
 	for i := len(text) - 1; i > 0; i-- {
 		switch text[i] {

@@ -14,7 +14,7 @@
 .DS_Store
 node_modules/
 
-# what the browser suite writes: screenshots, logs and the shared Piper cache
+# what the browser suite writes: screenshots and logs
 /e2e/out/
 
 # Claude Code scratch: agent worktrees and local session state

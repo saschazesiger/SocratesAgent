@@ -306,13 +306,13 @@ func TestTheSetupCheckReportsTheKeyAndTheVoice(t *testing.T) {
 	if !standard.OK || !strings.Contains(standard.Detail, googletts.DefaultVoiceDE) {
 		t.Fatalf("standard = %#v", standard)
 	}
-	if strings.Contains(standard.Detail, "billed") {
-		t.Fatalf("a free voice was reported as billed: %#v", standard)
+	if strings.Contains(standard.Detail, "free tier") {
+		t.Fatalf("a free voice was reported as outside the free tier: %#v", standard)
 	}
 
 	billed := voiceCheck(config.VoiceSettings{
 		Language: "en", GoogleAPIKey: "k", GoogleVoiceEN: "en-US-Neural2-C"})
-	if !billed.OK || !strings.Contains(billed.Detail, "billed from the first character") {
+	if !billed.OK || !strings.Contains(billed.Detail, "outside the 4M-character free tier") {
 		t.Fatalf("billed = %#v", billed)
 	}
 }

@@ -155,8 +155,8 @@ type VoiceSettings struct {
 
 	// GoogleVoiceEN and GoogleVoiceDE are the voice names per language. They
 	// default to Standard voices, which is the tier with four million
-	// characters a month free; a WaveNet, Neural2 or Studio name works here
-	// and is billed from the first character.
+	// characters a month free; a WaveNet, Neural2 or Studio name works here,
+	// with a far smaller allowance of its own and a higher price beyond it.
 	GoogleVoiceEN string `json:"google_voice_en"`
 	GoogleVoiceDE string `json:"google_voice_de"`
 

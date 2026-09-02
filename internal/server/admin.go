@@ -492,7 +492,7 @@ func voiceCheck(voice config.VoiceSettings) checkResult {
 	name := voice.GoogleVoice(voice.Language)
 	detail := "Google Cloud Text-to-Speech, speaking as " + name + "."
 	if !googletts.IsStandardVoice(name) {
-		detail += " That is not a Standard voice, so it is billed from the first character."
+		detail += " That is not a Standard voice, so it is outside the 4M-character free tier."
 	}
 	return checkResult{Name: "Text to speech", OK: true, Summary: "configured", Detail: detail}
 }

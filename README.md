@@ -199,10 +199,10 @@ Each extra is a build argument, so you can leave out whatever you would rather
 mount yourself or simply not carry:
 
 ```bash
-docker build -t socrates --build-arg INSTALL_AGENTS=0 --build-arg INSTALL_VOICE=0 .
+docker build -t socrates --build-arg INSTALL_AGENTS=0 .
 ```
 
-`INSTALL_AGENTS`, `INSTALL_CLOUDFLARED` and `INSTALL_VOICE` all default to `1`,
+`INSTALL_AGENTS` and `INSTALL_CLOUDFLARED` both default to `1`,
 and `VERSION` — what `socrates -version` prints — defaults to `docker`. tmux is
 not a build argument: without it the image would have nothing to run.
 
@@ -326,8 +326,10 @@ you are holding has a keyboard.
   **Test voice output**. The default voices are `en-US-Standard-C` and
   `de-DE-Standard-A`; any voice name Google offers works, but only the ones
   with `Standard` in the name are in the free tier of four million characters a
-  month — WaveNet, Neural2 and Studio voices are billed from the first
-  character. The speaking rate is a setting beside them.
+  month. WaveNet and Neural2 voices have their own, much smaller allowance — a
+  million characters a month — Studio voices 100,000 bytes a month, and all of
+  them cost more per character beyond it. The speaking rate is a setting beside
+  them.
   Reading out loud happens in the chat panel: a question you dictated is
   answered out loud, and any answer can be read again by double-tapping it.
   **It is not wired into a terminal session** — a pane is a program, not an
