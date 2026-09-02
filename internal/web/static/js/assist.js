@@ -181,6 +181,13 @@ export function mountAssist(ctx) {
     if (dom.audioModeBtn) {
       dom.audioModeBtn.hidden = !session;
       dom.audioModeBtn.setAttribute('aria-checked', audio ? 'true' : 'false');
+      // Entering auto mode with the socket down would hand somebody two
+      // buttons that cannot do anything, so it is unavailable - but *leaving*
+      // it always works, because auto mode is the mode in which nothing on
+      // this page can be typed, and being unable to get out of it during an
+      // outage would be the worse trap. The same rule as the Stop above: what
+      // asks the server nothing stays available.
+      dom.audioModeBtn.disabled = !usable && !audio;
     }
     // The stop is the same button: what is being asked for while the voice is
     // reading is silence, and a second control for it is a second thing to
@@ -324,8 +331,12 @@ export function mountAssist(ctx) {
     setClass(document.body, 'audio-mode', audio);
     // The whole of the promise: with auto mode on, nothing on this page can
     // open a keyboard - not the composer, not the key bar, and not the
-    // terminal's own hidden field. Leaving it gives all three back.
+    // terminal's own hidden field. Leaving it gives all three back, and the
+    // pane takes the focus again: somebody who has just switched typing back
+    // on means to type, and making them tap the pane first would be one tap
+    // for nothing.
     ctx.setTyping(!audio);
+    if (!audio) ctx.focusTerm();
     chat.audioChanged();
     paint();
     // The pane is not clipped by the bar above it, it is measured against it.

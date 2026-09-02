@@ -138,6 +138,10 @@ export function mountChat(ctx) {
       if (data && data.msg) take(data.msg);
     } catch (err) {
       thinking = false;
+      // Nothing was asked, so nothing was said: the words go back in the field
+      // they were cleared out of. Retyping a question because the key was not
+      // configured yet is a punishment for the server's problem.
+      if (field && !field.value) field.value = text;
       // A 400 from this route is the one case where the server's own words are
       // the instruction - "open /admin and pick an agent model" - so they are
       // shown where the answer was expected rather than in a toast that goes.

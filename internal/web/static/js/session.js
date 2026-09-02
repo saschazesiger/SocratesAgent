@@ -1716,6 +1716,9 @@ async function boot() {
     // Auto mode's one hard promise: with it on, the terminal's own hidden
     // field takes no focus, so a tap on the pane cannot bring a keyboard up.
     setTyping: (on) => { if (state.term) state.term.setTyping(on); },
+    // Leaving auto mode is somebody saying they want to type again, so the
+    // pane takes the focus back rather than waiting to be tapped.
+    focusTerm: () => { if (state.term) state.term.focus(); },
   });
   followViewport();
   // Read before anything is fetched: on an offline reload this is the only

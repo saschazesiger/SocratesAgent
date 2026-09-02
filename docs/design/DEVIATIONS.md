@@ -1352,3 +1352,15 @@ same three features with the middle one turned into a conversation.
    distinguishing "trivially safe" from "not" would have meant trusting a
    pointer media query with the one promise this mode makes. Leaving auto mode
    restores all three and refocuses the pane.
+9. **§D.5 — the Auto switch is disabled offline only on the way *in*.** The
+   section lists `#audioModeBtn` among the controls that go `disabled` while
+   `!state.live`, and entering auto mode with the socket down does deserve
+   that: the two buttons the mode leaves you with, Status and Agent, are both
+   dead without a server. Leaving it is the opposite case. Auto mode is the
+   mode in which nothing on the page can be typed, so a switch that also
+   locked on an outage would shut somebody inside a terminal they cannot use
+   until the connection comes back — on the one device this product exists
+   for, a phone that loses signal in a car. `audioModeBtn.disabled` is
+   therefore `!usable && !audio`, which is the rule the Stop on `#statusBtn`
+   and `#audioStatus` already follow: what asks the server nothing stays
+   available.

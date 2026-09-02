@@ -4019,9 +4019,50 @@ async function autoswitch() {
       null, { timeout: 10000 }).then(() => true).catch(() => false);
     ok(gone, 'and it switches back off again', gone ? 'off' : 'stuck on');
 
+    // Switching typing back on is somebody saying they want to type, so the
+    // pane takes the focus rather than waiting to be clicked first.
+    const refocused = await s.page.waitForFunction(() => {
+      const area = document.querySelector('#term .xterm-helper-textarea');
+      return !!area && document.activeElement === area && !area.readOnly;
+    }, null, { timeout: 5000 }).then(() => true).catch(() => false);
+    const active = await s.page.evaluate(() =>
+      (document.activeElement && (document.activeElement.id || document.activeElement.className)) || 'none');
+    ok(refocused, 'and leaving it gives the keyboard back to the pane, unasked', String(active));
+
+    // Offline, entering the mode would hand somebody two buttons that can do
+    // nothing - so it cannot be entered. Leaving it always can be: auto mode
+    // is the mode in which nothing can be typed, and being shut inside it
+    // during an outage would be the worse trap.
+    await s.context.setOffline(true);
+    const shut = await s.page.waitForFunction(
+      () => document.getElementById('audioModeBtn').disabled, null, { timeout: 25000 })
+      .then(() => true).catch(() => false);
+    ok(shut, 'an outage takes the way *into* auto mode away', shut ? 'disabled' : 'still offered');
+    await s.context.setOffline(false);
+    await s.page.waitForFunction(() => !document.getElementById('audioModeBtn').disabled,
+      null, { timeout: 30000 });
+    await s.page.click('#audioModeBtn');
+    await s.page.waitForSelector('#audioBar:not([hidden])', { timeout: 10000 });
+    await s.context.setOffline(true);
+    await s.page.waitForFunction(() => document.body.classList.contains('stale'),
+      null, { timeout: 25000 }).catch(() => {});
+    const wayOut = await s.page.evaluate(() => !document.getElementById('audioModeBtn').disabled);
+    ok(wayOut, 'but the way out of it is offered even with the socket down',
+      wayOut ? 'still operable' : 'shut in');
+    await s.page.click('#audioModeBtn');
+    const left = await s.page.waitForFunction(() => {
+      const area = document.querySelector('#term .xterm-helper-textarea');
+      return document.getElementById('audioBar').hidden && !!area && !area.readOnly;
+    }, null, { timeout: 10000 }).then(() => true).catch(() => false);
+    ok(left, 'and taking it works: the pane can be typed into again, still offline',
+      left ? 'out of auto mode' : 'stuck in it');
+    await s.context.setOffline(false);
+    await s.page.waitForFunction(() => !document.body.classList.contains('stale'),
+      null, { timeout: 30000 }).catch(() => {});
+
     await shot(s.page, 'auto-switch');
-    ok(unexpected(s.errors).length === 0, 'no console errors',
-      unexpected(s.errors).join(' | ') || '0');
+    ok(unexpected(s.errors, OFFLINE_NOISE).length === 0, 'no console errors',
+      unexpected(s.errors, OFFLINE_NOISE).join(' | ') || '0');
   } finally { await s.stop(); }
 }
 
