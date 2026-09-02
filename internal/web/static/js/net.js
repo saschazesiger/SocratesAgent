@@ -115,7 +115,7 @@ function streamsHealthy() {
 // OFFLINE_GRACE is how long a stream may be between connections before the
 // page says anything about it.
 //
-// Every chat switch closes one stream and opens another, and so does arriving
+// Every switch from one session to another closes one stream and opens another, and so does arriving
 // from another page: for a few hundred milliseconds there is genuinely no live
 // stream, and saying "connection lost" then is a lie that flashes on screen
 // several times a minute. A real loss is still announced - it just has to last
@@ -194,7 +194,7 @@ function setConnection(status, options = {}) {
   emitConnection();
 }
 
-// The chat view keeps its own "this is stale" visuals in step with the bar, so
+// The session page keeps its own "this is stale" visuals in step with the bar, so
 // the wait before either of them appears is defined in one place.
 export const CONNECTION_GRACE = OFFLINE_GRACE;
 

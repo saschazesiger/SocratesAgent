@@ -125,19 +125,12 @@
       <div class="field">
         <label for="orKey">OpenRouter API key</label>
         <input class="input mono" type="password" id="orKey" placeholder="sk-or-v1-…" autocomplete="off">
-        <div class="hint">Create one at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a>. It transcribes dictation and names sessions; the coding agents bring their own credentials.</div>
+        <div class="hint">Create one at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a>. It transcribes what you dictate, and nothing else; the coding programs bring their own credentials.</div>
       </div>
-      <div class="grid-2">
-        <div class="field">
-          <label>Transcription model</label>
-          <div id="orTranscribe"></div>
-          <div class="hint">A dedicated transcriber such as openai/gpt-transcribe, or a chat model that accepts audio such as google/gemini-2.5-flash.</div>
-        </div>
-        <div class="field">
-          <label>Title model</label>
-          <div id="orTitle"></div>
-          <div class="hint">Small and cheap is enough — it only names sessions.</div>
-        </div>
+      <div class="field">
+        <label>Transcription model</label>
+        <div id="orTranscribe"></div>
+        <div class="hint">A dedicated transcriber such as openai/gpt-transcribe, or a chat model that accepts audio such as google/gemini-2.5-flash.</div>
       </div>
       <div class="field">
         <label for="voiceLanguage">Spoken language</label>
@@ -159,11 +152,7 @@
           <div class="hint">How fast the voice reads. 1 is its own pace.</div>
         </div>
       </div>
-      <div class="row" style="gap:22px;flex-wrap:wrap">
-        <label class="switch"><input type="checkbox" id="speakAuto"><span class="track"></span><span>Read answers in audio mode</span></label>
-        <label class="switch"><input type="checkbox" id="speakChat"><span class="track"></span><span>Read answers in normal chat</span></label>
-      </div>
-      <div class="hint" style="margin-top:10px">Reading answers out loud is not wired into the terminal yet.</div>
+      <div class="hint" style="margin-top:10px">Reading out loud is not wired into a terminal session: a pane is a program, not an answer. What is here is the voice itself — installed, managed and testable below — and the language it speaks.</div>
       <div class="row" style="margin-top:16px">
         <button class="btn sm" id="testVoice" type="button">Test voice output</button>
       </div>

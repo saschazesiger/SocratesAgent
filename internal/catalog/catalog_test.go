@@ -166,7 +166,7 @@ func TestTheCatalogueSurvivesARestart(t *testing.T) {
 	}
 }
 
-// Nothing cached is an answer chat creation accepts: a chat queued offline
+// Nothing cached is an answer session creation accepts: a session queued offline
 // must never be failed permanently by a cache miss.
 func TestNothingIsCachedOnAFreshInstall(t *testing.T) {
 	c := New(newStore(), settingsFn(config.Default()))
@@ -219,7 +219,7 @@ func TestAStaleCacheIsStillAnsweredImmediately(t *testing.T) {
 	}
 }
 
-// Model lookup is what POST /api/chats validates against.
+// Model lookup is what POST /api/sessions validates against.
 func TestModelLookup(t *testing.T) {
 	onlyClaude(t)
 	c := New(newStore(), settingsFn(config.Default()))

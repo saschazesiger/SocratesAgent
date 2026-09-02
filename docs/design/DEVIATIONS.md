@@ -894,6 +894,61 @@ that is gone. `TestRebootResumesEverySession` resumes two sessions after a
 killed server - two is the smallest number that can show it - and
 `rebootresume` now creates two and resumes both in the browser.
 
+**WP10 / §H.3 row 21 — `lighttheme` proves the theme by measurement; the
+by-eye half was not performed.** The row asks for "a screenshot of a real Codex
+session inspected by eye to confirm `tui.theme` applied". A real Codex session
+cannot be started here: it needs an account and would spend tokens, and the
+implementer's brief forbids it outright. What the scenario asserts instead is
+every link of the same chain that a pair of eyes would have checked: the
+`-c tui.theme=…` Socrates built, the `theme=light` the program read back
+through tmux and the PTY, the `rgb(255,255,255)` the pane is painted, and all
+sixteen ANSI colours drawn at 4.5:1 or better on it. The screenshot is written
+to `e2e/out/shots/lighttheme.png` and is of the fake wearing the same terminal.
+
+**WP10 / §E.4 — the `design` scenario measures the drawn colour, as DEVIATIONS
+said it should.** Following the WP6 entry above: the palette table is not the
+claim, `minimumContrastRatio: 4.5` is. `lighttheme` prints all sixteen ANSI
+colours through a real pane and reads what the renderer drew; `design` asserts
+the four §E.10 rules. `term.js`'s comment, which claimed every colour in
+`LIGHT_THEME` is ≥ 4.5:1 against white, was corrected to say what is true.
+
+**WP10 / §E.10 rule 3 — two things were named in visible words, one was moved
+and one was left.** The voice status line printed the Piper binary's path in
+its sentence; `admin.js` now splits the path out and puts it behind the "i",
+without touching `piper.Status.Detail`, which is also a setup-check row and is
+already behind an "i" there. The Terminal engine card's `tmux 3.6` was left
+visible on purpose: that card's whole subject is whether tmux is usable and
+which version answered, so the version is the finding, not a detail about it.
+`design` asserts on paths, the workdir and the tmux session name, not on that.
+
+**WP10 / §G.1 — `openrouter.title_model` lost its controls, not its key.** The
+setting named a chat, and nothing generates a name any more: a session is named
+after its program and the moment it started, and renamed by hand. `config` keeps
+the field (§G.2 keeps `OpenRouter` verbatim, and a stored key nobody reads costs
+nothing), but the dashboard's "Title model" field and the two "Read answers"
+switches were removed and the API-key and setup hints rewritten: a control that
+promises behaviour the build does not have is worse than no control.
+
+**WP10 / the /tmp litter — `TestMain`, not `t.TempDir`.** The backlog asked for
+`t.TempDir()`. It does not fit: the fake CLI is built once per package through a
+`sync.Once` and shared by every test, so no single test owns the directory and
+`t.TempDir`'s cleanup would delete it out from under the next one. Both packages
+remove it in `TestMain` after `m.Run()` instead, which is the first moment the
+last test that needed it has finished. The `TestXxx…` directories in `/tmp` come
+from runs that were killed; they are `t.TempDir()` already.
+
+**WP10 / §H.2 — the fake CLI answers `--version` and the model listings.** It
+opened a pane for every question Socrates asked it, so `probeVersion` timed out
+against a TUI and the Codex and OpenCode catalogues were empty for the whole
+suite. `faketui` now answers `--version`, `codex debug models` and
+`opencode models [--json]` as plain subprocesses and exits.
+
+**WP10 / docs — the screenshots were renamed.** `screenshot-chat.png` and
+`screenshot-auto.png` were of the deleted chat product; they are replaced by
+`screenshot-session.png` (a session at 1280×720) and `screenshot-phone.png` (the
+key bar and the line input at 390×844). `screenshot-admin.png` is regenerated and
+`screenshot-tunnel.png` is kept untouched, as §G.2 requires.
+
 ## WP9a — the review's findings
 
 **WP9a review F1 / §E.7 — a notice appends its tip only when it has one.**
@@ -931,3 +986,44 @@ OpenCode now reports models and no default, so `#nsStart` stays disabled until
 one is picked - correct behaviour, and it broke `createopencode`, which never
 chose one. `startWithModel` asks the sheet whether the step is shown and picks
 the first entry when nothing is pre-filled, which is what a person does.
+
+**WP10 / §H.3 — three scenarios were reading a screen that tmux is allowed to
+repaint.** `latehello`'s warm-up, `exitoverlay`'s two banner assertions and
+`harnesses`' eight now read the journal instead, through `journalHas` and
+`journalSays`. A banner is printed before the first viewer has resized the
+window, so an attach redraw can reflow it away; `latehello`'s warm-up wrote to
+a file, so the only trace of it on screen was the echo of the typed characters.
+All three had failed intermittently. `journalSays` counts occurrences, because
+the journal is one file across a restart and a banner that was already there
+proves nothing about the program that has just been started.
+
+**WP10 — `startSession` handed back the previous session's id.** It waited for
+`location.hash` to be non-empty, which is already true for every session after
+the first, so a scenario that starts several in one tab was reading the wrong
+journal. It now waits for the hash to *change*, as `startWithModel` already did.
+
+**WP10 / §E.3 — the suite now has to pick a model for OpenCode.** With the fake
+answering `opencode models`, OpenCode has a catalogue and no default in it -
+which is what the real `opencode models` gives - so **Start session** stays
+disabled until a model is chosen and the sheet's hint says so. That is the
+design (§E.3), so `startSession` does what the hint tells a person to do rather
+than the sheet being changed.
+
+**WP10 / §B.6 — the journal sink no longer creates the directory it writes
+into.** `journalSink` began with `MkdirAll`, so a sink started for a session
+that had already been deleted recreated the tree - which is how 47 of one
+`go test -race ./...` run's `t.TempDir()` directories came back after their
+tests had removed them, each holding nothing but a `sessions/<id>/journal.raw`.
+The directory is made when the session is made; a sink that has to make it is
+writing for something that is gone, and now fails instead. One leftover remains
+after a full run (`TestTmuxInstallRefusesASecondOne`, which comes back with a
+`tmux.conf` and a `hook.sock`): a late `Manager.Start` on a data directory the
+test has already removed. It is one directory of a few hundred bytes, and the
+fix belongs where that goroutine is owned.
+
+**WP10 / §G.1 — the chat product's CSS class names were left alone.** The
+session list is still `.chat-list` holding `.chat-item` rows, and the button is
+still `.new-chat`. The rules are live and correctly retargeted, so this is a
+rename and nothing more; it would touch `app.css`, `index.html`, `session.js`
+and about forty selectors across `e2e/run.mjs`, in files two work packages were
+being reviewed in. It is recorded here rather than done blind at the end.

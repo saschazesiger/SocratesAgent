@@ -3,7 +3,7 @@
 // They are SVG paths in a module rather than image files for two reasons. The
 // page is used offline, and an inline mark is on screen the moment the script
 // is, with nothing left to fetch. And they sit beside text in half a dozen
-// sizes - a chat row, a badge, a sheet, a dashboard card - so they have to be
+// sizes - a session row, a badge, a sheet, a dashboard card - so they have to be
 // crisp at every one of them, which a path is and a bitmap is not.
 //
 // The shapes are the products' own marks, each in the colour it is published

@@ -1,7 +1,7 @@
 // Package catalog answers one question: which coding agents are on this
 // machine, and what can each of them be run on.
 //
-// It is the only thing that spawns an agent binary outside a chat, so it is
+// It is the only thing that spawns a program outside a session, so it is
 // also the only place that has to worry about a CLI taking twenty seconds to
 // answer. Everything it learns is cached - in memory and in the key/value
 // store - so a restart does not cost three subprocess spawns and a request
@@ -39,7 +39,7 @@ const cacheSchema = 2
 const TTL = 30 * time.Minute
 
 // versionTimeout is how long an agent gets to print its version. A CLI that
-// cannot manage that in five seconds is not one a chat should be waiting on.
+// cannot manage that in five seconds is not one a new session should wait on.
 const versionTimeout = 5 * time.Second
 
 // DiscoveryBudget is how long the probes get altogether. It is generous
@@ -187,8 +187,8 @@ func (c *Catalog) Get(ctx context.Context) Snapshot {
 	}
 }
 
-// Cached is what is known without asking anything. It is what chat creation
-// validates against, and "nothing cached" is an answer it accepts: a chat
+// Cached is what is known without asking anything. It is what session creation
+// validates against, and "nothing cached" is an answer it accepts: a session
 // queued offline must never be failed permanently by a cache miss.
 func (c *Catalog) Cached() (Snapshot, bool) {
 	c.mu.Lock()

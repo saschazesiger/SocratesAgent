@@ -291,7 +291,7 @@ let errorListener = null;
 
 /**
  * onSpeechError registers that notice - one slot, so the last caller wins.
- * The chat page is the one that takes it, because an answer it reads out by
+ * The session page is the one that takes it, because an answer it reads out by
  * itself has nowhere else to report from; the dashboard reads on a button
  * press and shows the failure at the button. It is called with the sentence
  * and the toast kind it should be shown as - '' for an install that is simply

@@ -40,13 +40,18 @@ function busyButton(button, on, label) {
 let settings = null;
 let defaults = null;
 
-// The two OpenRouter model ids are searchable fields rather than plain text
-// ones, so neither is in FIELDS. There is no model catalogue endpoint any more
-// - it went with the chat API - so the combobox is what it is with no items: a
-// text field that takes any id, with the ids already in use offered back.
+// The transcription model is a searchable field rather than a plain text one,
+// so it is not in FIELDS. There is no model catalogue endpoint any more - it
+// went with the chat API - so the combobox is what it is with no items: a text
+// field that takes any id, with the id already in use offered back.
+//
+// `openrouter.title_model` is deliberately not here. It named a chat, and
+// nothing generates a name any more: a session is named after the program and
+// the moment it started, and renamed by hand. The setting survives in the
+// document because it costs nothing there; a control for it would promise
+// something that does not happen.
 const MODEL_PICKERS = [
   ['orTranscribe', 'openrouter.transcribe_model'],
-  ['orTitle', 'openrouter.title_model'],
 ];
 
 // FIELDS is every control that is one element and one path. Everything with a
@@ -66,8 +71,6 @@ const FIELDS = [
   ['voiceLanguage', 'voice.language'],
   ['sttPrompt', 'voice.stt_prompt'],
   ['ttsRate', 'voice.tts_rate', 'number'],
-  ['speakAuto', 'voice.speak_in_auto_mode', 'bool'],
-  ['speakChat', 'voice.speak_in_chat_mode', 'bool'],
   ['tunnelMode', 'tunnel.mode'],
   ['tunnelToken', 'tunnel.token'],
   ['tunnelHostname', 'tunnel.hostname'],
@@ -1277,6 +1280,23 @@ const VOICE_LABEL = {
   failed: 'Voice failed',
 };
 
+// detailWithoutPath renders a sentence about the voice with the one thing in
+// it that is a machine detail - where the binary is - moved behind the "i".
+// The engine writes the path into its own sentence, because that sentence is
+// also a setup-check row; the page is where the design rule about technical
+// strings applies, so the split happens here rather than in the server.
+function detailWithoutPath(detail) {
+  const found = /(\s*)((?:[A-Za-z]:)?[\\/][^\s]*[\\/][^\s]*?)(\.?)(\s|$)/.exec(detail);
+  if (!found) return [el('span', { class: 'detail', text: detail })];
+  const path = found[2];
+  const before = detail.slice(0, found.index).replace(/\s+(at|in)$/, '').trimEnd();
+  const after = detail.slice(found.index + found[0].length).trim();
+  return [
+    el('span', { class: 'detail', text: [before, after].filter(Boolean).join(' ') }),
+    infoTip([path], { label: 'Where the voice is' }),
+  ];
+}
+
 // Everything after the dot is redrawn on every poll and the dot itself stays
 // put - one that is taken out of the page and put back every two seconds never
 // gets far enough into its animation to look like it is pulsing.
@@ -1294,7 +1314,7 @@ function renderVoiceStatus(voice) {
   const parts = [el('span', { class: 'state-label', text: VOICE_LABEL[state] || state })];
   if (voice.detail) {
     parts.push(el('span', { class: 'sep', text: '·' }));
-    parts.push(el('span', { class: 'detail', text: voice.detail }));
+    parts.push(...detailWithoutPath(voice.detail));
   }
   if (voice.error) {
     parts.push(el('span', { class: 'sep', text: '·' }));

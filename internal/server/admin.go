@@ -179,9 +179,9 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// OpenRouter. Since Socrates became a harness this key answers nothing
-	// except dictation and chat titles, so its row and the transcription row
-	// below are one story told twice.
+	// OpenRouter. Since Socrates became a harness this key answers nothing but
+	// dictation, so its row and the transcription row below are one story told
+	// twice.
 	openrouterOK := false
 	if strings.TrimSpace(settings.OpenRouter.APIKey) == "" {
 		add("OpenRouter", false, "no API key", "")

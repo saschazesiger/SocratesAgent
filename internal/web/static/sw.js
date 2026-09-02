@@ -29,10 +29,11 @@ const CACHE = 'socrates-shell-' + VERSION;
 // arrive before anything can be served offline at all is a file worth not
 // having in the list.
 //
-// The vendored terminal alone is 807 KB uncompressed and 206 KB over the wire
-// with the gzip the server already applies - xterm.js is 489 KB of that and the
-// WebGL renderer 248 KB - and both earn it, because a terminal that has to be
-// fetched is a terminal that is not there in a tunnel. The measurement for the
+// The vendored terminal alone is 807 KB uncompressed and 212 KB gzipped -
+// xterm.js is 489 KB of that and the WebGL renderer 248 KB - and both earn it,
+// because a terminal that has to be fetched is a terminal that is not there in
+// a tunnel. Socrates itself serves the files as they are: the compression is
+// whatever is in front of it, the Cloudflare edge or a reverse proxy. The measurement for the
 // whole list below is in the README, under "The app shell works with no
 // network", and is where an addition should be noticed.
 const SHELL = [

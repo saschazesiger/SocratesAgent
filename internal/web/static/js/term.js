@@ -11,9 +11,13 @@
 // `brightWhite` are greys, so that a program printing "white on default" is
 // still there to read; the runtime correction then has less to do.
 
-// LIGHT_THEME is the palette, drawn from the app's own tokens. Every colour in
-// it is at least 4.5:1 against #ffffff, which contrast() below measures and
-// the `design` e2e scenario asserts over the whole set.
+// LIGHT_THEME is the palette, drawn from the app's own tokens. Its ground is
+// white and its ink is near black; the rest are the colours a program means
+// when it says "yellow", and several of them are deliberately below 4.5:1 on
+// white, because a yellow that clears 4.5:1 on white is brown. What makes them
+// legible is `minimumContrastRatio` below, which re-derives a colour at draw
+// time - so `lighttheme` measures what the renderer actually drew, and
+// contrast() is what it measures with.
 export const LIGHT_THEME = {
   background: '#ffffff', foreground: '#17181b',
   cursor: '#17181b', cursorAccent: '#ffffff',
