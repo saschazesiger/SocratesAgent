@@ -230,7 +230,7 @@ Every phase change is broadcast with `s.broadcast(sessionID, …)`:
 {"t":"agent","run_id":"…","step":3,"phase":"acting","action":"pressed Enter","note":"…","done":false,"error":"","prompt":"…","summary":"","started":1788362216000}
 ```
 
-<!-- rev: fable --> The `<run>` object in `GET …/agent` and in `hello.agent` is this frame without `t` — the same keys (`run_id, step, phase, action, note, done, error, prompt, summary, started`), so the page renders a run from any of the three sources with one function. `prompt` is included because in audio mode it is the transcript the user never saw.
+<!-- rev: fable --> The `<run>` object in `GET …/agent` and in `hello.agent` is this frame without `t` — the same keys (`run_id, step, phase, action, note, done, error, prompt, summary, started`), so the page renders a run from any of the three sources with one function. `prompt` is included because for a dictated question it is the transcript the user never saw.
 
 WP1 provides the transport (`broadcast`, `broadcastAll`) and a pass-through `func (s *Server) emitAgent(sessionID string, payload map[string]any)`; WP2 only fills the payload.
 
@@ -408,7 +408,7 @@ Seeded in `Default()` and filled in `Normalize()` exactly as `TranscribeModel` i
 
 # D. Frontend
 
-New module `internal/web/static/js/assist.js` — status, agent and audio mode — imported by `session.js`, added to `sw.js`'s `SHELL` and to the import-graph assertion in `internal/web/embed_test.go`. Sidebar and frame handling stay in `session.js`.
+New module `internal/web/static/js/assist.js` — status, the ticker and the chat — imported by `session.js`, added to `sw.js`'s `SHELL` and to the import-graph assertion in `internal/web/embed_test.go`. Sidebar and frame handling stay in `session.js`.
 
 ## D.1 Sidebar row
 
@@ -420,22 +420,17 @@ New module `internal/web/static/js/assist.js` — status, agent and audio mode �
 - `Activity.source`, `.note` and `.since` join `rowFacts()` behind the existing `infoTip` — technical strings stay hover-only.
 - One visually-hidden `<div id="activityLive" aria-live="polite">` in the sidebar, written on a committed change ("Claude Code finished", "Codex needs an answer"), throttled to one message per 2 s.
 
-`onControl` gains `case 'activity':` — merge `frame.sessions` into a new `state.activity` Map, `renderList()`, update the header, run the audio-mode trigger (§D.4). `hello` seeds the same map; `refreshList()` seeds it from each view's `activity` field. `selectSession(id)` sends `{"t":"read","id":id}` on the open socket, or `POST /api/sessions/{id}/read` when there is none.
+`onControl` gains `case 'activity':` — merge `frame.sessions` into a new `state.activity` Map, `renderList()` and update the header. <!-- rev: fable --> Nothing else hangs off a committed change any more: the auto-status trigger went with Auto mode (§D.4). `hello` seeds the same map; `refreshList()` seeds it from each view's `activity` field. `selectSession(id)` sends `{"t":"read","id":id}` on the open socket, or `POST /api/sessions/{id}/read` when there is none.
 
 ## D.2 Header
 
-Two `.icon-btn`s and one switch in the `.topbar` before `#sessionMenu`, hidden
-until a session is attached: `#statusBtn` (speech bubble), `#agentBtn` (spark,
-tooltip **"What should I do?"**) and `#audioModeBtn`. All three carry `disabled`
-whenever `!state.live` — offline, nothing can be started and the control says
-so by being unavailable rather than by failing.
-
-`#audioModeBtn` is a real switch and not a pressed button: `role="switch"`,
-`aria-checked`, a 44 px hairline track with a 18 px knob that fills with
-`--text` when it is on, 150 ms, `prefers-reduced-motion` respected. It is
-labelled **Auto** beside the track, with "Auto mode" as its accessible name.
-The `localStorage['socrates.audio.mode'] = 'on'|'off'` semantics are unchanged;
-**Auto mode** is what the feature is called everywhere.
+<!-- rev: fable --> Two `.icon-btn`s in the `.topbar` before `#sessionMenu`,
+hidden until a session is attached: `#statusBtn` (speech bubble, **"Summarize
+this session"**, and **"Stop reading"** while the voice is going) and
+`#agentBtn` (spark, **"Ask the agent"**). Both carry `disabled` whenever
+`!state.live` — offline, nothing can be started and the control says so by
+being unavailable rather than by failing. There is no third control: the switch
+that used to sit beside them is gone with Auto mode (§D.4).
 
 New modules: `internal/web/static/js/chat.js` (the panel) beside `assist.js`
 (status, the ticker, auto mode), both in `sw.js`'s `SHELL` and both reached by
@@ -462,15 +457,13 @@ There is **one** ticker and it is the only such indicator on the page. What it
 says, in order of precedence:
 
 1. a status being made, or one just finished (held 6 s);
-2. the live operator run — "Step 3 · pressed Enter" — held 6 s after it ends;
-3. in Auto mode only, and continuously, the attached session's activity:
-   "Claude Code is working", "Claude Code is waiting for you", "Claude Code is
-   idle".
+2. the live operator run — "Step 3 · pressed Enter" — held 6 s after it ends.
 
-Outside Auto mode, with nothing happening, it is hidden.
+<!-- rev: fable --> There is no third line: what the session is doing
+continuously went with Auto mode (§D.4). With neither of the two happening the
+ticker is hidden, which is most of the time.
 
-**The chat** — `#chatPanel`, opened by `#agentBtn`, by `#audioAgent` and by
-nothing else. On a desk it is a 360 px column beside the terminal inside
+**The chat** — `#chatPanel`, opened by `#agentBtn` and by nothing else. On a desk it is a 360 px column beside the terminal inside
 `.stage`, and the pane refits when it opens or closes; under 860 px it is a
 full-height sheet over the terminal with a close button. The log is user and
 assistant bubbles, white with a hairline, distinguished by which edge they sit
@@ -480,45 +473,48 @@ carrying `run_id` grows a run row — the step, what it just did, and **Cancel**
 Everything arrives on the socket, so two devices watching one session see the
 same conversation.
 
-**The input row is one of two, never both.** With Auto mode **off** it is a text
-field and Send: Enter sends, Shift+Enter is a newline. With Auto mode **on**
-there is no text input anywhere in the panel — the row is one microphone at
-least 64 px tall, tap to start, tap again to stop, `dictateOnce` from
-`voice.js`, and the transcript is sent as the message with no confirmation
-step. Assistant replies are spoken with `speak()`.
+**The input row is one row, and everybody gets it.** <!-- rev: fable --> A text
+field (Enter sends), a microphone and Send. The microphone is `dictateOnce`
+from `voice.js`; while it records it is replaced by the two endings a recording
+has — **Send recording** (transcribe and submit) and **Discard recording**
+(throw the audio away: nothing is transcribed and nothing is said about it) —
+with the elapsed clock between them. A dictated question is posted with
+`auto: true`, which is what makes the server phrase the answer for the ear, and
+its answer is read out with `speak()`; a typed one is posted with `auto: false`
+and is not read out. It is counted per outstanding question rather than held as
+a mode, so a spoken question is still answered out loud if something was typed
+in the meantime. Any assistant bubble can be read out afterwards by
+double-tapping it (`dblclick`, or two `touchend`s inside 350 ms), and the same
+gesture while it is being read is silence.
 
-## D.4 Auto mode
+**Speech-to-text and text-to-speech never overlap.** <!-- rev: fable -->
+`voice.js` counts open microphones: `Recorder`'s start silences whatever is
+playing, and `speak()` while any recording runs resolves at once having played
+nothing. Nothing is queued — a sentence read out minutes later answers a
+question nobody is still holding.
 
-`localStorage['socrates.audio.mode']`, per device, read in `boot()`. On:
-`document.body.classList.add('audio-mode')` and the `<div class="audio-bar">`
-between `#termWrap` and `#keybar` with `#audioStatus` and `#audioAgent`, two
-full-width buttons at least 64 px tall. `#audioStatus` is Status (and Stop while
-the voice is reading); `#audioAgent` opens the chat panel with the microphone
-already recording, because opening it and then finding the button is two taps
-for one sentence.
+## D.4 Auto mode — removed
 
-**Nothing in Auto mode may open a keyboard.** The composer and the key bar are
-taken out of the layout (`body.audio-mode`), the chat panel builds a microphone
-instead of a field, and the terminal's own hidden textarea is closed:
-`term.setTyping(false)` makes it `readonly`, takes it out of the tab order and
-blurs it on every focus attempt, so a tap on the pane cannot raise one. Output,
-scrolling, selection and every path that sends bytes from somewhere else are
-untouched. This is not conditional on a touch screen — a physical keyboard is
-blocked too, because deciding otherwise would mean trusting a media query with
-the one promise this mode makes. Leaving Auto mode gives all three back and
-refocuses the pane.
+<!-- rev: fable --> Auto mode is gone: the switch, `#audioBar` with
+`#audioStatus` and `#audioAgent`, `localStorage['socrates.audio.mode']`,
+`body.audio-mode`, the activity line in the ticker, the auto-status on every
+busy→idle, and `term.setTyping` with it.
 
-**Auto-status**: on a committed transition **out of `busy`**, for the attached
-session only, run Status and speak it. If the voice is busy the new one is
-queued one deep and a third replaces the queued one. A live run owns the voice:
-its own busy-to-idle is the run typing, and the sentence that mode wants is the
-ending the run itself posts into the chat.
+**Why.** It was a mode with two differences — the answer was read out loud and
+the input was a microphone — and both of those are properties of a single
+question, not of the device. They are now in the ordinary chat: ask by voice and
+you are answered by voice (§D.3). A mode also meant a promise the page had to
+keep everywhere at once ("nothing may open a keyboard"), which cost the pane its
+own field and the ticker a second voice; a question that was spoken costs
+nothing when the next one is typed. A summary read out on every transition out
+of busy was the other half of it, and unasked speech in a car is worse than
+silence: **Summarize this session** is one tap, and a bubble is a double-tap.
 
 ## D.5 Offline
 
-`#statusBtn`, `#agentBtn`, `#audioModeBtn`, `#audioStatus`, `#audioAgent`, the
-chat's field, its Send and its microphone are all `disabled` while
-`!state.live`. The conversation stays on screen — it is history, not a live
+`#statusBtn`, `#agentBtn`, the chat's field, its Send and its microphone are
+all `disabled` while `!state.live` (stopping a recording and stopping the voice
+stay available: both are on this device and ask the server nothing). The conversation stays on screen — it is history, not a live
 view — and a run in flight keeps running on the server: the ticker and the run
 row hold the last step they knew and pick up from `hello.agent` on reconnect,
 while `hello.chat` re-seeds the panel. Activity goes stale with the rest of the
@@ -547,7 +543,7 @@ WP2 and WP3 run in parallel after WP1. Everything they need from each other is i
 
 **Files.** New: `internal/web/static/js/assist.js`. Changed: `js/session.js`, `js/voice.js` (`dictateOnce`), `index.html`, `css/app.css`, `sw.js`, `admin.html`, `js/admin.js`, `internal/web/embed_test.go`, `e2e/run.mjs`.
 
-**Acceptance.** New e2e scenarios, fake CLIs on PATH and `openRouterStub` throughout: `activity-claude`, `activity-codex`, `activity-opencode`, `activity-shell` (each: `/busy 3000` → the row spins within 2 s → it stops and the title goes bold within 3 s of the end); `activity-waiting` (`/ask` → static ring, amber dot, unread); `activity-fallback` (`/nofile` + `/hang 20000` → the row still leaves busy inside 35 s, proving the ladder); `unread` (bold clears on typing, and on tapping the row from another session); `status-speak` (the text appears in the notice and `/api/voice/speak` is called with it); `agent-run` (prompt → progress line → the fake pane received the keystrokes → done); `agent-cancel`; `audio-mode` (the toggle persists across a reload, two big buttons with the terminal still visible, one busy→idle transition triggers exactly one status call); `design` (the existing scenario extended: the spinner is `--text-faint` on white, motion is 120–900 ms and off under reduced motion, no technical string is visible outside an `infoTip`).
+**Acceptance.** New e2e scenarios, fake CLIs on PATH and `openRouterStub` throughout: `activity-claude`, `activity-codex`, `activity-opencode`, `activity-shell` (each: `/busy 3000` → the row spins within 2 s → it stops and the title goes bold within 3 s of the end); `activity-waiting` (`/ask` → static ring, amber dot, unread); `activity-fallback` (`/nofile` + `/hang 20000` → the row still leaves busy inside 35 s, proving the ladder); `unread` (bold clears on typing, and on tapping the row from another session); `status-speak` (the text appears in the notice and `/api/voice/speak` is called with it); `agent-run` (prompt → progress line → the fake pane received the keystrokes → done); `agent-cancel`; <!-- rev: fable --> `chat-dictate` and `no-overlap` in place of the deleted `audio-mode`, `auto-switch` and `chat-audio` (a recording with two endings, a discarded one that costs nothing, `auto:true` for a spoken question and its answer read out loud, a bubble read again by double-tap, and the microphone and the voice never open at once); `design` (the existing scenario extended: the spinner is `--text-faint` on white, motion is 120–900 ms and off under reduced motion, no technical string is visible outside an `infoTip`).
 
 ---
 

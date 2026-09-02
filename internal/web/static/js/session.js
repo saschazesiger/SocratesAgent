@@ -11,9 +11,9 @@
 //   * The overlays and notices: a pane that ended, a session that came back
 //     after a restart, a size somebody else chose.
 //
-// The key bar, the line input and dictation live in keybar.js and are mounted
-// here, because they send through the same numbered input path everything else
-// does and there is exactly one of it per session.
+// The key bar lives in keybar.js and is mounted here, because it sends through
+// the same numbered input path everything else does and there is exactly one
+// of it per session.
 
 import {
   api, el, toast, infoTip, confirmDialog, errorMessage, isOffline, isBusyConflict,
@@ -23,10 +23,8 @@ import { connectionSource } from './net.js';
 import { agentMark } from './logos.js';
 import * as harnesses from './harnesses.js';
 import { createTerm, measurePane } from './term.js';
-import { mountAssist, audioWanted } from './assist.js';
-import {
-  mountKeyBar, mountComposer, keyBarWanted, setKeyBarWanted, onKeyBarWanted, followViewport,
-} from './keybar.js';
+import { mountAssist } from './assist.js';
+import { mountKeyBar, keyBarWanted, setKeyBarWanted, followViewport } from './keybar.js';
 
 /* ------------------------------------------------------------- transport */
 
@@ -610,7 +608,6 @@ const state = {
   socket: null,
   term: null,
   keybar: null,
-  composer: null,
   // The attach a rapid run of taps down the list has scheduled, so that the
   // last session tapped is the only one a socket is opened for.
   pendingAttach: null,
@@ -643,7 +640,7 @@ const state = {
   // It is in memory only - the server re-derives it from a live pane every
   // second, so a copy that outlived a reload could only ever be wrong.
   activity: new Map(),
-  // Status, Agent and audio mode, mounted once in boot().
+  // Status, Agent and the chat, mounted once in boot().
   assist: null,
   // How the terminal is drawn, from the dashboard. The defaults here are what
   // a page that could not ask uses, and they are the same numbers the settings
@@ -654,12 +651,11 @@ const state = {
 const dom = {};
 const ids = ['sidebar', 'navScrim', 'menuBtn', 'newSession', 'sessionScope', 'sessionList',
   'activityLive', 'sessionHarness', 'sessionTitle', 'sessionArchived', 'termSize',
-  'statusBtn', 'agentBtn', 'audioModeBtn', 'sessionMenu',
+  'statusBtn', 'agentBtn', 'sessionMenu',
   'stage', 'termWrap', 'term', 'termOverlay', 'termLines', 'termNotice',
   'termTicker', 'tickerWindow', 'termEmpty',
   'chatPanel', 'chatLog', 'chatFoot', 'chatClose',
-  'audioBar', 'audioStatus', 'audioAgent', 'keybar', 'composer',
-  'lineInput', 'micBtn', 'recTime', 'logout'];
+  'keybar', 'logout'];
 for (const id of ids) dom[id] = document.getElementById(id);
 
 const STATE_WORDS = {
@@ -804,8 +800,8 @@ function updateRow(row, session) {
  * mergeActivity takes a map of committed changes and draws them.
  *
  * It is the one door: the poll, the handshake and the broadcast frame all
- * come through here, so the sidebar, the announcement and audio mode's own
- * rule cannot disagree about what changed.
+ * come through here, so the sidebar and the announcement cannot disagree
+ * about what changed.
  */
 function mergeActivity(sessions) {
   if (!sessions) return;
@@ -817,7 +813,6 @@ function mergeActivity(sessions) {
     if (prev && prev.state === next.state && prev.unread === next.unread && prev.note === next.note) continue;
     changed = true;
     announce(id, next, prev);
-    if (state.assist) state.assist.activity(id, next, prev);
   }
   if (changed) renderList();
 }
@@ -1103,7 +1098,6 @@ function keepTypingAlive() {
 function showEmpty() {
   state.current = null;
   dom.keybar.hidden = true;
-  dom.composer.hidden = true;
   dom.termEmpty.hidden = false;
   dom.termEmpty.innerHTML = '';
   // Unreachable is not empty. A page that could not read the list says so and
@@ -1297,10 +1291,8 @@ function actionFailed(err, sentence) {
 
 function detach() {
   if (state.assist) state.assist.attached();
-  if (state.composer) { state.composer.dispose(); state.composer = null; }
   if (state.keybar) { state.keybar.dispose(); state.keybar = null; }
   dom.keybar.hidden = true;
-  dom.composer.hidden = true;
   if (state.socket) { state.socket.stop(); state.socket = null; }
   if (state.term) { state.term.dispose(); state.term = null; }
   dom.term.innerHTML = '';
@@ -1368,21 +1360,11 @@ function attach(session) {
   socketRef.socket = socket;
   state.socket = socket;
   state.keybar = mountKeyBar(dom.keybar, state.term.term, socket);
-  state.composer = mountComposer({
-    form: dom.composer,
-    input: dom.lineInput,
-    mic: dom.micBtn,
-    recTime: dom.recTime,
-    sessionId: session.id,
-    socket,
-    term: state.term.term,
-  });
-  dom.composer.hidden = false;
-  dom.micBtn.hidden = false;
   showKeyBar(keyBarWanted());
-  // The three buttons and, when this device is in audio mode, the bar under
-  // the pane. It is done before the size is read, because the bar takes rows
-  // off the terminal and the size the session is told is the size it gets.
+  // The two buttons in the header, and the conversation behind one of them.
+  // It is done before the size is read, because a chat panel that reopens
+  // takes width off the pane, and the size the session is told at attach is
+  // the size it gets.
   if (state.assist) state.assist.attached();
 
   const size = state.term.size();
@@ -1390,15 +1372,20 @@ function attach(session) {
   state.term.focus();
 }
 
-// The key bar stands beside a real keyboard rather than instead of one, so it
-// comes up on its own where there is one and stays away on a touch screen -
-// and the session menu can say otherwise on any device.
+// The key bar is asked for or it is not there: no device decides for itself
+// whether it has a keyboard, because the two that matter - a tablet in a
+// case, a laptop with a touch screen - are the two it would get wrong. The
+// session menu is the one way in, and the answer is kept per device.
 function showKeyBar(on) {
   dom.keybar.hidden = !on;
   // A modifier armed on a bar nobody can see would transform the next key
   // typed with nothing on screen to say why.
   if (!on && state.keybar) state.keybar.clear();
   if (state.term) state.term.refit();
+  // The rows the bar gave back belong to the pane, and so does the focus:
+  // with no bar on screen the terminal is the only thing there is to type
+  // into.
+  if (!on) keepTypingAlive();
 }
 
 // renameRow takes the new name of a session into the list and, when it is the
@@ -1488,10 +1475,6 @@ function onControl(sessionId, frame) {
         toast(frame.keystrokes + ' keystroke' + (frame.keystrokes === 1 ? '' : 's')
           + ' may not have been delivered.', 'error');
       }
-      if (frame.lines && frame.lines.length) {
-        if (state.composer) state.composer.restore(frame.lines);
-        toast('That line was not delivered — it is back in the field.', 'error');
-      }
       break;
     case 'error':
       toast(frame.message, 'error');
@@ -1571,23 +1554,17 @@ function markRead(id) {
 // new session starts with a resize, and a tmux window that shrinks reflows:
 // on 3.6 the first wrapped line of the program's banner goes into the
 // scrollback before it has been read. The chrome is put into the state the
-// attach will leave it in - the composer up, the key bar where this device
-// wants one - so that what is measured is the pane the session will get.
+// attach will leave it in - the key bar up only where this device asked for
+// one - so that what is measured is the pane the session will get.
 function measureNewPane() {
-  const composerWas = dom.composer.hidden;
   const keybarWas = dom.keybar.hidden;
-  const audioWas = dom.audioBar.hidden;
-  dom.audioBar.hidden = !audioWanted();
   // The real bar, because its height is its buttons. Nothing is wired to it:
   // it exists for the length of one measurement.
   const bar = mountKeyBar(dom.keybar, null, null);
-  dom.composer.hidden = false;
   dom.keybar.hidden = !keyBarWanted();
   const size = measurePane(dom.term, { fontSize: state.terminal.font_size });
   bar.dispose();
-  dom.composer.hidden = composerWas;
   dom.keybar.hidden = keybarWas;
-  dom.audioBar.hidden = audioWas;
   return size;
 }
 
@@ -1691,10 +1668,6 @@ function wire() {
   // slowly while it is being looked at, so a session another tab started or
   // deleted does not sit there being wrong.
   onWake(() => refreshList());
-  // A keyboard can arrive after the page did - a tablet put in its case, a
-  // window dragged onto a desk - and the bar follows it. Nothing is done to a
-  // session that is not open: the bar is drawn on attach from the same answer.
-  onKeyBarWanted((on) => { if (state.current) showKeyBar(on); });
   setInterval(() => {
     if (document.visibilityState === 'visible') refreshList();
   }, 15000);
@@ -1702,20 +1675,15 @@ function wire() {
 
 async function boot() {
   wire();
-  // Status, Agent and audio mode. Mounted before anything is measured,
-  // because whether this device is in audio mode decides how tall the pane
-  // is, and a layout applied afterwards resizes a terminal somebody is
-  // already looking at.
+  // Status, Agent and the chat, mounted before anything is measured: the
+  // panel takes width off the pane, and a layout applied afterwards resizes a
+  // terminal somebody is already looking at.
   state.assist = mountAssist({
     dom,
     notice,
     refit: () => { if (state.term) state.term.refit(); },
     current: () => state.current,
     live: () => state.live,
-    activityOf: (id) => state.activity.get(id) || null,
-    // Auto mode's one hard promise: with it on, the terminal's own hidden
-    // field takes no focus, so a tap on the pane cannot bring a keyboard up.
-    setTyping: (on) => { if (state.term) state.term.setTyping(on); },
   });
   followViewport();
   // Read before anything is fetched: on an offline reload this is the only

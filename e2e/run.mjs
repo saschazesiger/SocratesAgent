@@ -1081,38 +1081,36 @@ async function keybar() {
     await startSession(s.page, 'shell');
     await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
 
-    // The bar stands in for the keys a keyboard has. This context is a phone -
-    // touch only, a coarse pointer, no hover - so it is not drawn until it is
-    // asked for, and the line input and the microphone are what is on screen.
+    // Nothing on this page guesses at the hardware. The bar is not there until
+    // it is asked for, on a phone and on a desk alike, and there is no line
+    // input beside the terminal at all any more.
     await wait(400);
     const untouched = await s.page.evaluate(() => ({
       bar: document.getElementById('keybar').hidden,
-      composer: !document.getElementById('composer').hidden,
+      composer: !!document.getElementById('composer') || !!document.getElementById('lineInput'),
       hover: matchMedia('(hover: hover) and (pointer: fine)').matches,
     }));
-    ok(untouched.bar && untouched.composer && !untouched.hover,
-      'a touch-only device gets the line input and no key bar', JSON.stringify(untouched));
+    ok(untouched.bar && !untouched.composer,
+      'a session opens with no key bar and no line input', JSON.stringify(untouched));
 
-    // The rule itself, as a function: every case it is meant to decide.
+    // The whole of the rule, as the module itself: one remembered answer, and
+    // nothing in the exports that could decide otherwise.
     const decided = await s.page.evaluate(async () => {
       const mod = await import('/static/js/keybar.js');
-      const one = (env) => mod.keyboardLikely(env);
-      return {
-        phone: one({ pointerFine: false, platform: 'Linux armv8l', touchPoints: 5 }),
-        desk: one({ pointerFine: true, platform: 'Linux x86_64', touchPoints: 0 }),
-        ipad: one({ pointerFine: false, platform: 'MacIntel', touchPoints: 5 }),
-        typedOn: one({ pointerFine: false, platform: 'Linux armv8l', touchPoints: 5, seen: true }),
-        physical: mod.isPhysicalKeyEvent({ isTrusted: true, key: 'a', code: 'KeyA', keyCode: 65 }),
-        soft: mod.isPhysicalKeyEvent({ isTrusted: true, key: 'Unidentified', code: '', keyCode: 229 }),
-      };
+      const fresh = mod.keyBarWanted();
+      mod.setKeyBarWanted(true);
+      const asked = mod.keyBarWanted();
+      mod.setKeyBarWanted(false);
+      const refused = mod.keyBarWanted();
+      return { fresh, asked, refused, exports: Object.keys(mod).sort().join(',') };
     });
-    ok(!decided.phone && decided.desk && decided.ipad && decided.typedOn
-      && decided.physical && !decided.soft,
-      'the rule: no phone, every pointer, an iPad, and anything typed on',
-      JSON.stringify(decided));
+    ok(!decided.fresh && decided.asked && !decided.refused,
+      'the answer is the preference and nothing else', JSON.stringify(decided));
+    ok(decided.exports === 'followViewport,keyBarWanted,mountKeyBar,setKeyBarWanted',
+      'and there is no device heuristic left to be wrong about a keyboard', decided.exports);
 
-    // A desk is the other half of the same rule, and it is a context of its
-    // own: a mouse that can hover, and no touch at all.
+    // A desk is the same answer: a pointer that hovers is not a request for a
+    // row of buttons.
     const desk = await s.browser.newContext({
       viewport: { width: 1280, height: 720 },
       colorScheme: 'light',
@@ -1122,19 +1120,17 @@ async function keybar() {
     const openId = await s.page.evaluate(() => location.hash.slice(1));
     await deskPage.goto(s.url + '/#' + openId, { waitUntil: 'domcontentloaded' });
     await deskPage.waitForSelector('#term .xterm', { timeout: 20000 });
-    await deskPage.waitForSelector('#keybar:not([hidden])', { timeout: 10000 })
-      .catch(() => {});
+    await wait(600);
     const atDesk = await deskPage.evaluate(() => ({
-      bar: !document.getElementById('keybar').hidden,
+      bar: document.getElementById('keybar').hidden,
       hover: matchMedia('(hover: hover) and (pointer: fine)').matches,
     }));
-    ok(atDesk.bar && atDesk.hover, 'a device with a pointer that hovers gets it without asking',
+    ok(atDesk.bar && atDesk.hover, 'a device with a pointer that hovers does not get it either',
       JSON.stringify(atDesk));
     await deskPage.close();
     await desk.close();
 
-    // The rest of this scenario is what the bar does once it is up, and on a
-    // phone the session menu is what puts it there.
+    // The session menu is the one way in, on any device.
     await s.page.click('#sessionMenu');
     await s.page.click('.menu-item:has-text("Show key bar")');
     await s.page.waitForSelector('#keybar:not([hidden])', { timeout: 10000 });
@@ -1142,16 +1138,12 @@ async function keybar() {
     const keys = await s.page.$$eval('#keybar .key', (nodes) => nodes.map((n) => n.dataset.key));
     ok(keys.join(',') === 'Escape,Tab,Control,Alt,Left,Down,Up,Right,Enter,Ctrl-C,Ctrl-D,Ctrl-Z,Paste,Keyboard',
       'the key bar carries every key of §E.6, in order', keys.join(','));
-    const composer = await s.page.evaluate(() => ({
-      composer: !document.getElementById('composer').hidden,
-      mic: !document.getElementById('micBtn').hidden,
+    const placed = await s.page.evaluate(() => ({
       keybarTop: document.getElementById('keybar').getBoundingClientRect().top,
       wrapBottom: document.getElementById('termWrap').getBoundingClientRect().bottom,
     }));
-    ok(composer.composer && composer.mic, 'the line composer and its microphone are on screen at 390×844',
-      JSON.stringify(composer));
-    ok(composer.keybarTop >= composer.wrapBottom - 1, 'the key bar sits under the terminal, not over it',
-      Math.round(composer.keybarTop) + ' vs ' + Math.round(composer.wrapBottom));
+    ok(placed.keybarTop >= placed.wrapBottom - 1, 'the key bar sits under the terminal, not over it',
+      Math.round(placed.keybarTop) + ' vs ' + Math.round(placed.wrapBottom));
 
     // One key at a time, and the assertion is the byte. What a key adds is
     // compared against the frames sent since it was tapped rather than
@@ -1188,6 +1180,11 @@ async function keybar() {
     const disarmed = await s.page.$eval('#keybar .key[data-key="Control"]', (n) => n.className);
     ok(!/\bon\b/.test(disarmed), 'and the modifier disarmed itself', disarmed);
 
+    // A physical key was just pressed, and that is not a decision about the
+    // bar any more: it stays exactly where it was asked to be.
+    ok(!(await s.page.$eval('#keybar', (n) => n.hidden)),
+      'a keystroke on a real keyboard does not take the bar away', 'still on screen');
+
     // A second tap locks it, and a locked modifier keeps transforming.
     await s.page.click('#keybar .key[data-key="Control"]');
     await s.page.click('#keybar .key[data-key="Control"]');
@@ -1202,30 +1199,13 @@ async function keybar() {
     ok(!/\b(on|lock)\b/.test(await s.page.$eval('#keybar .key[data-key="Control"]', (n) => n.className)),
       'a third tap puts it away', 'off');
 
-    // The line input: a whole line and exactly one carriage return, which is
-    // the point of it - a phone that autocorrects a line it has already sent
-    // one character at a time cannot be undone.
-    const marker = 'line-' + Math.random().toString(36).slice(2, 8);
-    const before = (await sentBytes(s.page)).length;
-    await s.page.fill('#lineInput', 'echo ' + marker);
-    await s.page.click('#sendLine');
-    await wait(300);
-    const after = (await sentBytes(s.page)).slice(before);
-    const decoded = after.map((hex) => hex.match(/../g).map((b) => String.fromCharCode(parseInt(b, 16))).join(''));
-    // Leaving the terminal for the field makes xterm report the focus change,
-    // which is a frame of its own and nothing to do with the line.
-    const lines = decoded.filter((d) => d.includes(marker));
-    ok(lines.length === 1 && lines[0] === 'echo ' + marker + '\r',
-      'the line input sends the whole line and one carriage return in one frame',
-      JSON.stringify(decoded));
-    ok(await awaitScreen(s.page, marker), 'and the shell ran it', oneLine(await screen(s.page)));
-    ok(await s.page.$eval('#lineInput', (n) => n.value) === '', 'the field is empty again', 'empty');
-
     // A modifier is for the next key the person presses, and the terminal's
-    // own reports are not keys. Leaving the pane for the field, and coming
-    // back to it through the keyboard button, both make xterm send a focus
-    // report on the same channel - and neither may spend an armed Ctrl.
-    await s.page.click('#lineInput');
+    // own reports are not keys. Leaving the pane for the chat's field, and
+    // coming back to it through the keyboard button, both make xterm send a
+    // focus report on the same channel - and neither may spend an armed Ctrl.
+    await s.page.click('#agentBtn');
+    await s.page.waitForSelector('#chatPanel:not([hidden])', { timeout: 10000 });
+    await s.page.click('#chatText');
     await s.page.click('#keybar .key[data-key="Control"]');
     const beforeKeyboard = (await sentBytes(s.page)).length;
     await s.page.click('#keybar .key[data-key="Keyboard"]');
@@ -1239,15 +1219,21 @@ async function keybar() {
       throughFocus.join(',') || 'nothing');
 
     // A locked Alt must not put an ESC in front of what the terminal answers.
+    // On a phone the panel is a sheet over the pane, so it is closed before
+    // the pane is tapped and opened again to take the focus off it.
+    await s.page.click('#chatClose');
     await s.page.click('#term .xterm-screen');
+    await focusTerm(s.page);
     await s.page.click('#keybar .key[data-key="Alt"]');
     await s.page.click('#keybar .key[data-key="Alt"]');
     const beforeBlur = (await sentBytes(s.page)).length;
-    await s.page.click('#lineInput');
+    await s.page.click('#agentBtn');
+    await s.page.waitForSelector('#chatPanel:not([hidden])', { timeout: 10000 });
     await wait(250);
     const reports = (await sentBytes(s.page)).slice(beforeBlur);
     ok(!reports.some((hex) => hex.startsWith('1b1b')),
       'a locked Alt leaves the terminal\u2019s own reports alone', reports.join(',') || 'nothing');
+    await s.page.click('#chatClose');
 
     // And a bar that is put away takes its modifiers with it, rather than
     // transforming keys with nothing on screen to say why.
@@ -1257,119 +1243,34 @@ async function keybar() {
     const hidden = await s.page.evaluate(() => ({
       bar: document.getElementById('keybar').hidden,
       armed: [...document.querySelectorAll('#keybar .key.on, #keybar .key.lock')].length,
+      stored: localStorage.getItem('socrates.term.keybar'),
     }));
     ok(hidden.bar && hidden.armed === 0, 'hiding the key bar disarms it', JSON.stringify(hidden));
+    ok(hidden.stored === 'off', 'and the answer is written down for this device', String(hidden.stored));
+
+    // Asked for, it is asked for until it is not: a reload comes back to a
+    // bar rather than to a decision made again.
     await s.page.click('#sessionMenu');
     await s.page.click('.menu-item:has-text("Show key bar")');
     await s.page.waitForSelector('#keybar:not([hidden])', { timeout: 5000 });
-
-    // The draft survives a reload, because a composed line is worth keeping
-    // and half a keystroke is not.
-    await s.page.fill('#lineInput', 'half a thought');
-    await s.page.dispatchEvent('#lineInput', 'input');
-    await wait(150);
-    await s.page.reload({ waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('#lineInput', { timeout: 15000 });
-    await s.page.waitForFunction(() => document.getElementById('lineInput').value.length > 0,
-      null, { timeout: 10000 }).catch(() => {});
-    ok(await s.page.$eval('#lineInput', (n) => n.value) === 'half a thought',
-      'an unsent line is still in the field after a reload',
-      await s.page.$eval('#lineInput', (n) => n.value));
-
-    // A line that came back from storage is a draft, not something in flight.
-    // Sending it must leave nothing behind: a copy kept in localStorage would
-    // be handed back on every later reload of this session, for ever.
-    await s.page.fill('#lineInput', 'echo ghost-' + marker);
-    await s.page.dispatchEvent('#lineInput', 'input');
-    await s.page.click('#sendLine');
-    await wait(600);
     await s.page.reload({ waitUntil: 'domcontentloaded' });
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    await wait(600);
-    const ghost = await s.page.evaluate((id) => ({
-      field: document.getElementById('lineInput').value,
-      stored: localStorage.getItem('socrates.term.' + id + '.draft'),
-    }), await s.page.evaluate(() => location.hash.slice(1)));
-    ok(ghost.field === '' && !ghost.stored,
-      'a line that was sent leaves nothing behind in storage', JSON.stringify(ghost));
+    const kept = await s.page.waitForSelector('#keybar:not([hidden])', { timeout: 10000 })
+      .then(() => true).catch(() => false);
+    ok(kept, 'the bar is still there after a reload, because this device asked for it',
+      kept ? 'on screen' : 'gone');
+
+    // The pane keeps the keyboard through all of it, which is what says the
+    // bar is a row of buttons and not a second place to type.
+    const typed = 'kb-' + Math.random().toString(36).slice(2, 8);
+    await typeLine(s.page, 'echo ' + typed);
+    ok(await awaitScreen(s.page, typed, 25000), 'and the shell still takes a line typed into the pane',
+      oneLine(await screen(s.page)).slice(-60));
 
     await shot(s.page, 'keybar');
     ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
       unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
   } finally { await s.stop(); }
-}
-
-/* --------------------------------------------------------- 13. dictation */
-
-// The microphone, end to end: Chromium's fake device records, the browser
-// posts the WAV to the server, the server asks the gateway - a stub, so this
-// costs nothing and needs no key - and the words land in the line input,
-// unsent. The last part is the requirement: dictation writes a draft, it does
-// not type into a shell.
-async function dictation() {
-  const stub = await openRouterStub({ text: 'list the files' });
-  const s = await start({
-    viewport: { width: 390, height: 844 },
-    touch: true,
-    permissions: ['microphone'],
-    args: [
-      '--use-fake-ui-for-media-stream',
-      '--use-fake-device-for-media-stream',
-      '--autoplay-policy=no-user-gesture-required',
-    ],
-  });
-  try {
-    await setup(s.page, s.url);
-    await useDomRenderer(s);
-    // base_url exists so the app can be pointed at a mock; this is the mock.
-    const saved = await s.context.request.put(s.url + '/api/settings', {
-      data: { settings: { openrouter: { api_key: 'e2e-key', base_url: stub.url } } },
-    });
-    ok(saved.ok(), 'the gateway is pointed at the stub', saved.status() + ' ' + stub.url);
-
-    await recordInput(s.page);
-    await open(s);
-    await startSession(s.page, 'shell');
-    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
-    await s.page.waitForSelector('#micBtn:not([hidden])', { timeout: 10000 });
-
-    await s.page.click('#micBtn');
-    await s.page.waitForSelector('#micBtn.rec', { timeout: 10000 });
-    await wait(1400);
-    const clock = await s.page.$eval('#recTime', (n) => ({ hidden: n.hidden, text: n.textContent }));
-    ok(!clock.hidden && /^\d+:\d\d$/.test(clock.text), 'the recording clock is running', JSON.stringify(clock));
-    await s.page.click('#micBtn');
-
-    await s.page.waitForFunction(() => document.getElementById('lineInput').value.includes('list the files'),
-      null, { timeout: 30000 });
-    const value = await s.page.$eval('#lineInput', (n) => n.value);
-    ok(value === 'list the files', 'the transcript landed in the line input', JSON.stringify(value));
-    ok(stub.calls.length >= 1 && stub.calls[0].bytes > 2000,
-      'the server uploaded the recording to the gateway',
-      JSON.stringify(stub.calls.map((c) => c.path + ' ' + c.bytes + 'B')));
-
-    // Unsent is the whole point: nothing went to the pane.
-    const sent = await sentBytes(s.page);
-    const typed = sent.map((hex) => hex.match(/../g).map((b) => String.fromCharCode(parseInt(b, 16))).join('')).join('');
-    ok(!typed.includes('list the files'), 'and nothing of it was sent to the terminal',
-      JSON.stringify(typed.slice(-40)));
-    ok(!(await screen(s.page)).includes('list the files'), 'the pane never saw it',
-      oneLine(await screen(s.page)).slice(-80));
-
-    // It is a draft like any other, so Send is what puts it in the shell.
-    await s.page.click('#sendLine');
-    await wait(400);
-    const after = await sentBytes(s.page);
-    const line = after.map((hex) => hex.match(/../g).map((b) => String.fromCharCode(parseInt(b, 16))).join('')).join('');
-    ok(line.includes('list the files\r'), 'pressing Send is what delivers it', JSON.stringify(line.slice(-30)));
-
-    await shot(s.page, 'dictation');
-    ok(unexpected(s.errors).length === 0, 'no console errors',
-      unexpected(s.errors).join(' | ') || '0');
-  } finally {
-    await s.stop();
-    await stub.close();
-  }
 }
 
 /* ------------------------------------------------------- 14. offlineonce */
@@ -1468,16 +1369,10 @@ async function offlineonce() {
     });
     ok(cached.includes('/static/js/keybar.js') && cached.includes('/static/js/session.js'),
       'the key bar is part of the precached shell', cached.length + ' entries');
-    // A line composed but never sent, and then the tab killed with no signal:
-    // this is the ordinary iOS morning, and everything about it has to
-    // survive.
-    const back = 'echo back-' + tag;
+    // And then the tab is killed with no signal at all: this is the ordinary
+    // iOS morning, and everything about it has to survive.
     await s.context.setOffline(true);
     await s.page.evaluate(() => window.dispatchEvent(new Event('offline')));
-    await s.page.fill('#lineInput', back);
-    await s.page.dispatchEvent('#lineInput', 'input');
-    await wait(200);
-
     await s.page.reload({ waitUntil: 'domcontentloaded' });
     await s.page.waitForSelector('#newSession', { timeout: 20000 });
     await wait(1500);
@@ -1495,15 +1390,10 @@ async function offlineonce() {
 
     await s.context.setOffline(false);
     await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
-    await s.page.waitForSelector('#term .xterm', { timeout: 30000 });
-    await s.page.waitForFunction(() => document.getElementById('lineInput').value.length > 0,
-      null, { timeout: 15000 }).catch(() => {});
-    const restored = await s.page.evaluate(() => ({
-      composer: !document.getElementById('composer').hidden,
-      field: document.getElementById('lineInput').value,
-    }));
-    ok(restored.composer && restored.field === back,
-      'the session reopened by itself and the unsent line is in the field', JSON.stringify(restored));
+    const reopened = await s.page.waitForSelector('#term .xterm', { timeout: 30000 })
+      .then(() => true).catch(() => false);
+    ok(reopened, 'and the session it was on reopened by itself when the signal came back',
+      reopened ? 'the pane is back' : 'still empty');
 
     ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
       unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
@@ -1650,8 +1540,6 @@ async function offlinerestart() {
     await focusTerm(s.page);
     await s.page.keyboard.type('echo k >> ' + tag + '.txt', { delay: 20 });
     await s.page.keyboard.press('Enter');
-    await s.page.fill('#lineInput', 'echo l >> ' + tag + '.txt');
-    await s.page.click('#sendLine');
     await wait(300);
 
 
@@ -1679,30 +1567,21 @@ async function offlinerestart() {
     // Nothing may be lost in silence. Bytes that never reached a wire are
     // delivered once the counter is anchored; bytes that were on a wire when
     // the server forgot this viewer cannot be told apart from a resend, so
-    // they are dropped and said out loud - keystrokes counted in a toast, a
-    // composed line handed back to the field. Either outcome is honest; a
-    // keystroke that is neither delivered nor mentioned is not, and neither
-    // may run twice.
+    // they are dropped and said out loud, counted in a toast. Either outcome
+    // is honest; a keystroke that is neither delivered nor mentioned is not,
+    // and it may not run twice either.
     await wait(2500);
-    await typeLine(s.page, 'echo K=$(grep -c k ' + tag + '.txt) L=$(grep -c l ' + tag + '.txt)');
+    await typeLine(s.page, 'echo K=$(grep -c k ' + tag + '.txt)');
     const counted = await s.page.waitForFunction(() => {
       const rows = document.querySelector('#term .xterm-rows');
-      const found = rows && rows.innerText.match(/K=(\d+) L=(\d+)/);
-      return found ? found[1] + ',' + found[2] : null;
+      const found = rows && rows.innerText.match(/K=(\d+)/);
+      return found ? found[1] : null;
     }, null, { timeout: 25000 }).then((h) => h.jsonValue()).catch(() => 'no answer');
-    const [ranK, ranL] = String(counted).split(',');
-    const said = await s.page.evaluate(() => ({
-      toasts: window.__toasts.slice(),
-      field: document.getElementById('lineInput').value,
-    }));
-    ok(ranK === '1' || said.toasts.some((t) => /keystrokes? may not have been delivered/.test(t)),
+    const toasts = await s.page.evaluate(() => window.__toasts.slice());
+    ok(counted === '1' || toasts.some((t) => /keystrokes? may not have been delivered/.test(t)),
       'the keystrokes typed in the outage ran once, or were said to be lost',
-      'K=' + ranK + ' toasts=' + JSON.stringify(said.toasts));
-    ok(ranL === '1' || said.field === 'echo l >> ' + tag + '.txt',
-      'and the composed line ran once, or was handed back to the field',
-      'L=' + ranL + ' field=' + JSON.stringify(said.field));
-    ok(ranK !== undefined && Number(ranK) <= 1 && Number(ranL) <= 1,
-      'and neither of them ran twice', 'K=' + ranK + ' L=' + ranL);
+      'K=' + counted + ' toasts=' + JSON.stringify(toasts));
+    ok(Number(counted) <= 1, 'and they did not run twice', 'K=' + counted);
 
     // The session is still usable, which is what says the socket that came
     // back is a working one and not merely an open one.
@@ -1768,30 +1647,19 @@ async function latehello() {
     await focusTerm(s.page);
     await s.page.keyboard.type('echo k >> ' + tag + '.txt', { delay: 10 });
     await s.page.keyboard.press('Enter');
-    await s.page.fill('#lineInput', 'echo l >> ' + tag + '.txt');
-    await s.page.click('#sendLine');
 
     await s.page.waitForFunction(() => !document.body.classList.contains('conn-lost'),
       null, { timeout: 30000 }).catch(() => {});
     await wait(3000);
 
     // The shell counts, because the pane echoes a burst more than once.
-    await typeLine(s.page, 'echo K=$(grep -c k ' + tag + '.txt) L=$(grep -c l ' + tag + '.txt)');
+    await typeLine(s.page, 'echo K=$(grep -c k ' + tag + '.txt)');
     const counted = await s.page.waitForFunction(() => {
       const rows = document.querySelector('#term .xterm-rows');
-      const found = rows && rows.innerText.match(/K=(\d+) L=(\d+)/);
-      return found ? found[1] + ',' + found[2] : null;
+      const found = rows && rows.innerText.match(/K=(\d+)/);
+      return found ? found[1] : null;
     }, null, { timeout: 25000 }).then((h) => h.jsonValue()).catch(() => 'no answer');
-    ok(counted === '1,1', 'what was typed before hello ran, exactly once', String(counted));
-
-    const left = await s.page.evaluate((id) => ({
-      field: document.getElementById('lineInput').value,
-      stored: localStorage.getItem('socrates.term.' + id + '.draft'),
-      toasts: [...document.querySelectorAll('#toasts .toast')].map((n) => n.textContent),
-    }), await s.page.evaluate(() => location.hash.slice(1)));
-    ok(left.field === '' && !left.stored,
-      'and the composed line left nothing behind in the field or in storage',
-      JSON.stringify(left));
+    ok(counted === '1', 'what was typed before hello ran, exactly once', String(counted));
 
     await shot(s.page, 'latehello');
     ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
@@ -2410,7 +2278,7 @@ async function twoviewers() {
     await second.waitForSelector('#term .xterm', { timeout: 20000 });
     // Six seconds of watching what the window actually did. One device
     // connecting is one size change, and anything more would be a notice the
-    // person did not need: the composer coming up, a font settling, a fit
+    // person did not need: the key bar coming up, a font settling, a fit
     // arriving late.
     const seq = [first];
     for (let i = 0; i < 60; i += 1) {
@@ -2977,34 +2845,32 @@ async function design() {
       still.ring ? still.ring.name : 'no ring');
     await s.page.emulateMedia({ reducedMotion: null });
 
-    // Rule 2 and rule 3 on what audio mode adds: two buttons, one word each,
-    // white with a hairline, and nothing on the page that reads like a
-    // machine talking to itself.
-    await s.page.click('#audioModeBtn');
-    await s.page.waitForSelector('#audioBar:not([hidden])', { timeout: 10000 });
-    const audio = await s.page.evaluate(() => {
-      const buttons = [...document.querySelectorAll('#audioBar .audio-btn')];
+    // Rule 2 and rule 3 in the top bar: the two things a session can be asked
+    // are marks, their words are in the label a reader gets, and there is no
+    // mode switch beside them any more - what the answer sounds like follows
+    // from how the question was asked.
+    const header = await s.page.evaluate(() => ['statusBtn', 'agentBtn'].map((id) => {
+      const node = document.getElementById(id);
       return {
-        bar: getComputedStyle(document.getElementById('audioBar')).backgroundColor,
-        fills: buttons.map((b) => getComputedStyle(b).backgroundColor),
-        words: buttons.map((b) => b.textContent.trim()),
-        headers: ['statusBtn', 'agentBtn']
-          .map((one) => (document.getElementById(one) || {}).textContent || '')
-          .map((t) => t.trim()),
-        auto: (document.querySelector('#audioModeBtn .auto-word') || {}).textContent || '',
+        text: (node.textContent || '').trim(),
+        label: node.getAttribute('aria-label'),
+        title: node.title,
+        svg: node.querySelectorAll('svg').length,
       };
-    });
-    ok(white(audio.bar) && audio.fills.every(white), 'the audio bar is the same white',
-      JSON.stringify([audio.bar, ...audio.fills]));
-    ok(audio.words.every((w) => /^[A-Za-z]+$/.test(w)), 'its buttons are one plain word each',
-      audio.words.join(' / '));
-    ok(audio.headers.every((t) => t === ''),
+    }));
+    ok(header.every((one) => one.text === '' && one.svg === 1 && one.label === one.title),
       'the two header buttons are marks, with their words in the label',
-      JSON.stringify(audio.headers));
-    // Auto mode is the one control in that row that is a setting rather than
-    // an action, so it is a switch and it carries its one word.
-    ok(audio.auto.trim() === 'Auto', 'and the switch beside them carries its one word',
-      JSON.stringify(audio.auto));
+      JSON.stringify(header));
+    ok(header[0].label === 'Summarize this session' && header[1].label === 'Ask the agent',
+      'and the words say what pressing them does', header.map((one) => one.label).join(' / '));
+    const gone = await s.page.evaluate(() => ({
+      auto: document.querySelectorAll('.auto-switch').length,
+      bar: !!document.getElementById('audioBar'),
+      composer: !!document.getElementById('composer'),
+    }));
+    ok(gone.auto === 0 && !gone.bar && !gone.composer,
+      'there is no mode switch, no audio bar and no line input on the page',
+      JSON.stringify(gone));
 
     const spoken = await s.page.evaluate(() => {
       const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
@@ -3021,7 +2887,6 @@ async function design() {
     ok(!/\b(exact|quiet|unknown|run_id|phase)\b/.test(spoken) && !spoken.includes(id),
       'nothing the detector knows is written on the page in words',
       oneLine((/\b(exact|quiet|unknown|run_id|phase)\b/.exec(spoken) || ['none'])[0]));
-    await s.page.click('#audioModeBtn');
 
     // Rule 1 again, on the other page, and rule 2 on the admin cards.
     await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
@@ -3342,10 +3207,16 @@ async function unread() {
 // accept it as audio and play nothing. Piper is not installed on a test
 // machine, and what is under test is that the page asks for the render and
 // hands it the right words - not that this laptop can sing.
-function silentWav() {
-  const data = Buffer.alloc(46);
+// silentWav is `seconds` of silence as a 16 kHz mono WAV - one sample when
+// nothing is asked for, which is what a scenario that only counts requests
+// needs, and a real length for one that has to catch the page while it is
+// still reading.
+function silentWav(seconds = 0) {
+  const samples = Math.max(1, Math.round(16000 * seconds));
+  const bytes = samples * 2;
+  const data = Buffer.alloc(44 + bytes);
   data.write('RIFF', 0);
-  data.writeUInt32LE(38, 4);
+  data.writeUInt32LE(36 + bytes, 4);
   data.write('WAVEfmt ', 8);
   data.writeUInt32LE(16, 16);
   data.writeUInt16LE(1, 20);
@@ -3355,70 +3226,28 @@ function silentWav() {
   data.writeUInt16LE(2, 32);
   data.writeUInt16LE(16, 34);
   data.write('data', 36);
-  data.writeUInt32LE(2, 40);
+  data.writeUInt32LE(bytes, 40);
   return data;
 }
 
-// stubSpeech intercepts the one request the page makes to be read out loud and
-// records what it was asked to say.
-async function stubSpeech(context) {
+/**
+ * stubSpeech intercepts the one request the page makes to be read out loud and
+ * records what it was asked to say.
+ *
+ * `delay` holds the answer back, which is how a scenario gets a window in
+ * which the page is reliably "reading" without depending on a headless
+ * browser's audio clock; `seconds` is how long the audio it finally gets is.
+ */
+async function stubSpeech(context, { seconds = 0, delay = 0 } = {}) {
   const said = [];
   await context.route('**/api/voice/speak', async (route) => {
     let text = '';
     try { text = (route.request().postDataJSON() || {}).text || ''; } catch { /* not JSON */ }
     said.push(text);
-    await route.fulfill({ status: 200, contentType: 'audio/wav', body: silentWav() });
+    if (delay) await wait(delay);
+    await route.fulfill({ status: 200, contentType: 'audio/wav', body: silentWav(seconds) });
   });
   return said;
-}
-
-/**
- * assistRoutes says whether this build already has the Status and Agent
- * endpoints, and stands in for them when it does not.
- *
- * WP2 and WP3 were built in parallel against one written contract. A frontend
- * scenario that could only run after the backend landed would have proved
- * nothing until the last day, so the page is driven against the real routes
- * when they exist and against the contract's own shapes when they do not - and
- * the verdict says which of the two it was.
- */
-async function assistRoutes(s, id, { status, replies = [] } = {}) {
-  const probe = await s.context.request.get(s.url + '/api/sessions/' + encodeURIComponent(id) + '/agent');
-  const real = probe.status() !== 404;
-  const posts = { status: 0, agent: [], cancel: 0 };
-  if (real) {
-    // Count what the page asks for without answering it: the server does.
-    await s.page.route('**/api/sessions/*/status', async (route) => { posts.status += 1; await route.fallback(); });
-    await s.page.route('**/api/sessions/*/agent', async (route) => {
-      if (route.request().method() === 'POST') {
-        try { posts.agent.push((route.request().postDataJSON() || {}).prompt || ''); } catch { posts.agent.push(''); }
-      }
-      await route.fallback();
-    });
-    return { real, posts };
-  }
-  await s.page.route('**/api/sessions/*/status', async (route) => {
-    posts.status += 1;
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ text: status || 'It is waiting for an instruction.', language: 'en', state: 'idle', model: 'stub/model' }),
-    });
-  });
-  await s.page.route('**/api/sessions/*/agent', async (route) => {
-    if (route.request().method() !== 'POST') {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ run: null }) });
-      return;
-    }
-    try { posts.agent.push((route.request().postDataJSON() || {}).prompt || ''); } catch { posts.agent.push(''); }
-    await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ run_id: 'stub-run' }) });
-  });
-  await s.page.route('**/api/sessions/*/agent/cancel', async (route) => {
-    posts.cancel += 1;
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
-  });
-  void replies;
-  return { real, posts };
 }
 
 const noticeText = (page) => page.evaluate(() => {
@@ -3830,13 +3659,35 @@ async function chattext() {
   }
 }
 
-/* -------------------------------------------------------- 38. chat-audio */
+/* ------------------------------------------------------ 38. chat-dictate */
 
-// Auto mode on a phone: there is no field anywhere - not in the chat, not
-// under the terminal, and not the terminal's own - so a keyboard cannot come
-// up. Everything that is left is a microphone.
-async function chataudio() {
-  const stub = await openRouterStub({ text: 'It is waiting for you.' });
+// micRow is the microphone and the two endings a running recording has, as
+// the panel is actually drawing them.
+const micRow = (page) => page.evaluate(() => {
+  const shown = (id) => {
+    const node = document.getElementById(id);
+    return !!node && !node.hidden;
+  };
+  const titled = (id) => (document.getElementById(id) || {}).title || '';
+  const clock = document.getElementById('chatRecTime');
+  return {
+    mic: shown('chatMic'),
+    keep: shown('chatRecSend'),
+    drop: shown('chatRecCancel'),
+    clockShown: shown('chatRecTime'),
+    clock: clock ? clock.textContent.trim() : '',
+    titles: [titled('chatRecSend'), titled('chatRecCancel')].join(','),
+  };
+});
+
+// The microphone in the chat, which is the only microphone there is: two
+// endings while it records, a discarded recording that costs nothing, a
+// question that was spoken answered out loud, a typed one answered in
+// writing, and any answer readable again by double-tapping it.
+async function chatdictate() {
+  const spoken = JSON.stringify({ reply: 'It is waiting for you.', act: null });
+  const written = JSON.stringify({ reply: 'Nothing is running in it.', act: null });
+  const stub = await openRouterStub({ text: 'what is this session doing', replies: [spoken, written] });
   const s = await start({
     viewport: { width: 390, height: 844 },
     touch: true,
@@ -3850,93 +3701,149 @@ async function chataudio() {
   try {
     await setup(s.page, s.url);
     await useDomRenderer(s);
-    await pointGateway(s, stub);
-    await stubSpeech(s.context);
+    // A dedicated transcriber, so that a recording and a question arrive at
+    // the stub on different routes: the transcript is its fixed answer and
+    // the conversation gets the scripted ones.
+    const saved = await s.context.request.put(s.url + '/api/settings', {
+      data: {
+        settings: {
+          openrouter: { api_key: 'e2e-key', base_url: stub.url, transcribe_model: 'openai/whisper-1' },
+        },
+      },
+    });
+    ok(saved.ok(), 'the gateway is pointed at the stub', saved.status() + ' ' + stub.url);
+    // The answer is held back for a moment, which is the window in which the
+    // page is reliably reading - a headless browser's audio clock is not.
+    const said = await stubSpeech(s.context, { seconds: 1, delay: 1200 });
+    const transcribes = [];
+    await s.page.route('**/api/voice/transcribe', async (route) => {
+      transcribes.push(route.request().method());
+      await route.fallback();
+    });
+    const asked = [];
+    await s.page.route('**/api/sessions/*/chat', async (route) => {
+      if (route.request().method() === 'POST') {
+        try { asked.push(route.request().postDataJSON() || {}); } catch { asked.push({}); }
+      }
+      await route.fallback();
+    });
+
     await open(s);
     await startSession(s.page, 'shell');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    await openChat(s.page);
 
-    await s.page.waitForSelector('#audioModeBtn:not([hidden])', { timeout: 15000 });
-    await s.page.click('#audioModeBtn');
-    await s.page.waitForSelector('#audioBar:not([hidden])', { timeout: 10000 });
+    const idle = await micRow(s.page);
+    ok(idle.mic && !idle.keep && !idle.drop && !idle.clockShown,
+      'the row is a field, a microphone and a Send: one microphone, no endings',
+      JSON.stringify(idle));
 
-    await s.page.click('#agentBtn');
-    await s.page.waitForSelector('#chatPanel:not([hidden])', { timeout: 10000 });
-
-    const inputs = await s.page.evaluate(() => {
-      const panel = document.getElementById('chatPanel');
-      const fields = [...panel.querySelectorAll('input, textarea, [contenteditable="true"]')];
-      const mic = document.getElementById('chatMic');
-      const focusable = [...panel.querySelectorAll('*')].filter((n) => {
-        const tag = n.tagName.toLowerCase();
-        return (tag === 'input' || tag === 'textarea') && n.tabIndex >= 0;
-      });
+    // Recording: the microphone is replaced by the two things that can happen
+    // to a recording, and nothing else in the row moves.
+    await s.page.click('#chatMic');
+    await s.page.waitForSelector('#chatRecSend:not([hidden])', { timeout: 15000 });
+    await wait(1300);
+    const rec = await micRow(s.page);
+    ok(!rec.mic && rec.keep && rec.drop,
+      'a running recording is Send and Discard, and no microphone', JSON.stringify(rec));
+    ok(rec.titles === 'Send recording,Discard recording',
+      'and each of them says which it is', rec.titles);
+    ok(rec.clockShown && /^\d+:\d\d$/.test(rec.clock),
+      'the clock says how long it has been listening', rec.clock);
+    await shot(s.page, 'chat-dictate-recording');
+    const fits = await s.page.evaluate(() => {
+      const row = document.querySelector('.chat-compose').getBoundingClientRect();
+      const middle = (box) => (box.top + box.bottom) / 2;
+      const parts = [...document.querySelectorAll('.chat-compose > *')]
+        .map((n) => n.getBoundingClientRect());
       return {
-        fields: fields.length,
-        focusable: focusable.length,
-        mic: !!mic,
-        micHeight: mic ? Math.round(mic.getBoundingClientRect().height) : 0,
-        sheet: Math.round(panel.getBoundingClientRect().width),
-        page: Math.round(document.querySelector('.main').getBoundingClientRect().width),
+        aligned: parts.every((box) => Math.abs(middle(box) - middle(row)) <= 2),
+        inside: parts.every((box) => box.left >= row.left - 1 && box.right <= row.right + 1),
+        field: Math.round(parts[0].width),
       };
     });
-    ok(inputs.fields === 0 && inputs.focusable === 0,
-      'there is no text input in the panel at all, focusable or otherwise',
-      JSON.stringify(inputs));
-    ok(inputs.mic && inputs.micHeight >= 64, 'what is there instead is a microphone a thumb cannot miss',
-      inputs.micHeight + ' px');
-    ok(Math.abs(inputs.sheet - inputs.page) <= 2, 'on a phone it is a sheet over the terminal, not a column',
-      inputs.sheet + ' of ' + inputs.page);
+    ok(fits.aligned && fits.inside && fits.field > 100,
+      'and it is still one row on a phone, with the field still usable',
+      JSON.stringify(fits));
 
-    // Nothing under the terminal either.
-    const shelf = await s.page.evaluate(() => {
-      const seen = (id) => {
-        const n = document.getElementById(id);
-        return !!n && n.checkVisibility && n.checkVisibility();
-      };
-      return { composer: seen('composer'), keybar: seen('keybar') };
-    });
-    ok(!shelf.composer && !shelf.keybar, 'and the line input and the key bar are gone with it',
-      JSON.stringify(shelf));
+    // Discard: the audio is thrown away. Nothing is transcribed, nothing is
+    // asked, and nothing is said about it.
+    await s.page.click('#chatRecCancel');
+    await s.page.waitForSelector('#chatMic:not([hidden])', { timeout: 10000 });
+    await wait(800);
+    const after = await micRow(s.page);
+    ok(after.mic && !after.keep && !after.drop, 'Discard gives the microphone back', JSON.stringify(after));
+    ok(transcribes.length === 0 && asked.length === 0 && (await chatBubbles(s.page)).length === 0,
+      'and it costs nothing: no transcription, no question, no message',
+      transcribes.length + ' transcribe, ' + asked.length + ' chat');
 
-    // The one that matters: tapping the pane does not put the cursor in a
-    // field, which is what would bring a phone keyboard up.
-    await s.page.click('#chatClose');
-    await s.page.waitForFunction(() => document.getElementById('chatPanel').hidden,
-      null, { timeout: 10000 });
-    await s.page.click('#term .xterm-screen');
-    await wait(400);
-    const focus = await s.page.evaluate(() => {
-      const area = document.querySelector('#term .xterm-helper-textarea');
-      return {
-        focused: !!area && document.activeElement === area,
-        readonly: !!area && area.readOnly,
-        tabIndex: area ? area.tabIndex : null,
-        active: (document.activeElement && document.activeElement.tagName) || 'none',
-      };
-    });
-    ok(!focus.focused && focus.readonly && focus.tabIndex < 0,
-      'a tap on the terminal cannot open a keyboard, because nothing takes the focus',
-      JSON.stringify(focus));
+    // Send: transcribed, posted as a question that was spoken, answered, and
+    // the answer read out loud without anybody asking for that.
+    await s.page.click('#chatMic');
+    await s.page.waitForSelector('#chatRecSend:not([hidden])', { timeout: 15000 });
+    await wait(1300);
+    await s.page.click('#chatRecSend');
+    const posted = await awaitBubble(s.page, (msgs) =>
+      msgs.some((m) => m.who === 'user' && m.text === stub.text), 60000);
+    ok(posted.ok, 'Send makes what was heard the message, verbatim and unconfirmed',
+      JSON.stringify(posted.seen.map((m) => m.who + ': ' + oneLine(m.text))));
+    ok(transcribes.length === 1, 'and it was transcribed exactly once',
+      transcribes.length + ' request(s)');
+    const replied = await awaitBubble(s.page, (msgs) =>
+      msgs.some((m) => m.who === 'assistant' && /waiting for you/.test(m.text)), 60000);
+    ok(replied.ok, 'the agent answers it',
+      JSON.stringify(replied.seen.map((m) => oneLine(m.text)).slice(-1)));
+    ok(asked.length === 1 && asked[0].auto === true,
+      'a question that was spoken is sent as one', JSON.stringify(asked));
+    for (let i = 0; i < 80 && said.length === 0; i += 1) await wait(200);
+    ok(said.length === 1 && /waiting for you/.test(said[0] || ''),
+      'and its answer is read out loud, unasked', said.length + ': ' + oneLine(said[0] || ''));
 
-    // And the pane is still a pane: it draws, and it is not what is switched
-    // off, only its field.
-    const drawn = await s.page.evaluate(() =>
-      Math.round((document.querySelector('#term .xterm') || { getBoundingClientRect: () => ({ height: 0 }) })
-        .getBoundingClientRect().height));
-    ok(drawn > 80, 'the terminal is still there and still drawn', drawn + ' px tall');
+    await s.page.waitForFunction(() => !document.getElementById('statusBtn').classList.contains('speaking'),
+      null, { timeout: 20000 }).catch(() => {});
 
-    // Leaving auto mode gives everything back.
-    await s.page.click('#audioModeBtn');
-    const back = await s.page.waitForFunction(() => {
-      const area = document.querySelector('#term .xterm-helper-textarea');
-      const composer = document.getElementById('composer');
-      return !!area && !area.readOnly && !!composer && composer.checkVisibility();
-    }, null, { timeout: 10000 }).then(() => true).catch(() => false);
-    ok(back, 'and leaving it gives the keyboard, the composer and the pane back',
-      back ? 'everything is back' : 'something stayed off');
+    // A typed question is the other half of the same rule: answered on the
+    // screen, and the voice stays out of it.
+    await askChat(s.page, 'and what should I do next?');
+    const second = await awaitBubble(s.page, (msgs) =>
+      msgs.some((m) => m.who === 'assistant' && /Nothing is running/.test(m.text)), 60000);
+    ok(second.ok, 'a typed question is answered in words',
+      JSON.stringify(second.seen.map((m) => oneLine(m.text)).slice(-1)));
+    await wait(1500);
+    ok(asked.length === 2 && asked[1].auto === false,
+      'and it is sent as a typed one', JSON.stringify(asked.map((a) => a.auto)));
+    ok(said.length === 1, 'so nothing was read out loud for it', said.length + ' render(s)');
 
-    await shot(s.page, 'chat-audio');
+    // Any answer can be asked for out loud afterwards: two taps on the bubble.
+    const bubble = '#chatLog .chat-msg.assistant';
+    const hint = await s.page.$eval(bubble, (n) => n.title);
+    ok(hint === 'Double-tap to read aloud', 'an answer says it can be read out loud', hint);
+    await s.page.tap(bubble);
+    await s.page.tap(bubble);
+    for (let i = 0; i < 80 && said.length === 1; i += 1) await wait(200);
+    ok(said.length === 2 && /waiting for you/.test(said[1] || ''),
+      'a double-tap on it reads that answer, and only that one',
+      said.length + ': ' + oneLine(said[1] || ''));
+    const reading = await s.page.waitForFunction(
+      () => document.getElementById('statusBtn').classList.contains('speaking'),
+      null, { timeout: 10000 }).then(() => true).catch(() => false);
+    ok(reading, 'and while it is being read the page says so',
+      reading ? 'the header button offers to stop' : 'nothing said it was reading');
+
+    // The same gesture again is silence, not a second reading. It is the
+    // mouse's double-click this time, far enough after the taps that it
+    // cannot be one of them being replayed - which is a gesture, not a
+    // second one.
+    await wait(900);
+    await s.page.dblclick(bubble);
+    const stopped = await s.page.waitForFunction(
+      () => !document.getElementById('statusBtn').classList.contains('speaking'),
+      null, { timeout: 10000 }).then(() => true).catch(() => false);
+    await wait(800);
+    ok(stopped && said.length === 2, 'a second double-tap stops the reading rather than starting another',
+      (stopped ? 'stopped' : 'still reading') + ', ' + said.length + ' render(s)');
+
+    await shot(s.page, 'chat-dictate');
     ok(unexpected(s.errors).length === 0, 'no console errors',
       unexpected(s.errors).join(' | ') || '0');
   } finally {
@@ -3945,94 +3852,13 @@ async function chataudio() {
   }
 }
 
-/* ------------------------------------------------------- 39. auto-switch */
+/* -------------------------------------------------------- 39. no-overlap */
 
-// Auto mode is a state, so it wears a switch: a track, a knob that travels,
-// and a choice this phone remembers.
-async function autoswitch() {
-  const s = await start({ viewport: { width: 1280, height: 720 } });
-  try {
-    await setup(s.page, s.url);
-    await useDomRenderer(s);
-    await open(s);
-    await startSession(s.page, 'shell');
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    await s.page.waitForSelector('#audioModeBtn:not([hidden])', { timeout: 15000 });
-
-    const off = await s.page.evaluate(() => {
-      const btn = document.getElementById('audioModeBtn');
-      const track = btn.querySelector('.auto-track');
-      const knob = btn.querySelector('.auto-knob');
-      return {
-        role: btn.getAttribute('role'),
-        checked: btn.getAttribute('aria-checked'),
-        word: btn.querySelector('.auto-word').textContent.trim(),
-        name: btn.querySelector('.sr-only').textContent.trim(),
-        track: Math.round(track.getBoundingClientRect().width),
-        fill: getComputedStyle(knob).backgroundColor,
-        motion: getComputedStyle(knob).transitionDuration,
-        knobLeft: Math.round(knob.getBoundingClientRect().left - track.getBoundingClientRect().left),
-      };
-    });
-    ok(off.role === 'switch' && off.checked === 'false',
-      'it is a switch and it says which way it is set', off.role + ' / ' + off.checked);
-    ok(off.word === 'Auto' && /Auto mode/i.test(off.name),
-      'labelled Auto, and named Auto mode for a reader', off.word + ' · ' + off.name);
-    ok(off.track >= 40 && off.track <= 48, 'the track is about a thumb wide', off.track + ' px');
-    ok(off.fill === WHITE, 'and while it is off the knob is white like everything else', off.fill);
-    ok(off.motion.split(',').every((d) => d.trim() === '0.15s'), 'the knob travels in 150 ms', off.motion);
-
-    await s.page.click('#audioModeBtn');
-    await s.page.waitForSelector('#audioBar:not([hidden])', { timeout: 10000 });
-    // The knob is measured after it has travelled: getComputedStyle mid
-    // transition answers with where it still is, not where it is going.
-    await wait(400);
-    const on = await s.page.evaluate(() => {
-      const btn = document.getElementById('audioModeBtn');
-      const track = btn.querySelector('.auto-track');
-      const knob = btn.querySelector('.auto-knob');
-      return {
-        checked: btn.getAttribute('aria-checked'),
-        fill: getComputedStyle(knob).backgroundColor,
-        text: getComputedStyle(document.body).color,
-        knobLeft: Math.round(knob.getBoundingClientRect().left - track.getBoundingClientRect().left),
-        stored: localStorage.getItem('socrates.audio.mode'),
-      };
-    });
-    ok(on.checked === 'true', 'switching it says so', on.checked);
-    ok(on.knobLeft > off.knobLeft + 10, 'the knob travelled to the other end',
-      off.knobLeft + ' → ' + on.knobLeft);
-    ok(on.fill === on.text, 'and it fills with the page’s own ink rather than a new colour',
-      on.fill + ' vs ' + on.text);
-    ok(on.stored === 'on', 'the choice is written down for this device', String(on.stored));
-
-    await s.page.reload({ waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    await s.page.waitForSelector('#audioBar:not([hidden])', { timeout: 15000 });
-    const after = await s.page.$eval('#audioModeBtn', (n) => n.getAttribute('aria-checked'));
-    ok(after === 'true', 'and it survives a reload, because it is this phone’s choice', after);
-
-    await s.page.click('#audioModeBtn');
-    const gone = await s.page.waitForFunction(
-      () => document.getElementById('audioBar').hidden
-        && localStorage.getItem('socrates.audio.mode') === 'off',
-      null, { timeout: 10000 }).then(() => true).catch(() => false);
-    ok(gone, 'and it switches back off again', gone ? 'off' : 'stuck on');
-
-    await shot(s.page, 'auto-switch');
-    ok(unexpected(s.errors).length === 0, 'no console errors',
-      unexpected(s.errors).join(' | ') || '0');
-  } finally { await s.stop(); }
-}
-
-/* -------------------------------------------------------- 40. audio-mode */
-
-// Audio mode: a phone in a car. Two buttons a thumb cannot miss, the terminal
-// still there and merely shorter, one spoken summary per turn that ends -
-// without anybody asking for it - and a ticker that says what the session is
-// doing for as long as the mode is on.
-async function audiomode() {
-  const stub = await openRouterStub({ text: 'The session has finished and is waiting for you.' });
+// Speech-to-text and text-to-speech are one device talking to itself, so they
+// never overlap: while a microphone is open nothing is read out loud, and a
+// recording that starts silences whatever is being read.
+async function nooverlap() {
+  const stub = await openRouterStub({ text: 'The tests passed and it is waiting.' });
   const s = await start({
     viewport: { width: 390, height: 844 },
     touch: true,
@@ -4047,90 +3873,64 @@ async function audiomode() {
     await setup(s.page, s.url);
     await useDomRenderer(s);
     await pointGateway(s, stub);
-    const said = await stubSpeech(s.context);
+    const said = await stubSpeech(s.context, { seconds: 1, delay: 1200 });
     await open(s);
-    const id = await startSession(s.page, 'claude');
+    await startSession(s.page, 'shell');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    await openChat(s.page);
 
-    await s.page.waitForSelector('#audioModeBtn:not([hidden])', { timeout: 15000 });
-    await s.page.click('#audioModeBtn');
-    await s.page.waitForSelector('#audioBar:not([hidden])', { timeout: 10000 });
-    const bar = await s.page.evaluate(() => {
-      const buttons = [...document.querySelectorAll('#audioBar .audio-btn')];
-      const term = document.querySelector('#term .xterm');
-      return {
-        labels: buttons.map((b) => b.textContent.trim()),
-        heights: buttons.map((b) => Math.round(b.getBoundingClientRect().height)),
-        fills: buttons.map((b) => getComputedStyle(b).backgroundColor),
-        termVisible: !!term && term.getBoundingClientRect().height > 80,
-      };
-    });
-    ok(bar.labels.join(',') === 'Status,Agent', 'two buttons, one word each', bar.labels.join(','));
-    ok(bar.heights.every((h) => h >= 64), 'each of them is big enough for a thumb', bar.heights.join(' / '));
-    ok(bar.fills.every((c) => c === WHITE), 'on the same white as everything else', bar.fills.join(' '));
-    ok(bar.termVisible, 'and the terminal is still there, merely shorter', 'the pane is drawn');
-
-    // In this mode the one line never goes away: it is what the session is
-    // doing, for somebody who cannot look at the screen.
-    const idle = await s.page.waitForFunction(() => {
-      const host = document.getElementById('termTicker');
-      return !host.hidden && /Claude Code is /.test(host.textContent);
-    }, null, { timeout: 30000 }).then(() => true).catch(() => false);
-    const line = await s.page.$eval('#termTicker', (n) => n.textContent.trim());
-    ok(idle, 'the ticker says what the session is doing, unasked', oneLine(line));
-
-    await s.page.reload({ waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    await s.page.waitForSelector('#audioBar:not([hidden])', { timeout: 15000 });
-    ok(true, 'and the choice survives a reload, because it is this phone’s', 'audio mode still on');
-    const again = await assistRoutes(s, id, { status: stub.text });
-
-    // The rule audio mode exists for: a turn that ends says so out loud, on
-    // its own, for the session being listened to and for no other.
-    await s.page.evaluate(() => {
-      const area = document.querySelector('#term .xterm-helper-textarea');
-      return area && area.readOnly;
-    });
-    // Typing is off in this mode, so the turn is started the way a phone in a
-    // car would have to start one: through the socket, from the key bar's own
-    // path. The composer is gone, so this is the pane's input frame directly.
-    await s.page.click('#audioModeBtn');
-    await s.page.waitForFunction(() => document.getElementById('audioBar').hidden,
-      null, { timeout: 10000 });
-    await typeLine(s.page, '/busy 3000');
-    await s.page.click('#audioModeBtn');
-    await s.page.waitForSelector('#audioBar:not([hidden])', { timeout: 10000 });
-    await awaitRow(s.page, id, (r) => r.busy, 12000);
-
-    const spoke = await s.page.waitForFunction(() => {
+    // A recording is running, and Status is pressed: the answer arrives on
+    // the screen, and it is not read into the microphone.
+    await s.page.click('#chatMic');
+    await s.page.waitForSelector('#chatRecSend:not([hidden])', { timeout: 15000 });
+    await s.page.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 15000 });
+    await s.page.click('#statusBtn');
+    const shown = await s.page.waitForFunction(() => {
       const host = document.getElementById('termNotice');
       return !!host && !host.hidden && host.dataset.kind === 'status';
-    }, null, { timeout: 60000 }).then(() => true).catch(() => false);
-    ok(spoke, 'a turn that ends asks for a status by itself', spoke ? 'unasked' : 'never');
-    ok(again.posts.status === 1, 'exactly once for one transition out of busy',
-      again.posts.status + ' request(s)');
-    for (let i = 0; i < 40 && said.length === 0; i += 1) await wait(200);
-    ok(said.length >= 1, 'and it is read out loud', said.length + ' render(s)');
+    }, null, { timeout: 45000 }).then(() => true).catch(() => false);
+    ok(shown, 'the summary arrived while the microphone was open', oneLine(await noticeText(s.page)));
+    await wait(2000);
+    ok(said.length === 0, 'and nothing at all was read out loud', said.length + ' render(s)');
 
-    // The Agent button in this mode opens the conversation with the
-    // microphone already running: one tap, which is the whole budget.
-    await s.page.click('#audioAgent');
-    await s.page.waitForSelector('#chatPanel:not([hidden])', { timeout: 10000 });
-    const recording = await s.page.waitForSelector('#chatMic.rec', { timeout: 15000 })
-      .then(() => true).catch(() => false);
-    ok(recording, 'and it is recording before anything else is pressed',
-      recording ? 'the microphone is live' : 'it opened but did not listen');
-    await wait(1400);
-    const word = await s.page.$eval('#chatMic', (n) => n.textContent.trim());
-    ok(/^Stop/.test(word), 'the same button is the way to stop it', word);
-    await s.page.click('#chatMic');
+    // The recording is thrown away, and the same button says the same thing
+    // out loud - so what stopped the voice was the microphone and nothing else.
+    await s.page.click('#chatRecCancel');
+    await s.page.waitForSelector('#chatMic:not([hidden])', { timeout: 10000 });
+    await s.page.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 20000 });
+    await s.page.click('#statusBtn');
+    for (let i = 0; i < 120 && said.length === 0; i += 1) await wait(200);
+    ok(said.length === 1, 'with the microphone closed it is read out loud',
+      said.length + ' render(s)');
 
-    const posted = await awaitBubble(s.page, (msgs) =>
-      msgs.some((m) => m.who === 'user' && m.text === stub.text), 60000);
-    ok(posted.ok, 'and what was heard becomes the message, verbatim and unconfirmed',
-      JSON.stringify(posted.seen.map((m) => m.who + ': ' + oneLine(m.text))));
+    // And the rule itself, both ways round, in the module that owns it: a
+    // recording silences what is playing, and speak() while it runs plays
+    // nothing rather than queueing it.
+    const rule = await s.page.evaluate(async () => {
+      const mod = await import('/static/js/voice.js');
+      const playing = mod.speak('an answer that is being read out loud right now');
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const before = mod.isSpeaking();
+      const recorder = new mod.Recorder();
+      await recorder.start();
+      const after = mod.isSpeaking();
+      const again = await mod.speak('this one must not be read out loud at all')
+        .then(() => 'resolved').catch((err) => 'threw: ' + err.message);
+      const during = mod.isSpeaking();
+      await recorder.cancel();
+      await playing.catch(() => {});
+      return { before, after, again, during };
+    });
+    ok(rule.before && !rule.after, 'a recording that starts silences what is being read',
+      JSON.stringify(rule));
+    ok(rule.again === 'resolved' && !rule.during,
+      'and asking for speech while it records answers at once, having played nothing',
+      JSON.stringify(rule));
+    await wait(500);
+    ok(said.length === 2, 'the render that was interrupted was the last one asked for',
+      said.length + ' render(s)');
 
-    await shot(s.page, 'audio-mode');
+    await shot(s.page, 'no-overlap');
     ok(unexpected(s.errors).length === 0, 'no console errors',
       unexpected(s.errors).join(' | ') || '0');
   } finally {
@@ -4312,8 +4112,7 @@ const ALL = [
   ['sessionlist', 'rename, archive, unarchive and delete', sessionlist],
   ['exitoverlay', 'a pane that ends, its status under the sentence, and Restart', exitoverlay],
   ['webglrenders', 'the shipped renderer paints the terminal', webglrenders],
-  ['keybar', 'the key bar sends the right bytes and the line input sends whole lines', keybar],
-  ['dictation', 'the microphone writes a draft into the line input, unsent', dictation],
+  ['keybar', 'no device gets the key bar unasked, and asked for it sends the right bytes', keybar],
   ['offlineonce', 'a line typed with no network arrives exactly once', offlineonce],
   ['sigtermreattach', 'a restarted server reattaches to the pane that kept running', sigtermreattach],
   ['takeover', 'a second tab with the same viewer id takes the pane over', takeover],
@@ -4342,9 +4141,8 @@ const ALL = [
   ['status-ticker', 'the phases of a status, in order, in one line', statusticker],
   ['agent-run', 'a request that needs the keyboard, and keystrokes in the pane', agentrun],
   ['chat-text', 'a question answered in words, and a request that types', chattext],
-  ['chat-audio', 'auto mode: no field anywhere, and a keyboard that cannot open', chataudio],
-  ['auto-switch', 'a switch that travels, and a choice this phone keeps', autoswitch],
-  ['audio-mode', 'two large buttons, a remembered choice, and a turn that speaks for itself', audiomode],
+  ['chat-dictate', 'a recording with two endings, a spoken answer, and a bubble read again', chatdictate],
+  ['no-overlap', 'the microphone and the voice are never open at the same time', nooverlap],
   ['typeafteroutage', 'a cut socket, a locked phone, and a pane that still takes keystrokes', typeafteroutage],
   ['typekeepsfocus', 'a dialog, the ⋯ menu and two sessions: the keys still land in the pane', typekeepsfocus],
   ['design', 'white surfaces, marks, hover-only detail and motion that does not restart', design],

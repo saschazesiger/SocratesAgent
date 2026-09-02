@@ -66,23 +66,14 @@
            cross, quiet enough to sit beside the name, and it is hidden
            altogether on a narrow screen. -->
       <span class="term-size" id="termSize" hidden></span>
-      <!-- What this session is doing, said out loud; what it should do next,
-           done for you; and the mode that makes both of them thumb-sized.
-           All three are hidden until there is a session to ask about. -->
-      <button class="icon-btn" id="statusBtn" title="Say what this is doing" aria-label="Say what this is doing" hidden>
+      <!-- What this session is doing, said out loud, and what it should do
+           next, done for you. Both are hidden until there is a session to ask
+           about. -->
+      <button class="icon-btn" id="statusBtn" title="Summarize this session" aria-label="Summarize this session" hidden>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 0 1-8 8H5.5L4 21.5V12a8 8 0 1 1 16 0z"/></svg>
       </button>
-      <button class="icon-btn" id="agentBtn" title="What should I do?" aria-label="What should I do?" hidden>
+      <button class="icon-btn" id="agentBtn" title="Ask the agent" aria-label="Ask the agent" hidden>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M18.5 16.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></svg>
-      </button>
-      <!-- Auto mode is a state, not an action, so it is a switch and not a
-           pressed button: the knob says which way it is set without anybody
-           having to hover it. -->
-      <button class="auto-switch" id="audioModeBtn" type="button" role="switch" aria-checked="false"
-              title="Auto mode" hidden>
-        <span class="auto-word" aria-hidden="true">Auto</span>
-        <span class="auto-track"><span class="auto-knob"></span></span>
-        <span class="sr-only">Auto mode</span>
       </button>
       <button class="icon-btn" id="sessionMenu" title="Session actions" hidden aria-haspopup="true" aria-expanded="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>
@@ -112,8 +103,7 @@
       </div>
 
       <!-- The chat with the agent. chat.js fills the log and builds the input
-           row, which is a text field with a keyboard and one large microphone
-           without one. -->
+           row: a field, a microphone and a Send. -->
       <aside class="chat-panel" id="chatPanel" hidden aria-label="Ask the agent">
         <header class="chat-head">
           <span class="chat-head-title">Ask</span>
@@ -126,28 +116,9 @@
       </aside>
     </div>
 
-    <!-- Audio mode: the terminal stays where it is and simply gets shorter,
-         and everything a passenger needs is two buttons a thumb cannot miss.
-         assist.js fills them in and decides what they say. -->
-    <div class="audio-bar" id="audioBar" hidden>
-      <button class="audio-btn" id="audioStatus" type="button">Status</button>
-      <button class="audio-btn" id="audioAgent" type="button">Agent</button>
-    </div>
-
-    <!-- The keys a phone keyboard does not have, and the field a whole line is
-         composed in before it is sent. keybar.js fills both in and decides
-         whether the key bar is wanted on this device. -->
+    <!-- The keys a phone keyboard does not have. keybar.js fills them in; the
+         session menu is what puts the bar on screen, on any device. -->
     <div class="keybar" id="keybar" hidden></div>
-    <form class="composer" id="composer" hidden>
-      <input id="lineInput" class="input" type="text"
-             autocorrect="off" autocapitalize="none" autocomplete="off" spellcheck="false"
-             enterkeyhint="send" placeholder="Type a line…">
-      <button class="icon-btn" id="micBtn" type="button" title="Speak" hidden>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
-      </button>
-      <span class="rec-time" id="recTime" hidden>0:00</span>
-      <button class="btn primary" id="sendLine" type="submit">Send</button>
-    </form>
   </main>
 </div>
 

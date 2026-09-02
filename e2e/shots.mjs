@@ -117,8 +117,8 @@ async function sessionShot() {
   } finally { await s.stop(); }
 }
 
-// The phone picture: the same terminal at 390x844, with the key bar and the
-// line input that make a terminal usable with a thumb.
+// The phone picture: the same terminal at 390x844, with the key bar that makes
+// a terminal usable with a thumb.
 async function phoneShot() {
   const s = await start({ viewport: PHONE });
   try {
@@ -131,8 +131,11 @@ async function phoneShot() {
     await rename(s, id, 'Claude Code · on the train');
     await typeLine(s.page, 'what changed in the store package today?');
     await seen(s.page, 'you said:');
+    // The bar is off until it is asked for, and the session menu is where it
+    // is asked for - which is what the picture is of.
+    await s.page.click('#sessionMenu');
+    await s.page.click('.menu-item:has-text("Show key bar")');
     await s.page.waitForSelector('#keybar:not([hidden])', { timeout: 10000 }).catch(() => {});
-    await s.page.fill('#lineInput', 'now run the tests');
     await wait(600);
 
     mkdirSync(DOCS, { recursive: true });
