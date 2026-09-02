@@ -8,18 +8,16 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
 	"github.com/saschazesiger/SocratesAgent/internal/catalog"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
-	"github.com/saschazesiger/SocratesAgent/internal/engine"
 	"github.com/saschazesiger/SocratesAgent/internal/piper"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
+	"github.com/saschazesiger/SocratesAgent/internal/termux"
 	"github.com/saschazesiger/SocratesAgent/internal/tunnel"
 	"github.com/saschazesiger/SocratesAgent/internal/web"
 )
@@ -29,17 +27,31 @@ var Version = "dev"
 
 const settingsKey = "settings"
 
-// Server wires storage, the harness engine and the HTTP handlers together.
+// Server wires storage, the terminal sessions and the HTTP handlers together.
 type Server struct {
-	store  *store.Store
-	bus    *engine.Bus
-	engine *engine.Engine
-	tunnel *tunnel.Manager
-	hosts  *agenthost.Manager
-	agents *catalog.Catalog
-	voice  *piper.Engine
+	store   *store.Store
+	tunnel  *tunnel.Manager
+	voice   *piper.Engine
+	manager *termux.Manager
+	catalog *catalog.Catalog
 
+	dataDir  string
 	localURL string
+
+	// hub is every browser tab the transport currently remembers, including
+	// the ones whose socket has dropped and whose terminal is in its grace.
+	hub *termHub
+	// pingEvery, pingTimeout and writeTimeout are the transport's watchdog and
+	// its slow-reader guard, set once here so that the tests can run them in
+	// milliseconds rather than in minutes.
+	pingEvery    time.Duration
+	pingTimeout  time.Duration
+	writeTimeout time.Duration
+
+	// tmuxAdmin is the terminal engine card of the dashboard: the detection
+	// behind /api/tmux and the install it streams. Its zero value is a server
+	// that has installed nothing, so it needs nothing from New.
+	tmuxAdmin tmuxAdmin
 
 	mu       sync.RWMutex
 	settings config.Settings
@@ -48,6 +60,9 @@ type Server struct {
 
 	loginMu   sync.Mutex
 	loginFail map[string]*attempt
+	// wsRate is the per address ceiling on WebSocket handshakes, guarded by
+	// loginMu because it is the same kind of defence.
+	wsRate map[string]*attempt
 }
 
 type attempt struct {
@@ -59,9 +74,14 @@ type attempt struct {
 // its own files, including a cloudflared it downloads itself.
 func New(st *store.Store, dataDir string) (*Server, error) {
 	s := &Server{
-		store:     st,
-		bus:       engine.NewBus(),
-		loginFail: map[string]*attempt{},
+		store:        st,
+		dataDir:      dataDir,
+		hub:          newTermHub(),
+		pingEvery:    defaultPingEvery,
+		pingTimeout:  defaultPingTimeout,
+		writeTimeout: defaultWriteTimeout,
+		loginFail:    map[string]*attempt{},
+		wsRate:       map[string]*attempt{},
 	}
 
 	settings := config.Default()
@@ -74,19 +94,22 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 		return nil, err
 	}
 
-	// Agent sessions run in their own processes, started by re-executing this
-	// binary, so that a turn in flight survives a restart of the web server.
-	self, err := os.Executable()
-	if err != nil {
-		return nil, fmt.Errorf("could not locate the Socrates binary: %w", err)
-	}
-	s.hosts, err = agenthost.NewManager(filepath.Join(dataDir, "agents"), self)
+	cfg := managerConfig(dataDir, settings)
+	// The manager plans a resume of its own accord after a reboot, so it reads
+	// the live settings rather than the copy it was built with.
+	cfg.Settings = s.Settings
+	// A pane that dies and a window that changes size are facts about the
+	// substrate; the frames that carry them to a browser are the transport's,
+	// which is why the Manager is handed two functions rather than a socket.
+	cfg.OnExit = s.onSessionExit
+	cfg.OnSize = s.onSessionSize
+	manager, err := termux.New(st, cfg)
 	if err != nil {
 		return nil, err
 	}
+	s.manager = manager
+	s.catalog = catalog.New(st, s.Settings)
 
-	s.agents = catalog.New(st, s.Settings)
-	s.engine = engine.New(st, s.bus, s.Settings, s.hosts)
 	s.tunnel = tunnel.New(s.Settings, s.LocalURL, filepath.Join(dataDir, "bin"))
 	s.voice = piper.New(filepath.Join(dataDir, "voice"))
 	s.installVoice()
@@ -94,6 +117,53 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	s.routes()
 	return s, nil
 }
+
+// managerConfig is the terminal substrate as the dashboard has configured it.
+// The generated tmux configuration is written from these, so a change to them
+// reaches the sessions created after it and never the ones already running: a
+// terminal keeps the substrate it was started on.
+func managerConfig(dataDir string, settings config.Settings) termux.Config {
+	return termux.Config{
+		DataDir: dataDir,
+		Conf: termux.ConfOptions{
+			HistoryLimit: settings.Terminal.HistoryLimit,
+			Mouse:        settings.Terminal.Mouse,
+			ExtendedKeys: settings.Terminal.ExtendedKeys,
+		},
+		WindowSize: settings.Terminal.WindowSize,
+		Supervisor: termux.DetectSupervisor(),
+	}
+}
+
+// StartSessions brings the terminal substrate up: the generated configuration,
+// the socket the tmux hooks report to, the re-adoption of everything that
+// survived the last run, and the poll that watches for panes that die.
+//
+// Adoption runs before the listener accepts, because a browser that asks for
+// the session list in the first moment must not be told a running session is
+// gone. A failure here is reported and not fatal: a Socrates that cannot start
+// sessions still has to serve the dashboard that says why.
+func (s *Server) StartSessions(ctx context.Context) error {
+	if err := s.manager.Start(ctx); err != nil {
+		return err
+	}
+	if err := s.manager.Adopt(ctx); err != nil {
+		log.Printf("terminal sessions: could not reconcile with tmux: %v", err)
+	}
+	s.manager.StartPoll(ctx)
+	return nil
+}
+
+// StopSessions lets go of everything Socrates owns and nothing tmux owns: the
+// sessions themselves keep running, which is the whole point of them.
+func (s *Server) StopSessions() {
+	if err := s.manager.Close(); err != nil {
+		log.Printf("terminal sessions: %v", err)
+	}
+}
+
+// Sessions is the terminal manager, for the transport that attaches to it.
+func (s *Server) Sessions() *termux.Manager { return s.manager }
 
 // installVoice puts Piper on the machine while nobody is waiting for it. A
 // fresh installation downloads about 150 MB, and the worst moment to discover
@@ -185,23 +255,6 @@ func (s *Server) StartTunnelIfEnabled() {
 	log.Print("cloudflare tunnel: starting")
 }
 
-// ResumeAgents reconnects to the agent sessions that kept running while
-// Socrates was restarted and takes their turns back over. It returns the run
-// ids it claimed, so the caller can keep RecoverRuns off them.
-func (s *Server) ResumeAgents() []string {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	s.hosts.Restore(ctx)
-	s.hosts.Prune()
-	return s.engine.Adopt(ctx)
-}
-
-// DetachAgents lets go of the running sessions without stopping them, so a
-// restart does not interrupt work in progress. The engine is told first: a
-// subscription that ends because we dropped the socket is not a turn that
-// died, and mistaking one for the other orphans the turn.
-func (s *Server) DetachAgents() { s.engine.Detach() }
-
 // StopTunnel shuts the tunnel down, used on graceful shutdown.
 func (s *Server) StopTunnel() { s.tunnel.Stop() }
 
@@ -228,29 +281,34 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/login", s.handleLogin)
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
 
-	// Chats
-	mux.HandleFunc("GET /api/chats", s.auth(s.handleListChats))
-	mux.HandleFunc("POST /api/chats", s.auth(s.handleCreateChat))
-	mux.HandleFunc("GET /api/chats/{id}", s.auth(s.handleGetChat))
-	mux.HandleFunc("PATCH /api/chats/{id}", s.auth(s.handleUpdateChat))
-	mux.HandleFunc("DELETE /api/chats/{id}", s.auth(s.handleDeleteChat))
-	mux.HandleFunc("POST /api/chats/{id}/archive", s.auth(s.handleArchiveChat))
-	mux.HandleFunc("POST /api/chats/{id}/unarchive", s.auth(s.handleUnarchiveChat))
-	mux.HandleFunc("POST /api/chats/{id}/messages", s.auth(s.handleSendMessage))
-	mux.HandleFunc("POST /api/chats/{id}/stop", s.auth(s.handleStopRun))
-	mux.HandleFunc("GET /api/chats/{id}/events", s.auth(s.handleEvents))
+	// Terminal sessions
+	mux.HandleFunc("GET /api/sessions", s.auth(s.handleListSessions))
+	mux.HandleFunc("POST /api/sessions", s.auth(s.handleCreateSession))
+	mux.HandleFunc("GET /api/sessions/{id}", s.auth(s.handleGetSession))
+	mux.HandleFunc("PATCH /api/sessions/{id}", s.auth(s.handleRenameSession))
+	mux.HandleFunc("DELETE /api/sessions/{id}", s.auth(s.endingViewers(s.handleDeleteSession)))
+	mux.HandleFunc("POST /api/sessions/{id}/archive", s.auth(s.handleArchiveSession))
+	mux.HandleFunc("POST /api/sessions/{id}/resume", s.auth(s.handleResumeSession))
+	mux.HandleFunc("POST /api/sessions/{id}/restart", s.auth(s.handleRestartSession))
+	mux.HandleFunc("POST /api/sessions/{id}/ack-resume", s.auth(s.handleAckResume))
+	mux.HandleFunc("GET /api/sessions/{id}/journal", s.auth(s.handleJournal))
+	mux.HandleFunc("GET /api/sessions/{id}/ws", s.auth(s.handleSessionWS))
 
-	// Agents: what is installed, and which models each one offers.
-	mux.HandleFunc("GET /api/agents", s.auth(s.handleAgents))
-	mux.HandleFunc("POST /api/agents/refresh", s.auth(s.handleAgentsRefresh))
+	// The harness catalogue: what can be started, and where.
+	mux.HandleFunc("GET /api/harnesses", s.auth(s.handleHarnesses))
+	mux.HandleFunc("POST /api/harnesses/refresh", s.auth(s.handleRefreshHarnesses))
 
 	// Admin
 	mux.HandleFunc("GET /api/settings", s.auth(s.handleGetSettings))
 	mux.HandleFunc("PUT /api/settings", s.auth(s.handlePutSettings))
 	mux.HandleFunc("POST /api/settings/password", s.auth(s.handleChangePassword))
 	mux.HandleFunc("GET /api/preferences", s.auth(s.handlePreferences))
-	mux.HandleFunc("GET /api/models", s.auth(s.handleModels))
 	mux.HandleFunc("POST /api/diagnostics", s.auth(s.handleDiagnostics))
+
+	// The terminal engine: is tmux here, and the install that puts it there.
+	mux.HandleFunc("GET /api/tmux", s.auth(s.handleTmux))
+	mux.HandleFunc("POST /api/tmux/install", s.auth(s.handleTmuxInstall))
+	mux.HandleFunc("GET /api/tmux/events", s.auth(s.handleTmuxEvents))
 
 	// Cloudflare tunnel
 	mux.HandleFunc("GET /api/tunnel", s.auth(s.handleTunnelStatus))
@@ -344,7 +402,11 @@ func readJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 }
 
 // sameOrigin is a lightweight CSRF guard for state changing requests. The
-// session cookie is SameSite=Lax, so this is a second line of defence.
+// session cookie is SameSite=Lax (auth.go, and DEVIATIONS says why: Strict
+// would sign a person out of every link into the app), so this is not a second
+// line of defence but a real one; the WebSocket handshake has the same check
+// inside websocket.Accept, which is where it has to be because a GET is not
+// covered here.
 func sameOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {

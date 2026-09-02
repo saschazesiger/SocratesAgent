@@ -115,7 +115,7 @@ function streamsHealthy() {
 // OFFLINE_GRACE is how long a stream may be between connections before the
 // page says anything about it.
 //
-// Every chat switch closes one stream and opens another, and so does arriving
+// Every switch from one session to another closes one stream and opens another, and so does arriving
 // from another page: for a few hundred milliseconds there is genuinely no live
 // stream, and saying "connection lost" then is a lie that flashes on screen
 // several times a minute. A real loss is still announced - it just has to last
@@ -194,9 +194,64 @@ function setConnection(status, options = {}) {
   emitConnection();
 }
 
-// The chat view keeps its own "this is stale" visuals in step with the bar, so
+// The session page keeps its own "this is stale" visuals in step with the bar, so
 // the wait before either of them appears is defined in one place.
 export const CONNECTION_GRACE = OFFLINE_GRACE;
+
+/**
+ * connectionSource lets something that is not a LiveStream report to the same
+ * status bar.
+ *
+ * The terminal's transport is a WebSocket, and setConnection is private to
+ * this file for a good reason: one place decides what the app believes about
+ * its connection. So instead of exporting that decision, this hands out a
+ * reporter backed by a pseudo-stream registered in the same two sets the
+ * EventSource wrapper uses. streamsHealthy() weighs it like any other stream,
+ * the window's offline listener reaches it through goOffline(), and the bar,
+ * body.conn-lost and body.stale keep working with no change at all.
+ *
+ * report(status, extra) takes 'live' | 'connecting' | 'offline' | 'idle', with
+ * the same extra fields LiveStream reports: retryAt, immediate, retryNow.
+ * release() takes the pseudo-stream out again, which a page must do when it
+ * closes its socket for good - a source left behind would hold the bar down
+ * for ever.
+ */
+export function connectionSource({ global = true } = {}) {
+  const source = {
+    status: 'idle',
+    reportsGlobal: global,
+    // The offline listener calls this on every registered stream. A socket
+    // that is still open when the radio goes simply stops delivering, so the
+    // owner is told to give up on it rather than left looking live.
+    goOffline() { source.onOffline(); },
+    onOffline: () => {},
+  };
+  liveStreams.add(source);
+  if (global) globalStreams.add(source);
+  return {
+    report(status, extra = {}) {
+      source.status = status;
+      if (!global) return;
+      if (status === 'live') setConnection(LIVE);
+      else if (status !== 'idle') {
+        setConnection(navigator.onLine === false ? OFFLINE : CONNECTING, {
+          retryAt: extra.retryAt || 0,
+          immediate: !!extra.immediate,
+          retryNow: extra.retryNow,
+        });
+      }
+    },
+    // onOffline is how the owner hears the device losing its network, which is
+    // the one signal a socket does not produce on its own.
+    onOffline(handler) { source.onOffline = handler; },
+    release() {
+      source.status = 'idle';
+      liveStreams.delete(source);
+      globalStreams.delete(source);
+      if (streamsHealthy() && connection.status !== LIVE) setConnection(LIVE);
+    },
+  };
+}
 
 // noteContact records that the server answered something. That proves the
 // connection works, but not that the live view is current - a stream that is

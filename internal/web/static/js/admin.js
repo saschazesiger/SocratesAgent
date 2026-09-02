@@ -1,11 +1,23 @@
 // The admin dashboard: everything about Socrates is configurable here.
+//
+// The page is one settings document with a form drawn over it. Every control
+// writes straight into that document and Save sends the whole thing back, so
+// an unsaved change is undone by leaving the page and a save is one request
+// that either succeeded or did not.
+//
+// The harness cards are not hand written. §C.9-C.12 of the specification is a
+// catalogue of options - a key, a control, the flag or variable it becomes -
+// and OPTIONS below is that catalogue in one place, so a new option is one
+// entry rather than a field, a reader, a writer and a paragraph of HTML.
 
-import { api, el, toast, isOffline, errorMessage, setClass, onWake, infoTip } from './api.js';
+import {
+  api, el, toast, isOffline, errorMessage, setClass, onWake, infoTip,
+  confirmDialog, LiveStream,
+} from './api.js';
 import { agentMark } from './logos.js';
 import { speak, speechKind } from './voice.js';
 import { combobox } from './combobox.js';
-import * as models from './models.js';
-import * as agents from './agents.js';
+import * as harnesses from './harnesses.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -28,28 +40,49 @@ function busyButton(button, on, label) {
 let settings = null;
 let defaults = null;
 
-// Everything that names a model is picked from the OpenRouter catalogue with a
-// searchable dropdown rather than typed into a text field, so none of them are
-// in FIELDS.
+// The transcription model is a searchable field rather than a plain text one,
+// so it is not in FIELDS. There is no model catalogue endpoint any more - it
+// went with the chat API - so the combobox is what it is with no items: a text
+// field that takes any id, with the id already in use offered back.
+//
+// `openrouter.title_model` is deliberately not here. It named a chat, and
+// nothing generates a name any more: a session is named after the program and
+// the moment it started, and renamed by hand. The setting survives in the
+// document because it costs nothing there; a control for it would promise
+// something that does not happen.
 const MODEL_PICKERS = [
-  ['orTranscribe', 'openrouter.transcribe_model', () => models.audio()],
-  ['orTitle', 'openrouter.title_model', () => models.chat()],
+  ['orTranscribe', 'openrouter.transcribe_model'],
 ];
 
+// FIELDS is every control that is one element and one path. Everything with a
+// shape of its own - the presets, the harness cards, the model short lists -
+// is built and read below.
 const FIELDS = [
   ['orKey', 'openrouter.api_key'],
-  ['workspaceRoot', 'agent.workspace_root'],
+  ['workspaceRoot', 'workspace.root'],
+  ['allowCustomDir', 'workspace.allow_custom', 'bool'],
+  ['windowSize', 'terminal.window_size'],
+  ['historyLimit', 'terminal.history_limit', 'int'],
+  ['scrollback', 'terminal.scrollback', 'int'],
+  ['fontSize', 'terminal.font_size', 'int'],
+  ['mouseOn', 'terminal.mouse', 'bool'],
+  ['extendedKeys', 'terminal.extended_keys', 'bool'],
+  ['webgl', 'terminal.webgl', 'bool'],
   ['voiceLanguage', 'voice.language'],
   ['sttPrompt', 'voice.stt_prompt'],
   ['ttsRate', 'voice.tts_rate', 'number'],
-  ['speakAuto', 'voice.speak_in_auto_mode', 'bool'],
-  ['speakChat', 'voice.speak_in_chat_mode', 'bool'],
   ['tunnelMode', 'tunnel.mode'],
   ['tunnelToken', 'tunnel.token'],
   ['tunnelHostname', 'tunnel.hostname'],
   ['tunnelCommand', 'tunnel.command'],
   ['tunnelArgs', 'tunnel.extra_args', 'args'],
 ];
+
+const WINDOW_SIZE_HINTS = {
+  manual: 'Socrates sizes the window to the viewer that last connected or resized; typing never changes it.',
+  latest: 'The window follows whichever viewer last typed or attached.',
+  largest: 'The window is as large as the biggest viewer, and smaller viewers pan over it.',
+};
 
 let tunnelTimer = null;
 let voiceTimer = null;
@@ -65,6 +98,336 @@ function setPath(object, path, value) {
   const target = keys.reduce((acc, key) => (acc[key] = acc[key] || {}), object);
   target[last] = value;
 }
+
+/* ------------------------------------------------------- the option catalogue */
+
+// A group is a disclosure inside a harness card. The order here is the order
+// they appear in; a group with no options for a harness is not drawn.
+const GROUP_ORDER = [
+  'Model & effort',
+  'Model & agent',
+  'Permissions & sandbox',
+  'Permissions',
+  'Providers',
+  'Isolation',
+  'Remote control',
+  'Session & prompt',
+  'Session',
+  'Extensions',
+  'Tools & features',
+  'Theme & terminal',
+  'Diagnostics',
+  'Advanced (raw)',
+];
+
+// The Codex themes the specification names, and OpenCode's verified built-in
+// list. Neither CLI validates a theme name, so a typo is a session that starts
+// and looks wrong - which is why both are closed lists with a way out.
+const CODEX_THEMES = ['light-gray', 'gruvbox-light', 'ocean-light', 'light-dark', 'gruvbox-dark'];
+// The built-in themes of OpenCode 1.17.13, read out of its own theme registry
+// rather than out of its documentation, which lists a third of them. `system`
+// is registered separately and is the one that follows the terminal.
+const OPENCODE_THEMES = ['opencode', 'system', 'aura', 'ayu', 'carbonfox', 'catppuccin',
+  'catppuccin-frappe', 'catppuccin-macchiato', 'cobalt2', 'cursor', 'dracula', 'everforest',
+  'flexoki', 'github', 'gruvbox', 'kanagawa', 'lucent-orng', 'material', 'matrix', 'mercury',
+  'monokai', 'nightowl', 'nord', 'one-dark', 'orng', 'osaka-jade', 'palenight', 'rosepine',
+  'solarized', 'synthwave84', 'tokyonight', 'vercel', 'vesper', 'zenburn'];
+
+const CLAUDE_EFFORTS = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
+const CODEX_EFFORTS = ['', 'minimal', 'low', 'medium', 'high', 'xhigh'];
+
+// The raw groups every harness has, because every harness has the flag and the
+// variable this app did not think of.
+const RAW = [
+  { key: 'extra_args', label: 'Extra arguments', type: 'list', group: 'Advanced (raw)',
+    hint: 'Appended to the command line verbatim, separated by spaces.' },
+  { key: 'extra_env', label: 'Extra environment', type: 'lines', group: 'Advanced (raw)',
+    hint: 'One KEY=VALUE per line. A name that is not a valid variable name is dropped on save.' },
+];
+
+const OPTIONS = {
+  shell: [
+    { key: 'login', label: 'Login shell', type: 'switch', group: 'Session',
+      hint: 'Starts the shell with -l, so the profile that sets up PATH and the prompt is read.' },
+    ...RAW,
+  ],
+
+  claude: [
+    { key: 'default_model', label: 'Default model', type: 'model', group: 'Model & effort',
+      hint: '--model. A session started without a model of its own uses this one.' },
+    { key: 'default_effort', label: 'Default effort', type: 'select', values: CLAUDE_EFFORTS,
+      group: 'Model & effort', hint: '--effort. Empty leaves Claude Code on its own default.' },
+    { key: 'autocompact', label: 'Autocompact', type: 'text', group: 'Model & effort',
+      placeholder: 'auto, or 200k',
+      hint: '--autocompact. Either the word auto or a context size between 100k and 1M.' },
+    { key: 'max_thinking_tokens', label: 'Max thinking tokens', type: 'int', min: 0,
+      group: 'Model & effort', hint: 'env MAX_THINKING_TOKENS. 0 leaves it unset.' },
+
+    { key: 'remote_control', label: 'Remote control', type: 'switch', group: 'Remote control',
+      confirm: (value) => value === true,
+      confirmTitle: 'Let a remote client drive this session?',
+      confirmBody: 'Claude Code opens a remote-control channel: whoever can reach it can send '
+        + 'prompts and see everything in the session, as if they were at this keyboard.',
+      confirmAgain: 'The channel is open for every Claude Code session started from now on, not '
+        + 'just this one. Turn it on?',
+      hint: '--remote-control.' },
+    { key: 'permission_mode', label: 'Permission mode', type: 'select',
+      values: ['unset', 'manual', 'acceptEdits', 'auto', 'plan', 'dontAsk', 'bypassPermissions'],
+      group: 'Permissions & sandbox',
+      // bypassPermissions is --dangerously-skip-permissions by another name -
+      // it is the value that makes the launcher suppress Claude Code's own
+      // safety dialog - so it is asked about exactly as the "Dangerous skip"
+      // below is.
+      confirm: (value) => value === 'bypassPermissions',
+      confirmTitle: 'Let Claude Code skip every permission prompt?',
+      confirmBody: 'bypassPermissions is the mode that asks about nothing: every edit, every '
+        + 'command and every network call happens without being approved, and Socrates answers '
+        + 'the safety dialog for it.',
+      confirmAgain: 'This applies to every Claude Code session started from now on. Say yes only '
+        + 'if this machine is one you would let a stranger type on.',
+      hint: '--permission-mode. "unset" leaves the flag off.' },
+    { key: 'skip_permissions', label: 'Dangerous skip', type: 'select',
+      values: [
+        { value: 'off', label: 'Off — the flag is never passed' },
+        { value: 'allow', label: 'Allow — the session may skip permission prompts' },
+        { value: 'force', label: 'Force — skip every permission prompt' },
+      ],
+      group: 'Permissions & sandbox', confirm: (value) => value !== 'off',
+      confirmTitle: 'Let Claude Code skip permission prompts?',
+      confirmBody: 'Every edit, every command and every network call happens without being asked '
+        + 'about. Only do this in a directory you are willing to lose.',
+      confirmAgain: 'This applies to every Claude Code session started from now on. Say yes only '
+        + 'if you would be content to lose everything under the working directory.',
+      hint: 'Off passes nothing; allow passes --allow-dangerously-skip-permissions; force passes '
+        + '--dangerously-skip-permissions.' },
+    { key: 'allowed_tools', label: 'Allowed tools', type: 'list', group: 'Permissions & sandbox',
+      hint: '--allowedTools, comma separated.' },
+    { key: 'disallowed_tools', label: 'Disallowed tools', type: 'list', group: 'Permissions & sandbox',
+      hint: '--disallowedTools, comma separated.' },
+    { key: 'tools', label: 'Tools', type: 'text', group: 'Permissions & sandbox',
+      hint: '--tools. Empty, the word default, or a list.' },
+    { key: 'setting_sources', label: 'Setting sources', type: 'multi',
+      values: ['user', 'project', 'local'], group: 'Permissions & sandbox',
+      hint: '--setting-sources. Which layers of the user’s own settings Claude Code reads.' },
+    { key: 'cleanup_period_days', label: 'Keep transcripts for', type: 'int', min: 1, max: 3650,
+      group: 'Permissions & sandbox', hint: 'Days, written as cleanupPeriodDays into the generated settings file.' },
+    { key: 'restricted', label: 'Restricted', type: 'switch', group: 'Permissions & sandbox', hint: '--restricted.' },
+    { key: 'safe_mode', label: 'Safe mode', type: 'switch', group: 'Permissions & sandbox', hint: '--safe-mode.' },
+    { key: 'bare', label: 'Bare', type: 'switch', group: 'Permissions & sandbox',
+      hint: '--bare. It forces API-key authentication, so a subscription login will not be used.' },
+
+    { key: 'add_dirs', label: 'Extra directories', type: 'lines', group: 'Permissions & sandbox',
+      hint: '--add-dir, one absolute path per line. They are also written as permissions.additionalDirectories.' },
+
+    { key: 'remote_control_name', label: 'Remote control name', type: 'text', group: 'Remote control',
+      hint: 'The name passed after --remote-control. Empty uses the session title.' },
+    { key: 'remote_control_prefix', label: 'Session name prefix', type: 'text', group: 'Remote control',
+      hint: 'env CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX.' },
+
+    { key: 'resume_mode', label: 'On resume', type: 'select',
+      values: [
+        { value: 'continue', label: 'Continue the conversation' },
+        { value: 'fork', label: 'Fork it, leaving the original as it was' },
+      ],
+      group: 'Session & prompt', hint: '--resume, with --fork-session for the second.' },
+    { key: 'agent', label: 'Agent', type: 'text', group: 'Session & prompt', hint: '--agent.' },
+    { key: 'append_system_prompt', label: 'Appended system prompt', type: 'textarea',
+      group: 'Session & prompt', hint: '--append-system-prompt.' },
+    { key: 'system_prompt_snapshot', label: 'System prompt snapshot', type: 'select',
+      values: ['on', 'off'], group: 'Session & prompt',
+      hint: '--system-prompt-snapshot. It only decides anything when a prompt is appended above.' },
+    { key: 'exclude_dynamic_prompt_sections', label: 'Exclude dynamic prompt sections',
+      type: 'switch', group: 'Session & prompt', hint: '--exclude-dynamic-system-prompt-sections.' },
+    { key: 'disable_slash_commands', label: 'Disable slash commands', type: 'switch',
+      group: 'Session & prompt', hint: '--disable-slash-commands.' },
+
+    { key: 'mcp_config', label: 'MCP configuration files', type: 'lines', group: 'Extensions',
+      hint: '--mcp-config, one path per line.' },
+    { key: 'strict_mcp_config', label: 'Strict MCP configuration', type: 'switch',
+      group: 'Extensions', hint: '--strict-mcp-config.' },
+    { key: 'plugin_dirs', label: 'Plugin directories', type: 'lines', group: 'Extensions',
+      hint: '--plugin-dir, one path per line.' },
+
+    { key: 'pin_light_theme', label: 'Pin the light theme', type: 'switch', group: 'Theme & terminal',
+      hint: 'Writes "theme":"light" into the global Claude Code preferences, so the pane matches the page.' },
+    { key: 'disable_terminal_title', label: 'Leave the terminal title alone', type: 'switch',
+      group: 'Theme & terminal', hint: 'env CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1.' },
+    { key: 'disable_mouse', label: 'Disable the mouse', type: 'switch', group: 'Theme & terminal',
+      hint: 'env CLAUDE_CODE_DISABLE_MOUSE=1.' },
+    { key: 'no_flicker', label: 'No flicker', type: 'switch', group: 'Theme & terminal',
+      hint: 'env CLAUDE_CODE_NO_FLICKER=1.' },
+    { key: 'force_sync_output', label: 'Force synchronous output', type: 'switch',
+      group: 'Theme & terminal', hint: 'env CLAUDE_CODE_FORCE_SYNC_OUTPUT=1.' },
+
+    { key: 'verbose', label: 'Verbose', type: 'switch', group: 'Diagnostics', hint: '--verbose.' },
+    { key: 'debug_filter', label: 'Debug filter', type: 'text', group: 'Diagnostics', hint: '-d <filter>.' },
+    { key: 'debug_file', label: 'Write a debug log', type: 'switch', group: 'Diagnostics',
+      hint: '--debug-file, into the session’s own directory.' },
+
+    { key: 'advisor', label: 'Advisor model', type: 'text', group: 'Advanced (raw)',
+      hint: '--advisor. Undocumented and absent from --help, so it lives here: it is offered '
+        + 'because it is in the shipped binary, and a wrong value is a session that will not start.' },
+    { key: 'settings_overrides', label: 'Settings overrides', type: 'json', group: 'Advanced (raw)',
+      hint: 'JSON, deep-merged into the generated settings file. Invalid JSON is refused when you save.' },
+    ...RAW,
+  ],
+
+  codex: [
+    { key: 'default_model', label: 'Default model', type: 'model', group: 'Model & effort', hint: '-m.' },
+    { key: 'default_effort', label: 'Default effort', type: 'select', values: CODEX_EFFORTS,
+      group: 'Model & effort',
+      hint: '-c model_reasoning_effort. Codex does not check this value, so the list is closed here.' },
+    { key: 'model_reasoning_summary', label: 'Reasoning summary', type: 'select',
+      values: ['', 'auto', 'concise', 'detailed', 'none'], group: 'Model & effort',
+      hint: '-c model_reasoning_summary.' },
+    { key: 'model_verbosity', label: 'Verbosity', type: 'select', values: ['', 'low', 'medium', 'high'],
+      group: 'Model & effort', hint: '-c model_verbosity.' },
+    { key: 'personality', label: 'Personality', type: 'select', values: ['', 'none', 'friendly', 'pragmatic'],
+      group: 'Model & effort', hint: '-c personality.' },
+    { key: 'review_model', label: 'Review model', type: 'text', group: 'Model & effort',
+      hint: '-c review_model.' },
+
+    { key: 'sandbox', label: 'Sandbox', type: 'select',
+      values: ['read-only', 'workspace-write', 'danger-full-access'],
+      group: 'Permissions & sandbox',
+      confirm: (value) => value === 'danger-full-access',
+      confirmTitle: 'Give Codex the whole machine?',
+      confirmBody: 'danger-full-access is no sandbox at all: Codex may read and write anything '
+        + 'your user can, anywhere on this machine, and reach the network.',
+      confirmAgain: 'Nothing outside the working directory is protected any more. Are you sure?',
+      hint: '-s.' },
+    { key: 'approval', label: 'Approval policy', type: 'select',
+      values: ['on-request', 'on-failure', 'never'], group: 'Permissions & sandbox',
+      confirm: (value) => value === 'never',
+      confirmTitle: 'Let Codex run everything unasked?',
+      confirmBody: 'With never, Codex carries out every command it decides on - including the '
+        + 'ones it would normally stop and ask about - and nothing in the browser can refuse one.',
+      confirmAgain: 'This applies to every Codex session started from now on. Turn approvals off?',
+      hint: '-a. on-failure goes through -c approval_policy, because the flag itself rejects it.' },
+    { key: 'network_access', label: 'Network access', type: 'switch', group: 'Permissions & sandbox',
+      hint: '-c sandbox_workspace_write.network_access=true.' },
+    { key: 'writable_roots', label: 'Writable roots', type: 'lines', group: 'Permissions & sandbox',
+      hint: '-c sandbox_workspace_write.writable_roots, one path per line.' },
+    { key: 'add_dirs', label: 'Extra directories', type: 'lines', group: 'Permissions & sandbox',
+      hint: '--add-dir, one path per line.' },
+    { key: 'approve_for_me', label: 'Approve for me', type: 'switch', group: 'Permissions & sandbox',
+      hint: '--approve-for-me.' },
+    { key: 'bypass', label: 'Bypass approvals and sandbox', type: 'switch',
+      group: 'Permissions & sandbox', confirm: (value) => value === true,
+      confirmTitle: 'Turn the Codex sandbox off?',
+      confirmBody: 'Codex will run every command with your own rights and no approval. Only do '
+        + 'this in a directory you are willing to lose.',
+      confirmAgain: 'Neither the sandbox nor the approval prompt is left. Turn both off?',
+      hint: '--dangerously-bypass-approvals-and-sandbox.' },
+    { key: 'trust_workdir', label: 'Trust the working directory', type: 'switch',
+      group: 'Permissions & sandbox', warnWhenOff:
+        'With this off Codex opens on its trust picker and the session blocks until somebody '
+        + 'answers it in the pane.',
+      hint: '-c projects."<cwd>".trust_level="trusted". Leave it on unless you know why not.' },
+
+    { key: 'remote_addr', label: 'Remote address', type: 'text', group: 'Remote control',
+      placeholder: 'ws://…', hint: '--remote.' },
+    { key: 'remote_auth_token_env', label: 'Remote token variable', type: 'text',
+      group: 'Remote control',
+      hint: '--remote-auth-token-env. This is the name of an environment variable, not the token.' },
+
+    { key: 'web_search', label: 'Web search', type: 'switch', group: 'Tools & features', hint: '--search.' },
+    { key: 'features_enable', label: 'Features on', type: 'list', group: 'Tools & features',
+      hint: '--enable, comma separated. Run `codex features list` to see what there is; Codex '
+        + 'cannot validate these names.' },
+    { key: 'features_disable', label: 'Features off', type: 'list', group: 'Tools & features',
+      hint: '--disable, comma separated.' },
+    { key: 'hide_agent_reasoning', label: 'Hide reasoning', type: 'switch', group: 'Tools & features',
+      hint: '-c hide_agent_reasoning.' },
+    { key: 'show_raw_agent_reasoning', label: 'Show raw reasoning', type: 'switch',
+      group: 'Tools & features', hint: '-c show_raw_agent_reasoning.' },
+
+    { key: 'tui_theme', label: 'Theme', type: 'freeselect', values: CODEX_THEMES,
+      group: 'Theme & terminal', hint: '-c tui.theme. Any name Codex knows is accepted; it does not check it.' },
+    { key: 'no_alt_screen', label: 'No alternate screen', type: 'switch', group: 'Theme & terminal',
+      hint: '--no-alt-screen. It keeps the scrollback, which is what a web terminal wants.' },
+    { key: 'disable_keyboard_enhancement', label: 'Disable keyboard enhancement', type: 'switch',
+      group: 'Theme & terminal',
+      hint: 'env CODEX_TUI_DISABLE_KEYBOARD_ENHANCEMENT=1, for when keys misbehave through tmux.' },
+
+    { key: 'config_overrides', label: 'Configuration overrides', type: 'lines', group: 'Advanced (raw)',
+      hint: 'One key=value per line, each passed as its own -c. Codex is launched with '
+        + '--strict-config, so a wrong key here is a session that refuses to start.' },
+    ...RAW,
+  ],
+
+  opencode: [
+    { key: 'default_model', label: 'Default model', type: 'model', group: 'Model & agent',
+      hint: '-m provider/model. Everything after the first slash is the model id.' },
+    { key: 'small_model', label: 'Small model', type: 'text', group: 'Model & agent',
+      hint: 'config small_model, for the cheap work OpenCode does on the side.' },
+    { key: 'default_agent', label: 'Default agent', type: 'text', group: 'Model & agent',
+      hint: '--agent. An unknown name silently falls back to build.' },
+
+    { key: 'auto', label: 'Approve everything', type: 'switch', group: 'Permissions',
+      confirm: (value) => value === true,
+      confirmTitle: 'Approve everything OpenCode does?',
+      confirmBody: 'Every action not explicitly denied below runs without being asked about.',
+      confirmAgain: 'The permissions JSON below is then the only thing standing between OpenCode '
+        + 'and this machine. Approve everything else?',
+      hint: '--auto. Auto-approves everything not explicitly denied.' },
+    { key: 'permission_json', label: 'Permissions', type: 'json', group: 'Permissions',
+      placeholder: '{"*":"ask","bash":{"git *":"allow"}}',
+      hint: 'env OPENCODE_PERMISSION. Actions are ask, allow or deny. Invalid JSON is refused when you save.' },
+
+    { key: 'enabled_providers', label: 'Providers allowed', type: 'list', group: 'Providers',
+      hint: 'config enabled_providers, comma separated. An allowlist: empty means all of them.' },
+    { key: 'disabled_providers', label: 'Providers blocked', type: 'list', group: 'Providers',
+      hint: 'config disabled_providers, comma separated.' },
+
+    { key: 'pure', label: 'Pure', type: 'switch', group: 'Isolation', hint: '--pure.' },
+    { key: 'disable_project_config', label: 'Ignore project configuration', type: 'switch',
+      group: 'Isolation', hint: 'env OPENCODE_DISABLE_PROJECT_CONFIG=1.' },
+    { key: 'disable_models_fetch', label: 'Do not fetch the model list', type: 'switch',
+      group: 'Isolation',
+      hint: 'env OPENCODE_DISABLE_MODELS_FETCH=1. This is what lets OpenCode start with no network at all.' },
+
+    { key: 'resume_mode', label: 'On resume', type: 'select',
+      values: [
+        { value: 'continue', label: 'Continue the conversation' },
+        { value: 'fork', label: 'Fork it, leaving the original as it was' },
+      ],
+      group: 'Session', hint: '--session, with --fork for the second.' },
+    { key: 'share', label: 'Sharing', type: 'select', values: ['manual', 'auto', 'disabled'],
+      group: 'Session', hint: 'config share. Disabled is the default and the only one that publishes nothing.' },
+
+    { key: 'tui_theme', label: 'Theme', type: 'freeselect', values: OPENCODE_THEMES,
+      group: 'Theme & terminal',
+      hint: 'tui.json theme. The light or dark palette of it is chosen by the pane, not by the name.' },
+    { key: 'mini', label: 'Mini', type: 'switch', group: 'Theme & terminal',
+      hint: '--mini. Line-oriented instead of an alternate screen, which is easier on a phone.' },
+    { key: 'no_replay', label: 'No replay', type: 'switch', group: 'Theme & terminal',
+      requires: 'mini', hint: '--no-replay. Mini only.' },
+    { key: 'replay_limit', label: 'Replay limit', type: 'int', min: 0, group: 'Theme & terminal',
+      requires: 'mini', hint: '--replay-limit. Mini only; 0 leaves it unset.' },
+    { key: 'disable_mouse', label: 'Disable the mouse', type: 'switch', group: 'Theme & terminal',
+      hint: 'env OPENCODE_DISABLE_MOUSE=1.' },
+    { key: 'mouse', label: 'Mouse in the TUI', type: 'switch', group: 'Theme & terminal',
+      hint: 'tui.json mouse.' },
+    { key: 'attention', label: 'Attention sounds', type: 'switch', group: 'Theme & terminal',
+      hint: 'tui.json attention.enabled. A server has no business making desktop notification sounds.' },
+
+    { key: 'log_level', label: 'Log level', type: 'select', values: ['', 'DEBUG', 'INFO', 'WARN', 'ERROR'],
+      group: 'Diagnostics', hint: '--log-level. Empty leaves OpenCode on its own.' },
+
+    { key: 'config_content', label: 'Configuration', type: 'json', group: 'Advanced (raw)',
+      hint: 'JSON, deep-merged into OPENCODE_CONFIG_CONTENT.' },
+    { key: 'tui_config', label: 'TUI configuration', type: 'json', group: 'Advanced (raw)',
+      hint: 'JSON, deep-merged into the generated tui.json.' },
+    ...RAW,
+  ],
+};
+
+// Every option in the catalogue is start-only: a session that is running keeps
+// the command line it was launched with.
+const START_ONLY_NOTE = 'These apply to sessions started from now on.';
+
+/* ------------------------------------------------------------------- boot */
 
 // The admin page is loaded once. If the connection was down at that moment it
 // would otherwise stay blank for good, so it retries and comes back on its own.
@@ -87,14 +450,17 @@ async function load() {
   $('versionLabel').textContent = 'Socrates ' + (data.version || '');
   fillForm();
   buildModelPickers();
+  renderDefaultHarness();
+  renderPresets();
   bind();
-  loadModels();
-  loadAgents();
+  loadHarnesses();
+  refreshTmux();
   if (data.local_url) localURL = data.local_url;
   refreshTunnel();
   refreshVoice();
   if (new URLSearchParams(location.search).get('welcome')) {
-    showNotice('Welcome. Add your OpenRouter key, check the agents below, then head back to the chat.', 'ok');
+    showNotice('Welcome. Check the terminal engine below, add your OpenRouter key if you want to '
+      + 'dictate, then head back to the sessions.', 'ok');
   }
   const tunnelError = sessionStorage.getItem('socrates.tunnel_error');
   if (tunnelError) {
@@ -112,6 +478,7 @@ function fillForm() {
     else if (type === 'args') node.value = (value || []).join(' ');
     else node.value = value ?? '';
   }
+  renderWindowSizeHint();
 }
 
 function collect() {
@@ -120,11 +487,18 @@ function collect() {
     const node = $(id);
     if (!node) continue;
     if (type === 'bool') setPath(next, path, node.checked);
+    else if (type === 'int') setPath(next, path, Math.round(Number(node.value) || 0));
     else if (type === 'number') setPath(next, path, Number(node.value) || 0);
     else if (type === 'args') setPath(next, path, splitArgs(node.value));
     else setPath(next, path, node.value);
   }
+  next.workspace.presets = readPresets();
   return next;
+}
+
+function renderWindowSizeHint() {
+  const node = $('windowSizeHint');
+  if (node) node.textContent = WINDOW_SIZE_HINTS[$('windowSize').value] || '';
 }
 
 /* ---------------------------------------------------------- model pickers */
@@ -132,17 +506,16 @@ function collect() {
 const pickers = {};
 
 // buildModelPickers fills the empty slots the page leaves for them. They are
-// built before the catalogue arrives, so the dashboard is usable straight away
-// and simply gains its list a moment later.
+// built before anything arrives, so the dashboard is usable straight away.
 function buildModelPickers() {
-  for (const [id, path, items] of MODEL_PICKERS) {
+  for (const [id, path] of MODEL_PICKERS) {
     const host = $(id);
     if (!host) continue;
     host.innerHTML = '';
     const picker = combobox({
       value: getPath(settings, path) || '',
-      items,
-      placeholder: 'anthropic/claude-sonnet-4.5',
+      items: () => [],
+      placeholder: 'google/gemini-2.5-flash',
       onChange: (value) => setPath(settings, path, value),
     });
     pickers[id] = picker;
@@ -157,155 +530,577 @@ function syncModelPickers() {
   }
 }
 
-async function loadModels() {
-  const hint = $('modelsHint');
+/* ------------------------------------------------------------- workspace */
+
+function renderDefaultHarness() {
+  const host = $('defaultHarness');
+  if (!host) return;
+  host.innerHTML = '';
+  for (const id of ['shell', 'claude', 'codex', 'opencode']) {
+    const button = el('button', {
+      class: 'seg with-mark', type: 'button', 'data-value': id,
+      onclick: () => {
+        setPath(settings, 'workspace.default_harness', id);
+        renderDefaultHarness();
+      },
+    }, agentMark(id, 18), el('span', { class: 'seg-text' },
+      el('span', { text: harnessLabel(id) })));
+    setClass(button, 'on', getPath(settings, 'workspace.default_harness') === id);
+    button.setAttribute('aria-pressed', String(getPath(settings, 'workspace.default_harness') === id));
+    host.append(button);
+  }
+}
+
+// The preset editor is a repeating row, read back as a list when the page is
+// saved rather than written into the document on every keystroke: a half-typed
+// path is not a preset yet.
+function presetRow(preset = { label: '', path: '' }) {
+  const label = el('input', { class: 'input', type: 'text', placeholder: 'Name', value: preset.label || '' });
+  const path = el('input', {
+    class: 'input mono', type: 'text', spellcheck: 'false', placeholder: '/srv/projects',
+    value: preset.path || '',
+  });
+  const row = el('div', { class: 'preset-row' }, label, path,
+    el('button', {
+      class: 'btn sm', type: 'button', text: 'Remove', 'aria-label': 'Remove this directory',
+      onclick: () => row.remove(),
+    }));
+  return row;
+}
+
+function renderPresets() {
+  const host = $('presetDirs');
+  if (!host) return;
+  host.innerHTML = '';
+  for (const preset of getPath(settings, 'workspace.presets') || []) host.append(presetRow(preset));
+}
+
+function readPresets() {
+  const host = $('presetDirs');
+  if (!host) return [];
+  return [...host.querySelectorAll('.preset-row')].map((row) => {
+    const [label, path] = row.querySelectorAll('input');
+    return { label: label.value.trim(), path: path.value.trim() };
+  }).filter((preset) => preset.path !== '');
+}
+
+/* ------------------------------------------------------- the tmux engine */
+
+const TMUX_LABEL = { ok: 'tmux is ready', old: 'tmux is too old', missing: 'tmux is missing' };
+
+let tmuxReport = null;
+let tmuxStream = null;
+
+function tmuxState(report) {
+  if (report.ok) return 'ok';
+  return report.installed ? 'old' : 'missing';
+}
+
+function renderTmux(report) {
+  tmuxReport = report;
+  const host = $('tmuxStatus');
+  let dot = host.querySelector(':scope > .state-dot');
+  if (!dot) {
+    dot = el('span', { class: 'state-dot' });
+    host.prepend(dot);
+  }
+  const state = report.installing ? 'installing' : tmuxState(report);
+  for (const name of ['ok', 'old', 'missing', 'installing']) setClass(dot, name, state === name);
+  while (dot.nextSibling) dot.nextSibling.remove();
+
+  const parts = [el('span', {
+    class: 'state-label',
+    text: report.installing ? 'Installing tmux…' : TMUX_LABEL[state],
+  })];
+  if (report.version) {
+    parts.push(el('span', { class: 'sep', text: '·' }));
+    parts.push(el('span', { class: 'muted', text: 'tmux ' + report.version }));
+  }
+  parts.push(el('span', { class: 'sep', text: '·' }));
+  parts.push(el('span', { class: 'muted', text: 'needs ' + (report.min || '3.3') + ' or newer' }));
+  // The path is state, not documentation, so it goes behind the "i" where the
+  // rest of this page puts a build number.
+  if (report.path) {
+    parts.push(infoTip([report.path], { label: 'Where tmux is' }));
+  }
+  host.append(...parts);
+
+  $('tmuxReason').textContent = report.ok ? '' : (report.reason || '');
+
+  const install = $('tmuxInstall');
+  install.hidden = report.ok || !report.can_install;
+  install.disabled = !!report.installing;
+  install.textContent = report.installing ? 'Installing…' : 'Install tmux with ' + report.manager;
+
+  const manual = $('tmuxManualField');
+  manual.hidden = report.ok || !report.command;
+  if (!manual.hidden) $('tmuxManual').value = report.command;
+
+  const toggle = $('tmuxLogToggle');
+  toggle.hidden = !(report.log || []).length && !report.installing;
+  renderInstallResult(report);
+  renderTmuxLog(report.log || []);
+}
+
+// renderInstallResult is the sentence above the log: what the last install did
+// and when. Without it a reload after a failure shows a log and no verdict,
+// and somebody has to read package-manager output to find out whether it
+// worked.
+function renderInstallResult(report) {
+  const node = $('tmuxInstallResult');
+  if (!node) return;
+  const exit = report.last_exit;
+  if (report.installing || exit === undefined || exit === null || exit < 0 || !report.last_at) {
+    node.hidden = true;
+    node.textContent = '';
+    return;
+  }
+  node.hidden = false;
+  setClass(node, 'bad', exit !== 0);
+  node.textContent = (exit === 0
+    ? 'The last install finished'
+    : 'The last install failed (exit ' + exit + ') — the output says why')
+    + ' · ' + sinceWhen(report.last_at);
+}
+
+// sinceWhen is a timestamp as a person would say it. Anything older than a day
+// is a date, because "37 hours ago" is not how anybody thinks about it.
+function sinceWhen(at) {
+  const seconds = Math.max(0, Math.round((Date.now() - at) / 1000));
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return Math.round(seconds / 60) + ' min ago';
+  if (seconds < 86400) return Math.round(seconds / 3600) + ' h ago';
+  return new Date(at).toLocaleDateString();
+}
+
+function renderTmuxLog(lines) {
+  const log = $('tmuxLog');
+  if (lines.length) log.dataset.lines = String(lines.length);
+  if (log.hidden) return;
+  log.textContent = lines.join('\n') || 'no output yet';
+  log.scrollTop = log.scrollHeight;
+}
+
+async function refreshTmux() {
   try {
-    await models.load();
-    if (hint) hint.textContent = models.count() + ' models loaded from OpenRouter. Type to search, or enter any id by hand.';
+    const report = await api('/api/tmux');
+    renderTmux(report);
+    if (report.installing) watchInstall();
   } catch (err) {
-    if (hint) {
-      hint.textContent = 'Could not load the model list (' + err.message +
-        '). The fields still accept a model id typed by hand.';
+    if (!isOffline(err)) toast(errorMessage(err), 'error');
+  }
+}
+
+// watchInstall subscribes to the progress stream. It is the same LiveStream
+// the session page uses, so the backoff, the watchdog and the connection bar
+// are the ones the rest of the app already has.
+function watchInstall() {
+  if (tmuxStream) return;
+  const lines = [...(tmuxReport && tmuxReport.log ? tmuxReport.log : [])];
+  $('tmuxLog').hidden = false;
+  $('tmuxLogToggle').hidden = false;
+  $('tmuxLogToggle').textContent = 'Hide output';
+  tmuxStream = new LiveStream({
+    url: () => '/api/tmux/events',
+    reportsGlobal: false,
+    onMessage: (event) => {
+      if (!event) return;
+      if (event.type === 'line') {
+        lines.push(event.line);
+        renderTmuxLog(lines);
+        return;
+      }
+      if (event.type !== 'done') return;
+      tmuxStream.stop();
+      tmuxStream = null;
+      toast(event.ok ? 'tmux installed' : 'The install failed — the output says why.',
+        event.ok ? '' : 'error');
+      refreshTmux();
+      // A successful install is the moment sessions become possible, and the
+      // catalogue is what every page asks about that. Asking again here is
+      // what keeps the sheet's Start from staying disabled behind a card that
+      // says tmux is ready.
+      if (event.ok) loadHarnesses(true).catch(() => {});
+    },
+  });
+  tmuxStream.start();
+}
+
+async function installTmux() {
+  const button = $('tmuxInstall');
+  busyButton(button, true, 'Installing…');
+  try {
+    await api('/api/tmux/install', { method: 'POST', body: {} });
+    watchInstall();
+  } catch (err) {
+    toast(errorMessage(err), 'error');
+  } finally {
+    busyButton(button, false, 'Installing…');
+  }
+}
+
+/* ------------------------------------------------------------- harnesses */
+
+async function loadHarnesses(force = false) {
+  renderHarnesses(force ? 'refreshing' : 'loading');
+  try {
+    await harnesses.load(force);
+    renderHarnesses('');
+  } catch (err) {
+    renderHarnesses(errorMessage(err));
+  }
+}
+
+// cleanVersion is the client half of the same rule the server applies: what a
+// program printed for --version is its text, not ours, and a CLI that puts a
+// colour query in it must not put escape glyphs on this page.
+function cleanVersion(text) {
+  // eslint-disable-next-line no-control-regex
+  const stripped = String(text || '').replace(/\u001b[\[\]][^\u0007\u001b]*(?:\u0007|\u001b\\)?/g, '')
+    .replace(/[\u0000-\u001f\u007f]/g, '').trim();
+  return stripped.length > 120 ? stripped.slice(0, 120).trim() + '…' : stripped;
+}
+
+function harnessLabel(id) {
+  const found = harnesses.list().find((h) => h.id === id);
+  if (found) return found.label;
+  return { shell: 'Shell', claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode' }[id] || id;
+}
+
+function optionPath(id, key) { return 'harnesses.' + id + '.' + key; }
+
+function optionValue(id, key) {
+  const value = getPath(settings, optionPath(id, key));
+  if (value !== undefined && value !== null) return value;
+  return getPath(defaults, optionPath(id, key));
+}
+
+// openGroups remembers which disclosures are open, per harness, so that a save
+// - which rebuilds every card from the settings the server normalised - does
+// not close them all and leave a phone scrolled somewhere else.
+function openGroups() {
+  const open = {};
+  for (const card of document.querySelectorAll('.harness-card')) {
+    const id = card.id.replace(/^harness-/, '');
+    open[id] = [...card.querySelectorAll('details.group[open]')].map((node) => node.dataset.group);
+  }
+  return open;
+}
+
+function restoreGroups(open) {
+  for (const [id, groups] of Object.entries(open || {})) {
+    for (const group of groups) {
+      const node = document.querySelector('#harness-' + id + ' details.group[data-group="'
+        + CSS.escape(group) + '"]');
+      if (node) node.open = true;
     }
   }
 }
 
-/* ---------------------------------------------------------------- agents */
-
-// The three programs Socrates can hand a chat to. What is settable about one
-// of them is small on purpose - whether it is used at all, where its binary
-// is, and the one flag this app did not think of - because everything else is
-// the app's business rather than a preference.
-//
-// The rest of the card is not a setting at all: it is what this machine
-// reported, and it is here so that "Codex is missing" is answered on the page
-// where somebody would look for it.
-const AGENT_IDS = ['claude', 'codex', 'opencode'];
-
-async function loadAgents(force = false) {
-  renderAgents(force ? 'refreshing' : 'loading');
-  try {
-    await agents.load(force);
-    renderAgents('');
-  } catch (err) {
-    renderAgents(errorMessage(err));
-  }
-}
-
-function agentSetting(id, key, fallback) {
-  const value = getPath(settings, 'agents.' + id + '.' + key);
-  return value === undefined || value === null ? fallback : value;
-}
-
-function renderAgents(status) {
-  const host = $('agentsList');
+function renderHarnesses(status) {
+  const host = $('harnessCards');
   if (!host) return;
+  const open = openGroups();
   host.innerHTML = '';
-  const found = agents.list();
+  const found = harnesses.list();
   if (!found.length) {
-    host.append(el('div', { class: 'hint', text: status === 'loading'
-      ? 'Asking this machine which agents are installed…'
-      : (status || 'Socrates could not ask this machine which agents are installed.') }));
+    host.append(el('section', { class: 'card' },
+      el('h2', { text: 'Programs' }),
+      el('p', { class: 'card-sub', text: status === 'loading'
+        ? 'Asking this machine which programs are installed…'
+        : (status || 'Socrates could not ask this machine which programs are installed.') })));
     return;
   }
   if (status && status !== 'loading' && status !== 'refreshing') {
     host.append(el('div', { class: 'hint', text: status }));
-  } else if (agents.stale()) {
-    host.append(el('div', { class: 'hint', text: 'Showing the agents from your last visit — this machine could not be asked just now.' }));
+  } else if (harnesses.stale()) {
+    host.append(el('div', { class: 'hint',
+      text: 'Showing the programs from your last visit — this machine could not be asked just now.' }));
   }
-  for (const id of AGENT_IDS) {
-    const agent = found.find((a) => a.id === id);
-    if (agent) host.append(agentCard(agent, status === 'refreshing'));
+  for (const id of ['shell', 'claude', 'codex', 'opencode']) {
+    const harness = found.find((h) => h.id === id);
+    if (harness) host.append(harnessCard(harness, status === 'refreshing'));
   }
+  restoreGroups(open);
+  renderDefaultHarness();
 }
 
-function agentCard(agent, refreshing) {
-  const enabled = !!agentSetting(agent.id, 'enabled', agent.enabled);
-
-  const toggle = el('input', { type: 'checkbox' });
-  toggle.checked = enabled;
-  toggle.addEventListener('change', () => setPath(settings, 'agents.' + agent.id + '.enabled', toggle.checked));
+function harnessCard(harness, refreshing) {
+  const toggle = el('input', { type: 'checkbox', id: 'opt-' + harness.id + '-enabled' });
+  toggle.checked = !!optionValue(harness.id, 'enabled');
+  toggle.addEventListener('change', () => setPath(settings, optionPath(harness.id, 'enabled'), toggle.checked));
 
   // What this machine reported, in the order somebody reads it: is it here,
-  // which build, and how much it can be run on.
+  // which build, and how much it can be run on. It is state, so it goes behind
+  // the "i" rather than into the body of the card.
   const facts = [];
-  if (!agent.installed) facts.push('not installed');
+  if (!harness.installed) facts.push('not installed');
   else {
-    if (agent.version) facts.push(agent.version);
-    if (agent.path) facts.push(agent.path);
+    if (harness.version) facts.push(cleanVersion(harness.version));
+    if (harness.path) facts.push(harness.path);
   }
-  const count = (agent.models || []).length;
-  if (count) facts.push(count + ' model' + (count === 1 ? '' : 's') + (agent.static ? ' · curated' : ''));
+  const count = (harness.models || []).length;
+  if (count) facts.push(count + ' model' + (count === 1 ? '' : 's') + (harness.static ? ' · curated' : ''));
 
   const binary = el('input', {
-    class: 'input mono', type: 'text', spellcheck: 'false',
-    placeholder: agent.path || 'found on PATH',
-    value: agentSetting(agent.id, 'binary', '') || '',
+    class: 'input mono', type: 'text', spellcheck: 'false', id: 'opt-' + harness.id + '-binary',
+    placeholder: harness.path || 'found on PATH',
+    value: optionValue(harness.id, 'binary') || '',
   });
-  binary.addEventListener('input', () => setPath(settings, 'agents.' + agent.id + '.binary', binary.value.trim()));
-
-  const args = el('input', {
-    class: 'input mono', type: 'text', spellcheck: 'false', placeholder: '--some-flag',
-    value: (agentSetting(agent.id, 'extra_args', []) || []).join(' '),
-  });
-  args.addEventListener('input', () => setPath(settings, 'agents.' + agent.id + '.extra_args', splitArgs(args.value)));
+  binary.addEventListener('input', () => setPath(settings, optionPath(harness.id, 'binary'), binary.value.trim()));
 
   const refresh = el('button', {
-    class: 'btn sm', type: 'button', text: refreshing ? 'Asking…' : 'Refresh models',
+    class: 'btn sm', type: 'button', text: refreshing ? 'Asking…' : 'Ask this machine again',
     disabled: refreshing,
-    onclick: () => { loadAgents(true).catch(() => {}); },
+    onclick: () => { loadHarnesses(true).catch(() => {}); },
   });
 
-  // The facts are behind an "i" beside the name: they are the answer to
-  // "which build, where" and nothing a person reads twice. They stay in the
-  // page in full, one line each, for whoever hovers - or for a test.
-  return el('div', { class: 'agent-card' + (agent.installed ? '' : ' missing') },
-    el('div', { class: 'agent-head' },
+  const card = el('section', { class: 'card harness-card' + (harness.installed ? '' : ' missing'),
+    id: 'harness-' + harness.id },
+    el('div', { class: 'harness-head' },
       el('label', { class: 'switch' }, toggle, el('span', { class: 'track' }),
-        el('span', { class: 'agent-name' }, agentMark(agent.id, 20), el('span', { text: agent.label }))),
-      facts.length ? infoTip(el('span', { class: 'agent-facts mono', text: facts.join(' · ') }), { label: agent.label + ' details' }) : null,
+        el('span', { class: 'harness-name' }, agentMark(harness.id, 22), el('span', { text: harness.label }))),
+      facts.length
+        ? infoTip(facts, { label: harness.label + ' details' })
+        : null,
     ),
-    agent.error ? el('div', { class: 'agent-note bad', text: agent.error }) : null,
-    agent.notes ? el('div', { class: 'agent-note', text: agent.notes }) : null,
-    modelList(agent),
-    el('div', { class: 'grid-2' },
-      field('Binary path', binary, 'Leave it empty to look the program up on PATH, which is what a normal installation wants.'),
-      field('Extra arguments', args, 'Appended to every command line, for the one flag this app did not think of.'),
-    ),
-    el('div', { class: 'row' }, refresh),
+    harness.error ? el('div', { class: 'agent-note bad', text: harness.error }) : null,
+    harness.notes ? el('p', { class: 'card-sub', text: harness.notes }) : null,
+    harness.id === 'shell' ? null : modelList(harness),
+    field('Binary path', binary,
+      'Leave it empty to look the program up on PATH, which is what a normal installation wants.'),
   );
+
+  const built = new Map();
+  for (const group of GROUP_ORDER) {
+    const options = (OPTIONS[harness.id] || []).filter((option) => option.group === group);
+    if (!options.length) continue;
+    const body = el('div', { class: 'group-body' });
+    for (const option of options) {
+      const made = optionField(harness, option);
+      built.set(option.key, made);
+      body.append(made.node);
+    }
+    card.append(el('details', { class: 'group', 'data-group': group },
+      el('summary', { text: group }), body));
+  }
+  // A control that only means something while another one is on follows it:
+  // one listener per pair, on the card that owns both.
+  for (const made of built.values()) {
+    const master = made.requires && built.get(made.requires);
+    if (master) master.control.addEventListener('change', made.reflect);
+  }
+  card.append(el('div', { class: 'row' }, refresh));
+  card.append(el('div', { class: 'hint start-only', text: START_ONLY_NOTE }));
+  return card;
 }
 
-// modelList is the person's own short list for one agent: the models the
-// new-chat sheet offers, in this order, each with the effort it starts on.
-// An entry is picked from what the agent reported or typed in as it is; an
-// empty list means the sheet offers everything the agent reported.
+// optionField turns one catalogue entry into the control the specification
+// names for it, with the flag or variable it maps to in the hint - that is
+// technical, and technical detail is what the hint is for.
+function optionField(harness, option) {
+  const id = 'opt-' + harness.id + '-' + option.key;
+  const path = optionPath(harness.id, option.key);
+  const value = optionValue(harness.id, option.key);
+  const write = (next) => setPath(settings, path, next);
+
+  let control = null;
+  let wrapper = null;
+  switch (option.type) {
+    case 'switch': {
+      const box = el('input', { type: 'checkbox', id });
+      box.checked = !!value;
+      box.addEventListener('change', () => guard(option, box.checked, box, () => write(box.checked)));
+      wrapper = el('label', { class: 'switch' }, box, el('span', { class: 'track' }),
+        el('span', { text: option.label }));
+      control = box;
+      break;
+    }
+    case 'select':
+    case 'freeselect': {
+      control = el('select', { class: 'select', id });
+      const entries = option.values.map((v) => (typeof v === 'string' ? { value: v, label: v || '—' } : v));
+      // A free select keeps a value the CLI knows and this list does not, so
+      // that saving the page never quietly changes somebody's theme.
+      if (option.type === 'freeselect' && value && !entries.some((e) => e.value === value)) {
+        entries.push({ value, label: value + ' (typed in)' });
+      }
+      for (const entry of entries) control.append(el('option', { value: entry.value, text: entry.label }));
+      control.value = value ?? '';
+      // The dialog below has to be able to put a refused choice back, and a
+      // select does not remember what it was before the change event.
+      control.dataset.previous = control.value;
+      control.addEventListener('change', () => guard(option, control.value, control, () => {
+        write(control.value);
+        control.dataset.previous = control.value;
+      }));
+      break;
+    }
+    case 'multi': {
+      wrapper = el('div', { class: 'multi', id });
+      const chosen = new Set(value || []);
+      for (const name of option.values) {
+        const box = el('input', { type: 'checkbox', id: id + '-' + name });
+        box.checked = chosen.has(name);
+        box.addEventListener('change', () => {
+          if (box.checked) chosen.add(name); else chosen.delete(name);
+          write(option.values.filter((v) => chosen.has(v)));
+        });
+        wrapper.append(el('label', { class: 'switch' }, box, el('span', { class: 'track' }),
+          el('span', { text: name })));
+      }
+      // A multi is a set of boxes with no single control behind it, so the
+      // group itself stands in for one.
+      control = wrapper;
+      break;
+    }
+    case 'int': {
+      control = el('input', { class: 'input', type: 'number', id, value: value ?? 0 });
+      if (option.min !== undefined) control.setAttribute('min', option.min);
+      if (option.max !== undefined) control.setAttribute('max', option.max);
+      control.addEventListener('input', () => write(Math.round(Number(control.value) || 0)));
+      break;
+    }
+    case 'list': {
+      control = el('input', {
+        class: 'input mono', type: 'text', id, spellcheck: 'false',
+        placeholder: option.placeholder || '',
+        value: (value || []).join(', '),
+      });
+      control.addEventListener('input', () => write(splitCommas(control.value)));
+      break;
+    }
+    case 'lines': {
+      control = el('textarea', { class: 'textarea mono', id, spellcheck: 'false',
+        placeholder: option.placeholder || '', value: (value || []).join('\n') });
+      control.addEventListener('input', () => write(splitLines(control.value)));
+      break;
+    }
+    case 'textarea':
+    case 'json': {
+      control = el('textarea', {
+        class: 'textarea' + (option.type === 'json' ? ' mono' : ''), id, spellcheck: 'false',
+        placeholder: option.placeholder || '', value: value || '',
+      });
+      control.addEventListener('input', () => write(control.value));
+      break;
+    }
+    case 'model': {
+      const picker = combobox({
+        value: value || '',
+        placeholder: 'pick from the list, or type a model id',
+        items: () => (harness.models || []).map((m) => ({
+          value: m.id, label: m.label || m.id, hint: m.hint || '', group: m.group || '',
+        })),
+        onChange: (next) => write(next.trim()),
+      });
+      const input = picker.node.querySelector('input');
+      input.id = id;
+      wrapper = picker.node;
+      control = input;
+      break;
+    }
+    default: {
+      control = el('input', {
+        class: 'input mono', type: 'text', id, spellcheck: 'false',
+        placeholder: option.placeholder || '', value: value ?? '',
+      });
+      control.addEventListener('input', () => write(control.value));
+    }
+  }
+
+  const node = wrapper || control;
+  const hint = el('div', { class: 'hint', text: option.hint || '' });
+  const warning = el('div', { class: 'hint bad', hidden: true });
+  const wrap = el('div', { class: 'field option', 'data-key': option.key, 'data-startonly': '1' });
+  // A switch carries its own label; everything else gets one above it.
+  if (option.type !== 'switch') wrap.append(el('label', { for: id, text: option.label }));
+  wrap.append(node, hint, warning);
+
+  // reflect is everything about this control that depends on another value:
+  // the red line under a switch that should not be off, and the greying out of
+  // a control whose master switch is off.
+  const reflect = () => {
+    if (option.warnWhenOff) {
+      const off = !control.checked;
+      warning.hidden = !off;
+      warning.textContent = off ? option.warnWhenOff : '';
+    }
+    if (option.requires) {
+      const on = !!optionValue(harness.id, option.requires);
+      setClass(wrap, 'disabled', !on);
+      control.disabled = !on;
+    }
+  };
+  reflect();
+  control.addEventListener('change', reflect);
+  return { node: wrap, control, reflect, requires: option.requires || '' };
+}
+
+// guard is the confirm-twice the specification asks for on the options that
+// hand a machine over: two dialogs, the second restating the consequence in
+// its own words rather than repeating the first. Twice, because the first one
+// is what a person taps through and the second is the one they read.
 //
-// The list lives in the settings object like every other field on this page
-// and is written by Save - so a picked model is not a request to the server,
-// and an unsaved change is reverted by leaving, the same as everywhere else.
-function modelList(agent) {
-  const path = 'agents.' + agent.id + '.models';
-  const picks = () => (agentSetting(agent.id, 'models', []) || []).map((p) => ({ id: p.id, effort: p.effort || '' }));
-  const known = (id) => (agent.models || []).find((m) => m.id === id) || null;
+// A refusal at either step puts the control back exactly as it was, because a
+// switch that stays on after a refusal is a switch that lied.
+async function guard(option, value, control, apply) {
+  if (!option.confirm || !option.confirm(value)) {
+    apply();
+    return;
+  }
+  const previous = control.type === 'checkbox' ? !control.checked : (control.dataset.previous || '');
+  const revert = () => {
+    if (control.type === 'checkbox') control.checked = previous;
+    else control.value = previous;
+    control.dispatchEvent(new Event('change'));
+  };
+  const first = await confirmDialog({
+    title: option.confirmTitle,
+    body: option.confirmBody,
+    confirmLabel: 'I understand',
+    danger: true,
+  });
+  if (!first) {
+    revert();
+    return;
+  }
+  const second = await confirmDialog({
+    title: 'Once more, to be sure',
+    body: option.confirmAgain || option.confirmBody,
+    confirmLabel: 'Yes, turn it on',
+    danger: true,
+  });
+  if (!second) {
+    revert();
+    return;
+  }
+  apply();
+}
+
+// modelList is the person's own short list for one harness: the models the
+// new-session sheet offers, in this order, each with the effort it starts on.
+// An empty list means the sheet offers everything the program reported.
+function modelList(harness) {
+  const path = optionPath(harness.id, 'models');
+  const picks = () => (optionValue(harness.id, 'models') || []).map((p) => ({ id: p.id, effort: p.effort || '' }));
+  const known = (id) => (harness.models || []).find((m) => m.id === id) || null;
 
   const rows = el('div', { class: 'model-list' });
   function render() {
     rows.innerHTML = '';
     const list = picks();
     if (!list.length) {
-      rows.append(el('div', { class: 'hint', text: 'No short list - the new-chat sheet offers every model '
-        + agent.label + ' reports.' }));
+      rows.append(el('div', { class: 'hint', text: 'No short list — the new-session sheet offers every model '
+        + harness.label + ' reports.' }));
       return;
     }
     list.forEach((pick, index) => {
       const model = known(pick.id);
-      // The levels are the model's own; a model the agent has not reported
-      // gets every level any of the agent's models offers.
-      const efforts = agents.effortsFor(agent.id, pick.id);
+      const efforts = harnesses.effortsFor(harness.id, pick.id);
       const effort = el('select', { class: 'select sm', 'aria-label': 'Default effort for ' + pick.id });
       for (const value of ['', ...efforts]) {
-        effort.append(el('option', { value, text: agents.effortLabel(value) }));
+        effort.append(el('option', { value, text: harnesses.effortLabel(value) }));
       }
       effort.value = efforts.includes(pick.effort) ? pick.effort : '';
       effort.hidden = !efforts.length;
@@ -321,7 +1116,8 @@ function modelList(agent) {
       rows.append(el('div', { class: 'model-row' },
         el('div', { class: 'model-name' },
           el('div', { text: model ? (model.label || pick.id) : pick.id }),
-          el('div', { class: 'hint mono', text: model ? (model.hint || pick.id) : pick.id + ' · typed in, not on the list ' + agent.label + ' reports' }),
+          el('div', { class: 'hint mono', text: model ? (model.hint || pick.id)
+            : pick.id + ' · typed in, not on the list ' + harness.label + ' reports' }),
         ),
         effort, remove,
       ));
@@ -330,11 +1126,14 @@ function modelList(agent) {
 
   const picker = combobox({
     value: '',
-    placeholder: agent.static ? 'sonnet' : 'pick from the list, or type a model id',
-    items: () => (agent.models || []).map((m) => ({ value: m.id, label: m.label || m.id, hint: m.hint || '', group: m.group || '' })),
+    placeholder: harness.static ? 'sonnet' : 'pick from the list, or type a model id',
+    items: () => (harness.models || []).map((m) => ({
+      value: m.id, label: m.label || m.id, hint: m.hint || '', group: m.group || '',
+    })),
     onChange: () => {},
   });
   const input = picker.node.querySelector('input');
+  input.id = 'models-' + harness.id;
   const add = () => {
     const id = input.value.trim();
     if (!id) return;
@@ -359,19 +1158,31 @@ function modelList(agent) {
   });
   render();
   return el('div', { class: 'field model-picks' },
-    el('label', { text: 'Models offered in the chat' }),
+    el('label', { text: 'Models offered in the sheet' }),
     rows,
-    el('div', { class: 'model-add' }, picker.node, el('button', { class: 'btn sm', type: 'button', text: 'Add', onclick: add })),
-    el('div', { class: 'hint', text: 'Pick from what ' + agent.label + ' reports or type an id, and set the effort a new chat starts on. '
-      + 'Only these appear in the new-chat sheet; leave the list empty to offer all of them.' }),
+    el('div', { class: 'model-add' }, picker.node,
+      el('button', { class: 'btn sm', type: 'button', text: 'Add', id: 'add-model-' + harness.id, onclick: add })),
+    el('div', { class: 'hint', text: 'Pick from what ' + harness.label + ' reports or type an id, and set the '
+      + 'effort a new session starts on. Leave the list empty to offer all of them.' }),
   );
 }
+
+/* ---------------------------------------------------------------- saving */
 
 function bind() {
   $('saveTop').addEventListener('click', save);
   $('saveBottom').addEventListener('click', save);
   $('runChecks').addEventListener('click', runChecks);
   $('changePw').addEventListener('click', changePassword);
+  $('presetAdd').addEventListener('click', () => $('presetDirs').append(presetRow()));
+  $('windowSize').addEventListener('change', renderWindowSizeHint);
+  $('tmuxInstall').addEventListener('click', installTmux);
+  $('tmuxLogToggle').addEventListener('click', () => {
+    const log = $('tmuxLog');
+    log.hidden = !log.hidden;
+    $('tmuxLogToggle').textContent = log.hidden ? 'Show output' : 'Hide output';
+    if (!log.hidden) refreshTmux();
+  });
   $('tunnelStart').addEventListener('click', startTunnel);
   $('tunnelStop').addEventListener('click', stopTunnel);
   $('tunnelMode').addEventListener('change', renderTunnelMode);
@@ -401,8 +1212,7 @@ function bind() {
     } catch (err) {
       // Every press answers, whether or not this reason has been seen before:
       // a button that stays silent the second time reads as a button that did
-      // nothing at all. A voice that is still downloading itself is not one of
-      // the failures, so it is not shown as one.
+      // nothing at all.
       toast(errorMessage(err), speechKind(err));
     } finally {
       busyButton(button, false, 'Reading…');
@@ -427,11 +1237,13 @@ async function save() {
     settings = data.settings;
     fillForm();
     syncModelPickers();
-    // The card is drawn from the settings it just wrote, so it has to follow
-    // whatever the server normalised them into.
-    renderAgents('');
+    renderPresets();
+    // The cards are drawn from the settings they just wrote, so they have to
+    // follow whatever the server normalised them into.
+    renderHarnesses('');
     refreshTunnel();
     hint('Saved');
+    for (const warning of data.warnings || []) toast(warning);
     toast('Settings saved');
   } catch (err) {
     toast(errorMessage(err), 'error');
@@ -473,6 +1285,9 @@ function splitArgs(value) {
   return out;
 }
 
+const splitCommas = (value) => value.split(',').map((part) => part.trim()).filter(Boolean);
+const splitLines = (value) => value.split('\n').map((part) => part.trim()).filter(Boolean);
+
 /* ------------------------------------------------------------- the voice */
 
 const VOICE_LABEL = {
@@ -482,8 +1297,23 @@ const VOICE_LABEL = {
   failed: 'Voice failed',
 };
 
-// The same line as the tunnel below, down to the dot, because it is the same
-// kind of thing: something that downloads itself once and then simply works.
+// detailWithoutPath renders a sentence about the voice with the one thing in
+// it that is a machine detail - where the binary is - moved behind the "i".
+// The engine writes the path into its own sentence, because that sentence is
+// also a setup-check row; the page is where the design rule about technical
+// strings applies, so the split happens here rather than in the server.
+function detailWithoutPath(detail) {
+  const found = /(\s*)((?:[A-Za-z]:)?[\\/][^\s]*[\\/][^\s]*?)(\.?)(\s|$)/.exec(detail);
+  if (!found) return [el('span', { class: 'detail', text: detail })];
+  const path = found[2];
+  const before = detail.slice(0, found.index).replace(/\s+(at|in)$/, '').trimEnd();
+  const after = detail.slice(found.index + found[0].length).trim();
+  return [
+    el('span', { class: 'detail', text: [before, after].filter(Boolean).join(' ') }),
+    infoTip([path], { label: 'Where the voice is' }),
+  ];
+}
+
 // Everything after the dot is redrawn on every poll and the dot itself stays
 // put - one that is taken out of the page and put back every two seconds never
 // gets far enough into its animation to look like it is pulsing.
@@ -499,11 +1329,9 @@ function renderVoiceStatus(voice) {
   while (dot.nextSibling) dot.nextSibling.remove();
 
   const parts = [el('span', { class: 'state-label', text: VOICE_LABEL[state] || state })];
-  // The detail is where the download says how far it has got, so it is the
-  // part that has to change between two polls for the card to look alive.
   if (voice.detail) {
     parts.push(el('span', { class: 'sep', text: '·' }));
-    parts.push(el('span', { class: 'detail', text: voice.detail }));
+    parts.push(...detailWithoutPath(voice.detail));
   }
   if (voice.error) {
     parts.push(el('span', { class: 'sep', text: '·' }));
@@ -564,10 +1392,6 @@ const STATE_LABEL = {
   stopped: 'Tunnel is off',
 };
 
-// The status line is polled every three seconds. Everything after the dot is
-// redrawn, but the dot itself stays put: one that is taken out of the page and
-// put back that often never gets far enough into its animation to look like it
-// is pulsing - it just blinks.
 function renderTunnelStatus(status) {
   const host = $('tunnelStatus');
   let dot = host.querySelector(':scope > .state-dot');
@@ -639,6 +1463,7 @@ onWake(() => {
   if (document.visibilityState === 'hidden' || !settings) return;
   refreshTunnel();
   refreshVoice();
+  refreshTmux();
 });
 
 async function refreshTunnel() {
@@ -724,6 +1549,16 @@ async function stopTunnel() {
 
 /* ------------------------------------------------------------ side tasks */
 
+// The marks beside a diagnostics row: a check that names a program is drawn
+// with that program's mark, so the four cards above and this list read as one
+// thing.
+const CHECK_MARKS = {
+  'Claude Code': 'claude', 'Claude Code state': 'claude',
+  Codex: 'codex', 'Codex state': 'codex',
+  OpenCode: 'opencode', 'OpenCode state': 'opencode',
+  Shell: 'shell',
+};
+
 async function runChecks() {
   const button = $('runChecks');
   const host = $('checks');
@@ -733,11 +1568,15 @@ async function runChecks() {
   try {
     const data = await api('/api/diagnostics', { method: 'POST', body: {} });
     for (const check of data.checks || []) {
-      const agentId = { 'Claude Code': 'claude', Codex: 'codex', OpenCode: 'opencode' }[check.name] || '';
+      const mark = CHECK_MARKS[check.name] || '';
+      // §E.10 rule 3: a version, a path, a socket or an error message is
+      // technical state, so it is behind the row's "i" and never in the line
+      // itself. What is visible is the verdict, in words.
       host.append(el('div', { class: 'check' },
         el('span', { class: 'st ' + (check.ok ? 'ok' : 'bad') }),
-        el('span', { class: 'nm' }, agentId ? agentMark(agentId, 14) : null, el('span', { text: check.name })),
-        el('span', { class: 'dt', text: check.detail }),
+        el('span', { class: 'nm' }, mark ? agentMark(mark, 14) : null, el('span', { text: check.name })),
+        el('span', { class: 'dt', text: check.summary || (check.ok ? 'ok' : 'not ready') }),
+        check.detail ? infoTip(String(check.detail).split(' · '), { label: check.name + ' details' }) : null,
       ));
     }
   } catch (err) {

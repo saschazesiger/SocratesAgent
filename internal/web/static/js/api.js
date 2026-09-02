@@ -133,7 +133,7 @@ export function toast(message, kind = '') {
   }, kind === 'error' ? 6000 : 3200);
 }
 
-// isBusyConflict is the one refusal that passes on its own: the chat is still
+// isBusyConflict is the one refusal that passes on its own: the session is still
 // working on the previous turn. Everything permanent uses another status, so
 // this is the only one worth waiting out rather than showing as a failure.
 export function isBusyConflict(err) {

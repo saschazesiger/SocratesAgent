@@ -2,8 +2,8 @@
 // no signal at all.
 //
 // Without it, a reload in a tunnel replaces the whole app with the browser's
-// error page, and everything the page was holding - the queued message, the
-// draft, the transcript on screen - goes with it. With it, the app itself
+// error page, and everything the page was holding - the typed line, the draft,
+// the screen the terminal is on - goes with it. With it, the app itself
 // still loads, says it has no connection, and picks up where it left off the
 // moment there is network again.
 //
@@ -23,20 +23,37 @@ const CACHE = 'socrates-shell-' + VERSION;
 
 // The shell is small and entirely local, so it is worth having in full before
 // the first bad connection rather than only what happened to load. It is the
-// chat page and what it imports, and nothing else: the dashboard's own
-// modules can never be reached from a page this worker serves offline, and a
-// file that has to arrive before anything can be served offline at all is a
-// file worth not having in the list.
+// session page, everything it imports, and the vendored terminal it loads with
+// plain script tags - and nothing else: the dashboard's own modules can never
+// be reached from a page this worker serves offline, and a file that has to
+// arrive before anything can be served offline at all is a file worth not
+// having in the list.
+//
+// The vendored terminal alone is 807 KB uncompressed and 212 KB gzipped -
+// xterm.js is 489 KB of that and the WebGL renderer 248 KB - and both earn it,
+// because a terminal that has to be fetched is a terminal that is not there in
+// a tunnel. Socrates itself serves the files as they are: the compression is
+// whatever is in front of it, the Cloudflare edge or a reverse proxy. The measurement for the
+// whole list below is in the README, under "The app shell works with no
+// network", and is where an addition should be noticed.
 const SHELL = [
   '/',
   '/static/css/app.css',
+  '/static/vendor/xterm.css',
+  '/static/vendor/xterm.js',
+  '/static/vendor/addon-fit.js',
+  '/static/vendor/addon-unicode11.js',
+  '/static/vendor/addon-web-links.js',
+  '/static/vendor/addon-clipboard.js',
+  '/static/vendor/addon-webgl.js',
   '/static/js/net.js',
   '/static/js/api.js',
-  '/static/js/chat.js',
-  '/static/js/agents.js',
+  '/static/js/session.js',
+  '/static/js/term.js',
+  '/static/js/keybar.js',
+  '/static/js/harnesses.js',
   '/static/js/logos.js',
   '/static/js/combobox.js',
-  '/static/js/markdown.js',
   '/static/js/voice.js',
   '/favicon.png',
   '/static/img/logo.png',
@@ -124,7 +141,7 @@ self.addEventListener('fetch', (event) => {
       const cached = await caches.match(request);
       if (cached) return cached;
       // A navigation with nothing cached for that exact URL still gets the
-      // app: the chat page reads which conversation to open from the hash.
+      // app: the session page reads which session to open from the hash.
       if (request.mode === 'navigate') {
         const shell = await caches.match('/');
         if (shell) return shell;

@@ -76,7 +76,7 @@ func (s *Server) authenticated(r *http.Request) bool {
 	if err != nil {
 		return false
 	}
-	return s.store.ValidSession(c.Value)
+	return s.store.ValidLogin(c.Value)
 }
 
 // auth wraps an API handler with session and CSRF checks.
@@ -98,13 +98,16 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func (s *Server) startSession(w http.ResponseWriter, r *http.Request) error {
+// startLogin hands the browser a fresh cookie. The cookie is still called
+// socrates_session, because renaming a cookie signs everybody out and the
+// table it came from is the only thing that was renamed.
+func (s *Server) startLogin(w http.ResponseWriter, r *http.Request) error {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return err
 	}
 	token := hex.EncodeToString(raw)
-	if err := s.store.CreateSession(token, sessionTTL); err != nil {
+	if err := s.store.CreateLogin(token, sessionTTL); err != nil {
 		return err
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -112,6 +115,12 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request) error {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
+		// Lax, not Strict. A WebSocket handshake is not a top level
+		// navigation, so Lax already withholds this cookie from a cross site
+		// request; Strict would add nothing to the transport's CSRF story -
+		// the origin check inside websocket.Accept is what defends it - and
+		// would cost the one case people actually meet, a link to the tunnel
+		// opened from another app landing on the login page.
 		SameSite: http.SameSiteLaxMode,
 		Secure:   r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"),
 		MaxAge:   int(sessionTTL.Seconds()),
@@ -120,19 +129,36 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request) error {
 }
 
 func clientIP(r *http.Request) string {
-	// Cloudflare puts the real caller here; it is the value to rate limit on
-	// when Socrates is published through a tunnel.
-	if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
-		return cf
-	}
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		return strings.TrimSpace(strings.SplitN(fwd, ",", 2)[0])
-	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
+	}
+	// Cloudflare and a reverse proxy put the real caller in a header, and it
+	// is the value to rate limit on when Socrates is published through one.
+	// The header is believed only when the connection itself came from a
+	// machine that could be that proxy - loopback, or the private network the
+	// container sits on. From anywhere else it is a caller choosing its own
+	// identity, which is a rate limit that limits nothing.
+	if forwarder(host) {
+		if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
+			return cf
+		}
+		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+			return strings.TrimSpace(strings.SplitN(fwd, ",", 2)[0])
+		}
 	}
 	return host
+}
+
+// forwarder reports whether a peer is close enough to be the proxy in front of
+// Socrates: cloudflared runs beside it, and a container's proxy is on the same
+// private network.
+func forwarder(host string) bool {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
 }
 
 // throttle slows down password guessing.
@@ -241,7 +267,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.startSession(w, r); err != nil {
+	if err := s.startLogin(w, r); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -288,8 +314,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.noteLogin(ip, true)
-	_ = s.store.PurgeExpiredSessions()
-	if err := s.startSession(w, r); err != nil {
+	_ = s.store.PurgeExpiredLogins()
+	if err := s.startLogin(w, r); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -304,7 +330,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if c, err := r.Cookie(sessionCookie); err == nil {
-		_ = s.store.DeleteSession(c.Value)
+		_ = s.store.DeleteLogin(c.Value)
 	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -340,11 +366,11 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := s.store.DeleteAllSessions(); err != nil && !errors.Is(err, store.ErrNotFound) {
+	if err := s.store.DeleteAllLogins(); err != nil && !errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := s.startSession(w, r); err != nil {
+	if err := s.startLogin(w, r); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

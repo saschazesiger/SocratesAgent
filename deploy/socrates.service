@@ -1,0 +1,19 @@
+[Unit]
+Description=Socrates
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/socrates -addr 127.0.0.1:8080
+Restart=on-failure
+# The tmux server is deliberately outside this unit's lifecycle: sessions
+# survive a restart of Socrates itself. With systemd's default
+# KillMode=control-group, `systemctl restart socrates` would kill the tmux
+# server along with Socrates, and every ordinary restart would become the
+# reboot path.
+KillMode=process
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

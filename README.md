@@ -1,13 +1,12 @@
 # Socrates
 
-**A web harness for Claude Code, Codex and OpenCode.**
-One Go binary with a ChatGPT style web interface and a hands free audio mode.
-Every chat is bound to one of the three agents and one of its models, and what
-you type goes straight into that program's own headless protocol. There is no
-model in between: Socrates does not think, it carries.
+**A web terminal for Claude Code, Codex, OpenCode and your shell.**
+One Go binary. Every session is a real terminal in a real tmux pane, and the
+browser is a window onto it — so the session outlives the tab, the phone, the
+network and Socrates itself.
 
 <p align="center">
-  <img src="docs/screenshot-chat.png" alt="A chat with a tool card, a reasoning step and the agent's answer" width="860">
+  <img src="docs/screenshot-session.png" alt="A Claude Code session in the browser, with a session per program in the sidebar" width="860">
 </p>
 
 ---
@@ -15,61 +14,58 @@ model in between: Socrates does not think, it carries.
 ## Why
 
 Claude Code, Codex and OpenCode are excellent, and they live in a terminal. That
-is fine at a desk and useless everywhere else — on a phone, on a train, in a car,
-on the sofa. Every wrapper that fixes this seems to add a model of its own that
-paraphrases the agent, guesses what it meant and gets in the way.
+is fine at a desk and useless everywhere else — on a phone, on a train, in a
+car, on the sofa. Wrappers that fix this usually put a model of their own in
+between, which paraphrases the CLI, guesses what it meant and gets in the way.
 
-Socrates adds no model. It opens the agent the way its own maintainers intended —
-`claude -p`, `codex app-server`, `opencode serve` — and renders what comes back:
-the answer as chat text, every tool call as a card, questions as messages you
-reply to. You pick the agent and the model when you start the chat, and from then
-on you are talking to that agent, through a browser, with your voice if you want.
+Socrates puts nothing in between. It starts the program exactly as you would
+start it yourself, inside tmux, and gives you the pane: the real TUI, the real
+keys, the real colours. What it adds is everything around the pane — the
+session survives, the browser reconnects, the phone gets a key bar, and one
+password guards the lot.
 
 ## What you get
 
-- **A chat that feels familiar.** Sidebar with past conversations, streaming
-  answers, markdown, mobile friendly. Light, quiet, minimal.
-- **One agent per chat, chosen up front.** Agent, model and — where the agent has
-  one — reasoning effort are picked in the new-chat sheet and shown in the chat
-  header. The model can be changed between turns; the agent cannot, because a
-  different agent is a different conversation.
-- **Tool activity you can read.** Commands, file edits, searches, reasoning and
-  subagents arrive as structured cards in the chat, in the order they happened,
-  with their output and whether they succeeded. No screen scraping, no ANSI.
-- **Turns that survive a restart.** Every chat's agent runs in its own detached
-  host process. Restarting or upgrading Socrates does not interrupt a running
-  turn or the subagents it started; the new process reattaches and replays
-  everything that happened while it was away.
-- **Built for a bad connection.** Losing signal is treated as normal, not as an
-  error. A banner says the moment the live view stops being live and how old what
-  you are looking at is — the chat and the hands free display both stop
-  pretending. The stream reconnects itself and replays exactly what was missed,
-  so nothing quietly goes stale. Anything you send while the connection is gone —
-  a message, a new chat, a half typed draft — is kept and delivered when there is
-  signal again, once and only once. The app even opens with no network at all,
-  and picks up where it left off.
-- **It asks you back.** When something is ambiguous the agent asks in its reply
-  and stops, instead of guessing. You answer with the next message.
-- **Voice in and out.** Record in the browser, transcribe through OpenRouter,
-  have the answer read back by a voice that runs on the same machine as Socrates
-  — no key, no account, no provider and nothing to choose. It installs itself on
-  first start and is already in the Docker image.
-- **Audio mode.** One big microphone button, a timer, and the answer shown as
-  large as it fits and read out loud. When it ends on a question you hear it and
-  simply speak your reply.
-- **Archive instead of delete.** A conversation you are done with can be put away
-  rather than thrown away: the transcript stays, its agent session is closed, and
-  the sidebar hides it until you switch it from **Active** to **All**. Writing to
-  an archived chat makes it active again by itself.
+- **Four kinds of session.** Shell, Claude Code, Codex and OpenCode. You pick
+  the program, the directory and — for the three CLIs — the model and the
+  reasoning effort when you start the session, and it keeps them for life.
+- **The real terminal.** xterm.js in the browser, tmux behind it, no screen
+  scraping and no translation layer. Anything that runs in a terminal runs
+  here, alternate screen and mouse reporting included.
+- **A session outlives everything except the machine.** Close the tab, lose
+  signal, restart Socrates, upgrade the binary — the pane keeps running,
+  because it belongs to a tmux server that is deliberately outside Socrates'
+  lifecycle. Reopening reattaches to the screen as it is now.
+- **A reboot is survivable too.** When the tmux server is gone, Socrates does
+  not pretend: sessions go to *needs resume*, and opening one relaunches its
+  program on the **conversation it already had** — `claude --resume`,
+  `codex resume`, `opencode --session` — with a banner saying it came back and
+  what it came back on.
+- **Built for a bad connection.** Losing signal is normal, not an error. The
+  connection bar says the moment the live view stops being live; the socket
+  reconnects itself and replays the bytes that were missed, from a per-viewer
+  ring, so the screen is continuous rather than cleared. What you type while it
+  is down is delivered when it comes back, **exactly once**. The app shell even
+  opens with no network at all.
+- **Two devices on one session.** Open the same session on a laptop and a
+  phone: both see the same pane, and the one whose window is smaller is told,
+  once, that the size changed under it — Socrates owns the size rather than
+  letting tmux shrink the pane to the smallest client.
+- **A phone that can drive a TUI.** A key bar with `Esc`, `Tab`, sticky `Ctrl`
+  and `Alt`, arrows, `^C`, `^D`, `^Z` and paste, plus a line input that sends a
+  whole line with one `\r` — because autocorrect rewrites characters *after* a
+  terminal has already sent them one at a time.
+- **Dictation.** Record in the browser, transcribe through OpenRouter, and the
+  words land in the line input **unsent**, for you to read before they reach a
+  program that runs commands.
 - **Reachable from anywhere, without opening a port.** A managed Cloudflare
-  tunnel publishes the local server on the internet — a throwaway
-  `trycloudflare.com` address in one click, or your own hostname with a tunnel
-  token. `cloudflared` is downloaded automatically if you do not have it. Start,
-  stop and watch it from the dashboard.
-- **An admin dashboard for everything.** API key, a searchable picker over the
-  live OpenRouter catalogue for the two models Socrates itself uses, which agents
-  are switched on and where their binaries are, voice, remote access, password,
-  and a setup check.
+  tunnel publishes the local server: a throwaway `trycloudflare.com` address in
+  one click, or your own hostname with a tunnel token. `cloudflared` is
+  downloaded for you if you do not have it.
+- **A dashboard for everything.** Whether tmux is there (and a one-click
+  installer if it is not), where sessions work, how the terminal behaves, every
+  flag each CLI is started with, voice, remote access, password and a setup
+  check.
 - **Single binary.** Go plus embedded HTML/CSS/JS, SQLite for state, no build
   step, no CDN, no telemetry.
 
@@ -86,73 +82,83 @@ on you are talking to that agent, through a browser, with your voice if you want
         │                      cloudflared (child process)
         ▼                                │
   ┌─────────────────────────────────────────────────────────────┐
-  │  socrates serve (single Go binary)                          │
-  │                                                             │
-  │    web UI · JSON API · SSE · SQLite state                   │
-  │                        │                                    │
-  │                   the engine: normalised events → messages, │
-  │                   step cards, transcript, chat title        │
-  │                        │                                    │
-  └────────────────────────┼────────────────────────────────────┘
-                           │
-              OpenRouter   │  unix socket (one per chat)
-      transcribe + titles  │
-              only         ▼
-                    socrates agent-host          detached: survives a
-                           │                     restart of the server
-                           ▼
-                    the adapter for this chat's agent
-                           │
-        ┌──────────────────┼──────────────────────┐
-        ▼                  ▼                      ▼
-  claude -p            codex app-server      opencode serve
-  stream-json          JSON-RPC 2.0          HTTP + SSE
-  over stdio           over stdio            over 127.0.0.1
-        │                  │                      │
-        ▼                  ▼                      ▼
-   Anthropic           OpenAI                your OpenCode provider
-   (your login)        (your login)          (your login)
+  │  socrates (single Go binary)                                │
+  │    web UI · JSON API · WebSocket · SQLite state             │
+  └───────────────┬─────────────────────────────────────────────┘
+                  │  one `tmux attach` per viewer, on its own PTY
+                  │  -S <data>/tmux.sock
+  ┌───────────────▼─────────────────────────────────────────────┐
+  │  tmux server — daemonized out of Socrates' process tree     │
+  │  one session per Socrates session, named soc_<id>           │
+  └───┬──────────────┬───────────────┬──────────────┬───────────┘
+      ▼              ▼               ▼              ▼
+   /bin/bash      claude          codex          opencode
+   (login)        (TUI)           (TUI)          (TUI + its own
+      │              │               │            loopback server)
+      ▼              ▼               ▼              ▼
+   your files    Anthropic        OpenAI        your OpenCode
+                 (your login)     (your login)   provider
 ```
 
-An **adapter** is the only thing in Socrates that knows a native protocol. It
-translates that protocol into one small set of events — text, reasoning, a tool
-started, a tool finished, a subagent, a notice, the turn ended — and the engine
-turns those into the assistant messages and step cards you see. Adding a fourth
-agent means writing one adapter, not patching the app.
+Socrates never speaks a CLI's protocol. It builds a command line, starts it in
+a tmux pane, and moves bytes between that pane and your browser. The parts that
+are Socrates' own are the ones a terminal cannot do for itself:
 
-Each chat's adapter runs inside its own **agent host**: a detached
-`socrates agent-host` process that owns the CLI, appends every event to a journal
-on disk and hands it to whoever is connected. That is what makes a restart
-harmless — the turn keeps running in the host, and the server reattaches to the
-journal and replays it. It is also why the browser can drop off a network and
-come back without losing anything.
+- **The size.** tmux sizes a window to the smallest attached client. Socrates
+  therefore sizes the window itself, per session, and every viewer is told what
+  the size became.
+- **The white.** The pane is white, not "not black". tmux answers each CLI's
+  own background query out of a window style Socrates sets, so a program that
+  asks gets `light`; `COLORFGBG=0;15` covers the ones that do not ask; and
+  xterm.js re-derives any colour that would be illegible at draw time.
+- **The journal.** Every byte a pane prints is piped into a `socrates
+  journal-sink` process — rotated, downloadable, and the record when a screen
+  has been repainted.
+- **The conversation id.** Each CLI keeps its session somewhere different, so
+  Socrates learns it — Claude Code by choosing it up front, Codex by watching
+  its rollout files, OpenCode by asking the TUI's own authenticated server —
+  and that id is what a resume after a reboot is built on.
 
-**OpenRouter is used for two things only:** transcribing what you say, and
-writing a chat's title. The coding agents never go through it — each one talks to
-its own provider with its own credentials, the same ones it uses in your
-terminal.
+### The app shell works with no network
+
+A service worker precaches everything the session page is made of, so Socrates
+opens on a phone with no signal: the shell, the terminal engine and the styles
+come from the cache, the connection bar says the truth about the network, and
+nothing old is presented as current.
+
+Measured on this build, the precached shell is **20 files, 1 069 KiB
+uncompressed and 340 KiB gzipped** — of which the vendored terminal (xterm.js
+and its five addons plus its stylesheet) is 788 KiB and 207 KiB. Adding a file
+to `SHELL` in `internal/web/static/sw.js` adds to that number, and it is
+recorded here so that an addition is noticed. Socrates serves the files as they
+are; the compression is whatever is in front of it.
 
 ## Requirements
 
-- **Go 1.25+** — only to build the binary.
-- **A Unix-like system** — macOS or Linux (WSL counts). Socrates builds and runs
-  on Windows and the UI, the dashboard, the tunnel and voice all work there, but
-  **agent chats do not**: they need a unix socket and POSIX process detachment,
-  and sending a message on Windows is refused with a plain sentence rather than
-  half working. Use the Docker image or WSL.
-- **At least one agent CLI** in your `PATH`, **signed in already**:
+- **tmux 3.3 or newer.** Not optional and there is no fallback: a session *is*
+  a tmux pane. If it is missing, the dashboard says so and offers to install it
+  with this machine's own package manager (`apt-get`, `apk`, `dnf`, `yum`,
+  `pacman`, `zypper` or `brew`), streaming the output into the page. The Docker
+  image already has it.
+- **A Unix-like system** — macOS or Linux (WSL counts). Socrates builds and
+  runs on Windows, and the dashboard, the tunnel and voice work there, but
+  **terminal sessions do not**: creating one, restarting one or opening its
+  WebSocket is refused with `503` and a sentence that says so. Use the Docker
+  image or WSL.
+- **Go 1.25 or newer** — only to build the binary.
+- **At least one CLI in your `PATH`, signed in already** — none of them if you
+  only want a shell:
   [`claude`](https://claude.com/claude-code),
   [`codex`](https://github.com/openai/codex),
   [`opencode`](https://opencode.ai).
-  Socrates does not log you in and holds no keys for them; run each one once in a
-  terminal first.
-- **An OpenRouter API key** — <https://openrouter.ai/keys>. Only speech to text
-  and chat titles depend on it; without one, Socrates works and stays silent.
-- **`piper`** — only on macOS, and only for the voice that reads answers out
-  loud: it is the one thing Socrates cannot install for you there. One
-  `brew install piper`. See [Voice](#voice).
+  Socrates does not log you in and holds no keys for them; run each one once in
+  a terminal first.
+- **An OpenRouter API key** — <https://openrouter.ai/keys>. Only dictation
+  depends on it; without one, everything else works.
+- **`piper`** — only on macOS, and only for the voice: it is the one thing
+  Socrates cannot install for you there. One `brew install piper`.
 - **`cloudflared`** — not required: if you turn on remote access and it is
-  missing, Socrates downloads it for you. See [Remote access](#remote-access).
+  missing, Socrates downloads it for you.
 
 ## Install
 
@@ -170,8 +176,8 @@ go install github.com/saschazesiger/SocratesAgent@latest
 SocratesAgent            # the binary takes the name of the repository
 ```
 
-Or with Docker (the image also brings the three agent CLIs, `cloudflared` and
-the voice):
+Or with Docker (the image brings tmux, the three CLIs, `cloudflared` and the
+voice):
 
 ```bash
 docker build -t socrates .
@@ -182,189 +188,139 @@ The CLIs still need their own credentials inside the container — mount your
 `~/.claude`, `~/.codex` and `~/.config/opencode` into it, or sign in once in a
 shell on the running container.
 
-Each of the three extras is a build argument, so you can leave out whatever you
-would rather mount yourself or simply not carry:
+Each extra is a build argument, so you can leave out whatever you would rather
+mount yourself or simply not carry:
 
 ```bash
 docker build -t socrates --build-arg INSTALL_AGENTS=0 --build-arg INSTALL_VOICE=0 .
 ```
 
 `INSTALL_AGENTS`, `INSTALL_CLOUDFLARED` and `INSTALL_VOICE` all default to `1`,
-and `VERSION` — what `socrates -version` prints — defaults to `docker`. Nothing
-is lost by leaving one out: Socrates downloads `cloudflared` and the voice into
-its data directory the first time it needs them, and an agent binary can be
-mounted in and pointed at from the dashboard.
+and `VERSION` — what `socrates -version` prints — defaults to `docker`. tmux is
+not a build argument: without it the image would have nothing to run.
 
 Then open <http://localhost:8080>.
 
 ## First run
 
-1. `/setup` asks you for the password you will use from now on. You can paste
-   your OpenRouter key right away, and decide whether the instance should be
+1. `/setup` asks for the password you will use from now on. You can paste your
+   OpenRouter key right away and decide whether the instance should be
    published through a Cloudflare tunnel — both can also be changed later.
-2. You land in the admin dashboard. Press **Run checks**. It verifies your
-   OpenRouter key, the workspace directory, that agent hosts can be started on
-   this machine, **each enabled agent** — that its binary is on `PATH`, what
-   version it reports and how many models it offers — remote access, and both
-   halves of voice.
-3. Go back to the chat, press **+**, pick an agent and a model, and ask for
-   something.
+2. You land in the dashboard. The first card says whether tmux is there; if it
+   is not, **Install tmux** runs your package manager and streams the output.
+   Press **Run checks** at the bottom for the rest: the workspace directory,
+   each program and where its state lives, OpenRouter, voice, remote access and
+   free disk.
+3. Go back, press **New session**, pick a program and a directory, and start.
 
 <p align="center">
-  <img src="docs/screenshot-admin.png" alt="The Agents card in the admin dashboard" width="860">
+  <img src="docs/screenshot-admin.png" alt="The Programs cards in the dashboard, one per session type" width="860">
 </p>
 
-## Agents and models
+## The four session types
 
-A chat is bound to one agent at creation and keeps it for life. The new-chat
-sheet lists the three agents with what Socrates found on this machine: whether
-the binary is there, which version, which models it offers and any note that
-applies to it. An agent you do not use can be switched off in the dashboard and
-disappears from the picker.
+A session is bound to one program at creation and keeps it for life. What each
+one is started as:
 
-| Agent | How Socrates talks to it | Model | Reasoning effort |
+| Session | Command line, in outline | Model | Effort |
 | --- | --- | --- | --- |
-| **Claude Code** | `claude -p --output-format stream-json --input-format stream-json`, one long lived process per chat, newline JSON over stdio | `--model` | `--effort` |
-| **Codex** | `codex app-server`, JSON-RPC 2.0 over stdio | on `thread/start` and on every turn | `model_reasoning_effort` |
-| **OpenCode** | `opencode serve` on a loopback port it picks itself, HTTP for calls and SSE for events | per session, `provider/model` | as the model's *variant* |
+| **Shell** | `$SHELL` (else `/bin/bash`, else `/bin/sh`), `-l` when "login shell" is on | — | — |
+| **Claude Code** | `claude --session-id <uuid> …`, resumed with `--resume <id>` | `--model` | `--effort` |
+| **Codex** | `codex --strict-config -C <dir> …`, resumed with `codex resume <id>` | `-m` | `-c model_reasoning_effort=…` |
+| **OpenCode** | `opencode --port <free port> --hostname 127.0.0.1 … <dir>`, resumed with `--session <id>` | `-m` | as the model's *variant* |
 
-**Where the models come from.** Codex and OpenCode are asked: Socrates reads
-Codex's `model/list` and OpenCode's `GET /config/providers` - every provider with
-working credentials and its whole model list, the same list OpenCode's own picker
-shows - and offers what that installation actually has.
-Claude Code has no such command, so Socrates ships a curated list of the
-documented aliases — Opus, Sonnet, Haiku, Fable, Best, Opus plan and the 1M
-variants — and the picker's field also accepts anything you type, so a new alias
-works the day Anthropic ships it without waiting for a Socrates release. A model
-id Claude does not know comes back as a normal failed turn with Claude's
-own message in it.
+**Where the models come from.** Codex and OpenCode are asked — `codex debug
+models` and `opencode models` — so the picker offers what that installation
+actually has. Claude Code has no such command, so Socrates ships a curated list
+of the documented aliases, and the field also accepts anything you type, so a
+new alias works the day it ships. Every program's card in the dashboard can
+narrow that to a short list, each entry with the effort a new session starts on.
 
-**Effort levels are the agent's own.** Claude Code takes low, medium, high,
-xhigh and max; Codex reports a list per model, xhigh included; OpenCode names
-its "variants" per model. The effort row offers exactly what the chosen model
-reports, and the server refuses a level the model does not name.
+**Where a session works.** The dashboard has a workspace root (default
+`<data>/workspaces`). A session gets its own directory below it, named after the
+program and the moment it was created — or one of the preset directories an
+administrator has named, or a path you type if that is allowed. Presets must
+already exist and are never created; `/`, `/etc`, `/usr`, `/bin`, `/sbin`,
+`/boot` and anything under `/proc`, `/sys` or `/dev` are refused. The rules are
+enforced by the server, not by the sheet.
 
-**Your own short list.** Four hundred OpenRouter models is a list to search,
-not to choose from. The Agents card in the dashboard has a short list per agent:
-pick a model from what the agent reports or type an id, give each one the effort
-a new chat starts on, and save. The new-chat sheet then offers exactly that list,
-starting on its first entry, and an id you typed is accepted as typed. An empty
-list offers everything the agent reports.
+**Every flag is yours.** Each program's card in the dashboard is the whole
+surface of its command line, grouped and with the exact flag or environment
+variable in the hint under every control: permissions and sandboxing, providers,
+isolation, remote control, session and prompt, extensions, tools, theme and
+terminal, diagnostics, and raw extra flags, extra environment and config
+overrides. They all take effect for sessions started from then on — a running
+pane is never reconfigured behind your back.
 
-**Changing the model.** Allowed between turns, never during one. Socrates closes
-the chat's agent host and opens a new one on the new model; the agent's own
-session is resumed, so the conversation continues rather than restarting.
+## What survives what
 
-**Sessions.** A session belongs to the chat, not to a message: what the agent
-learned while answering one thing is still there for the next. Sessions are the
-CLIs' own — Socrates stores their ids and resumes them — so they outlive both the
-host process and Socrates itself. They end when the chat is archived or deleted.
+| | the pane keeps running | the conversation continues |
+| --- | --- | --- |
+| Close the tab, lock the phone, lose signal | yes | yes |
+| `socrates` restarted or upgraded | yes | yes |
+| `systemctl restart socrates` | yes, with the shipped unit | yes |
+| The machine reboots | no | yes — the resume path |
+| The container is restarted | no | yes — the resume path |
+| You delete the session | no | no, but the directory it worked in stays |
 
-**Where they run.** The dashboard has a workspace root (default
-`~/.socrates/workspaces`); a chat gets its own directory below it — named after
-the chat — so chats stay isolated. A chat can instead be pointed at an existing
-project directory, which is what you want when the work is on a real repository.
+The tmux server is deliberately outside Socrates' lifecycle. Shutdown stops the
+HTTP server, the tunnel and the viewers, and leaves every pane running; on
+start, Socrates re-adopts what it finds, marks panes that died while it was away
+as exited with their status, and takes in a `soc_*` session it does not know
+rather than killing it.
 
-**Known limitation — OpenCode and OpenRouter models.**
+Two deployment shapes follow from that:
 
-> OpenCode 1.17.x can only run models whose provider uses `@ai-sdk/openai`,
-> `@ai-sdk/anthropic`, or `@ai-sdk/openai-compatible` with a `url`. OpenRouter
-> models are listed by OpenCode but fail at the first turn with
-> `UnsupportedApiError`. Socrates shows what OpenCode reports and does not change
-> your OpenCode configuration. If you want OpenRouter models in OpenCode,
-> override the provider yourself in `opencode.json`
-> (`"npm": "@ai-sdk/openai-compatible"`, `"options": {"baseURL":
-> "https://openrouter.ai/api/v1"}`) and export `OPENROUTER_API_KEY`; the built-in
-> `opencode` (Zen) models work out of the box.
+- **systemd** — `deploy/socrates.service` ships with `KillMode=process`, because
+  systemd's default would kill the tmux server along with Socrates and turn
+  every ordinary restart into a reboot. Belt and braces, when `systemd-run` is
+  available Socrates starts the tmux server in a transient scope of its own so
+  it is outside the unit's cgroup as well.
+- **Docker** — a container restart *is* a reboot: the tmux server dies with the
+  container and sessions come back through the resume path. The image uses
+  `tini` as its entrypoint so the tmux server, which reparents to PID 1, cannot
+  become a zombie (`docker run --init` does the same from outside).
 
-The failure is not loud: OpenCode sends nothing at all on that path, so the turn
-ends with *"the agent produced no answer"* rather than with the real error. The
-same warning is on the OpenCode entry in the picker, which is where you will see
-it before spending a turn finding out.
+## On a phone
 
-## Choosing models
+<p align="center">
+  <img src="docs/screenshot-phone.png" alt="A session on a phone: the pane, the key bar and the line input" width="300">
+</p>
 
-There are two kinds of model here and they are not interchangeable.
+The session list is a drawer, the sheet is a bottom sheet, and under the pane
+there are two things a touch keyboard cannot do on its own:
 
-**The agent's models** are the ones above. They are that program's own names —
-`sonnet`, `gpt-5.6-sol`, `opencode/big-pickle` — they are chosen per chat, and
-they never touch OpenRouter.
+- **The key bar** — `Esc`, `Tab`, `Ctrl`, `Alt`, the four arrows, `⏎`, `^C`,
+  `^D`, `^Z`, paste and a keyboard toggle. `Ctrl` and `Alt` are sticky: tap to
+  arm for the next letter, tap again to lock, tap again to clear.
+- **The line input** — type a whole line, correct it, then send it with one
+  `\r`. The microphone beside it dictates into the same field, and nothing is
+  sent until you send it. A half-typed line survives a reload.
 
-**Socrates' own two models** are OpenRouter models and live in the dashboard:
-the one that transcribes a recording, and the one that writes a chat's title.
-Both are picked with a searchable dropdown over the live OpenRouter catalogue,
-grouped by provider and annotated with context length and price. The list is
-fetched when the dashboard opens; OpenRouter serves it without a key, so it works
-before you have pasted one, and every field still accepts anything you type.
-
-The voice that reads an answer out loud is on neither list. It is not a model you
-pick — see **Voice** below.
+It appears by itself on a coarse pointer or a narrow window, and the session
+menu can force it either way.
 
 ## Voice
 
 - **Microphones need a secure context.** Browsers only allow recording on
-  `localhost` or over HTTPS. If you run Socrates on a server, put it behind a TLS
-  reverse proxy or the Cloudflare tunnel, otherwise the microphone button will
-  report that it is blocked.
+  `localhost` or over HTTPS. On a server, put Socrates behind TLS or the
+  Cloudflare tunnel, or the microphone will report that it is blocked.
 - **Speech to text** goes through the transcription model chosen in the
-  dashboard — an audio capable chat model such as `google/gemini-2.5-flash`, or a
-  dedicated transcriber such as `openai/gpt-transcribe` or `deepgram/nova-3`.
-  Socrates works out which of the two endpoints a model lives at and remembers
-  it. The browser records raw PCM and sends a 16 kHz WAV, so no ffmpeg is
-  involved.
-- **Text to speech** is one voice, running on the server, and there is nothing to
-  configure: no provider, no model, no voice name, no API key and no account.
-  Socrates installs [Piper](https://github.com/rhasspy/piper) and both voices by
-  itself the first time it starts — the Voice card in the dashboard shows the
-  download while it runs — and the Docker image already has all of it baked in,
-  so a container reads the first answer it is given. German is
-  `de_DE-thorsten-medium`, English is `en_US-ljspeech-medium`, and the spoken
-  language below is what picks between them. Both are installed whichever
-  language you speak, on purpose: the language is a setting you flip, and a flip
-  that starts a 60 MB download is a broken experience.
-  - **macOS is the exception.** There Socrates installs nothing and says so: the
-    published macOS builds of this Piper release ship without the libraries their
-    own binary loads, so an installation would look finished and then abort
-    inside the loader. Run `brew install piper` once and Socrates picks it up
-    from your `PATH`; the two voices are still downloaded and managed for you.
-    Linux (x86_64, aarch64, armv7l) and Windows x86_64 install themselves.
-  - **It sounds synthetic**, clearly so, and it is completely intelligible. That
-    is the trade: a small neural model on your own CPU instead of a voice that is
-    indistinguishable from a person and belongs to somebody else.
-  - **It is fast.** Roughly ten times faster than real time on an ordinary CPU —
-    445 characters of German became 24 seconds of audio in 1.5 seconds — so the
-    answer starts almost as soon as it is written.
-  - **It costs nothing**, per character or otherwise, and it needs no connection
-    to a third party at any point. What it needs is one download of about 150 MB
-    — the engine and both voices — and only the first time; it unpacks to about
-    180 MB under `<data>/voice`.
-  - The bundled engine ships GPL-3.0 and MIT components; what they are and where
-    their source lives is in
-    [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
-- **Spoken language** is one setting in the admin dashboard, English or Deutsch,
-  and it covers everything Socrates says: which language your recording is
-  transcribed into, which installed voice reads the answer out loud, and which
-  language the agent is asked to answer in. Getting this wrong is what makes a
-  German answer come out with an English accent. English is the default; there is
-  no detection and nothing to configure per chat.
-
-## Audio mode
-
-The top bar has one slider with two stops — **Chat** and **Audio** — and only one
-of them at a time. The second turns the chat into a hands free surface: a large
-microphone button with a recording timer, a short status line while the agent
-works, and the finished answer shown as large as it fits and read out loud. If
-the agent needs a decision it asks for it in that answer, which is read out with
-the rest — you tap the microphone and say what you want.
-
-<p align="center">
-  <img src="docs/screenshot-auto.png" alt="Audio mode on a phone: one microphone button and the answer shown large" width="300">
-</p>
-
-One answer is spoken per turn, at the end, not every sentence as it appears. A
-long turn is therefore quiet for a while; the status line is what tells you it is
-still working. That is deliberate: narrating a twenty minute refactor into a car
-is worse than waiting for the result.
+  dashboard — an audio-capable chat model such as `google/gemini-2.5-flash`, or
+  a dedicated transcriber such as `openai/gpt-transcribe`. The browser records
+  raw PCM and sends a 16 kHz WAV, so no ffmpeg is involved.
+- **Text to speech** is [Piper](https://github.com/rhasspy/piper), running on
+  the same machine — no provider, no model, no API key. Socrates installs it and
+  both voices by itself, and the Docker image has them baked in. On macOS it
+  installs nothing and says so: those builds ship without the libraries their
+  own binary loads, so `brew install piper` once and Socrates picks it up.
+  **It is not wired into a terminal session** — a pane is a program, not an
+  answer — so what the dashboard offers today is the installation itself, the
+  language, the speaking rate and a **Test voice output** button.
+- **Spoken language** is one setting, English or Deutsch, and it picks both the
+  language a recording is transcribed into and the installed voice.
+- The bundled engine ships GPL-3.0 and MIT components; what they are and where
+  their source lives is in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 
 ## Remote access
 
@@ -376,136 +332,132 @@ without opening a port, forwarding anything on your router, or owning a static
 IP.
 
 <p align="center">
-  <img src="docs/screenshot-tunnel.png" alt="The remote access card in the admin dashboard" width="760">
+  <img src="docs/screenshot-tunnel.png" alt="The remote access card in the dashboard" width="760">
 </p>
 
 There is nothing to install by hand. If `cloudflared` is not on your `PATH`,
-Socrates downloads the official build for your platform from Cloudflare's release
-page into `<data>/bin/cloudflared` the moment you start a tunnel, checks that it
-runs, and uses it from then on. The dashboard shows the download progress and has
-a **Download cloudflared** button if you want it ready beforehand. A
+Socrates downloads the official build for your platform into `<data>/bin` the
+moment you start a tunnel, checks that it runs, and uses it from then on. A
 `cloudflared` that is already installed always wins, and an explicit path in the
 settings is never overridden.
 
-Pick one of two modes in **Admin → Remote access** (or right in the setup
-wizard):
-
 **Quick tunnel** — one click, no Cloudflare account. Cloudflare hands out a
 random `https://….trycloudflare.com` address, which Socrates shows as soon as it
-appears. The address changes on every restart, and anyone who has the link
-reaches your login page, so treat it as a temporary demo door.
+appears. It changes on every restart, and anyone with the link reaches your
+login page, so treat it as a temporary demo door.
 
-**Named tunnel** — your own hostname, your own Cloudflare account:
+**Named tunnel** — your own hostname, your own account:
 
-1. Zero Trust → Networks → Tunnels → **Create a tunnel** → *Cloudflared*, name it
-   and save it.
-2. Cloudflare then shows **Install and run connector**. Copy the token out of the
-   install command on that screen and paste it into Socrates.
-3. Add a public hostname for the tunnel and point it at the local address that
-   the admin dashboard displays (`http://localhost:8080` by default). This is
-   exactly why Socrates keeps serving locally.
-4. Enter the same hostname in Socrates so it can link you to it, then press
-   **Start tunnel**.
+1. Zero Trust → Networks → Tunnels → **Create a tunnel** → *Cloudflared*.
+2. Copy the token out of the install command Cloudflare shows and paste it into
+   Socrates.
+3. Add a public hostname for the tunnel and point it at the local address the
+   dashboard displays (`http://localhost:8080` by default). This is exactly why
+   Socrates keeps serving locally.
+4. Enter the same hostname in Socrates, then press **Start tunnel**.
 
-The tunnel is supervised: it restarts with backoff if `cloudflared` dies, it
-comes back automatically when Socrates restarts, and it is shut down cleanly on
-exit. The token is passed through the environment, so it never shows up in the
-process list, and it is redacted from the log tail in the dashboard.
+The tunnel is supervised: it restarts with backoff if `cloudflared` dies, comes
+back when Socrates restarts, and is shut down cleanly on exit. The token is
+passed through the environment, so it never shows up in the process list, and it
+is redacted from the log tail in the dashboard.
 
 ## Configuration
 
 | Flag | Environment | Default | Meaning |
 | --- | --- | --- | --- |
-| `-addr` | `SOCRATES_ADDR` | `:8080` | listen address; use `127.0.0.1:8080` to accept local connections only |
-| `-data` | `SOCRATES_DATA_DIR` | `~/.socrates` | database and workspaces |
+| `-addr` | `SOCRATES_ADDR` | `:8080` | listen address; `127.0.0.1:8080` accepts local connections only |
+| `-data` | `SOCRATES_DATA_DIR` | `~/.socrates` | database, tmux socket, journals and workspaces. Keep it short: two Unix sockets live in it, and a path over ~100 bytes is refused at start-up with a sentence saying so |
 | `-version` | | | print the version and exit |
 | | `OPENROUTER_API_KEY` | | seeds the key on first start |
 | | `SOCRATES_WORKSPACE_ROOT` | `<data>/workspaces` | default workspace root |
 | | `SOCRATES_PIPER_DIR` | | a Piper installation to use instead of the managed one; the Docker image sets it |
-| | `XDG_RUNTIME_DIR` | `$TMPDIR` | where the agent host sockets live; a unix socket path has a hard length limit, and Socrates says so by name if yours is too long |
 
-There are two subcommands. `socrates serve` is the same thing as plain `socrates`
-and takes the same flags, for anyone who prefers to say it out loud.
-`socrates agent-host --dir <dir>` is internal: it hosts one agent session and
-Socrates starts it itself — that is the box in the diagram above, and not
-something to run by hand.
+`socrates serve` is the same thing as plain `socrates`, for anyone who prefers
+to say it out loud. Two more subcommands exist and are internal: `socrates
+journal-sink` is what tmux pipes a pane's output into, and `socrates tmux-hook`
+is what a tmux hook runs to tell Socrates a pane has died. Neither is something
+to run by hand.
 
-Everything else lives in the admin dashboard and is stored in
-`<data>/socrates.db` — a single SQLite file that holds settings, chats, messages,
-every step and your password hash.
+Inside the data directory:
+
+```
+<data>/socrates.db              SQLite: settings, sessions, logins, password hash
+<data>/socrates.db.pre-v3.bak   one-time backup, if an older database was migrated
+<data>/tmux.sock                the Socrates-owned tmux server (0700, in a 0700 directory)
+<data>/tmux.conf                generated on every start
+<data>/sessions/<id>/           the launch plan, the journal, generated CLI config
+<data>/workspaces/              where sessions work, unless told otherwise
+```
+
+Everything else lives in the dashboard.
 
 ## Security
 
-Socrates is built for a single trusted operator, and it runs the coding agents
-**fully unattended**. That is the point of it — nobody can tap "allow" from a car
-— and it is the thing to understand before you publish it.
+Socrates is built for a single trusted operator, and it runs the coding CLIs
+**unattended**. That is the point of it — nobody can tap "allow" from a car —
+and it is the thing to understand before you publish it.
 
-- **Unattended means unattended.** Each agent is started in its own bypass mode:
-  `--permission-mode bypassPermissions` for Claude Code (plus `IS_SANDBOX=1`,
-  because it refuses to skip permissions as root — the normal case in a container
-  — unless it is told it is already confined); `approvalPolicy: "never"` and
-  `sandbox: "danger-full-access"` for Codex; `OPENCODE_PERMISSION="allow"` for
-  OpenCode. There are no approval cards in the UI, by design. Anything the agent
-  decides to run, it runs.
-- **Remote control is off for every chat.** Claude Code and Codex can both hand a
-  running session to their vendor's own phone and web apps — Anthropic's Remote
-  Control, OpenAI's remote control — where a second surface steers the very turn
-  Socrates is driving and the transcript is kept on their servers for as long as
-  it is connected. Socrates is the surface, so every session it starts turns that
-  off explicitly rather than inheriting whatever the machine or the account
-  defaults to: `--settings '{"disableRemoteControl":true,"remoteControlAtStartup":false}'`
-  for Claude Code, `-c features.remote_control=false` for Codex. OpenCode has no
-  such feature. `extra_args` in the admin dashboard is appended after these, so
-  it is also the way to undo them — note that a second `--settings` replaces this
-  one outright rather than merging with it.
-- **The agents run as the user that runs Socrates**, with that user's files,
+- **Unattended means unattended, if you say so.** The permission and sandbox
+  settings of each CLI are yours, in its card in the dashboard, with the flag
+  each one maps to written under it, and the dangerous ones ask twice before
+  they are saved. There are no approval cards in the pane's way; what the
+  program is allowed to do is what you configured before it started.
+- **The programs run as the user that runs Socrates**, with that user's files,
   credentials and network. Access to the web interface is therefore access to
   that account — treat the password accordingly, and put Cloudflare Access in
   front of the hostname if you publish it.
-- One password, hashed with PBKDF2-HMAC-SHA256 (210k rounds), a session cookie
-  that is `HttpOnly` and `SameSite=Lax`, and rate limited logins.
-- Socrates listens on every interface by default, so it works out of the box on a
-  server, in Docker and behind a tunnel. Pass `-addr 127.0.0.1:8080` (or set
-  `SOCRATES_ADDR`) to accept local connections only and publish it exclusively
-  through the Cloudflare tunnel.
-- Requests through a tunnel are rate limited per `CF-Connecting-IP`, and the
-  session cookie is marked `Secure` as soon as the request arrives over HTTPS.
-- Agent hosts are reachable only through the authenticated API. Each one has its
-  own unix socket in a `0700` directory under the user's runtime directory, and
-  the OpenCode server one of them starts is bound to loopback behind a random
-  password generated per process and never written to disk.
+- One password, hashed with PBKDF2-HMAC-SHA256 (210 000 rounds), a session
+  cookie that is `HttpOnly` and `SameSite=Lax` and becomes `Secure` as soon as
+  the request arrives over HTTPS, and rate-limited logins — after five failures
+  the delay grows to ten minutes, per client address. Changing the password
+  signs every other browser out.
+- Every state-changing request is checked for a same-origin `Origin`, and the
+  WebSocket only accepts a handshake whose origin is the host it was served
+  from.
+- The tmux server has a socket of its own inside the data directory, which
+  Socrates creates with `0700`, and every tmux command carries `-S`, so a
+  session is not reachable by name from another program and Socrates never
+  touches your own tmux server.
+- OpenCode's TUI *is* an HTTP server. Socrates gives each session a random
+  password for it, held in memory and never written to disk, and binds it to
+  loopback.
+- Socrates listens on every interface by default, so it works out of the box on
+  a server, in Docker and behind a tunnel. Pass `-addr 127.0.0.1:8080` to accept
+  local connections only and publish it exclusively through the tunnel.
 
 ## Development
 
 ```bash
 make check       # exactly what CI runs: gofmt, go vet, go mod tidy, go test -race, go build
 make fmt         # the one target that rewrites your files
-make e2e         # the browser end to end suite (needs node and a Chromium)
-go test ./...    # unit tests, the adapters against fake CLIs that speak the real
-                 # protocols, and hosts started as real detached processes
+make e2e         # the browser suite (needs node, a Chromium and tmux)
+make vendor-xterm  # re-download the pinned xterm.js bundle set
 ```
+
+The Go tests use **real tmux**, on a private socket under the test's own
+temporary directory, and skip themselves when tmux is missing or older than 3.3.
+They never touch your tmux server and never start a real CLI session; the
+browser suite runs a fake TUI installed under all three CLI names, which writes
+the same state files the real programs write and refuses the same way they
+refuse. See [e2e/README.md](e2e/README.md).
 
 Layout:
 
 ```
-main.go                     flags, startup, graceful shutdown, the agent-host subcommand
-internal/harness            the adapter contract: Spec, the normalised Event, the registry
-internal/harness/claude     Claude Code: stream-json over stdio
-internal/harness/codex      Codex: app-server JSON-RPC over stdio
-internal/harness/opencode   OpenCode: serve, HTTP + SSE on loopback
-internal/harness/fakes      fake claude/codex/opencode binaries for hermetic tests
-internal/agenthost          the detached host process, its socket protocol and its journal
-internal/engine             turns, the event pump, step cards, the SSE bus, chat titles
-internal/catalog            which agents are installed and which models they offer
-internal/store              SQLite persistence (chats, runs, steps, messages)
-internal/config             settings document and defaults
-internal/openrouter         transcription, the model catalogue, chat completions for titles
+main.go                     flags, startup, shutdown, journal-sink and tmux-hook
+internal/termux             the tmux substrate: sessions, viewers, sizing, journal, adoption
+internal/harnesses          the four programs: command lines, config files, id discovery
+internal/catalog            which programs are installed and which models they offer
+internal/store              SQLite persistence (sessions, settings, logins)
+internal/config             the settings document and its defaults
+internal/server             HTTP API, auth, the WebSocket, admin, voice, tunnel
+internal/openrouter         transcription and the model catalogue
 internal/piper              the local voice: its installer and the renderer
-internal/server             HTTP API, auth, SSE, admin, agents, voice, tunnel
 internal/tunnel             supervised Cloudflare tunnel and its installer
 internal/proc               process group helpers
 internal/web/static         the whole front end: plain HTML, CSS and JS
-e2e                         Playwright specs driven against a real server
+e2e                         Playwright scenarios against a real server and real tmux
+deploy/socrates.service     the systemd unit
 ```
 
 The front end has no build step. Edit the files under `internal/web/static` and
@@ -516,6 +468,7 @@ rebuild the binary — that is all.
 MIT. See [LICENSE](LICENSE).
 
 The local voice is not part of that: Piper, the libraries it ships with and the
-two voice models carry their own licences, one of them GPL-3.0. They are named in
-[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md), which matters to anyone
-publishing the Docker image.
+two voice models carry their own licences, one of them GPL-3.0. tmux and the
+coding CLIs are separate programs Socrates starts, each under its own terms.
+They are named in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md), which
+matters to anyone publishing the Docker image.

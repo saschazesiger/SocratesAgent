@@ -1,15 +1,17 @@
-// The marks of the agents Socrates can hand a chat to, drawn inline.
+// The marks of the harnesses a session can run, drawn inline.
 //
 // They are SVG paths in a module rather than image files for two reasons. The
 // page is used offline, and an inline mark is on screen the moment the script
 // is, with nothing left to fetch. And they sit beside text in half a dozen
-// sizes - a chat row, a badge, a sheet, a dashboard card - so they have to be
+// sizes - a session row, a badge, a sheet, a dashboard card - so they have to be
 // crisp at every one of them, which a path is and a bitmap is not.
 //
 // The shapes are the products' own marks, each in the colour it is published
 // in: Claude's starburst (Anthropic), the OpenAI knot that Codex ships under,
-// and OpenCode's bracketed square. An agent this file has not heard of gets a
-// neutral tile with its initial, so a new id never renders as a broken image.
+// and OpenCode's bracketed square. Shell has no product behind it, so it gets
+// the oldest mark there is - a prompt and a cursor. An id this file has not
+// heard of gets a neutral tile with its initial, so a new one never renders as
+// a broken image.
 
 import { el } from './api.js';
 
@@ -17,6 +19,18 @@ const NS = 'http://www.w3.org/2000/svg';
 
 // Each mark is a 24-unit viewBox, the paths as published, and the brand colour.
 const MARKS = {
+  shell: {
+    name: 'Shell',
+    color: '#131010',
+    viewBox: '0 0 24 24',
+    // A tile with a prompt and a cursor: `>_`, the mark every terminal has
+    // worn since before any of the others existed.
+    tile: true,
+    paths: [
+      'M6.2 7.4a1 1 0 0 1 1.4-1.4l3.7 3.7a1.2 1.2 0 0 1 0 1.7l-3.7 3.7a1 1 0 1 1-1.4-1.4l2.9-2.9a.2.2 0 0 0 0-.3z',
+      'M12.6 16.1h5a1 1 0 1 1 0 2h-5a1 1 0 1 1 0-2z',
+    ],
+  },
   claude: {
     name: 'Claude Code',
     color: '#D97757',

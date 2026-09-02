@@ -25,9 +25,10 @@ const (
 type Settings struct {
 	OpenRouter OpenRouterSettings `json:"openrouter"`
 	Voice      VoiceSettings      `json:"voice"`
-	Agent      AgentSettings      `json:"agent"`
-	Agents     AgentsSettings     `json:"agents"`
 	Tunnel     TunnelSettings     `json:"tunnel"`
+	Workspace  WorkspaceSettings  `json:"workspace"`
+	Terminal   TerminalSettings   `json:"terminal"`
+	Harnesses  HarnessSettings    `json:"harnesses"`
 }
 
 // OpenRouterSettings configures access to the OpenRouter API. Since Socrates
@@ -113,11 +114,53 @@ type VoiceSettings struct {
 	SpeakInChatMode bool `json:"speak_in_chat_mode"`
 }
 
-// AgentSettings is where a chat works when it was not pointed anywhere else.
-// It is all that is left of a section that used to configure a loop.
-type AgentSettings struct {
-	WorkspaceRoot string `json:"workspace_root"`
+// WorkspaceSettings decides where a session may work. Root is where a
+// "dynamic" session gets its own fresh directory; Presets are the places the
+// new-session sheet offers by name; AllowCustom decides whether a path may be
+// typed in at all, because on a machine that is published through a tunnel
+// "anywhere on the disk" is a decision and not a default.
+type WorkspaceSettings struct {
+	Root           string      `json:"root"`
+	DefaultHarness string      `json:"default_harness"`
+	Presets        []PresetDir `json:"presets"`
+	AllowCustom    bool        `json:"allow_custom"`
 }
+
+// PresetDir is one quick pick: a label a person recognises and the path it
+// stands for.
+type PresetDir struct {
+	Label string `json:"label"`
+	Path  string `json:"path"`
+}
+
+// TerminalSettings is how the terminal itself behaves - the tmux side of it
+// and the xterm.js side, in one place, because to the person changing them
+// they are one thing.
+//
+// There is deliberately no fixed size here. Under the "manual" policy Socrates
+// sizes the window to the viewer that owns it, so a fixed size would be a
+// setting with nothing to apply it to; the fallback when nobody is connecting
+// is a constant.
+type TerminalSettings struct {
+	// WindowSize is tmux's policy when several browsers watch one session:
+	// "manual" (Socrates decides), "latest" (the last one to act) or
+	// "largest".
+	WindowSize string `json:"window_size"`
+	// HistoryLimit is how many lines tmux keeps per pane, Scrollback how many
+	// the browser keeps. They are two buffers, and only the first survives a
+	// reload.
+	HistoryLimit int  `json:"history_limit"`
+	Mouse        bool `json:"mouse"`
+	ExtendedKeys bool `json:"extended_keys"`
+	Scrollback   int  `json:"scrollback"`
+	FontSize     int  `json:"font_size"`
+	// WebGL renders with the GPU where there is one; the browser falls back on
+	// its own when there is not.
+	WebGL bool `json:"webgl"`
+}
+
+// The tmux window-size policies Socrates offers.
+var WindowSizePolicies = []string{"manual", "latest", "largest"}
 
 // The reasoning effort levels. Each agent names its own - Claude Code takes
 // low, medium, high, xhigh and max, Codex reports a list per model, OpenCode
@@ -154,54 +197,6 @@ func NormalizeEffort(level string) string {
 	return EffortDefault
 }
 
-// AgentsSettings is what the user decides about the three programs Socrates
-// can talk to. Everything else about them - how they are launched, what they
-// say back - is the app's business, not a setting.
-type AgentsSettings struct {
-	Claude   AgentEntry `json:"claude"`
-	Codex    AgentEntry `json:"codex"`
-	OpenCode AgentEntry `json:"opencode"`
-}
-
-// AgentEntry is one agent's switch and the two overrides a person may need.
-type AgentEntry struct {
-	Enabled bool `json:"enabled"`
-	// Binary overrides where the program is found. Empty means "look it up on
-	// PATH", which is what a normal installation wants.
-	Binary string `json:"binary,omitempty"`
-	// ExtraArgs is appended to the command line, for the one flag a person
-	// turns out to need and this app did not think of.
-	ExtraArgs []string `json:"extra_args,omitempty"`
-	// Models is the person's own short list: the models the new-chat sheet
-	// offers for this agent, in this order, each with the effort it starts
-	// on. Empty means "offer everything the agent reports", which is what a
-	// fresh installation wants and what a four-hundred-entry OpenRouter list
-	// does not.
-	Models []ModelPick `json:"models,omitempty"`
-}
-
-// ModelPick is one entry of that short list. The id is in the agent's own
-// naming, picked from the discovered list or typed in - a typed one is not
-// checked against anything here, because the discovery may simply be older
-// than the model.
-type ModelPick struct {
-	ID     string `json:"id"`
-	Effort string `json:"effort,omitempty"` // one of the effort levels above, "" = the model's own
-}
-
-// Entry returns the settings for one agent id, and whether it is a known one.
-func (a AgentsSettings) Entry(id string) (AgentEntry, bool) {
-	switch id {
-	case "claude":
-		return a.Claude, true
-	case "codex":
-		return a.Codex, true
-	case "opencode":
-		return a.OpenCode, true
-	}
-	return AgentEntry{}, false
-}
-
 // Tunnel modes.
 const (
 	TunnelQuick = "quick" // free *.trycloudflare.com URL, no account needed
@@ -235,19 +230,25 @@ func Default() Settings {
 			TTSRate:         1,
 			SpeakInAutoMode: true,
 		},
-		Agent: AgentSettings{
-			WorkspaceRoot: DefaultWorkspaceRoot(),
-		},
-		Agents: AgentsSettings{
-			Claude:   AgentEntry{Enabled: true},
-			Codex:    AgentEntry{Enabled: true},
-			OpenCode: AgentEntry{Enabled: true},
-		},
 		Tunnel: TunnelSettings{
 			Enabled: false,
 			Mode:    TunnelQuick,
 			Command: "cloudflared",
 		},
+		Workspace: WorkspaceSettings{
+			Root:           DefaultWorkspaceRoot(),
+			DefaultHarness: HarnessClaude,
+			AllowCustom:    true,
+		},
+		Terminal: TerminalSettings{
+			WindowSize:   "manual",
+			HistoryLimit: 20000,
+			Mouse:        true,
+			Scrollback:   2000,
+			FontSize:     14,
+			WebGL:        true,
+		},
+		Harnesses: DefaultHarnesses(),
 	}
 }
 
@@ -276,10 +277,9 @@ func (s *Settings) Normalize() {
 	if s.Voice.TTSRate <= 0 {
 		s.Voice.TTSRate = 1
 	}
-	if strings.TrimSpace(s.Agent.WorkspaceRoot) == "" {
-		s.Agent.WorkspaceRoot = d.Agent.WorkspaceRoot
-	}
-	s.normalizeAgents()
+	s.normalizeWorkspace(d)
+	s.normalizeTerminal(d)
+	s.Harnesses.normalize()
 	if s.Tunnel.Mode != TunnelToken {
 		s.Tunnel.Mode = TunnelQuick
 	}
@@ -296,26 +296,59 @@ func (s *Settings) Normalize() {
 	}
 }
 
-// normalizeAgents does the little there is to do: trim the strings a person
-// can type, and keep the model list to one entry per id with an effort the
-// agents understand. Whether an agent is actually there is not a setting - it
-// is a fact about the machine, and /api/agents is what reports it.
-func (s *Settings) normalizeAgents() {
-	for _, e := range []*AgentEntry{&s.Agents.Claude, &s.Agents.Codex, &s.Agents.OpenCode} {
-		e.Binary = strings.TrimSpace(e.Binary)
-		e.Models = normalizePicks(e.Models)
-		args := e.ExtraArgs[:0]
-		for _, a := range e.ExtraArgs {
-			if a = strings.TrimSpace(a); a != "" {
-				args = append(args, a)
-			}
-		}
-		if len(args) == 0 {
-			e.ExtraArgs = nil
+// normalizeWorkspace keeps the two facts a session is created from usable: a
+// root it can always fall back to, and a default harness that exists. A preset
+// with no path is dropped, and one with no label is named after its path, so
+// the picker never shows a blank row.
+func (s *Settings) normalizeWorkspace(d Settings) {
+	if strings.TrimSpace(s.Workspace.Root) == "" {
+		s.Workspace.Root = d.Workspace.Root
+	}
+	s.Workspace.Root = strings.TrimSpace(s.Workspace.Root)
+	if !IsHarness(s.Workspace.DefaultHarness) {
+		s.Workspace.DefaultHarness = d.Workspace.DefaultHarness
+	}
+	var presets []PresetDir
+	seen := map[string]bool{}
+	for _, p := range s.Workspace.Presets {
+		path := strings.TrimSpace(p.Path)
+		if path == "" || seen[path] {
 			continue
 		}
-		e.ExtraArgs = args
+		seen[path] = true
+		label := strings.TrimSpace(p.Label)
+		if label == "" {
+			label = filepath.Base(path)
+		}
+		presets = append(presets, PresetDir{Label: label, Path: path})
 	}
+	s.Workspace.Presets = presets
+}
+
+// normalizeTerminal replaces the sizes an empty form leaves behind. A zero
+// scrollback or a zero font size is a field that was never filled in, not a
+// terminal somebody wants.
+func (s *Settings) normalizeTerminal(d Settings) {
+	s.Terminal.WindowSize = oneOf(s.Terminal.WindowSize, WindowSizePolicies, d.Terminal.WindowSize)
+	if s.Terminal.HistoryLimit < 100 {
+		s.Terminal.HistoryLimit = d.Terminal.HistoryLimit
+	}
+	if s.Terminal.Scrollback < 100 {
+		s.Terminal.Scrollback = d.Terminal.Scrollback
+	}
+	if s.Terminal.FontSize < 8 || s.Terminal.FontSize > 40 {
+		s.Terminal.FontSize = d.Terminal.FontSize
+	}
+}
+
+// Validate reports what is wrong with a settings document that Normalize
+// cannot put right on its own. Normalize is total by design - it always
+// produces a usable document - so this is where a person's typing is refused
+// instead of quietly discarded, and it is what the dashboard answers 400 with.
+//
+// Call it after Normalize: the two together are what saving a document means.
+func (s *Settings) Validate() error {
+	return s.Harnesses.validate()
 }
 
 // PublicURL is the address the tunnel publishes, when it is known upfront.
@@ -354,27 +387,11 @@ func DataDir() string {
 	return filepath.Join(home, ".socrates")
 }
 
-// DefaultWorkspaceRoot is where delegate agents get their working directories.
+// DefaultWorkspaceRoot is where a session with a dynamic working directory
+// gets one.
 func DefaultWorkspaceRoot() string {
 	if v := strings.TrimSpace(os.Getenv("SOCRATES_WORKSPACE_ROOT")); v != "" {
 		return v
 	}
 	return filepath.Join(DataDir(), "workspaces")
-}
-
-// normalizePicks trims every id, drops the empty ones and the repeats (the
-// first occurrence wins, so the order a person arranged survives), and maps
-// every effort onto a level the agents understand.
-func normalizePicks(in []ModelPick) []ModelPick {
-	var out []ModelPick
-	seen := map[string]bool{}
-	for _, p := range in {
-		id := strings.TrimSpace(p.ID)
-		if id == "" || seen[id] {
-			continue
-		}
-		seen[id] = true
-		out = append(out, ModelPick{ID: id, Effort: NormalizeEffort(p.Effort)})
-	}
-	return out
 }

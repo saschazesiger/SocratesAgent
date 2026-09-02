@@ -1,7 +1,9 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -18,133 +20,271 @@ func openTest(t *testing.T) *Store {
 	return st
 }
 
-func TestChatLifecycle(t *testing.T) {
-	st := openTest(t)
-	chat := &Chat{ID: "c1", Title: "First"}
-	if err := st.CreateChat(chat); err != nil {
-		t.Fatal(err)
-	}
-	got, err := st.GetChat("c1")
-	if err != nil || got.Title != "First" {
-		t.Fatalf("get: %v %#v", err, got)
-	}
-	if _, err := st.GetChat("missing"); err != ErrNotFound {
-		t.Fatalf("expected ErrNotFound, got %v", err)
-	}
-	if err := st.UpdateChat("c1", "Renamed", "/tmp/work"); err != nil {
-		t.Fatal(err)
-	}
-	list, err := st.ListChats(false)
-	if err != nil || len(list) != 1 || list[0].Title != "Renamed" || list[0].Workspace != "/tmp/work" {
-		t.Fatalf("list = %#v (%v)", list, err)
-	}
-	if err := st.AddMessage(&Message{ID: "m1", ChatID: "c1", Role: "user", Content: "hi"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.DeleteChat("c1"); err != nil {
-		t.Fatal(err)
-	}
-	messages, _ := st.ListMessages("c1")
-	if len(messages) != 0 {
-		t.Errorf("messages should be gone: %#v", messages)
+func newSession(id string) *Session {
+	return &Session{
+		ID:          id,
+		Title:       "Claude · repo",
+		Harness:     "claude",
+		Model:       "claude-sonnet-4-5",
+		Workdir:     "/srv/repo",
+		WorkdirMode: WorkdirPreset,
+		TmuxName:    "soc_" + id,
 	}
 }
 
-func TestMessageSequence(t *testing.T) {
+func TestSessionLifecycle(t *testing.T) {
 	st := openTest(t)
-	_ = st.CreateChat(&Chat{ID: "c1"})
-	for i := 0; i < 3; i++ {
-		if err := st.AddMessage(&Message{ID: string(rune('a' + i)), ChatID: "c1", Role: "user", Content: "x"}); err != nil {
+	sess := newSession("a1")
+	if err := st.CreateSession(sess); err != nil {
+		t.Fatal(err)
+	}
+	// A fresh session is starting, has never exited, and has a size even
+	// though nobody said one.
+	if sess.State != StateStarting || sess.ExitStatus != -1 || sess.CLISessionState != CLINone {
+		t.Fatalf("fresh session = %#v", sess)
+	}
+	if sess.Cols != DefaultCols || sess.Rows != DefaultRows {
+		t.Fatalf("size = %dx%d", sess.Cols, sess.Rows)
+	}
+
+	got, err := st.GetSession("a1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TmuxName != "soc_a1" || got.Harness != "claude" || string(got.Options) != "{}" {
+		t.Fatalf("stored session = %#v", got)
+	}
+
+	if err := st.UpdateSessionTitle("a1", "Renamed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSessionState("a1", StateExited, 7, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSessionCLI("a1", "9f2c", CLIVerified); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSessionSize("a1", 100, 30); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.NoteAttach("a1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.NoteResume("a1"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = st.GetSession("a1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != "Renamed" || got.State != StateExited || got.ExitStatus != 7 {
+		t.Fatalf("after updates = %#v", got)
+	}
+	if got.CLISessionID != "9f2c" || got.CLISessionState != CLIVerified {
+		t.Fatalf("cli session = %q/%q", got.CLISessionID, got.CLISessionState)
+	}
+	if got.Cols != 100 || got.Rows != 30 || got.LastAttached == 0 {
+		t.Fatalf("size and attach = %#v", got)
+	}
+	if !got.Resumed || got.ResumeCount != 1 {
+		t.Fatalf("resume = %v/%d", got.Resumed, got.ResumeCount)
+	}
+	if err := st.ClearResumedFlag("a1"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = st.GetSession("a1"); got.Resumed || got.ResumeCount != 1 {
+		t.Fatalf("the notice was cleared but so was the count: %#v", got)
+	}
+
+	if err := st.DeleteSession("a1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.GetSession("a1"); err != ErrNotFound {
+		t.Fatalf("deleted session = %v", err)
+	}
+	// Every write says so when there is nothing to write to, rather than
+	// reporting success on a session that is gone.
+	if err := st.UpdateSessionTitle("a1", "x"); err != ErrNotFound {
+		t.Fatalf("update of a missing session = %v", err)
+	}
+	if err := st.DeleteSession("a1"); err != ErrNotFound {
+		t.Fatalf("second delete = %v", err)
+	}
+}
+
+// Creating a session is what a phone on a bad link retries, so the same key
+// has to find the row it already made instead of making a second one.
+func TestCreateSessionIsIdempotentOnClientID(t *testing.T) {
+	st := openTest(t)
+	first := newSession("a1")
+	first.ClientID = "key-1"
+	if err := st.CreateSession(first); err != nil {
+		t.Fatal(err)
+	}
+	retry := newSession("a2")
+	retry.ClientID = "key-1"
+	if err := st.CreateSession(retry); err != nil {
+		t.Fatal(err)
+	}
+	// The retry is told about the session that exists, not about the one it
+	// asked for: the caller goes on to attach to a terminal that is real.
+	if retry.ID != "a1" {
+		t.Fatalf("retry created a second session: %#v", retry)
+	}
+	list, err := st.ListSessions(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("sessions = %#v", list)
+	}
+	if found, err := st.SessionByClientID("key-1"); err != nil || found.ID != "a1" {
+		t.Fatalf("lookup by key = %#v (%v)", found, err)
+	}
+	if _, err := st.SessionByClientID(""); err != ErrNotFound {
+		t.Fatalf("empty key = %v", err)
+	}
+
+	// An empty key is not a key: two sessions without one are two sessions.
+	if err := st.CreateSession(newSession("b1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateSession(newSession("b2")); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ = st.ListSessions(true); len(list) != 3 {
+		t.Fatalf("sessions = %d", len(list))
+	}
+}
+
+// One tmux session can only have one owner: a second row claiming it would be
+// two Socrates sessions writing into one terminal.
+func TestTmuxNameIsUnique(t *testing.T) {
+	st := openTest(t)
+	if err := st.CreateSession(newSession("a1")); err != nil {
+		t.Fatal(err)
+	}
+	clash := newSession("a2")
+	clash.TmuxName = "soc_a1"
+	if err := st.CreateSession(clash); err == nil {
+		t.Fatal("a second row claimed the same tmux session")
+	}
+}
+
+func TestListSessionsOrdersAndHidesArchived(t *testing.T) {
+	st := openTest(t)
+	for _, id := range []string{"a1", "a2"} {
+		if err := st.CreateSession(newSession(id)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	messages, err := st.ListMessages("c1")
+	// Touching a1 puts it in front: the list is ordered by activity.
+	if err := st.NoteAttach("a1"); err != nil {
+		t.Fatal(err)
+	}
+	list, err := st.ListSessions(false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, m := range messages {
-		if m.Seq != int64(i+1) {
-			t.Fatalf("message %d has seq %d", i, m.Seq)
-		}
+	if len(list) != 2 || list[0].ID != "a1" {
+		t.Fatalf("list = %#v", list)
+	}
+
+	if err := st.SetSessionArchived("a2", true); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ = st.ListSessions(false); len(list) != 1 || list[0].ID != "a1" {
+		t.Fatalf("archived session still listed: %#v", list)
+	}
+	list, _ = st.ListSessions(true)
+	if len(list) != 2 {
+		t.Fatalf("archived session missing from the full list: %#v", list)
+	}
+	// A restored session is indistinguishable from one that was never away.
+	if err := st.SetSessionArchived("a2", false); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ = st.ListSessions(false); len(list) != 2 || list[1].Archived {
+		t.Fatalf("restored session = %#v", list)
 	}
 }
 
-func TestStepsSinceRevision(t *testing.T) {
+// The options snapshot is what the session was launched with, and it has to
+// come back out byte for byte: it is what a restart relaunches from.
+func TestSessionOptionsRoundTrip(t *testing.T) {
 	st := openTest(t)
-	_ = st.CreateChat(&Chat{ID: "c1"})
-	_ = st.CreateRun(&Run{ID: "r1", ChatID: "c1", Status: RunRunning})
-
-	first := &Step{ID: "s1", RunID: "r1", ChatID: "c1", Seq: 1, Kind: StepDraft, Body: "one", Status: StatusDone}
-	if err := st.PutStep(first); err != nil {
+	sess := newSession("a1")
+	sess.Options = json.RawMessage(`{"sandbox":"workspace-write","extra_args":["--search"]}`)
+	if err := st.CreateSession(sess); err != nil {
 		t.Fatal(err)
 	}
-	mark := st.Rev()
-	second := &Step{ID: "s2", RunID: "r1", ChatID: "c1", Seq: 2, Kind: StepDraft, Body: "two", Status: StatusDone}
-	if err := st.PutStep(second); err != nil {
-		t.Fatal(err)
-	}
-	changed, err := st.StepsSince("c1", mark)
+	got, err := st.GetSession("a1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(changed) != 1 || changed[0].ID != "s2" {
-		t.Fatalf("expected only the new step, got %#v", changed)
+	var out struct {
+		Sandbox   string   `json:"sandbox"`
+		ExtraArgs []string `json:"extra_args"`
 	}
-
-	// Updating an old step must bring it back with a fresh revision.
-	first.Body = "one updated"
-	if err := st.PutStep(first); err != nil {
+	if err := json.Unmarshal(got.Options, &out); err != nil {
 		t.Fatal(err)
 	}
-	changed, _ = st.StepsSince("c1", mark)
-	if len(changed) != 2 {
-		t.Fatalf("expected both steps, got %#v", changed)
-	}
-	all, _ := st.ListSteps("c1")
-	if len(all) != 2 || all[0].Body != "one updated" {
-		t.Fatalf("upsert failed: %#v", all)
+	if out.Sandbox != "workspace-write" || len(out.ExtraArgs) != 1 {
+		t.Fatalf("options = %#v", out)
 	}
 }
 
-func TestRecoverRuns(t *testing.T) {
+// Every write bumps the revision, so a client holding a number knows whether
+// anything changed at all without comparing rows.
+func TestWritesBumpTheRevision(t *testing.T) {
 	st := openTest(t)
-	_ = st.CreateChat(&Chat{ID: "c1"})
-	_ = st.CreateRun(&Run{ID: "r1", ChatID: "c1", Status: RunRunning})
-	_ = st.PutStep(&Step{ID: "s1", RunID: "r1", ChatID: "c1", Kind: StepDraft, Status: StatusRunning})
-
-	if err := st.RecoverRuns(); err != nil {
+	before := st.Rev()
+	if err := st.CreateSession(newSession("a1")); err != nil {
 		t.Fatal(err)
 	}
-	run, _ := st.GetRun("r1")
-	if run.Status != RunInterrupted {
-		t.Errorf("run status = %q", run.Status)
+	afterCreate := st.Rev()
+	if afterCreate <= before {
+		t.Fatalf("create did not bump the revision: %d -> %d", before, afterCreate)
 	}
-	steps, _ := st.ListSteps("c1")
-	if steps[0].Status != StatusInterrupted {
-		t.Errorf("step status = %q", steps[0].Status)
+	if err := st.UpdateSessionTitle("a1", "x"); err != nil {
+		t.Fatal(err)
+	}
+	if st.Rev() <= afterCreate {
+		t.Fatalf("update did not bump the revision: %d", st.Rev())
 	}
 }
 
-func TestSessions(t *testing.T) {
+func TestLogins(t *testing.T) {
 	st := openTest(t)
-	if err := st.CreateSession("token", time.Hour); err != nil {
+	if err := st.CreateLogin("token", time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	if !st.ValidSession("token") {
-		t.Fatal("session should be valid")
+	if !st.ValidLogin("token") {
+		t.Fatal("login should be valid")
 	}
-	if st.ValidSession("other") {
-		t.Fatal("unknown token must not validate")
+	if st.ValidLogin("other") || st.ValidLogin("") {
+		t.Fatal("an unknown token must not validate")
 	}
-	if err := st.DeleteSession("token"); err != nil {
+	if err := st.DeleteLogin("token"); err != nil {
 		t.Fatal(err)
 	}
-	if st.ValidSession("token") {
-		t.Fatal("deleted session still valid")
+	if st.ValidLogin("token") {
+		t.Fatal("deleted login still valid")
 	}
-	_ = st.CreateSession("expired", -time.Hour)
-	if st.ValidSession("expired") {
-		t.Fatal("expired session must not validate")
+	_ = st.CreateLogin("expired", -time.Hour)
+	if st.ValidLogin("expired") {
+		t.Fatal("expired login must not validate")
+	}
+	if err := st.PurgeExpiredLogins(); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.CreateLogin("one", time.Hour)
+	_ = st.CreateLogin("two", time.Hour)
+	if err := st.DeleteAllLogins(); err != nil {
+		t.Fatal(err)
+	}
+	if st.ValidLogin("one") || st.ValidLogin("two") {
+		t.Fatal("changing the password left a browser signed in")
 	}
 }
 
@@ -163,56 +303,231 @@ func TestKV(t *testing.T) {
 	}
 }
 
-// The reconnect story rests on one promise: a client that knows the last
-// revision it saw can ask for everything after it and get exactly that.
-func TestMessagesCarryRevisionsAndReplay(t *testing.T) {
-	st := openTest(t)
-	if err := st.CreateChat(&Chat{ID: "c1"}); err != nil {
-		t.Fatal(err)
-	}
-	first := &Message{ID: "m1", ChatID: "c1", Role: "user", Content: "one"}
-	if err := st.AddMessage(first); err != nil {
-		t.Fatal(err)
-	}
-	if first.Rev == 0 {
-		t.Fatal("a message must be given a revision")
-	}
-	mark := st.Rev()
-	second := &Message{ID: "m2", ChatID: "c1", Role: "assistant", Content: "two"}
-	if err := st.AddMessage(second); err != nil {
-		t.Fatal(err)
-	}
-	if second.Rev <= first.Rev {
-		t.Fatalf("revisions must increase: %d then %d", first.Rev, second.Rev)
-	}
+// v2 is the database this build replaces: the chat transcript, and an auth
+// table that was called `sessions` before a session became a terminal.
+const schemaV2 = `
+CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE chats (
+  id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', workspace TEXT NOT NULL DEFAULT '',
+  client_id TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '',
+  effort TEXT NOT NULL DEFAULT '', agent_session TEXT NOT NULL DEFAULT '',
+  host_dir TEXT NOT NULL DEFAULT '', host_seq INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, archived_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE messages (id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, seq INTEGER NOT NULL, created_at INTEGER NOT NULL);
+CREATE TABLE runs (id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+CREATE TABLE steps (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, chat_id TEXT NOT NULL, seq INTEGER NOT NULL, rev INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+CREATE TABLE sessions (token TEXT PRIMARY KEY, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
+CREATE INDEX idx_messages_chat ON messages(chat_id, seq);
+CREATE UNIQUE INDEX idx_chats_client ON chats(client_id) WHERE client_id <> '';
+`
 
-	missed, err := st.MessagesSince("c1", mark)
+// buildV2 writes a pre rewrite database by hand: the old tables, a login that
+// must survive, a settings document that must be carried across, and a chat
+// that must not be.
+func buildV2(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "socrates.db")
+	db, err := sql.Open("sqlite", "file:"+path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(missed) != 1 || missed[0].ID != "m2" {
-		t.Fatalf("expected only the newer message, got %#v", missed)
+	defer db.Close()
+	if _, err := db.Exec(schemaV2); err != nil {
+		t.Fatal(err)
 	}
-	if all, err := st.MessagesSince("c1", 0); err != nil || len(all) != 2 {
-		t.Fatalf("from zero every message should come back, got %#v (%v)", all, err)
+	settings := `{"openrouter":{"api_key":"sk-test"},"agent":{"workspace_root":"/srv/work"},` +
+		`"agents":{"claude":{"enabled":false,"binary":"/opt/claude","models":[{"id":"m1","effort":"high"}]},` +
+		`"codex":{"enabled":true},"opencode":{"enabled":true}},"tunnel":{"enabled":true,"mode":"quick"}}`
+	for _, q := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO kv(key, value) VALUES('password_hash', 'pbkdf2-sha256$1$a$b')`, nil},
+		{`INSERT INTO kv(key, value) VALUES('settings', ?)`, []any{settings}},
+		{`INSERT INTO sessions(token, created_at, expires_at) VALUES('tok', 1, ?)`,
+			[]any{time.Now().Add(time.Hour).UnixMilli()}},
+		{`INSERT INTO chats(id, title, created_at, updated_at) VALUES('c1', 'Old chat', 1, 1)`, nil},
+		{`INSERT INTO messages(id, chat_id, seq, created_at) VALUES('m1', 'c1', 1, 1)`, nil},
+	} {
+		if _, err := db.Exec(q.sql, q.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return path
+}
+
+// The clean cut: the transcript tables go, the auth table gives up the name
+// `sessions` and keeps its rows, and the kv document survives with the parts
+// of it that still mean something moved into their new places.
+func TestMigrationDropsChatsAndRenamesSessions(t *testing.T) {
+	path := buildV2(t)
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open a v2 database: %v", err)
+	}
+	defer st.Close()
+
+	for _, table := range []string{"chats", "messages", "runs", "steps"} {
+		if ok, err := hasTable(st.db, table); err != nil || ok {
+			t.Errorf("table %s survived the cut (%v)", table, err)
+		}
+	}
+	if ok, err := hasTable(st.db, "logins"); err != nil || !ok {
+		t.Fatalf("logins is missing (%v)", err)
+	}
+	// The rows came with the name change: nobody is signed out by an upgrade.
+	if !st.ValidLogin("tok") {
+		t.Error("the login did not survive the rename")
+	}
+	// And `sessions` is now the terminal table, which the new columns prove.
+	if err := st.CreateSession(newSession("a1")); err != nil {
+		t.Fatalf("the new sessions table is not usable: %v", err)
+	}
+
+	var version int
+	if err := st.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != SchemaVersion {
+		t.Errorf("user_version = %d, want %d", version, SchemaVersion)
+	}
+
+	// The password survives, because it is in kv and kv is kept.
+	if v, err := st.GetKV("password_hash"); err != nil || v == "" {
+		t.Errorf("password_hash = %q (%v)", v, err)
+	}
+	var doc map[string]json.RawMessage
+	if err := st.GetJSON("settings", &doc); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := doc["agents"]; present {
+		t.Error("the settings document still has an agents section")
+	}
+	if _, present := doc["agent"]; present {
+		t.Error("the settings document still has an agent section")
+	}
+	if _, kept := doc["tunnel"]; !kept {
+		t.Error("the tunnel settings were lost")
+	}
+	// The three agents are three of the four harnesses, and everything the
+	// user configured about them moved across whole.
+	var harnesses struct {
+		Claude struct {
+			Enabled bool   `json:"enabled"`
+			Binary  string `json:"binary"`
+			Models  []struct {
+				ID     string `json:"id"`
+				Effort string `json:"effort"`
+			} `json:"models"`
+		} `json:"claude"`
+	}
+	if err := json.Unmarshal(doc["harnesses"], &harnesses); err != nil {
+		t.Fatal(err)
+	}
+	if harnesses.Claude.Enabled || harnesses.Claude.Binary != "/opt/claude" {
+		t.Errorf("claude settings did not move across: %#v", harnesses.Claude)
+	}
+	if len(harnesses.Claude.Models) != 1 || harnesses.Claude.Models[0].ID != "m1" {
+		t.Errorf("the model short list was lost: %#v", harnesses.Claude.Models)
+	}
+	var workspace struct {
+		Root string `json:"root"`
+	}
+	if err := json.Unmarshal(doc["workspace"], &workspace); err != nil {
+		t.Fatal(err)
+	}
+	if workspace.Root != "/srv/work" {
+		t.Errorf("workspace root = %q", workspace.Root)
+	}
+
+	// The backup is the whole reason an irreversible cut is safe to run.
+	backupPath := path + ".pre-v3.bak"
+	if _, err := os.Stat(backupPath); err != nil {
+		t.Fatalf("no backup was written: %v", err)
+	}
+	old, err := sql.Open("sqlite", "file:"+backupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.Close()
+	var title string
+	if err := old.QueryRow(`SELECT title FROM chats WHERE id = 'c1'`).Scan(&title); err != nil {
+		t.Fatalf("the backup does not hold the old chats: %v", err)
+	}
+	if title != "Old chat" {
+		t.Errorf("backed up chat title = %q", title)
 	}
 }
 
-// Reopening must not hand out revisions that were already used, or a browser
-// would be told that rows it has already seen are new.
-func TestRevisionSurvivesReopen(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "reopen.db")
+// Opening the migrated database again is an ordinary start: the version says
+// so, and nothing is backed up or dropped a second time.
+func TestMigrationIsIdempotent(t *testing.T) {
+	path := buildV2(t)
 	st, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateChat(&Chat{ID: "c1"}); err != nil {
+	if err := st.CreateSession(newSession("a1")); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.AddMessage(&Message{ID: "m1", ChatID: "c1", Role: "user", Content: "hi"}); err != nil {
+	st.Close()
+
+	backupPath := path + ".pre-v3.bak"
+	if err := os.Remove(backupPath); err != nil {
 		t.Fatal(err)
 	}
-	high := st.Rev()
+	again, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer again.Close()
+	if _, err := again.GetSession("a1"); err != nil {
+		t.Fatalf("the second open lost the sessions: %v", err)
+	}
+	if _, err := os.Stat(backupPath); !os.IsNotExist(err) {
+		t.Error("a database that needs no migration was backed up anyway")
+	}
+}
+
+// A fresh installation is not a migration: it gets the schema and the version
+// and no backup file next to it.
+func TestFreshDatabaseIsAtTheCurrentVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "socrates.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	var version int
+	if err := st.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != SchemaVersion {
+		t.Errorf("user_version = %d, want %d", version, SchemaVersion)
+	}
+	if _, err := os.Stat(path + ".pre-v3.bak"); !os.IsNotExist(err) {
+		t.Error("a fresh database was backed up")
+	}
+}
+
+// The revision has to be monotonic across a restart. A browser that comes back
+// holding a number - the phone that lost signal in a car - must never be told
+// that nothing has changed since a number the server is about to hand out for
+// the second time.
+func TestRevSurvivesAReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "socrates.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateSession(newSession("a1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateSessionTitle("a1", "x"); err != nil {
+		t.Fatal(err)
+	}
+	before := st.Rev()
 	st.Close()
 
 	again, err := Open(path)
@@ -220,236 +535,183 @@ func TestRevisionSurvivesReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer again.Close()
-	if again.Rev() < high {
-		t.Fatalf("revision went backwards on reopen: %d then %d", high, again.Rev())
+	if again.Rev() < before {
+		t.Fatalf("the revision went backwards over a restart: %d -> %d", before, again.Rev())
+	}
+	// And it keeps counting from there rather than from zero.
+	if err := again.UpdateSessionTitle("a1", "y"); err != nil {
+		t.Fatal(err)
+	}
+	if again.Rev() <= before {
+		t.Fatalf("a write after the restart did not pass the old revision: %d", again.Rev())
 	}
 }
 
-// The idempotency keys are what make a retry over a bad connection safe.
-func TestClientIDsFindExistingRows(t *testing.T) {
+// An options snapshot that is not JSON would be stored happily and then break
+// the encoding of the whole session list, not just its own row.
+func TestCreateSessionRefusesInvalidOptions(t *testing.T) {
 	st := openTest(t)
-	if err := st.CreateChat(&Chat{ID: "c1", ClientID: "key-chat"}); err != nil {
+	sess := newSession("a1")
+	sess.Options = json.RawMessage(`{not json`)
+	if err := st.CreateSession(sess); err == nil {
+		t.Fatal("invalid options were accepted")
+	}
+	if _, err := st.GetSession("a1"); err != ErrNotFound {
+		t.Fatalf("a refused session was stored anyway: %v", err)
+	}
+	// The whole list still encodes, which is the property being protected.
+	sess.Options = json.RawMessage(`{"ok":true}`)
+	if err := st.CreateSession(sess); err != nil {
 		t.Fatal(err)
 	}
-	found, err := st.ChatByClientID("key-chat")
-	if err != nil || found.ID != "c1" {
-		t.Fatalf("chat by client id = %#v (%v)", found, err)
-	}
-	if _, err := st.ChatByClientID(""); err != ErrNotFound {
-		t.Fatalf("an empty key must never match: %v", err)
-	}
-	if err := st.CreateChat(&Chat{ID: "c2", ClientID: "key-chat"}); err == nil {
-		t.Fatal("the same key must not be able to create a second chat")
-	}
-
-	if err := st.AddMessage(&Message{ID: "m1", ChatID: "c1", Role: "user", Content: "hi", ClientID: "key-msg"}); err != nil {
-		t.Fatal(err)
-	}
-	msg, err := st.MessageByClientID("c1", "key-msg")
-	if err != nil || msg.ID != "m1" {
-		t.Fatalf("message by client id = %#v (%v)", msg, err)
-	}
-	if _, err := st.MessageByClientID("c1", "other"); err != ErrNotFound {
-		t.Fatalf("expected ErrNotFound, got %v", err)
-	}
-	if err := st.AddMessage(&Message{ID: "m2", ChatID: "c1", Role: "user", Content: "hi", ClientID: "key-msg"}); err == nil {
-		t.Fatal("the same key must not be able to store the message twice")
-	}
-	// Two chats may well use the same key for their own first message.
-	if err := st.CreateChat(&Chat{ID: "c3"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.AddMessage(&Message{ID: "m3", ChatID: "c3", Role: "user", Content: "hi", ClientID: "key-msg"}); err != nil {
-		t.Fatalf("a key is only unique inside its chat: %v", err)
-	}
-}
-
-// A deletion carries no revision, so a client that was away is told which
-// steps still exist instead of showing the removed ones forever.
-func TestStepIDsReportWhatIsLeft(t *testing.T) {
-	st := openTest(t)
-	if err := st.CreateChat(&Chat{ID: "c1"}); err != nil {
-		t.Fatal(err)
-	}
-	for _, id := range []string{"s1", "s2"} {
-		if err := st.PutStep(&Step{ID: id, ChatID: "c1", RunID: "r1", Kind: "text", Status: "done"}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := st.DeleteStep("s1"); err != nil {
-		t.Fatal(err)
-	}
-	ids, err := st.StepIDs("c1")
-	if err != nil || len(ids) != 1 || ids[0] != "s2" {
-		t.Fatalf("step ids = %#v (%v)", ids, err)
-	}
-}
-
-// Archiving is the half way house between keeping a chat and deleting it: the
-// transcript survives, and the sidebar stops showing it until it is asked for.
-func TestArchiveChat(t *testing.T) {
-	st := openTest(t)
-	if err := st.CreateChat(&Chat{ID: "c1", Title: "Kept"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.CreateChat(&Chat{ID: "c2", Title: "Put away"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.AddMessage(&Message{ID: "m1", ChatID: "c2", Role: "user", Content: "hi"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.SetChatArchived("c2", true); err != nil {
-		t.Fatal(err)
-	}
-
-	active, err := st.ListChats(false)
-	if err != nil || len(active) != 1 || active[0].ID != "c1" {
-		t.Fatalf("active list = %#v (%v)", active, err)
-	}
-	all, err := st.ListChats(true)
-	if err != nil || len(all) != 2 {
-		t.Fatalf("full list = %#v (%v)", all, err)
-	}
-	got, err := st.GetChat("c2")
-	if err != nil || !got.Archived || got.ArchivedAt == 0 {
-		t.Fatalf("archived chat = %#v (%v)", got, err)
-	}
-	// The conversation is the whole point of archiving rather than deleting.
-	if messages, err := st.ListMessages("c2"); err != nil || len(messages) != 1 {
-		t.Fatalf("messages = %#v (%v)", messages, err)
-	}
-
-	if err := st.SetChatArchived("c2", false); err != nil {
-		t.Fatal(err)
-	}
-	got, err = st.GetChat("c2")
-	if err != nil || got.Archived || got.ArchivedAt != 0 {
-		t.Fatalf("restored chat = %#v (%v)", got, err)
-	}
-	if active, err := st.ListChats(false); err != nil || len(active) != 2 {
-		t.Fatalf("restored chat missing from the active list: %#v (%v)", active, err)
-	}
-	if err := st.SetChatArchived("missing", true); err != ErrNotFound {
-		t.Fatalf("expected ErrNotFound, got %v", err)
-	}
-}
-
-// A chat is bound to one agent when it is created, and the binding, the native
-// session id and the host bookkeeping all have to survive a reload - the
-// restart promise is built on the last two.
-func TestChatCarriesItsAgentBinding(t *testing.T) {
-	st := openTest(t)
-	if err := st.CreateChat(&Chat{ID: "c1", Agent: "claude", Model: "sonnet", Effort: "medium"}); err != nil {
-		t.Fatal(err)
-	}
-	chat, err := st.GetChat("c1")
+	list, err := st.ListSessions(true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if chat.Agent != "claude" || chat.Model != "sonnet" || chat.Effort != "medium" {
-		t.Fatalf("binding = %#v", chat)
+	if _, err := json.Marshal(list); err != nil {
+		t.Fatalf("the session list does not encode: %v", err)
 	}
-	if chat.AgentSession != "" || chat.HostDir != "" || chat.HostSeq != 0 {
-		t.Fatalf("a fresh chat already has host bookkeeping: %#v", chat)
-	}
+}
 
-	if err := st.UpdateChatModel("c1", "opus", "high"); err != nil {
+// The caller has to be left holding what was actually stored, not what it
+// asked for: a session is created attached to nobody and resumed never.
+func TestCreateSessionOverwritesTheFieldsTheRowOwns(t *testing.T) {
+	st := openTest(t)
+	sess := newSession("a1")
+	sess.Resumed = true
+	sess.LastAttached = 5
+	sess.Archived, sess.ArchivedAt = true, 5
+	sess.ExitStatus = 3
+	if err := st.CreateSession(sess); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetChatSession("c1", "sess_abc"); err != nil {
-		t.Fatal(err)
+	if sess.Resumed || sess.LastAttached != 0 || sess.Archived || sess.ArchivedAt != 0 || sess.ExitStatus != -1 {
+		t.Fatalf("the caller's struct disagrees with the row: %#v", sess)
 	}
-	chat, _ = st.GetChat("c1")
-	if chat.Model != "opus" || chat.Effort != "high" || chat.AgentSession != "sess_abc" {
-		t.Fatalf("after the change: %#v", chat)
-	}
-	if chat.Agent != "claude" {
-		t.Fatal("changing the model changed the agent")
-	}
-	if err := st.UpdateChatModel("nothing", "opus", ""); err != ErrNotFound {
-		t.Errorf("updating a chat that is not there = %v", err)
-	}
-
-	// The session id is internal plumbing and a session id is not something to
-	// hand out, so none of the three reach the browser.
-	raw, err := json.Marshal(chat)
+	stored, err := st.GetSession("a1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, gone := range []string{"sess_abc", "agent_session", "host_dir", "host_seq"} {
-		if strings.Contains(string(raw), gone) {
-			t.Errorf("%s is written to the wire: %s", gone, raw)
+	if stored.Resumed != sess.Resumed || stored.LastAttached != sess.LastAttached ||
+		stored.Archived != sess.Archived || stored.ExitStatus != sess.ExitStatus {
+		t.Fatalf("stored = %#v, caller holds = %#v", stored, sess)
+	}
+}
+
+// A size with no area is a caller that computed one wrongly. Writing nothing
+// and reporting success is how that stays hidden, and every other write on a
+// session that is gone says so.
+func TestSetSessionSizeRefusesNonsense(t *testing.T) {
+	st := openTest(t)
+	if err := st.CreateSession(newSession("a1")); err != nil {
+		t.Fatal(err)
+	}
+	for _, size := range [][2]int{{0, 40}, {120, 0}, {-1, -1}} {
+		if err := st.SetSessionSize("a1", size[0], size[1]); err == nil {
+			t.Errorf("%dx%d was accepted", size[0], size[1])
 		}
 	}
-}
-
-// host_seq means "where this turn began". A new host has a new journal that
-// starts at seq 1, so carrying an old position over would make the chat skip
-// the first events of its own fresh journal and wait forever for an end it had
-// already gone past.
-func TestSetChatHostResetsTheTurnPosition(t *testing.T) {
-	st := openTest(t)
-	if err := st.CreateChat(&Chat{ID: "c1", Agent: "test"}); err != nil {
-		t.Fatal(err)
+	got, _ := st.GetSession("a1")
+	if got.Cols != DefaultCols || got.Rows != DefaultRows {
+		t.Fatalf("a refused size was written anyway: %dx%d", got.Cols, got.Rows)
 	}
-	if err := st.SetChatHost("c1", "/data/agents/host_a"); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.SetChatHostSeq("c1", 412); err != nil {
-		t.Fatal(err)
-	}
-	chat, _ := st.GetChat("c1")
-	if chat.HostDir != "/data/agents/host_a" || chat.HostSeq != 412 {
-		t.Fatalf("chat = %#v", chat)
-	}
-
-	if err := st.SetChatHost("c1", "/data/agents/host_b"); err != nil {
-		t.Fatal(err)
-	}
-	chat, _ = st.GetChat("c1")
-	if chat.HostDir != "/data/agents/host_b" || chat.HostSeq != 0 {
-		t.Fatalf("a new host kept the old turn position: %#v", chat)
-	}
-
-	// Clearing the host clears both.
-	if err := st.SetChatHost("c1", ""); err != nil {
-		t.Fatal(err)
-	}
-	chat, _ = st.GetChat("c1")
-	if chat.HostDir != "" || chat.HostSeq != 0 {
-		t.Fatalf("clearing left something behind: %#v", chat)
+	if err := st.SetSessionSize("gone", 100, 30); err != ErrNotFound {
+		t.Fatalf("sizing a session that does not exist = %v", err)
 	}
 }
 
-// Without the exclusion list the run Adopt has just claimed is marked
-// interrupted one line after being adopted, and its running tool steps are
-// interrupted underneath the pump that is still filling them in.
-func TestRecoverRunsSkipsWhatWasAdopted(t *testing.T) {
-	st := openTest(t)
-	_ = st.CreateChat(&Chat{ID: "c1"})
-	_ = st.CreateRun(&Run{ID: "kept", ChatID: "c1", Status: RunRunning})
-	_ = st.CreateRun(&Run{ID: "lost", ChatID: "c1", Status: RunRunning})
-	_ = st.PutStep(&Step{ID: "s_kept", RunID: "kept", ChatID: "c1", Kind: StepTool, Status: StatusRunning})
-	_ = st.PutStep(&Step{ID: "s_lost", RunID: "lost", ChatID: "c1", Kind: StepTool, Status: StatusRunning})
-
-	if err := st.RecoverRuns("kept"); err != nil {
+// A file written by a newer build is not a legacy file. Rewriting its version
+// down would leave this build running against a schema it cannot know.
+func TestOpenRefusesANewerSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "socrates.db")
+	st, err := Open(path)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if run, _ := st.GetRun("kept"); run.Status != RunRunning {
-		t.Errorf("the adopted run was interrupted anyway: %q", run.Status)
+	if _, err := st.db.Exec(`PRAGMA user_version = 99`); err != nil {
+		t.Fatal(err)
 	}
-	if run, _ := st.GetRun("lost"); run.Status != RunInterrupted {
-		t.Errorf("the orphaned run was not recovered: %q", run.Status)
+	st.Close()
+
+	if _, err := Open(path); err == nil {
+		t.Fatal("a database from a newer build was opened anyway")
+	} else if !strings.Contains(err.Error(), "newer Socrates") {
+		t.Fatalf("error = %v", err)
 	}
-	steps := map[string]string{}
-	all, _ := st.ListSteps("c1")
-	for _, s := range all {
-		steps[s.ID] = s.Status
+	// And the version it was carrying is still there for that newer build.
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if steps["s_kept"] != StatusRunning {
-		t.Errorf("a step of the adopted run was interrupted underneath its pump: %q", steps["s_kept"])
+	defer db.Close()
+	var version int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
 	}
-	if steps["s_lost"] != StatusInterrupted {
-		t.Errorf("a step of the orphaned run was not recovered: %q", steps["s_lost"])
+	if version != 99 {
+		t.Errorf("user_version = %d, want it left alone at 99", version)
+	}
+}
+
+// A backup that cannot be written stops the migration: the statement after it
+// drops the only copy of the old transcripts. Nothing misleading is left
+// behind either - a file called .pre-v3.bak has to be a database or not exist.
+func TestAFailedBackupStopsTheMigration(t *testing.T) {
+	path := buildV2(t)
+	// A non-empty directory in the backup's place is a destination that can
+	// neither be cleared nor written, which is what a full disk looks like
+	// from here.
+	blocked := path + ".pre-v3.bak"
+	if err := os.MkdirAll(filepath.Join(blocked, "in-the-way"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(path); err == nil {
+		t.Fatal("the migration ran without a backup")
+	}
+	// The database still holds everything, so the next start can try again.
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var chats int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM chats`).Scan(&chats); err != nil || chats != 1 {
+		t.Fatalf("the old data was touched: %d rows (%v)", chats, err)
+	}
+	db.Close()
+
+	if err := os.RemoveAll(blocked); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("the retry failed: %v", err)
+	}
+	defer st.Close()
+	if _, err := os.Stat(blocked); err != nil {
+		t.Fatalf("the retry wrote no backup: %v", err)
+	}
+}
+
+// A stale or half written backup from an earlier attempt is replaced, not
+// added to: there is one file with that name and it is the current one.
+func TestAStaleBackupIsReplaced(t *testing.T) {
+	path := buildV2(t)
+	dest := path + ".pre-v3.bak"
+	if err := os.WriteFile(dest, []byte("not a database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	old, err := sql.Open("sqlite", "file:"+dest+"?mode=ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.Close()
+	var title string
+	if err := old.QueryRow(`SELECT title FROM chats WHERE id = 'c1'`).Scan(&title); err != nil {
+		t.Fatalf("the stale file was not replaced by a database: %v", err)
 	}
 }

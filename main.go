@@ -1,5 +1,5 @@
-// Command socrates is a web harness for Claude Code, Codex and OpenCode
-// with a web interface, voice mode and an admin dashboard.
+// Command socrates is a web terminal for Shell, Claude Code, Codex and
+// OpenCode, with voice input and an admin dashboard.
 package main
 
 import (
@@ -17,16 +17,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/server"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
-
-	// The adapters register themselves, and both roles - the web server and an
-	// agent host - need the registry filled before they look anything up.
-	_ "github.com/saschazesiger/SocratesAgent/internal/harness/claude"
-	_ "github.com/saschazesiger/SocratesAgent/internal/harness/codex"
-	_ "github.com/saschazesiger/SocratesAgent/internal/harness/opencode"
+	"github.com/saschazesiger/SocratesAgent/internal/termux"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".
@@ -35,25 +29,18 @@ var version = "dev"
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime)
 
-	// "socrates agent-host" owns a single agent session. Socrates starts it
-	// detached, so a turn in flight - the agent and everything it spawned -
-	// keeps running even while the web server is restarted.
-	if len(os.Args) > 1 && os.Args[1] == "agent-host" {
-		hostFlags := flag.NewFlagSet("agent-host", flag.ExitOnError)
-		dir := hostFlags.String("dir", "", "host directory")
-		if err := hostFlags.Parse(os.Args[2:]); err != nil {
-			os.Exit(2)
-		}
-		if err := agenthost.RunHost(*dir); err != nil {
-			log.Printf("agent host: %v", err)
-			os.Exit(1)
-		}
-		return
-	}
-
 	args := os.Args[1:]
-	if len(args) > 0 && args[0] == "serve" {
-		args = args[1:]
+	if len(args) > 0 {
+		switch args[0] {
+		case "serve":
+			args = args[1:]
+		case "journal-sink":
+			journalSink(args[1:])
+			return
+		case "tmux-hook":
+			tmuxHook(args[1:])
+			return
+		}
 	}
 
 	fs := flag.NewFlagSet("socrates", flag.ExitOnError)
@@ -61,8 +48,8 @@ func main() {
 	dataDir := fs.String("data", config.DataDir(), "directory for the database and workspaces")
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Socrates %s - a web harness for Claude Code, Codex and OpenCode\n\n", version)
-		fmt.Fprintf(os.Stderr, "Usage:\n  socrates [flags]        start the web server\n  socrates agent-host     internal: hosts one agent session\n\nFlags:\n")
+		fmt.Fprintf(os.Stderr, "Socrates %s - a terminal harness for Shell, Claude Code, Codex and OpenCode\n\n", version)
+		fmt.Fprintf(os.Stderr, "Usage:\n  socrates [flags]        start the web server\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -99,6 +86,16 @@ func main() {
 		log.Fatalf("could not start: %v", err)
 	}
 
+	// The terminal substrate comes up before the listener accepts, so that the
+	// very first session list is answered by a Socrates that has already
+	// reconciled with tmux. A machine without a usable tmux still serves the
+	// dashboard, which is where it says so.
+	sessionCtx, stopSessions := context.WithCancel(context.Background())
+	defer stopSessions()
+	if err := srv.StartSessions(sessionCtx); err != nil {
+		log.Printf("terminal sessions are unavailable: %v", err)
+	}
+
 	listener, err := net.Listen("tcp", *addr)
 	if err != nil {
 		log.Fatalf("could not listen on %s: %v", *addr, err)
@@ -108,7 +105,7 @@ func main() {
 	httpServer := &http.Server{
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 20 * time.Second,
-		// No write timeout: SSE streams and delegate runs stay open for a long time.
+		// No write timeout: a terminal connection stays open for a long time.
 	}
 
 	log.Printf("Socrates %s", version)
@@ -128,24 +125,61 @@ func main() {
 	}()
 
 	srv.StartTunnelIfEnabled()
-	// Agent hosts come back before the runs are recovered, so a turn that is
-	// genuinely still running is adopted rather than marked interrupted.
-	adopted := srv.ResumeAgents()
-	if err := st.RecoverRuns(adopted...); err != nil {
-		log.Printf("warning: could not clean up unfinished runs: %v", err)
-	}
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
 	log.Print("shutting down")
-	// The agent hosts keep running: whatever an agent is in the middle of is
-	// still there when Socrates comes back.
-	srv.DetachAgents()
 	srv.StopTunnel()
+	// The tmux server and every session on it are deliberately left running.
+	stopSessions()
+	srv.StopSessions()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpServer.Shutdown(ctx)
+}
+
+// journalSink is the sink tmux pipes a pane's output into. It is a subcommand
+// rather than `cat >> file` because a terminal user interface that redraws
+// continuously writes megabytes an hour, and the session it writes for is
+// never restarted: rotation has to happen while it runs or it never happens.
+func journalSink(args []string) {
+	fs := flag.NewFlagSet("journal-sink", flag.ExitOnError)
+	path := fs.String("path", "", "file to append the pane output to")
+	maxBytes := fs.Int64("max-bytes", termux.JournalMaxBytes, "rotate once the file passes this size")
+	keep := fs.Int("keep", termux.JournalKeep, "how many rotated files to keep")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
+	if *path == "" {
+		fmt.Fprintln(os.Stderr, "socrates journal-sink: -path is required")
+		os.Exit(2)
+	}
+	if err := termux.RunJournalSink(*path, *maxBytes, *keep); err != nil {
+		fmt.Fprintf(os.Stderr, "socrates journal-sink: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// tmuxHook carries one tmux event to the running Socrates. It is deliberately
+// silent and best effort: the server polls as well, so a hook that never
+// arrives costs a couple of seconds and never correctness.
+func tmuxHook(args []string) {
+	fs := flag.NewFlagSet("tmux-hook", flag.ExitOnError)
+	sock := fs.String("sock", "", "the Socrates hook socket")
+	event := fs.String("event", "", "the tmux hook that fired")
+	session := fs.String("session", "", "the tmux session it fired for")
+	status := fs.String("status", "", "the exit status, for pane-died")
+	signal := fs.String("signal", "", "the signal that killed the pane, when it was killed")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
+	if *sock == "" || *event == "" {
+		os.Exit(2)
+	}
+	_ = termux.SendHook(*sock, termux.Hook{
+		Event: *event, Session: *session, Status: *status, Signal: *signal,
+	})
 }
 
 func envOr(key, fallback string) string {
