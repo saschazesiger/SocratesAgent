@@ -11,8 +11,8 @@
 // "danger-full-access", the model and the reasoning effort - is passed
 // explicitly at thread/start, and the model and effort go on every turn/start
 // as well, so a resumed thread never silently runs on whatever model it was
-// recorded with. No `-c` flags are used: nothing depends on argv construction
-// being right.
+// recorded with. The one thing argv carries beyond the transport is
+// `-c features.remote_control=false`; see remoteControlOff.
 package codex
 
 import (
@@ -69,6 +69,22 @@ var (
 // startGrace bounds the handshake when the caller passed a context without a
 // deadline of its own. The host always passes one; a test might not.
 const startGrace = 2 * time.Minute
+
+// remoteControlOff is the config override every app-server is started with.
+//
+// Remote control hands a running app-server to the ChatGPT apps, so that a
+// second surface can steer the very turn Socrates is driving. An app-server
+// only joins it when it is started with `--remote-control`, which Socrates
+// never passes - but "we happen not to ask for it" is not the same promise as
+// "it is off", and the enrolment that decides it is persisted in ~/.codex,
+// outside anything this process controls. So the feature is turned off out
+// loud, for every chat.
+//
+// It is a `-c` override rather than `--disable remote_control` because `-c` is
+// the older and more universally accepted of the two spellings of the same
+// thing, and a flag the installed codex rejects would kill every codex chat at
+// start.
+const remoteControlOff = "features.remote_control=false"
 
 type adapter struct {
 	events chan harness.Event
@@ -244,7 +260,8 @@ func (a *adapter) Start(ctx context.Context, spec harness.Spec) error {
 		return fmt.Errorf("codex is not on this machine: %w", err)
 	}
 
-	args := append([]string{"app-server", "--listen", "stdio://"}, spec.ExtraArgs...)
+	args := append([]string{"app-server", "--listen", "stdio://", "-c", remoteControlOff},
+		spec.ExtraArgs...)
 	cmd := exec.Command(path, args...)
 	cmd.Dir = spec.Cwd
 	cmd.Env = append(os.Environ(), spec.Env...)

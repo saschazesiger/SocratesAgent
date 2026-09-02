@@ -30,6 +30,9 @@ const RESTART_NOISE = new RegExp(OFFLINE_NOISE.source
 const unexpected = (errors, extra) =>
   errors.filter((e) => !EXPECTED_ERROR.test(e) && !(extra && extra.test(e)));
 
+// The header badge is a mark and a few words, with the agent's name in a
+// bubble that is only drawn on hover; its accessible name is the whole
+// binding spelled out, which is what every scenario reads.
 const idle = (page, t = 30000) =>
   page.waitForFunction(() => !document.body.classList.contains('busy'), null, { timeout: t });
 const busy = (page, t = 10000) =>
@@ -156,9 +159,34 @@ async function newchat() {
     // what makes the offline case work - so the badge is proven after a send.
     await send(s.page, 'Run the tests.');
     await s.page.waitForSelector('#chatAgent:not([hidden])', { timeout: 15000 });
-    await s.page.waitForFunction(() => document.getElementById('chatAgent').textContent.includes('·'));
-    const badge = await s.page.textContent('#chatAgent');
-    ok(badge === 'Claude Code · Sonnet · medium', 'the header badge reads agent · model · effort', badge);
+    await s.page.waitForFunction(() => document.getElementById('chatAgent').getAttribute('aria-label').includes('·'));
+    // The badge is the agent's mark and the model and effort as words; the
+    // agent's name and its build number are in the bubble under it, which
+    // is in the page but only drawn on hover.
+    const badgeView = await s.page.evaluate(() => {
+      const badgeEl = document.getElementById('chatAgent');
+      const tip = badgeEl.querySelector('.badge-tip');
+      const mark = badgeEl.querySelector('.agent-mark');
+      return {
+        words: [...badgeEl.childNodes].filter((n) => n !== tip).map((n) => n.textContent).join(''),
+        mark: mark ? mark.dataset.agent : '',
+        markDrawn: !!(mark && mark.querySelector('svg path')),
+        tipText: tip ? tip.textContent : '',
+        tipShown: tip ? getComputedStyle(tip).visibility : '',
+      };
+    });
+    ok(badgeView.words === 'Sonnet · medium', 'the header badge reads model · effort', badgeView.words);
+    ok(badgeView.mark === 'claude' && badgeView.markDrawn, "the badge carries Claude's mark", badgeView.mark);
+    ok(/Claude Code 2\.1\.252-fake/.test(badgeView.tipText) && badgeView.tipShown === 'hidden',
+      'the agent name and build are in the bubble, hidden until hovered', badgeView.tipText + ' (' + badgeView.tipShown + ')');
+    await s.page.hover('#chatAgent');
+    await wait(300);
+    const hovered = await s.page.$eval('#chatAgent .badge-tip', (n) => {
+      const r = n.getBoundingClientRect();
+      return { shown: getComputedStyle(n).visibility, onScreen: r.left >= 0 && r.right <= window.innerWidth && r.top > 0 };
+    });
+    ok(hovered.shown === 'visible' && hovered.onScreen, 'hovering the badge draws the bubble, on screen', JSON.stringify(hovered));
+    await s.page.mouse.move(5, 300);
 
     await s.page.waitForFunction(() => location.hash.length > 1, null, { timeout: 20000 });
     const chatId = await s.page.evaluate(() => location.hash.slice(1));
@@ -193,20 +221,20 @@ async function newchat() {
         titleWidth: title.getBoundingClientRect().width,
         titleVisible: getComputedStyle(title).visibility,
         badgeWidth: Math.round(badgeEl.getBoundingClientRect().width),
-        agentPart: seen('.b-agent'),
-        modelPart: seen('.b-model'),
-        badgeTitle: badgeEl.title,
+        agentPart: seen('.b-effort'),
+        modelPart: seen('.b-model') && seen('.agent-mark'),
+        badgeTitle: badgeEl.getAttribute('aria-label'),
         overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
       };
     });
-    ok(bar.titleWidth >= 111 && bar.titleVisible === 'visible',
-      'the chat title keeps at least 111 px beside the badge at 390',
+    ok(bar.titleWidth >= 96 && bar.titleVisible === 'visible',
+      'the chat title keeps at least 96 px beside the badge at 390',
       `${bar.titleWidth.toFixed(1)} px "${bar.titleText}" (${bar.titleVisible})`);
     ok(bar.agentPart === false && bar.modelPart === true,
-      'the badge drops the agent name and keeps the model at 390',
-      JSON.stringify({ agent: bar.agentPart, model: bar.modelPart, badgeWidth: bar.badgeWidth }));
+      'the badge drops the effort and keeps the mark and the model at 390',
+      JSON.stringify({ effort: bar.agentPart, model: bar.modelPart, badgeWidth: bar.badgeWidth }));
     ok(bar.badgeTitle === 'Claude Code · Sonnet · medium',
-      'and the whole binding stays in the title attribute', bar.badgeTitle);
+      'and the whole binding is the badge\'s accessible name', bar.badgeTitle);
     ok(bar.overflow <= 1, 'the top bar still does not scroll sideways', bar.overflow + 'px');
     await shot(s.page, 'newchat-badge');
     ok(unexpected(s.errors).length === 0, 'no unexpected console errors', unexpected(s.errors).join(' | ') || '0');
@@ -444,13 +472,13 @@ async function modelchange() {
     await s.page.click('#panelEffort .seg[data-value="high"]');
     await shot(s.page, 'modelchange-picker');
     await s.page.click('#panelSave');
-    await s.page.waitForFunction(() => document.getElementById('chatAgent').textContent.includes('Opus'),
+    await s.page.waitForFunction(() => document.getElementById('chatAgent').getAttribute('aria-label').includes('Opus'),
       null, { timeout: 10000 });
 
     const after = await s.page.evaluate(async (chatId) => (await (await fetch('/api/chats/' + chatId)).json()).chat, id);
     ok(after.model === 'opus' && after.effort === 'high', 'the server took the new model and effort',
       `${after.model}/${after.effort}`);
-    const badge = await s.page.textContent('#chatAgent');
+    const badge = await s.page.getAttribute('#chatAgent', 'aria-label');
     ok(badge === 'Claude Code · Opus · high', 'the header badge followed', badge);
 
     // While a turn is running the same change is a 409 - the one refusal that
@@ -853,7 +881,7 @@ async function blankchat() {
     await send(s.page, 'A second conversation.');
     await s.page.waitForSelector('.msg.user.pending', { timeout: 8000 });
     const before = await s.page.evaluate(() => ({
-      hash: location.hash, badge: document.getElementById('chatAgent').textContent,
+      hash: location.hash, badge: document.getElementById('chatAgent').getAttribute('aria-label'),
     }));
     ok(before.hash === '' && before.badge === 'Claude Code · Sonnet · high',
       'the blank chat shows the binding it was given', JSON.stringify(before));
@@ -865,7 +893,7 @@ async function blankchat() {
       hash: location.hash,
       pending: document.querySelectorAll('.msg.user.pending').length,
       pendingText: (document.querySelector('.msg.user.pending') || {}).textContent || '',
-      badge: document.getElementById('chatAgent').textContent,
+      badge: document.getElementById('chatAgent').getAttribute('aria-label'),
       sidebar: document.querySelectorAll('.chat-item').length,
     }));
     ok(afterReload.hash === '', 'a reload stays on the blank chat rather than opening the newest one',
@@ -948,7 +976,7 @@ async function queuedchat() {
     await s.page.click('#ncEffort .seg[data-value="high"]');
     await s.page.click('#ncStart');
     await s.page.waitForSelector('#newChatSheet[open]', { state: 'detached' }).catch(() => {});
-    const badgeBefore = await s.page.textContent('#chatAgent');
+    const badgeBefore = await s.page.getAttribute('#chatAgent', 'aria-label');
     await send(s.page, 'First, offline.');
     await s.page.waitForSelector('.msg.user.pending', { timeout: 5000 });
     ok(badgeBefore === 'Claude Code · Sonnet · high',
@@ -958,7 +986,7 @@ async function queuedchat() {
     await s.page.waitForSelector('#newChat', { timeout: 15000 });
     await wait(800);
     const after = await s.page.evaluate(() => ({
-      badge: document.getElementById('chatAgent').textContent,
+      badge: document.getElementById('chatAgent').getAttribute('aria-label'),
       badgeHidden: document.getElementById('chatAgent').hidden,
       pending: document.querySelectorAll('.msg.user.pending').length,
       hash: location.hash,
@@ -1005,7 +1033,7 @@ async function queuedchat() {
       'the chat was created with the binding from before the reload',
       `${srv.chat.agent}/${srv.chat.model}/${srv.chat.effort}`);
     ok(chats === 1, 'exactly one chat exists', chats + ' chats');
-    const badge = await s.page.textContent('#chatAgent');
+    const badge = await s.page.getAttribute('#chatAgent', 'aria-label');
     ok(badge === 'Claude Code · Sonnet · high', 'the badge after creation matches', badge);
     await shot(s.page, 'queuedchat-after');
     const bad = unexpected(s.errors, OFFLINE_NOISE);
@@ -1037,7 +1065,7 @@ async function queuedchatbeside() {
     await wait(1200);
     const after = await s.page.evaluate(() => ({
       hash: location.hash,
-      badge: document.getElementById('chatAgent').textContent,
+      badge: document.getElementById('chatAgent').getAttribute('aria-label'),
       pending: document.querySelectorAll('.msg.user.pending').length,
       outbox: JSON.parse(localStorage.getItem('socrates.outbox.messages') || '[]').length,
       sidebar: [...document.querySelectorAll('.chat-item .label')].length,
@@ -1132,7 +1160,7 @@ async function refused422() {
     const after = await s.page.evaluate(() => ({
       composerShown: getComputedStyle(document.getElementById('composer')).display !== 'none',
       warn: document.getElementById('chatAgent').classList.contains('warn'),
-      title: document.getElementById('chatAgent').title,
+      title: document.getElementById('chatAgent').getAttribute('aria-label'),
       busy: document.body.classList.contains('busy'),
     }));
     ok(after.warn && /is not available on this machine any more/.test(after.title),
@@ -1593,6 +1621,162 @@ async function liveclaude() {
   } finally { await s.stop(); }
 }
 
+// ---------------------------------------------------------------- 20. design
+
+// The look of the thing, measured. Every surface is the same white; every
+// agent is its own mark wherever it is named; and the detail nobody reads
+// twice - a build number, a path - is in the page but only drawn while its
+// "i" is hovered, focused or tapped. A phone has no hover, so the tap is
+// proven with a real click at 390, and the desktop half with a real hover.
+async function design() {
+  const WHITE = 'rgb(255, 255, 255)';
+  for (const viewport of [{ width: 390, height: 844 }, { width: 1440, height: 900 }]) {
+    const tag = viewport.width + 'x' + viewport.height;
+    const phone = viewport.width < 900;
+    const s = await start({ viewport });
+    try {
+      // The sign-in page, before anything else: white, no gradient.
+      await s.page.goto(s.url + '/login', { waitUntil: 'domcontentloaded' });
+      await wait(400);
+      const loginBg = await s.page.evaluate(() => {
+        const of = (sel) => getComputedStyle(document.querySelector(sel)).backgroundImage + ' ' + getComputedStyle(document.querySelector(sel)).backgroundColor;
+        return { body: getComputedStyle(document.body).backgroundColor, auth: of('.auth') };
+      });
+      ok(loginBg.body === WHITE && loginBg.auth === 'none ' + WHITE, `/login at ${tag} is plain white`, JSON.stringify(loginBg));
+
+      await setup(s.page, s.url);
+      await s.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
+      await s.page.waitForSelector('#newChat', { timeout: 15000 });
+      await ensureNav(s.page);
+      const chatBg = await s.page.evaluate(() => {
+        const bg = (sel) => getComputedStyle(document.querySelector(sel)).backgroundColor;
+        return { body: bg('body'), sidebar: bg('.sidebar'), topbar: bg('.topbar'), main: bg('.main'), composer: bg('.composer') };
+      });
+      ok(Object.values(chatBg).every((c) => c === WHITE || c === 'rgba(0, 0, 0, 0)'),
+        `every surface of the chat page at ${tag} is white`, JSON.stringify(chatBg));
+      ok(chatBg.sidebar === WHITE, `the sidebar at ${tag} is white, not a shade of its own`, chatBg.sidebar);
+
+      // The sheet: three marks, three names, no version in sight.
+      await s.page.click('#newChat');
+      await s.page.waitForSelector('#newChatSheet[open]');
+      await wait(300);
+      const sheet = await s.page.evaluate(() => {
+        const marks = [...document.querySelectorAll('#ncAgent .seg .agent-mark')].map((m) => ({
+          agent: m.dataset.agent, drawn: !!m.querySelector('svg path'), w: Math.round(m.getBoundingClientRect().width),
+        }));
+        const tips = [...document.querySelectorAll('#ncAgent .tip')].map((t) => ({
+          text: t.querySelector('.tip-bubble').textContent,
+          shown: getComputedStyle(t.querySelector('.tip-bubble')).visibility,
+        }));
+        const visible = [...document.querySelectorAll('#ncAgent .seg, #ncHint')].map((n) => n.textContent).join(' ');
+        return { marks, tips, visible };
+      });
+      ok(sheet.marks.map((m) => m.agent).join(',') === 'claude,codex,opencode' && sheet.marks.every((m) => m.drawn && m.w >= 18),
+        `the sheet at ${tag} shows one mark per agent`, JSON.stringify(sheet.marks));
+      ok(!/\d+\.\d+\.\d+/.test(sheet.visible), `no version number is in the sheet's words at ${tag}`, sheet.visible.replace(/\s+/g, ' ').trim());
+      ok(sheet.tips.length === 3 && sheet.tips.every((t) => t.shown === 'hidden') && /2\.1\.252-fake/.test(sheet.tips[0].text),
+        `each agent has an "i" whose bubble holds the build, hidden at rest at ${tag}`, JSON.stringify(sheet.tips.map((t) => t.text.slice(0, 40))));
+
+      // Hover on a desk, tap on a phone: both draw the bubble, on screen.
+      const mark = '#ncAgent .seg-cell:nth-child(2) .tip-mark';
+      if (phone) await s.page.click(mark); else await s.page.hover(mark);
+      await wait(350);
+      const bubble = await s.page.$eval('#ncAgent .seg-cell:nth-child(2) .tip-bubble', (n) => {
+        const r = n.getBoundingClientRect();
+        return { shown: getComputedStyle(n).visibility, opacity: getComputedStyle(n).opacity,
+          onScreen: r.left >= 0 && r.right <= window.innerWidth && r.top > 0 && r.bottom <= window.innerHeight, text: n.textContent };
+      });
+      ok(bubble.shown === 'visible' && bubble.opacity === '1' && bubble.onScreen,
+        `${phone ? 'a tap' : 'a hover'} draws Codex's bubble inside the viewport at ${tag}`, JSON.stringify(bubble));
+      ok(/codex-cli 0\.152\.0-fake/.test(bubble.text), `the bubble names the build ${tag}`, bubble.text);
+      await shot(s.page, 'design-sheet-tip-' + tag);
+      // And it goes away again: a tap beside it, or the pointer leaving.
+      if (phone) await s.page.click('#newChatSheet .sheet-title'); else await s.page.mouse.move(5, 5);
+      await wait(350);
+      const gone = await s.page.$eval('#ncAgent .seg-cell:nth-child(2) .tip-bubble', (n) => getComputedStyle(n).visibility);
+      ok(gone === 'hidden', `the bubble is put away again at ${tag}`, gone);
+      // Escape closes an open bubble before it closes the sheet. The pointer
+      // is moved off the mark first: a mouse that stays on it keeps the
+      // bubble by hovering, which is right, and not what is measured here.
+      await s.page.click(mark);
+      await s.page.mouse.move(5, 5);
+      await wait(250);
+      const held = await s.page.$eval('#ncAgent .seg-cell:nth-child(2) .tip-bubble', (n) => getComputedStyle(n).visibility);
+      ok(held === 'visible', `a tapped bubble stays open once the pointer has left at ${tag}`, held);
+      await s.page.keyboard.press('Escape');
+      await wait(200);
+      const afterEsc = await s.page.evaluate(() => ({
+        bubble: getComputedStyle(document.querySelector('#ncAgent .seg-cell:nth-child(2) .tip-bubble')).visibility,
+        sheetOpen: document.getElementById('newChatSheet').open,
+      }));
+      ok(afterEsc.bubble === 'hidden' && afterEsc.sheetOpen === true,
+        `Escape closes the bubble and leaves the sheet open at ${tag}`, JSON.stringify(afterEsc));
+      if (afterEsc.sheetOpen) await s.page.click('#ncCancel');
+      await s.page.waitForSelector('#newChatSheet[open]', { state: 'detached', timeout: 5000 }).catch(() => {});
+
+      // A chat, so there is a row in the list and a badge in the bar.
+      await openSheetAndStart(s.page, { effort: 'medium' });
+      await send(s.page, 'Say hi.');
+      await s.page.waitForSelector('#chatAgent:not([hidden])', { timeout: 15000 });
+      await s.page.waitForSelector('.msg.assistant', { timeout: 25000 });
+      await idle(s.page);
+      await ensureNav(s.page);
+      const list = await s.page.evaluate(() => ({
+        rows: [...document.querySelectorAll('.chat-item')].map((r) => {
+          const m = r.querySelector('.agent-mark');
+          return { agent: m ? m.dataset.agent : '', drawn: !!(m && m.querySelector('svg path')) };
+        }),
+        badgeMark: (document.querySelector('#chatAgent .agent-mark') || {}).dataset ? document.querySelector('#chatAgent .agent-mark').dataset.agent : '',
+        emptyMark: !!document.querySelector('.empty-mark'),
+      }));
+      ok(list.rows.length >= 1 && list.rows.every((r) => r.agent === 'claude' && r.drawn),
+        `every chat row at ${tag} carries its agent's mark`, JSON.stringify(list.rows));
+      ok(list.badgeMark === 'claude', `the header badge at ${tag} carries the mark`, list.badgeMark);
+      await shot(s.page, 'design-chat-' + tag);
+      if (phone) {
+        // Tapping the badge on a phone draws the binding under it.
+        // The drawer is closed by a tap beside it, which is where the scrim is
+        // tappable: at the right edge, not under the drawer.
+        await s.page.mouse.click(viewport.width - 8, 400);
+        await s.page.waitForFunction(() => !document.body.classList.contains('nav-open'), null, { timeout: 5000 });
+        await wait(300);
+        await s.page.click('#chatAgent');
+        await wait(350);
+        const badgeTip = await s.page.$eval('#chatAgent .badge-tip', (n) => {
+          const r = n.getBoundingClientRect();
+          return { shown: getComputedStyle(n).visibility, onScreen: r.left >= 0 && r.right <= window.innerWidth, text: n.textContent };
+        });
+        ok(badgeTip.shown === 'visible' && badgeTip.onScreen && /Claude Code/.test(badgeTip.text),
+          'tapping the badge on a phone draws the binding, on screen', JSON.stringify(badgeTip));
+        await shot(s.page, 'design-badge-tap-' + tag);
+      }
+
+      // The dashboard: white, marks on the cards, facts behind the "i".
+      await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
+      await s.page.waitForSelector('.agent-card', { timeout: 15000 });
+      await wait(500);
+      const admin = await s.page.evaluate(() => {
+        const bg = (sel) => getComputedStyle(document.querySelector(sel)).backgroundColor;
+        const cards = [...document.querySelectorAll('.agent-card')].map((c) => ({
+          mark: (c.querySelector('.agent-name .agent-mark') || { dataset: {} }).dataset.agent,
+          name: c.querySelector('.agent-name').textContent,
+          factsShown: getComputedStyle(c.querySelector('.tip-bubble')).visibility,
+          facts: c.querySelector('.agent-facts').textContent,
+          headWords: c.querySelector('.agent-head').innerText,
+        }));
+        return { page: bg('.admin-page'), top: bg('.admin-top'), body: bg('body'), cards };
+      });
+      ok(admin.page === WHITE && admin.top === WHITE && admin.body === WHITE, `the dashboard at ${tag} is white`, JSON.stringify([admin.page, admin.top, admin.body]));
+      ok(admin.cards.map((c) => c.mark).join(',') === 'claude,codex,opencode', `each agent card at ${tag} carries its mark`, admin.cards.map((c) => c.mark).join(','));
+      ok(admin.cards.every((c) => c.factsShown === 'hidden' && /\//.test(c.facts) && !/\//.test(c.headWords)),
+        `the build and the path at ${tag} are in the bubble, not in the card's words`, JSON.stringify(admin.cards.map((c) => c.headWords.replace(/\s+/g, ' '))));
+      const overflow = await s.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      ok(overflow <= 1, `hidden bubbles do not make /admin scroll sideways at ${tag}`, overflow + 'px');
+      ok(unexpected(s.errors).length === 0, `no unexpected console errors at ${tag}`, unexpected(s.errors).join(' | ') || '0');
+    } finally { await s.stop(); }
+  }
+}
+
 // -------------------------------------------------------------------- run
 
 const ALL = [
@@ -1616,6 +1800,7 @@ const ALL = [
   ['modellist', 'the short list in the dashboard is what the sheet offers', modellist],
   ['pages', 'every page is clean at a phone and at a desk', pages],
   ['modelpick', 'a model tapped in the new-chat sheet is the model the chat gets', modelpick],
+  ['design', 'white surfaces, one mark per agent, and the detail behind an "i"', design],
   ['liveclaude', 'one real turn against the real Claude Code CLI', liveclaude, { live: true }],
 ];
 

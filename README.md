@@ -447,6 +447,17 @@ Socrates is built for a single trusted operator, and it runs the coding agents
   `sandbox: "danger-full-access"` for Codex; `OPENCODE_PERMISSION="allow"` for
   OpenCode. There are no approval cards in the UI, by design. Anything the agent
   decides to run, it runs.
+- **Remote control is off for every chat.** Claude Code and Codex can both hand a
+  running session to their vendor's own phone and web apps — Anthropic's Remote
+  Control, OpenAI's remote control — where a second surface steers the very turn
+  Socrates is driving and the transcript is kept on their servers for as long as
+  it is connected. Socrates is the surface, so every session it starts turns that
+  off explicitly rather than inheriting whatever the machine or the account
+  defaults to: `--settings '{"disableRemoteControl":true,"remoteControlAtStartup":false}'`
+  for Claude Code, `-c features.remote_control=false` for Codex. OpenCode has no
+  such feature. `extra_args` in the admin dashboard is appended after these, so
+  it is also the way to undo them — note that a second `--settings` replaces this
+  one outright rather than merging with it.
 - **The agents run as the user that runs Socrates**, with that user's files,
   credentials and network. Access to the web interface is therefore access to
   that account — treat the password accordingly, and put Cloudflare Access in

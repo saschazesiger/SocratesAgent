@@ -34,6 +34,7 @@ const SHELL = [
   '/static/js/api.js',
   '/static/js/chat.js',
   '/static/js/agents.js',
+  '/static/js/logos.js',
   '/static/js/combobox.js',
   '/static/js/markdown.js',
   '/static/js/voice.js',

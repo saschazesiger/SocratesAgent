@@ -336,6 +336,10 @@ func TestATextTurnStreamsAndCompletes(t *testing.T) {
 	if lines[0][1] != "app-server" || !strings.Contains(strings.Join(lines[0], " "), "stdio://") {
 		t.Errorf("argv = %v", lines[0])
 	}
+	// Remote control is refused for every chat, not merely not asked for.
+	if !strings.Contains(strings.Join(lines[0], " "), "-c features.remote_control=false") {
+		t.Errorf("argv does not turn remote control off: %v", lines[0])
+	}
 	want := []string{"turn/start", "model=gpt-5.4-mini", "effort=low"}
 	if strings.Join(lines[1], " ") != strings.Join(want, " ") {
 		t.Errorf("turn/start recorded %v, want %v", lines[1], want)

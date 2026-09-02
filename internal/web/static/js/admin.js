@@ -1,6 +1,7 @@
 // The admin dashboard: everything about Socrates is configurable here.
 
-import { api, el, toast, isOffline, errorMessage, setClass, onWake } from './api.js';
+import { api, el, toast, isOffline, errorMessage, setClass, onWake, infoTip } from './api.js';
+import { agentMark } from './logos.js';
 import { speak, speechKind } from './voice.js';
 import { combobox } from './combobox.js';
 import * as models from './models.js';
@@ -255,10 +256,14 @@ function agentCard(agent, refreshing) {
     onclick: () => { loadAgents(true).catch(() => {}); },
   });
 
+  // The facts are behind an "i" beside the name: they are the answer to
+  // "which build, where" and nothing a person reads twice. They stay in the
+  // page in full, one line each, for whoever hovers - or for a test.
   return el('div', { class: 'agent-card' + (agent.installed ? '' : ' missing') },
     el('div', { class: 'agent-head' },
-      el('label', { class: 'switch' }, toggle, el('span', { class: 'track' }), el('span', { text: agent.label })),
-      el('span', { class: 'agent-facts mono', text: facts.join(' · ') }),
+      el('label', { class: 'switch' }, toggle, el('span', { class: 'track' }),
+        el('span', { class: 'agent-name' }, agentMark(agent.id, 20), el('span', { text: agent.label }))),
+      facts.length ? infoTip(el('span', { class: 'agent-facts mono', text: facts.join(' · ') }), { label: agent.label + ' details' }) : null,
     ),
     agent.error ? el('div', { class: 'agent-note bad', text: agent.error }) : null,
     agent.notes ? el('div', { class: 'agent-note', text: agent.notes }) : null,
@@ -728,9 +733,10 @@ async function runChecks() {
   try {
     const data = await api('/api/diagnostics', { method: 'POST', body: {} });
     for (const check of data.checks || []) {
+      const agentId = { 'Claude Code': 'claude', Codex: 'codex', OpenCode: 'opencode' }[check.name] || '';
       host.append(el('div', { class: 'check' },
         el('span', { class: 'st ' + (check.ok ? 'ok' : 'bad') }),
-        el('span', { class: 'nm', text: check.name }),
+        el('span', { class: 'nm' }, agentId ? agentMark(agentId, 14) : null, el('span', { text: check.name })),
         el('span', { class: 'dt', text: check.detail }),
       ));
     }

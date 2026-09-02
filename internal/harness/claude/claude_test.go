@@ -557,6 +557,7 @@ func TestArgvAndEnvironment(t *testing.T) {
 		{"--include-partial-messages", ""},
 		{"--permission-mode", "bypassPermissions"},
 		{"--setting-sources", "project,local"},
+		{"--settings", `{"disableRemoteControl":true,"remoteControlAtStartup":false}`},
 		{"--replay-user-messages", ""},
 		{"--model", "haiku"},
 		{"--effort", "low"},

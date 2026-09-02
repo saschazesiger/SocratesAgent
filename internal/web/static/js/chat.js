@@ -3,7 +3,7 @@
 import {
   api, el, toast, confirmDialog, fmtClock, fmtTokens, isOffline, errorMessage,
   setClass, LiveStream, Outbox, clientKey, onWake, HttpError, RetryLater,
-  isBusyConflict, CONNECTION_GRACE,
+  isBusyConflict, CONNECTION_GRACE, placeBubble,
 } from './api.js';
 import { renderMarkdown } from './markdown.js';
 import {
@@ -12,6 +12,7 @@ import {
 } from './voice.js';
 import * as agents from './agents.js';
 import { combobox } from './combobox.js';
+import { agentMark } from './logos.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -699,6 +700,8 @@ function buildChatItem(chat) {
   // was built from: a row outlives several refreshes of the list.
   const current = () => state.chats.find((c) => c.id === item.dataset.chat);
   const dot = el('span', { class: 'dot', hidden: true, title: 'Working' });
+  // The agent's mark, so a list of chats says at a glance who answers where.
+  let mark = agentMark(chat.agent, 14);
   const label = el('span', { class: 'label' });
   const archive = el('button', {
     class: 'icon-btn act',
@@ -719,9 +722,14 @@ function buildChatItem(chat) {
       if (chatNow) deleteChat(chatNow);
     },
   });
-  item.append(dot, label, archive, remove);
+  item.append(mark, dot, label, archive, remove);
   item.update = (next) => {
     item.dataset.chat = next.id;
+    if (mark.dataset.agent !== (next.agent || '')) {
+      const fresh = agentMark(next.agent, 14);
+      mark.replaceWith(fresh);
+      mark = fresh;
+    }
     const active = next.id === state.chatId;
     setClass(item, 'active', active);
     setClass(item, 'archived', !!next.archived);
@@ -919,24 +927,49 @@ function paintAgentBadge() {
   // agent's name - which is fixed for the life of the chat and is in the
   // settings popover - rather than eat the chat's own name. The whole binding
   // stays in the title attribute either way.
-  const parts = [];
+  const parts = [agentMark(binding.agent, 16)];
   const push = (cls, text) => {
     if (!text) return;
     // The separator is a node of its own so that hiding a part takes its
     // separator with it, rather than leaving a dot hanging off the front.
-    if (parts.length) parts.push(el('span', { class: 'b-sep', text: ' · ' }));
+    if (parts.length > 1) parts.push(el('span', { class: 'b-sep', text: ' · ' }));
     parts.push(el('span', { class: cls, text }));
   };
-  push('b-agent', agentLabel);
+  // The agent is its mark: the name is in the bubble, with the build number
+  // and the rest of the binding, for whoever hovers to ask.
   push('b-model', modelLabel);
   push('b-effort', binding.effort);
   badge.hidden = false;
   badge.className = 'agent-badge' + (state.agentOK ? '' : ' warn');
   badge.replaceChildren(...parts);
+  // The whole binding is the badge's name for a screen reader, and it is what
+  // the bubble spells out for a pointer; a native title on top of the bubble
+  // would be the same words twice.
   const full = [agentLabel, modelLabel, binding.effort].filter(Boolean).join(' · ');
-  badge.title = state.agentOK
+  badge.setAttribute('aria-label', state.agentOK
     ? full
-    : full + ' — ' + agentLabel + ' is not available on this machine any more.';
+    : full + ' — ' + agentLabel + ' is not available on this machine any more.');
+  badge.tabIndex = 0;
+  const facts = agents.agentFacts(known);
+  const bubble = el('span', { class: 'badge-tip', role: 'tooltip' },
+    el('span', { class: 'b-agent', text: agentLabel + (facts.length ? ' ' + facts[0] : '') }),
+    el('span', { class: 'b-binding', text: [modelLabel, binding.effort].filter(Boolean).join(' · ') }),
+    state.agentOK ? null : el('span', { class: 'b-warn', text: agentLabel + ' is not available on this machine any more.' }));
+  badge.append(bubble);
+  if (!badge.dataset.tip) {
+    badge.dataset.tip = '1';
+    const place = () => placeBubble(badge, badge.querySelector('.badge-tip'));
+    badge.addEventListener('mouseenter', place);
+    badge.addEventListener('focus', place);
+    // A tap is a phone's hover: it opens the bubble, and a tap anywhere else
+    // closes it again, the same as every other bubble on the page.
+    badge.addEventListener('click', (event) => {
+      event.stopPropagation();
+      badge.classList.toggle('open');
+      if (badge.classList.contains('open')) place();
+    });
+    document.addEventListener('click', () => badge.classList.remove('open'));
+  }
 }
 
 async function openChat(id, options = {}) {
@@ -1033,9 +1066,13 @@ function showEmptyState() {
   state.stepEls.clear();
   state.stepData.clear();
   state.turnEls.clear();
+  const binding = state.chat && state.chat.agent ? state.chat : state.pendingBinding;
+  const bound = binding && binding.agent ? agents.agent(binding.agent) : null;
+  const who = bound ? bound.label : (binding && binding.agent) || '';
   const wrap = el('div', { class: 'empty' },
+    binding && binding.agent ? el('div', { class: 'empty-mark' }, agentMark(binding.agent, 30)) : null,
     el('h2', { text: 'What should we work on?' }),
-    el('p', { text: 'This chat goes straight to the agent it is bound to.' }),
+    el('p', { text: who ? 'This chat goes straight to ' + who + '.' : 'This chat goes straight to the agent it is bound to.' }),
   );
   const suggestions = el('div', { class: 'suggestions' });
   for (const text of [

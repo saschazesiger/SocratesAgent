@@ -9,8 +9,9 @@
 // by the server when the chat is finally created; a stale copy degrades to
 // "the agent reports a bad model as a run error", never to a lost message.
 
-import { api, el, toast } from './api.js';
+import { api, el, toast, infoTip } from './api.js';
 import { combobox } from './combobox.js';
+import { agentMark } from './logos.js';
 
 const CACHE_KEY = 'socrates.agents';
 
@@ -154,13 +155,26 @@ export function defaultModelFor(agentId) {
 
 // segButton is the one control shape this sheet uses for a short, closed set
 // of choices: a row of buttons, one of them pressed.
-function segButton(label, value, sub) {
+function segButton(label, value, sub, mark) {
   return el('button', {
-    class: 'seg',
+    class: 'seg' + (mark ? ' with-mark' : ''),
     type: 'button',
     'data-value': value,
     'aria-pressed': 'false',
-  }, el('span', { class: 'seg-label', text: label }), sub ? el('span', { class: 'seg-sub', text: sub }) : null);
+  }, mark || null, el('span', { class: 'seg-text' },
+    el('span', { class: 'seg-label', text: label }),
+    sub ? el('span', { class: 'seg-sub', text: sub }) : null));
+}
+
+// agentFacts is what an agent reported about itself, for the small mark
+// beside its name: the build it is, and where it was found. It is detail, so
+// it is hover only - the name and the logo are what a person picks by.
+export function agentFacts(entry) {
+  const facts = [];
+  if (!entry) return facts;
+  if (entry.installed && entry.version) facts.push(entry.version);
+  if (entry.installed && entry.path) facts.push(entry.path);
+  return facts;
 }
 
 function pressed(row, value) {
@@ -207,10 +221,16 @@ export async function openNewChatSheet() {
 
   for (const entry of agents) {
     const usable = entry.enabled && entry.installed;
-    const button = segButton(entry.label, entry.id, usable ? '' : 'not installed');
+    const button = segButton(entry.label, entry.id, usable ? '' : 'not installed', agentMark(entry.id, 20));
     button.disabled = !usable;
     button.addEventListener('click', () => selectAgent(entry.id));
-    agentRow.append(button);
+    // The build and the path sit behind an "i" on the corner of the button
+    // rather than in the hint: they are the answer to a question almost
+    // nobody asks, and the sheet is read by someone about to type.
+    const facts = agentFacts(entry);
+    const cell = el('span', { class: 'seg-cell' }, button,
+      facts.length ? infoTip(facts, { label: entry.label + ' details', bubbleClass: 'mono' }) : null);
+    agentRow.append(cell);
   }
 
   modelHost.innerHTML = '';
@@ -264,7 +284,6 @@ export async function openNewChatSheet() {
     if (entry) {
       if (entry.error) parts.push(entry.error);
       if (entry.notes) parts.push(entry.notes);
-      if (entry.installed && entry.version) parts.push(entry.label + ' ' + entry.version);
       // Codex and OpenCode have no default of their own: the catalogue reports
       // what this installation has connected, and one of them has to be named.
       if (entry.installed && !entry.static && !defaultModelFor(entry.id) && !pick.model) {

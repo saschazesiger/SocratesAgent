@@ -381,14 +381,32 @@ func (a *adapter) launch(ctx context.Context, spec harness.Spec, sessionID strin
 	}
 }
 
+// remoteControlOff is the settings override every chat is started with.
+//
+// Remote Control hands a running Claude Code process to claude.ai and the
+// Claude apps, so that a second surface can steer the very turn Socrates is
+// driving and the transcript is kept on Anthropic's servers for as long as it
+// is connected. Socrates is the surface; a session with two of them is a shape
+// this adapter has no answer for. So it is off for every chat, by default and
+// on purpose, rather than left to whatever the account or the machine happens
+// to default to. disableRemoteControl is the documented "everywhere it can
+// start" switch and remoteControlAtStartup closes the auto-connect path that a
+// managed policy can otherwise turn on.
+//
+// It travels as --settings rather than as a file because that level sits above
+// the user, project and local settings - only a managed policy outranks it -
+// and because the alternative would be writing a .claude/settings.json into a
+// directory that, for a pinned chat, is somebody's own repository.
+const remoteControlOff = `{"disableRemoteControl":true,"remoteControlAtStartup":false}`
+
 // Argv is the exact production command line. It is built in one place so that
 // live_test.go can run it verbatim: of these flags only
 // --replay-user-messages was live-tested by the research, and a rejected flag
 // kills the process at start - which would kill every chat (F-4).
 //
-// F-4 is now closed: this exact argv, --name, --setting-sources and --effort
-// included, was run against claude 2.1.252 by live_test.go and accepted. None
-// of the flags had to be dropped.
+// F-4 is now closed: this exact argv, --name, --setting-sources, --settings and
+// --effort included, was run against claude 2.1.258 by live_test.go and
+// accepted. None of the flags had to be dropped.
 func Argv(spec harness.Spec, sessionID string, resume bool) []string {
 	args := []string{
 		"-p",
@@ -398,6 +416,7 @@ func Argv(spec harness.Spec, sessionID string, resume bool) []string {
 		"--include-partial-messages",
 		"--permission-mode", "bypassPermissions",
 		"--setting-sources", "project,local",
+		"--settings", remoteControlOff,
 		"--replay-user-messages",
 	}
 	if spec.Model != "" {

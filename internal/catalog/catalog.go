@@ -23,6 +23,16 @@ import (
 // cacheKey is where the last discovery is kept between restarts.
 const cacheKey = "agents_catalog"
 
+// cacheSchema is stamped onto every cached snapshot, and a snapshot carrying
+// another number is thrown away on load. Bump it whenever what a discovery
+// puts into a snapshot changes meaning - a new effort level policy, a new
+// field the picker relies on - so an upgraded Socrates does not serve the
+// previous version's answer for the next half hour.
+//
+//	1  the first shape
+//	2  efforts are every level the agent names, not the low/medium/high cut
+const cacheSchema = 2
+
 // TTL is how long a discovered catalogue is treated as current. Models are
 // added to a CLI a few times a year; half an hour is generous either way.
 const TTL = 30 * time.Minute
@@ -85,6 +95,7 @@ func (a Agent) Model(id string) (harness.Model, bool) {
 type Snapshot struct {
 	Agents      []Agent `json:"agents"`
 	RefreshedAt int64   `json:"refreshed_at"`
+	Schema      int     `json:"schema,omitempty"`
 }
 
 // Agent returns one entry of a snapshot.
@@ -173,7 +184,17 @@ func (c *Catalog) Cached() (Snapshot, bool) {
 	defer c.mu.Unlock()
 	if !c.loaded {
 		var stored Snapshot
-		if err := c.store.GetJSON(cacheKey, &stored); err == nil && len(stored.Agents) > 0 {
+		switch err := c.store.GetJSON(cacheKey, &stored); {
+		case err != nil || len(stored.Agents) == 0:
+		case stored.Schema != cacheSchema:
+			log.Printf("catalog: the cached agent list is from another version of Socrates; discovering again")
+		default:
+			// A curated list is this build's, not the cache's: it costs no
+			// subprocess to read, and the cached copy would be the previous
+			// build's list for as long as the cache is fresh.
+			for i := range stored.Agents {
+				refreshStatic(&stored.Agents[i])
+			}
 			c.snapshot = stored
 		}
 		c.loaded = true
@@ -258,7 +279,7 @@ func (c *Catalog) discover() *discovery {
 // can run.
 func (c *Catalog) probeAll(ctx context.Context) Snapshot {
 	settings := c.settings()
-	snap := Snapshot{RefreshedAt: time.Now().UnixMilli()}
+	snap := Snapshot{RefreshedAt: time.Now().UnixMilli(), Schema: cacheSchema}
 	for _, id := range harness.IDs() {
 		desc, ok := harness.Get(id)
 		if !ok {
@@ -280,7 +301,7 @@ func (c *Catalog) probeAll(ctx context.Context) Snapshot {
 // dashboard takes effect without spawning anything.
 func (c *Catalog) withSettings(snap Snapshot) Snapshot {
 	settings := c.settings()
-	out := Snapshot{RefreshedAt: snap.RefreshedAt, Agents: make([]Agent, 0, len(snap.Agents))}
+	out := Snapshot{RefreshedAt: snap.RefreshedAt, Schema: snap.Schema, Agents: make([]Agent, 0, len(snap.Agents))}
 	for _, a := range snap.Agents {
 		if a.Models == nil {
 			a.Models = []harness.Model{}
@@ -346,6 +367,12 @@ func discoverOne(ctx context.Context, desc harness.Descriptor, entry config.Agen
 		a.Error = err.Error()
 		return a
 	}
+	applyCatalog(&a, cat)
+	return a
+}
+
+// applyCatalog puts what an adapter reported into the agent's entry.
+func applyCatalog(a *Agent, cat harness.Catalog) {
 	a.Static = cat.Static
 	if cat.Notes != "" {
 		a.Notes = cat.Notes
@@ -366,7 +393,26 @@ func discoverOne(ctx context.Context, desc harness.Descriptor, entry config.Agen
 			a.DefaultModel = a.Models[i].ID
 		}
 	}
-	return a
+}
+
+// refreshStatic replaces a cached curated list with this build's. A static
+// Discover spawns nothing, so it is cheap enough to run on every load.
+func refreshStatic(a *Agent) {
+	if !a.Static || !a.Installed {
+		return
+	}
+	desc, ok := harness.Get(a.ID)
+	if !ok || desc.Discover == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cat, err := desc.Discover(ctx, a.Path)
+	if err != nil || !cat.Static {
+		return
+	}
+	a.DefaultModel = desc.DefaultModel
+	applyCatalog(a, cat)
 }
 
 // probeVersion runs the binary's version command and keeps the first readable

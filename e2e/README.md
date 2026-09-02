@@ -1,6 +1,6 @@
 # The end-to-end suite
 
-Twenty scenarios that drive the real `socrates` binary through a real browser.
+Twenty-one scenarios that drive the real `socrates` binary through a real browser.
 Each one boots a server on its own port with its own temporary data directory,
 completes setup the way a person would, and then asserts against what the page
 actually shows — printing the value it measured beside every verdict.
@@ -179,6 +179,7 @@ scenario. Deleting `e2e/out/` is always safe.
 | `admin` | the Agents card, refresh, save and the diagnostics rows |
 | `pages` | every page is clean, at a phone and at a desk |
 | `modelpick` | a model tapped with the mouse keeps the sheet and reaches the chat; a tap beside it still closes it |
+| `design` | every surface is white, every agent is its own mark, and the build and path are behind an "i" that a hover, a tap and Escape all drive |
 | `liveclaude` | one real turn against the real Claude Code CLI (gated) |
 
 ## Screenshots for the README

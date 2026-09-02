@@ -26,7 +26,9 @@ func Discover(ctx context.Context, bin string) (harness.Catalog, error) {
 	if bin == "" {
 		bin = "codex"
 	}
-	cmd := exec.CommandContext(ctx, bin, "app-server", "--listen", "stdio://")
+	// remoteControlOff here too: every app-server Socrates starts is one, not
+	// only the ones that carry a chat.
+	cmd := exec.CommandContext(ctx, bin, "app-server", "--listen", "stdio://", "-c", remoteControlOff)
 	cmd.Env = os.Environ()
 	proc.Configure(cmd)
 	stdin, err := cmd.StdinPipe()

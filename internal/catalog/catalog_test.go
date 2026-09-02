@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/config"
+	"github.com/saschazesiger/SocratesAgent/internal/harness"
 
 	_ "github.com/saschazesiger/SocratesAgent/internal/harness/claude"
 	_ "github.com/saschazesiger/SocratesAgent/internal/harness/codex"
@@ -373,5 +374,54 @@ func TestPicksOverlayTheDiscovery(t *testing.T) {
 	claude = mustAgent(t, c.Get(context.Background()), "claude")
 	if len(claude.Picks) != 0 {
 		t.Errorf("an emptied list still reports %#v", claude.Picks)
+	}
+}
+
+// An upgraded Socrates must not serve the previous build's catalogue: a cache
+// stamped with another schema is discarded, and a curated list in a cache
+// with the right stamp is replaced by this build's on load.
+func TestTheCacheIsNotTheOldBuildsAnswer(t *testing.T) {
+	onlyClaude(t)
+	st := newStore()
+	fresh := New(st, settingsFn(config.Default())).Refresh(context.Background())
+
+	// Another schema: thrown away, so Cached has nothing.
+	old := fresh
+	old.Schema = cacheSchema - 1
+	if err := st.SetJSON(cacheKey, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := New(st, settingsFn(config.Default())).Cached(); ok {
+		t.Fatal("a cache from another schema was served")
+	}
+
+	// The right schema, but the curated list of an older build - three
+	// efforts and four models. On load it is this build's list again.
+	stale := fresh
+	stale.Agents = append([]Agent(nil), fresh.Agents...)
+	for i := range stale.Agents {
+		if stale.Agents[i].ID != "claude" {
+			continue
+		}
+		stale.Agents[i].Models = []harness.Model{
+			{ID: "sonnet", Label: "Sonnet", Efforts: []string{"low", "medium", "high"}, Default: true},
+		}
+	}
+	if err := st.SetJSON(cacheKey, stale); err != nil {
+		t.Fatal(err)
+	}
+	cached, ok := New(st, settingsFn(config.Default())).Cached()
+	if !ok {
+		t.Fatal("nothing was cached")
+	}
+	claude := mustAgent(t, cached, "claude")
+	if len(claude.Models) != 8 {
+		t.Fatalf("the old build's curated list was served: %d models", len(claude.Models))
+	}
+	if m, _ := claude.Model("sonnet"); strings.Join(m.Efforts, ",") != "low,medium,high,xhigh,max" {
+		t.Errorf("sonnet efforts = %v", m.Efforts)
+	}
+	if cached.RefreshedAt != fresh.RefreshedAt {
+		t.Errorf("a static refresh changed refreshed_at")
 	}
 }

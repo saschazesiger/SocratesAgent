@@ -1,15 +1,21 @@
-/* Socrates - light, quiet, minimal. One accent, a lot of whitespace. */
+/* Socrates - white, quiet, minimal. One accent, a lot of whitespace.
+
+   Every surface is the same white: the sidebar, the top bar, the dashboard,
+   the sign-in page. Structure comes from hairlines and spacing, never from a
+   second shade of background. The only greys are the ones a control needs to
+   be a control - a pressed row, a hovered button, a bubble of your own. */
 
 :root {
   --bg: #ffffff;
-  --bg-soft: #fafafa;
+  --bg-soft: #ffffff;
   --bg-sunken: #f4f4f5;
-  --bg-hover: #f0f0f1;
+  --bg-hover: #f1f1f3;
   --text: #17181b;
   --text-soft: #63666d;
   --text-faint: #9b9ea6;
-  --line: #e9e9ec;
-  --line-strong: #d9dade;
+  --line: #ececee;
+  --line-strong: #dcdde1;
+  --ease: cubic-bezier(.2, .7, .2, 1);
   --accent: #17181b;
   --accent-text: #ffffff;
   --green: #1a9a63;
@@ -69,19 +75,21 @@ a { color: inherit; }
   cursor: pointer;
   font-size: 14px;
   font-weight: 500;
-  transition: background .14s ease, border-color .14s ease, opacity .14s ease, transform .1s ease;
+  transition: background .16s var(--ease), border-color .16s var(--ease), color .16s var(--ease),
+              opacity .16s var(--ease), transform .16s var(--ease), box-shadow .16s var(--ease);
   white-space: nowrap;
   text-decoration: none;
 }
-.btn:hover { background: var(--bg-hover); }
-.btn:active { transform: translateY(1px); }
+.btn:hover { background: var(--bg-hover); border-color: #cfd0d5; }
+.btn:active { transform: scale(.985); }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
 .btn.primary {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-text);
 }
-.btn.primary:hover { background: #2b2d33; }
+.btn.primary:hover { background: #2b2d33; border-color: #2b2d33; box-shadow: 0 6px 18px rgba(16, 17, 20, .16); transform: translateY(-1px); }
+.btn.primary:active { transform: scale(.985); box-shadow: none; }
 .btn.ghost { border-color: transparent; background: transparent; }
 .btn.ghost:hover { background: var(--bg-hover); }
 .btn.danger { color: var(--red); border-color: #f0d4d4; }
@@ -100,14 +108,17 @@ a { color: inherit; }
   background: transparent;
   color: var(--text-soft);
   cursor: pointer;
-  transition: background .14s ease, color .14s ease;
+  transition: background .16s var(--ease), color .16s var(--ease), transform .16s var(--ease);
 }
 .icon-btn:hover { background: var(--bg-hover); color: var(--text); }
+.icon-btn:active { transform: scale(.92); }
 .icon-btn svg { width: 17px; height: 17px; }
 
 /* ------------------------------------------------------------------ forms */
 
 .field { margin-bottom: 18px; }
+/* A hint outside a field reads the same as one inside it. */
+.hint { font-size: 12.5px; color: var(--text-faint); line-height: 1.5; overflow-wrap: anywhere; }
 .field > label {
   display: block;
   font-size: 13px;
@@ -138,11 +149,12 @@ a { color: inherit; }
   border-radius: var(--r-sm);
   background: var(--bg);
   outline: none;
-  transition: border-color .14s ease, box-shadow .14s ease;
+  transition: border-color .18s var(--ease), box-shadow .18s var(--ease);
 }
+.input:hover, .select:hover, .textarea:hover { border-color: #c9cacf; }
 .input:focus, .select:focus, .textarea:focus {
-  border-color: #b9bbc2;
-  box-shadow: 0 0 0 3px rgba(23, 24, 27, .06);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px rgba(23, 24, 27, .07);
 }
 .textarea { min-height: 96px; resize: vertical; line-height: 1.6; }
 .mono { font-family: var(--mono); font-size: 13px; }
@@ -191,13 +203,12 @@ a { color: inherit; }
            calc(20px + env(safe-area-inset-right, 0px))
            calc(32px + env(safe-area-inset-bottom, 0px))
            calc(20px + env(safe-area-inset-left, 0px));
-  background:
-    radial-gradient(1200px 600px at 50% -10%, #f6f7f9 0%, transparent 60%),
-    var(--bg);
+  background: var(--bg);
 }
 .auth-card {
   width: 100%;
   max-width: 380px;
+  animation: rise .36s var(--ease) both;
 }
 .auth-mark {
   width: 42px;
@@ -206,8 +217,8 @@ a { color: inherit; }
   margin-bottom: 22px;
 }
 .auth h1 {
-  font-size: 24px;
-  letter-spacing: -.03em;
+  font-size: 26px;
+  letter-spacing: -.035em;
   margin: 0 0 6px;
   font-weight: 650;
 }
@@ -242,7 +253,7 @@ a { color: inherit; }
 }
 
 .sidebar {
-  background: var(--bg-soft);
+  background: var(--bg);
   border-right: 1px solid var(--line);
   display: flex;
   flex-direction: column;
@@ -252,33 +263,38 @@ a { color: inherit; }
    sidebar has become a drawer. */
 .nav-scrim { display: none; }
 .side-head {
-  padding: 14px 12px 10px;
+  padding: 18px 12px 10px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 .brand {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
   padding: 0 6px;
-  font-weight: 620;
-  letter-spacing: -.02em;
-  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -.025em;
+  font-size: 16px;
 }
 .brand .mark {
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
   flex: none;
   /* The logo carries its own shape and colour, so it wants no tile behind it. */
   object-fit: contain;
 }
+/* The one black thing in the sidebar, so the eye lands on it first. */
 .new-chat {
   width: 100%;
   justify-content: flex-start;
-  background: var(--bg);
-  box-shadow: var(--shadow-sm);
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+  box-shadow: 0 1px 2px rgba(16, 17, 20, .08), 0 6px 16px rgba(16, 17, 20, .10);
 }
+.new-chat:hover { background: #2b2d33; border-color: #2b2d33; transform: translateY(-1px); box-shadow: 0 8px 20px rgba(16, 17, 20, .16); }
+.new-chat:active { transform: scale(.985); box-shadow: none; }
 
 /* A control that is waiting on the network says so where it was tapped. */
 .btn.is-busy { opacity: .75; cursor: default; }
@@ -330,16 +346,22 @@ a { color: inherit; }
 .chat-item {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   padding: 7px 8px 7px 10px;
-  border-radius: 9px;
+  border-radius: 10px;
   cursor: pointer;
   color: var(--text-soft);
   font-size: 13.5px;
-  transition: background .12s ease, color .12s ease;
+  transition: background .16s var(--ease), color .16s var(--ease);
+  animation: fade .24s var(--ease) both;
 }
 .chat-item:hover { background: var(--bg-hover); color: var(--text); }
-.chat-item.active { background: #ecedef; color: var(--text); font-weight: 500; }
+.chat-item.active { background: var(--bg-sunken); color: var(--text); font-weight: 500; }
+/* The mark says who answers in a row; it is small and stays out of the way
+   until the row is the one you are on. */
+.chat-item .agent-mark { opacity: .7; transition: opacity .16s var(--ease); }
+.chat-item:hover .agent-mark, .chat-item.active .agent-mark { opacity: 1; }
+.chat-item.archived .agent-mark { opacity: .4; filter: grayscale(1); }
 .chat-item .label {
   flex: 1;
   min-width: 0;
@@ -410,8 +432,7 @@ a { color: inherit; }
   padding: 0 18px;
   position: relative;
   border-bottom: 1px solid var(--line);
-  background: rgba(255, 255, 255, .8);
-  backdrop-filter: blur(8px);
+  background: var(--bg);
   z-index: 3;
 }
 .topbar .title {
@@ -435,26 +456,72 @@ a { color: inherit; }
   /* It shrinks before the chat's own name does, and the name keeps a floor of
      its own below - the binding is a caption, the title is what you are
      looking for in a list of open tabs. */
+  position: relative;
   flex: 0 1 auto;
   min-width: 0;
   max-width: 46%;
   display: flex;
-  align-items: baseline;
-  font-size: 11.5px;
-  color: var(--text-faint);
-  background: var(--bg-sunken);
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  font-size: 12px;
+  color: var(--text-soft);
+  background: var(--bg);
+  border: 1px solid var(--line);
   border-radius: 999px;
-  padding: 3px 9px;
-  overflow: hidden;
+  padding: 0 10px 0 7px;
   white-space: nowrap;
+  cursor: default;
+  transition: border-color .16s var(--ease), box-shadow .16s var(--ease);
 }
-.agent-badge > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.agent-badge > .b-sep { flex: none; opacity: .7; }
+.agent-badge:hover { border-color: var(--line-strong); }
+.agent-badge > span:not(.badge-tip) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.agent-badge > .agent-mark { flex: none; }
+.agent-badge > .b-sep { flex: none; opacity: .6; margin: 0 -3px; }
+/* The agent's name, its build and the whole binding, drawn under the badge
+   only while it is hovered: the mark already says who, and the bar has no
+   room for a sentence. */
+.agent-badge .badge-tip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 11px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1.4;
+  width: max-content;
+  max-width: min(300px, calc(100vw - 20px));
+  white-space: normal;
+  overflow-wrap: anywhere;
+  box-shadow: var(--shadow);
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(calc(-50% + var(--tip-shift, 0px)), -4px);
+  transition: opacity .16s var(--ease), transform .16s var(--ease), visibility 0s linear .16s;
+  z-index: 20;
+  pointer-events: none;
+}
+.agent-badge:hover .badge-tip, .agent-badge:focus-visible .badge-tip, .agent-badge.open .badge-tip {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(calc(-50% + var(--tip-shift, 0px)), 0);
+  transition-delay: 0s;
+}
+.agent-badge:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.agent-badge .badge-tip .b-agent { font-weight: 600; }
+.agent-badge .badge-tip .b-binding { opacity: .8; }
+.agent-badge .badge-tip .b-warn { color: #ffd28a; }
 /* The agent this chat needs is gone or switched off. Saying so here is the
    only warning there is before the composer refuses the next message. */
 .agent-badge.warn {
   color: #a5670f;
-  background: #fdf3e2;
+  border-color: #f2d9a8;
+  background: #fdf7ea;
 }
 /* Two ways to use a chat, one at a time: the conversation, or hands free. The
    knob is the only thing that moves, so where it sits is the whole answer to
@@ -523,7 +590,10 @@ a { color: inherit; }
   box-shadow: var(--shadow);
   padding: 18px 18px 14px;
   z-index: 12;
-  animation: rise .16s ease both;
+  /* Entrance animations run backwards-only wherever a bubble can be inside:
+     an animation that keeps filling keeps its transform on the element, and a
+     transformed ancestor is what a fixed bubble would be placed against. */
+  animation: rise .16s ease backwards;
 }
 .popover .field:last-of-type { margin-bottom: 14px; }
 
@@ -572,6 +642,12 @@ a { color: inherit; }
   margin: 0 0 8px;
 }
 .empty p { color: var(--text-soft); margin: 0; }
+.empty-mark {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 18px;
+  animation: pop .4s var(--ease) both;
+}
 .suggestions {
   display: flex;
   flex-wrap: wrap;
@@ -844,14 +920,17 @@ a { color: inherit; }
   border: 1px solid var(--line-strong);
   border-radius: 24px;
   background: var(--bg);
-  box-shadow: var(--shadow);
+  box-shadow: 0 1px 2px rgba(16, 17, 20, .04), 0 4px 16px rgba(16, 17, 20, .05);
   padding: 8px 8px 8px 18px;
   display: flex;
   align-items: flex-end;
   gap: 8px;
-  transition: border-color .14s ease, box-shadow .14s ease;
+  transition: border-color .2s var(--ease), box-shadow .2s var(--ease);
 }
-.composer:focus-within { border-color: #c3c4ca; }
+.composer:focus-within {
+  border-color: #c3c4ca;
+  box-shadow: 0 1px 2px rgba(16, 17, 20, .04), 0 10px 30px rgba(16, 17, 20, .09);
+}
 .composer textarea {
   flex: 1;
   border: none;
@@ -873,14 +952,17 @@ a { color: inherit; }
   cursor: pointer;
   background: var(--bg-sunken);
   color: var(--text);
-  transition: background .14s ease, opacity .14s ease, transform .1s ease;
+  transition: background .16s var(--ease), color .16s var(--ease), opacity .16s var(--ease), transform .16s var(--ease);
   flex: none;
 }
 .round-btn:hover { background: #e8e8ea; }
-.round-btn:active { transform: scale(.94); }
+.round-btn:active { transform: scale(.92); }
 .round-btn svg { width: 17px; height: 17px; }
 .round-btn.send { background: var(--accent); color: #fff; }
-.round-btn.send:hover { background: #2b2d33; }
+.round-btn.send:hover { background: #2b2d33; transform: scale(1.04); }
+.round-btn.send:active { transform: scale(.92); }
+/* The moment there is something to send, the button says so. */
+.round-btn.send:not(:disabled) { animation: pop .2s var(--ease) both; }
 .round-btn.send:disabled { background: var(--bg-sunken); color: var(--text-faint); cursor: not-allowed; }
 .round-btn.rec { background: var(--red); color: #fff; animation: pulse-rec 1.5s ease-in-out infinite; }
 .round-btn.rec:hover { background: #bd3838; }
@@ -1020,7 +1102,7 @@ body.auto .auto-screen {
   padding: 22px 24px 18px;
   width: min(420px, calc(100vw - 32px));
   margin: auto;
-  animation: pop .16s cubic-bezier(.3, .8, .4, 1) both;
+  animation: pop .16s cubic-bezier(.3, .8, .4, 1) backwards;
 }
 .modal::backdrop {
   background: rgba(16, 17, 20, .32);
@@ -1063,9 +1145,9 @@ body.auto .auto-screen {
   width: min(440px, calc(100vw - 32px));
   max-height: calc(100vh - 64px);
   overflow: auto;
-  animation: rise .18s ease both;
+  animation: pop .22s var(--ease) backwards;
 }
-.sheet::backdrop { background: rgba(20, 20, 24, .34); }
+.sheet::backdrop { background: rgba(20, 20, 24, .3); animation: fade .2s ease both; }
 .sheet-title {
   margin: 0 0 16px;
   font-size: 17px;
@@ -1092,32 +1174,56 @@ body.auto .auto-screen {
 }
 .seg-row .seg {
   display: inline-flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
+  align-items: center;
+  gap: 9px;
   border: 1px solid var(--line-strong);
   background: var(--bg);
-  border-radius: 10px;
+  border-radius: 11px;
   padding: 8px 12px;
   font: inherit;
   font-size: 13px;
   color: var(--text-soft);
   cursor: pointer;
-  transition: border-color .12s ease, color .12s ease, background .12s ease;
+  transition: border-color .16s var(--ease), color .16s var(--ease), background .16s var(--ease),
+              box-shadow .16s var(--ease), transform .16s var(--ease);
 }
+.seg-row .seg .seg-text { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; }
 .seg-row .seg:hover:not(:disabled) { color: var(--text); border-color: var(--text-faint); }
+.seg-row .seg:active:not(:disabled) { transform: scale(.98); }
 .seg-row .seg.on {
   border-color: var(--accent);
   color: var(--text);
-  background: var(--bg-hover);
+  background: var(--bg);
   font-weight: 550;
+  box-shadow: 0 0 0 1px var(--accent);
 }
+/* A button and its "i" side by side. The "i" is a control of its own - it
+   cannot live inside the button - so the pair share a cell and the "i" sits
+   on the button's corner. */
+.seg-row .seg-cell { position: relative; display: inline-flex; }
+.seg-row .seg-cell > .tip { position: absolute; top: -8px; right: -8px; }
+.seg-row .seg-cell > .tip .tip-mark {
+  width: 20px;
+  height: 20px;
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--shadow-sm);
+}
+.seg-row .seg-cell > .tip .tip-mark svg { width: 12px; height: 12px; }
+.seg-row .seg.with-mark { padding-left: 10px; }
+.seg-row .seg:disabled .agent-mark { filter: grayscale(1); }
 /* An agent that is not installed stays in the row rather than disappearing
    from it: knowing it exists and is not here is the answer to the question
    "why can I not pick Codex". */
 .seg-row .seg:disabled { opacity: .45; cursor: default; }
 .seg-row .seg-sub { font-size: 10.5px; color: var(--text-faint); }
-.seg-row.agents .seg { min-width: 96px; }
+.seg-row.agents .seg { min-width: 120px; min-height: 46px; }
+/* On a phone the three agents share one row, so the buttons are as wide as
+   their names and no wider. */
+@media (max-width: 620px) {
+  .seg-row.agents .seg { min-width: 0; padding: 7px 10px; font-size: 12.5px; gap: 8px; }
+  .seg-row.agents .seg .agent-mark { width: 18px !important; height: 18px !important; }
+}
 
 /* On a phone the sheet is a sheet: it comes up from the bottom, where the
    thumb already is, and it keeps clear of the home indicator. */
@@ -1162,7 +1268,7 @@ body.auto .auto-screen {
 
 .admin-page {
   min-height: 100%;
-  background: var(--bg-soft);
+  background: var(--bg);
   display: flex;
   flex-direction: column;
 }
@@ -1170,8 +1276,7 @@ body.auto .auto-screen {
   position: sticky;
   top: 0;
   z-index: 5;
-  background: rgba(250, 250, 250, .85);
-  backdrop-filter: blur(8px);
+  background: var(--bg);
   border-bottom: 1px solid var(--line);
   padding: 0 22px;
   height: 58px;
@@ -1180,24 +1285,30 @@ body.auto .auto-screen {
   gap: 12px;
 }
 .admin-top .title { font-weight: 600; letter-spacing: -.02em; flex: 1; }
-.admin-wrap { max-width: 860px; width: 100%; margin: 0 auto; padding: 26px 22px 60px; }
+.admin-wrap { max-width: 860px; width: 100%; margin: 0 auto; padding: 30px 22px 60px; }
+/* A section is a heading, a line of what it is for, and its fields: white on
+   white, parted by a hairline and by air rather than by a box. */
 .card {
   background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-  padding: 22px 24px;
-  margin-bottom: 18px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  padding: 6px 0 30px;
+  margin-bottom: 30px;
+  animation: rise .3s var(--ease) backwards;
 }
+.card:last-of-type { border-bottom: 0; margin-bottom: 0; }
 .card > h2 {
-  font-size: 15px;
-  font-weight: 620;
-  letter-spacing: -.02em;
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: -.025em;
   margin: 0 0 4px;
 }
 .card > .card-sub {
   color: var(--text-soft);
   font-size: 13.5px;
-  margin: 0 0 20px;
+  margin: 0 0 22px;
+  max-width: 640px;
 }
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px; }
 .row { display: flex; gap: 10px; align-items: center; }
@@ -1209,20 +1320,30 @@ body.auto .auto-screen {
 .agents-list { display: flex; flex-direction: column; gap: 14px; }
 .agent-card {
   border: 1px solid var(--line);
-  border-radius: var(--r);
-  padding: 14px 16px 4px;
+  border-radius: 14px;
+  padding: 16px 18px 6px;
+  transition: border-color .16s var(--ease), box-shadow .16s var(--ease);
 }
-.agent-card.missing { opacity: .72; }
+.agent-card:hover { border-color: var(--line-strong); }
+.agent-card.missing { opacity: .6; }
+.agent-card.missing .agent-mark { filter: grayscale(1); }
 .agent-head {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 10px 16px;
-  margin-bottom: 12px;
+  gap: 6px;
+  margin-bottom: 14px;
 }
+.agent-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: -.01em;
+}
+/* The build and the path, one line each, inside the bubble. */
 .agent-facts {
   font-size: 11.5px;
-  color: var(--text-faint);
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -1251,11 +1372,13 @@ body.auto .auto-screen {
   gap: 10px;
   font-size: 13.5px;
   padding: 9px 12px;
-  border-radius: var(--r-sm);
-  background: var(--bg-soft);
+  border-radius: 10px;
+  background: var(--bg);
   border: 1px solid var(--line);
+  animation: fade .24s var(--ease) both;
 }
 .check .st { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.check .nm { display: inline-flex; align-items: center; gap: 7px; }
 .check .st.ok { background: var(--green); }
 .check .st.bad { background: var(--red); }
 .check .nm { font-weight: 550; min-width: 130px; }
@@ -1272,7 +1395,7 @@ body.auto .auto-screen {
   padding: 12px 14px;
   border: 1px solid var(--line);
   border-radius: var(--r);
-  background: var(--bg-soft);
+  background: var(--bg);
   margin-bottom: 20px;
   font-size: 13.5px;
 }
@@ -1357,6 +1480,7 @@ body.auto .auto-screen {
   }
   .spinner { animation-name: pulse !important; }
   .thread { scroll-behavior: auto; }
+  .tip-bubble, .agent-badge .badge-tip { transition: none !important; }
 }
 
 /* -------------------------------------------------------------- mobile */
@@ -1486,12 +1610,12 @@ body.auto .auto-screen {
              calc(10px + env(safe-area-inset-left, 0px));
   }
   .view-slider .stop { padding: 6px 8px; }
-  /* Mobile first: the chat's name comes before the caption under it. The agent
-     is fixed for the life of the chat and is named in the settings popover, so
-     it is the part that goes; the model is the part that can change. */
-  .agent-badge { max-width: 34%; }
-  .agent-badge > .b-agent,
-  .agent-badge > .b-agent + .b-sep { display: none; }
+  /* Mobile first: the chat's name comes before the caption under it. The
+     agent is its mark and the mark stays; the effort is the first thing to
+     go, the model the second, and both are still in the bubble under a tap. */
+  .agent-badge { max-width: 40%; gap: 5px; padding: 0 8px 0 6px; }
+  .agent-badge > .b-effort,
+  .agent-badge > .b-model + .b-sep { display: none; }
 }
 /* Narrower than this the title has room for one letter and an ellipsis that
    does not fit, which reads as a glitch rather than as a name. It keeps its
@@ -1501,10 +1625,10 @@ body.auto .auto-screen {
   .topbar .title { visibility: hidden; }
 }
 @container (max-width: 380px) {
-  /* Narrower still: only the model is left, so the separator before it goes
-     too. */
-  .agent-badge > .b-effort,
-  .agent-badge > .b-model + .b-sep { display: none; }
+  /* Narrower still: only the mark is left, a round badge that opens with a
+     tap. */
+  .agent-badge > .b-model { display: none; }
+  .agent-badge { padding: 0 5px; }
   .topbar {
     gap: 5px;
     padding: 0
@@ -1754,3 +1878,99 @@ body.stale .chat-item .dot { animation: none; opacity: .4; }
   line-height: 1.4;
 }
 .auto-screen.answering .auto-offline { order: 0; }
+
+/* ------------------------------------------------------------ the marks */
+
+/* An agent's logo, inline. It is sized by the script that draws it, so the
+   same mark is a 14px glyph in a chat row and a 30px one over an empty chat.
+   The svg fills it and the span takes the baseline. */
+.agent-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  vertical-align: middle;
+  line-height: 1;
+}
+.agent-mark svg { display: block; width: 100%; height: 100%; }
+/* An id with no mark of its own: a neutral tile and its initial. */
+.agent-mark.generic {
+  border-radius: 30%;
+  background: var(--bg-sunken);
+  color: var(--text-soft);
+  font-size: 60%;
+  font-weight: 650;
+}
+
+/* ---------------------------------------------------------- the tooltip */
+
+/* A small "i" and the detail behind it. The detail is in the page the whole
+   time and drawn only while the mark is hovered, focused or, on a phone,
+   tapped - an "i" a finger cannot open would be decoration. */
+.tip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+.tip-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: help;
+  transition: color .16s var(--ease), background .16s var(--ease);
+  -webkit-tap-highlight-color: transparent;
+}
+.tip-mark svg { width: 14px; height: 14px; display: block; }
+.tip-mark:hover, .tip:focus-within .tip-mark, .tip.open .tip-mark { color: var(--text); background: var(--bg-hover); }
+.tip-mark:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.tip-bubble {
+  position: fixed;
+  top: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: min(320px, calc(100vw - 20px));
+  padding: 7px 10px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: left;
+  width: max-content;
+  /* Everything in the bubble wraps inside it. A path that does not wrap is
+     wider than a phone, and even a hidden bubble that wide is something the
+     page can be scrolled sideways to. */
+  white-space: normal;
+  overflow-wrap: anywhere;
+  box-shadow: var(--shadow);
+  transform: translate(calc(-50% + var(--tip-shift, 0px)), -4px);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .16s var(--ease), transform .16s var(--ease), visibility 0s linear .16s;
+  z-index: 30;
+  pointer-events: none;
+}
+.tip-bubble.mono { font-family: var(--mono); font-size: 11.5px; }
+.tip-bubble .tip-line { display: block; }
+.tip-bubble .agent-facts { display: block; color: inherit; }
+.tip:hover .tip-bubble, .tip:focus-within .tip-bubble, .tip.open .tip-bubble {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(calc(-50% + var(--tip-shift, 0px)), 0);
+  transition-delay: 0s;
+}
+/* A finger cannot hover, so on a phone the "i" is a little bigger to tap. */
+@media (pointer: coarse) {
+  .tip-mark { width: 28px; height: 28px; }
+  .tip-mark svg { width: 15px; height: 15px; }
+}
