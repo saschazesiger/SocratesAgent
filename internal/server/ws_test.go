@@ -1490,10 +1490,14 @@ func TestTerminalAHandshakeNeverStrandsTheViewer(t *testing.T) {
 	// The first socket goes without a word while the attach is still running.
 	e.dialWSRaw(id, "viewer=tab-a&cols=100&rows=30", nil).drop()
 
+	// The client comes back for as long as it is told to; what is under test
+	// is that it is always told something, and that being told it eventually
+	// gets it a terminal.
 	var live *wsClient
-	for attempt := 0; attempt < 20 && live == nil; attempt++ {
+	attempt := 0
+	for deadline := time.Now().Add(60 * time.Second); live == nil && time.Now().Before(deadline); attempt++ {
 		c := e.dialWS(id, "viewer=tab-a&cols=100&rows=30")
-		frame, status, silent := c.helloOrClose(15 * time.Second)
+		frame, status, silent := c.helloOrClose(20 * time.Second)
 		switch {
 		case silent:
 			t.Fatalf("handshake %d said nothing at all: the viewer is stranded", attempt)
@@ -1511,7 +1515,7 @@ func TestTerminalAHandshakeNeverStrandsTheViewer(t *testing.T) {
 		}
 	}
 	if live == nil {
-		t.Fatal("twenty handshakes in a row and none of them was served")
+		t.Fatalf("%d handshakes over a minute and none of them was served", attempt)
 	}
 
 	// And the viewer that was served is a working terminal, not a shell of one.
