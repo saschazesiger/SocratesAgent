@@ -324,7 +324,14 @@ class TermSocket {
 
     // Anchor: what the server says it has written is the truth, and this
     // client's own counter never survives a connect.
-    this.held = this.held.filter((f) => f.seq > ack);
+    //
+    // Only what has been on a wire can have been written. A frame that was
+    // typed while this socket was still shaking hands carries a number from a
+    // counter the server has never seen - after a reload it starts at zero
+    // again - and dropping it because that number is below the server's ack
+    // would throw away, in silence, every keystroke made in the round trip
+    // that `hello` took to arrive.
+    this.held = this.held.filter((f) => !f.sent || f.seq > ack);
     this.inputSeq = ack;
     // From here the counter means what the server means by it, so input may
     // go out again.
@@ -346,10 +353,14 @@ class TermSocket {
         const lines = [];
         let keystrokes = 0;
         for (const held of lost) {
-          if (held.text !== undefined) lines.push(held.text); else keystrokes += 1;
+          if (held.text !== undefined) lines.push(held.text);
+          // The replies to the questions tmux asks on every attach travel the
+          // same path as typed bytes. Counting them would send somebody
+          // looking for six characters they never typed.
+          else if (held.bytes[0] !== 0x1b) keystrokes += 1;
           if (held.onLost) held.onLost();
         }
-        this.onControl({ t: 'input_lost', keystrokes, lines });
+        if (keystrokes || lines.length) this.onControl({ t: 'input_lost', keystrokes, lines });
       }
     }
     // Renumbering is safe because the content is what matters: the numbers

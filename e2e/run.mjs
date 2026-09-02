@@ -1494,14 +1494,19 @@ async function offlinerestart() {
     await s.page.waitForFunction(() => document.body.classList.contains('conn-lost'),
       null, { timeout: 20000 });
 
+    // Both commands write to a file, because the pane cannot be counted on:
+    // a burst delivered into bash is echoed by the tty and then redisplayed by
+    // readline, so one delivery can appear three times on screen. The file is
+    // what the shell actually did.
     const tag = Math.random().toString(36).slice(2, 8);
     await s.page.click('#term .xterm-screen');
     await focusTerm(s.page);
-    await s.page.keyboard.type('echo k-' + tag, { delay: 20 });
+    await s.page.keyboard.type('echo k >> ' + tag + '.txt', { delay: 20 });
     await s.page.keyboard.press('Enter');
-    await s.page.fill('#lineInput', 'echo l-' + tag);
+    await s.page.fill('#lineInput', 'echo l >> ' + tag + '.txt');
     await s.page.click('#sendLine');
     await wait(300);
+
 
     // The server goes away and comes back while the browser cannot see it, so
     // the viewer it knew about is gone: this is the `viewer_fresh` path.
@@ -1529,32 +1534,28 @@ async function offlinerestart() {
     // the server forgot this viewer cannot be told apart from a resend, so
     // they are dropped and said out loud - keystrokes counted in a toast, a
     // composed line handed back to the field. Either outcome is honest; a
-    // keystroke that is neither delivered nor mentioned is not.
+    // keystroke that is neither delivered nor mentioned is not, and neither
+    // may run twice.
     await wait(2500);
-    const outcomeOf = async (marker) => {
-      const text = await screen(s.page);
-      const said = await s.page.evaluate(() => ({
-        toasts: window.__toasts.slice(),
-        field: document.getElementById('lineInput').value,
-      }));
-      return {
-        onScreen: text.split(marker).length - 1,
-        toasts: said.toasts,
-        field: said.field,
-      };
-    };
-    const keys = await outcomeOf('k-' + tag);
-    ok(keys.onScreen === 2
-      || keys.toasts.some((t) => /keystrokes? may not have been delivered/.test(t)),
-      'the keystrokes typed in the outage were delivered, or said to be lost',
-      JSON.stringify({ onScreen: keys.onScreen, toasts: keys.toasts }));
-    const line = await outcomeOf('l-' + tag);
-    ok(line.onScreen === 2 || line.field === 'echo l-' + tag,
-      'and the composed line was delivered, or handed back to the field',
-      JSON.stringify({ onScreen: line.onScreen, field: line.field }));
-    ok(line.onScreen <= 2 && keys.onScreen <= 2,
-      'and neither of them arrived twice',
-      'k=' + keys.onScreen + ' l=' + line.onScreen);
+    await typeLine(s.page, 'echo K=$(grep -c k ' + tag + '.txt) L=$(grep -c l ' + tag + '.txt)');
+    const counted = await s.page.waitForFunction(() => {
+      const rows = document.querySelector('#term .xterm-rows');
+      const found = rows && rows.innerText.match(/K=(\d+) L=(\d+)/);
+      return found ? found[1] + ',' + found[2] : null;
+    }, null, { timeout: 25000 }).then((h) => h.jsonValue()).catch(() => 'no answer');
+    const [ranK, ranL] = String(counted).split(',');
+    const said = await s.page.evaluate(() => ({
+      toasts: window.__toasts.slice(),
+      field: document.getElementById('lineInput').value,
+    }));
+    ok(ranK === '1' || said.toasts.some((t) => /keystrokes? may not have been delivered/.test(t)),
+      'the keystrokes typed in the outage ran once, or were said to be lost',
+      'K=' + ranK + ' toasts=' + JSON.stringify(said.toasts));
+    ok(ranL === '1' || said.field === 'echo l >> ' + tag + '.txt',
+      'and the composed line ran once, or was handed back to the field',
+      'L=' + ranL + ' field=' + JSON.stringify(said.field));
+    ok(ranK !== undefined && Number(ranK) <= 1 && Number(ranL) <= 1,
+      'and neither of them ran twice', 'K=' + ranK + ' L=' + ranL);
 
     // The session is still usable, which is what says the socket that came
     // back is a working one and not merely an open one.
@@ -1564,6 +1565,81 @@ async function offlinerestart() {
       oneLine(await screen(s.page)));
 
     await shot(s.page, 'offlinerestart');
+    ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
+      unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+/* -------------------------------------------------------- 18. latehello */
+
+// A reload does not stop a person typing. The terminal is on screen before the
+// socket has been told `hello`, and on a phone that round trip is not
+// milliseconds - it is the tunnel. Everything typed in that window is held,
+// and the anchor that arrives afterwards must renumber it and send it, not
+// throw it away because the numbers it was given are below the ones the server
+// has already written for this tab.
+async function latehello() {
+  const s = await start({ viewport: { width: 390, height: 844 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+
+    // Type first, so that the server has a `lastInputSeq` well above zero for
+    // this viewer. That is what makes the reload interesting: the counter in
+    // the page starts again at nothing while the server's does not.
+    const tag = Math.random().toString(36).slice(2, 8);
+    await typeLine(s.page, 'echo warm >> ' + tag + '.txt');
+    ok(await awaitScreen(s.page, 'warm'), 'the session has taken input before the reload',
+      oneLine(await screen(s.page)));
+
+    // Every frame the server sends is held back for a second and a half, which
+    // is what a bad line does to a handshake.
+    await s.page.routeWebSocket(/\/ws\?/, (ws) => {
+      const server = ws.connectToServer();
+      ws.onMessage((message) => server.send(message));
+      server.onMessage(async (message) => {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        ws.send(message);
+      });
+    });
+
+    await s.page.reload({ waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    // Before `hello`: the pane is there, the person types, and the socket has
+    // no idea yet what number anything should carry.
+    await s.page.click('#term .xterm-screen');
+    await focusTerm(s.page);
+    await s.page.keyboard.type('echo k >> ' + tag + '.txt', { delay: 10 });
+    await s.page.keyboard.press('Enter');
+    await s.page.fill('#lineInput', 'echo l >> ' + tag + '.txt');
+    await s.page.click('#sendLine');
+
+    await s.page.waitForFunction(() => !document.body.classList.contains('conn-lost'),
+      null, { timeout: 30000 }).catch(() => {});
+    await wait(3000);
+
+    // The shell counts, because the pane echoes a burst more than once.
+    await typeLine(s.page, 'echo K=$(grep -c k ' + tag + '.txt) L=$(grep -c l ' + tag + '.txt)');
+    const counted = await s.page.waitForFunction(() => {
+      const rows = document.querySelector('#term .xterm-rows');
+      const found = rows && rows.innerText.match(/K=(\d+) L=(\d+)/);
+      return found ? found[1] + ',' + found[2] : null;
+    }, null, { timeout: 25000 }).then((h) => h.jsonValue()).catch(() => 'no answer');
+    ok(counted === '1,1', 'what was typed before hello ran, exactly once', String(counted));
+
+    const left = await s.page.evaluate((id) => ({
+      field: document.getElementById('lineInput').value,
+      stored: localStorage.getItem('socrates.term.' + id + '.draft'),
+      toasts: [...document.querySelectorAll('#toasts .toast')].map((n) => n.textContent),
+    }), await s.page.evaluate(() => location.hash.slice(1)));
+    ok(left.field === '' && !left.stored,
+      'and the composed line left nothing behind in the field or in storage',
+      JSON.stringify(left));
+
+    await shot(s.page, 'latehello');
     ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
       unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
   } finally { await s.stop(); }
@@ -1586,6 +1662,7 @@ const ALL = [
   ['sigtermreattach', 'a restarted server reattaches to the pane that kept running', sigtermreattach],
   ['takeover', 'a second tab with the same viewer id takes the pane over', takeover],
   ['offlinerestart', 'a restart during an outage, a wake storm, and nothing lost in silence', offlinerestart],
+  ['latehello', 'what is typed before a late hello is delivered, exactly once', latehello],
   ['adminoptions', 'every harness option round-trips and reaches the command line', adminoptions],
   ['tmuxinstaller', 'the engine card, and an install that streams and survives a reload', tmuxinstaller],
   ['livesession', 'one real session against the real Claude Code CLI', livesession, { live: true }],
