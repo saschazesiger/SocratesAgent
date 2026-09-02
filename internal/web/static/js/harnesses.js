@@ -197,6 +197,39 @@ function pressed(row, value) {
   }
 }
 
+// The value a directory option carries. A preset is a mode and a path, and one
+// string holds both so the dropdown has one value per entry and nothing has to
+// be kept in step beside it.
+const dirValue = (mode, path) => (mode === PRESET ? PRESET + ':' + path : mode);
+
+// dirName is what a preset is called in the list: the name the dashboard gave
+// it, or the last segment of its path. The path itself is the sub-text, so the
+// list reads as places rather than as a column of prefixes.
+function dirName(preset) {
+  if (preset.label) return preset.label;
+  const parts = String(preset.path || '').split('/').filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : preset.path;
+}
+
+// dirItems is the dropdown's view of where a session may work: a fresh
+// directory, every place the dashboard named, and - when the dashboard allows
+// one at all - a path typed by hand.
+function dirItems() {
+  const space = workspace();
+  const items = [{ value: DYNAMIC, label: 'Dynamic', hint: 'a fresh directory for every session' }];
+  for (const preset of space.presets || []) {
+    items.push({ value: dirValue(PRESET, preset.path), label: dirName(preset), hint: preset.path });
+  }
+  if (space.allow_custom) items.push({ value: CUSTOM, label: 'Custom path…' });
+  return items;
+}
+
+// dirLabel is how a chosen directory reads in the closed field.
+function dirLabel(value) {
+  const found = dirItems().find((item) => item.value === value);
+  return found ? found.label : '';
+}
+
 // dynamicPreview is the directory a dynamic session will get, spelled the way
 // internal/harnesses/workdir.go spells it. It is shown greyed under the row so
 // that "Dynamic" is a place and not a promise.
@@ -259,22 +292,27 @@ export async function openNewSessionSheet() {
     harnessRow.append(button);
   }
 
-  // The directory row: Dynamic, one cell per preset the dashboard named, and
-  // Custom… when the dashboard allows a free-form path at all.
+  // Where a session works is a dropdown rather than a row of cells: a machine
+  // with a dozen preset directories on it would otherwise be a dozen cells
+  // three characters wide. It is the same control the model is picked with,
+  // strict because the list is the whole of what the server allows - Dynamic,
+  // every preset, and a path typed by hand where the dashboard permits one.
   dirRow.innerHTML = '';
-  const dynamic = segButton('Dynamic', DYNAMIC, 'a fresh directory');
-  dynamic.addEventListener('click', () => selectDir(DYNAMIC, ''));
-  dirRow.append(dynamic);
-  for (const preset of space.presets || []) {
-    const button = segButton(preset.label || preset.path, PRESET + ':' + preset.path);
-    button.addEventListener('click', () => selectDir(PRESET, preset.path));
-    dirRow.append(button);
-  }
-  if (space.allow_custom) {
-    const custom = segButton('Custom…', CUSTOM);
-    custom.addEventListener('click', () => selectDir(CUSTOM, dirPath.value.trim()));
-    dirRow.append(custom);
-  }
+  const dirPicker = combobox({
+    value: DYNAMIC,
+    strict: true,
+    items: dirItems,
+    display: dirLabel,
+    emptyText: 'No directory matches',
+    onChange: (value) => {
+      if (value === DYNAMIC || value === CUSTOM) {
+        selectDir(value, value === CUSTOM ? dirPath.value.trim() : '');
+        return;
+      }
+      selectDir(PRESET, value.slice(PRESET.length + 1));
+    },
+  });
+  dirRow.append(dirPicker.node);
   dirPath.addEventListener('input', () => {
     if (pick.mode !== CUSTOM) return;
     pick.workdir = dirPath.value.trim();
@@ -302,6 +340,8 @@ export async function openNewSessionSheet() {
   function selectDir(mode, path) {
     pick.mode = mode;
     pick.workdir = mode === DYNAMIC ? '' : path;
+    // Only "Custom path…" has anything left to ask, so it is the only choice
+    // that puts a second field on the sheet.
     dirPath.hidden = mode !== CUSTOM;
     if (mode === CUSTOM) dirPath.focus();
     renderDir();
@@ -309,7 +349,8 @@ export async function openNewSessionSheet() {
   }
 
   function renderDir() {
-    pressed(dirRow, pick.mode === PRESET ? PRESET + ':' + pick.workdir : pick.mode);
+    // `false`: the field is being told what was chosen, not told to choose.
+    dirPicker.setValue(dirValue(pick.mode, pick.workdir), false);
     if (pick.mode === DYNAMIC) dirHint.textContent = dynamicPreview(pick.harness);
     else if (pick.mode === PRESET) dirHint.textContent = pick.workdir;
     else dirHint.textContent = pick.workdir || 'An absolute path on this machine.';

@@ -13,13 +13,24 @@
 <div class="app">
   <aside class="sidebar" id="sidebar">
     <div class="side-head">
-      <div class="brand">
-        <img class="mark" src="/static/img/logo.png" alt="" width="24" height="24">
-        Socrates
+      <!-- The name of the thing, and the one control that takes the column
+           down to a rail. On a phone the sidebar is already a drawer, so the
+           control is not there at all. -->
+      <div class="brand-row">
+        <div class="brand">
+          <img class="mark" src="/static/img/logo.png" alt="" width="24" height="24">
+          <span class="brand-name">Socrates</span>
+        </div>
+        <button class="icon-btn side-toggle" id="sideCollapse" type="button"
+                title="Collapse the sidebar" aria-label="Collapse the sidebar"
+                aria-expanded="true" aria-controls="sidebar">
+          <svg class="ico-wide" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M16.5 9.5L14 12l2.5 2.5"/></svg>
+          <svg class="ico-rail" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M14 9.5L16.5 12 14 14.5"/></svg>
+        </button>
       </div>
-      <button class="btn new-chat" id="newSession">
+      <button class="btn new-chat" id="newSession" title="New session">
         <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-        New session
+        <span class="btn-label">New session</span>
       </button>
       <!-- Archived sessions stay out of the way until they are asked for. -->
       <div class="scope" id="sessionScope" role="group" aria-label="Which sessions to show">
@@ -33,13 +44,13 @@
          throttled so a busy machine does not talk over itself. -->
     <div class="sr-only" id="activityLive" role="status" aria-live="polite"></div>
     <div class="side-foot">
-      <a class="btn" href="/admin">
+      <a class="btn" href="/admin" title="Admin">
         <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 9 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></svg>
-        Admin
+        <span class="btn-label">Admin</span>
       </a>
-      <button class="btn" id="logout">
+      <button class="btn" id="logout" title="Sign out">
         <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
-        Sign out
+        <span class="btn-label">Sign out</span>
       </button>
     </div>
   </aside>
@@ -145,7 +156,7 @@
   <div class="seg-row agents" id="nsHarness" role="group" aria-label="Harness"></div>
   <div class="field" id="nsDirField">
     <label>Working directory</label>
-    <div class="seg-row" id="nsDir" role="group" aria-label="Working directory"></div>
+    <div id="nsDir"></div>
     <input class="input mono" type="text" id="nsDirPath" spellcheck="false" hidden
            autocorrect="off" autocapitalize="none" placeholder="/srv/projects/socrates">
     <div class="hint mono" id="nsDirHint"></div>

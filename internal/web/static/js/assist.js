@@ -16,7 +16,11 @@ import { speak, stopSpeaking, onSpeechError } from './voice.js';
 import { mountChat } from './chat.js';
 
 // How long a finished status or a finished run keeps the ticker before it goes
-// back to whatever is true underneath. Long enough to read one line.
+// back to whatever is true underneath. Long enough to read one line, and the
+// same number as NOTICE_LINGER in session.js on purpose: the notice and the
+// ticker are two lines stacked over the same pane, and one rhythm is easier to
+// live with than two. A line that is still true - a run taking a step - is not
+// on a timer at all; it goes when it stops being true.
 const TICKER_LINGER = 6000;
 
 // How long a leaving line is given to leave. It is the CSS transition plus a
