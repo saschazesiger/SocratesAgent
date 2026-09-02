@@ -290,9 +290,13 @@ func (m *Manager) Close() error {
 // Spec is a request for a new session: the row it becomes and the plan that
 // starts it.
 type Spec struct {
-	ID          string
-	ClientID    string
-	Title       string
+	ID       string
+	ClientID string
+	Title    string
+	// TitleSource is store.TitleUser when the browser sent a name of its own,
+	// and empty for the placeholder this package would have made up. It is
+	// what tells the automatic title which sessions are still nameless.
+	TitleSource string
 	Harness     string
 	Model       string
 	Effort      string
@@ -350,6 +354,7 @@ func (m *Manager) Create(ctx context.Context, spec Spec) (*store.Session, error)
 		ID:              spec.ID,
 		ClientID:        spec.ClientID,
 		Title:           spec.Title,
+		TitleSource:     spec.TitleSource,
 		Harness:         spec.Harness,
 		Model:           spec.Model,
 		Effort:          spec.Effort,

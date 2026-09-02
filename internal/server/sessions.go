@@ -203,6 +203,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		ID:          id,
 		ClientID:    strings.TrimSpace(body.ClientID),
 		Title:       sessionTitle(body.Title, h.Label(), workdir, mode),
+		TitleSource: titleSource(body.Title),
 		Harness:     harnessID,
 		Model:       strings.TrimSpace(body.Model),
 		Effort:      strings.TrimSpace(body.Effort),
@@ -268,6 +269,16 @@ func sessionTitle(title, label, workdir, mode string) string {
 		return label + " · " + time.Now().Format("2 Jan 15:04")
 	}
 	return label + " · " + filepath.Base(workdir)
+}
+
+// titleSource records whether the name came from the person creating the
+// session. A name they typed is theirs, and the automatic title leaves it
+// alone for the life of the session.
+func titleSource(title string) string {
+	if strings.TrimSpace(title) != "" {
+		return store.TitleUser
+	}
+	return ""
 }
 
 // session loads the row a request names, and answers 404 itself when there is
@@ -345,6 +356,9 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	// A run typing into a pane that is being torn down is the one way the
 	// operator could do something nobody asked for.
 	s.agents.cancel(row.ID, "the session was deleted")
+	// And a title run writing into a row that is being removed is the same
+	// kind of nothing-good.
+	s.titles.forget(row.ID)
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	if err := s.manager.Delete(ctx, row.ID); err != nil {

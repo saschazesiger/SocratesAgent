@@ -25,8 +25,10 @@ var ErrNotFound = errors.New("not found")
 
 // SchemaVersion is the shape of the database this build understands. Version 3
 // is the terminal harness: sessions are tmux sessions, and the chat transcript
-// tables of versions 1 and 2 are gone.
-const SchemaVersion = 3
+// tables of versions 1 and 2 are gone. Version 4 adds title_source, which
+// records who named a session and is what keeps the automatic title from
+// running twice or overwriting a name the user chose.
+const SchemaVersion = 4
 
 // Store wraps the database handle.
 type Store struct {
@@ -54,6 +56,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   id             TEXT PRIMARY KEY,
   client_id      TEXT NOT NULL DEFAULT '',
   title          TEXT NOT NULL DEFAULT '',
+  title_source   TEXT NOT NULL DEFAULT '',
   harness        TEXT NOT NULL,
   model          TEXT NOT NULL DEFAULT '',
   effort         TEXT NOT NULL DEFAULT '',
@@ -209,6 +212,11 @@ func migrate(db *sql.DB, path string) error {
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("create schema: %w", err)
 	}
+	// CREATE TABLE IF NOT EXISTS does nothing to a table that is already
+	// there, so a column added to an existing table has to be added by hand.
+	if err := addSessionColumns(db); err != nil {
+		return err
+	}
 	// PRAGMA takes no bound parameters, and the value is a constant.
 	if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, SchemaVersion)); err != nil {
 		return fmt.Errorf("write schema version: %w", err)
@@ -353,6 +361,45 @@ func backup(db *sql.DB, path string) error {
 	}
 	log.Printf("store: migrating to schema %d; the previous database was copied to %s", SchemaVersion, dest)
 	return nil
+}
+
+// addSessionColumns brings a sessions table from an older build up to the
+// current shape. Every column here is added with a default, so an existing row
+// is complete the moment the statement returns.
+func addSessionColumns(db *sql.DB) error {
+	for _, col := range [][2]string{
+		{"title_source", `TEXT NOT NULL DEFAULT ''`},
+	} {
+		has, err := hasColumn(db, "sessions", col[0])
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN ` + col[0] + ` ` + col[1]); err != nil {
+			return fmt.Errorf("add sessions.%s: %w", col[0], err)
+		}
+	}
+	return nil
+}
+
+func hasColumn(db *sql.DB, table, column string) (bool, error) {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, rows.Err()
+		}
+	}
+	return false, rows.Err()
 }
 
 func hasTable(db *sql.DB, name string) (bool, error) {

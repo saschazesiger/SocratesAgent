@@ -715,3 +715,94 @@ func TestAStaleBackupIsReplaced(t *testing.T) {
 		t.Fatalf("the stale file was not replaced by a database: %v", err)
 	}
 }
+
+// Who named a session is persisted, because "name it once" has to mean once
+// for the life of the session and not once per server process.
+func TestSessionTitleSourceSurvivesAReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "socrates.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateSession(newSession("a1")); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.GetSession("a1"); got.TitleSource != "" {
+		t.Fatalf("a session created without a name of its own is already claimed by %q", got.TitleSource)
+	}
+	if err := st.SetAutoSessionTitle("a1", "Refactoring the parser tests"); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	again, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer again.Close()
+	got, err := again.GetSession("a1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != "Refactoring the parser tests" || got.TitleSource != TitleAuto {
+		t.Fatalf("after a restart the session is %q, named by %q", got.Title, got.TitleSource)
+	}
+
+	// And a rename is the person taking the name for good.
+	if err := again.UpdateSessionTitle("a1", "Mine"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := again.GetSession("a1"); got.TitleSource != TitleUser {
+		t.Fatalf("after a rename the name belongs to %q", got.TitleSource)
+	}
+}
+
+// A database from an older build has no title_source column, and opening it
+// has to add one rather than fail or lose the sessions in it.
+func TestMigrateAddsTheTitleSource(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "socrates.db")
+	old, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Exec(`CREATE TABLE sessions (
+	  id TEXT PRIMARY KEY, client_id TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '',
+	  harness TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', effort TEXT NOT NULL DEFAULT '',
+	  workdir TEXT NOT NULL, workdir_mode TEXT NOT NULL, options TEXT NOT NULL DEFAULT '{}',
+	  tmux_name TEXT NOT NULL DEFAULT '', cli_session_id TEXT NOT NULL DEFAULT '',
+	  cli_session_state TEXT NOT NULL DEFAULT 'none', state TEXT NOT NULL DEFAULT 'starting',
+	  exit_status INTEGER NOT NULL DEFAULT -1, fail_reason TEXT NOT NULL DEFAULT '',
+	  resumed INTEGER NOT NULL DEFAULT 0, resume_count INTEGER NOT NULL DEFAULT 0,
+	  cols INTEGER NOT NULL DEFAULT 120, rows INTEGER NOT NULL DEFAULT 40,
+	  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+	  last_attached INTEGER NOT NULL DEFAULT 0, archived_at INTEGER NOT NULL DEFAULT 0)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Exec(`INSERT INTO sessions(id, harness, workdir, workdir_mode, created_at, updated_at)
+		VALUES('a1', 'claude', '/srv/repo', 'preset', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Exec(`PRAGMA user_version = 3`); err != nil {
+		t.Fatal(err)
+	}
+	old.Close()
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("opening a schema 3 database: %v", err)
+	}
+	defer st.Close()
+	got, err := st.GetSession("a1")
+	if err != nil {
+		t.Fatalf("the session did not survive the migration: %v", err)
+	}
+	if got.TitleSource != "" {
+		t.Fatalf("the migrated session is named by %q", got.TitleSource)
+	}
+	if err := st.SetAutoSessionTitle("a1", "A name"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.GetSession("a1"); got.TitleSource != TitleAuto {
+		t.Fatalf("the migrated column does not take a value: %#v", got)
+	}
+}

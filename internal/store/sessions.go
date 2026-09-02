@@ -64,9 +64,15 @@ type Session struct {
 	// that drops halfway.
 	ClientID string `json:"client_id,omitempty"`
 	Title    string `json:"title"`
-	Harness  string `json:"harness"`
-	Model    string `json:"model,omitempty"`
-	Effort   string `json:"effort,omitempty"`
+	// TitleSource says who the name came from: TitleUser for a name a person
+	// typed or a rename, TitleAuto once Socrates has had its one go at naming
+	// the session, empty for the placeholder a session is created with. It is
+	// persisted because "name it once, and never over a name the user chose"
+	// has to survive a restart.
+	TitleSource string `json:"title_source,omitempty"`
+	Harness     string `json:"harness"`
+	Model       string `json:"model,omitempty"`
+	Effort      string `json:"effort,omitempty"`
 	// Workdir is always an absolute path, and WorkdirMode records how it was
 	// arrived at, because a dynamic directory is ours to create and a custom
 	// one is not.
@@ -105,7 +111,15 @@ type Session struct {
 	ArchivedAt int64 `json:"-"`
 }
 
-const sessionCols = `id, client_id, title, harness, model, effort, workdir, workdir_mode,
+// Where a session's name came from. The empty string is the third value: a
+// session still carrying the placeholder it was created with, which is the
+// only kind the automatic title may replace.
+const (
+	TitleUser = "user"
+	TitleAuto = "auto"
+)
+
+const sessionCols = `id, client_id, title, title_source, harness, model, effort, workdir, workdir_mode,
                      options, tmux_name, cli_session_id, cli_session_state, state, exit_status,
                      fail_reason, resumed, resume_count, cols, rows,
                      created_at, updated_at, last_attached, archived_at`
@@ -114,7 +128,7 @@ func scanSession(row interface{ Scan(...any) error }) (*Session, error) {
 	s := &Session{}
 	var options string
 	var resumed int
-	err := row.Scan(&s.ID, &s.ClientID, &s.Title, &s.Harness, &s.Model, &s.Effort,
+	err := row.Scan(&s.ID, &s.ClientID, &s.Title, &s.TitleSource, &s.Harness, &s.Model, &s.Effort,
 		&s.Workdir, &s.WorkdirMode, &options, &s.TmuxName, &s.CLISessionID, &s.CLISessionState,
 		&s.State, &s.ExitStatus, &s.FailReason, &resumed, &s.ResumeCount, &s.Cols, &s.Rows,
 		&s.CreatedAt, &s.UpdatedAt, &s.LastAttached, &s.ArchivedAt)
@@ -173,8 +187,8 @@ func (s *Store) CreateSession(sess *Session) error {
 	}
 	sess.Options = json.RawMessage(options)
 	_, err := s.db.Exec(`INSERT INTO sessions(`+sessionCols+`)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sess.ID, sess.ClientID, sess.Title, sess.Harness, sess.Model, sess.Effort,
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sess.ID, sess.ClientID, sess.Title, sess.TitleSource, sess.Harness, sess.Model, sess.Effort,
 		sess.Workdir, sess.WorkdirMode, options, sess.TmuxName, sess.CLISessionID,
 		sess.CLISessionState, sess.State, sess.ExitStatus, sess.FailReason, 0,
 		sess.ResumeCount, sess.Cols, sess.Rows, sess.CreatedAt, sess.UpdatedAt, 0, 0)
@@ -258,9 +272,24 @@ func (s *Store) update(id, query string, args ...any) error {
 	return nil
 }
 
-// UpdateSessionTitle renames a session.
+// UpdateSessionTitle renames a session. A rename is a person naming it, so it
+// also closes the door on the automatic title: a name somebody typed is never
+// replaced by one a model wrote.
 func (s *Store) UpdateSessionTitle(id, title string) error {
-	return s.update(id, `title = ?`, title)
+	return s.update(id, `title = ?, title_source = ?`, title, TitleUser)
+}
+
+// SetAutoSessionTitle records the name the title run came up with, and marks
+// the session as named so the run never happens again.
+func (s *Store) SetAutoSessionTitle(id, title string) error {
+	return s.update(id, `title = ?, title_source = ?`, title, TitleAuto)
+}
+
+// MarkSessionTitled records that the one automatic naming has happened, for a
+// run that produced nothing usable. Without it a model that answers with an
+// empty string would be asked again on every later turn.
+func (s *Store) MarkSessionTitled(id string) error {
+	return s.update(id, `title_source = ?`, TitleAuto)
 }
 
 // SetSessionState records where a session is in its life. The exit status and
