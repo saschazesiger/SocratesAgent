@@ -10,8 +10,11 @@
 
 import {
   start, setup, shot, ok, scenario, skipScenario, finish, ensureNav, wait,
-  PASSWORD, LIVE,
+  readFakeLog, PASSWORD, LIVE,
 } from './harness.mjs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // A browser that has been switched offline reports its own failed requests.
 // They are the point of the scenarios that do it, not a defect in the page.
@@ -583,6 +586,251 @@ async function livesession() {
   } finally { await s.stop(); }
 }
 
+/* ------------------------------------------------------- 10. adminoptions */
+
+// One option in every group of every harness, plus a preset directory: set it
+// in the page, save, reload, and find it all still there - then start a
+// session and read the flags the launcher actually built out of FAKE_LOG.
+//
+// The controls are addressed by the id the dashboard derives from the storage
+// key, `opt-<harness>-<key>`, which is what makes this a table rather than a
+// hundred lines of clicking.
+const ADMIN_OPTIONS = [
+  // shell: Session, Advanced (raw)
+  ['shell', 'login', 'switch', false],
+  ['shell', 'extra_args', 'text', '-x'],
+  // claude: every group it has
+  ['claude', 'default_effort', 'select', 'high'],
+  ['claude', 'autocompact', 'text', '200k'],
+  ['claude', 'permission_mode', 'select', 'plan'],
+  ['claude', 'allowed_tools', 'text', 'Read, Write'],
+  ['claude', 'remote_control_prefix', 'text', 'socrates-'],
+  ['claude', 'agent', 'text', 'reviewer'],
+  ['claude', 'strict_mcp_config', 'switch', true],
+  ['claude', 'disable_mouse', 'switch', true],
+  ['claude', 'verbose', 'switch', true],
+  ['claude', 'settings_overrides', 'text', '{"env":{"SOCRATES_E2E":"1"}}'],
+  // codex: every group it has
+  ['codex', 'default_effort', 'select', 'xhigh'],
+  ['codex', 'sandbox', 'select', 'read-only'],
+  ['codex', 'remote_auth_token_env', 'text', 'CODEX_TOKEN'],
+  ['codex', 'web_search', 'switch', true],
+  ['codex', 'tui_theme', 'select', 'ocean-light'],
+  ['codex', 'config_overrides', 'text', 'tools.web_search=true'],
+  // opencode: every group it has
+  ['opencode', 'small_model', 'text', 'openai/gpt-5-mini'],
+  ['opencode', 'permission_json', 'text', '{"*":"ask"}'],
+  ['opencode', 'enabled_providers', 'text', 'anthropic'],
+  ['opencode', 'pure', 'switch', true],
+  ['opencode', 'share', 'select', 'manual'],
+  ['opencode', 'tui_theme', 'select', 'nord'],
+  ['opencode', 'log_level', 'select', 'WARN'],
+  ['opencode', 'config_content', 'text', '{"theme":"nord"}'],
+];
+
+// Every disclosure is opened first: a control inside a shut <details> is not
+// something a person could type into either.
+const openGroups = (page) => page.$$eval('details.group', (nodes) => {
+  for (const node of nodes) node.open = true;
+});
+
+async function setOption(page, [harness, key, kind, value]) {
+  const selector = '#opt-' + harness + '-' + key;
+  if (kind === 'switch') {
+    // The checkbox itself is invisible by design - the switch a person sees
+    // and taps is the track beside it - so that is what is clicked.
+    if (await page.$eval(selector, (n) => n.checked) !== value) {
+      await page.click(selector + ' + .track');
+    }
+    return;
+  }
+  if (kind === 'select') {
+    await page.selectOption(selector, value);
+    return;
+  }
+  await page.fill(selector, value);
+}
+
+async function readOption(page, [harness, key, kind]) {
+  const selector = '#opt-' + harness + '-' + key;
+  if (kind === 'switch') return page.$eval(selector, (n) => n.checked);
+  return page.$eval(selector, (n) => n.value);
+}
+
+async function adminoptions() {
+  const s = await start({ viewport: { width: 1280, height: 900 } });
+  try {
+    await setup(s.page, s.url);
+    const preset = join(s.data, 'preset-dir');
+    mkdirSync(preset, { recursive: true });
+
+    await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#harness-opencode', { timeout: 20000 });
+    await openGroups(s.page);
+
+    for (const option of ADMIN_OPTIONS) await setOption(s.page, option);
+
+    // The preset row, typed the way a person types it.
+    await s.page.click('#presetAdd');
+    const row = '#presetDirs .preset-row:last-child';
+    await s.page.fill(row + ' input:nth-child(1)', 'Projects');
+    await s.page.fill(row + ' input:nth-child(2)', preset);
+    await s.page.selectOption('#windowSize', 'largest');
+    await s.page.fill('#historyLimit', '31000');
+
+    await s.page.click('#saveTop');
+    await s.page.waitForSelector('.toast', { timeout: 15000 });
+    await wait(400);
+    await shot(s.page, 'admin-options');
+
+    // The reload is the assertion: everything above has to come back out of
+    // the database and into the same controls.
+    await s.page.reload({ waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#harness-opencode', { timeout: 20000 });
+    await openGroups(s.page);
+
+    const wrong = [];
+    for (const option of ADMIN_OPTIONS) {
+      const got = await readOption(s.page, option);
+      const want = option[2] === 'text' ? String(option[3]) : option[3];
+      // A text list is stored as a list and shown joined, so "Read, Write"
+      // comes back as "Read, Write" and not as what was typed character for
+      // character. Comparing without the spaces is the honest test.
+      const same = String(got).replace(/\s/g, '') === String(want).replace(/\s/g, '');
+      if (!same) wrong.push(option[0] + '.' + option[1] + '=' + got + ' (want ' + want + ')');
+    }
+    ok(wrong.length === 0, 'every option in every group survived a save and a reload',
+      wrong.join(' | ') || ADMIN_OPTIONS.length + ' options');
+
+    const terminal = await s.page.evaluate(() => ({
+      windowSize: document.getElementById('windowSize').value,
+      history: document.getElementById('historyLimit').value,
+      preset: document.querySelector('#presetDirs .preset-row input:nth-child(2)')?.value || '',
+    }));
+    ok(terminal.windowSize === 'largest' && terminal.history === '31000',
+      'the terminal card round-trips too', JSON.stringify(terminal));
+    ok(terminal.preset === preset, 'the preset directory was stored', terminal.preset);
+
+    // The sheet is where a preset is used, so that is where it is checked.
+    await s.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#newSession', { timeout: 15000 });
+    await ensureNav(s.page);
+    await s.page.click('#newSession');
+    await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    const cell = '#nsDir .seg[data-value="preset:' + preset + '"]';
+    const offered = await s.page.$(cell);
+    ok(!!offered, 'the new-session sheet offers the preset directory', cell);
+    if (offered) await s.page.click(cell);
+    await s.page.click('#nsHarness .seg[data-value="claude"]');
+    await s.page.click('#nsStart');
+    await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
+    await s.page.waitForFunction(() => location.hash.length > 1, null, { timeout: 30000 });
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+
+    const launches = readFakeLog(s.data).filter((entry) => entry.name === 'claude');
+    const launch = launches[launches.length - 1] || { argv: [], env: {}, cwd: '' };
+    const argv = (launch.argv || []).join(' ');
+    const flags = [
+      // Not --effort: the sheet offers a model and an effort of its own, and
+      // the launcher is meant to prefer what the session was started with.
+      ['--autocompact 200k', argv.includes('--autocompact 200k')],
+      ['--permission-mode plan', argv.includes('--permission-mode plan')],
+      ['--allowedTools Read,Write', argv.includes('--allowedTools Read,Write')],
+      ['--agent reviewer', argv.includes('--agent reviewer')],
+      ['--strict-mcp-config', argv.includes('--strict-mcp-config')],
+      ['--verbose', argv.includes('--verbose')],
+    ];
+    const missing = flags.filter(([, present]) => !present).map(([flag]) => flag);
+    ok(missing.length === 0, 'the saved options reached the command line',
+      missing.join(', ') || argv.slice(0, 220));
+    ok((launch.env || {}).CLAUDE_CODE_DISABLE_MOUSE === '1',
+      'and a switch that is an environment variable reached the environment',
+      String((launch.env || {}).CLAUDE_CODE_DISABLE_MOUSE));
+    ok((launch.env || {}).CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX === 'socrates-',
+      'as did the one that is a prefix',
+      String((launch.env || {}).CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX));
+    ok(launch.cwd === preset, 'the session was started in the preset directory', launch.cwd);
+
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+/* ------------------------------------------------------ 11. tmuxinstaller */
+
+// The engine card against a machine that has the wrong tmux and a package
+// manager that only pretends. Nothing is installed: `tmux` on this run's PATH
+// is a script that says 3.2a, and `apt-get` is a script that prints what
+// apt-get prints and exits.
+function stubMachine() {
+  const dir = mkdtempSync(join(tmpdir(), 'socrates-e2e-stub-'));
+  writeFileSync(join(dir, 'tmux'), '#!/bin/sh\necho "tmux 3.2a"\n', { mode: 0o755 });
+  writeFileSync(join(dir, 'apt-get'), `#!/bin/sh
+if [ "$1" = "update" ]; then
+  echo "Reading package lists..."
+  exit 0
+fi
+echo "Setting up tmux (3.6a-2) ..."
+echo "Processing triggers for ncurses-term ..."
+exit 0
+`, { mode: 0o755 });
+  return dir;
+}
+
+async function tmuxinstaller() {
+  const stub = stubMachine();
+  const s = await start({
+    viewport: { width: 1280, height: 900 },
+    env: { PATH: stub + ':' + process.env.PATH },
+  });
+  try {
+    await setup(s.page, s.url);
+    await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#tmuxCard .state-label', { timeout: 20000 });
+    await s.page.waitForFunction(
+      () => !/Loading/.test(document.querySelector('#tmuxStatus .state-label').textContent),
+      null, { timeout: 15000 });
+
+    const card = await s.page.evaluate(() => ({
+      dot: document.querySelector('#tmuxStatus .state-dot').className,
+      label: document.querySelector('#tmuxStatus .state-label').textContent,
+      detail: document.querySelector('#tmuxStatus').textContent,
+      install: document.getElementById('tmuxInstall').hidden
+        ? '' : document.getElementById('tmuxInstall').textContent,
+    }));
+    // The checklist item: 3.2a is amber and "too old", never green and "ok".
+    ok(/\bold\b/.test(card.dot) && /too old/.test(card.label),
+      'tmux 3.2a is reported as too old, not as ok', card.dot + ' · ' + card.label);
+    ok(card.detail.includes('3.2a') && card.detail.includes('3.3'),
+      'the card shows the version it found and the one it needs', oneLine(card.detail));
+    ok(card.install.includes('apt-get'), 'and it offers the package manager it found', card.install);
+
+    await shot(s.page, 'tmux-card');
+    await s.page.click('#tmuxInstall');
+    // The output arrives over the event stream, line by line.
+    await s.page.waitForFunction(
+      () => /Setting up tmux/.test(document.getElementById('tmuxLog').textContent),
+      null, { timeout: 30000 });
+    const streamed = await s.page.$eval('#tmuxLog', (n) => n.textContent);
+    ok(streamed.includes('apt-get update') && streamed.includes('Reading package lists'),
+      'the installer streamed its output into the page', oneLine(streamed));
+
+    // And it survives the page being thrown away, because it is in the
+    // database and not only in the tab that watched it.
+    await s.page.reload({ waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#tmuxLogToggle:not([hidden])', { timeout: 20000 });
+    await s.page.click('#tmuxLogToggle');
+    await s.page.waitForFunction(
+      () => /Setting up tmux/.test(document.getElementById('tmuxLog').textContent),
+      null, { timeout: 15000 });
+    const kept = await s.page.$eval('#tmuxLog', (n) => n.textContent);
+    ok(kept.includes('Setting up tmux'), 'and it is still there after a reload', oneLine(kept));
+
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 // -------------------------------------------------------------------- run
 
 const ALL = [
@@ -594,6 +842,8 @@ const ALL = [
   ['sessionlist', 'rename, archive, unarchive and delete', sessionlist],
   ['exitoverlay', 'a pane that ends, its status behind the "i", and Restart', exitoverlay],
   ['webglrenders', 'the shipped renderer paints the terminal', webglrenders],
+  ['adminoptions', 'every harness option round-trips and reaches the command line', adminoptions],
+  ['tmuxinstaller', 'the engine card, and an install that streams and survives a reload', tmuxinstaller],
   ['livesession', 'one real session against the real Claude Code CLI', livesession, { live: true }],
 ];
 

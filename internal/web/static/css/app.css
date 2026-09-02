@@ -1489,3 +1489,104 @@ body.stale .chat-item .dot { animation: none; opacity: .4; }
   .tip-mark { width: 28px; height: 28px; }
   .tip-mark svg { width: 15px; height: 15px; }
 }
+
+/* ------------------------------------------------------- admin: the engine,
+   the harness cards and the option groups. Everything here belongs to
+   admin.html alone; the terminal above is untouched. */
+
+.engine-status {
+  display: flex;
+  align-items: center;
+  gap: 10px 14px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--bg);
+  margin-bottom: 12px;
+  font-size: 13.5px;
+}
+.engine-status .state-label { font-weight: 550; }
+.engine-status .sep { color: var(--line-strong); }
+.engine-status .muted { color: var(--text-faint); font-family: var(--mono); font-size: 12.5px; }
+/* The three states of tmux, in the three colours the rest of the app already
+   uses for them: ready, old enough to be a problem, and not there at all. */
+.state-dot.ok { background: var(--green); }
+.state-dot.old { background: var(--amber); }
+.state-dot.missing { background: var(--red); }
+
+/* A preset is a name and a path, side by side on a desk and stacked on a
+   phone, with the button that removes it at the end of the row. */
+.preset-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.preset-row .input { margin: 0; }
+
+/* One card per program. It is a card like every other one - hairlines, no
+   box - and its head is the mark, the name and the switch that offers it. */
+.harness-card.missing { opacity: .65; }
+.harness-card.missing .agent-mark { filter: grayscale(1); }
+.harness-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.harness-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+}
+
+/* An option group is a disclosure: shut, a harness card is four lines; open,
+   it is everything §C.9-C.12 offers. */
+details.group {
+  border-top: 1px solid var(--line);
+  padding: 2px 0;
+}
+details.group > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 11px 0;
+  font-size: 13.5px;
+  font-weight: 550;
+  color: var(--text-soft);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+details.group > summary::-webkit-details-marker { display: none; }
+details.group > summary::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform .16s var(--ease);
+  flex: none;
+}
+details.group[open] > summary::before { transform: rotate(45deg); }
+details.group > summary:hover { color: var(--text); }
+.group-body { padding: 4px 0 10px; }
+.group-body > .field:last-child { margin-bottom: 6px; }
+
+/* An option that only means something while another switch is on is greyed
+   rather than hidden: hiding it would make the setting unfindable. */
+.field.option.disabled { opacity: .45; }
+.field.option .hint.bad { color: var(--red); margin-top: 6px; }
+.field.option .textarea { min-height: 76px; }
+.multi { display: flex; flex-wrap: wrap; gap: 10px 20px; }
+.hint.start-only { margin-top: 12px; color: var(--text-faint); }
+
+@media (max-width: 700px) {
+  .preset-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .preset-row .input:first-child { grid-column: 1 / -1; }
+}

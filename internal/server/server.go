@@ -48,6 +48,11 @@ type Server struct {
 	pingTimeout  time.Duration
 	writeTimeout time.Duration
 
+	// tmuxAdmin is the terminal engine card of the dashboard: the detection
+	// behind /api/tmux and the install it streams. Its zero value is a server
+	// that has installed nothing, so it needs nothing from New.
+	tmuxAdmin tmuxAdmin
+
 	mu       sync.RWMutex
 	settings config.Settings
 
@@ -299,6 +304,11 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/settings/password", s.auth(s.handleChangePassword))
 	mux.HandleFunc("GET /api/preferences", s.auth(s.handlePreferences))
 	mux.HandleFunc("POST /api/diagnostics", s.auth(s.handleDiagnostics))
+
+	// The terminal engine: is tmux here, and the install that puts it there.
+	mux.HandleFunc("GET /api/tmux", s.auth(s.handleTmux))
+	mux.HandleFunc("POST /api/tmux/install", s.auth(s.handleTmuxInstall))
+	mux.HandleFunc("GET /api/tmux/events", s.auth(s.handleTmuxEvents))
 
 	// Cloudflare tunnel
 	mux.HandleFunc("GET /api/tunnel", s.auth(s.handleTunnelStatus))

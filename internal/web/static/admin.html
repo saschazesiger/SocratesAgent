@@ -13,7 +13,7 @@
   <header class="admin-top">
     <a class="btn sm" href="/">
       <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-      Chat
+      Sessions
     </a>
     <div class="title">Admin</div>
     <span id="savedHint" style="font-size:13px;color:var(--text-faint)"></span>
@@ -23,50 +23,98 @@
   <div class="admin-wrap">
     <div class="notice" id="notice"></div>
 
-    <section class="card">
-      <h2>OpenRouter</h2>
-      <p class="card-sub">Everything Socrates thinks with runs on OpenRouter — answering, transcription and titles. The key is stored in your local database.</p>
-      <div class="field">
-        <label for="orKey">API key</label>
-        <input class="input mono" type="password" id="orKey" placeholder="sk-or-v1-…" autocomplete="off">
-        <div class="hint">Create one at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a>.</div>
+    <section class="card" id="tmuxCard">
+      <h2>Terminal engine</h2>
+      <p class="card-sub">Socrates keeps every session inside tmux, which is what lets a terminal outlive the browser, the phone and Socrates itself. It is not optional and there is no fallback.</p>
+      <div class="engine-status" id="tmuxStatus">
+        <span class="state-dot"></span>
+        <span class="state-label">Loading…</span>
       </div>
-      <div class="grid-2">
-        <div class="field">
-          <label>Transcription model</label>
-          <div id="orTranscribe"></div>
-          <div class="hint">A dedicated transcriber such as openai/gpt-transcribe or deepgram/nova-3, or a chat model that accepts audio such as google/gemini-2.5-flash.</div>
-        </div>
-        <div class="field">
-          <label>Title model</label>
-          <div id="orTitle"></div>
-          <div class="hint">Small and cheap is enough — it only names chats.</div>
-        </div>
+      <div class="hint" id="tmuxReason"></div>
+      <div class="row" style="flex-wrap:wrap;margin-top:14px">
+        <button class="btn sm primary" id="tmuxInstall" type="button" hidden>Install tmux</button>
+        <button class="btn sm ghost" id="tmuxLogToggle" type="button" hidden>Show output</button>
       </div>
-      <div class="hint" id="modelsHint">Loading the model list from OpenRouter…</div>
-    </section>
-
-    <section class="card">
-      <h2>Agents</h2>
-      <p class="card-sub">The coding agents Socrates can hand a chat to. Each one has to be installed and signed in on this machine; Socrates only starts it and reads what it says back.</p>
-      <div class="agents-list" id="agentsList">
-        <div class="hint">Asking this machine which agents are installed…</div>
+      <pre class="log" id="tmuxLog" hidden></pre>
+      <div class="field" id="tmuxManualField" hidden style="margin-top:16px">
+        <label for="tmuxManual">Install it yourself</label>
+        <input class="input mono" type="text" id="tmuxManual" readonly spellcheck="false">
+        <div class="hint">Run this in a terminal on this machine, then reload this page.</div>
       </div>
     </section>
 
-    <section class="card">
+    <section class="card" id="workspaceCard">
       <h2>Workspace</h2>
-      <p class="card-sub">Where a chat works when it was not pointed somewhere else.</p>
+      <p class="card-sub">Where a session works, which program it starts on, and the directories the new-session sheet offers by name.</p>
       <div class="field">
         <label for="workspaceRoot">Workspace root</label>
         <input class="input mono" type="text" id="workspaceRoot" spellcheck="false">
-        <div class="hint">Every chat gets its own folder below this path. A chat can be pinned to another directory from the chat itself.</div>
+        <div class="hint">An absolute path. A session with a dynamic directory gets its own folder below this one.</div>
+      </div>
+      <div class="field">
+        <label>Default program</label>
+        <div class="seg-row agents" id="defaultHarness"></div>
+        <div class="hint">What the new-session sheet opens on.</div>
+      </div>
+      <div class="field">
+        <label class="switch"><input type="checkbox" id="allowCustomDir"><span class="track"></span><span>Allow a typed-in directory</span></label>
+        <div class="hint">With it off the sheet offers only the workspace root and the presets below — which is what you want on a machine published through a tunnel.</div>
+      </div>
+      <div class="field">
+        <label>Preset directories</label>
+        <div id="presetDirs"></div>
+        <button class="btn sm" id="presetAdd" type="button">Add a directory</button>
+        <div class="hint">Each one becomes a button in the new-session sheet. A path that is not there yet is saved with a warning, because a mount may simply be down.</div>
       </div>
     </section>
 
-    <section class="card">
+    <section class="card" id="terminalCard">
+      <h2>Terminal behaviour</h2>
+      <p class="card-sub">How the pane behaves on the tmux side and how it is drawn on the browser side. The first three reach the sessions that are already open; the rest apply to new ones.</p>
+      <div class="grid-2">
+        <div class="field">
+          <label for="windowSize">Window size policy</label>
+          <select class="select" id="windowSize">
+            <option value="manual">Manual — Socrates decides</option>
+            <option value="latest">Latest — the viewer that last acted</option>
+            <option value="largest">Largest — the biggest viewer</option>
+          </select>
+          <div class="hint" id="windowSizeHint"></div>
+        </div>
+        <div class="field">
+          <label for="historyLimit">Scrollback kept by tmux</label>
+          <input class="input" type="number" id="historyLimit" min="1000" max="200000" step="1000">
+          <div class="hint">Lines per pane. This is the buffer that survives a reload.</div>
+        </div>
+        <div class="field">
+          <label for="scrollback">Scrollback kept by the browser</label>
+          <input class="input" type="number" id="scrollback" min="100" max="100000" step="100">
+          <div class="hint">Lines xterm.js keeps in this tab. It is thrown away on a reload.</div>
+        </div>
+        <div class="field">
+          <label for="fontSize">Font size</label>
+          <input class="input" type="number" id="fontSize" min="8" max="40">
+          <div class="hint">Pixels, in the terminal only.</div>
+        </div>
+      </div>
+      <div class="row" style="gap:22px;flex-wrap:wrap">
+        <label class="switch"><input type="checkbox" id="mouseOn"><span class="track"></span><span>Mouse in the pane</span></label>
+        <label class="switch"><input type="checkbox" id="extendedKeys"><span class="track"></span><span>Extended keys</span></label>
+        <label class="switch"><input type="checkbox" id="webgl"><span class="track"></span><span>Draw with the GPU</span></label>
+      </div>
+      <div class="hint" style="margin-top:10px">Extended keys let Shift+Enter reach the CLIs; they may confuse older terminals. The terminal type, the pane that stays after its program exits and the white window style only take effect for <em>new</em> sessions.</div>
+    </section>
+
+    <div id="harnessCards">
+      <section class="card">
+        <h2>Programs</h2>
+        <p class="card-sub">Asking this machine which programs are installed…</p>
+      </section>
+    </div>
+
+    <section class="card" id="voiceCard">
       <h2>Voice</h2>
-      <p class="card-sub">Your recording is transcribed by an OpenRouter model, picked from the same catalogue as everything else. Reading the answer back is not a model at all: a small voice ships with Socrates and runs on this machine. It costs nothing, needs no key and no account, and there is nothing to pick — the spoken language below is what chooses the voice. Socrates installs it by itself the first time it starts — a 150 MB download, which is what the line below reports on — and the Docker image already has it.</p>
+      <p class="card-sub">Your recording is transcribed by an OpenRouter model. Reading an answer back is not a model at all: a small voice ships with Socrates and runs on this machine — the spoken language below is what chooses it.</p>
 
       <div class="voice-status" id="voiceStatus">
         <span class="state-dot"></span>
@@ -74,36 +122,53 @@
       </div>
 
       <div class="field">
+        <label for="orKey">OpenRouter API key</label>
+        <input class="input mono" type="password" id="orKey" placeholder="sk-or-v1-…" autocomplete="off">
+        <div class="hint">Create one at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a>. It transcribes dictation and names sessions; the coding agents bring their own credentials.</div>
+      </div>
+      <div class="grid-2">
+        <div class="field">
+          <label>Transcription model</label>
+          <div id="orTranscribe"></div>
+          <div class="hint">A dedicated transcriber such as openai/gpt-transcribe, or a chat model that accepts audio such as google/gemini-2.5-flash.</div>
+        </div>
+        <div class="field">
+          <label>Title model</label>
+          <div id="orTitle"></div>
+          <div class="hint">Small and cheap is enough — it only names sessions.</div>
+        </div>
+      </div>
+      <div class="field">
         <label for="voiceLanguage">Spoken language</label>
         <select class="select" id="voiceLanguage">
           <option value="en">English</option>
           <option value="de">Deutsch</option>
         </select>
-        <div class="hint">One setting for everything Socrates says: how your recording is transcribed, which voice reads the answer out loud — <span class="mono">en_US-ljspeech-medium</span> for English, <span class="mono">de_DE-thorsten-medium</span> for Deutsch — and which language Socrates answers in.</div>
+        <div class="hint">One setting for everything Socrates says: how a recording is transcribed and which voice reads an answer out loud — <span class="mono">en_US-ljspeech-medium</span> for English, <span class="mono">de_DE-thorsten-medium</span> for Deutsch.</div>
       </div>
       <div class="field">
         <label for="sttPrompt">Transcription instruction</label>
         <input class="input" type="text" id="sttPrompt">
-        <div class="hint">Sent with the recording when a chat model does the transcribing. A dedicated transcription model is given the language instead. Which model it is, is the transcription model above.</div>
+        <div class="hint">Sent with the recording when a chat model does the transcribing. A dedicated transcription model is given the language instead.</div>
       </div>
-      <div class="divider" style="border-top:1px solid var(--line);margin:6px 0 20px"></div>
       <div class="grid-2">
         <div class="field">
           <label for="ttsRate">Speaking rate</label>
           <input class="input" type="number" id="ttsRate" min="0.5" max="2" step="0.1">
-          <div class="hint">How fast the voice reads. 1 is its own pace; 1.2 is a fifth quicker.</div>
+          <div class="hint">How fast the voice reads. 1 is its own pace.</div>
         </div>
       </div>
       <div class="row" style="gap:22px;flex-wrap:wrap">
         <label class="switch"><input type="checkbox" id="speakAuto"><span class="track"></span><span>Read answers in audio mode</span></label>
         <label class="switch"><input type="checkbox" id="speakChat"><span class="track"></span><span>Read answers in normal chat</span></label>
       </div>
+      <div class="hint" style="margin-top:10px">Reading answers out loud is not wired into the terminal yet.</div>
       <div class="row" style="margin-top:16px">
         <button class="btn sm" id="testVoice" type="button">Test voice output</button>
       </div>
     </section>
 
-    <section class="card">
+    <section class="card" id="tunnelCard">
       <h2>Remote access</h2>
       <p class="card-sub">Publish Socrates on the internet through a Cloudflare tunnel — no open port, no router configuration. It keeps serving on its local address either way, which is the address you point Cloudflare at.</p>
 
@@ -150,14 +215,14 @@
       <pre class="log" id="tunnelLog" hidden></pre>
     </section>
 
-    <section class="card">
+    <section class="card" id="checksCard">
       <h2>Setup check</h2>
-      <p class="card-sub">Verifies the API key, the workspace, the agent hosts and every enabled agent.</p>
+      <p class="card-sub">Asks this machine everything Socrates depends on: tmux and its socket, the workspace, each program and the state it keeps, the OpenRouter key, and the disk underneath all of it.</p>
       <button class="btn sm" id="runChecks" type="button">Run checks</button>
       <div class="checks" id="checks"></div>
     </section>
 
-    <section class="card">
+    <section class="card" id="passwordCard">
       <h2>Password</h2>
       <p class="card-sub">Changing it signs out every other browser.</p>
       <div class="grid-2">

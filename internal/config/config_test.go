@@ -283,3 +283,37 @@ func TestValidateRefusesWhatNormalizeCannotRepair(t *testing.T) {
 		t.Errorf("a valid document was refused: %v", err)
 	}
 }
+
+// The two fields WP1 left to WP8's controls. Both are free text in the
+// dashboard, so both are refused here rather than at launch, where the message
+// would arrive in a pane that is already gone.
+func TestAutocompactAndSettingSourcesAreValidated(t *testing.T) {
+	for _, ok := range []string{"", "auto", "AUTO", "100k", "200K", "1M", "0.5M"} {
+		s := Default()
+		s.Harnesses.Claude.Autocompact = ok
+		s.Normalize()
+		if err := s.Validate(); err != nil {
+			t.Errorf("autocompact %q was refused: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"lots", "99k", "2M", "200", "200 k", "-1k"} {
+		s := Default()
+		s.Harnesses.Claude.Autocompact = bad
+		s.Normalize()
+		if err := s.Validate(); err == nil {
+			t.Errorf("autocompact %q was accepted", bad)
+		}
+	}
+
+	s := Default()
+	s.Harnesses.Claude.SettingSources = []string{"user", "project", "local"}
+	s.Normalize()
+	if err := s.Validate(); err != nil {
+		t.Errorf("the three real setting sources were refused: %v", err)
+	}
+	s.Harnesses.Claude.SettingSources = []string{"user", "global"}
+	s.Normalize()
+	if err := s.Validate(); err == nil {
+		t.Error("an invented setting source was accepted")
+	}
+}

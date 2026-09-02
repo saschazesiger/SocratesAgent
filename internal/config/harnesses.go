@@ -3,6 +3,8 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -152,6 +154,52 @@ type ClaudeOptions struct {
 	// Advanced. SettingsOverrides is deep-merged into the generated settings
 	// file; it is JSON in a string, checked where it is saved.
 	SettingsOverrides string `json:"settings_overrides"`
+}
+
+// ClaudeSettingSources are the three layers --setting-sources may name. A
+// fourth word there is not a warning inside Claude Code, it is a launch that
+// stops, so the value is closed here as well as in the dashboard.
+var ClaudeSettingSources = []string{"user", "project", "local"}
+
+// autocompactRe is the shape --autocompact takes: a context window in
+// thousands or millions of tokens. "auto" is the word for "let Claude Code
+// decide", and is checked separately.
+var autocompactRe = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)?)([kKmM])$`)
+
+// validAutocompact checks the field the dashboard offers as free text.
+// Anything between 100k and 1M is accepted, which is the documented range; the
+// flag itself rejects the rest with a message nobody sees, because it arrives
+// in a pane that is already gone by the time it is read.
+func validAutocompact(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.EqualFold(value, "auto") {
+		return nil
+	}
+	m := autocompactRe.FindStringSubmatch(value)
+	if m == nil {
+		return fmt.Errorf("harnesses.claude.autocompact: %q is neither \"auto\" nor a size such as 200k or 1M", value)
+	}
+	size, err := strconv.ParseFloat(m[1], 64)
+	if err != nil {
+		return fmt.Errorf("harnesses.claude.autocompact: %q is not a number", value)
+	}
+	if strings.EqualFold(m[2], "m") {
+		size *= 1000
+	}
+	if size < 100 || size > 1000 {
+		return fmt.Errorf("harnesses.claude.autocompact: %q is outside the range 100k to 1M", value)
+	}
+	return nil
+}
+
+// isOneOf is oneOf without the fallback: a membership test.
+func isOneOf(value string, allowed []string) bool {
+	for _, a := range allowed {
+		if value == a {
+			return true
+		}
+	}
+	return false
 }
 
 // Claude Code permission modes, as the flag spells them.
@@ -534,6 +582,15 @@ func (h HarnessSettings) validate() error {
 		}
 		if !json.Valid([]byte(f.value)) {
 			return fmt.Errorf("%s is not valid JSON", f.name)
+		}
+	}
+	if err := validAutocompact(h.Claude.Autocompact); err != nil {
+		return err
+	}
+	for _, source := range h.Claude.SettingSources {
+		if !isOneOf(source, ClaudeSettingSources) {
+			return fmt.Errorf("harnesses.claude.setting_sources: %q is not one of %s",
+				source, strings.Join(ClaudeSettingSources, ", "))
 		}
 	}
 	// Every config override reaches Codex as one -c argument, and Codex is

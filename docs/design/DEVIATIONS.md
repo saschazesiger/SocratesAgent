@@ -492,6 +492,58 @@ read the pane out of the DOM, and the shipped default must not be the untested p
 and `ensureNav()` names the drawer it opens; both now say `#newSession`. The boot, assert and
 leak machinery is unchanged.
 
+## WP8 — Admin
+
+**WP8 / §F.1 — the install stream sends unnamed SSE frames with a `type` field, not `line` and
+`done` events.** §F.1 asks for "one `line` event per output line and a final `done` event" and
+in the same breath says the page consumes it with the existing `LiveStream` from `net.js`.
+Those two cannot both be true: `LiveStream` reads `source.onmessage`, which an `EventSource`
+only fires for frames with no `event:` name. Naming the events would have meant a second
+consumer written by hand, with its own backoff and its own watchdog, which is precisely what
+§F.1 rejects. The frames are therefore `{"type":"line","line":…}` and
+`{"type":"done","exit":N,"ok":bool}`, plus the `{"type":"ping"}` heartbeat `LiveStream`
+measures its watchdog against - the same shape every other stream in this app uses.
+
+**WP8 / §F.1 — the install is offered for a tmux that is too old as well as one that is
+missing.** The detection in §F.1 goes looking for a package manager only "if missing". The
+command it would run is the same command that upgrades 3.2a to 3.6a, and a machine whose tmux
+is too old is the case the checklist is most worried about, so refusing to offer it there would
+leave the one user who needs the button without it. `ok` is still the only field that decides
+anything, and 3.2a is still amber and never green.
+
+**WP8 / §F.7 — the diagnostics list keeps the "Text to speech" row §F.7 does not name.** Every
+bullet in §F.7 is implemented; this one row is inherited from the dashboard as it was. The voice
+card has no check of its own, dictation is a DECISIONS.md requirement, and dropping the row
+would have been a regression in what the page can answer.
+
+**WP8 / §C.10 — `advisor` lives in the "Advanced (raw)" group rather than behind a control of
+its own.** §C.10 says to hide it behind "Advanced". The harness cards already have exactly one
+such place - the raw group, which is where every other "you had better know why" option is - so
+it went there instead of gaining a second disclosure that means the same thing.
+
+**WP8 / §F.4 — `Extra flags (raw)`, `Extra env (raw)` and `Config overrides (raw)` are one
+group, "Advanced (raw)".** §F.4 lists them as three disclosures. Two of them hold a single
+field each, and a disclosure per field is a click to reach a text box. The three groups' options
+are all present, in that order, inside one group.
+
+**WP8 / §I — four files outside the named scope.** The scope names `internal/termux/install.go`;
+the endpoints and their state went to a new `internal/server/tmux.go` rather than into
+`admin.go`, the live application of the terminal card to `internal/termux/apply.go` (it is
+Manager state, and `manager.go` belongs to WP2), the free-space probe to
+`internal/server/disk_{unix,other}.go` because `syscall.Statfs` does not exist on every platform
+this repo builds for, and three exported accessors for the paths §F.7 checks to
+`internal/harnesses/statepaths.go`, so that the diagnostics name the same directories the
+launchers use rather than a second guess at them. `internal/server/server.go` gained two hunks
+only - the `tmuxAdmin` field and three route lines - because WP5 is mid-flight in that file.
+
+**WP8 / §D.2, §D.9 — the "viewer lag" admin row was not built, and the `lag` frame was not
+deleted either.** §D.9 gives the frame exactly one consumer and the review note says WP8 either
+uses it or the frame goes. §F describes eight admin sections and none of them is a viewer-lag
+row; the frame is per-session state and the dashboard has no session list to hang it on.
+Deleting it would mean editing `internal/server/ws.go` and `js/session.js`, which WP5 is
+rewriting right now. The decision is therefore left open and flagged: whoever closes WP5 should
+either delete the `lag` frame and its client timer, or say where the row belongs.
+
 ### WP5 fix-up — the review findings
 
 **WP5 / §D.7 — the session cookie stays `SameSite=Lax`.** The section asks for `Strict`. A

@@ -1,14 +1,20 @@
 package server
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/saschazesiger/SocratesAgent/internal/catalog"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
+	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
 	"github.com/saschazesiger/SocratesAgent/internal/openrouter"
 	"github.com/saschazesiger/SocratesAgent/internal/piper"
+	"github.com/saschazesiger/SocratesAgent/internal/termux"
 	"github.com/saschazesiger/SocratesAgent/internal/tunnel"
 )
 
@@ -66,11 +72,60 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// The workspace root is the one path the server has to be able to use, so
+	// it is refused here rather than saved and discovered later by somebody
+	// pressing Start.
+	if !filepath.IsAbs(next.Workspace.Root) {
+		writeError(w, http.StatusBadRequest, "the workspace root has to be an absolute path")
+		return
+	}
+	if err := writableDir(next.Workspace.Root); err != nil {
+		writeError(w, http.StatusBadRequest, "the workspace root cannot be used: "+err.Error())
+		return
+	}
+	previous := s.Settings().Terminal
 	if err := s.saveSettings(next); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"settings": s.Settings()})
+	saved := s.Settings()
+
+	// A preset that does not exist is a warning and not a refusal: a mount
+	// that is not up yet is the ordinary reason, and refusing the save would
+	// take the other nine presets with it.
+	warnings := []string{}
+	for _, preset := range saved.Workspace.Presets {
+		if _, err := os.Stat(preset.Path); err != nil {
+			warnings = append(warnings, preset.Label+": "+preset.Path+" is not there yet")
+		}
+	}
+	if terminalChanged(previous, saved.Terminal) {
+		if err := s.applyTerminal(r.Context(), saved.Terminal); err != nil {
+			warnings = append(warnings,
+				"the terminal settings were saved, but tmux would not take them live: "+err.Error())
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"settings": saved, "warnings": warnings})
+}
+
+// terminalChanged reports whether anything the tmux server holds has moved.
+// The browser-side settings - the scrollback, the font, the renderer - are
+// applied by the page itself and are no business of tmux's.
+func terminalChanged(a, b config.TerminalSettings) bool {
+	return a.WindowSize != b.WindowSize || a.HistoryLimit != b.HistoryLimit ||
+		a.Mouse != b.Mouse || a.ExtendedKeys != b.ExtendedKeys
+}
+
+// applyTerminal rewrites the generated tmux configuration and applies live
+// what tmux will take live. What it cannot apply - the terminal type, the
+// pane that stays after its program exits - reaches the sessions started from
+// now on, which is what the card's hint says.
+func (s *Server) applyTerminal(ctx context.Context, terminal config.TerminalSettings) error {
+	return s.manager.ApplyTerminal(ctx, termux.ConfOptions{
+		HistoryLimit: terminal.HistoryLimit,
+		Mouse:        terminal.Mouse,
+		ExtendedKeys: terminal.ExtendedKeys,
+	}, terminal.WindowSize)
 }
 
 type checkResult struct {
@@ -79,92 +134,286 @@ type checkResult struct {
 	Detail string `json:"detail"`
 }
 
-// handleDiagnostics powers the "check my setup" button in the admin dashboard.
+// handleDiagnostics powers the "check my setup" button in the admin
+// dashboard. It is §F.7's list, in its order: the terminal engine first,
+// because nothing works without it, then the place sessions run, then the four
+// programs and the credentials each of them needs, and finally the disk they
+// all write to.
 func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	settings := s.Settings()
 	results := []checkResult{}
+	add := func(name string, ok bool, detail string) {
+		results = append(results, checkResult{Name: name, OK: ok, Detail: detail})
+	}
 
-	// OpenRouter. Whether the key works decides more than its own row: speech
-	// to text further down is the very same key.
+	results = append(results, s.tmuxChecks(r.Context())...)
+
+	// Where sessions work. Creating it is the check: a root that cannot be
+	// made is a new-session sheet that fails on Start.
+	root := settings.Workspace.Root
+	if err := writableDir(root); err != nil {
+		add("Workspace", false, err.Error())
+	} else {
+		add("Workspace", true, root)
+	}
+
+	// The four programs, each with the state directory it cannot work without.
+	snapshot := s.catalog.Get(r.Context())
+	for _, id := range config.KnownHarnesses {
+		agent, ok := snapshot.Agent(id)
+		if !ok {
+			continue
+		}
+		results = append(results, harnessCheck(agent))
+		if extra, ok := harnessStateCheck(id); ok {
+			results = append(results, extra)
+		}
+	}
+
+	// OpenRouter. Since Socrates became a harness this key answers nothing
+	// except dictation and chat titles, so its row and the transcription row
+	// below are one story told twice.
 	openrouterOK := false
 	if strings.TrimSpace(settings.OpenRouter.APIKey) == "" {
-		results = append(results, checkResult{Name: "OpenRouter", OK: false, Detail: "no API key set"})
+		add("OpenRouter", false, "no API key set")
 	} else {
 		client := openrouter.New(settings.OpenRouter.BaseURL, settings.OpenRouter.APIKey)
 		if info, err := client.CheckKey(r.Context()); err != nil {
-			results = append(results, checkResult{Name: "OpenRouter", OK: false, Detail: err.Error()})
+			add("OpenRouter", false, err.Error())
 		} else {
 			detail := "key accepted"
 			if info.Label != "" {
 				detail += " · " + info.Label
 			}
 			openrouterOK = true
-			results = append(results, checkResult{Name: "OpenRouter", OK: true, Detail: detail})
+			add("OpenRouter", true, detail)
 		}
 	}
-
-	// Workspace root
-	root := settings.Workspace.Root
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		results = append(results, checkResult{Name: "Workspace", OK: false, Detail: err.Error()})
-	} else {
-		probe := filepath.Join(root, ".socrates-write-test")
-		if err := os.WriteFile(probe, []byte("ok"), 0o600); err != nil {
-			results = append(results, checkResult{Name: "Workspace", OK: false, Detail: err.Error()})
-		} else {
-			os.Remove(probe)
-			results = append(results, checkResult{Name: "Workspace", OK: true, Detail: root})
-		}
-	}
-
-	// Remote access
-	installed, version, _ := s.tunnel.Probe()
-	switch {
-	case !settings.Tunnel.Enabled:
-		results = append(results, checkResult{Name: "Remote access", OK: true,
-			Detail: "tunnel off, reachable at " + orLocal(s.LocalURL())})
-	case !installed:
-		results = append(results, checkResult{Name: "Remote access", OK: false,
-			Detail: "cloudflared is not installed yet, it is downloaded when the tunnel starts"})
-	default:
-		status := s.tunnel.Status()
-		detail := status.State
-		if status.URL != "" {
-			detail += " · " + status.URL
-		}
-		if version != "" {
-			detail += " · " + version
-		}
-		if status.Error != "" {
-			detail += " · " + status.Error
-		}
-		results = append(results, checkResult{
-			Name:   "Remote access",
-			OK:     status.State == tunnel.StateRunning,
-			Detail: detail,
-		})
-	}
-
-	// Voice. Listening happens at OpenRouter and speaking happens here, so the
-	// two halves are checked quite differently. Speech to text has nothing of
-	// its own to try: it is the key that was just tested and a model to spend
-	// it on, and saying it is fine regardless is how a green dot ends up next
-	// to a red one about the very same key.
 	transcribe := strings.TrimSpace(settings.OpenRouter.TranscribeModel)
 	switch {
 	case !openrouterOK:
-		results = append(results, checkResult{Name: "Speech to text", OK: false,
-			Detail: "it listens through OpenRouter, so that check has to pass first"})
+		add("Speech to text", false, "it listens through OpenRouter, so that check has to pass first")
 	case transcribe == "":
-		results = append(results, checkResult{Name: "Speech to text", OK: false,
-			Detail: "no transcription model is picked"})
+		add("Speech to text", false, "no transcription model is picked")
 	default:
-		results = append(results, checkResult{Name: "Speech to text", OK: true,
-			Detail: "OpenRouter · " + transcribe})
+		add("Speech to text", true, "OpenRouter · "+transcribe)
 	}
 	results = append(results, voiceCheck(s.voice.Status()))
 
+	// Remote access, and then the disk everything above writes to.
+	results = append(results, s.tunnelCheck(settings))
+	results = append(results, diskCheck(s.dataDir))
+
 	writeJSON(w, http.StatusOK, map[string]any{"checks": results})
+}
+
+// tmuxChecks are the terminal engine's three rows: the binary and its version,
+// the socket this Socrates owns, and how many sessions are on it.
+func (s *Server) tmuxChecks(ctx context.Context) []checkResult {
+	report := s.tmuxAdmin.installer.Detect(ctx)
+	engine := checkResult{Name: "tmux", OK: report.OK}
+	switch {
+	case report.OK:
+		engine.Detail = report.Version + " · " + report.Path
+	default:
+		engine.Detail = report.Reason
+	}
+	out := []checkResult{engine}
+
+	socket := checkResult{Name: "tmux socket", Detail: s.manager.Socket()}
+	if err := s.manager.Available(); err != nil {
+		socket.Detail = err.Error()
+		return append(out, socket)
+	}
+	names, err := s.manager.LiveSessionNames(ctx)
+	if err != nil {
+		socket.Detail = s.manager.Socket() + " · " + err.Error()
+		return append(out, socket)
+	}
+	socket.OK = true
+	socket.Detail = fmt.Sprintf("%s · %d session%s", s.manager.Socket(), len(names), plural(len(names)))
+	return append(out, socket)
+}
+
+// harnessCheck is one program: is it here, which build, and can its model list
+// be reached at all.
+func harnessCheck(agent catalog.Agent) checkResult {
+	row := checkResult{Name: agent.Label}
+	switch {
+	case !agent.Enabled:
+		row.OK = true
+		row.Detail = "turned off in the dashboard"
+	case !agent.Installed:
+		row.Detail = "not installed"
+		if agent.Error != "" {
+			row.Detail += " · " + agent.Error
+		}
+	default:
+		row.OK = true
+		row.Detail = agent.Version
+		if agent.Path != "" {
+			row.Detail += " · " + agent.Path
+		}
+		if agent.ID == config.HarnessShell {
+			break
+		}
+		count := len(agent.Models)
+		switch {
+		case agent.Error != "":
+			row.OK = false
+			row.Detail += " · " + agent.Error
+		case count == 0:
+			row.OK = false
+			row.Detail += " · no models reported"
+		default:
+			row.Detail += fmt.Sprintf(" · %d model%s", count, plural(count))
+			if agent.Static {
+				row.Detail += " · curated"
+			}
+		}
+	}
+	return row
+}
+
+// harnessStateCheck is the one directory or file each coding agent keeps its
+// own state in. They are checked because each is a silent failure otherwise:
+// an unwritable CLAUDE_CONFIG_DIR is a theme that never pins, and an
+// unreadable Codex or OpenCode database is a session that can never be
+// resumed after a reboot.
+func harnessStateCheck(id string) (checkResult, bool) {
+	switch id {
+	case config.HarnessClaude:
+		dir := harnesses.ClaudeConfigDir()
+		row := checkResult{Name: "Claude Code state", Detail: dir}
+		if err := writableDir(dir); err != nil {
+			row.Detail = err.Error()
+		} else {
+			row.OK = true
+		}
+		return row, true
+	case config.HarnessCodex:
+		path := filepath.Join(harnesses.CodexHome(), "state_5.sqlite")
+		row := checkResult{Name: "Codex state", Detail: path}
+		if err := readable(path); err != nil {
+			row.Detail = err.Error()
+		} else {
+			row.OK = true
+		}
+		return row, true
+	case config.HarnessOpenCode:
+		path := harnesses.OpenCodeDBPath()
+		row := checkResult{Name: "OpenCode state", Detail: path}
+		if err := readable(path); err != nil {
+			row.Detail = err.Error()
+		} else {
+			row.OK = true
+		}
+		return row, true
+	}
+	return checkResult{}, false
+}
+
+// tunnelCheck is the remote-access row, unchanged in substance from the one
+// the dashboard has always shown.
+func (s *Server) tunnelCheck(settings config.Settings) checkResult {
+	installed, version, _ := s.tunnel.Probe()
+	switch {
+	case !settings.Tunnel.Enabled:
+		return checkResult{Name: "Remote access", OK: true,
+			Detail: "tunnel off, reachable at " + orLocal(s.LocalURL())}
+	case !installed:
+		return checkResult{Name: "Remote access", OK: false,
+			Detail: "cloudflared is not installed yet, it is downloaded when the tunnel starts"}
+	}
+	status := s.tunnel.Status()
+	detail := status.State
+	if status.URL != "" {
+		detail += " · " + status.URL
+	}
+	if version != "" {
+		detail += " · " + version
+	}
+	if status.Error != "" {
+		detail += " · " + status.Error
+	}
+	return checkResult{Name: "Remote access", OK: status.State == tunnel.StateRunning, Detail: detail}
+}
+
+// diskCheck is how much room the journals, the generated files and the
+// database have left. A terminal that fills the disk stops recording what it
+// showed, which is the one failure nobody notices until they need the replay.
+func diskCheck(dir string) checkResult {
+	// A data directory that does not exist yet - a Socrates that has never
+	// started a session - is still on a disk, and that disk is the answer.
+	probe := dir
+	for probe != "" {
+		if _, err := os.Stat(probe); err == nil {
+			break
+		}
+		parent := filepath.Dir(probe)
+		if parent == probe {
+			break
+		}
+		probe = parent
+	}
+	free, total, err := diskFree(probe)
+	if err != nil {
+		return checkResult{Name: "Disk", Detail: err.Error()}
+	}
+	detail := fmt.Sprintf("%s free of %s under %s", humanBytes(free), humanBytes(total), dir)
+	// Half a gigabyte is roughly one full journal plus room to write the
+	// database out; below that a session is one long paste from failing.
+	return checkResult{Name: "Disk", OK: free >= 512<<20, Detail: detail}
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+// humanBytes is a size somebody reads rather than counts.
+func humanBytes(n uint64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	value, exp := float64(n)/unit, 0
+	for value >= unit && exp < 4 {
+		value /= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", value, "KMGTP"[exp])
+}
+
+// writableDir makes a directory if it is not there and proves it can be
+// written to, which is the only claim worth making about one.
+func writableDir(dir string) error {
+	if strings.TrimSpace(dir) == "" {
+		return errors.New("no directory is configured")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	probe := filepath.Join(dir, ".socrates-write-test")
+	if err := os.WriteFile(probe, []byte("ok"), 0o600); err != nil {
+		return err
+	}
+	return os.Remove(probe)
+}
+
+// readable proves a file exists and can be opened, which for a state database
+// is the whole question.
+func readable(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("this machine has no home directory to look in")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	return f.Close()
 }
 
 // voiceCheck says what the local voice can do right now. An install that is
