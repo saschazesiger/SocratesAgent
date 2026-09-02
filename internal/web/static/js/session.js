@@ -21,6 +21,7 @@ import {
 } from './api.js';
 import { connectionSource } from './net.js';
 import { agentMark } from './logos.js';
+import { DAY_GROUPS, bucketOf, momentOf } from './daygroups.js';
 import * as harnesses from './harnesses.js';
 import { createTerm, measurePane } from './term.js';
 import { mountAssist, audioWanted } from './assist.js';
@@ -686,28 +687,51 @@ function renderList() {
     host.append(el('div', { class: 'list-empty', text: empty }));
     return;
   }
+  // Which day each session was last used on. The server hands the list over
+  // newest first, and grouping keeps that order inside every group, so the
+  // rows never move relative to each other - only a header appears between
+  // them.
+  const now = Date.now();
+  const byGroup = new Map();
+  for (const session of wanted) {
+    const key = bucketOf(momentOf(session), now);
+    const rows = byGroup.get(key);
+    if (rows) rows.push(session); else byGroup.set(key, [session]);
+  }
   // The list is patched rather than rebuilt: taking a connected node out of
   // the page and putting it back restarts its animations, and a row that
-  // fades in again every few seconds is a page that looks broken.
+  // fades in again every few seconds is a page that looks broken. The headers
+  // are patched the same way and for the same reason - and because a row that
+  // crosses midnight, or is renamed and so becomes today's, has to keep the
+  // element it already had while it moves under a different header.
   const seen = new Set();
+  const headers = new Set();
   let previous = null;
-  for (const session of wanted) {
-    seen.add(session.id);
-    let row = host.querySelector('[data-id="' + cssId(session.id) + '"]');
-    if (!row) {
-      row = buildRow(session);
-      if (previous) previous.after(row); else host.prepend(row);
-    } else {
-      updateRow(row, session);
-      if (previous ? previous.nextElementSibling !== row : host.firstElementChild !== row) {
-        if (previous) previous.after(row); else host.prepend(row);
-      }
+  // place puts a node where the walk has got to, and only if it is not there
+  // already.
+  const place = (node) => {
+    if (previous ? previous.nextElementSibling !== node : host.firstElementChild !== node) {
+      if (previous) previous.after(node); else host.prepend(node);
     }
-    previous = row;
+    previous = node;
+  };
+  for (const { key, label } of DAY_GROUPS) {
+    const rows = byGroup.get(key);
+    if (!rows || !rows.length) continue;
+    headers.add(key);
+    place(host.querySelector('.chat-group[data-group="' + key + '"]')
+      || el('div', { class: 'chat-group', 'data-group': key, text: label }));
+    for (const session of rows) {
+      seen.add(session.id);
+      const row = host.querySelector('.chat-item[data-id="' + cssId(session.id) + '"]');
+      if (row) updateRow(row, session);
+      place(row || buildRow(session));
+    }
   }
-  for (const row of [...host.children]) {
-    if (row.dataset.id && !seen.has(row.dataset.id)) row.remove();
-    else if (!row.dataset.id) row.remove();
+  for (const node of [...host.children]) {
+    if (node.dataset.id) { if (!seen.has(node.dataset.id)) node.remove(); }
+    else if (node.dataset.group) { if (!headers.has(node.dataset.group)) node.remove(); }
+    else node.remove();
   }
 }
 
