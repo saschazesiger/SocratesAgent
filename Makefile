@@ -51,10 +51,11 @@ tidy-check:
 ## check: everything CI runs, and it changes nothing
 check: fmt-check vet tidy-check race build
 
-## e2e: the browser suite - a real server, the fake agent CLIs on PATH, and
-## Playwright driving the page. It is deliberately not part of `check` and not
-## part of CI: it wants node and a Chromium, and it starts detached host
-## processes, which is exactly what it is there to test.
+## e2e: the browser suite - a real server, the fake CLIs on PATH, real tmux
+## sessions and Playwright driving the page. It is deliberately not part of
+## `check` and not part of CI: it wants node, a Chromium and tmux >= 3.3, and
+## it starts real terminal sessions that outlive the server, which is exactly
+## what it is there to test.
 e2e: build
 	@if [ ! -f e2e/run.mjs ]; then \
 	  echo "e2e/run.mjs is not in this tree - the browser suite is left out of the Docker build context."; \

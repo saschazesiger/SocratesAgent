@@ -622,7 +622,7 @@ const schemaVersion    = 3   // 3 == the terminal-harness schema
    never be opened: its transcript lived in tables we are deleting, its agent-host is gone, and
    its tmux session never existed. An empty list is more honest than a list of things that do
    nothing. The `kv` table survives, so the password, tunnel and voice settings survive; the
-   `agents` sub-document of the settings JSON is migrated in place (§C.7).
+   `agents` sub-document of the settings JSON is replaced by `harnesses` in place (§B.5).
 3. Create the new schema.
 4. `PRAGMA user_version = 3`.
 
@@ -1669,9 +1669,11 @@ bytes 9..   : raw bytes to write to the PTY
 {"t":"bye"}                    // clean detach
 ```
 
-`lag` exists for exactly one purpose: the admin Diagnostics panel's "viewer lag" row. It is sent at
-most once a second, and nothing in the transport depends on it. If a future package finds no use
-for that row, delete the frame rather than keep it "for later".
+`lag` is the client's acknowledgement of what it has actually rendered: the last output byte it
+put on the screen. It is sent at most once a second and nothing in the transport depends on it.
+The admin "viewer lag" row it was originally proposed for is **dropped** - WP8 built Diagnostics
+out of checks that can fail, and a number that reads zero on every local network is not one - but
+the frame stays, because nothing else tells the server what a viewer has actually drawn.
 
 One writer goroutine per connection (coder/websocket allows one concurrent writer).
 
@@ -3056,9 +3058,9 @@ reviewer does not read them as oversights.
    coalescing writer, the drop counter and the resync-after-loss branch are gone entirely rather
    than merely corrected.
 2. **Finding 13's output `ack` is kept, not deleted, but is now purely diagnostic.** It is renamed
-   `lag`, sent once a second, and §D.9 gives it exactly one consumer: the admin "viewer lag" row.
-   The spec says in §D.2 that if WP8 finds no use for that row, the frame is deleted rather than
-   kept "for later". `cseq` is gone.
+   `lag` and sent once a second. The admin "viewer lag" row it was proposed for was dropped after
+   WP8 (§D.2); the frame itself stays, because it is the client's acknowledgement of what it has
+   rendered and the server has nowhere else to learn that. `cseq` is gone.
 
 ## Appendix B: quick reference for an implementer
 

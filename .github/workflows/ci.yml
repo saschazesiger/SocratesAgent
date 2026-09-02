@@ -22,6 +22,20 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Every session is a tmux pane, so the tmux-backed internal/termux tests
+      # are the substrate's real regression net. Without this step they would
+      # skip themselves silently on both runners and CI would stay green while
+      # the product stopped working.
+      - name: Install tmux
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends tmux ncurses-term
+          else
+            brew list tmux >/dev/null 2>&1 || brew install tmux
+          fi
+          tmux -V
+
       - name: Check formatting
         if: matrix.os == 'ubuntu-latest'
         run: |
@@ -45,13 +59,16 @@ jobs:
       - name: Build
         run: go build ./...
 
-  # Every release ships a windows/amd64 binary, and internal/agenthost and
-  # internal/proc each have a Windows only file, so both have to compile and
-  # vet on every change. Agent chats themselves do not work on Windows - they
-  # need a unix socket and POSIX detachment - but the server, the dashboard,
-  # the tunnel and voice do, so the build has to stay green. The test suite is
-  # not run here: parts of it script /bin/sh, send signals a Windows box does
-  # not have, and start detached host processes.
+  # Every release ships a windows/amd64 binary, so the tree has to compile and
+  # vet on Windows on every change. Terminal sessions themselves do not run
+  # there: they are tmux panes on a unix socket, so internal/termux has a
+  # Windows file that returns termux.ErrUnsupported, the server answers 503 on
+  # POST /api/sessions and on the WebSocket, and the binary says so in one line
+  # at start-up. The server, the dashboard, the tunnel and voice all work, so
+  # the build has to stay green. The test suite is not run here: the termux
+  # tests are //go:build !windows, and the rest scripts /bin/sh and sends
+  # signals a Windows box does not have. The harness-argv tests do build on
+  # Windows and are the part that matters here.
   windows:
     runs-on: windows-latest
     steps:
