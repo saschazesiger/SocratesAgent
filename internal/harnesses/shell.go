@@ -39,14 +39,13 @@ func (s Shell) Plan(ctx context.Context, req PlanRequest) (LaunchPlan, error) {
 	if err != nil {
 		return LaunchPlan{}, err
 	}
-	argv := []string{bin}
 	// A login shell reads the profile that sets up PATH and the prompt, which
-	// is what makes the pane look like the machine's own terminal.
-	argv = switchFlag(argv, "-l", opts.Login)
-	argv = append(argv, opts.ExtraArgs...)
+	// is what makes the pane look like the machine's own terminal. It is not a
+	// setting: a shell that did not read the profile is a shell whose PATH is
+	// missing the very programs the person opened it for.
+	argv := []string{bin, "-l"}
 
 	env := baseEnv(req)
-	addExtraEnv(env, opts.ExtraEnv)
 
 	return LaunchPlan{
 		Argv:     argv,

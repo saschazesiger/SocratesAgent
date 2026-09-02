@@ -182,15 +182,6 @@ func TestClaudeResumeArgv(t *testing.T) {
 		t.Fatal("the resume used --continue")
 	}
 
-	l.settings.Harnesses.Claude.ResumeMode = config.ResumeFork
-	req.Settings = l.settings
-	forked, err := Claude{}.ResumePlan(context.Background(), req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !carries(forked.Argv, "--fork-session") {
-		t.Fatalf("fork argv = %v", forked.Argv)
-	}
 }
 
 // A session id may be used exactly once: the binary answers `Error: Session ID
@@ -262,53 +253,32 @@ func TestClaudeSettingsOnlyVerifiedKeys(t *testing.T) {
 	l := newLab(t)
 	doc := claudeSettingsDoc(t, l.plan(Claude{}))
 
-	// The defaults are permission_mode "unset" and skip_permissions "off", so
-	// neither prompt-suppressing key applies and neither is written.
-	for _, never := range []string{"askUserQuestionTimeout", "autoContinueAtUsageLimit", "attribution",
-		"skipDangerousModePermissionPrompt", "skipAutoPermissionPrompt"} {
+	// Documented but absent from the 2.1.258 binary. A timeout of zero might
+	// well mean "dismiss every question at once", which would break
+	// AskUserQuestion in every session Socrates ever starts.
+	for _, never := range []string{"askUserQuestionTimeout", "autoContinueAtUsageLimit",
+		"attribution", "skipAutoPermissionPrompt", "permissions"} {
 		if _, found := doc[never]; found {
 			t.Errorf("%s was written into the settings file", never)
 		}
 	}
-	if doc["cleanupPeriodDays"] != float64(90) {
+	if doc["cleanupPeriodDays"] != float64(claudeTranscriptDays) {
 		t.Errorf("cleanupPeriodDays = %v", doc["cleanupPeriodDays"])
 	}
-
-	// The two skip keys appear exactly for the modes that raise those dialogs,
-	// because without them an unattended launch stops on a confirmation the
-	// user cannot reach.
-	l.settings.Harnesses.Claude.PermissionMode = "bypassPermissions"
-	bypass := claudeSettingsDoc(t, l.plan(Claude{}))
-	if bypass["skipDangerousModePermissionPrompt"] != true {
-		t.Errorf("bypass mode did not suppress its dialog: %v", bypass)
+	// Without this, a launch with --dangerously-skip-permissions stops on a
+	// confirmation dialog before the user can type a single character.
+	if doc["skipDangerousModePermissionPrompt"] != true {
+		t.Errorf("the bypass dialog was not suppressed: %v", doc)
 	}
-	l.settings.Harnesses.Claude.PermissionMode = "auto"
-	auto := claudeSettingsDoc(t, l.plan(Claude{}))
-	if auto["skipAutoPermissionPrompt"] != true {
-		t.Errorf("auto mode did not suppress its dialog: %v", auto)
+	// The flag not being passed is only half of turning Remote Control off.
+	if doc["disableRemoteControl"] != true {
+		t.Errorf("Remote Control was not disabled: %v", doc)
 	}
-	perms, _ := auto["permissions"].(map[string]any)
-	if perms["defaultMode"] != "auto" {
-		t.Errorf("permissions = %v", auto["permissions"])
-	}
-}
-
-// Anything this build does not ship is the user's own business, and it is
-// deep-merged rather than overwritten.
-func TestClaudeSettingsOverridesAreDeepMerged(t *testing.T) {
-	l := newLab(t)
-	l.settings.Harnesses.Claude.SettingsOverrides = `{"permissions":{"allow":["Bash(git *)"]},"askUserQuestionTimeout":0}`
-	l.settings.Harnesses.Claude.PermissionMode = "acceptEdits"
-	doc := claudeSettingsDoc(t, l.plan(Claude{}))
-	perms, _ := doc["permissions"].(map[string]any)
-	if perms["defaultMode"] != "acceptEdits" {
-		t.Errorf("the override replaced the generated block: %v", perms)
-	}
-	if list, _ := perms["allow"].([]any); len(list) != 1 {
-		t.Errorf("the override did not apply: %v", perms)
-	}
-	if doc["askUserQuestionTimeout"] != float64(0) {
-		t.Errorf("a key the user set themselves was dropped: %v", doc)
+	// The environment the pane was given reaches every subprocess Claude Code
+	// starts, which is what makes a tool's shell look like the pane.
+	env, _ := doc["env"].(map[string]any)
+	if env["COLORFGBG"] != "0;15" {
+		t.Errorf("the pane's environment is not in the settings file: %v", doc["env"])
 	}
 }
 
@@ -324,15 +294,19 @@ func claudeSettingsDoc(t *testing.T, plan LaunchPlan) map[string]any {
 	return doc
 }
 
-// The theme preference lives in the global configuration file, and the file
-// belongs to the user: one key changes and everything else survives.
-func TestClaudeThemePinKeepsTheRestOfTheFile(t *testing.T) {
+// The theme and the Remote Control preference live in the global
+// configuration file, and the file belongs to the user: those keys change and
+// everything else survives.
+func TestClaudeGlobalConfigPinKeepsTheRestOfTheFile(t *testing.T) {
 	l := newLab(t)
 	path := claudeGlobalConfigPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(`{"oauthAccount":{"uuid":"keep me"},"theme":"dark"}`), 0o600); err != nil {
+	stored := `{"oauthAccount":{"uuid":"keep me"},"theme":"dark",` +
+		`"remoteControlAtStartup":true,"projects":{"` + l.cwd + `":` +
+		`{"hasTrustDialogAccepted":true,"remoteControlAtStartup":true}}}`
+	if err := os.WriteFile(path, []byte(stored), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	l.plan(Claude{})
@@ -348,20 +322,28 @@ func TestClaudeThemePinKeepsTheRestOfTheFile(t *testing.T) {
 	if doc["theme"] != "light" {
 		t.Errorf("theme = %v", doc["theme"])
 	}
+	// A person who once turned Remote Control on by hand has a stored
+	// preference that starts it again with no flag at all.
+	if doc["remoteControlAtStartup"] != false {
+		t.Errorf("remoteControlAtStartup = %v", doc["remoteControlAtStartup"])
+	}
+	projects, _ := doc["projects"].(map[string]any)
+	entry, _ := projects[l.cwd].(map[string]any)
+	if entry["remoteControlAtStartup"] != false {
+		t.Errorf("the project entry still starts on Remote Control: %v", entry)
+	}
+	if entry["hasTrustDialogAccepted"] != true {
+		t.Errorf("the pin rewrote the project entry: %v", entry)
+	}
 	account, _ := doc["oauthAccount"].(map[string]any)
 	if account["uuid"] != "keep me" {
 		t.Fatalf("the pin rewrote the whole file: %v", doc)
 	}
 
-	// And with the switch off it does not touch the file at all.
-	if err := os.WriteFile(path, []byte(`{"theme":"dark"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	l.settings.Harnesses.Claude.PinLightTheme = false
-	l.plan(Claude{})
-	raw, _ = os.ReadFile(path)
-	if strings.Contains(string(raw), "light") {
-		t.Errorf("the pin wrote with the switch off: %s", raw)
+	// A working directory Claude Code has never been run in gets no entry
+	// invented for it: there is no stored preference there to clear.
+	if _, found := projects["/somewhere/else"]; found {
+		t.Errorf("the pin invented a project entry: %v", projects)
 	}
 }
 
@@ -384,19 +366,6 @@ func TestCodexTrustLevelQuoting(t *testing.T) {
 	if !has(plan.Argv, "-c", want) {
 		t.Fatalf("argv = %v, want a -c %s", plan.Argv, want)
 	}
-
-	// Turning it off is an option a person can take, and then the session
-	// opens on the trust picker - which is the point of the red warning.
-	l.settings.Harnesses.Codex.TrustWorkdir = false
-	off, err := Codex{}.Plan(context.Background(), l.req())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, a := range off.Argv {
-		if strings.Contains(a, "trust_level") {
-			t.Fatalf("the trust override survived the switch: %v", off.Argv)
-		}
-	}
 }
 
 func TestCodexArgvHasStrictConfig(t *testing.T) {
@@ -411,9 +380,11 @@ func TestCodexArgvHasStrictConfig(t *testing.T) {
 	if plan.Env["CODEX_INTERNAL_ORIGINATOR_OVERRIDE"] != codexOriginator {
 		t.Errorf("the originator is %q", plan.Env["CODEX_INTERNAL_ORIGINATOR_OVERRIDE"])
 	}
-	// None of these exists in 0.152.0; each is an `unexpected argument` and a
-	// session that never starts.
-	for _, gone := range []string{"--full-auto", "--yolo", "--json", "--color", "--model-provider", "--skip-git-repo-check", "--no-project-doc"} {
+	// None of these is a flag of the interactive TUI in 0.152.1; each is an
+	// `unexpected argument` and a session that never starts. (--yolo is
+	// accepted as an alias of the bypass flag, but the long spelling is what
+	// is passed, because it says what it does.)
+	for _, gone := range []string{"--full-auto", "--json", "--color", "--model-provider", "--skip-git-repo-check", "--no-project-doc"} {
 		if carries(plan.Argv, gone) {
 			t.Errorf("%s was passed", gone)
 		}
@@ -426,22 +397,25 @@ func TestCodexArgvHasStrictConfig(t *testing.T) {
 	}
 }
 
-// The flag takes on-request and never, and nothing else: on-failure is only
-// reachable through the configuration key.
-func TestCodexApprovalOnFailureGoesThroughConfig(t *testing.T) {
-	l := newLab(t)
-	l.settings.Harnesses.Codex.Approval = "on-failure"
-	plan := l.plan(Codex{})
-	if has(plan.Argv, "-a", "on-failure") {
-		t.Fatalf("on-failure reached the flag: %v", plan.Argv)
-	}
-	if !has(plan.Argv, "-c", `approval_policy="on-failure"`) {
+// The bypass replaces both -s and -a. Codex refuses a command line that names
+// a sandbox and then bypasses it, so passing either beside the bypass is a
+// session that never starts.
+func TestCodexBypassesApprovalsAndSandbox(t *testing.T) {
+	plan := newLab(t).plan(Codex{})
+	if !carries(plan.Argv, "--dangerously-bypass-approvals-and-sandbox") {
 		t.Fatalf("argv = %v", plan.Argv)
 	}
-
-	l.settings.Harnesses.Codex.Approval = "never"
-	if !has(l.plan(Codex{}).Argv, "-a", "never") {
-		t.Fatal("never did not reach the flag")
+	for _, conflicting := range []string{"-s", "-a", "--sandbox", "--ask-for-approval", "--approve-for-me"} {
+		if carries(plan.Argv, conflicting) {
+			t.Errorf("%s was passed beside the bypass: %v", conflicting, plan.Argv)
+		}
+	}
+	// A Codex TUI that talks to somebody else's app server is not the session
+	// this app started.
+	for _, remote := range []string{"--remote", "--remote-auth-token-env"} {
+		if carries(plan.Argv, remote) {
+			t.Errorf("%s was passed: %v", remote, plan.Argv)
+		}
 	}
 }
 
@@ -543,10 +517,7 @@ func TestCodexWatchRolloutMatchesCwdAndOriginator(t *testing.T) {
 
 func TestOpenCodePositionalCwdIsLast(t *testing.T) {
 	l := newLab(t)
-	// A boolean flag, deliberately: an array-valued one such as --cors would
-	// swallow the positional path, which is a real trap and is on the manual
-	// list rather than something this test should paper over.
-	l.settings.Harnesses.OpenCode.ExtraArgs = []string{"--mdns"}
+	l.settings.Harnesses.OpenCode.DefaultModel = "anthropic/claude-sonnet-4-5"
 	plan := l.plan(OpenCode{})
 	if plan.Argv[len(plan.Argv)-1] != l.cwd {
 		t.Fatalf("the project path is not last: %v", plan.Argv)
@@ -560,15 +531,13 @@ func TestOpenCodePositionalCwdIsLast(t *testing.T) {
 }
 
 func TestOpenCodeNeverPassesPrintLogs(t *testing.T) {
-	l := newLab(t)
-	l.settings.Harnesses.OpenCode.LogLevel = "DEBUG"
-	plan := l.plan(OpenCode{})
-	// --print-logs writes to stderr, which is the pane the person is reading.
-	if carries(plan.Argv, "--print-logs") {
-		t.Fatalf("argv = %v", plan.Argv)
-	}
-	if !has(plan.Argv, "--log-level", "DEBUG") {
-		t.Errorf("the log level is not passed: %v", plan.Argv)
+	plan := newLab(t).plan(OpenCode{})
+	// --print-logs writes to stderr, which is the pane the person is reading,
+	// and --log-level without it only fills a file nobody asked for.
+	for _, never := range []string{"--print-logs", "--log-level"} {
+		if carries(plan.Argv, never) {
+			t.Fatalf("%s was passed: %v", never, plan.Argv)
+		}
 	}
 }
 
@@ -759,42 +728,25 @@ func TestOpenCodeResumeArgv(t *testing.T) {
 		t.Fatalf("the project path is not last on a resume: %v", plan.Argv)
 	}
 
-	l.settings.Harnesses.OpenCode.ResumeMode = config.ResumeFork
-	req.Settings = l.settings
-	forked, err := OpenCode{}.ResumePlan(context.Background(), req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !carries(forked.Argv, "--fork") {
-		t.Fatalf("fork argv = %v", forked.Argv)
-	}
 }
 
 // ------------------------------------------------------------------- shared
 
 func TestGeneratedFilesAreValid(t *testing.T) {
 	l := newLab(t)
-	l.settings.Harnesses.Claude.SettingsOverrides = `{"statusLine":{"type":"command"}}`
-	l.settings.Harnesses.OpenCode.TUIConfig = `{"scroll_speed":3,"attention":{"sound":false}}`
-	l.settings.Harnesses.OpenCode.ConfigContent = `{"instructions":["AGENTS.md"]}`
-	l.settings.Harnesses.OpenCode.PermissionJSON = `{"bash":{"git *":"allow"}}`
-
-	claude := claudeSettingsDoc(t, l.plan(Claude{}))
-	if line, _ := claude["statusLine"].(map[string]any); line["type"] != "command" {
-		t.Errorf("the Claude override did not apply: %v", claude)
-	}
+	claudeSettingsDoc(t, l.plan(Claude{}))
 
 	plan := l.plan(OpenCode{})
 	var tui map[string]any
 	if err := json.Unmarshal(plan.Files[0].Data, &tui); err != nil {
 		t.Fatalf("tui.json is not JSON: %v", err)
 	}
-	if tui["theme"] != "github" || tui["scroll_speed"] != float64(3) {
+	if tui["theme"] != openCodeTheme || tui["mouse"] != true {
 		t.Errorf("tui.json = %v", tui)
 	}
 	attention, _ := tui["attention"].(map[string]any)
-	// The deep merge keeps the generated key and adds the user's.
-	if attention["enabled"] != false || attention["sound"] != false {
+	// A server harness has no business making a desktop notification sound.
+	if attention["enabled"] != false {
 		t.Errorf("attention = %v", attention)
 	}
 
@@ -805,10 +757,10 @@ func TestGeneratedFilesAreValid(t *testing.T) {
 	if inline["share"] != "disabled" || inline["autoupdate"] != false {
 		t.Errorf("the inline config = %v", inline)
 	}
-	if list, _ := inline["instructions"].([]any); len(list) != 1 {
-		t.Errorf("the inline override did not apply: %v", inline)
+	if permission, _ := inline["permission"].(map[string]any); permission["*"] != "allow" {
+		t.Errorf("the inline config does not allow everything: %v", inline["permission"])
 	}
-	if plan.Env["OPENCODE_PERMISSION"] != l.settings.Harnesses.OpenCode.PermissionJSON {
+	if !json.Valid([]byte(plan.Env["OPENCODE_PERMISSION"])) {
 		t.Errorf("OPENCODE_PERMISSION = %q", plan.Env["OPENCODE_PERMISSION"])
 	}
 }
@@ -876,10 +828,6 @@ func TestShellHasNothingToResume(t *testing.T) {
 	}
 	if _, err := (Shell{}).ResumePlan(context.Background(), l.req()); err != ErrNoResume {
 		t.Fatalf("resume = %v", err)
-	}
-	l.settings.Harnesses.Shell.Login = false
-	if carries(l.plan(Shell{}).Argv, "-l") {
-		t.Error("the login switch did nothing")
 	}
 }
 

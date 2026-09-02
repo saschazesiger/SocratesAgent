@@ -12,16 +12,18 @@ import (
 
 // Codex is the Codex TUI launcher.
 //
-// Three things about it are not options and a change that drops one of them is
-// a defect:
+// Only the binary, the model and the effort come from the settings. The rest
+// of the command line is fixed policy - see docs/design/HARNESS-POLICY.md -
+// and four parts of it are load-bearing rather than tasteful:
 //
 //   - the trust override for the working directory, because a fresh directory
 //     otherwise opens on a blocking "do you trust this directory?" picker that
 //     eats the first keystroke - and dynamic working directories are fresh
 //     every single time;
 //   - `--strict-config`, because without it an unknown -c key is ignored in
-//     silence, and a dashboard whose settings might quietly do nothing is not
-//     a dashboard worth having;
+//     silence, and a policy that might quietly do nothing is not a policy;
+//   - `--dangerously-bypass-approvals-and-sandbox`, because an approval prompt
+//     in a pane nobody is watching is a session that has stopped;
 //   - `CODEX_INTERNAL_ORIGINATOR_OVERRIDE=socrates`, because it stamps the
 //     rollout file that is how the session id is found again.
 type Codex struct{}
@@ -37,6 +39,11 @@ func (Codex) VersionArgs() []string { return []string{"--version"} }
 func (c Codex) Plan(ctx context.Context, req PlanRequest) (LaunchPlan, error) {
 	return c.plan(req, nil)
 }
+
+// codexTheme is the TUI palette. Codex does not validate a theme name, so this
+// is one of its own: light-gray is the light family, which is what a white
+// page wants.
+const codexTheme = "light-gray"
 
 // ResumePlan inserts `resume <uuid>` before the identical option block, which
 // `codex resume` accepts unchanged. --last is deliberately not used: it is
@@ -63,65 +70,23 @@ func (c Codex) plan(req PlanRequest, lead []string) (LaunchPlan, error) {
 	if effort := oneOf(pick(req.Effort, opts.DefaultEffort), config.CodexEfforts); effort != "" {
 		argv = append(argv, "-c", tomlAssign("model_reasoning_effort", effort))
 	}
-	argv = flag(argv, "-s", oneOf(opts.Sandbox, config.CodexSandboxes))
-	switch opts.Approval {
-	case "on-request", "never":
-		argv = append(argv, "-a", opts.Approval)
-	case "on-failure":
-		// The flag rejects on-failure; the configuration key takes it.
-		argv = append(argv, "-c", tomlAssign("approval_policy", "on-failure"))
-	}
-	if opts.TrustWorkdir {
-		argv = append(argv, "-c", trustLevelOverride(req.Cwd))
-	}
-	argv = append(argv, "-c", tomlAssign("tui.theme", opts.TUITheme))
-	argv = switchFlag(argv, "--no-alt-screen", opts.NoAltScreen)
-	argv = repeated(argv, "--add-dir", opts.AddDirs)
-	argv = switchFlag(argv, "--search", opts.WebSearch)
-	argv = switchFlag(argv, "--approve-for-me", opts.ApproveForMe)
-	if opts.NetworkAccess {
-		argv = append(argv, "-c", "sandbox_workspace_write.network_access=true")
-	}
-	if len(opts.WritableRoots) > 0 {
-		argv = append(argv, "-c", "sandbox_workspace_write.writable_roots="+tomlStringArray(opts.WritableRoots))
-	}
-	if opts.HideAgentReasoning {
-		argv = append(argv, "-c", "hide_agent_reasoning=true")
-	}
-	if opts.ShowRawAgentReasoning {
-		argv = append(argv, "-c", "show_raw_agent_reasoning=true")
-	}
-	if summary := oneOf(opts.ModelReasoningSummary, []string{"auto", "concise", "detailed", "none"}); summary != "" {
-		argv = append(argv, "-c", tomlAssign("model_reasoning_summary", summary))
-	}
-	if verbosity := oneOf(opts.ModelVerbosity, []string{"low", "medium", "high"}); verbosity != "" {
-		argv = append(argv, "-c", tomlAssign("model_verbosity", verbosity))
-	}
-	if personality := oneOf(opts.Personality, []string{"none", "friendly", "pragmatic"}); personality != "" {
-		argv = append(argv, "-c", tomlAssign("personality", personality))
-	}
-	if review := strings.TrimSpace(opts.ReviewModel); review != "" {
-		argv = append(argv, "-c", tomlAssign("review_model", review))
-	}
-	argv = repeated(argv, "--enable", opts.FeaturesEnable)
-	argv = repeated(argv, "--disable", opts.FeaturesDisable)
-	argv = flag(argv, "--remote", opts.RemoteAddr)
-	argv = flag(argv, "--remote-auth-token-env", opts.RemoteAuthTokenEnv)
-	argv = switchFlag(argv, "--dangerously-bypass-approvals-and-sandbox", opts.Bypass)
-	argv = repeated(argv, "-c", opts.ConfigOverrides)
-	argv = append(argv, opts.ExtraArgs...)
+	argv = append(argv, "-c", trustLevelOverride(req.Cwd))
+	argv = append(argv, "-c", tomlAssign("tui.theme", codexTheme))
+	// Inline rather than the alternate screen, so the pane keeps its
+	// scrollback - which is the whole of what a web terminal has.
+	argv = append(argv, "--no-alt-screen")
+	// Neither -s nor -a is passed with this: the flag replaces both, and Codex
+	// refuses a command line that sets a sandbox and then bypasses it.
+	// `--yolo` is the same flag under a shorter name; the long spelling is
+	// used because it says what it does.
+	argv = append(argv, "--dangerously-bypass-approvals-and-sandbox")
+	// --remote is never passed: a Codex TUI that talks to somebody else's app
+	// server is not the session this app started.
 
 	env := baseEnv(req)
-	if opts.DisableKeyboardEnhancement {
-		env["CODEX_TUI_DISABLE_KEYBOARD_ENHANCEMENT"] = "1"
-	}
-	addExtraEnv(env, opts.ExtraEnv)
 	// The originator is what tells a rollout file written by Socrates apart
 	// from one the user started by hand, and it is how the session id is found
-	// again. It is set after the raw list on purpose: §C.11 lists it as always
-	// applied and not user-visible, and an extra_env entry that overwrote it
-	// would leave the watcher matching nothing at all, in silence, for fifteen
-	// minutes.
+	// again.
 	env["CODEX_INTERNAL_ORIGINATOR_OVERRIDE"] = codexOriginator
 
 	return LaunchPlan{
@@ -167,14 +132,6 @@ func tomlString(value string) string {
 		return `""`
 	}
 	return strings.ReplaceAll(string(quoted), "\u007f", `\u007F`)
-}
-
-func tomlStringArray(values []string) string {
-	parts := make([]string, 0, len(values))
-	for _, v := range values {
-		parts = append(parts, tomlString(v))
-	}
-	return "[" + strings.Join(parts, ",") + "]"
 }
 
 // codexHome is where Codex keeps its rollout files and its index.

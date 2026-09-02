@@ -37,49 +37,29 @@ func adminEnv(t *testing.T) *testEnv {
 	return env
 }
 
-// Every group of every harness, saved and read back. This is the server half
-// of the adminoptions scenario: whatever shape a control has in the page, the
+// The basics of every harness, saved and read back. This is the server half of
+// the adminoptions scenario: whatever shape a control has in the page, the
 // value it writes has to survive a round trip through the settings document.
 func TestHarnessOptionsRoundTrip(t *testing.T) {
 	env := adminEnv(t)
-	dir := t.TempDir()
 
 	res, saved := putSettings(t, env, func(settings map[string]any) {
 		harnesses := settings["harnesses"].(map[string]any)
-		shell := harnesses["shell"].(map[string]any)
-		shell["login"] = false
-		shell["extra_args"] = []any{"-x"}
+		harnesses["shell"].(map[string]any)["binary"] = "/bin/sh"
 
 		claude := harnesses["claude"].(map[string]any)
+		claude["binary"] = "/opt/claude"
+		claude["default_model"] = "opus"
 		claude["default_effort"] = "high"
-		claude["autocompact"] = "200k"
-		claude["permission_mode"] = "plan"
-		claude["setting_sources"] = []any{"user", "project"}
-		claude["add_dirs"] = []any{dir}
-		claude["remote_control_prefix"] = "socrates-"
-		claude["agent"] = "reviewer"
-		claude["mcp_config"] = []any{filepath.Join(dir, "mcp.json")}
-		claude["disable_mouse"] = true
-		claude["verbose"] = true
-		claude["settings_overrides"] = `{"env":{"FOO":"bar"}}`
+		claude["models"] = []any{map[string]any{"id": "opus", "effort": "high"}}
 
 		codex := harnesses["codex"].(map[string]any)
+		codex["default_model"] = "gpt-5.6-terra"
 		codex["default_effort"] = "xhigh"
-		codex["sandbox"] = "read-only"
-		codex["remote_auth_token_env"] = "CODEX_TOKEN"
-		codex["web_search"] = true
-		codex["tui_theme"] = "ocean-light"
-		codex["config_overrides"] = []any{"tools.web_search=true"}
 
 		opencode := harnesses["opencode"].(map[string]any)
-		opencode["small_model"] = "openai/gpt-5-mini"
-		opencode["permission_json"] = `{"*":"ask"}`
-		opencode["enabled_providers"] = []any{"anthropic"}
-		opencode["pure"] = true
-		opencode["share"] = "manual"
-		opencode["tui_theme"] = "nord"
-		opencode["log_level"] = "WARN"
-		opencode["config_content"] = `{"theme":"nord"}`
+		opencode["default_model"] = "anthropic/claude-sonnet-4-5"
+		opencode["enabled"] = false
 	})
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("save failed: %d %#v", res.StatusCode, saved)
@@ -93,57 +73,67 @@ func TestHarnessOptionsRoundTrip(t *testing.T) {
 		harness, key string
 		value        any
 	}{
-		{"shell", "login", false},
+		{"shell", "binary", "/bin/sh"},
+		{"claude", "binary", "/opt/claude"},
+		{"claude", "default_model", "opus"},
 		{"claude", "default_effort", "high"},
-		{"claude", "autocompact", "200k"},
-		{"claude", "permission_mode", "plan"},
-		{"claude", "agent", "reviewer"},
-		{"claude", "remote_control_prefix", "socrates-"},
-		{"claude", "disable_mouse", true},
-		{"claude", "verbose", true},
-		{"claude", "settings_overrides", `{"env":{"FOO":"bar"}}`},
+		{"codex", "default_model", "gpt-5.6-terra"},
 		{"codex", "default_effort", "xhigh"},
-		{"codex", "sandbox", "read-only"},
-		{"codex", "remote_auth_token_env", "CODEX_TOKEN"},
-		{"codex", "web_search", true},
-		{"codex", "tui_theme", "ocean-light"},
-		{"opencode", "small_model", "openai/gpt-5-mini"},
-		{"opencode", "pure", true},
-		{"opencode", "share", "manual"},
-		{"opencode", "tui_theme", "nord"},
-		{"opencode", "log_level", "WARN"},
-		{"opencode", "config_content", `{"theme":"nord"}`},
+		{"opencode", "default_model", "anthropic/claude-sonnet-4-5"},
+		{"opencode", "enabled", false},
 	} {
 		if got[want.harness].(map[string]any)[want.key] != want.value {
 			t.Errorf("harnesses.%s.%s is %#v, want %#v", want.harness, want.key,
 				got[want.harness].(map[string]any)[want.key], want.value)
 		}
 	}
-	if sources := got["claude"].(map[string]any)["setting_sources"].([]any); len(sources) != 2 {
-		t.Errorf("setting_sources came back as %#v", sources)
-	}
-	if overrides := got["codex"].(map[string]any)["config_overrides"].([]any); len(overrides) != 1 {
-		t.Errorf("config_overrides came back as %#v", overrides)
+	models := got["claude"].(map[string]any)["models"].([]any)
+	if len(models) != 1 || models[0].(map[string]any)["id"] != "opus" {
+		t.Errorf("the model short list came back as %#v", models)
 	}
 }
 
-// WP1 left these two to WP8's controls, and a closed list in the page is only
-// closed if the server says so too.
+// A document written before the dashboard was cut back to the basics is
+// accepted and its dead keys are dropped: an installation upgrading into this
+// version must not be met with a 400 it cannot fix.
+func TestSettingsIgnoreTheOptionsThatAreNowPolicy(t *testing.T) {
+	env := adminEnv(t)
+	res, saved := putSettings(t, env, func(settings map[string]any) {
+		claude := settings["harnesses"].(map[string]any)["claude"].(map[string]any)
+		claude["default_model"] = "opus"
+		// Every one of these used to be a control, and three of them used to
+		// be refused when they were wrong.
+		claude["permission_mode"] = "invented"
+		claude["autocompact"] = "lots"
+		claude["setting_sources"] = []any{"user", "global"}
+		claude["remote_control"] = true
+		claude["extra_args"] = []any{"--verbose"}
+		codex := settings["harnesses"].(map[string]any)["codex"].(map[string]any)
+		codex["config_overrides"] = []any{"not-an-assignment"}
+		codex["sandbox"] = "danger-full-access"
+	})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("answered %d, want 200: %#v", res.StatusCode, saved)
+	}
+	claude := saved["settings"].(map[string]any)["harnesses"].(map[string]any)["claude"].(map[string]any)
+	if claude["default_model"] != "opus" {
+		t.Errorf("the setting that is still a setting was lost: %#v", claude)
+	}
+	for _, gone := range []string{"permission_mode", "autocompact", "remote_control", "extra_args"} {
+		if _, found := claude[gone]; found {
+			t.Errorf("%s came back out of the stored document", gone)
+		}
+	}
+}
+
+// A closed list in the page is only closed if the server says so too: the API
+// takes whatever is sent to it.
 func TestSettingsRefusesWhatTheControlsCannotProduce(t *testing.T) {
 	for _, bad := range []struct {
 		name   string
 		mutate func(map[string]any)
 		says   string
 	}{
-		{"autocompact", func(s map[string]any) {
-			s["harnesses"].(map[string]any)["claude"].(map[string]any)["autocompact"] = "lots"
-		}, "autocompact"},
-		{"autocompact out of range", func(s map[string]any) {
-			s["harnesses"].(map[string]any)["claude"].(map[string]any)["autocompact"] = "4M"
-		}, "100k to 1M"},
-		{"setting sources", func(s map[string]any) {
-			s["harnesses"].(map[string]any)["claude"].(map[string]any)["setting_sources"] = []any{"user", "global"}
-		}, "setting_sources"},
 		{"relative workspace root", func(s map[string]any) {
 			s["workspace"].(map[string]any)["root"] = "workspaces"
 		}, "absolute"},

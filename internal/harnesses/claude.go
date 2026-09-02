@@ -5,11 +5,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/saschazesiger/SocratesAgent/internal/config"
 )
 
 // Claude is the Claude Code launcher.
@@ -36,8 +34,10 @@ var claudeEfforts = []string{"low", "medium", "high", "xhigh", "max"}
 // claudeSettingsFile is the generated settings document, one per session.
 const claudeSettingsFile = "claude-settings.json"
 
-// claudeDebugFile is where --debug-file writes when the admin turns it on.
-const claudeDebugFile = "claude-debug.log"
+// claudeTranscriptDays is how long Claude Code keeps a transcript on disk.
+// A conversation has to be resumable after a week away from the machine, and
+// Claude Code's own default is shorter than that.
+const claudeTranscriptDays = 90
 
 // Plan builds a fresh session, with a uuid of our own choosing.
 //
@@ -67,15 +67,18 @@ func (c Claude) ResumePlan(ctx context.Context, req PlanRequest) (LaunchPlan, er
 	if id == "" {
 		return LaunchPlan{}, ErrNoResume
 	}
-	lead := []string{"--resume", id}
-	if req.Settings.Harnesses.Claude.ResumeMode == config.ResumeFork {
-		lead = append(lead, "--fork-session")
-	}
-	return c.plan(req, lead, id)
+	// --fork-session is deliberately not offered: a resume continues the
+	// conversation it names, and a branch of it is a second session the user
+	// never asked for.
+	return c.plan(req, []string{"--resume", id}, id)
 }
 
 // plan is the shared body: everything but the two flags that decide whether
 // this is a new conversation or an old one.
+//
+// The command line is fixed policy, not configuration. Only the binary, the
+// model and the effort come from the settings; the rest is what
+// docs/design/HARNESS-POLICY.md says every Socrates session gets.
 func (c Claude) plan(req PlanRequest, lead []string, id string) (LaunchPlan, error) {
 	opts := req.Settings.Harnesses.Claude
 	bin, err := resolveBinary(opts.Binary, c.DefaultBinary())
@@ -88,96 +91,35 @@ func (c Claude) plan(req PlanRequest, lead []string, id string) (LaunchPlan, err
 	argv = flag(argv, "--name", req.Title)
 	argv = flag(argv, "--model", pick(req.Model, opts.DefaultModel))
 	argv = flag(argv, "--effort", oneOf(pick(req.Effort, opts.DefaultEffort), claudeEfforts))
-	if opts.PermissionMode != "" && opts.PermissionMode != "unset" {
-		argv = append(argv, "--permission-mode", opts.PermissionMode)
-	}
-	switch opts.SkipPermissions {
-	case config.SkipPermissionsForce:
-		argv = append(argv, "--dangerously-skip-permissions")
-	case config.SkipPermissionsAllow:
-		argv = append(argv, "--allow-dangerously-skip-permissions")
-	}
-	argv = flag(argv, "--allowedTools", strings.Join(opts.AllowedTools, ","))
-	argv = flag(argv, "--disallowedTools", strings.Join(opts.DisallowedTools, ","))
-	argv = flag(argv, "--tools", opts.Tools)
-	argv = repeated(argv, "--add-dir", opts.AddDirs)
+	// Permissions are bypassed, always. A session is a terminal somebody
+	// opened on their own machine to do work in; a permission dialog in it is
+	// a dialog nobody is watching, on a phone, in a car. --permission-mode
+	// bypassPermissions would be the same thing said less plainly, and the
+	// settings key below is what stops Claude Code asking about it first.
+	argv = append(argv, "--dangerously-skip-permissions")
 	argv = append(argv, "--settings", settingsPath)
-	argv = flag(argv, "--setting-sources", strings.Join(opts.SettingSources, ","))
-	argv = switchFlag(argv, "--restricted", opts.Restricted)
-	argv = switchFlag(argv, "--safe-mode", opts.SafeMode)
-	argv = switchFlag(argv, "--bare", opts.Bare)
-	argv = flag(argv, "--agent", opts.Agent)
-	argv = flag(argv, "--advisor", opts.Advisor)
-	argv = flag(argv, "--autocompact", opts.Autocompact)
-	argv = flag(argv, "--append-system-prompt", opts.AppendSystemPrompt)
-	if strings.TrimSpace(opts.AppendSystemPrompt) != "" {
-		// The snapshot only decides anything when there is an appended prompt:
-		// with it on, a *changed* append on a later launch is ignored until
-		// compaction. Passing it unconditionally would flip Claude's own
-		// default (on, for the built-in prompt) for every session that never
-		// appends anything, which is an unrequested behaviour change with a
-		// prompt-cache cost on every resume.
-		argv = flag(argv, "--system-prompt-snapshot", oneOf(opts.SystemPromptSnapshot, []string{"on", "off"}))
-	}
-	argv = switchFlag(argv, "--exclude-dynamic-system-prompt-sections", opts.ExcludeDynamicPromptSections)
-	argv = switchFlag(argv, "--disable-slash-commands", opts.DisableSlashCommands)
-	argv = repeated(argv, "--mcp-config", opts.MCPConfig)
-	argv = switchFlag(argv, "--strict-mcp-config", opts.StrictMCPConfig)
-	argv = repeated(argv, "--plugin-dir", opts.PluginDirs)
-	if opts.RemoteControl {
-		// The name is optional, and an optional value takes the next
-		// non-dash argument - which would be the first of extra_args if the
-		// admin left the name empty. The session title is a better name than
-		// somebody's raw flag, and it is always there.
-		name := strings.TrimSpace(opts.RemoteControlName)
-		if name == "" {
-			name = strings.TrimSpace(req.Title)
-		}
-		argv = append(argv, "--remote-control")
-		if name != "" {
-			argv = append(argv, name)
-		}
-	}
-	argv = switchFlag(argv, "--verbose", opts.Verbose)
-	argv = flag(argv, "-d", opts.DebugFilter)
-	if opts.DebugFile {
-		argv = append(argv, "--debug-file", SessionFile(req.DataDir, req.SessionID, claudeDebugFile))
-	}
-	argv = append(argv, opts.ExtraArgs...)
+	// --remote-control is never passed. See claudeSettings and
+	// pinClaudeGlobalConfig for the two places it is also turned off, because
+	// not passing the flag is not on its own enough.
 
 	env := baseEnv(req)
 	// Claude Code does not read OSC 11 at all; COLORFGBG in baseEnv is what
 	// decides its palette, and the true-colour hint is what keeps that palette
 	// from being approximated to 256 colours inside tmux.
 	env["CLAUDE_CODE_TMUX_TRUECOLOR"] = "1"
-	if opts.DisableTerminalTitle {
-		env["CLAUDE_CODE_DISABLE_TERMINAL_TITLE"] = "1"
-	}
-	if opts.DisableMouse {
-		env["CLAUDE_CODE_DISABLE_MOUSE"] = "1"
-	}
-	if opts.NoFlicker {
-		env["CLAUDE_CODE_NO_FLICKER"] = "1"
-	}
-	if opts.ForceSyncOutput {
-		env["CLAUDE_CODE_FORCE_SYNC_OUTPUT"] = "1"
-	}
-	if opts.MaxThinkingTokens > 0 {
-		env["MAX_THINKING_TOKENS"] = strconv.Itoa(opts.MaxThinkingTokens)
-	}
-	if prefix := strings.TrimSpace(opts.RemoteControlPrefix); prefix != "" {
-		env["CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX"] = prefix
-	}
-	addExtraEnv(env, opts.ExtraEnv)
+	// The pane's title belongs to Socrates, and a redraw that blanks the
+	// screen between frames is what a phone on a slow link sees as a flash.
+	// The mouse is left alone: tmux owns it, and CLAUDE_CODE_DISABLE_MOUSE
+	// would take it from the pane as well as from the program.
+	env["CLAUDE_CODE_DISABLE_TERMINAL_TITLE"] = "1"
+	env["CLAUDE_CODE_NO_FLICKER"] = "1"
 
-	settings, err := claudeSettings(opts, env)
+	settings, err := claudeSettings(env)
 	if err != nil {
 		return LaunchPlan{}, err
 	}
 
-	if opts.PinLightTheme {
-		pinClaudeTheme(claudeGlobalConfigPath())
-	}
+	pinClaudeGlobalConfig(claudeGlobalConfigPath(), req.Cwd)
 
 	return LaunchPlan{
 		Argv:       argv,
@@ -190,40 +132,25 @@ func (c Claude) plan(req PlanRequest, lead []string, id string) (LaunchPlan, err
 }
 
 // claudeSettings builds the one auditable artefact per session. Only keys that
-// were verified against the shipped binary are written; anything else a person
-// wants goes through settings_overrides, which is theirs and is deep-merged
-// last.
+// were verified against the shipped binary are written.
 //
 // askUserQuestionTimeout and autoContinueAtUsageLimit are deliberately absent.
 // They are documented but do not appear in the 2.1.258 binary, and a timeout of
 // zero might well mean "dismiss every question at once", which would break
 // AskUserQuestion in every session Socrates ever starts.
-func claudeSettings(opts config.ClaudeOptions, env map[string]string) ([]byte, error) {
-	doc := map[string]any{}
-
-	// Without these two an unattended launch into bypass or auto mode stops on
-	// a confirmation dialog before the user can type a single character. They
-	// are written only for the modes that actually raise those dialogs.
-	if opts.PermissionMode == "bypassPermissions" || opts.SkipPermissions != config.SkipPermissionsOff {
-		doc["skipDangerousModePermissionPrompt"] = true
-	}
-	if opts.PermissionMode == "auto" {
-		doc["skipAutoPermissionPrompt"] = true
-	}
-	if opts.CleanupPeriodDays > 0 {
+func claudeSettings(env map[string]string) ([]byte, error) {
+	doc := map[string]any{
+		// Without this, a launch with --dangerously-skip-permissions stops on
+		// a confirmation dialog before the user can type a single character.
+		"skipDangerousModePermissionPrompt": true,
+		// Remote Control is off in every Socrates session, and the flag not
+		// being passed is only half of it: `disableRemoteControl` is the key
+		// the binary reports as `Disabled by org policy (disableRemoteControl)`
+		// and is what stops the feature being offered inside the pane at all.
+		"disableRemoteControl": true,
 		// A transcript has to outlive the offline stretch it may have to be
-		// resumed after, and the default retention is shorter than that.
-		doc["cleanupPeriodDays"] = opts.CleanupPeriodDays
-	}
-	permissions := map[string]any{}
-	if opts.PermissionMode != "" && opts.PermissionMode != "unset" {
-		permissions["defaultMode"] = opts.PermissionMode
-	}
-	if len(opts.AddDirs) > 0 {
-		permissions["additionalDirectories"] = opts.AddDirs
-	}
-	if len(permissions) > 0 {
-		doc["permissions"] = permissions
+		// resumed after, and Claude Code's own retention is shorter than that.
+		"cleanupPeriodDays": claudeTranscriptDays,
 	}
 	if len(env) > 0 {
 		// The env key reaches every subprocess Claude Code starts, which is
@@ -234,8 +161,6 @@ func claudeSettings(opts config.ClaudeOptions, env map[string]string) ([]byte, e
 		}
 		doc["env"] = vars
 	}
-
-	doc = mergeJSON(doc, opts.SettingsOverrides)
 	return json.MarshalIndent(doc, "", "  ")
 }
 
@@ -293,10 +218,12 @@ func claudeGlobalConfigPath() string {
 	return filepath.Join(home, ".claude.json")
 }
 
-// pinClaudeTheme writes "theme": "light" into the global configuration.
+// pinClaudeGlobalConfig writes the two preferences that are not settings-file
+// keys into Claude Code's global configuration: the light theme, and Remote
+// Control off at startup.
 //
-// Where that preference lives was verified against the 2.1.258 binary rather
-// than guessed: the defaults object the binary builds for its global config -
+// Where those preferences live was verified against the 2.1.258 binary rather
+// than guessed. The defaults object the binary builds for its global config -
 // `{numStartups:0, installMethod:undefined, autoUpdates:undefined,
 // theme:"dark", preferredNotifChannel:"auto", …, diffTool:"auto",
 // autoConnectIde:false, …}` - carries `theme`, and the same object is the one
@@ -307,20 +234,31 @@ func claudeGlobalConfigPath() string {
 // "dark" - which on Socrates' white page is the unreadable case. There is no
 // --theme flag in 2.1.258 and `theme` is not a settings.json key.
 //
+// `remoteControlAtStartup` is the second half of turning Remote Control off.
+// Not passing --remote-control is not enough on its own: the binary logs
+// `remoteControlAtStartup: true in …` for `project and local` and for
+// `legacy_global_config`, so a person who once turned Remote Control on by
+// hand has a stored preference that starts it again with no flag at all. It is
+// cleared at the top level and inside the entry for this working directory -
+// but only when that entry already exists, because a projects entry Socrates
+// invents is a directory Claude Code has never been run in, where the
+// preference cannot be set in the first place.
+//
 // The file belongs to the user and holds their credentials, so it is read,
-// changed by exactly one key and written through a temporary file in the same
-// directory; when it does not exist at all, what is written is a file with
-// only this key in it, which is what Claude Code itself would grow from. A
+// changed by exactly these keys and written through a temporary file in the
+// same directory; when it does not exist at all, what is written is a file
+// with only them in it, which is what Claude Code itself would grow from. A
 // failure is not a launch failure: COLORFGBG is the lever that actually
-// decides the palette, and this is the belt to its braces.
+// decides the palette, and the missing flag is what actually decides Remote
+// Control.
 //
 // It is a side effect of building a plan rather than of starting the pane, and
-// Claude Code writes the same file under a lock of its own. A pin that lands
+// Claude Code writes the same file under a lock of its own. A write that lands
 // while another Claude is running can therefore be overwritten by it. That
 // costs one session the wrong palette and nothing else, which is why it is
 // left as it is rather than being turned into a lock protocol against a file
 // format nobody has documented.
-func pinClaudeTheme(path string) {
+func pinClaudeGlobalConfig(path, cwd string) {
 	if path == "" {
 		return
 	}
@@ -334,10 +272,24 @@ func pinClaudeTheme(path string) {
 	case !os.IsNotExist(err):
 		return
 	}
-	if doc["theme"] == "light" {
+	changed := false
+	if doc["theme"] != "light" {
+		doc["theme"] = "light"
+		changed = true
+	}
+	if doc["remoteControlAtStartup"] != false {
+		doc["remoteControlAtStartup"] = false
+		changed = true
+	}
+	if projects, ok := doc["projects"].(map[string]any); ok && cwd != "" {
+		if entry, ok := projects[cwd].(map[string]any); ok && entry["remoteControlAtStartup"] != false {
+			entry["remoteControlAtStartup"] = false
+			changed = true
+		}
+	}
+	if !changed {
 		return
 	}
-	doc["theme"] = "light"
 	out, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return

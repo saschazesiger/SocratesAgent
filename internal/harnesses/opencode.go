@@ -36,6 +36,34 @@ const openCodeUser = "opencode"
 // openCodeTUIFile is the generated tui.json, one per session.
 const openCodeTUIFile = "tui.json"
 
+// openCodeTheme is the TUI palette family. The light or dark half of it is
+// chosen by the pane's OSC 11 answer, not by this name.
+const openCodeTheme = "github"
+
+// openCodePermission is the answer to every permission OpenCode knows how to
+// ask about. A prompt in a pane nobody is watching is a session that has
+// stopped, so there are none.
+//
+// The wildcard is what OpenCode's own built-in agents use ("*":"deny" with
+// named exceptions), and it is merged into config.permission from the
+// OPENCODE_PERMISSION variable. The named keys are listed as well as the
+// wildcard because external_directory is asked for through a path of its own
+// and a wildcard that did not cover it would be a blocking prompt nobody
+// would find.
+var openCodePermission = map[string]any{
+	"*":                  "allow",
+	"bash":               "allow",
+	"edit":               "allow",
+	"write":              "allow",
+	"patch":              "allow",
+	"read":               "allow",
+	"webfetch":           "allow",
+	"websearch":          "allow",
+	"task":               "allow",
+	"todowrite":          "allow",
+	"external_directory": "allow",
+}
+
 // openCodeSecrets remembers each session's server password for as long as the
 // process lives. It is deliberately not in the store: the password is only
 // meaningful while the TUI it belongs to is running, and a secret with a
@@ -80,11 +108,10 @@ func (o OpenCode) ResumePlan(ctx context.Context, req PlanRequest) (LaunchPlan, 
 	if id == "" {
 		return LaunchPlan{}, ErrNoResume
 	}
-	lead := []string{"--session", id}
-	if req.Settings.Harnesses.OpenCode.ResumeMode == config.ResumeFork {
-		lead = append(lead, "--fork")
-	}
-	return o.plan(req, lead)
+	// --fork is deliberately not offered: a resume continues the conversation
+	// it names, and a branch of it is a second session the user never asked
+	// for.
+	return o.plan(req, []string{"--session", id})
 }
 
 func (o OpenCode) plan(req PlanRequest, session []string) (LaunchPlan, error) {
@@ -105,31 +132,25 @@ func (o OpenCode) plan(req PlanRequest, session []string) (LaunchPlan, error) {
 	argv := []string{bin, "--port", strconv.Itoa(port), "--hostname", "127.0.0.1"}
 	argv = append(argv, session...)
 	argv = flag(argv, "-m", pick(req.Model, opts.DefaultModel))
-	argv = flag(argv, "--agent", opts.DefaultAgent)
-	argv = switchFlag(argv, "--auto", opts.Auto)
-	argv = switchFlag(argv, "--pure", opts.Pure)
-	if opts.Mini {
-		argv = append(argv, "--mini")
-		// Both of these are mini-only, and the dashboard greys them out
-		// otherwise; the launcher agrees rather than trusting it.
-		argv = switchFlag(argv, "--no-replay", opts.NoReplay)
-		if opts.ReplayLimit > 0 {
-			argv = append(argv, "--replay-limit", strconv.Itoa(opts.ReplayLimit))
-		}
-	}
-	argv = flag(argv, "--log-level", opts.LogLevel)
-	argv = append(argv, opts.ExtraArgs...)
-	// --print-logs is never passed: it writes the log to stderr, which is the
-	// very pane the user is reading.
+	// --auto is not passed: it approves only what is not explicitly denied,
+	// which leaves the answer to a configuration file the user may have.
+	// OPENCODE_PERMISSION below says allow to everything by name instead.
+	//
+	// --print-logs is never passed either: it writes the log to stderr, which
+	// is the very pane the user is reading.
 	//
 	// The project path is positional and goes last, after every flag.
 	argv = append(argv, req.Cwd)
 
-	tui, err := openCodeTUI(opts)
+	tui, err := openCodeTUI()
 	if err != nil {
 		return LaunchPlan{}, err
 	}
 	inline, err := openCodeConfig(opts, req)
+	if err != nil {
+		return LaunchPlan{}, err
+	}
+	permission, err := json.Marshal(openCodePermission)
 	if err != nil {
 		return LaunchPlan{}, err
 	}
@@ -138,28 +159,17 @@ func (o OpenCode) plan(req PlanRequest, session []string) (LaunchPlan, error) {
 	env := baseEnv(req)
 	env["OPENCODE_DISABLE_AUTOUPDATE"] = "1"
 	env["OPENCODE_DISABLE_TERMINAL_TITLE"] = "1"
-	if opts.DisableModelsFetch {
-		// This is what lets OpenCode start with no network at all, which is
-		// the difference between a usable session in a car and a spinner.
-		env["OPENCODE_DISABLE_MODELS_FETCH"] = "1"
-	}
-	if opts.DisableProjectConfig {
-		env["OPENCODE_DISABLE_PROJECT_CONFIG"] = "1"
-	}
-	if opts.DisableMouse {
-		env["OPENCODE_DISABLE_MOUSE"] = "1"
-	}
-	if perm := strings.TrimSpace(opts.PermissionJSON); perm != "" {
-		env["OPENCODE_PERMISSION"] = perm
-	}
-	addExtraEnv(env, opts.ExtraEnv)
-	// These four are the launch, not a preference: the two generated documents
-	// are what make the session look and behave the way it was configured, and
-	// the credentials are the only thing between the agent and any process on
-	// the machine. An extra_env entry that overwrote a password would turn
-	// every discovery poll into a 401 and the launch into a failure; one that
-	// overwrote a config path would silently drop the theme. So they are
-	// applied last and the raw list cannot reach them.
+	// This is what lets OpenCode start with no network at all, which is the
+	// difference between a usable session in a car and a spinner.
+	env["OPENCODE_DISABLE_MODELS_FETCH"] = "1"
+	// The permissions are set twice on purpose: this variable is merged over
+	// every configuration file OpenCode found, and the generated config below
+	// is what a session carries if the variable is ever dropped.
+	env["OPENCODE_PERMISSION"] = string(permission)
+	// The two generated documents are what make the session look and behave
+	// the way it does, and the credentials are the only thing between the
+	// agent and any process on the machine: the TUI is the whole OpenCode HTTP
+	// server, and without a password every path on it is open.
 	env["OPENCODE_TUI_CONFIG"] = tuiPath
 	env["OPENCODE_CONFIG_CONTENT"] = string(inline)
 	env["OPENCODE_SERVER_USERNAME"] = openCodeUser
@@ -178,52 +188,36 @@ func (o OpenCode) plan(req PlanRequest, session []string) (LaunchPlan, error) {
 	}, nil
 }
 
-// openCodeTUI is the generated tui.json: the theme family, whether the mouse
-// is captured, and no attention noises, because a server harness has no
-// business trying to make a desktop notification sound.
+// openCodeTUI is the generated tui.json: the theme family, a captured mouse,
+// and no attention noises, because a server harness has no business trying to
+// make a desktop notification sound.
 //
 // A light background is a per-theme mode rather than a theme of its own -
 // every built-in theme carries a {dark,light} pair - so the name here chooses
 // the palette family and the OSC 11 answer, which tmux gives from the window
 // style, chooses the mode.
-func openCodeTUI(opts config.OpenCodeOptions) ([]byte, error) {
-	doc := map[string]any{
+func openCodeTUI() ([]byte, error) {
+	return json.MarshalIndent(map[string]any{
 		"$schema":   "https://opencode.ai/tui.json",
-		"theme":     opts.TUITheme,
-		"mouse":     opts.Mouse,
-		"attention": map[string]any{"enabled": opts.Attention},
-	}
-	doc = mergeJSON(doc, opts.TUIConfig)
-	return json.MarshalIndent(doc, "", "  ")
+		"theme":     openCodeTheme,
+		"mouse":     true,
+		"attention": map[string]any{"enabled": false},
+	}, "", "  ")
 }
 
 // openCodeConfig is OPENCODE_CONFIG_CONTENT, which is merged last of every
 // file source and is therefore the one lever that reliably wins.
 func openCodeConfig(opts config.OpenCodeOptions, req PlanRequest) ([]byte, error) {
 	doc := map[string]any{
-		"$schema":    "https://opencode.ai/config.json",
-		"share":      opts.Share,
+		"$schema": "https://opencode.ai/config.json",
+		// Nothing a session does is published anywhere.
+		"share":      "disabled",
 		"autoupdate": false,
+		"permission": openCodePermission,
 	}
 	if model := pick(req.Model, opts.DefaultModel); model != "" {
 		doc["model"] = model
 	}
-	if opts.SmallModel != "" {
-		doc["small_model"] = opts.SmallModel
-	}
-	if len(opts.EnabledProviders) > 0 {
-		doc["enabled_providers"] = opts.EnabledProviders
-	}
-	if len(opts.DisabledProviders) > 0 {
-		doc["disabled_providers"] = opts.DisabledProviders
-	}
-	if perm := strings.TrimSpace(opts.PermissionJSON); perm != "" {
-		var permission any
-		if json.Unmarshal([]byte(perm), &permission) == nil {
-			doc["permission"] = permission
-		}
-	}
-	doc = mergeJSON(doc, opts.ConfigContent)
 	return json.Marshal(doc)
 }
 

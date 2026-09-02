@@ -10,15 +10,18 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 )
 
-// This file answers one question per option: the dashboard has some seventy of
-// them, and every one is a promise that setting it changes what the program is
-// started with. A promise nothing checks is a promise that quietly stops being
-// true - a dropped `--plugin-dir` or a lost `OPENCODE_DISABLE_PROJECT_CONFIG`
-// would pass every other test in this package.
+// This file answers one question per option: every setting the dashboard has
+// is a promise that setting it changes what the program is started with, and a
+// promise nothing checks is a promise that quietly stops being true.
 //
 // The tables are kept honest by reflection: a field of the option struct with
 // no entry here fails the test, so an option added to the catalogue cannot be
 // added without saying where it goes.
+//
+// The other half of a launch is no longer here. Since 2026-09-02 the argv is
+// fixed policy rather than configuration, and what it must contain - and must
+// never contain - is pinned by TestFixedPolicyArgv at the bottom of this file
+// rather than by a row per switch.
 
 // optionCase is one option, what it is set to, and what that must produce.
 type optionCase struct {
@@ -171,11 +174,6 @@ func TestShellOptionsReachTheLaunch(t *testing.T) {
 			set: func(o *config.HarnessSettings) { o.Shell.Binary = "/bin/sh" }},
 		{field: "Models", note: "a shell has no model step",
 			set: func(o *config.HarnessSettings) { o.Shell.Models = []config.ModelPick{{ID: "x"}} }},
-		{field: "ExtraArgs", set: func(o *config.HarnessSettings) { o.Shell.ExtraArgs = []string{"-x"} },
-			want: argvCarries("-x")},
-		{field: "ExtraEnv", set: func(o *config.HarnessSettings) { o.Shell.ExtraEnv = []string{"PS1=> "} },
-			want: envIs("PS1", "> ")},
-		{field: "Login", set: func(o *config.HarnessSettings) { o.Shell.Login = true }, want: argvCarries("-l")},
 	})
 }
 
@@ -187,70 +185,8 @@ func TestClaudeOptionsReachTheLaunch(t *testing.T) {
 		{field: "Enabled", note: "the picker, not the launcher", set: claude(func(c *config.ClaudeOptions) { c.Enabled = false })},
 		{field: "Binary", note: "resolved to argv[0]", set: claude(func(c *config.ClaudeOptions) { c.Binary = "claude" })},
 		{field: "Models", note: "the new-session sheet's short list", set: claude(func(c *config.ClaudeOptions) { c.Models = []config.ModelPick{{ID: "opus"}} })},
-		{field: "ExtraArgs", set: claude(func(c *config.ClaudeOptions) { c.ExtraArgs = []string{"--ax-screen-reader"} }), want: argvCarries("--ax-screen-reader")},
-		{field: "ExtraEnv", set: claude(func(c *config.ClaudeOptions) { c.ExtraEnv = []string{"ANTHROPIC_PROFILE=work"} }), want: envIs("ANTHROPIC_PROFILE", "work")},
-
 		{field: "DefaultModel", set: claude(func(c *config.ClaudeOptions) { c.DefaultModel = "opus" }), want: argvHas("--model", "opus")},
 		{field: "DefaultEffort", set: claude(func(c *config.ClaudeOptions) { c.DefaultEffort = "high" }), want: argvHas("--effort", "high")},
-		{field: "Advisor", set: claude(func(c *config.ClaudeOptions) { c.Advisor = "opus" }), want: argvHas("--advisor", "opus")},
-		{field: "Autocompact", set: claude(func(c *config.ClaudeOptions) { c.Autocompact = "200k" }), want: argvHas("--autocompact", "200k")},
-		{field: "MaxThinkingTokens", set: claude(func(c *config.ClaudeOptions) { c.MaxThinkingTokens = 4096 }), want: envIs("MAX_THINKING_TOKENS", "4096")},
-
-		{field: "PermissionMode", set: claude(func(c *config.ClaudeOptions) { c.PermissionMode = "plan" }), want: argvHas("--permission-mode", "plan")},
-		{field: "SkipPermissions", set: claude(func(c *config.ClaudeOptions) { c.SkipPermissions = config.SkipPermissionsAllow }), want: argvCarries("--allow-dangerously-skip-permissions")},
-		{field: "AllowedTools", set: claude(func(c *config.ClaudeOptions) { c.AllowedTools = []string{"Edit", "Bash(git *)"} }), want: argvHas("--allowedTools", "Edit,Bash(git *)")},
-		{field: "DisallowedTools", set: claude(func(c *config.ClaudeOptions) { c.DisallowedTools = []string{"WebFetch"} }), want: argvHas("--disallowedTools", "WebFetch")},
-		{field: "Tools", set: claude(func(c *config.ClaudeOptions) { c.Tools = "default,-Bash" }), want: argvHas("--tools", "default,-Bash")},
-		{field: "AddDirs", set: claude(func(c *config.ClaudeOptions) { c.AddDirs = []string{"/srv/one", "/srv/two"} }),
-			want: func(t *testing.T, p LaunchPlan) {
-				argvHas("--add-dir", "/srv/one")(t, p)
-				argvHas("--add-dir", "/srv/two")(t, p)
-				fileHas("permissions.additionalDirectories", []any{"/srv/one", "/srv/two"})(t, p)
-			}},
-		{field: "Restricted", set: claude(func(c *config.ClaudeOptions) { c.Restricted = true }), want: argvCarries("--restricted")},
-		{field: "SafeMode", set: claude(func(c *config.ClaudeOptions) { c.SafeMode = true }), want: argvCarries("--safe-mode")},
-		{field: "Bare", set: claude(func(c *config.ClaudeOptions) { c.Bare = true }), want: argvCarries("--bare")},
-		{field: "SettingSources", set: claude(func(c *config.ClaudeOptions) { c.SettingSources = []string{"user", "project"} }), want: argvHas("--setting-sources", "user,project")},
-		{field: "CleanupPeriodDays", set: claude(func(c *config.ClaudeOptions) { c.CleanupPeriodDays = 365 }), want: fileHas("cleanupPeriodDays", float64(365))},
-
-		{field: "RemoteControl", set: claude(func(c *config.ClaudeOptions) { c.RemoteControl = true }), want: argvCarries("--remote-control")},
-		{field: "RemoteControlName", set: claude(func(c *config.ClaudeOptions) {
-			c.RemoteControl, c.RemoteControlName = true, "phone"
-		}), want: argvHas("--remote-control", "phone")},
-		{field: "RemoteControlPrefix", set: claude(func(c *config.ClaudeOptions) { c.RemoteControlPrefix = "socrates" }),
-			want: envIs("CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX", "socrates")},
-
-		{field: "ResumeMode", resume: true, set: claude(func(c *config.ClaudeOptions) { c.ResumeMode = config.ResumeFork }), want: argvCarries("--fork-session")},
-		{field: "Agent", set: claude(func(c *config.ClaudeOptions) { c.Agent = "reviewer" }), want: argvHas("--agent", "reviewer")},
-		{field: "AppendSystemPrompt", set: claude(func(c *config.ClaudeOptions) { c.AppendSystemPrompt = "be brief" }), want: argvHas("--append-system-prompt", "be brief")},
-		{field: "SystemPromptSnapshot", set: claude(func(c *config.ClaudeOptions) {
-			c.AppendSystemPrompt, c.SystemPromptSnapshot = "be brief", "on"
-		}), want: argvHas("--system-prompt-snapshot", "on")},
-		{field: "ExcludeDynamicPromptSections", set: claude(func(c *config.ClaudeOptions) { c.ExcludeDynamicPromptSections = true }),
-			want: argvCarries("--exclude-dynamic-system-prompt-sections")},
-		{field: "DisableSlashCommands", set: claude(func(c *config.ClaudeOptions) { c.DisableSlashCommands = true }), want: argvCarries("--disable-slash-commands")},
-
-		{field: "MCPConfig", set: claude(func(c *config.ClaudeOptions) { c.MCPConfig = []string{"/srv/mcp.json"} }), want: argvHas("--mcp-config", "/srv/mcp.json")},
-		{field: "StrictMCPConfig", set: claude(func(c *config.ClaudeOptions) { c.StrictMCPConfig = true }), want: argvCarries("--strict-mcp-config")},
-		{field: "PluginDirs", set: claude(func(c *config.ClaudeOptions) { c.PluginDirs = []string{"/srv/plugins"} }), want: argvHas("--plugin-dir", "/srv/plugins")},
-
-		{field: "PinLightTheme", note: "writes one key into the global configuration; TestClaudeThemePinKeepsTheRestOfTheFile checks both switch positions",
-			set: claude(func(c *config.ClaudeOptions) { c.PinLightTheme = true })},
-		{field: "DisableTerminalTitle", set: claude(func(c *config.ClaudeOptions) { c.DisableTerminalTitle = true }), want: envIs("CLAUDE_CODE_DISABLE_TERMINAL_TITLE", "1")},
-		{field: "DisableMouse", set: claude(func(c *config.ClaudeOptions) { c.DisableMouse = true }), want: envIs("CLAUDE_CODE_DISABLE_MOUSE", "1")},
-		{field: "NoFlicker", set: claude(func(c *config.ClaudeOptions) { c.NoFlicker = true }), want: envIs("CLAUDE_CODE_NO_FLICKER", "1")},
-		{field: "ForceSyncOutput", set: claude(func(c *config.ClaudeOptions) { c.ForceSyncOutput = true }), want: envIs("CLAUDE_CODE_FORCE_SYNC_OUTPUT", "1")},
-
-		{field: "Verbose", set: claude(func(c *config.ClaudeOptions) { c.Verbose = true }), want: argvCarries("--verbose")},
-		{field: "DebugFilter", set: claude(func(c *config.ClaudeOptions) { c.DebugFilter = "api,hooks" }), want: argvHas("-d", "api,hooks")},
-		{field: "DebugFile", set: claude(func(c *config.ClaudeOptions) { c.DebugFile = true }),
-			want: func(t *testing.T, p LaunchPlan) {
-				if path := valueOf(p.Argv, "--debug-file"); !strings.HasSuffix(path, claudeDebugFile) {
-					t.Errorf("--debug-file = %q", path)
-				}
-			}},
-		{field: "SettingsOverrides", set: claude(func(c *config.ClaudeOptions) { c.SettingsOverrides = `{"editorMode":"vim"}` }),
-			want: fileHas("editorMode", "vim")},
 	})
 }
 
@@ -262,43 +198,8 @@ func TestCodexOptionsReachTheLaunch(t *testing.T) {
 		{field: "Enabled", note: "the picker, not the launcher", set: codex(func(c *config.CodexOptions) { c.Enabled = false })},
 		{field: "Binary", note: "resolved to argv[0]", set: codex(func(c *config.CodexOptions) { c.Binary = "codex" })},
 		{field: "Models", note: "the new-session sheet's short list", set: codex(func(c *config.CodexOptions) { c.Models = []config.ModelPick{{ID: "gpt-5.6-sol"}} })},
-		{field: "ExtraArgs", set: codex(func(c *config.CodexOptions) { c.ExtraArgs = []string{"--oss"} }), want: argvCarries("--oss")},
-		{field: "ExtraEnv", set: codex(func(c *config.CodexOptions) { c.ExtraEnv = []string{"OPENAI_BASE_URL=https://example.test"} }),
-			want: envIs("OPENAI_BASE_URL", "https://example.test")},
-
 		{field: "DefaultModel", set: codex(func(c *config.CodexOptions) { c.DefaultModel = "gpt-5.6-terra" }), want: argvHas("-m", "gpt-5.6-terra")},
 		{field: "DefaultEffort", set: codex(func(c *config.CodexOptions) { c.DefaultEffort = "xhigh" }), want: argvHas("-c", `model_reasoning_effort="xhigh"`)},
-		{field: "ModelReasoningSummary", set: codex(func(c *config.CodexOptions) { c.ModelReasoningSummary = "detailed" }), want: argvHas("-c", `model_reasoning_summary="detailed"`)},
-		{field: "ModelVerbosity", set: codex(func(c *config.CodexOptions) { c.ModelVerbosity = "high" }), want: argvHas("-c", `model_verbosity="high"`)},
-		{field: "Personality", set: codex(func(c *config.CodexOptions) { c.Personality = "pragmatic" }), want: argvHas("-c", `personality="pragmatic"`)},
-		{field: "ReviewModel", set: codex(func(c *config.CodexOptions) { c.ReviewModel = "gpt-5.4" }), want: argvHas("-c", `review_model="gpt-5.4"`)},
-
-		{field: "Sandbox", set: codex(func(c *config.CodexOptions) { c.Sandbox = "read-only" }), want: argvHas("-s", "read-only")},
-		{field: "Approval", set: codex(func(c *config.CodexOptions) { c.Approval = "never" }), want: argvHas("-a", "never")},
-		{field: "NetworkAccess", set: codex(func(c *config.CodexOptions) { c.NetworkAccess = true }), want: argvHas("-c", "sandbox_workspace_write.network_access=true")},
-		{field: "WritableRoots", set: codex(func(c *config.CodexOptions) { c.WritableRoots = []string{"/srv/a", "/srv/b"} }),
-			want: argvHas("-c", `sandbox_workspace_write.writable_roots=["/srv/a","/srv/b"]`)},
-		{field: "AddDirs", set: codex(func(c *config.CodexOptions) { c.AddDirs = []string{"/srv/one"} }), want: argvHas("--add-dir", "/srv/one")},
-		{field: "ApproveForMe", set: codex(func(c *config.CodexOptions) { c.ApproveForMe = true }), want: argvCarries("--approve-for-me")},
-		{field: "Bypass", set: codex(func(c *config.CodexOptions) { c.Bypass = true }), want: argvCarries("--dangerously-bypass-approvals-and-sandbox")},
-		{field: "TrustWorkdir", set: codex(func(c *config.CodexOptions) { c.TrustWorkdir = true }),
-			want: func(t *testing.T, p LaunchPlan) { argvHas("-c", trustLevelOverride(p.Cwd))(t, p) }},
-
-		{field: "RemoteAddr", set: codex(func(c *config.CodexOptions) { c.RemoteAddr = "ws://127.0.0.1:9000" }), want: argvHas("--remote", "ws://127.0.0.1:9000")},
-		{field: "RemoteAuthTokenEnv", set: codex(func(c *config.CodexOptions) { c.RemoteAuthTokenEnv = "CODEX_TOKEN" }), want: argvHas("--remote-auth-token-env", "CODEX_TOKEN")},
-
-		{field: "TUITheme", set: codex(func(c *config.CodexOptions) { c.TUITheme = "gruvbox-light" }), want: argvHas("-c", `tui.theme="gruvbox-light"`)},
-		{field: "NoAltScreen", set: codex(func(c *config.CodexOptions) { c.NoAltScreen = true }), want: argvCarries("--no-alt-screen")},
-		{field: "DisableKeyboardEnhancement", set: codex(func(c *config.CodexOptions) { c.DisableKeyboardEnhancement = true }),
-			want: envIs("CODEX_TUI_DISABLE_KEYBOARD_ENHANCEMENT", "1")},
-
-		{field: "WebSearch", set: codex(func(c *config.CodexOptions) { c.WebSearch = true }), want: argvCarries("--search")},
-		{field: "FeaturesEnable", set: codex(func(c *config.CodexOptions) { c.FeaturesEnable = []string{"memories"} }), want: argvHas("--enable", "memories")},
-		{field: "FeaturesDisable", set: codex(func(c *config.CodexOptions) { c.FeaturesDisable = []string{"apps"} }), want: argvHas("--disable", "apps")},
-		{field: "HideAgentReasoning", set: codex(func(c *config.CodexOptions) { c.HideAgentReasoning = true }), want: argvHas("-c", "hide_agent_reasoning=true")},
-		{field: "ShowRawAgentReasoning", set: codex(func(c *config.CodexOptions) { c.ShowRawAgentReasoning = true }), want: argvHas("-c", "show_raw_agent_reasoning=true")},
-		{field: "ConfigOverrides", set: codex(func(c *config.CodexOptions) { c.ConfigOverrides = []string{`history.persistence="none"`} }),
-			want: argvHas("-c", `history.persistence="none"`)},
 	})
 }
 
@@ -310,83 +211,128 @@ func TestOpenCodeOptionsReachTheLaunch(t *testing.T) {
 		{field: "Enabled", note: "the picker, not the launcher", set: oc(func(c *config.OpenCodeOptions) { c.Enabled = false })},
 		{field: "Binary", note: "resolved to argv[0]", set: oc(func(c *config.OpenCodeOptions) { c.Binary = "opencode" })},
 		{field: "Models", note: "the new-session sheet's short list", set: oc(func(c *config.OpenCodeOptions) { c.Models = []config.ModelPick{{ID: "opencode/big-pickle"}} })},
-		{field: "ExtraArgs", set: oc(func(c *config.OpenCodeOptions) { c.ExtraArgs = []string{"--mdns"} }), want: argvCarries("--mdns")},
-		{field: "ExtraEnv", set: oc(func(c *config.OpenCodeOptions) { c.ExtraEnv = []string{"OPENROUTER_API_KEY=k"} }), want: envIs("OPENROUTER_API_KEY", "k")},
-
 		{field: "DefaultModel", set: oc(func(c *config.OpenCodeOptions) { c.DefaultModel = "anthropic/claude-sonnet-4-5" }),
 			want: func(t *testing.T, p LaunchPlan) {
 				argvHas("-m", "anthropic/claude-sonnet-4-5")(t, p)
 				inlineHas("model", "anthropic/claude-sonnet-4-5")(t, p)
 			}},
-		{field: "SmallModel", set: oc(func(c *config.OpenCodeOptions) { c.SmallModel = "anthropic/claude-haiku-4-5" }),
-			want: inlineHas("small_model", "anthropic/claude-haiku-4-5")},
-		{field: "DefaultAgent", set: oc(func(c *config.OpenCodeOptions) { c.DefaultAgent = "plan" }), want: argvHas("--agent", "plan")},
-
-		{field: "Auto", set: oc(func(c *config.OpenCodeOptions) { c.Auto = true }), want: argvCarries("--auto")},
-		{field: "PermissionJSON", set: oc(func(c *config.OpenCodeOptions) { c.PermissionJSON = `{"webfetch":"deny"}` }),
-			want: func(t *testing.T, p LaunchPlan) {
-				envIs("OPENCODE_PERMISSION", `{"webfetch":"deny"}`)(t, p)
-				inlineHas("permission.webfetch", "deny")(t, p)
-			}},
-
-		{field: "EnabledProviders", set: oc(func(c *config.OpenCodeOptions) { c.EnabledProviders = []string{"anthropic"} }),
-			want: inlineHas("enabled_providers", []any{"anthropic"})},
-		{field: "DisabledProviders", set: oc(func(c *config.OpenCodeOptions) { c.DisabledProviders = []string{"openai"} }),
-			want: inlineHas("disabled_providers", []any{"openai"})},
-
-		{field: "Pure", set: oc(func(c *config.OpenCodeOptions) { c.Pure = true }), want: argvCarries("--pure")},
-		{field: "DisableProjectConfig", set: oc(func(c *config.OpenCodeOptions) { c.DisableProjectConfig = true }),
-			want: envIs("OPENCODE_DISABLE_PROJECT_CONFIG", "1")},
-		{field: "DisableModelsFetch", set: oc(func(c *config.OpenCodeOptions) { c.DisableModelsFetch = true }),
-			want: envIs("OPENCODE_DISABLE_MODELS_FETCH", "1")},
-
-		{field: "TUITheme", set: oc(func(c *config.OpenCodeOptions) { c.TUITheme = "solarized" }), want: fileHas("theme", "solarized")},
-		{field: "Mini", set: oc(func(c *config.OpenCodeOptions) { c.Mini = true }), want: argvCarries("--mini")},
-		{field: "NoReplay", set: oc(func(c *config.OpenCodeOptions) { c.Mini, c.NoReplay = true, true }), want: argvCarries("--no-replay")},
-		{field: "ReplayLimit", set: oc(func(c *config.OpenCodeOptions) { c.Mini, c.ReplayLimit = true, 25 }), want: argvHas("--replay-limit", "25")},
-		{field: "DisableMouse", set: oc(func(c *config.OpenCodeOptions) { c.DisableMouse = true }), want: envIs("OPENCODE_DISABLE_MOUSE", "1")},
-		{field: "Mouse", set: oc(func(c *config.OpenCodeOptions) { c.Mouse = true }), want: fileHas("mouse", true)},
-		{field: "Attention", set: oc(func(c *config.OpenCodeOptions) { c.Attention = true }), want: fileHas("attention.enabled", true)},
-
-		{field: "ResumeMode", resume: true, set: oc(func(c *config.OpenCodeOptions) { c.ResumeMode = config.ResumeFork }), want: argvCarries("--fork")},
-		{field: "Share", set: oc(func(c *config.OpenCodeOptions) { c.Share = "manual" }), want: inlineHas("share", "manual")},
-		{field: "LogLevel", set: oc(func(c *config.OpenCodeOptions) { c.LogLevel = "WARN" }), want: argvHas("--log-level", "WARN")},
-
-		{field: "ConfigContent", set: oc(func(c *config.OpenCodeOptions) { c.ConfigContent = `{"snapshot":false}` }), want: inlineHas("snapshot", false)},
-		{field: "TUIConfig", set: oc(func(c *config.OpenCodeOptions) { c.TUIConfig = `{"leader_timeout":900}` }), want: fileHas("leader_timeout", float64(900))},
 	})
 }
 
-// The handful of variables that are the launch rather than a preference are
-// applied after the raw list, so that a typo - or a paste - in extra_env
-// cannot quietly disarm the session-id discovery or the server's password.
-func TestExtraEnvCannotOverrideTheMandatoryVariables(t *testing.T) {
-	l := newLab(t)
-	l.settings.Harnesses.Codex.ExtraEnv = []string{"CODEX_INTERNAL_ORIGINATOR_OVERRIDE=someone-else"}
-	l.settings.Harnesses.OpenCode.ExtraEnv = []string{
-		"OPENCODE_SERVER_PASSWORD=hunter2",
-		"OPENCODE_SERVER_USERNAME=root",
-		"OPENCODE_TUI_CONFIG=/dev/null",
-		"OPENCODE_CONFIG_CONTENT={}",
+// TestFixedPolicyArgv is the other half of the catalogue: what every session
+// gets whatever the settings say, and what no session may ever get.
+//
+// The flags were verified against the shipped binaries - Claude Code 2.1.258,
+// codex-cli 0.152.1, OpenCode 1.17.13 - and the sources are in
+// docs/design/HARNESS-POLICY.md. A change to one of these lines is a change to
+// what the product promises, not a refactor.
+func TestFixedPolicyArgv(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		h    Harness
+		// must is a flag the argv always carries.
+		must []string
+		// never is a flag no argv may carry, whatever is configured.
+		never []string
+		env   map[string]string
+		// noEnv are variables that must not be set at all.
+		noEnv []string
+	}{
+		{
+			name: "claude",
+			h:    Claude{},
+			must: []string{"--dangerously-skip-permissions", "--settings", "--session-id"},
+			// Remote Control is off in every session, and the permission mode
+			// is not a second lever on the first: bypassing is said once.
+			never: []string{"--remote-control", "--permission-mode", "--allow-dangerously-skip-permissions",
+				"--restricted", "--safe-mode", "--bare", "--verbose", "--fork-session"},
+			env: map[string]string{
+				"CLAUDE_CODE_TMUX_TRUECOLOR":         "1",
+				"CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1",
+				"CLAUDE_CODE_NO_FLICKER":             "1",
+			},
+			noEnv: []string{"CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX", "MAX_THINKING_TOKENS",
+				"CLAUDE_CODE_DISABLE_MOUSE", "CLAUDE_CODE_FORCE_SYNC_OUTPUT"},
+		},
+		{
+			name: "codex",
+			h:    Codex{},
+			must: []string{"--strict-config", "--no-alt-screen", "--dangerously-bypass-approvals-and-sandbox"},
+			// -s and -a are what the bypass replaces; passing either beside it
+			// is a command line Codex refuses.
+			never: []string{"-s", "-a", "--remote", "--remote-auth-token-env", "--approve-for-me", "--search", "--yolo"},
+			env:   map[string]string{"CODEX_INTERNAL_ORIGINATOR_OVERRIDE": codexOriginator},
+			noEnv: []string{"CODEX_TUI_DISABLE_KEYBOARD_ENHANCEMENT"},
+		},
+		{
+			name:  "opencode",
+			h:     OpenCode{},
+			must:  []string{"--port", "--hostname"},
+			never: []string{"--auto", "--pure", "--mini", "--print-logs", "--fork", "--log-level"},
+			env: map[string]string{
+				"OPENCODE_DISABLE_AUTOUPDATE":     "1",
+				"OPENCODE_DISABLE_TERMINAL_TITLE": "1",
+				"OPENCODE_DISABLE_MODELS_FETCH":   "1",
+				"OPENCODE_SERVER_USERNAME":        openCodeUser,
+			},
+			noEnv: []string{"OPENCODE_DISABLE_MOUSE", "OPENCODE_DISABLE_PROJECT_CONFIG"},
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := newLab(t).plan(c.h)
+			for _, flag := range c.must {
+				if !carries(p.Argv, flag) {
+					t.Errorf("argv has no %s: %v", flag, p.Argv)
+				}
+			}
+			for _, flag := range c.never {
+				if carries(p.Argv, flag) {
+					t.Errorf("argv carries %s, which no session may ever be started with: %v", flag, p.Argv)
+				}
+			}
+			for key, want := range c.env {
+				if p.Env[key] != want {
+					t.Errorf("%s = %q, want %q", key, p.Env[key], want)
+				}
+			}
+			for _, key := range c.noEnv {
+				if _, ok := p.Env[key]; ok {
+					t.Errorf("%s is set to %q and should not be set at all", key, p.Env[key])
+				}
+			}
+		})
 	}
+}
 
-	codex := l.plan(Codex{})
-	if codex.Env["CODEX_INTERNAL_ORIGINATOR_OVERRIDE"] != codexOriginator {
-		t.Errorf("extra_env replaced the originator with %q, and the watcher would match nothing",
-			codex.Env["CODEX_INTERNAL_ORIGINATOR_OVERRIDE"])
-	}
+// The Claude Code settings file is where the two things a flag cannot say are
+// said: that the bypass dialog is not to be shown, and that Remote Control is
+// off. Neither is a setting.
+func TestClaudeSettingsCarryTheFixedPolicy(t *testing.T) {
+	p := newLab(t).plan(Claude{})
+	fileHas("skipDangerousModePermissionPrompt", true)(t, p)
+	fileHas("disableRemoteControl", true)(t, p)
+	fileHas("cleanupPeriodDays", float64(claudeTranscriptDays))(t, p)
+}
 
-	oc := l.plan(OpenCode{})
-	if oc.Env["OPENCODE_SERVER_PASSWORD"] == "hunter2" {
-		t.Error("extra_env replaced the generated server password")
+// OpenCode is told to allow everything twice - once in the variable that is
+// merged over every configuration file it found, and once in the generated
+// configuration that is merged last - because a prompt in a pane nobody is
+// watching is a session that has stopped.
+func TestOpenCodeAllowsEveryPermission(t *testing.T) {
+	p := newLab(t).plan(OpenCode{})
+	var fromEnv map[string]any
+	if err := json.Unmarshal([]byte(p.Env["OPENCODE_PERMISSION"]), &fromEnv); err != nil {
+		t.Fatalf("OPENCODE_PERMISSION is not JSON: %v", err)
 	}
-	if oc.Env["OPENCODE_SERVER_USERNAME"] != openCodeUser {
-		t.Errorf("username = %q", oc.Env["OPENCODE_SERVER_USERNAME"])
+	for key, want := range openCodePermission {
+		if fromEnv[key] != want {
+			t.Errorf("OPENCODE_PERMISSION[%q] = %#v, want %#v", key, fromEnv[key], want)
+		}
+		inlineHas("permission."+key, want)(t, p)
 	}
-	if oc.Env["OPENCODE_TUI_CONFIG"] != oc.Files[0].Path {
-		t.Errorf("OPENCODE_TUI_CONFIG = %q, want the generated file", oc.Env["OPENCODE_TUI_CONFIG"])
+	if fromEnv["*"] != "allow" {
+		t.Errorf("the wildcard permission is %#v", fromEnv["*"])
 	}
-	if oc.Env["OPENCODE_CONFIG_CONTENT"] == "{}" {
-		t.Error("extra_env replaced the generated inline configuration")
-	}
+	// Nothing a session does is published anywhere.
+	inlineHas("share", "disabled")(t, p)
 }
