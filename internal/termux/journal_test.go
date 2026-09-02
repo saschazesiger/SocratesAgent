@@ -4,10 +4,16 @@ package termux
 
 import (
 	"bytes"
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestJournalRotatesWhileRunning(t *testing.T) {
@@ -107,8 +113,98 @@ func TestTailJournalReachesIntoTheRotatedFile(t *testing.T) {
 
 func TestPipeCommandQuotesBothPaths(t *testing.T) {
 	got := PipeCommand("/a b/it's/socrates", "/data/it's/journal.raw", 42, 1)
-	want := `'/a b/it'\''s/socrates' journal-sink --path '/data/it'\''s/journal.raw' --max-bytes 42 --keep 1`
+	want := `exec '/a b/it'\''s/socrates' journal-sink --path '/data/it'\''s/journal.raw' --max-bytes 42 --keep 1`
 	if got != want {
 		t.Fatalf("PipeCommand = %s\nwant %s", got, want)
 	}
+}
+
+// TestWatchParentProcessNoticesReparenting is the mechanism the sink leans on
+// when its pipe never closes: the parent it was started by is gone.
+func TestWatchParentProcessNoticesReparenting(t *testing.T) {
+	var ppid atomic.Int64
+	ppid.Store(4242)
+	fired := make(chan struct{})
+	stop := watchParent(time.Millisecond, func() int { return int(ppid.Load()) },
+		func() { close(fired) })
+	defer close(stop)
+
+	select {
+	case <-fired:
+		t.Fatal("the watch fired while the parent was still there")
+	case <-time.After(30 * time.Millisecond):
+	}
+	ppid.Store(1)
+	select {
+	case <-fired:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the watch never noticed that the parent had gone")
+	}
+}
+
+// TestJournalSinkDiesWithItsSession and its neighbour below are here because a
+// sink that outlives its session is not a theory: a run that left twenty-two
+// of them behind held twenty-two journals open and a copy of the binary
+// resident in each. Both ends of a session's life are covered - the deliberate
+// one and the violent one - and both are measured on the process table rather
+// than on our idea of what tmux does with the pipe.
+func TestJournalSinkDiesWithItsSession(t *testing.T) {
+	l := newLab(t)
+	row := l.create(shellSpec(t.TempDir()))
+	journal := JournalPath(l.dataDir, row.ID)
+	waitFor(t, 10*time.Second, "the journal sink to start", func() bool {
+		return len(sinkPIDs(t, journal)) > 0
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := l.Delete(ctx, row.ID); err != nil {
+		t.Fatalf("could not delete the session: %v", err)
+	}
+	waitFor(t, 10*time.Second, "the journal sink to stop after the delete", func() bool {
+		return len(sinkPIDs(t, journal)) == 0
+	})
+}
+
+func TestJournalSinkDiesWithTheTmuxServer(t *testing.T) {
+	l := newLab(t)
+	row := l.create(shellSpec(t.TempDir()))
+	journal := JournalPath(l.dataDir, row.ID)
+	waitFor(t, 10*time.Second, "the journal sink to start", func() bool {
+		return len(sinkPIDs(t, journal)) > 0
+	})
+
+	// A reboot, or an operator with a big hammer: the server is killed
+	// outright and never gets to close anything.
+	serverPID, err := strconv.Atoi(l.tmuxOut("display-message", "-p", "#{pid}"))
+	if err != nil {
+		t.Fatalf("could not read the tmux server pid: %v", err)
+	}
+	if err := syscall.Kill(serverPID, syscall.SIGKILL); err != nil {
+		t.Fatalf("could not kill the tmux server: %v", err)
+	}
+	waitFor(t, 15*time.Second, "the journal sink to stop with its server", func() bool {
+		return len(sinkPIDs(t, journal)) == 0
+	})
+}
+
+// sinkPIDs is every process on this machine whose command line names this
+// journal. `ps` is the portable way to ask; /proc is not on macOS.
+func sinkPIDs(t *testing.T, journal string) []int {
+	t.Helper()
+	out, err := exec.Command("ps", "-eo", "pid=,args=").Output()
+	if err != nil {
+		t.Fatalf("could not read the process table: %v", err)
+	}
+	var pids []int
+	for _, line := range Lines(string(out)) {
+		if !strings.Contains(line, journal) || !strings.Contains(line, "journal-sink") {
+			continue
+		}
+		pid, err := strconv.Atoi(strings.Fields(line)[0])
+		if err == nil {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
 }

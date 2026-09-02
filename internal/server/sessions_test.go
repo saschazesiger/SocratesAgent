@@ -157,6 +157,28 @@ func (e *sessionEnv) start(srv *Server) {
 		srv.StopSessions()
 		_ = exec.Command(e.tmuxBin, "-S", srv.Sessions().Socket(), "kill-server").Run()
 	})
+	e.guard(srv.Sessions().Socket())
+}
+
+// guard makes this test's tmux server die with the test binary.
+//
+// The cleanup above covers every ordinary ending, a failed assertion
+// included - but not a package level timeout, which panics the process before
+// any cleanup runs and leaves a daemon and its journal sink on the machine for
+// good. This shell loop is orphaned by such a panic rather than killed by it,
+// and one second later it takes the server down.
+func (e *sessionEnv) guard(socket string) {
+	e.t.Helper()
+	script := fmt.Sprintf("while kill -0 %d 2>/dev/null; do sleep 1; done; exec %s -S %s kill-server",
+		os.Getpid(), termux.ShellQuote(e.tmuxBin), termux.ShellQuote(socket))
+	cmd := exec.Command("/bin/sh", "-c", script)
+	if err := cmd.Start(); err != nil {
+		e.t.Fatalf("could not arm the tmux server guard: %v", err)
+	}
+	e.t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	})
 }
 
 func (e *sessionEnv) socket() string { return e.srv.Sessions().Socket() }

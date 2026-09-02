@@ -4,6 +4,7 @@ package termux
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -90,7 +91,32 @@ func newLab(t *testing.T, tweak ...func(*Config)) *lab {
 		defer cancel()
 		_, _ = m.tmux.Run(ctx, "kill-server")
 	})
-	return &lab{Manager: m, t: t, dataDir: dir, store: st}
+	l := &lab{Manager: m, t: t, dataDir: dir, store: st}
+	l.guard()
+	return l
+}
+
+// guard makes the lab's tmux server die with the test binary.
+//
+// The cleanup above covers every ordinary ending, a failed assertion
+// included - but not the one that actually left twenty-two servers and their
+// journal sinks on this machine: a package level timeout, which panics the
+// process before any cleanup runs. A tmux server is a daemon, so what it
+// outlives it outlives for ever. This little shell loop is orphaned by such a
+// panic rather than killed by it, and one second later it takes the server
+// down.
+func (l *lab) guard() {
+	l.t.Helper()
+	script := fmt.Sprintf("while kill -0 %d 2>/dev/null; do sleep 1; done; exec %s -S %s kill-server",
+		os.Getpid(), ShellQuote(l.cfg.TmuxBin), ShellQuote(l.tmux.Sock))
+	cmd := exec.Command("/bin/sh", "-c", script)
+	if err := cmd.Start(); err != nil {
+		l.t.Fatalf("could not arm the tmux server guard: %v", err)
+	}
+	l.t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	})
 }
 
 // tmuxOut runs a tmux command on the lab's socket and returns its output.

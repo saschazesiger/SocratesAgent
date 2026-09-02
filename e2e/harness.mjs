@@ -14,6 +14,7 @@
 
 import { chromium } from '/opt/browser-testing/node_modules/playwright-core/index.mjs';
 import { createServer } from 'node:http';
+import { createServer as createSocketServer } from 'node:net';
 import { spawn, execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -33,6 +34,48 @@ export const SHOTS = join(OUT, 'shots');
 // cache, shared by every run on this machine, symlinked into place.
 const VOICE_CACHE = join(OUT, 'voice-cache');
 
+// Everything a run makes outside e2e/out is tracked here, so that an
+// interrupted run - Ctrl-C, a killed CI job, a scenario that throws past its
+// own stop() - takes its directories and its tmux servers with it. Sixty
+// leaked build and data directories once filled this machine's tmpfs, and a
+// leaked server went on answering on the port the next run wanted.
+const litter = new Set();
+// The servers this run started. Node does not take its children with it, so
+// an interrupted run leaves one listening on the port the next run wants -
+// which is how a suite ends up talking to a server from twenty minutes ago.
+const servers = new Set();
+
+function scratchDir(prefix) {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  litter.add(dir);
+  return dir;
+}
+
+// sweep removes one tracked directory and whatever tmux server belongs to it.
+function sweep(dir) {
+  killTmux(dir);
+  rmSync(dir, { recursive: true, force: true });
+  litter.delete(dir);
+}
+
+let sweeping = false;
+function sweepAll() {
+  if (sweeping) return;
+  sweeping = true;
+  for (const child of servers) {
+    try { child.kill('SIGKILL'); } catch { /* already gone */ }
+  }
+  servers.clear();
+  for (const dir of [...litter]) {
+    try { sweep(dir); } catch { /* the process is on its way out */ }
+  }
+  sweeping = false;
+}
+process.on('exit', sweepAll);
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(signal, () => { sweepAll(); process.exit(130); });
+}
+
 const CHROME = process.env.SOCRATES_E2E_CHROME
   || '/root/.cache/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-linux64/chrome-headless-shell';
 
@@ -43,7 +86,7 @@ export const LIVE = process.env.SOCRATES_LIVE_AGENTS === '1';
 // The Go-overlay trick the old suite used is gone with the adapter registry it
 // pointed at: `socrates` is now built plainly.
 function buildFakes() {
-  const dir = mkdtempSync(join(tmpdir(), 'socrates-e2e-'));
+  const dir = scratchDir('socrates-e2e-');
   const bin = join(dir, 'bin');
   mkdirSync(bin);
   const faketui = join(bin, 'faketui');
@@ -55,7 +98,7 @@ function buildFakes() {
 
 // The live build is the shipped one: no fakes on PATH, the real CLIs.
 function buildLive() {
-  const dir = mkdtempSync(join(tmpdir(), 'socrates-e2e-live-'));
+  const dir = scratchDir('socrates-e2e-live-');
   execFileSync('go', ['build', '-o', join(dir, 'socrates'), '.'], { cwd: REPO });
   return { dir, bin: null, exe: join(dir, 'socrates') };
 }
@@ -69,7 +112,7 @@ export function binaries(live = false) {
 
 export function cleanupBuild() {
   for (const key of Object.keys(builds)) {
-    rmSync(builds[key].dir, { recursive: true, force: true });
+    sweep(builds[key].dir);
     delete builds[key];
   }
 }
@@ -86,8 +129,34 @@ export async function waitForHealth(url, deadlineMs = 25000) {
   throw new Error('the server never became healthy at ' + url);
 }
 
-// Ports 5000-5099 are this machine's budget for browser runs.
-let nextPort = 5000;
+// Ports 5000-5099 are this machine's budget for browser runs. Which of them
+// is free is not something a counter can know: an interrupted run leaves a
+// server behind, and a second suite on the same machine wants ports too. So
+// each one is claimed by listening on it first, and a run with nothing free
+// says so instead of quietly talking to somebody else's server.
+const PORT_LOW = 5000;
+const PORT_HIGH = 5099;
+const claimed = new Set();
+
+function canListen(port) {
+  return new Promise((resolve) => {
+    const probe = createSocketServer();
+    probe.once('error', () => resolve(false));
+    probe.listen(port, '127.0.0.1', () => probe.close(() => resolve(true)));
+  });
+}
+
+export async function freePort() {
+  for (let port = PORT_LOW; port <= PORT_HIGH; port += 1) {
+    if (claimed.has(port)) continue;
+    if (await canListen(port)) {
+      claimed.add(port);
+      return port;
+    }
+  }
+  throw new Error('every port from ' + PORT_LOW + ' to ' + PORT_HIGH
+    + ' is in use; something from an earlier run is still listening');
+}
 
 export function spawnServer({ data, port, live = false, env = {} }) {
   const { exe, bin } = binaries(live);
@@ -119,6 +188,8 @@ export function spawnServer({ data, port, live = false, env = {} }) {
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  servers.add(server);
+  server.on('exit', () => servers.delete(server));
   const log = [];
   server.stdout.on('data', (d) => log.push(String(d)));
   server.stderr.on('data', (d) => log.push(String(d)));
@@ -140,6 +211,19 @@ export function sessionsOn(data) {
     return out.split('\n').filter(Boolean);
   } catch {
     return [];
+  }
+}
+
+// windowSize is what tmux itself says the window of a session is. It is the
+// ground truth under the size policy: the browser is told the size, but only
+// tmux knows what the window actually did.
+export function windowSize(data, tmuxName) {
+  try {
+    return execFileSync('tmux', ['-S', tmuxSock(data), 'display-message', '-p', '-t', tmuxName,
+      '#{window_width}x#{window_height}'], { stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString().trim();
+  } catch {
+    return '';
   }
 }
 
@@ -214,10 +298,10 @@ export async function openRouterStub({ text = 'hello from the microphone' } = {}
 export async function start(options = {}) {
   const live = !!options.live;
   mkdirSync(VOICE_CACHE, { recursive: true });
-  const data = mkdtempSync(join(tmpdir(), 'socrates-data-'));
+  const data = scratchDir('socrates-data-');
   mkdirSync(join(data, 'workspaces'), { recursive: true });
   try { symlinkSync(VOICE_CACHE, join(data, 'voice')); } catch { /* best effort */ }
-  const port = options.port || nextPort++;
+  const port = options.port || await freePort();
   const url = 'http://127.0.0.1:' + port;
   const spawned = spawnServer({ data, port, live, env: options.env });
   await waitForHealth(url);
@@ -310,8 +394,7 @@ export async function start(options = {}) {
       left.tmux.length + ' sessions' + (left.tmux.length ? ' (' + left.tmux.join(',') + ')' : ''));
     // The backstop: whatever the assertion just found does not stay on the
     // machine.
-    killTmux(data);
-    rmSync(data, { recursive: true, force: true });
+    sweep(data);
   };
 
   return s;

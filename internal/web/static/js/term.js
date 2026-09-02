@@ -122,6 +122,21 @@ export function createTerm(host, opts = {}) {
     if (timer) clearTimeout(timer);
     timer = setTimeout(measure, 80);
   };
+  // flush takes a fit that is still on its debounce now. The caller that
+  // needs it is the one opening the socket: it reveals the composer and the
+  // key bar and then asks for the size, and an answer one layout behind
+  // attaches at one size and resizes to the real one a moment later - two
+  // window changes, and two "another viewer resized this session" notices on
+  // every other device, for one person opening one session (§A.7).
+  const flush = () => { if (timer) { clearTimeout(timer); measure(); } };
+
+  // One measurement before anything else, and a synchronous one: the socket
+  // is opened with whatever size() answers, and a terminal that has not been
+  // fitted yet answers with xterm's own 80x24. Attaching at that size and
+  // fitting a frame later is two real size changes for one device opening a
+  // session - two window re-layouts, and two "another viewer resized this
+  // session" notices on every other device (§A.7).
+  measure();
 
   const observer = new ResizeObserver(refit);
   observer.observe(opts.fitTo || host);
@@ -136,8 +151,8 @@ export function createTerm(host, opts = {}) {
     fit,
     /** refit re-measures after a layout change nothing observed. */
     refit,
-    /** size is what was last measured and reported. */
-    size: () => ({ cols: term.cols, rows: term.rows }),
+    /** size is what was measured, fitting first when a fit is still pending. */
+    size: () => { flush(); return { cols: term.cols, rows: term.rows }; },
     write: (data) => term.write(data),
     /** reset is the full repaint a `replay_from: 0` hello asks for. */
     reset: () => { term.reset(); last = { cols: 0, rows: 0 }; },

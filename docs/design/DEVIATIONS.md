@@ -799,3 +799,36 @@ delivered exactly once or handed back with a toast.
 needs a server that accepts a socket and never speaks, which cannot be arranged
 without changing `internal/server`. `offlinerestart` covers the path that used
 to reach it, and the deadline is the belt to that braces.
+
+**WP9b / §A.7, §H.3 #17 — one device connecting must be one size change, and
+that had to be fixed in `term.js`.** The notice is specified to fire once per
+real size change, and it fired twice for every attach: the socket is opened
+with whatever `state.term.size()` answers, and `attach()` reveals the composer
+and the key bar immediately before asking - so the answer was one layout
+behind. The session attached at the pre-composer size and resized to the real
+one a moment later, which is two `resize-window` calls, two re-layouts of the
+TUI, and two "another viewer resized this session" notices on every other
+device. `createTerm` now measures once, synchronously, before the observer is
+armed, and `size()` takes a fit that is still on its 80 ms debounce rather than
+answering from before it. Nothing in `session.js` changed. `twoviewers` asserts
+the window moved exactly once, from tmux's own `#{window_width}x#{window_height}`
+rather than from anything the page reports.
+
+**WP9b / §H.3 #18 — `backpressure` measures against the journal, not against a
+record the fake keeps.** The spec asks for "the fake's own record of what it
+printed". `faketui` writes no such file; what it has is `/spin`'s own numbering,
+1 to 200, which is a record a hole cannot hide in. The scenario asserts that
+the journal holds all two hundred lines in order and exactly once each, and
+that the screen is a contiguous tail of that same stream ending on line 200.
+
+**WP9b / backlog — the journal sink is not allowed to outlive its server.** A
+sink orphaned by a killed tmux server holds a journal open and a copy of the
+Socrates binary resident until the machine is rebooted, and a run that left
+twenty-two of them behind filled this machine's tmpfs. `PipeCommand` now begins
+with `exec`, so the shell tmux spawns becomes the sink rather than waiting on
+it - one process instead of two, and the sink is a direct child of the server.
+`RunJournalSink` watches for the reparenting that says its server has gone.
+Both ends are tested against the process table: a session deleted and a server
+killed with SIGKILL. The servers themselves are guarded in the tests, where the
+leak came from: a package-level timeout panics before any cleanup runs, so each
+lab arms a small shell loop that outlives that panic and takes the server down.

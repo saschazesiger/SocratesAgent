@@ -10,7 +10,7 @@
 
 import {
   start, setup, shot, ok, scenario, skipScenario, finish, ensureNav, wait,
-  readFakeLog, openRouterStub, PASSWORD, LIVE,
+  readFakeLog, openRouterStub, sessionsOn, windowSize, PASSWORD, LIVE,
 } from './harness.mjs';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1645,6 +1645,713 @@ async function latehello() {
   } finally { await s.stop(); }
 }
 
+
+/* ------------------------------------------- §H.3 13-16: harness lifecycle */
+
+// The four scenarios below are §H.3 rows 13 to 16. They are about what a
+// harness *is* rather than about the terminal it draws in: the flags the
+// launcher built, the conversation id each CLI keeps in a different place, and
+// the resume that a reboot makes necessary. Everything they assert is read
+// from the fake's own launch log or from the API, never from a screen - a
+// banner can only say what the fake was told, and the point of these is what
+// it was told with.
+
+// sessionRow is the API's own answer about one session, which is the record
+// the browser and the launcher have to agree with.
+async function sessionRow(s, id) {
+  const res = await s.context.request.get(s.url + '/api/sessions/' + encodeURIComponent(id));
+  return (await res.json()).session;
+}
+
+// launchesOf is every time one fake CLI was started, oldest first.
+const launchesOf = (s, name) => readFakeLog(s.data).filter((entry) => entry.name === name);
+const lastLaunch = (s, name) => launchesOf(s, name).slice(-1)[0] || null;
+const argvOf = (entry) => (entry && entry.argv ? entry.argv.join(' ') : '');
+
+// startWithModel drives the sheet the way `startSession` does and picks a
+// model on the way through, which is the step §E.3 hides for Shell and which
+// no other scenario exercises.
+async function startWithModel(page, harness, modelLabel) {
+  await ensureNav(page);
+  await page.click('#newSession');
+  await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+  await page.waitForSelector('#nsHarness .seg[data-value="' + harness + '"]', { timeout: 10000 });
+  await page.click('#nsHarness .seg[data-value="' + harness + '"]');
+  if (modelLabel) {
+    await page.click('#nsModel .combo-input');
+    await page.waitForSelector('#nsModel .combo-option', { timeout: 5000 });
+    await page.click('#nsModel .combo-option:has(.combo-label:text-is("' + modelLabel + '"))');
+  }
+  await page.click('#nsStart');
+  await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
+  await page.waitForFunction(() => location.hash.length > 1, null, { timeout: 30000 });
+  return page.evaluate(() => location.hash.slice(1));
+}
+
+// waitForCLISession polls until the discoverer has learned which conversation
+// this pane is holding. Codex and OpenCode both write nothing until a turn has
+// happened, so the caller types one first and this is the wait afterwards.
+async function waitForCLISession(s, id, timeout = 30000) {
+  const until = Date.now() + timeout;
+  let row = await sessionRow(s, id);
+  while (Date.now() < until && !(row && row.cli_session_id)) {
+    await wait(500);
+    row = await sessionRow(s, id);
+  }
+  return row;
+}
+
+// waitForState polls the API until a session reaches one of the states asked
+// for, and answers with the last row it saw either way.
+async function waitForState(s, id, states, timeout = 40000) {
+  const until = Date.now() + timeout;
+  let row = await sessionRow(s, id);
+  while (Date.now() < until && !(row && states.includes(row.state))) {
+    await wait(500);
+    row = await sessionRow(s, id);
+  }
+  return row;
+}
+
+// waitForAck polls until the server has lowered the resumed flag, which is
+// what dismissing the banner asks it to do.
+async function waitForAck(s, id, timeout = 10000) {
+  const until = Date.now() + timeout;
+  let row = await sessionRow(s, id);
+  while (Date.now() < until && row && row.resumed !== false) {
+    await wait(300);
+    row = await sessionRow(s, id);
+  }
+  return row;
+}
+
+// endAndRestart is §E.7's exit overlay driven from the browser: the program is
+// told to end, the overlay comes up, and Restart is pressed. It answers with
+// the number of launches the fake had recorded before the restart, so the
+// caller can say which record is the relaunch.
+async function endAndRestart(s, name, code) {
+  const before = launchesOf(s, name).length;
+  await typeLine(s.page, '/exit ' + code);
+  await s.page.waitForSelector('#termOverlay .overlay-card', { timeout: 25000 });
+  const words = await s.page.$eval('#termOverlay .overlay-title', (n) => n.textContent);
+  ok(/The session ended/.test(words), name + ': the overlay says the session ended', oneLine(words));
+  await s.page.click('#termRestart');
+  await s.page.waitForFunction(() => {
+    const node = document.getElementById('termOverlay');
+    return node && node.hidden;
+  }, null, { timeout: 40000 });
+  return before;
+}
+
+/* --------------------------------------------------------- 13. createclaude */
+
+// Claude Code start to finish: the sheet offers the models the API named, the
+// launcher is given the one that was picked, the uuid it fixes at creation is
+// the uuid in the store, and the header says what this session runs. Then the
+// program ends and Restart brings it back on the conversation it already had.
+async function createclaude() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+
+    // §E.3 step 3: the model list is the catalogue's, not a list in the page.
+    // The catalogue is asked again first - the dashboard's Refresh - so what
+    // the sheet shows is this machine's current answer.
+    const refreshed = await s.context.request.post(s.url + '/api/harnesses/refresh');
+    ok(refreshed.ok(), 'the catalogue can be refreshed on demand', String(refreshed.status()));
+    const catalogue = await (await s.context.request.get(s.url + '/api/harnesses')).json();
+    const claude = (catalogue.harnesses || []).find((h) => h.id === 'claude') || {};
+    const offered = (claude.picks && claude.picks.length ? claude.picks : claude.models || [])
+      .map((m) => m.label || m.id);
+
+    await ensureNav(s.page);
+    await s.page.click('#newSession');
+    await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    await s.page.click('#nsHarness .seg[data-value="claude"]');
+    await s.page.click('#nsModel .combo-input');
+    await s.page.waitForSelector('#nsModel .combo-option', { timeout: 5000 });
+    const shown = await s.page.$$eval('#nsModel .combo-option .combo-label', (nodes) => nodes.map((n) => n.textContent));
+    ok(shown.length > 0 && shown.join(',') === offered.join(','),
+      'the sheet offers exactly the models /api/harnesses reported for Claude Code',
+      shown.join(',') + ' vs ' + offered.join(','));
+    await s.page.click('#nsModel .combo-option:has(.combo-label:text-is("Haiku"))');
+    await s.page.click('#nsStart');
+    await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
+    await s.page.waitForFunction(() => location.hash.length > 1, null, { timeout: 30000 });
+    const id = await s.page.evaluate(() => location.hash.slice(1));
+
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    ok(await awaitScreen(s.page, 'FAKE claude'), 'the session is up', oneLine(await screen(s.page)));
+    ok(await awaitScreen(s.page, 'theme=light'), 'and it was told the terminal is light',
+      oneLine(await screen(s.page)));
+
+    const row = await sessionRow(s, id);
+    const launch = lastLaunch(s, 'claude');
+    ok(!!launch, 'the fake recorded its launch', launch ? 'one record' : 'nothing in fake.log');
+    ok(launch.cwd === row.workdir, 'it was started in the session’s own working directory',
+      launch.cwd + ' vs ' + row.workdir);
+    ok(/(^| )--model haiku( |$)/.test(argvOf(launch)), 'with the model that was picked in the sheet',
+      argvOf(launch));
+    const fixed = launch.argv[launch.argv.indexOf('--session-id') + 1];
+    ok(launch.argv.includes('--session-id')
+      && /^[0-9a-f-]{36}$/.test(fixed || '') && fixed === row.cli_session_id,
+      'and with the --session-id the store holds for it', fixed + ' vs ' + row.cli_session_id);
+
+    // §E.10 rule 2 and 3: the header names the model beside the mark of what
+    // runs it, and the path is behind the "i".
+    const badge = await s.page.evaluate(() => {
+      const host = document.getElementById('sessionHarness');
+      return {
+        mark: (host.querySelector('.agent-mark') || { dataset: {} }).dataset.agent,
+        model: (host.querySelector('.b-model') || {}).textContent,
+        bubble: (host.querySelector('.tip-bubble') || {}).textContent || '',
+        bubbleShown: host.querySelector('.tip-bubble')
+          ? getComputedStyle(host.querySelector('.tip-bubble')).visibility : 'none',
+      };
+    });
+    ok(badge.mark === 'claude' && badge.model === 'haiku',
+      'the header badge carries the mark and the model', JSON.stringify(badge));
+    ok(badge.bubble.includes(row.workdir) && badge.bubbleShown === 'hidden',
+      'and the working directory only in the bubble', badge.bubbleShown + ' ' + oneLine(badge.bubble));
+    await shot(s.page, 'createclaude');
+
+    // The program ends and is started again from the browser. A restart is a
+    // resume (§C.8), so the conversation it had is the conversation it gets.
+    const before = await endAndRestart(s, 'claude', 3);
+    ok(await awaitScreen(s.page, 'FAKE claude', 25000), 'Restart brought Claude Code back',
+      oneLine(await screen(s.page)));
+    const again = launchesOf(s, 'claude').slice(before);
+    ok(again.length === 1 && argvOf(again[0]).includes('--resume ' + row.cli_session_id),
+      'and it was resumed on the conversation it already had', argvOf(again[0]));
+    const back = await sessionRow(s, id);
+    ok(back.state === 'running', 'the row is running again', back.state);
+
+    ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
+      unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+/* ---------------------------------------------------------- 14. createcodex */
+
+// Codex is the harness whose launch is mostly configuration: --strict-config
+// makes an unknown key an error rather than a shrug, and the working directory
+// has to be trusted in the same breath or the TUI opens on a prompt nobody can
+// answer from a browser. Its conversation id exists only after a turn, so the
+// scenario types one and waits for the watcher to find it.
+async function createcodex() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    const id = await startWithModel(s.page, 'codex', null);
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    ok(await awaitScreen(s.page, 'FAKE codex'), 'the session is up', oneLine(await screen(s.page)));
+    ok(await awaitScreen(s.page, 'theme=light'), 'and it was told the terminal is light',
+      oneLine(await screen(s.page)));
+
+    const row = await sessionRow(s, id);
+    const launch = lastLaunch(s, 'codex');
+    ok(!!launch && launch.argv.includes('--strict-config'),
+      'it was started with --strict-config', argvOf(launch));
+    const trust = (launch.argv || []).find((arg) => arg.includes('trust_level')) || '';
+    ok(trust.includes('trusted') && trust.includes(row.workdir),
+      'and with this working directory trusted in the same command line', trust);
+    ok(launch.cwd === row.workdir, 'and it is working where the row says it is',
+      launch.cwd + ' vs ' + row.workdir);
+
+    // A turn is what makes Codex write its rollout down; before one there is
+    // nothing to discover and that is not a failure.
+    ok(!row.cli_session_id, 'before a turn there is no conversation to remember',
+      row.cli_session_id || 'empty');
+    await typeLine(s.page, 'hello codex');
+    ok(await awaitScreen(s.page, 'you said: hello codex'), 'the turn was taken',
+      oneLine(await screen(s.page)));
+    const found = await waitForCLISession(s, id, 30000);
+    ok(!!found.cli_session_id, 'and the conversation id was discovered from what it wrote',
+      found.cli_session_id || 'still empty');
+    await shot(s.page, 'createcodex');
+
+    const before = await endAndRestart(s, 'codex', 0);
+    ok(await awaitScreen(s.page, 'FAKE codex', 25000), 'Restart brought Codex back',
+      oneLine(await screen(s.page)));
+    const again = launchesOf(s, 'codex').slice(before);
+    ok(again.length === 1 && argvOf(again[0]).startsWith('resume ' + found.cli_session_id),
+      'and it was resumed on the conversation it had taken', argvOf(again[0]));
+
+    ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
+      unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+/* ------------------------------------------------------- 15. createopencode */
+
+// OpenCode keeps its session id nowhere a file watcher can reach it: the only
+// way to learn it is to ask the TUI's own HTTP server, on the port Socrates
+// chose, with the password Socrates generated. The fake answers 401 without
+// it, so an id here is proof that the whole authenticated path worked.
+async function createopencode() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    const id = await startWithModel(s.page, 'opencode', null);
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    ok(await awaitScreen(s.page, 'FAKE opencode'), 'the session is up', oneLine(await screen(s.page)));
+    ok(await awaitScreen(s.page, 'theme=light'), 'and it was told the terminal is light',
+      oneLine(await screen(s.page)));
+
+    const row = await sessionRow(s, id);
+    const launch = lastLaunch(s, 'opencode');
+    const port = launch ? launch.argv[launch.argv.indexOf('--port') + 1] : '';
+    ok(!!launch && launch.argv.includes('--port') && /^\d+$/.test(port || ''),
+      'it was given a port of its own', argvOf(launch));
+    const password = (launch.env || {}).OPENCODE_SERVER_PASSWORD || '';
+    ok(password.length >= 16, 'and a password for the server on it',
+      password ? password.length + ' characters' : 'not set');
+    ok(launch.cwd === row.workdir, 'and it is working where the row says it is',
+      launch.cwd + ' vs ' + row.workdir);
+
+    await typeLine(s.page, 'hello opencode');
+    ok(await awaitScreen(s.page, 'you said: hello opencode'), 'the turn was taken',
+      oneLine(await screen(s.page)));
+    const found = await waitForCLISession(s, id, 40000);
+    ok(/^ses_/.test(found.cli_session_id || ''),
+      'and the discoverer read the conversation id over the authenticated HTTP server',
+      found.cli_session_id || 'still empty');
+    await shot(s.page, 'createopencode');
+
+    const before = await endAndRestart(s, 'opencode', 0);
+    ok(await awaitScreen(s.page, 'FAKE opencode', 25000), 'Restart brought OpenCode back',
+      oneLine(await screen(s.page)));
+    const again = launchesOf(s, 'opencode').slice(before);
+    ok(again.length === 1 && argvOf(again[0]).includes('--session ' + found.cli_session_id),
+      'and it was resumed on the session the server had named', argvOf(again[0]));
+
+    ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
+      unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+/* --------------------------------------------------------- 16. rebootresume */
+
+// A reboot, without rebooting: the tmux server is killed behind Socrates' back
+// and everything it was running goes with it. Nothing is relaunched eagerly -
+// forty stored sessions must not become forty programs - so the sessions sit
+// in needs_resume until somebody opens one, and opening one is what this
+// scenario does.
+//
+// Two sessions are killed, because the two halves of §C.8 are different: a
+// Shell has no conversation and comes back as a fresh login shell, while
+// Claude Code has a uuid on disk and has to come back with **--resume** on its
+// command line. And the banner that says so has to be shown, and putting it
+// away has to be remembered.
+async function rebootresume() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+
+    const shellId = await startWithModel(s.page, 'shell', null);
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const marker = 'before-' + Math.random().toString(36).slice(2, 8);
+    await typeLine(s.page, 'echo ' + marker);
+    ok(await awaitScreen(s.page, marker), 'the shell session is up', oneLine(await screen(s.page)));
+
+    const claudeId = await startWithModel(s.page, 'claude', 'Sonnet');
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    ok(await awaitScreen(s.page, 'FAKE claude'), 'and so is the Claude Code one',
+      oneLine(await screen(s.page)));
+    const conversation = (await sessionRow(s, claudeId)).cli_session_id;
+    ok(/^[0-9a-f-]{36}$/.test(conversation || ''), 'which is holding a conversation',
+      conversation || 'none');
+
+    // The tab is put away first. With a page attached, the socket's own
+    // reconnect would open the session again the moment the row flipped, and
+    // the scenario would be measuring its own browser rather than the state a
+    // rebooted machine is found in.
+    await s.page.goto('about:blank', { waitUntil: 'domcontentloaded' });
+    killTmux(s.data);
+
+    for (const [id, what] of [[shellId, 'the shell session'], [claudeId, 'the Claude Code session']]) {
+      const row = await waitForState(s, id, ['needs_resume'], 40000);
+      ok(row.state === 'needs_resume', what + ' is waiting to be resumed, not running and not dead',
+        row.state);
+    }
+
+    // The reload. Opening the session is what resumes it, and the resume is
+    // the whole of the handshake - so what the pane says while it waits is
+    // "Resuming after a restart…", never "this session is not running".
+    const beforeClaude = launchesOf(s, 'claude').length;
+    const beforeShell = launchesOf(s, 'shell').length;
+    await s.page.goto(s.url + '/#' + claudeId, { waitUntil: 'domcontentloaded' });
+    ok(await awaitScreen(s.page, 'FAKE claude', 40000), 'opening it brought Claude Code back',
+      oneLine(await screen(s.page)));
+
+    const relaunch = launchesOf(s, 'claude').slice(beforeClaude);
+    ok(relaunch.length === 1 && argvOf(relaunch[0]).includes('--resume ' + conversation),
+      'and it came back with a resume on its command line, not a new conversation',
+      argvOf(relaunch[0]));
+    ok(!argvOf(relaunch[0]).includes('--session-id'),
+      'the uuid it was created with was not handed to it a second time', argvOf(relaunch[0]));
+
+    // §E.7: the banner is a thin line above the pane, it says what happened,
+    // the conversation it names is behind the "i", and it never blocks.
+    await s.page.waitForSelector('#termNotice:not([hidden])', { timeout: 20000 });
+    const banner = await s.page.evaluate(() => {
+      const host = document.getElementById('termNotice');
+      const bubble = host.querySelector('.tip-bubble');
+      return {
+        kind: host.dataset.kind,
+        words: host.querySelector('.notice-text').textContent,
+        bubble: bubble ? bubble.textContent : '',
+        bubbleShown: bubble ? getComputedStyle(bubble).visibility : 'none',
+      };
+    });
+    ok(banner.kind === 'resumed' && /Resumed after a restart/.test(banner.words),
+      'the banner says the session was resumed', JSON.stringify(banner));
+    ok(!/could not be resumed/.test(banner.words),
+      'and it does not claim the conversation was lost, because it was not', oneLine(banner.words));
+    ok(banner.bubble.includes(conversation) && banner.bubbleShown === 'hidden',
+      'the conversation it came back on is behind the "i"',
+      banner.bubbleShown + ' ' + oneLine(banner.bubble));
+    await shot(s.page, 'rebootresume');
+
+    // Dismissing it is a decision the server keeps: the banner does not come
+    // back on the next reload.
+    await s.page.click('#termNotice .notice-close');
+    await s.page.waitForSelector('#termNotice[hidden]', { timeout: 5000 });
+    const acked = await waitForAck(s, claudeId);
+    ok(acked.resumed === false, 'putting the banner away cleared the flag behind it',
+      JSON.stringify({ resumed: acked.resumed, resume_count: acked.resume_count }));
+    ok(acked.resume_count === 1, 'and the resume was counted once', String(acked.resume_count));
+    await s.page.reload({ waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    await wait(1500);
+    const still = await s.page.$eval('#termNotice', (n) => n.hidden);
+    ok(still === true, 'and a reload does not show it again', 'hidden=' + still);
+
+    // The other half of §C.8: a Shell has nothing to resume, so it comes back
+    // as a plain login shell and says so by working.
+    await s.page.goto(s.url + '/#' + shellId, { waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const after = 'after-' + Math.random().toString(36).slice(2, 8);
+    await typeLine(s.page, 'echo ' + after);
+    ok(await awaitScreen(s.page, after, 30000), 'the shell session came back and works',
+      oneLine(await screen(s.page)));
+    ok(launchesOf(s, 'shell').length === beforeShell,
+      'and it needed no CLI to do it', 'a login shell, not a program');
+    const shellRow = await sessionRow(s, shellId);
+    ok(shellRow.state === 'running', 'both sessions are running again', shellRow.state);
+
+    ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
+      unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+
+/* ---------------------------------------------------------- 18. twoviewers */
+
+// recordNotices keeps every notice the thin line above the terminal has shown,
+// in order. It is an init script rather than a poll because the resized notice
+// puts itself away after four seconds, and a scenario that only looked at the
+// end would see nothing at all - or, worse, would count two of them as one.
+function recordNotices() {
+  window.__notices = [];
+  const arm = () => {
+    const host = document.getElementById('termNotice');
+    if (!host) { setTimeout(arm, 50); return; }
+    let showing = host.hidden ? '' : (host.dataset.kind || '') + '|' + host.textContent.trim();
+    const look = () => {
+      const now = host.hidden ? '' : (host.dataset.kind || '') + '|' + host.textContent.trim();
+      if (now && now !== showing) {
+        window.__notices.push({ kind: now.split('|')[0], text: host.textContent.trim() });
+      }
+      showing = now;
+    };
+    new MutationObserver(look).observe(host,
+      { attributes: true, childList: true, subtree: true, characterData: true });
+    look();
+  };
+  arm();
+}
+
+const noticeKinds = (page, kind) => page.evaluate((want) =>
+  (window.__notices || []).filter((n) => n.kind === want), kind);
+
+// Two devices on one session, which is the ordinary case for the person this
+// is built for: a phone in a car and a laptop on a desk. Both see the same
+// pane, the window is sized to whoever connected last, and the other one is
+// told once - not on every keystroke, which is what tmux's own `latest`
+// policy would have done (§A.7).
+async function twoviewers() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await s.page.addInitScript(recordNotices);
+    await open(s);
+    const id = await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+    // The window is tmux's own answer rather than anything the page reports:
+    // the browser is told the size, but only tmux knows what the window did.
+    const name = 'soc_' + id;
+    await wait(1200);
+    const first = windowSize(s.data, name);
+    ok(/^\d+x\d+$/.test(first), 'the window is sized to the viewer that opened it', first);
+
+    // The second device is a different shape, so the window really moves.
+    const second = await s.context.newPage();
+    await second.setViewportSize({ width: 640, height: 480 });
+    await second.goto(s.url + '/#' + id, { waitUntil: 'domcontentloaded' });
+    await second.waitForSelector('#term .xterm', { timeout: 20000 });
+    // Six seconds of watching what the window actually did. One device
+    // connecting is one size change, and anything more would be a notice the
+    // person did not need: the composer coming up, a font settling, a fit
+    // arriving late.
+    const seq = [first];
+    for (let i = 0; i < 60; i += 1) {
+      await wait(100);
+      const now = windowSize(s.data, name);
+      if (now !== seq[seq.length - 1]) seq.push(now);
+    }
+    const moved = seq[seq.length - 1];
+    ok(seq.length === 2 && moved !== first,
+      'the window moved exactly once, to the viewer that connected last', seq.join(' -> '));
+    await s.page.waitForFunction(() => (window.__notices || [])
+      .some((n) => n.kind === 'resized'), null, { timeout: 15000 }).catch(() => {});
+    let notices = await noticeKinds(s.page, 'resized');
+    ok(notices.length === 1, 'the first viewer was told once that the size moved',
+      JSON.stringify(notices));
+    ok(notices.length === 1 && notices[0].text.includes(moved.replace('x', '×')),
+      'and told which size it moved to', notices.length ? notices[0].text : 'nothing');
+    ok(await s.page.$eval('#termSize', (n) => n.textContent) === moved.replace('x', '×'),
+      'the first viewer now shows the window the second one set',
+      await s.page.$eval('#termSize', (n) => n.textContent));
+
+    // One pane, two windows onto it: what either types, both see.
+    const fromSecond = 'second-' + Math.random().toString(36).slice(2, 8);
+    await second.click('#term .xterm-screen');
+    await focusTerm(second);
+    await second.keyboard.type('echo ' + fromSecond);
+    await second.keyboard.press('Enter');
+    ok(await awaitScreen(second, fromSecond, 20000), 'the second viewer drives the pane',
+      oneLine(await screen(second)));
+    ok(await awaitScreen(s.page, fromSecond, 20000), 'and the first one sees it too',
+      oneLine(await screen(s.page)));
+
+    const fromFirst = 'first-' + Math.random().toString(36).slice(2, 8);
+    await typeLine(s.page, 'echo ' + fromFirst);
+    ok(await awaitScreen(s.page, fromFirst, 20000), 'the first viewer drives the pane',
+      oneLine(await screen(s.page)));
+    ok(await awaitScreen(second, fromFirst, 20000), 'and the second one sees it too',
+      oneLine(await screen(second)));
+
+    // §A.7 and decision J4 in two assertions: typing is not an explicit act,
+    // so it moves neither the window nor anybody's notice line. Under tmux's
+    // own `latest` policy the window would have flipped on every one of those
+    // keystrokes.
+    await wait(2500);
+    ok(windowSize(s.data, name) === moved, 'typing on either device left the window alone',
+      windowSize(s.data, name) + ', want ' + moved);
+    notices = await noticeKinds(s.page, 'resized');
+    ok(notices.length === 1, 'no keystroke produced a second resize notice',
+      JSON.stringify(notices));
+    const theirNotices = await noticeKinds(second, 'resized');
+    ok(theirNotices.length === 0, 'and the viewer that owns the size was told nothing',
+      JSON.stringify(theirNotices));
+
+    await shot(s.page, 'twoviewers');
+    await second.close();
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+/* -------------------------------------------------------- 19. backpressure */
+
+// Two hundred lines as fast as a program can write them. The ring, the socket
+// and the browser all have to agree about what was printed: a hole in the
+// middle would mean the replay window moved under a reader that was behind,
+// and a terminal that silently loses output is worse than one that stops.
+async function backpressure() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    const id = await startSession(s.page, 'claude');
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    ok(await awaitScreen(s.page, 'FAKE claude'), 'the fake CLI is at its prompt',
+      oneLine(await screen(s.page)));
+
+    await typeLine(s.page, '/spin');
+    ok(await awaitScreen(s.page, 'spin 200', 40000), 'the last of the two hundred lines arrived',
+      oneLine(await screen(s.page)));
+
+    // What the pane printed, as the journal recorded it: the fake's own
+    // numbering makes a hole impossible to miss.
+    const { readFileSync } = await import('node:fs');
+    const journal = join(s.data, 'sessions', id, 'journal.raw');
+    let numbers = [];
+    for (let i = 0; i < 40; i += 1) {
+      const text = readFileSync(journal, 'latin1');
+      numbers = [...text.matchAll(/spin (\d+)/g)].map((m) => Number(m[1]));
+      if (numbers.length >= 200) break;
+      await wait(250);
+    }
+    const missing = [];
+    for (let n = 1; n <= 200; n += 1) if (numbers[n - 1] !== n) missing.push(n);
+    ok(numbers.length === 200 && missing.length === 0,
+      'the journal holds all two hundred lines, in order and once each',
+      numbers.length + ' lines, first gap at ' + (missing[0] || 'none'));
+
+    // And the screen is the tail of that same stream, with nothing skipped.
+    const shown = [...(await screen(s.page)).matchAll(/spin (\d+)/g)].map((m) => Number(m[1]));
+    const contiguous = shown.length > 1
+      && shown.every((n, i) => i === 0 || n === shown[i - 1] + 1);
+    ok(contiguous && shown[shown.length - 1] === 200,
+      'the pane ends on line two hundred with no holes above it',
+      shown.length ? shown[0] + '…' + shown[shown.length - 1] : 'nothing on screen');
+
+    await shot(s.page, 'backpressure');
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+/* ------------------------------------------------------ 20. deletekeepsdir */
+
+// Delete is the only thing in Socrates that kills a tmux session, and the only
+// thing it may take with it is the session: the work stays on disk. This is
+// that promise measured from all three sides - the row, the tmux server and
+// the file the person made - plus the journal they can take away first.
+async function deletekeepsdir() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    const id = await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+
+    const { existsSync } = await import('node:fs');
+    const row = await (await s.context.request.get(s.url + '/api/sessions/' + id)).json();
+    const workdir = row.session.workdir;
+    const kept = join(workdir, 'kept.txt');
+    await typeLine(s.page, 'echo work-that-stays > kept.txt');
+    for (let i = 0; i < 40 && !existsSync(kept); i += 1) await wait(250);
+    ok(existsSync(kept), 'the session did some work in its directory', kept);
+    ok(sessionsOn(s.data).includes('soc_' + id), 'and it has a tmux session',
+      sessionsOn(s.data).join(',') || 'none');
+
+    // The scrollback is downloadable while the session is there. The menu
+    // item opens the endpoint in a tab, which is a browser download rather
+    // than something a page can be asked about, so the item is checked on
+    // screen and the bytes are fetched over the same signed-in context.
+    const journal = await s.context.request.get(s.url + '/api/sessions/' + id + '/journal');
+    const body = await journal.text();
+    ok(journal.ok() && body.includes('kept.txt'),
+      'the scrollback can be taken away before the session goes',
+      journal.status() + ', ' + body.length + ' bytes');
+    ok(/attachment/.test(journal.headers()['content-disposition'] || ''),
+      'as an attachment', journal.headers()['content-disposition'] || 'no disposition');
+
+    await s.page.click('#sessionList .chat-item[data-id="' + id + '"] .act');
+    await s.page.waitForSelector('.menu', { timeout: 5000 });
+    const items = await s.page.$$eval('.menu .menu-item', (nodes) =>
+      nodes.map((n) => n.textContent.trim()));
+    ok(items.includes('Download scrollback'), 'and the row is where it is offered',
+      items.join(' | '));
+    await s.page.click('.menu .menu-item:text-is("Delete")');
+    await s.page.waitForSelector('.modal[open] .btn.danger', { timeout: 5000 });
+    await s.page.click('.modal[open] .btn.danger');
+    await s.page.waitForFunction((sel) => !document.querySelector(sel),
+      '#sessionList .chat-item[data-id="' + id + '"]', { timeout: 10000 });
+
+    const left = await (await s.context.request.get(s.url + '/api/sessions?scope=all')).json();
+    ok((left.sessions || []).length === 0, 'the row is gone', (left.sessions || []).length + ' left');
+    let live = sessionsOn(s.data);
+    for (let i = 0; i < 20 && live.includes('soc_' + id); i += 1) {
+      await wait(250);
+      live = sessionsOn(s.data);
+    }
+    ok(!live.includes('soc_' + id), 'the tmux session was killed with it',
+      live.join(',') || 'no tmux session left');
+    ok(existsSync(workdir) && existsSync(kept), 'and the working directory was kept', kept);
+    ok(!existsSync(join(s.data, 'sessions', id)),
+      'while what Socrates itself wrote for the session is gone',
+      join('sessions', id));
+
+    await shot(s.page, 'deletekeepsdir');
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+/* --------------------------------------------------- 21. recoveredsession */
+
+// A tmux session of ours with no row behind it - a restored database, a failed
+// migration, a crash in the moment between the session appearing and the row
+// being written. DECISIONS.md is explicit that it is never killed, so it is
+// taken in instead, and the person can see it and decide (§A.8 step 5).
+async function recoveredsession() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    // One ordinary session first, so the substrate is up and the hand made
+    // one lands on the same server a person's would.
+    const id = await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+
+    const { execFileSync } = await import('node:child_process');
+    const { mkdirSync: mkdir } = await import('node:fs');
+    const stray = [...Array(32)].map(() => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('');
+    const dir = join(s.data, 'workspaces', 'stray');
+    mkdir(dir, { recursive: true });
+    execFileSync('tmux', ['-S', join(s.data, 'tmux.sock'), 'new-session', '-d',
+      '-s', 'soc_' + stray, '-c', dir, 'sleep 600']);
+    ok(sessionsOn(s.data).includes('soc_' + stray), 'a tmux session of ours has no row',
+      sessionsOn(s.data).join(','));
+
+    await s.restart();
+    await open(s);
+    await s.page.waitForFunction((want) => [...document.querySelectorAll('#sessionList .chat-item')]
+      .some((n) => n.dataset.id === want), stray, { timeout: 20000 }).catch(() => {});
+
+    const listed = await (await s.context.request.get(s.url + '/api/sessions?scope=all')).json();
+    const found = (listed.sessions || []).find((row) => row.id === stray);
+    ok(!!found, 'the orphan was taken in rather than killed', found ? found.id : 'not listed');
+    ok(!!found && found.title === 'Recovered session', 'and it is called what it is',
+      found ? found.title : 'no row');
+    ok(!!found && found.state === 'running' && found.harness === 'shell',
+      'running, as a shell, because nothing else can be known about it',
+      found ? found.state + '/' + found.harness : 'no row');
+    ok(!!found && found.workdir === dir, 'with the directory its pane is in',
+      found ? found.workdir : 'no row');
+    ok(sessionsOn(s.data).includes('soc_' + stray), 'and it was never killed',
+      sessionsOn(s.data).join(','));
+    ok(s.log.join('').includes('took in the tmux session'),
+      'the start-up log says what happened', oneLine(s.log.join('')).slice(-140));
+
+    const label = await s.page.$eval('#sessionList .chat-item[data-id="' + stray + '"] .label',
+      (n) => n.textContent).catch(() => 'no row on screen');
+    ok(label === 'Recovered session', 'the browser shows it in the list', label);
+    ok(await s.page.$('#sessionList .chat-item[data-id="' + id + '"]') !== null,
+      'beside the session that was there all along', id);
+
+    await shot(s.page, 'recoveredsession');
+    ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
+      unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 // -------------------------------------------------------------------- run
 
 const ALL = [
@@ -1665,6 +2372,10 @@ const ALL = [
   ['latehello', 'what is typed before a late hello is delivered, exactly once', latehello],
   ['adminoptions', 'every harness option round-trips and reaches the command line', adminoptions],
   ['tmuxinstaller', 'the engine card, and an install that streams and survives a reload', tmuxinstaller],
+  ['twoviewers', 'two devices on one session, and one notice about the size', twoviewers],
+  ['backpressure', 'two hundred lines arrive whole, on screen and in the journal', backpressure],
+  ['deletekeepsdir', 'delete kills the tmux session and keeps the work', deletekeepsdir],
+  ['recoveredsession', 'a tmux session with no row is taken in, never killed', recoveredsession],
   ['livesession', 'one real session against the real Claude Code CLI', livesession, { live: true }],
 ];
 
