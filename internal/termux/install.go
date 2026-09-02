@@ -71,6 +71,10 @@ var managerCommands = map[string][][]string{
 	"brew":   {{"brew", "install", "tmux"}},
 }
 
+// installEnv is what a package manager must never be without: no questions,
+// and output in a language this log can be read in.
+var installEnv = []string{"DEBIAN_FRONTEND=noninteractive", "LC_ALL=C"}
+
 // managerOrder is the order the managers are looked for in: first hit wins.
 var managerOrder = []string{"apt-get", "apk", "dnf", "yum", "pacman", "zypper", "brew"}
 
@@ -128,10 +132,13 @@ func (i *Installer) Detect(ctx context.Context) Report {
 	}
 
 	root := i.euid() == 0
+	// The command in the report is the one a person pastes into a terminal, so
+	// it says "sudo" and not "sudo -n": they can answer a password prompt, and
+	// Socrates cannot, which is the only reason -n exists here.
 	prefix := ""
 	if !root {
 		if sudo, err := i.lookPath("sudo"); err == nil && i.sudoWorks(ctx, sudo) {
-			prefix = "sudo -n"
+			prefix = "sudo"
 		}
 	}
 	rep.Privileged = root || prefix != ""
@@ -235,7 +242,14 @@ func (i *Installer) Install(ctx context.Context, emit func(line string)) (int, e
 		name, args := step[0], step[1:]
 		prefix := ""
 		if sudo {
-			name, args, prefix = "sudo", append([]string{"-n"}, step...), "sudo -n"
+			// sudo resets the environment, and DEBIAN_FRONTEND is not on
+			// Debian's env_keep list - so passing it in cmd.Env only sets it
+			// for sudo itself. `env` inside the sudo call is what puts it in
+			// front of the package manager, which is where it is read.
+			name = "sudo"
+			args = append([]string{"-n", "env"}, installEnv...)
+			args = append(args, step...)
+			prefix = "sudo -n env " + strings.Join(installEnv, " ")
 		}
 		emit("$ " + commandLine([][]string{step}, prefix))
 		exit, err := runStreaming(ctx, name, args, emit)
@@ -256,7 +270,7 @@ func (i *Installer) Install(ctx context.Context, emit func(line string)) (int, e
 // than wait for an answer that is never coming.
 func runStreaming(ctx context.Context, name string, args []string, emit func(string)) (int, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive", "LC_ALL=C")
+	cmd.Env = append(os.Environ(), installEnv...)
 	cmd.Stdin = nil
 	pr, pw := io.Pipe()
 	cmd.Stdout, cmd.Stderr = pw, pw

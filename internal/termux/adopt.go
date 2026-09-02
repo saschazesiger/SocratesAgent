@@ -73,7 +73,7 @@ func (m *Manager) listPanes(ctx context.Context) (map[string]pane, error) {
 // every session the machine lost becomes one to resume, and every tmux session
 // of ours without a row is taken in rather than killed.
 func (m *Manager) Adopt(ctx context.Context) error {
-	if err := m.unavailable; err != nil {
+	if err := m.Available(); err != nil {
 		return nil
 	}
 	rows, err := m.st.ListSessions(true)
@@ -230,7 +230,7 @@ func (m *Manager) StartPoll(ctx context.Context) {
 
 // Poll asks tmux once what is still alive and reconciles the answer.
 func (m *Manager) Poll(ctx context.Context) {
-	if m.unavailable != nil {
+	if m.Available() != nil {
 		return
 	}
 	rows, err := m.st.ListSessions(true)

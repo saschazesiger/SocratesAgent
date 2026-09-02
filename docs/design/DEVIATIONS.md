@@ -536,13 +536,46 @@ this repo builds for, and three exported accessors for the paths §F.7 checks to
 launchers use rather than a second guess at them. `internal/server/server.go` gained two hunks
 only - the `tmuxAdmin` field and three route lines - because WP5 is mid-flight in that file.
 
-**WP8 / §D.2, §D.9 — the "viewer lag" admin row was not built, and the `lag` frame was not
-deleted either.** §D.9 gives the frame exactly one consumer and the review note says WP8 either
-uses it or the frame goes. §F describes eight admin sections and none of them is a viewer-lag
-row; the frame is per-session state and the dashboard has no session list to hang it on.
-Deleting it would mean editing `internal/server/ws.go` and `js/session.js`, which WP5 is
-rewriting right now. The decision is therefore left open and flagged: whoever closes WP5 should
-either delete the `lag` frame and its client timer, or say where the row belongs.
+**WP8 / §D.2, §D.9 — the "viewer lag" admin row is dropped and the `lag` frame stays.** §D.9
+gives the frame exactly one consumer and the review note says WP8 either uses it or the frame
+goes. §F describes eight admin sections and none of them is a viewer-lag row; the frame is
+per-session state and the dashboard has no session list to hang it on. Put to the orchestrator,
+the decision was: no row, and the frame is kept as the purely diagnostic thing §D.2 already
+calls it. Nothing in `ws.go` or `session.js` changes.
+
+## WP8 — after the review
+
+**WP8 / §C.10–§C.12 — "confirm-twice" is two dialogs, the second asking its own question.** The
+specification says confirm-twice and does not say what the second confirmation is. A second
+identical dialog is a second tap and nothing more, so the second one restates the consequence in
+its own words ("Once more, to be sure") and takes a different answer. A refusal at either step
+puts the control back exactly as it was. The same guard was added to two options the catalogue
+had left unguarded and which are in the same danger class: Codex's `sandbox` when it is set to
+`danger-full-access` (no sandbox at all) and Claude Code's `remote_control` (it hands the session
+to whoever can reach the channel).
+
+**WP8 / §I — three more files outside the named scope, all of them one fix.** Finding 3 is a data
+race on the two `Manager.cfg` fields `ApplyTerminal` writes, and the reads are spread over
+`manager.go`, `adopt.go` and `ensure.go`; they now go through `policy()`, `confOptions()` and the
+existing `Available()`, which take the manager's lock. `conf.go`'s `writeConf` became a
+temp-file-and-rename, because a save of the terminal card can truncate the generated
+configuration while a first `new-session` is reading it. Nothing else in those files moved.
+
+**WP8 / §F.7 — a diagnostics row is a verdict, and its detail is behind the row's "i".** §F.7
+lists the checks and says nothing about how a row is drawn; §E.10 rule 3 says a version, a path
+or an error message is never in visible text. `checkResult` therefore carries `summary` (what is
+shown) as well as `detail` (what the "i" holds), and a version is passed through `StripANSI` and
+clamped before it is shown at all - a CLI that prints a colour query into `--version`, which the
+suite's own fake does, would otherwise put escape glyphs on the dashboard.
+
+**WP8 / §F.1 — a successful install re-probes tmux instead of asking for a restart.** Neither §F.1
+nor §A.3 says what happens to the manager when the installer finishes; `termux.New` decided
+`unavailable` once and never again, so the card said "tmux is ready" while the new-session sheet
+still refused. `Manager.Redetect` re-runs the lookup and the version check under the manager's
+lock, writes the generated configuration if the manager never got that far, and the install
+goroutine calls it before it publishes `done`; the page then asks for the catalogue again. It
+deliberately does not touch `Tmux.Bin`, which is the literal "tmux" on a machine that had none
+and is resolved on PATH at every call.
 
 ### WP5 fix-up — the review findings
 

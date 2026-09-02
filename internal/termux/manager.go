@@ -181,10 +181,18 @@ func New(st *store.Store, cfg Config) (*Manager, error) {
 }
 
 // TmuxPath is the binary the manager runs.
-func (m *Manager) TmuxPath() string { return m.tmuxPath }
+func (m *Manager) TmuxPath() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.tmuxPath
+}
 
 // TmuxVersion is what that binary reported.
-func (m *Manager) TmuxVersion() Version { return m.tmuxVersion }
+func (m *Manager) TmuxVersion() Version {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.tmuxVersion
+}
 
 // Socket is the path of the tmux server socket.
 func (m *Manager) Socket() string { return m.tmux.Sock }
@@ -192,8 +200,13 @@ func (m *Manager) Socket() string { return m.tmux.Sock }
 // ConfPath is the generated configuration file.
 func (m *Manager) ConfPath() string { return m.tmux.Conf }
 
-// Available reports why sessions cannot be created, or nil.
-func (m *Manager) Available() error { return m.unavailable }
+// Available reports why sessions cannot be created, or nil. It takes the lock
+// because Redetect can replace the answer while a request is reading it.
+func (m *Manager) Available() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.unavailable
+}
 
 func (m *Manager) logf(format string, args ...any) { m.cfg.Logf(format, args...) }
 
@@ -204,7 +217,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	if err := os.MkdirAll(m.cfg.DataDir, 0o700); err != nil {
 		return err
 	}
-	if err := WriteConf(m.tmux.Conf, m.cfg.Conf); err != nil {
+	if err := WriteConf(m.tmux.Conf, m.confOptions()); err != nil {
 		return err
 	}
 	return m.listenHooks()
@@ -281,7 +294,7 @@ func SessionID(tmuxName string) (string, bool) {
 // that window is empty - and Adopt picks up anything that still slips through
 // rather than killing it.
 func (m *Manager) Create(ctx context.Context, spec Spec) (*store.Session, error) {
-	if err := m.unavailable; err != nil {
+	if err := m.Available(); err != nil {
 		return nil, err
 	}
 	if len(spec.Plan.Argv) == 0 {
@@ -370,7 +383,7 @@ var ErrStillRunning = errors.New("the session is still running; it will not be r
 // no running work to lose, and the user asked for this by pressing Restart. A
 // session whose pane is still alive is refused instead.
 func (m *Manager) Relaunch(ctx context.Context, row *store.Session, plan harnesses.LaunchPlan) error {
-	if err := m.unavailable; err != nil {
+	if err := m.Available(); err != nil {
 		return err
 	}
 	if err := m.clearDeadSession(ctx, row.TmuxName); err != nil {
@@ -528,7 +541,7 @@ func (m *Manager) newSession(ctx context.Context, row *store.Session, plan harne
 	if conf, readErr := os.ReadFile(m.tmux.Conf); readErr == nil {
 		m.logf("tmux refused to start with the generated configuration:\n%s", conf)
 	}
-	if writeErr := writeConf(m.tmux.Conf, MinimalConf(m.cfg.Conf)); writeErr != nil {
+	if writeErr := writeConf(m.tmux.Conf, MinimalConf(m.confOptions())); writeErr != nil {
 		return err
 	}
 	m.logf("retrying with a minimal tmux configuration")
@@ -573,10 +586,7 @@ func sortedEnv(env map[string]string) []string {
 // second takes the server, and every session on it, down. Per window it is
 // well behaved and idempotent.
 func (m *Manager) applySizePolicy(ctx context.Context, tmuxName string, cols, rows int) error {
-	policy := m.cfg.WindowSize
-	if policy == "" {
-		policy = "manual"
-	}
+	policy := m.policy()
 	if _, err := m.tmux.Run(ctx, "setw", "-t", tmuxName, "window-size", policy); err != nil {
 		return err
 	}
@@ -615,7 +625,7 @@ func (m *Manager) attachJournal(ctx context.Context, id, tmuxName string) error 
 // Attach opens one browser's window onto a session: a tmux client of our own
 // on a pseudo terminal, whose output goes into a replay ring.
 func (m *Manager) Attach(ctx context.Context, sessionID, viewerID string, cols, rows int) (*Viewer, error) {
-	if err := m.unavailable; err != nil {
+	if err := m.Available(); err != nil {
 		return nil, err
 	}
 	row, err := m.st.GetSession(sessionID)
@@ -718,7 +728,7 @@ func (m *Manager) own(ctx context.Context, v *Viewer) error {
 	name := live.tmuxName
 	m.mu.Unlock()
 
-	if m.cfg.WindowSize != "manual" && m.cfg.WindowSize != "" {
+	if m.policy() != "manual" {
 		// Under latest or largest the window is tmux's to decide, and issuing
 		// resize-window would fight it.
 		return nil
@@ -785,7 +795,7 @@ func (m *Manager) Delete(ctx context.Context, sessionID string) error {
 	for _, v := range m.Viewers(sessionID) {
 		_ = v.Close()
 	}
-	if m.unavailable == nil && row.TmuxName != "" {
+	if m.Available() == nil && row.TmuxName != "" {
 		// A bare pipe-pane closes the journal; then the session goes.
 		_, _ = m.tmux.Run(ctx, "pipe-pane", "-t", row.TmuxName)
 		if _, err := m.tmux.Run(ctx, "kill-session", "-t", row.TmuxName); err != nil && !serverGone(err) &&

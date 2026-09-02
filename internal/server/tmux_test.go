@@ -230,3 +230,67 @@ func TestTmuxEndpointsAreBehindTheWall(t *testing.T) {
 		t.Fatalf("the installer answered %d to a stranger", res.StatusCode)
 	}
 }
+
+// The whole promise of the install button: a machine with no tmux, an install
+// that succeeds, and sessions become possible without restarting Socrates.
+// Nothing is installed - the fake apt-get's "install" step drops a link to
+// this machine's own tmux where PATH can see it, which is exactly the change a
+// real install makes.
+func TestASuccessfulInstallMakesSessionsPossible(t *testing.T) {
+	real, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("no tmux on this machine")
+	}
+	dir := t.TempDir()
+	// The script uses absolute paths for everything: PATH holds nothing but
+	// this directory, which is the point - the machine has no tmux on it.
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"update\" ]; then echo \"Reading package lists...\"; exit 0; fi\n" +
+		"/bin/ln -sf " + real + " " + filepath.Join(dir, "tmux") + "\n" +
+		"echo \"Setting up tmux ...\"\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "apt-get"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+	env.srv.tmuxAdmin.installer = termux.Installer{Geteuid: func() int { return 0 }}
+
+	_, before := env.do(t, env.client, "GET", "/api/harnesses", "")
+	if before["sessions_available"] != false {
+		t.Fatalf("sessions were possible before tmux existed: %#v", before["sessions_available"])
+	}
+
+	if res, _ := env.do(t, env.client, "POST", "/api/tmux/install", "{}"); res.StatusCode != http.StatusAccepted {
+		t.Fatalf("install was not accepted: %d", res.StatusCode)
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	var card, catalogue map[string]any
+	for time.Now().Before(deadline) {
+		_, card = env.do(t, env.client, "GET", "/api/tmux", "")
+		if card["installing"] == false && card["ok"] == true {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if card["ok"] != true {
+		t.Fatalf("the card never said tmux was ready: %#v", card)
+	}
+	if card["last_exit"] != float64(0) {
+		t.Fatalf("the exit code of the last install is %#v, want 0", card["last_exit"])
+	}
+
+	// The page and the manager have to agree. Before Redetect existed the card
+	// said "ready" here while Start stayed disabled, for ever.
+	_, catalogue = env.do(t, env.client, "GET", "/api/harnesses", "")
+	if catalogue["sessions_available"] != true {
+		t.Fatalf("the card says tmux is ready but sessions are still refused: %#v",
+			catalogue["sessions_error"])
+	}
+	if err := env.srv.Sessions().Available(); err != nil {
+		t.Fatalf("the manager still refuses sessions: %v", err)
+	}
+	if _, err := os.Stat(env.srv.Sessions().ConfPath()); err != nil {
+		t.Fatalf("the generated configuration was not written: %v", err)
+	}
+}

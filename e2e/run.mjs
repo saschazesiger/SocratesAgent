@@ -635,6 +635,13 @@ const openGroups = (page) => page.$$eval('details.group', (nodes) => {
   for (const node of nodes) node.open = true;
 });
 
+// The dangerous options confirm twice, and the second dialog is the one a
+// person actually reads. These drive the pair the way a person would.
+const dialogTitle = (page) => page.$eval('dialog.modal .modal-title', (n) => n.textContent)
+  .catch(() => '');
+const acceptDialog = (page) => page.click('dialog.modal .modal-actions button.danger');
+const cancelDialog = (page) => page.click('dialog.modal .modal-actions button:not(.danger)');
+
 async function setOption(page, [harness, key, kind, value]) {
   const selector = '#opt-' + harness + '-' + key;
   if (kind === 'switch') {
@@ -679,10 +686,21 @@ async function adminoptions() {
     await s.page.selectOption('#windowSize', 'largest');
     await s.page.fill('#historyLimit', '31000');
 
+    // The verified built-in theme list, not the third of it the docs name.
+    const themes = await s.page.$$eval('#opt-opencode-tui_theme option', (ns) => ns.map((n) => n.value));
+    ok(['opencode', 'dracula', 'carbonfox', 'catppuccin-frappe', 'system'].every((t) => themes.includes(t)),
+      'the OpenCode theme list is the verified built-in one', themes.length + ' themes');
+
     await s.page.click('#saveTop');
     await s.page.waitForSelector('.toast', { timeout: 15000 });
     await wait(400);
     await shot(s.page, 'admin-options');
+
+    // A save rebuilds the cards from what the server normalised, and must not
+    // close the group somebody was editing while it does.
+    const stillOpen = await s.page.$eval(
+      '#harness-claude details.group[data-group="Diagnostics"]', (n) => n.open);
+    ok(stillOpen, 'saving leaves the option group that was open, open', String(stillOpen));
 
     // The reload is the assertion: everything above has to come back out of
     // the database and into the same controls.
@@ -711,6 +729,61 @@ async function adminoptions() {
     ok(terminal.windowSize === 'largest' && terminal.history === '31000',
       'the terminal card round-trips too', JSON.stringify(terminal));
     ok(terminal.preset === preset, 'the preset directory was stored', terminal.preset);
+
+    // Confirm-twice, on an option that turns a sandbox off. Two dialogs, and a
+    // refusal at the second leaves the switch exactly as it was.
+    await s.page.click('#opt-codex-bypass + .track');
+    await s.page.waitForSelector('dialog.modal', { timeout: 5000 });
+    const firstTitle = await dialogTitle(s.page);
+    await acceptDialog(s.page);
+    await s.page.waitForFunction(
+      () => /Once more/.test(document.querySelector('dialog.modal .modal-title')?.textContent || ''),
+      null, { timeout: 5000 });
+    const secondTitle = await dialogTitle(s.page);
+    ok(/sandbox/i.test(firstTitle) && /Once more/i.test(secondTitle),
+      'a dangerous switch asks twice, and the second dialog is its own question',
+      firstTitle + ' → ' + secondTitle);
+    await cancelDialog(s.page);
+    await s.page.waitForSelector('dialog.modal', { state: 'detached', timeout: 5000 });
+    const bypass = await s.page.$eval('#opt-codex-bypass', (n) => n.checked);
+    ok(bypass === false, 'and cancelling the second dialog leaves it off', String(bypass));
+
+    // The two options the review found unguarded.
+    for (const [name, action] of [
+      ['danger-full-access', () => s.page.selectOption('#opt-codex-sandbox', 'danger-full-access')],
+      ['remote control', () => s.page.click('#opt-claude-remote_control + .track')],
+    ]) {
+      await action();
+      const asked = await s.page.waitForSelector('dialog.modal', { timeout: 5000 })
+        .then(() => true).catch(() => false);
+      ok(asked, name + ' asks before it is turned on', String(asked));
+      if (asked) {
+        await cancelDialog(s.page);
+        await s.page.waitForSelector('dialog.modal', { state: 'detached', timeout: 5000 });
+      }
+    }
+    const reverted = await s.page.evaluate(() => ({
+      sandbox: document.getElementById('opt-codex-sandbox').value,
+      remote: document.getElementById('opt-claude-remote_control').checked,
+    }));
+    ok(reverted.sandbox === 'read-only' && reverted.remote === false,
+      'and a refusal puts both back', JSON.stringify(reverted));
+
+    // §E.10 rule 3, in the setup check: the row says a verdict, the path and
+    // the version are behind its "i".
+    await s.page.click('#runChecks');
+    await s.page.waitForSelector('#checks .check', { timeout: 60000 });
+    const rows = await s.page.$$eval('#checks .check', (nodes) => nodes.map((node) => ({
+      name: node.querySelector('.nm').textContent.trim(),
+      visible: node.querySelector('.dt').textContent.trim(),
+      tip: !!node.querySelector('.tip'),
+    })));
+    const leaking = rows.filter((row) => row.visible.includes('/'));
+    ok(rows.length > 0 && leaking.length === 0,
+      'no diagnostics row shows a path in the line itself',
+      leaking.map((row) => row.name + ': ' + row.visible).join(' | ') || rows.length + ' rows');
+    ok(rows.some((row) => row.tip), 'and the technical detail is behind the row\u2019s "i"',
+      rows.filter((row) => row.tip).length + ' of ' + rows.length + ' rows have one');
 
     // The sheet is where a preset is used, so that is where it is checked.
     await s.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
@@ -826,6 +899,12 @@ async function tmuxinstaller() {
       null, { timeout: 15000 });
     const kept = await s.page.$eval('#tmuxLog', (n) => n.textContent);
     ok(kept.includes('Setting up tmux'), 'and it is still there after a reload', oneLine(kept));
+    // The exit code is half the result: a log with no verdict makes somebody
+    // read package-manager output to find out whether it worked.
+    const verdict = await s.page.$eval('#tmuxInstallResult',
+      (n) => (n.hidden ? '' : n.textContent));
+    ok(/The last install finished/.test(verdict),
+      'and the reload says what the last install did, and when', verdict || 'nothing shown');
 
     ok(unexpected(s.errors).length === 0, 'no console errors',
       unexpected(s.errors).join(' | ') || '0');

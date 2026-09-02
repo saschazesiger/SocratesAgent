@@ -33,6 +33,14 @@ type installLog struct {
 	At    int64    `json:"at"`
 }
 
+// detectEvery is how long a detection stands. The card is refreshed on load,
+// on every wake and whenever the output is opened, and each detection runs
+// `tmux -V` and, on a machine that is not root, `sudo -n true`. A few seconds
+// of memory turns that into one pair of subprocesses per visit without ever
+// showing an answer from before something changed: every path that changes it
+// - the install - clears the cache itself.
+const detectEvery = 5 * time.Second
+
 // tmuxEvent is one frame of the progress stream. The type field is what the
 // browser switches on; the LiveStream in net.js reads unnamed SSE events, so
 // the kind of frame travels in the payload rather than in an event name.
@@ -49,12 +57,42 @@ type tmuxEvent struct {
 type tmuxAdmin struct {
 	installer termux.Installer
 
-	mu      sync.Mutex
-	running bool
-	lines   []string
-	exit    int
-	done    bool
-	subs    map[chan tmuxEvent]struct{}
+	mu       sync.Mutex
+	running  bool
+	lines    []string
+	exit     int
+	done     bool
+	subs     map[chan tmuxEvent]struct{}
+	cached   termux.Report
+	cachedAt time.Time
+}
+
+// detect answers the card's question, from memory when the answer is seconds
+// old. force is what the install uses to make sure the page never sees the
+// machine as it was before it ran.
+func (t *tmuxAdmin) detect(ctx context.Context, force bool) termux.Report {
+	t.mu.Lock()
+	if !force && !t.cachedAt.IsZero() && time.Since(t.cachedAt) < detectEvery {
+		report := t.cached
+		t.mu.Unlock()
+		return report
+	}
+	t.mu.Unlock()
+
+	report := t.installer.Detect(ctx)
+
+	t.mu.Lock()
+	t.cached, t.cachedAt = report, time.Now()
+	t.mu.Unlock()
+	return report
+}
+
+// forget throws the cached detection away, which is what has to happen the
+// moment anything could have changed the machine.
+func (t *tmuxAdmin) forget() {
+	t.mu.Lock()
+	t.cachedAt = time.Time{}
+	t.mu.Unlock()
 }
 
 // subscribe joins the stream, and is handed everything the run has printed so
@@ -113,13 +151,17 @@ func (t *tmuxAdmin) snapshot() (running bool, lines []string) {
 // handleTmux is the terminal engine card: what tmux is here, what could
 // install it, and what the last install printed.
 func (s *Server) handleTmux(w http.ResponseWriter, r *http.Request) {
-	report := s.tmuxAdmin.installer.Detect(r.Context())
+	report := s.tmuxAdmin.detect(r.Context(), false)
 	running, lines := s.tmuxAdmin.snapshot()
+	// The exit code of the last install is as much of the result as the log
+	// is: a page reloaded after a failure has to be able to say that the
+	// install failed, and when, rather than only show output.
+	var stored installLog
+	if err := s.store.GetJSON(installLogKey, &stored); err != nil {
+		stored = installLog{Exit: -1}
+	}
 	if len(lines) == 0 {
-		var stored installLog
-		if err := s.store.GetJSON(installLogKey, &stored); err == nil {
-			lines = stored.Lines
-		}
+		lines = stored.Lines
 	}
 	if lines == nil {
 		lines = []string{}
@@ -137,6 +179,8 @@ func (s *Server) handleTmux(w http.ResponseWriter, r *http.Request) {
 		"reason":      report.Reason,
 		"installing":  running,
 		"log":         lines,
+		"last_exit":   stored.Exit,
+		"last_at":     stored.At,
 	})
 }
 
@@ -168,8 +212,25 @@ func (s *Server) handleTmuxInstall(w http.ResponseWriter, r *http.Request) {
 				exit = -1
 			}
 		}
+		t.forget()
+		// The install is only finished when sessions are possible. Without
+		// this the card would say tmux is ready while the manager still holds
+		// the "tmux is not installed" it decided at start-up, the sheet's
+		// Start would stay disabled, and the page would contradict itself
+		// until somebody restarted Socrates. The outcome is a line of the log
+		// like any other, so it is written before the log is kept.
+		if exit == 0 {
+			if err := s.manager.Redetect(ctx); err != nil {
+				t.publish(tmuxEvent{Type: "line",
+					Line: "tmux is installed, but sessions are still not possible: " + err.Error()})
+			} else {
+				t.publish(tmuxEvent{Type: "line", Line: "tmux is ready; sessions can be started now."})
+			}
+		}
+		// The record is written before the run is marked finished: a page
+		// that polls the card the moment `installing` goes false has to find
+		// the exit code already there.
 		t.mu.Lock()
-		t.running, t.done, t.exit = false, true, exit
 		lines := append([]string(nil), t.lines...)
 		t.mu.Unlock()
 		if err := s.store.SetJSON(installLogKey, installLog{
@@ -177,6 +238,9 @@ func (s *Server) handleTmuxInstall(w http.ResponseWriter, r *http.Request) {
 		}); err != nil {
 			log.Printf("tmux install: could not record the log: %v", err)
 		}
+		t.mu.Lock()
+		t.running, t.done, t.exit = false, true, exit
+		t.mu.Unlock()
 		t.publish(tmuxEvent{Type: "done", Exit: exit, OK: exit == 0})
 	}()
 

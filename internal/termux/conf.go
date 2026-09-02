@@ -116,11 +116,34 @@ func WriteConf(path string, o ConfOptions) error {
 	return writeConf(path, Conf(o))
 }
 
+// writeConf replaces the file atomically: a temporary file beside it, then a
+// rename. A plain write truncates first, and the dashboard can save the
+// terminal card at the moment a first session is starting the server with
+// `-f` - which would hand tmux half a configuration and spend the start-up
+// guard's single retry on a file that was fine a moment later.
 func writeConf(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+	tmp, err := os.CreateTemp(dir, ".tmux.conf-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer func() { _ = os.Remove(name) }()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, path)
 }
 
 var (

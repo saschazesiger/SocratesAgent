@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -250,10 +251,10 @@ func TestDiagnosticsCoversTheEngineTheProgramsAndTheDisk(t *testing.T) {
 	if len(checks) == 0 {
 		t.Fatalf("no checks in %#v", data)
 	}
-	seen := map[string]string{}
+	seen := map[string]map[string]any{}
 	for _, entry := range checks {
 		row := entry.(map[string]any)
-		seen[row["name"].(string)] = row["detail"].(string)
+		seen[row["name"].(string)] = row
 	}
 	for _, name := range []string{
 		"tmux", "tmux socket", "Workspace", "Shell", "Claude Code", "Claude Code state",
@@ -264,7 +265,55 @@ func TestDiagnosticsCoversTheEngineTheProgramsAndTheDisk(t *testing.T) {
 			t.Errorf("no %q row in %v", name, seen)
 		}
 	}
-	if !strings.Contains(seen["Disk"], "free of") {
-		t.Errorf("the disk row says %q", seen["Disk"])
+	if summary, _ := seen["Disk"]["summary"].(string); !strings.HasSuffix(summary, "free") {
+		t.Errorf("the disk row says %q", summary)
+	}
+	if detail, _ := seen["Disk"]["detail"].(string); !strings.Contains(detail, env.srv.dataDir) {
+		t.Errorf("the disk detail does not name the directory: %q", detail)
+	}
+}
+
+// §E.10 rule 3: a version, a path, a socket or an error message is technical
+// state and lives behind the row's "i". The visible half of a row is a
+// verdict, and the server is where that split is made.
+func TestDiagnosticsKeepsPathsAndVersionsOutOfTheVisibleHalf(t *testing.T) {
+	env := adminEnv(t)
+	_, data := env.do(t, env.client, "POST", "/api/diagnostics", "{}")
+	for _, entry := range data["checks"].([]any) {
+		row := entry.(map[string]any)
+		name, _ := row["name"].(string)
+		summary, _ := row["summary"].(string)
+		if strings.TrimSpace(summary) == "" {
+			t.Errorf("%q has nothing visible to say", name)
+			continue
+		}
+		if strings.Contains(summary, "/") {
+			t.Errorf("%q shows a path in its visible half: %q", name, summary)
+		}
+		// A free-space figure is the verdict itself - the review names
+		// "1.7 GiB free" as the shape a disk row should have - so the only
+		// number forbidden here is one that is not carrying a unit with it.
+		if regexp.MustCompile(`\d+\.\d+(?:[a-z]|$)`).MatchString(summary) {
+			t.Errorf("%q shows a version in its visible half: %q", name, summary)
+		}
+		if len(summary) > 40 {
+			t.Errorf("%q is not a verdict, it is a sentence: %q", name, summary)
+		}
+	}
+}
+
+// A program whose --version prints escape sequences - which the e2e fake does
+// - must not put escape glyphs on the dashboard.
+func TestDiagnosticsCleansWhatAProgramPrintedForItsVersion(t *testing.T) {
+	noisy := "\x1b]11;?\x1b\\FAKE claude\x07 " + strings.Repeat("x", 300)
+	got := clean(noisy)
+	if strings.ContainsAny(got, "\x1b\x07") {
+		t.Fatalf("escapes survived: %q", got)
+	}
+	if !strings.HasPrefix(got, "FAKE claude") {
+		t.Fatalf("the version itself was lost: %q", got)
+	}
+	if len([]rune(got)) > 121 {
+		t.Fatalf("the version was not clamped: %d runes", len([]rune(got)))
 	}
 }

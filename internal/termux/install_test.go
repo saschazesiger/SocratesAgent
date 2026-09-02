@@ -278,3 +278,115 @@ func TestInstallRefusesASecondRun(t *testing.T) {
 	}
 	<-done
 }
+
+// Everything above runs as root, which is the shape of the container Socrates
+// ships in. The other shape - an ordinary user with sudo - has its own
+// refusals and its own command line, and neither was exercised.
+
+// fakeSudo writes a sudo that records the argv it was handed, so the test can
+// assert what the package manager was actually run with.
+func fakeSudo(t *testing.T, dir, exit string) string {
+	t.Helper()
+	record := filepath.Join(dir, "sudo.log")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"-n\" ] && [ \"$2\" = \"true\" ]; then exit " + exit + "; fi\n" +
+		"printf '%s\\n' \"$*\" >> " + record + "\n" +
+		"shift\nexec \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "sudo"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return record
+}
+
+func asUser() *Installer {
+	return &Installer{
+		Geteuid: func() int { return 1000 },
+		LookPath: func(file string) (string, error) {
+			if file == "tmux" {
+				return "", errNotOnPath
+			}
+			return exec.LookPath(file)
+		},
+	}
+}
+
+func TestDetectOffersSudoOnlyWhenItAnswers(t *testing.T) {
+	dir := fakeBin(t, "apt-get", "#!/bin/sh\nexit 0\n")
+	fakeSudo(t, dir, "0")
+	t.Setenv("PATH", dir)
+
+	report := asUser().Detect(context.Background())
+	if !report.Privileged || !report.CanInstall {
+		t.Fatalf("a sudo that answers was not accepted: %#v", report)
+	}
+	// The command in the report is the one a person pastes, so it must not
+	// carry the -n that exists only because Socrates cannot type a password.
+	if !strings.HasPrefix(report.Command, "sudo apt-get update") || strings.Contains(report.Command, "-n apt-get") {
+		t.Fatalf("the pasteable command is %q", report.Command)
+	}
+}
+
+func TestDetectRefusesWhenSudoWantsAPassword(t *testing.T) {
+	dir := fakeBin(t, "apt-get", "#!/bin/sh\nexit 0\n")
+	fakeSudo(t, dir, "1")
+	t.Setenv("PATH", dir)
+
+	report := asUser().Detect(context.Background())
+	if report.Privileged || report.CanInstall {
+		t.Fatalf("a sudo that asks for a password was treated as usable: %#v", report)
+	}
+	if !strings.Contains(report.Reason, "password") || !strings.Contains(report.Reason, "apt-get install") {
+		t.Fatalf("the reason does not say what to do: %q", report.Reason)
+	}
+	if _, err := asUser().Install(context.Background(), func(string) {}); err == nil {
+		t.Fatal("the install was attempted anyway")
+	}
+}
+
+// Homebrew is the one manager that must never be wrapped in sudo, and as an
+// ordinary user it is exactly the one that works.
+func TestDetectRunsBrewAsAnOrdinaryUser(t *testing.T) {
+	dir := fakeBin(t, "brew", "#!/bin/sh\nexit 0\n")
+	t.Setenv("PATH", dir)
+	report := asUser().Detect(context.Background())
+	if !report.CanInstall {
+		t.Fatalf("brew as a normal user was refused: %#v", report)
+	}
+	if strings.Contains(report.Command, "sudo") {
+		t.Fatalf("brew was offered with sudo: %q", report.Command)
+	}
+}
+
+// DEBIAN_FRONTEND has to be in front of the package manager, not in sudo's own
+// environment: sudo resets it away, and a debconf prompt with no stdin is a
+// package manager that fails for a reason nobody can see.
+func TestInstallCarriesTheFrontendThroughSudo(t *testing.T) {
+	dir := fakeBin(t, "apt-get", "#!/bin/sh\necho \"frontend=$DEBIAN_FRONTEND\"\nexit 0\n")
+	record := fakeSudo(t, dir, "0")
+	// The fake sudo execs `env`, which lives in the real PATH; the fakes come
+	// first, so they are still the sudo and the apt-get that run.
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var lines []string
+	exit, err := asUser().Install(context.Background(), func(line string) { lines = append(lines, line) })
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if exit != 0 {
+		t.Fatalf("exit is %d, want 0", exit)
+	}
+	log := strings.Join(lines, "\n")
+	if !strings.Contains(log, "frontend=noninteractive") {
+		t.Fatalf("the package manager did not see DEBIAN_FRONTEND:\n%s", log)
+	}
+	argv, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("sudo was never run: %v", err)
+	}
+	if !strings.Contains(string(argv), "-n env DEBIAN_FRONTEND=noninteractive LC_ALL=C apt-get update") {
+		t.Fatalf("sudo was handed %q", argv)
+	}
+	if !strings.Contains(log, "$ sudo -n env DEBIAN_FRONTEND=noninteractive") {
+		t.Fatalf("the log does not show the command that ran:\n%s", log)
+	}
+}

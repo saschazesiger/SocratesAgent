@@ -128,9 +128,18 @@ func (s *Server) applyTerminal(ctx context.Context, terminal config.TerminalSett
 	}, terminal.WindowSize)
 }
 
+// checkResult is one row of the setup check. It is split in two because
+// §E.10.3 is a rule about this list as much as about the session page: the
+// verdict a person reads is short and plain, and the version, the path, the
+// socket and the error text live behind the row's "i".
 type checkResult struct {
-	Name   string `json:"name"`
-	OK     bool   `json:"ok"`
+	Name string `json:"name"`
+	OK   bool   `json:"ok"`
+	// Summary is the visible half: three or four words, no paths, no
+	// versions, no stderr.
+	Summary string `json:"summary"`
+	// Detail is the hover-only half. It may be empty, and then the row has no
+	// "i" at all.
 	Detail string `json:"detail"`
 }
 
@@ -142,8 +151,8 @@ type checkResult struct {
 func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	settings := s.Settings()
 	results := []checkResult{}
-	add := func(name string, ok bool, detail string) {
-		results = append(results, checkResult{Name: name, OK: ok, Detail: detail})
+	add := func(name string, ok bool, summary, detail string) {
+		results = append(results, checkResult{Name: name, OK: ok, Summary: summary, Detail: detail})
 	}
 
 	results = append(results, s.tmuxChecks(r.Context())...)
@@ -152,9 +161,9 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	// made is a new-session sheet that fails on Start.
 	root := settings.Workspace.Root
 	if err := writableDir(root); err != nil {
-		add("Workspace", false, err.Error())
+		add("Workspace", false, "not writable", err.Error())
 	} else {
-		add("Workspace", true, root)
+		add("Workspace", true, "writable", root)
 	}
 
 	// The four programs, each with the state directory it cannot work without.
@@ -175,28 +184,25 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	// below are one story told twice.
 	openrouterOK := false
 	if strings.TrimSpace(settings.OpenRouter.APIKey) == "" {
-		add("OpenRouter", false, "no API key set")
+		add("OpenRouter", false, "no API key", "")
 	} else {
 		client := openrouter.New(settings.OpenRouter.BaseURL, settings.OpenRouter.APIKey)
 		if info, err := client.CheckKey(r.Context()); err != nil {
-			add("OpenRouter", false, err.Error())
+			add("OpenRouter", false, "the key was refused", err.Error())
 		} else {
-			detail := "key accepted"
-			if info.Label != "" {
-				detail += " · " + info.Label
-			}
 			openrouterOK = true
-			add("OpenRouter", true, detail)
+			add("OpenRouter", true, "the key works", info.Label)
 		}
 	}
 	transcribe := strings.TrimSpace(settings.OpenRouter.TranscribeModel)
 	switch {
 	case !openrouterOK:
-		add("Speech to text", false, "it listens through OpenRouter, so that check has to pass first")
+		add("Speech to text", false, "waiting on OpenRouter",
+			"it listens through OpenRouter, so that check has to pass first")
 	case transcribe == "":
-		add("Speech to text", false, "no transcription model is picked")
+		add("Speech to text", false, "no model picked", "")
 	default:
-		add("Speech to text", true, "OpenRouter · "+transcribe)
+		add("Speech to text", true, "ready", "OpenRouter · "+transcribe)
 	}
 	results = append(results, voiceCheck(s.voice.Status()))
 
@@ -210,28 +216,36 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 // tmuxChecks are the terminal engine's three rows: the binary and its version,
 // the socket this Socrates owns, and how many sessions are on it.
 func (s *Server) tmuxChecks(ctx context.Context) []checkResult {
-	report := s.tmuxAdmin.installer.Detect(ctx)
+	report := s.tmuxAdmin.detect(ctx, false)
 	engine := checkResult{Name: "tmux", OK: report.OK}
 	switch {
 	case report.OK:
-		engine.Detail = report.Version + " · " + report.Path
+		engine.Summary = "ready"
+		engine.Detail = clean(report.Version) + " · " + report.Path
+	case report.Installed:
+		engine.Summary = "too old"
+		engine.Detail = report.Reason
 	default:
+		engine.Summary = "not installed"
 		engine.Detail = report.Reason
 	}
 	out := []checkResult{engine}
 
 	socket := checkResult{Name: "tmux socket", Detail: s.manager.Socket()}
 	if err := s.manager.Available(); err != nil {
+		socket.Summary = "no server"
 		socket.Detail = err.Error()
 		return append(out, socket)
 	}
 	names, err := s.manager.LiveSessionNames(ctx)
 	if err != nil {
+		socket.Summary = "unreachable"
 		socket.Detail = s.manager.Socket() + " · " + err.Error()
 		return append(out, socket)
 	}
 	socket.OK = true
-	socket.Detail = fmt.Sprintf("%s · %d session%s", s.manager.Socket(), len(names), plural(len(names)))
+	socket.Summary = fmt.Sprintf("%d session%s", len(names), plural(len(names)))
+	socket.Detail = s.manager.Socket()
 	return append(out, socket)
 }
 
@@ -242,15 +256,14 @@ func harnessCheck(agent catalog.Agent) checkResult {
 	switch {
 	case !agent.Enabled:
 		row.OK = true
-		row.Detail = "turned off in the dashboard"
+		row.Summary = "turned off"
 	case !agent.Installed:
-		row.Detail = "not installed"
-		if agent.Error != "" {
-			row.Detail += " · " + agent.Error
-		}
+		row.Summary = "not installed"
+		row.Detail = agent.Error
 	default:
 		row.OK = true
-		row.Detail = agent.Version
+		row.Summary = "ready"
+		row.Detail = clean(agent.Version)
 		if agent.Path != "" {
 			row.Detail += " · " + agent.Path
 		}
@@ -261,18 +274,37 @@ func harnessCheck(agent catalog.Agent) checkResult {
 		switch {
 		case agent.Error != "":
 			row.OK = false
+			row.Summary = "no model list"
 			row.Detail += " · " + agent.Error
 		case count == 0:
 			row.OK = false
-			row.Detail += " · no models reported"
+			row.Summary = "no models reported"
 		default:
-			row.Detail += fmt.Sprintf(" · %d model%s", count, plural(count))
+			row.Summary = fmt.Sprintf("ready, %d model%s", count, plural(count))
 			if agent.Static {
-				row.Detail += " · curated"
+				row.Summary += " (curated)"
 			}
 		}
 	}
 	return row
+}
+
+// clean is what stands between a program's idea of `--version` and this page.
+// A CLI that prints a colour query or an escape sequence into its version -
+// which the suite's own fake does - would otherwise put raw escapes into the
+// dashboard, and a very long line into every row it appears in.
+func clean(text string) string {
+	text = strings.TrimSpace(StripANSI(text))
+	text = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, text)
+	if len(text) > 120 {
+		text = strings.TrimSpace(text[:120]) + "…"
+	}
+	return text
 }
 
 // harnessStateCheck is the one directory or file each coding agent keeps its
@@ -284,27 +316,27 @@ func harnessStateCheck(id string) (checkResult, bool) {
 	switch id {
 	case config.HarnessClaude:
 		dir := harnesses.ClaudeConfigDir()
-		row := checkResult{Name: "Claude Code state", Detail: dir}
+		row := checkResult{Name: "Claude Code state", Summary: "writable", Detail: dir}
 		if err := writableDir(dir); err != nil {
-			row.Detail = err.Error()
+			row.Summary, row.Detail = "not writable", err.Error()
 		} else {
 			row.OK = true
 		}
 		return row, true
 	case config.HarnessCodex:
 		path := filepath.Join(harnesses.CodexHome(), "state_5.sqlite")
-		row := checkResult{Name: "Codex state", Detail: path}
+		row := checkResult{Name: "Codex state", Summary: "readable", Detail: path}
 		if err := readable(path); err != nil {
-			row.Detail = err.Error()
+			row.Summary, row.Detail = "not readable", err.Error()
 		} else {
 			row.OK = true
 		}
 		return row, true
 	case config.HarnessOpenCode:
 		path := harnesses.OpenCodeDBPath()
-		row := checkResult{Name: "OpenCode state", Detail: path}
+		row := checkResult{Name: "OpenCode state", Summary: "readable", Detail: path}
 		if err := readable(path); err != nil {
-			row.Detail = err.Error()
+			row.Summary, row.Detail = "not readable", err.Error()
 		} else {
 			row.OK = true
 		}
@@ -319,24 +351,25 @@ func (s *Server) tunnelCheck(settings config.Settings) checkResult {
 	installed, version, _ := s.tunnel.Probe()
 	switch {
 	case !settings.Tunnel.Enabled:
-		return checkResult{Name: "Remote access", OK: true,
-			Detail: "tunnel off, reachable at " + orLocal(s.LocalURL())}
+		return checkResult{Name: "Remote access", OK: true, Summary: "tunnel off",
+			Detail: "reachable at " + orLocal(s.LocalURL())}
 	case !installed:
-		return checkResult{Name: "Remote access", OK: false,
-			Detail: "cloudflared is not installed yet, it is downloaded when the tunnel starts"}
+		return checkResult{Name: "Remote access", OK: false, Summary: "cloudflared missing",
+			Detail: "it is downloaded when the tunnel starts"}
 	}
 	status := s.tunnel.Status()
-	detail := status.State
+	var detail []string
 	if status.URL != "" {
-		detail += " · " + status.URL
+		detail = append(detail, status.URL)
 	}
 	if version != "" {
-		detail += " · " + version
+		detail = append(detail, clean(version))
 	}
 	if status.Error != "" {
-		detail += " · " + status.Error
+		detail = append(detail, status.Error)
 	}
-	return checkResult{Name: "Remote access", OK: status.State == tunnel.StateRunning, Detail: detail}
+	return checkResult{Name: "Remote access", OK: status.State == tunnel.StateRunning,
+		Summary: status.State, Detail: strings.Join(detail, " · ")}
 }
 
 // diskCheck is how much room the journals, the generated files and the
@@ -358,12 +391,16 @@ func diskCheck(dir string) checkResult {
 	}
 	free, total, err := diskFree(probe)
 	if err != nil {
-		return checkResult{Name: "Disk", Detail: err.Error()}
+		return checkResult{Name: "Disk", Summary: "unknown", Detail: err.Error()}
 	}
-	detail := fmt.Sprintf("%s free of %s under %s", humanBytes(free), humanBytes(total), dir)
 	// Half a gigabyte is roughly one full journal plus room to write the
 	// database out; below that a session is one long paste from failing.
-	return checkResult{Name: "Disk", OK: free >= 512<<20, Detail: detail}
+	return checkResult{
+		Name:    "Disk",
+		OK:      free >= 512<<20,
+		Summary: humanBytes(free) + " free",
+		Detail:  fmt.Sprintf("%s of %s under %s", humanBytes(free), humanBytes(total), dir),
+	}
 }
 
 func plural(n int) string {
@@ -427,11 +464,13 @@ func voiceCheck(voice piper.Status) checkResult {
 		if len(voice.Voices) > 0 {
 			detail += " · " + strings.Join(voice.Voices, ", ")
 		}
-		return checkResult{Name: "Text to speech", OK: true, Detail: detail}
+		return checkResult{Name: "Text to speech", OK: true, Summary: "ready", Detail: detail}
 	case voice.Err != "":
-		return checkResult{Name: "Text to speech", OK: false, Detail: voice.Detail + " · " + voice.Err}
+		return checkResult{Name: "Text to speech", OK: false, Summary: "failed",
+			Detail: voice.Detail + " · " + voice.Err}
 	default:
-		return checkResult{Name: "Text to speech", OK: false, Detail: voice.Detail}
+		return checkResult{Name: "Text to speech", OK: false, Summary: "not installed",
+			Detail: voice.Detail}
 	}
 }
 

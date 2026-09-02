@@ -1627,3 +1627,8 @@ details.group > summary:hover { color: var(--text); }
   .preset-row { grid-template-columns: minmax(0, 1fr) auto; }
   .preset-row .input:first-child { grid-column: 1 / -1; }
 }
+
+/* The verdict of the last install, above its output: the one line that says
+   whether it worked, for a page that was reloaded after it finished. */
+.install-result { margin-top: 12px; }
+.install-result.bad { color: var(--red); }

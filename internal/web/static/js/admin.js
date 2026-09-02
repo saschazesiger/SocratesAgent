@@ -121,8 +121,14 @@ const GROUP_ORDER = [
 // list. Neither CLI validates a theme name, so a typo is a session that starts
 // and looks wrong - which is why both are closed lists with a way out.
 const CODEX_THEMES = ['light-gray', 'gruvbox-light', 'ocean-light', 'light-dark', 'gruvbox-dark'];
-const OPENCODE_THEMES = ['github', 'solarized', 'tokyonight', 'everforest', 'ayu', 'catppuccin',
-  'gruvbox', 'kanagawa', 'nord', 'one-dark', 'rosepine', 'flexoki', 'vercel', 'system'];
+// The built-in themes of OpenCode 1.17.13, read out of its own theme registry
+// rather than out of its documentation, which lists a third of them. `system`
+// is registered separately and is the one that follows the terminal.
+const OPENCODE_THEMES = ['opencode', 'system', 'aura', 'ayu', 'carbonfox', 'catppuccin',
+  'catppuccin-frappe', 'catppuccin-macchiato', 'cobalt2', 'cursor', 'dracula', 'everforest',
+  'flexoki', 'github', 'gruvbox', 'kanagawa', 'lucent-orng', 'material', 'matrix', 'mercury',
+  'monokai', 'nightowl', 'nord', 'one-dark', 'orng', 'osaka-jade', 'palenight', 'rosepine',
+  'solarized', 'synthwave84', 'tokyonight', 'vercel', 'vesper', 'zenburn'];
 
 const CLAUDE_EFFORTS = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
 const CODEX_EFFORTS = ['', 'minimal', 'low', 'medium', 'high', 'xhigh'];
@@ -154,6 +160,14 @@ const OPTIONS = {
     { key: 'max_thinking_tokens', label: 'Max thinking tokens', type: 'int', min: 0,
       group: 'Model & effort', hint: 'env MAX_THINKING_TOKENS. 0 leaves it unset.' },
 
+    { key: 'remote_control', label: 'Remote control', type: 'switch', group: 'Remote control',
+      confirm: (value) => value === true,
+      confirmTitle: 'Let a remote client drive this session?',
+      confirmBody: 'Claude Code opens a remote-control channel: whoever can reach it can send '
+        + 'prompts and see everything in the session, as if they were at this keyboard.',
+      confirmAgain: 'The channel is open for every Claude Code session started from now on, not '
+        + 'just this one. Turn it on?',
+      hint: '--remote-control.' },
     { key: 'permission_mode', label: 'Permission mode', type: 'select',
       values: ['unset', 'manual', 'acceptEdits', 'auto', 'plan', 'dontAsk', 'bypassPermissions'],
       group: 'Permissions & sandbox', hint: '--permission-mode. "unset" leaves the flag off.' },
@@ -167,6 +181,8 @@ const OPTIONS = {
       confirmTitle: 'Let Claude Code skip permission prompts?',
       confirmBody: 'Every edit, every command and every network call happens without being asked '
         + 'about. Only do this in a directory you are willing to lose.',
+      confirmAgain: 'This applies to every Claude Code session started from now on. Say yes only '
+        + 'if you would be content to lose everything under the working directory.',
       hint: 'Off passes nothing; allow passes --allow-dangerously-skip-permissions; force passes '
         + '--dangerously-skip-permissions.' },
     { key: 'allowed_tools', label: 'Allowed tools', type: 'list', group: 'Permissions & sandbox',
@@ -188,8 +204,6 @@ const OPTIONS = {
     { key: 'add_dirs', label: 'Extra directories', type: 'lines', group: 'Permissions & sandbox',
       hint: '--add-dir, one absolute path per line. They are also written as permissions.additionalDirectories.' },
 
-    { key: 'remote_control', label: 'Remote control', type: 'switch', group: 'Remote control',
-      hint: '--remote-control.' },
     { key: 'remote_control_name', label: 'Remote control name', type: 'text', group: 'Remote control',
       hint: 'The name passed after --remote-control. Empty uses the session title.' },
     { key: 'remote_control_prefix', label: 'Session name prefix', type: 'text', group: 'Remote control',
@@ -260,7 +274,13 @@ const OPTIONS = {
 
     { key: 'sandbox', label: 'Sandbox', type: 'select',
       values: ['read-only', 'workspace-write', 'danger-full-access'],
-      group: 'Permissions & sandbox', hint: '-s.' },
+      group: 'Permissions & sandbox',
+      confirm: (value) => value === 'danger-full-access',
+      confirmTitle: 'Give Codex the whole machine?',
+      confirmBody: 'danger-full-access is no sandbox at all: Codex may read and write anything '
+        + 'your user can, anywhere on this machine, and reach the network.',
+      confirmAgain: 'Nothing outside the working directory is protected any more. Are you sure?',
+      hint: '-s.' },
     { key: 'approval', label: 'Approval policy', type: 'select',
       values: ['on-request', 'on-failure', 'never'], group: 'Permissions & sandbox',
       hint: '-a. on-failure goes through -c approval_policy, because the flag itself rejects it.' },
@@ -277,6 +297,7 @@ const OPTIONS = {
       confirmTitle: 'Turn the Codex sandbox off?',
       confirmBody: 'Codex will run every command with your own rights and no approval. Only do '
         + 'this in a directory you are willing to lose.',
+      confirmAgain: 'Neither the sandbox nor the approval prompt is left. Turn both off?',
       hint: '--dangerously-bypass-approvals-and-sandbox.' },
     { key: 'trust_workdir', label: 'Trust the working directory', type: 'switch',
       group: 'Permissions & sandbox', warnWhenOff:
@@ -327,6 +348,8 @@ const OPTIONS = {
       confirm: (value) => value === true,
       confirmTitle: 'Approve everything OpenCode does?',
       confirmBody: 'Every action not explicitly denied below runs without being asked about.',
+      confirmAgain: 'The permissions JSON below is then the only thing standing between OpenCode '
+        + 'and this machine. Approve everything else?',
       hint: '--auto. Auto-approves everything not explicitly denied.' },
     { key: 'permission_json', label: 'Permissions', type: 'json', group: 'Permissions',
       placeholder: '{"*":"ask","bash":{"git *":"allow"}}',
@@ -595,7 +618,39 @@ function renderTmux(report) {
 
   const toggle = $('tmuxLogToggle');
   toggle.hidden = !(report.log || []).length && !report.installing;
+  renderInstallResult(report);
   renderTmuxLog(report.log || []);
+}
+
+// renderInstallResult is the sentence above the log: what the last install did
+// and when. Without it a reload after a failure shows a log and no verdict,
+// and somebody has to read package-manager output to find out whether it
+// worked.
+function renderInstallResult(report) {
+  const node = $('tmuxInstallResult');
+  if (!node) return;
+  const exit = report.last_exit;
+  if (report.installing || exit === undefined || exit === null || exit < 0 || !report.last_at) {
+    node.hidden = true;
+    node.textContent = '';
+    return;
+  }
+  node.hidden = false;
+  setClass(node, 'bad', exit !== 0);
+  node.textContent = (exit === 0
+    ? 'The last install finished'
+    : 'The last install failed (exit ' + exit + ') — the output says why')
+    + ' · ' + sinceWhen(report.last_at);
+}
+
+// sinceWhen is a timestamp as a person would say it. Anything older than a day
+// is a date, because "37 hours ago" is not how anybody thinks about it.
+function sinceWhen(at) {
+  const seconds = Math.max(0, Math.round((Date.now() - at) / 1000));
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return Math.round(seconds / 60) + ' min ago';
+  if (seconds < 86400) return Math.round(seconds / 3600) + ' h ago';
+  return new Date(at).toLocaleDateString();
 }
 
 function renderTmuxLog(lines) {
@@ -641,6 +696,11 @@ function watchInstall() {
       toast(event.ok ? 'tmux installed' : 'The install failed — the output says why.',
         event.ok ? '' : 'error');
       refreshTmux();
+      // A successful install is the moment sessions become possible, and the
+      // catalogue is what every page asks about that. Asking again here is
+      // what keeps the sheet's Start from staying disabled behind a card that
+      // says tmux is ready.
+      if (event.ok) loadHarnesses(true).catch(() => {});
     },
   });
   tmuxStream.start();
@@ -671,6 +731,16 @@ async function loadHarnesses(force = false) {
   }
 }
 
+// cleanVersion is the client half of the same rule the server applies: what a
+// program printed for --version is its text, not ours, and a CLI that puts a
+// colour query in it must not put escape glyphs on this page.
+function cleanVersion(text) {
+  // eslint-disable-next-line no-control-regex
+  const stripped = String(text || '').replace(/\u001b[\[\]][^\u0007\u001b]*(?:\u0007|\u001b\\)?/g, '')
+    .replace(/[\u0000-\u001f\u007f]/g, '').trim();
+  return stripped.length > 120 ? stripped.slice(0, 120).trim() + '…' : stripped;
+}
+
 function harnessLabel(id) {
   const found = harnesses.list().find((h) => h.id === id);
   if (found) return found.label;
@@ -685,9 +755,32 @@ function optionValue(id, key) {
   return getPath(defaults, optionPath(id, key));
 }
 
+// openGroups remembers which disclosures are open, per harness, so that a save
+// - which rebuilds every card from the settings the server normalised - does
+// not close them all and leave a phone scrolled somewhere else.
+function openGroups() {
+  const open = {};
+  for (const card of document.querySelectorAll('.harness-card')) {
+    const id = card.id.replace(/^harness-/, '');
+    open[id] = [...card.querySelectorAll('details.group[open]')].map((node) => node.dataset.group);
+  }
+  return open;
+}
+
+function restoreGroups(open) {
+  for (const [id, groups] of Object.entries(open || {})) {
+    for (const group of groups) {
+      const node = document.querySelector('#harness-' + id + ' details.group[data-group="'
+        + CSS.escape(group) + '"]');
+      if (node) node.open = true;
+    }
+  }
+}
+
 function renderHarnesses(status) {
   const host = $('harnessCards');
   if (!host) return;
+  const open = openGroups();
   host.innerHTML = '';
   const found = harnesses.list();
   if (!found.length) {
@@ -708,6 +801,7 @@ function renderHarnesses(status) {
     const harness = found.find((h) => h.id === id);
     if (harness) host.append(harnessCard(harness, status === 'refreshing'));
   }
+  restoreGroups(open);
   renderDefaultHarness();
 }
 
@@ -722,7 +816,7 @@ function harnessCard(harness, refreshing) {
   const facts = [];
   if (!harness.installed) facts.push('not installed');
   else {
-    if (harness.version) facts.push(harness.version);
+    if (harness.version) facts.push(cleanVersion(harness.version));
     if (harness.path) facts.push(harness.path);
   }
   const count = (harness.models || []).length;
@@ -923,29 +1017,45 @@ function optionField(harness, option) {
   return { node: wrap, control, reflect, requires: option.requires || '' };
 }
 
-// guard is the confirm-twice dialog the dangerous switches carry. The control
-// is put back if the answer is no, because a switch that stays on after a
-// refusal is a switch that lied.
-function guard(option, value, control, apply) {
+// guard is the confirm-twice the specification asks for on the options that
+// hand a machine over: two dialogs, the second restating the consequence in
+// its own words rather than repeating the first. Twice, because the first one
+// is what a person taps through and the second is the one they read.
+//
+// A refusal at either step puts the control back exactly as it was, because a
+// switch that stays on after a refusal is a switch that lied.
+async function guard(option, value, control, apply) {
   if (!option.confirm || !option.confirm(value)) {
     apply();
     return;
   }
   const previous = control.type === 'checkbox' ? !control.checked : (control.dataset.previous || '');
-  confirmDialog({
+  const revert = () => {
+    if (control.type === 'checkbox') control.checked = previous;
+    else control.value = previous;
+    control.dispatchEvent(new Event('change'));
+  };
+  const first = await confirmDialog({
     title: option.confirmTitle,
     body: option.confirmBody,
     confirmLabel: 'I understand',
     danger: true,
-  }).then((yes) => {
-    if (yes) {
-      apply();
-      return;
-    }
-    if (control.type === 'checkbox') control.checked = previous;
-    else control.value = previous;
-    control.dispatchEvent(new Event('change'));
   });
+  if (!first) {
+    revert();
+    return;
+  }
+  const second = await confirmDialog({
+    title: 'Once more, to be sure',
+    body: option.confirmAgain || option.confirmBody,
+    confirmLabel: 'Yes, turn it on',
+    danger: true,
+  });
+  if (!second) {
+    revert();
+    return;
+  }
+  apply();
 }
 
 // modelList is the person's own short list for one harness: the models the
@@ -1422,10 +1532,14 @@ async function runChecks() {
     const data = await api('/api/diagnostics', { method: 'POST', body: {} });
     for (const check of data.checks || []) {
       const mark = CHECK_MARKS[check.name] || '';
+      // §E.10 rule 3: a version, a path, a socket or an error message is
+      // technical state, so it is behind the row's "i" and never in the line
+      // itself. What is visible is the verdict, in words.
       host.append(el('div', { class: 'check' },
         el('span', { class: 'st ' + (check.ok ? 'ok' : 'bad') }),
         el('span', { class: 'nm' }, mark ? agentMark(mark, 14) : null, el('span', { text: check.name })),
-        el('span', { class: 'dt', text: check.detail }),
+        el('span', { class: 'dt', text: check.summary || (check.ok ? 'ok' : 'not ready') }),
+        check.detail ? infoTip(String(check.detail).split(' · '), { label: check.name + ' details' }) : null,
       ));
     }
   } catch (err) {

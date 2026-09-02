@@ -2,7 +2,11 @@ package termux
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os/exec"
 	"strconv"
+	"time"
 )
 
 // ApplyTerminal is what the dashboard's terminal card does when it is saved:
@@ -34,7 +38,7 @@ func (m *Manager) ApplyTerminal(ctx context.Context, conf ConfOptions, windowSiz
 			return err
 		}
 	}
-	if m.unavailable != nil {
+	if m.Available() != nil {
 		return nil
 	}
 	running, err := m.tmux.Running(ctx)
@@ -77,7 +81,7 @@ func (m *Manager) liveNames() []string {
 // tmux rather than of the database: the dashboard's diagnostics are there to
 // find the case where the two disagree.
 func (m *Manager) LiveSessionNames(ctx context.Context) ([]string, error) {
-	if err := m.unavailable; err != nil {
+	if err := m.Available(); err != nil {
 		return nil, err
 	}
 	running, err := m.tmux.Running(ctx)
@@ -92,4 +96,88 @@ func (m *Manager) LiveSessionNames(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 	return Lines(out), nil
+}
+
+// policy and confOptions are how everything else reads the two fields
+// ApplyTerminal writes. They exist because a save of the terminal card can
+// land while a session is being created or a viewer is being resized, and a
+// string read while it is being written is a race whatever the timing looks
+// like in practice.
+func (m *Manager) policy() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cfg.WindowSize == "" {
+		return "manual"
+	}
+	return m.cfg.WindowSize
+}
+
+func (m *Manager) confOptions() ConfOptions {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cfg.Conf
+}
+
+// Redetect asks the machine about tmux again and republishes the answer.
+//
+// It exists for exactly one moment: the installer has just finished, the
+// dashboard's card says tmux is ready, and without this the manager still
+// holds the "tmux is not installed" it decided at start-up - so the sheet's
+// Start stays disabled and the page contradicts itself. Everything a session
+// needs from the manager is behind the fields set here, so putting them right
+// is the whole of making sessions possible again.
+//
+// It returns the reason sessions are still impossible, or nil.
+func (m *Manager) Redetect(ctx context.Context) error {
+	bin := m.cfg.TmuxBin
+	explicit := bin != ""
+	var unavailable error
+	if !explicit {
+		found, err := exec.LookPath("tmux")
+		if err != nil {
+			unavailable = errors.New("tmux is not installed. Socrates needs it to keep sessions alive")
+			bin = "tmux"
+		} else {
+			bin = found
+		}
+	}
+	var version Version
+	if unavailable == nil {
+		probe, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		v, err := BinaryVersion(probe, bin)
+		switch {
+		case err != nil:
+			unavailable = fmt.Errorf("could not run %s: %w", bin, err)
+		case !v.OK():
+			unavailable = fmt.Errorf("tmux %s is too old; Socrates needs %d.%d or newer",
+				v, MinMajor, MinMinor)
+		}
+		version = v
+	}
+
+	// Tmux.Bin is deliberately left alone. When tmux was missing it is the
+	// literal "tmux", which exec resolves on PATH at every call - so the
+	// binary that has just been installed is found without writing a field
+	// that every tmux command reads without a lock.
+	m.mu.Lock()
+	m.tmuxPath = bin
+	m.tmuxVersion = version
+	m.unavailable = unavailable
+	m.mu.Unlock()
+
+	if unavailable != nil {
+		return unavailable
+	}
+	// The generated configuration and the hook socket are what Start puts in
+	// place, and a Socrates that came up without tmux never got that far.
+	// Start is not called twice for the socket, though: listenHooks unlinks
+	// and re-listens, which would strand the goroutine already serving it.
+	m.mu.Lock()
+	listening := m.hookLn != nil
+	m.mu.Unlock()
+	if listening {
+		return WriteConf(m.tmux.Conf, m.confOptions())
+	}
+	return m.Start(ctx)
 }

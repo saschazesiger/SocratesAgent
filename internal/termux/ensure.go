@@ -75,7 +75,7 @@ func (m *Manager) Restart(ctx context.Context, sessionID string) (*store.Session
 	if err != nil {
 		return nil, err
 	}
-	if m.unavailable == nil && row.TmuxName != "" && !m.paneIsDead(row.TmuxName) {
+	if m.Available() == nil && row.TmuxName != "" && !m.paneIsDead(row.TmuxName) {
 		return nil, fmt.Errorf("%w: %s", ErrStillRunning, row.TmuxName)
 	}
 	if err := m.st.SetSessionState(row.ID, store.StateNeedsResume, -1, ""); err != nil {
@@ -104,7 +104,7 @@ func (m *Manager) waitForStart(ctx context.Context, row *store.Session) (*store.
 			return m.ensureLocked(ctx, row.ID)
 		}
 		if time.Now().After(deadline) {
-			if m.unavailable == nil && current.TmuxName != "" && !m.paneIsDead(current.TmuxName) {
+			if m.Available() == nil && current.TmuxName != "" && !m.paneIsDead(current.TmuxName) {
 				// The pane is alive and only the row is behind - a store write
 				// that failed at the end of Create. tmux is the authority, and
 				// writing "failed" over a working terminal is the one outcome
@@ -133,7 +133,7 @@ func (m *Manager) waitForStart(ctx context.Context, row *store.Session) (*store.
 // discard a conversation, and a resume that then fails says so in the pane,
 // which is honest and recoverable with the Restart button.
 func (m *Manager) resume(ctx context.Context, row *store.Session) (*store.Session, error) {
-	if err := m.unavailable; err != nil {
+	if err := m.Available(); err != nil {
 		return nil, err
 	}
 	h, ok := harnesses.Get(row.Harness)
