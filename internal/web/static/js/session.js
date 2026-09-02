@@ -25,7 +25,7 @@ import * as harnesses from './harnesses.js';
 import { createTerm, measurePane } from './term.js';
 import { mountAssist, audioWanted } from './assist.js';
 import {
-  mountKeyBar, mountComposer, keyBarWanted, setKeyBarWanted, followViewport,
+  mountKeyBar, mountComposer, keyBarWanted, setKeyBarWanted, onKeyBarWanted, followViewport,
 } from './keybar.js';
 
 /* ------------------------------------------------------------- transport */
@@ -568,12 +568,6 @@ const ids = ['sidebar', 'navScrim', 'menuBtn', 'newSession', 'sessionScope', 'se
   'lineInput', 'micBtn', 'recTime', 'logout'];
 for (const id of ids) dom[id] = document.getElementById(id);
 
-// The state dot is the only colour in a row, and each state has exactly one.
-const DOT = {
-  running: 'green', starting: 'green', resuming: 'green',
-  needs_resume: 'faint', exited: 'amber', failed: 'red',
-};
-
 const STATE_WORDS = {
   running: 'Running', starting: 'Starting', resuming: 'Resuming',
   needs_resume: 'Not running', exited: 'Ended', failed: 'Failed',
@@ -634,8 +628,6 @@ function buildRow(session) {
   },
   el('span', { class: 'row-mark' }, agentMark(session.harness, 18)),
   el('span', { class: 'label' }),
-  el('span', { class: 'row-tip' }),
-  el('span', { class: 'dot' }),
   el('button', {
     class: 'icon-btn act', type: 'button', 'aria-label': 'Session actions',
     html: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>',
@@ -649,11 +641,16 @@ function buildRow(session) {
   return row;
 }
 
-// The technical detail of a row - where it works, what it runs on, which
-// conversation it is holding, how often it has been brought back - is behind
-// an "i" and never in the words of the row.
+// The technical detail of a session - what it runs, where it works, what it
+// runs on, which conversation it is holding, how often it has been brought
+// back. It is never in the words of a row: the "Info" item of the row's menu
+// is the one place it is shown, for the list and for the header alike.
 function rowFacts(session) {
-  const facts = [STATE_WORDS[session.state] || session.state, session.workdir];
+  const facts = [
+    harnesses.label(session.harness),
+    STATE_WORDS[session.state] || session.state,
+    session.workdir,
+  ];
   const act = state.activity.get(session.id);
   if (act && ACTIVITY_WORDS[act.state]) {
     // What it is doing, why the detector thinks so, and since when. All three
@@ -674,9 +671,8 @@ function rowFacts(session) {
 // clockOf is when a state was committed, as a time of day.
 //
 // A duration would read better and is what a person would say, but it would be
-// a different string every second - and the row's "i" is rebuilt whenever its
-// facts change, so a ticking fact means a node replaced once a second in every
-// row in the list. The moment it happened is the same fact, and it holds still.
+// a different string every second. The moment it happened is the same fact,
+// and it holds still.
 function clockOf(at) {
   const when = new Date(Number(at));
   if (Number.isNaN(when.getTime())) return '';
@@ -690,32 +686,24 @@ function updateRow(row, session) {
   const attached = !!(state.current && state.current.id === session.id);
   setClass(row, 'active', attached);
   setClass(row, 'archived', !!session.archived);
-  const dot = row.querySelector('.dot');
-  dot.className = 'dot ' + (DOT[session.state] || 'faint');
-  dot.title = STATE_WORDS[session.state] || session.state;
 
-  // The activity of a row is three marks and no words: the agent's own mark
-  // turns into a ring while the harness is working, the ring stands still and
-  // the dot goes amber while it is waiting for an answer, and a name that has
+  // The activity of a row is two marks and no words: the agent's own mark
+  // turns into a ring that spins while the harness is working and stands
+  // still, in amber, while it is waiting for an answer, and a name that has
   // finished something nobody has seen is bold. The session being looked at
   // is never bold - it is not unread, it is open.
   const act = state.activity.get(session.id) || null;
   const mark = row.querySelector('.row-mark');
   const live = session.state === 'running' || session.state === 'starting' || session.state === 'resuming';
-  setClass(mark, 'busy', live && !!act && act.state === 'busy');
-  setClass(mark, 'waiting', live && !!act && act.state === 'waiting');
-  if (live && act && act.state === 'waiting') {
-    dot.className = 'dot amber';
-    dot.title = ACTIVITY_WORDS.waiting;
-  }
+  const busy = live && !!act && act.state === 'busy';
+  const waiting = live && !!act && act.state === 'waiting';
+  setClass(mark, 'busy', busy);
+  setClass(mark, 'waiting', waiting);
+  let word = STATE_WORDS[session.state] || session.state;
+  if (busy) word = ACTIVITY_WORDS.busy;
+  if (waiting) word = ACTIVITY_WORDS.waiting;
+  mark.title = word;
   setClass(row, 'unread', !!act && !!act.unread && !attached);
-  const tipHost = row.querySelector('.row-tip');
-  const facts = rowFacts(session).join('\n');
-  if (tipHost.dataset.facts !== facts) {
-    tipHost.dataset.facts = facts;
-    tipHost.innerHTML = '';
-    tipHost.append(infoTip(rowFacts(session), { label: session.title + ' details', bubbleClass: 'mono' }));
-  }
 }
 
 /**
@@ -865,6 +853,27 @@ function promptTitle(current) {
   });
 }
 
+// infoDialog is the "Info" item of the row menu: everything the machine knows
+// about one session, in one place and in one shape. It is built the way
+// confirmDialog and promptTitle are, and it is the only place these facts are
+// drawn - a row is a mark and a name, and nothing else.
+function infoDialog(session) {
+  const dialog = el('dialog', { class: 'modal' });
+  const close = el('button', { class: 'btn sm primary', type: 'button', text: 'Close' });
+  dialog.append(
+    el('h2', { class: 'modal-title', text: session.title }),
+    el('div', { class: 'facts mono' },
+      ...rowFacts(session).map((line) => el('div', { class: 'fact', text: line }))),
+    el('div', { class: 'modal-actions' }, close),
+  );
+  close.addEventListener('click', () => dialog.close());
+  dialog.addEventListener('click', (event) => { if (event.target === dialog) dialog.close(); });
+  dialog.addEventListener('close', () => dialog.remove());
+  document.body.append(dialog);
+  dialog.showModal();
+  close.focus();
+}
+
 async function archiveSession(session, archived) {
   try {
     const data = await api('/api/sessions/' + encodeURIComponent(session.id) + '/archive', {
@@ -917,6 +926,7 @@ function openRowMenu(anchor, id) {
   if (!session) return;
   closeMenu();
   const menu = el('div', { class: 'menu', role: 'menu' },
+    item('Info', () => infoDialog(session)),
     item('Rename', () => renameSession(session)),
     item(dom.keybar.hidden ? 'Show key bar' : 'Hide key bar', () => {
       const on = dom.keybar.hidden;
@@ -986,14 +996,13 @@ function applySession(session) {
   dom.sessionMenu.hidden = false;
   dom.termEmpty.hidden = true;
 
+  // The mark and the name of what it runs. Everything else the machine knows
+  // about this session is one place only: "Info" in the session menu.
   dom.sessionHarness.hidden = false;
   dom.sessionHarness.innerHTML = '';
-  const facts = [harnesses.label(session.harness), session.workdir];
-  if (session.model) facts.push(session.model + (session.effort ? ' · ' + session.effort : ''));
   dom.sessionHarness.append(
     agentMark(session.harness, 16),
     el('span', { class: 'b-model', text: session.model || harnesses.label(session.harness) }),
-    infoTip(facts, { label: 'What this session runs', bubbleClass: 'mono' }),
   );
 
   drawOverlay(session);
@@ -1022,8 +1031,8 @@ function drawOverlay(session) {
   switch (drawn) {
     case 'exited':
       show(
-        el('p', { class: 'overlay-title' }, 'The session ended.',
-          infoTip(['Exit status ' + session.exit_status], { label: 'Exit status', bubbleClass: 'mono' })),
+        el('p', { class: 'overlay-title', text: 'The session ended.' }),
+        el('p', { class: 'overlay-detail mono', text: 'Exit status ' + session.exit_status }),
         el('div', { class: 'overlay-actions' },
           actionButton(session, 'Restart', 'Restarting…'),
           el('button', { class: 'btn', type: 'button', text: 'Delete', onclick: () => deleteSession(session) })),
@@ -1031,10 +1040,10 @@ function drawOverlay(session) {
       break;
     case 'failed':
       show(
-        el('p', { class: 'overlay-title' }, 'The session could not start.',
-          session.fail_reason
-            ? infoTip([session.fail_reason], { label: 'Why it failed', bubbleClass: 'mono' })
-            : null),
+        el('p', { class: 'overlay-title', text: 'The session could not start.' }),
+        session.fail_reason
+          ? el('p', { class: 'overlay-detail mono', text: session.fail_reason })
+          : null,
         el('div', { class: 'overlay-actions' },
           actionButton(session, 'Try again', 'Trying again…')),
       );
@@ -1238,9 +1247,9 @@ function attach(session) {
   state.term.focus();
 }
 
-// The key bar is what a phone is missing rather than a preference, so it comes
-// up on its own where the keys are not there - and the session menu can say
-// otherwise on any device.
+// The key bar stands beside a real keyboard rather than instead of one, so it
+// comes up on its own where there is one and stays away on a touch screen -
+// and the session menu can say otherwise on any device.
 function showKeyBar(on) {
   dom.keybar.hidden = !on;
   // A modifier armed on a bar nobody can see would transform the next key
@@ -1490,6 +1499,10 @@ function wire() {
   // slowly while it is being looked at, so a session another tab started or
   // deleted does not sit there being wrong.
   onWake(() => refreshList());
+  // A keyboard can arrive after the page did - a tablet put in its case, a
+  // window dragged onto a desk - and the bar follows it. Nothing is done to a
+  // session that is not open: the bar is drawn on attach from the same answer.
+  onKeyBarWanted((on) => { if (state.current) showKeyBar(on); });
   setInterval(() => {
     if (document.visibilityState === 'visible') refreshList();
   }, 15000);

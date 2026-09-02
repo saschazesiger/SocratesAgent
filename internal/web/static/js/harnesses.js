@@ -9,7 +9,7 @@
 // server, which is the real boundary: a stale copy degrades to "the server
 // refuses that directory", never to a session in the wrong place.
 
-import { api, el, toast, infoTip } from './api.js';
+import { api, el, toast } from './api.js';
 import { combobox } from './combobox.js';
 import { agentMark } from './logos.js';
 
@@ -176,17 +176,6 @@ export function needsModel(id) {
   return (found.models || []).length > 0 || !!found.default_model;
 }
 
-// harnessFacts is what a CLI reported about itself, for the "i" beside its
-// name: the build it is, and where it was found. It is detail, so it is hover
-// only - the name and the mark are what a person picks by.
-export function harnessFacts(entry) {
-  const facts = [];
-  if (!entry) return facts;
-  if (entry.installed && entry.version) facts.push(entry.version);
-  if (entry.installed && entry.path) facts.push(entry.path);
-  return facts;
-}
-
 // segButton is the one control shape this sheet uses for a short, closed set
 // of choices: a row of buttons, one of them pressed.
 function segButton(text, value, sub, mark) {
@@ -265,12 +254,9 @@ export async function openNewSessionSheet() {
     const button = segButton(entry.label, entry.id, usable ? '' : 'not installed', agentMark(entry.id, 22));
     button.disabled = !usable;
     button.addEventListener('click', () => selectHarness(entry.id));
-    // The build and the path sit behind an "i" on the corner of the button
-    // rather than in the hint: they are the answer to a question almost
-    // nobody asks, and the sheet is read by someone about to start work.
-    const facts = harnessFacts(entry);
-    harnessRow.append(el('span', { class: 'seg-cell' }, button,
-      facts.length ? infoTip(facts, { label: entry.label + ' details', bubbleClass: 'mono' }) : null));
+    // The mark and the name are what a person picks by. The build a CLI is and
+    // where it was found are not part of that choice, and are not on the sheet.
+    harnessRow.append(button);
   }
 
   // The directory row: Dynamic, one cell per preset the dashboard named, and
@@ -352,9 +338,10 @@ export async function openNewSessionSheet() {
     pressed(effortRow, pick.effort);
   }
 
-  // renderHint is where everything the person needs to know but did not ask
-  // ends up: what the CLI said about itself, why it cannot be used, and
-  // whether this catalogue is even current.
+  // renderHint is what stands between the person and a session: why a program
+  // cannot be used, what is still missing, and whether this catalogue is even
+  // current. What a program is for is the dashboard's sentence, not the
+  // sheet's - by the time this is open, the choice is being made.
   function renderHint() {
     const entry = harness(pick.harness);
     const parts = [];
@@ -362,7 +349,6 @@ export async function openNewSessionSheet() {
     if (snap.sessions_available === false && snap.sessions_error) parts.push(snap.sessions_error);
     if (entry) {
       if (entry.error) parts.push(entry.error);
-      if (entry.notes) parts.push(entry.notes);
       if (entry.installed && !entry.static && !defaultModelFor(entry.id) && !pick.model && !modelField.hidden) {
         parts.push('Pick a model - ' + entry.label + ' does not name a default.');
       }

@@ -416,12 +416,6 @@ a { color: inherit; }
   border-radius: 5px;
   padding: 2px 5px;
 }
-.chat-item .dot {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: var(--green); flex: none;
-  transform-origin: center;
-  animation: pulse 1.8s cubic-bezier(.45, 0, .55, 1) infinite;
-}
 
 .side-foot {
   border-top: 1px solid var(--line);
@@ -532,6 +526,14 @@ a { color: inherit; }
   font-size: 14px;
   overflow-wrap: anywhere;
 }
+/* The facts of one session, in the "Info" dialog: one line each, and the only
+   place the page draws them. */
+.facts { display: flex; flex-direction: column; gap: 4px; }
+.facts .fact {
+  font-size: 12.5px;
+  color: var(--text-soft);
+  overflow-wrap: anywhere;
+}
 .modal-actions {
   display: flex;
   flex-wrap: wrap;
@@ -574,53 +576,47 @@ a { color: inherit; }
 .sheet .field { margin-bottom: 16px; }
 .sheet .hint { min-height: 1em; }
 
-/* A short, closed set of choices is a row of buttons, one of them pressed.
-   They wrap rather than shrink: a name that does not fit is worse than a row
-   that takes two lines. */
+/* A short, closed set of choices is one control rather than a handful of
+   buttons: one hairline around the row, hairline dividers inside it, and equal
+   parts that together are exactly as wide as the row. */
 .seg-row {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  border-radius: 11px;
+  overflow: hidden;
   margin-bottom: 16px;
 }
 .seg-row .seg {
+  flex: 1 1 0;
+  min-width: 0;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 9px;
-  border: 1px solid var(--line-strong);
+  border: 0;
+  border-left: 1px solid var(--line);
   background: var(--bg);
-  border-radius: 11px;
-  padding: 8px 12px;
+  padding: 9px 10px;
   font: inherit;
   font-size: 13px;
   color: var(--text-soft);
   cursor: pointer;
-  transition: border-color .16s var(--ease), color .16s var(--ease), background .16s var(--ease),
-              box-shadow .16s var(--ease), transform .16s var(--ease);
+  transition: color .16s var(--ease), background .16s var(--ease), box-shadow .16s var(--ease);
 }
-.seg-row .seg .seg-text { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; }
-.seg-row .seg:hover:not(:disabled) { color: var(--text); border-color: var(--text-faint); }
-.seg-row .seg:active:not(:disabled) { transform: scale(.98); }
+.seg-row .seg:first-child { border-left: 0; }
+.seg-row .seg .seg-text {
+  display: flex; flex-direction: column; align-items: center; gap: 1px;
+  min-width: 0; overflow: hidden;
+}
+.seg-row .seg .seg-label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.seg-row .seg:hover:not(:disabled) { color: var(--text); background: var(--bg-hover); }
 .seg-row .seg.on {
-  border-color: var(--accent);
   color: var(--text);
   background: var(--bg);
   font-weight: 550;
-  box-shadow: 0 0 0 1px var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
-/* A button and its "i" side by side. The "i" is a control of its own - it
-   cannot live inside the button - so the pair share a cell and the "i" sits
-   on the button's corner. */
-.seg-row .seg-cell { position: relative; display: inline-flex; }
-.seg-row .seg-cell > .tip { position: absolute; top: -8px; right: -8px; }
-.seg-row .seg-cell > .tip .tip-mark {
-  width: 20px;
-  height: 20px;
-  background: var(--bg);
-  border: 1px solid var(--line-strong);
-  box-shadow: var(--shadow-sm);
-}
-.seg-row .seg-cell > .tip .tip-mark svg { width: 12px; height: 12px; }
 .seg-row .seg.with-mark { padding-left: 10px; }
 .seg-row .seg:disabled .agent-mark { filter: grayscale(1); }
 /* An agent that is not installed stays in the row rather than disappearing
@@ -628,11 +624,11 @@ a { color: inherit; }
    "why can I not pick Codex". */
 .seg-row .seg:disabled { opacity: .45; cursor: default; }
 .seg-row .seg-sub { font-size: 10.5px; color: var(--text-faint); }
-.seg-row.agents .seg { min-width: 120px; min-height: 46px; }
-/* On a phone the three agents share one row, so the buttons are as wide as
-   their names and no wider. */
+.seg-row.agents .seg { min-height: 46px; }
+/* On a phone the four agents share the same row, so a name that would not fit
+   beside its mark goes under it instead. */
 @media (max-width: 620px) {
-  .seg-row.agents .seg { min-width: 0; padding: 7px 10px; font-size: 12.5px; gap: 8px; }
+  .seg-row.agents .seg { flex-direction: column; padding: 7px 6px; font-size: 12px; gap: 4px; }
   .seg-row.agents .seg .agent-mark { width: 18px !important; height: 18px !important; }
 }
 
@@ -881,7 +877,7 @@ a { color: inherit; }
    still happening, so the loading marks keep a slow, gentle beat. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
-  .spinner, .chat-item .dot, .state-dot.starting, .state-dot.installing,
+  .spinner, .state-dot.starting, .state-dot.installing,
   .conn-dot {
     animation-duration: 2.4s !important;
   }
@@ -1120,9 +1116,18 @@ a { color: inherit; }
   margin: 0;
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   font-size: 15px;
   font-weight: 550;
+}
+/* Why a pane ended. It is a fact about the machine, and there is nowhere left
+   to hide it: the overlay is only ever raised for this one session. */
+.overlay-detail {
+  margin: -8px 0 0;
+  font-size: 12.5px;
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
 }
 .overlay-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
 
@@ -1260,12 +1265,6 @@ a { color: inherit; }
   font-size: 13px;
   color: var(--text-faint);
 }
-/* The state dot is the only colour in a row, and it beats only while the pane
-   is running and the connection is live - body.stale already stops it. */
-.chat-item .dot.green { background: var(--green); }
-.chat-item .dot.amber { background: var(--amber); animation: none; }
-.chat-item .dot.red { background: var(--red); animation: none; }
-.chat-item .dot.faint { background: var(--text-faint); animation: none; }
 /* The activity of a row is drawn on the agent's own mark rather than beside
    it: a hairline ring that turns while the harness is working, and stands
    still while it is waiting for an answer. Nothing new is invented, and the
@@ -1280,6 +1279,10 @@ a { color: inherit; }
   border: 1px solid var(--line);
   pointer-events: none;
 }
+/* Waiting for an answer is the one thing a row says in colour, and it says it
+   on the ring rather than beside it: a complete amber circle, standing still.
+   Working is the same ring in the page's own hairline, turning. */
+.chat-item .row-mark.waiting::after { border-color: var(--amber); }
 /* One faint arc on an otherwise even ring is the whole of the motion. */
 .chat-item .row-mark.busy::after {
   border-top-color: var(--text-faint);
@@ -1288,15 +1291,6 @@ a { color: inherit; }
 /* A name whose session finished something nobody has seen. The session being
    looked at is never bold - the page never gives it the class. */
 .chat-item.unread .label { font-weight: 600; color: var(--text); }
-/* The "i" only appears where a pointer already is, so a row is a name and a
-   dot until somebody asks it for more. */
-.chat-item .row-tip { flex: none; opacity: 0; transition: opacity .16s var(--ease); }
-.chat-item:hover .row-tip, .chat-item.active .row-tip, .chat-item:focus-within .row-tip { opacity: .55; }
-.chat-item .row-tip:hover { opacity: 1; }
-@media (hover: none) {
-  .chat-item .row-tip { opacity: .45; }
-}
-
 /* The overflow menu a row and the header share. */
 .menu {
   position: fixed;
@@ -1324,20 +1318,6 @@ a { color: inherit; }
 }
 .menu-item:hover { background: var(--bg-hover); }
 .menu-item.danger { color: var(--red); }
-
-/* The advanced disclosure in the new session sheet. It holds the per session
-   overrides WP9a fills in; the element is here so that filling it in is not a
-   layout change. */
-.advanced { margin: 0 0 14px; }
-.advanced > summary {
-  cursor: pointer;
-  font-size: 13px;
-  color: var(--text-soft);
-  list-style: none;
-}
-.advanced > summary::-webkit-details-marker { display: none; }
-.advanced > summary::before { content: "▸ "; }
-.advanced[open] > summary::before { content: "▾ "; }
 
 /* ------------------------------------------------------------- combobox */
 
@@ -1523,7 +1503,6 @@ body.stale .spinner { animation-play-state: paused; opacity: .45; }
 /* What is on screen is old, so the ring stops turning with everything else:
    a spinner over a dead socket is a page claiming to know something. */
 body.stale .chat-item .row-mark.busy::after { animation-play-state: paused; opacity: .4; }
-body.stale .chat-item .dot { animation: none; opacity: .4; }
 
 /* ------------------------------------------------------------ the marks */
 

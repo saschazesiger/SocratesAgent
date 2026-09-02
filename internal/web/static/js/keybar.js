@@ -49,12 +49,62 @@ function isTypedKey(data) {
   return [...data].length === 1 && data.charCodeAt(0) >= 0x20 && data.charCodeAt(0) !== 0x7f;
 }
 
+// A device with a mouse and a hover has a keyboard behind it. The query is
+// both halves on purpose: a phone matches neither, and a laptop with a
+// touchscreen matches both.
+const KEYBOARD_MEDIA = '(hover: hover) and (pointer: fine)';
+
+// Whether a physical key has actually been pressed on this page. Nothing
+// resets it: a keyboard that was there once is taken to still be there.
+let keyboardSeen = false;
+
+/**
+ * isPhysicalKeyEvent is the one honest signal a real keyboard gives.
+ *
+ * An on-screen keyboard delivers its keys through composition instead: the
+ * key is `Unidentified`, the legacy code is 229, and `code` - which names a
+ * physical key on a physical layout - is empty. A hardware key on the same
+ * device fills all three in.
+ */
+export function isPhysicalKeyEvent(event) {
+  if (!event || event.isTrusted === false || event.isComposing) return false;
+  if (event.keyCode === 229) return false;
+  if (!event.key || event.key === 'Unidentified') return false;
+  return !!event.code;
+}
+
+/**
+ * keyboardLikely is whether a device plausibly has a physical keyboard.
+ *
+ * It is pure, and it is the whole of the rule: a keyboard that has been used
+ * is a keyboard; a mouse pointer that can hover is a computer; and an iPad,
+ * which Safari reports as a Mac with a touch screen, is the one device that
+ * looks like neither and is used with a keyboard anyway.
+ */
+export function keyboardLikely({ pointerFine = false, seen = false, platform = '', touchPoints = 0 } = {}) {
+  if (seen) return true;
+  if (pointerFine) return true;
+  return /mac/i.test(platform) && touchPoints > 1;
+}
+
+function keyboardEnv() {
+  const nav = typeof navigator === 'object' ? navigator : {};
+  return {
+    pointerFine: matchMedia(KEYBOARD_MEDIA).matches,
+    seen: keyboardSeen,
+    platform: nav.platform || (nav.userAgentData && nav.userAgentData.platform) || '',
+    touchPoints: nav.maxTouchPoints || 0,
+  };
+}
+
 /**
  * keyBarWanted is whether this device gets the key bar without being asked.
  *
- * A coarse pointer is a finger, and a narrow window is a phone held upright.
- * Either way the keyboard on screen is missing the keys a TUI needs. The
- * session menu can turn it on anywhere, and the answer is remembered.
+ * The bar stands in for keys a keyboard has and a touch screen does not - Esc,
+ * Tab, Ctrl, the arrows - so it is only worth the rows it costs where there is
+ * a keyboard to stand beside. A phone gets the line input and the microphone
+ * instead, and the session menu can still ask for the bar anywhere; the answer
+ * is remembered.
  */
 export function keyBarWanted() {
   try {
@@ -62,7 +112,27 @@ export function keyBarWanted() {
     if (stored === 'on') return true;
     if (stored === 'off') return false;
   } catch { /* a browser with no storage gets the default */ }
-  return matchMedia('(pointer: coarse)').matches || window.innerWidth < 900;
+  return keyboardLikely(keyboardEnv());
+}
+
+/**
+ * onKeyBarWanted calls back whenever the answer above can have changed: a
+ * window dragged onto another screen, a keyboard paired with a tablet.
+ */
+export function onKeyBarWanted(cb) {
+  const query = matchMedia(KEYBOARD_MEDIA);
+  const fire = () => cb(keyBarWanted());
+  const onKey = (event) => {
+    if (keyboardSeen || !isPhysicalKeyEvent(event)) return;
+    keyboardSeen = true;
+    fire();
+  };
+  query.addEventListener('change', fire);
+  window.addEventListener('keydown', onKey, true);
+  return () => {
+    query.removeEventListener('change', fire);
+    window.removeEventListener('keydown', onKey, true);
+  };
 }
 
 /** setKeyBarWanted records the answer the session menu gave. */
