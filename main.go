@@ -86,6 +86,16 @@ func main() {
 		log.Fatalf("could not start: %v", err)
 	}
 
+	// The terminal substrate comes up before the listener accepts, so that the
+	// very first session list is answered by a Socrates that has already
+	// reconciled with tmux. A machine without a usable tmux still serves the
+	// dashboard, which is where it says so.
+	sessionCtx, stopSessions := context.WithCancel(context.Background())
+	defer stopSessions()
+	if err := srv.StartSessions(sessionCtx); err != nil {
+		log.Printf("terminal sessions are unavailable: %v", err)
+	}
+
 	listener, err := net.Listen("tcp", *addr)
 	if err != nil {
 		log.Fatalf("could not listen on %s: %v", *addr, err)
@@ -121,6 +131,9 @@ func main() {
 	<-stop
 	log.Print("shutting down")
 	srv.StopTunnel()
+	// The tmux server and every session on it are deliberately left running.
+	stopSessions()
+	srv.StopSessions()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpServer.Shutdown(ctx)

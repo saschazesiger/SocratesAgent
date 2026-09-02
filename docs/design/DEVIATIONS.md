@@ -209,3 +209,46 @@ as the endpoint exists and harmless until then. The leak assertion is the specif
 §H.2 does not say when. Doing it at start-up would have made the discoverer's "the user has
 not typed anything yet" path - the one that leaves `cli_session_state='pending'` - unreachable
 from the suite, and it is not what the real TUI does either.
+
+## WP4 — Session HTTP API
+
+**WP4 / §A.11, §C.8 — `Ensure`, `Restart` and the resume flow are `internal/termux/ensure.go`,
+and `termux.Config` gained a `Settings` function.** The file list puts `Ensure` in `manager.go`;
+it sits beside it instead, as `adopt.go` and `hooks.go` already do. The `Settings` field is not
+cosmetic: a resume builds a *new* launch plan (§C.8 step 2), a plan is built from
+`config.Settings`, and the Manager had no way to read them. It is a function rather than a value
+so that a session relaunched an hour later is planned from the dashboard as it is then.
+
+**WP4 / §D.9 — `POST /api/sessions/{id}/resume` was added beside `restart`.** §C.8 makes
+`Ensure` "called whenever a viewer attaches", and the viewer is WP5's WebSocket, which does not
+exist yet. Without this route a `needs_resume` session could not be opened at all, which is
+exactly what the work package says must not wait for a UI. `restart` is the same path with the
+state forced first, as the section describes; `resume` leaves a running session alone.
+
+**WP4 / §C.8 — the `notice` control frame is not pushed.** There is no transport in WP4. The
+`resumed` flag on the row and `POST /api/sessions/{id}/ack-resume` carry the same fact, and WP5
+adds the frame on top of them.
+
+**WP4 / §C.6, §C.7 — running the session-id discoverers is nobody's scope, so WP4 runs them.**
+`WatchRollout` and `DiscoverOpenCodeSession` were built in WP3 and no work package says who
+calls them. Nothing did, so `cli_session_state` would have stayed `pending` for ever for Codex
+and OpenCode, and their half of `rebootresume` (WP9a) could never pass. `Manager.launch` now
+starts one detached watcher per session that needs one, ended by the Manager's own context on
+shutdown. `CODEX_HOME` is read from the plan's environment, then ours, then `~/.codex`: the
+launcher's own helper for it is unexported and its package was under review.
+
+**WP4 / WP4 checklist — a create whose tmux commands fail answers 201 with the failed row.**
+The checklist asks for the failure to surface as a `failed` row with tmux's stderr "not as a 500
+with no trace". A 500 would make the browser discard a session that exists, so the row is
+returned with its `fail_reason`, together with an `error` field, and the list shows it with the
+failed overlay and a Try again button.
+
+**WP4 / §D.9 — `GET /api/harnesses` also carries the workspace rules and whether sessions can be
+created at all.** The sheet needs the presets, the root, `allow_custom` and "tmux is missing" to
+draw itself, and §D.9 leaves no other endpoint for them; a second round trip for four fields
+would be one more thing to keep in step.
+
+**WP4 / §B.6 — the journal download is capped at 16 MiB from the end.** The section says the
+endpoint streams the current file and the rotated one before it, which is up to 128 MB through
+one response and one `[]byte`. What "download scrollback" is for is the recent past, and the
+whole file remains on disk for anyone who wants it.

@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net/http"
 	"net/http/cookiejar"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/saschazesiger/SocratesAgent/internal/piper"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
+	"github.com/saschazesiger/SocratesAgent/internal/termux"
 )
 
 // TestMain puts a stand-in piper where every server built in this package will
@@ -29,6 +31,18 @@ import (
 // hundred of those fill a tmpfs and every build on the machine starts failing
 // for want of space.
 func TestMain(m *testing.M) {
+	// The test binary also stands in for the Socrates executable, because the
+	// Manager points tmux at os.Executable() for the journal sink and for the
+	// hook a dying pane runs. Without this dispatch tmux would run the whole
+	// test suite again, once per pane.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "journal-sink":
+			os.Exit(runJournalSink(os.Args[2:]))
+		case "tmux-hook":
+			os.Exit(runTmuxHook(os.Args[2:]))
+		}
+	}
 	root, err := os.MkdirTemp("", "socrates-piper")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "test setup:", err)
@@ -80,11 +94,46 @@ func bakePiper(root string) error {
 	return nil
 }
 
+// runJournalSink and runTmuxHook are the two subcommands the substrate calls
+// this binary as.
+func runJournalSink(args []string) int {
+	fs := flag.NewFlagSet("journal-sink", flag.ContinueOnError)
+	path := fs.String("path", "", "")
+	maxBytes := fs.Int64("max-bytes", termux.JournalMaxBytes, "")
+	keep := fs.Int("keep", termux.JournalKeep, "")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if err := termux.RunJournalSink(*path, *maxBytes, *keep); err != nil {
+		return 1
+	}
+	return 0
+}
+
+func runTmuxHook(args []string) int {
+	fs := flag.NewFlagSet("tmux-hook", flag.ContinueOnError)
+	sock := fs.String("sock", "", "")
+	event := fs.String("event", "", "")
+	session := fs.String("session", "", "")
+	status := fs.String("status", "", "")
+	signal := fs.String("signal", "", "")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if err := termux.SendHook(*sock, termux.Hook{
+		Event: *event, Session: *session, Status: *status, Signal: *signal,
+	}); err != nil {
+		return 1
+	}
+	return 0
+}
+
 type testEnv struct {
 	server *httptest.Server
 	client *http.Client
 	anon   *http.Client
 	store  *store.Store
+	srv    *Server
 }
 
 func newEnv(t *testing.T) *testEnv {
@@ -116,6 +165,7 @@ func newEnv(t *testing.T) *testEnv {
 	noRedirect := func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }
 	return &testEnv{
 		server: ts,
+		srv:    srv,
 		client: &http.Client{Jar: jar, CheckRedirect: noRedirect},
 		anon:   &http.Client{CheckRedirect: noRedirect},
 		store:  st,

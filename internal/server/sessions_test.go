@@ -1,0 +1,626 @@
+//go:build !windows
+
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/saschazesiger/SocratesAgent/internal/store"
+	"github.com/saschazesiger/SocratesAgent/internal/termux"
+)
+
+// The session API is tested against the real substrate: a real store, a real
+// termux Manager, a real tmux server on a socket of its own under t.TempDir(),
+// and the e2e suite's fake CLI on PATH under the three names the launchers
+// look for. Nothing here starts a real Claude Code, Codex or OpenCode, and
+// nothing touches the machine's own tmux.
+
+// requireTmux skips a test when tmux is missing or older than the generated
+// configuration needs.
+func requireTmux(t *testing.T) string {
+	t.Helper()
+	bin, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux is not installed; skipping the session API tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	v, err := termux.BinaryVersion(ctx, bin)
+	if err != nil {
+		t.Skipf("could not read the tmux version: %v", err)
+	}
+	if !v.OK() {
+		t.Skipf("tmux %s is older than %d.%d", v, termux.MinMajor, termux.MinMinor)
+	}
+	return bin
+}
+
+var (
+	fakeOnce sync.Once
+	fakeDir  string
+	fakeErr  error
+)
+
+// fakeBinDir builds e2e/fakebin/faketui once per test run and links it under
+// the three names the launchers look for, so that a session created through
+// the API runs the fake and never a real CLI.
+func fakeBinDir(t *testing.T) string {
+	t.Helper()
+	fakeOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "socrates-fakebin-")
+		if err != nil {
+			fakeErr = err
+			return
+		}
+		exe := filepath.Join(dir, "faketui")
+		build := exec.Command("go", "build", "-o", exe, "./e2e/fakebin/faketui")
+		build.Dir = "../.."
+		if out, err := build.CombinedOutput(); err != nil {
+			fakeErr = fmt.Errorf("%v: %s", err, out)
+			return
+		}
+		for _, name := range []string{"claude", "codex", "opencode"} {
+			if err := os.Symlink(exe, filepath.Join(dir, name)); err != nil {
+				fakeErr = err
+				return
+			}
+		}
+		fakeDir = dir
+	})
+	if fakeErr != nil {
+		t.Skipf("the fake CLI could not be built: %v", fakeErr)
+	}
+	return fakeDir
+}
+
+// sessionEnv is a signed-in server with its terminal substrate started.
+type sessionEnv struct {
+	*testEnv
+	t       *testing.T
+	tmuxBin string
+	home    string
+	work    string
+}
+
+func newSessionEnv(t *testing.T) *sessionEnv {
+	t.Helper()
+	bin := requireTmux(t)
+	fakes := fakeBinDir(t)
+
+	home := t.TempDir()
+	work := filepath.Join(home, "work")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("SHELL", "/bin/sh")
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("PATH", fakes+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	env := newEnv(t)
+	e := &sessionEnv{testEnv: env, t: t, tmuxBin: bin, home: home, work: work}
+	e.signIn()
+	e.configureWorkspace(filepath.Join(home, "workspaces"), true, filepath.Join(home, "preset"))
+	e.start(env.srv)
+	return e
+}
+
+func (e *sessionEnv) signIn() {
+	e.t.Helper()
+	res, _ := e.do(e.t, e.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+	if res.StatusCode != http.StatusOK {
+		e.t.Fatalf("setup: %d", res.StatusCode)
+	}
+}
+
+// configureWorkspace puts the workspace root and the one preset inside the
+// test's own directory, so that no session is ever created anywhere else.
+func (e *sessionEnv) configureWorkspace(root string, allowCustom bool, preset string) {
+	e.t.Helper()
+	for _, dir := range []string{root, preset} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			e.t.Fatal(err)
+		}
+	}
+	body := fmt.Sprintf(`{"settings":{"workspace":{"root":%q,"allow_custom":%t,"default_harness":"shell",
+		"presets":[{"label":"Preset","path":%q}]}}}`, root, allowCustom, preset)
+	res, payload := e.do(e.t, e.client, "PUT", "/api/settings", body)
+	if res.StatusCode != http.StatusOK {
+		e.t.Fatalf("settings: %d %#v", res.StatusCode, payload)
+	}
+}
+
+// start brings the substrate up and takes it back down with the test, leaving
+// no tmux server behind.
+func (e *sessionEnv) start(srv *Server) {
+	e.t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := srv.StartSessions(ctx); err != nil {
+		cancel()
+		e.t.Fatalf("could not start the terminal substrate: %v", err)
+	}
+	e.t.Cleanup(func() {
+		cancel()
+		srv.StopSessions()
+		_ = exec.Command(e.tmuxBin, "-S", srv.Sessions().Socket(), "kill-server").Run()
+	})
+}
+
+func (e *sessionEnv) socket() string { return e.srv.Sessions().Socket() }
+
+func (e *sessionEnv) tmux(args ...string) (string, error) {
+	full := append([]string{"-S", e.socket()}, args...)
+	out, err := exec.Command(e.tmuxBin, full...).CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+func (e *sessionEnv) hasTmuxSession(id string) bool {
+	_, err := e.tmux("has-session", "-t", termux.TmuxName(id))
+	return err == nil
+}
+
+// create posts one session and returns what the server stored.
+func (e *sessionEnv) create(body string) (*http.Response, map[string]any) {
+	e.t.Helper()
+	res, payload := e.do(e.t, e.client, "POST", "/api/sessions", body)
+	session, _ := payload["session"].(map[string]any)
+	return res, session
+}
+
+func (e *sessionEnv) get(id string) map[string]any {
+	e.t.Helper()
+	res, payload := e.do(e.t, e.client, "GET", "/api/sessions/"+id, "")
+	if res.StatusCode != http.StatusOK {
+		e.t.Fatalf("GET session %s: %d %#v", id, res.StatusCode, payload)
+	}
+	session, _ := payload["session"].(map[string]any)
+	return session
+}
+
+// waitForState polls the API until the session reaches one of the states.
+func (e *sessionEnv) waitForState(id string, within time.Duration, want ...string) map[string]any {
+	e.t.Helper()
+	deadline := time.Now().Add(within)
+	var last map[string]any
+	for time.Now().Before(deadline) {
+		last = e.get(id)
+		for _, w := range want {
+			if last["state"] == w {
+				return last
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	e.t.Fatalf("session %s never reached %v; it is %#v", id, want, last)
+	return nil
+}
+
+// waitForPane waits until the pane says what the test is waiting for, which is
+// how a test knows the program itself started and not merely tmux.
+func (e *sessionEnv) waitForPane(id, want string) string {
+	e.t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	screen := ""
+	for time.Now().Before(deadline) {
+		screen, _ = e.tmux("capture-pane", "-p", "-t", termux.TmuxName(id))
+		if strings.Contains(screen, want) {
+			return screen
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	e.t.Fatalf("the pane of %s never showed %q; it shows:\n%s", id, want, screen)
+	return ""
+}
+
+// planArgv reads back the argv a session was actually started with.
+func (e *sessionEnv) planArgv(id string) []string {
+	e.t.Helper()
+	raw, err := os.ReadFile(filepath.Join(e.srv.dataDir, "sessions", id, "plan.json"))
+	if err != nil {
+		e.t.Fatalf("plan.json: %v", err)
+	}
+	var plan struct {
+		Argv []string `json:"Argv"`
+	}
+	if err := json.Unmarshal(raw, &plan); err != nil {
+		e.t.Fatalf("plan.json: %v", err)
+	}
+	return plan.Argv
+}
+
+func sessionID(t *testing.T, session map[string]any) string {
+	t.Helper()
+	id, _ := session["id"].(string)
+	if id == "" {
+		t.Fatalf("the answer carried no session: %#v", session)
+	}
+	return id
+}
+
+// TestSessionLifecycle drives the whole of the API against real tmux: one
+// session per harness, then the list, the rename, the archive and the delete.
+func TestSessionLifecycle(t *testing.T) {
+	e := newSessionEnv(t)
+
+	cases := []struct {
+		harness string
+		banner  string
+	}{
+		{"shell", ""},
+		{"claude", "FAKE claude"},
+		{"codex", "FAKE codex"},
+		{"opencode", "FAKE opencode"},
+	}
+	ids := map[string]string{}
+	for _, c := range cases {
+		t.Run(c.harness, func(t *testing.T) {
+			dir := filepath.Join(e.work, c.harness)
+			res, session := e.create(fmt.Sprintf(
+				`{"harness":%q,"workdir_mode":"custom","workdir":%q,"cols":100,"rows":30}`, c.harness, dir))
+			if res.StatusCode != http.StatusCreated {
+				t.Fatalf("create %s: %d %#v", c.harness, res.StatusCode, session)
+			}
+			id := sessionID(t, session)
+			ids[c.harness] = id
+			if session["state"] != store.StateRunning {
+				t.Fatalf("%s: state = %v (%v)", c.harness, session["state"], session["fail_reason"])
+			}
+			if session["workdir"] != dir {
+				t.Fatalf("%s: workdir = %v", c.harness, session["workdir"])
+			}
+			if !e.hasTmuxSession(id) {
+				t.Fatalf("%s: tmux has no session soc_%s", c.harness, id)
+			}
+			if c.banner != "" {
+				e.waitForPane(id, c.banner)
+			}
+		})
+	}
+
+	res, payload := e.do(t, e.client, "GET", "/api/sessions", "")
+	list, _ := payload["sessions"].([]any)
+	if res.StatusCode != http.StatusOK || len(list) != len(cases) {
+		t.Fatalf("list: %d, %d sessions, want %d", res.StatusCode, len(list), len(cases))
+	}
+
+	id := ids["shell"]
+	res, payload = e.do(t, e.client, "PATCH", "/api/sessions/"+id, `{"title":"Renamed"}`)
+	if res.StatusCode != http.StatusOK || payload["session"].(map[string]any)["title"] != "Renamed" {
+		t.Fatalf("rename: %d %#v", res.StatusCode, payload)
+	}
+	res, _ = e.do(t, e.client, "PATCH", "/api/sessions/"+id, `{"title":"  "}`)
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("an empty name should be refused, got %d", res.StatusCode)
+	}
+
+	// Archiving hides a session from the default list and leaves it running.
+	res, _ = e.do(t, e.client, "POST", "/api/sessions/"+id+"/archive", `{"archived":true}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("archive: %d", res.StatusCode)
+	}
+	_, payload = e.do(t, e.client, "GET", "/api/sessions", "")
+	if list, _ := payload["sessions"].([]any); len(list) != len(cases)-1 {
+		t.Fatalf("an archived session should be hidden, %d of %d left", len(list), len(cases))
+	}
+	_, payload = e.do(t, e.client, "GET", "/api/sessions?scope=all", "")
+	if list, _ := payload["sessions"].([]any); len(list) != len(cases) {
+		t.Fatalf("scope=all should show it again, got %d", len(list))
+	}
+	if !e.hasTmuxSession(id) {
+		t.Fatal("archiving must not stop a session")
+	}
+	res, _ = e.do(t, e.client, "POST", "/api/sessions/"+id+"/archive", `{"archived":false}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("unarchive: %d", res.StatusCode)
+	}
+
+	// Delete is the one path that kills a tmux session, and it keeps the
+	// working directory.
+	for _, c := range cases {
+		res, payload := e.do(t, e.client, "DELETE", "/api/sessions/"+ids[c.harness], "")
+		if res.StatusCode != http.StatusOK || payload["workdir_kept"] != true {
+			t.Fatalf("delete %s: %d %#v", c.harness, res.StatusCode, payload)
+		}
+		if e.hasTmuxSession(ids[c.harness]) {
+			t.Fatalf("delete %s left its tmux session behind", c.harness)
+		}
+		if _, err := os.Stat(filepath.Join(e.work, c.harness)); err != nil {
+			t.Fatalf("delete %s removed the working directory: %v", c.harness, err)
+		}
+		res, _ = e.do(t, e.client, "GET", "/api/sessions/"+ids[c.harness], "")
+		if res.StatusCode != http.StatusNotFound {
+			t.Fatalf("a deleted session should be gone, got %d", res.StatusCode)
+		}
+	}
+}
+
+// TestCreateIsIdempotent is what makes starting a session over a link that
+// drops safe: the same client_id twice is one session, not two.
+func TestCreateIsIdempotent(t *testing.T) {
+	e := newSessionEnv(t)
+	body := fmt.Sprintf(`{"client_id":"abc-123","harness":"shell","workdir_mode":"custom","workdir":%q}`,
+		filepath.Join(e.work, "idem"))
+
+	res, first := e.create(body)
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("first create: %d %#v", res.StatusCode, first)
+	}
+	res, second := e.create(body)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("a repeated create should answer with the session it made, got %d", res.StatusCode)
+	}
+	if sessionID(t, first) != sessionID(t, second) {
+		t.Fatalf("two sessions for one client_id: %s and %s", first["id"], second["id"])
+	}
+	_, payload := e.do(t, e.client, "GET", "/api/sessions", "")
+	if list, _ := payload["sessions"].([]any); len(list) != 1 {
+		t.Fatalf("expected one session, got %d", len(list))
+	}
+}
+
+// TestWorkspaceRulesAreEnforced holds the server to the rules the sheet only
+// displays.
+func TestWorkspaceRulesAreEnforced(t *testing.T) {
+	e := newSessionEnv(t)
+
+	// A preset the dashboard does not name is refused, and the one it does is
+	// accepted.
+	res, payload := e.create(fmt.Sprintf(
+		`{"harness":"shell","workdir_mode":"preset","workdir":%q}`, filepath.Join(e.home, "elsewhere")))
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("an unknown preset should be refused, got %d %#v", res.StatusCode, payload)
+	}
+	res, session := e.create(fmt.Sprintf(
+		`{"harness":"shell","workdir_mode":"preset","workdir":%q}`, filepath.Join(e.home, "preset")))
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("the preset should be accepted, got %d %#v", res.StatusCode, session)
+	}
+
+	// With custom directories switched off, a typed-in path is refused however
+	// the request is dressed up.
+	e.configureWorkspace(filepath.Join(e.home, "workspaces"), false, filepath.Join(e.home, "preset"))
+	res, payload = e.create(fmt.Sprintf(
+		`{"harness":"shell","workdir_mode":"custom","workdir":%q}`, filepath.Join(e.home, "anywhere")))
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a typed-in directory should be refused, got %d %#v", res.StatusCode, payload)
+	}
+	if _, err := os.Stat(filepath.Join(e.home, "anywhere")); err == nil {
+		t.Fatal("a refused directory must not be created")
+	}
+
+	// A dynamic directory is made under the root and nowhere else.
+	res, session = e.create(`{"harness":"shell"}`)
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("dynamic create: %d %#v", res.StatusCode, session)
+	}
+	workdir, _ := session["workdir"].(string)
+	if !strings.HasPrefix(workdir, filepath.Join(e.home, "workspaces")+string(os.PathSeparator)) {
+		t.Fatalf("the dynamic directory %q is not under the workspace root", workdir)
+	}
+}
+
+// TestRestartAfterExit walks the exit overlay's path: the program ends, the
+// row says so with its status, and Restart brings the session back.
+func TestRestartAfterExit(t *testing.T) {
+	e := newSessionEnv(t)
+	res, session := e.create(fmt.Sprintf(
+		`{"harness":"shell","workdir_mode":"custom","workdir":%q}`, filepath.Join(e.work, "restart")))
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d %#v", res.StatusCode, session)
+	}
+	id := sessionID(t, session)
+
+	if _, err := e.tmux("send-keys", "-t", termux.TmuxName(id), "exit 7", "Enter"); err != nil {
+		t.Fatalf("could not type into the pane: %v", err)
+	}
+	exited := e.waitForState(id, 15*time.Second, store.StateExited)
+	if exited["exit_status"] != float64(7) {
+		t.Fatalf("exit_status = %v, want 7", exited["exit_status"])
+	}
+
+	res, payload := e.do(t, e.client, "POST", "/api/sessions/"+id+"/restart", "")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("restart: %d %#v", res.StatusCode, payload)
+	}
+	restarted, _ := payload["session"].(map[string]any)
+	if restarted["state"] != store.StateRunning {
+		t.Fatalf("after a restart the session is %v", restarted["state"])
+	}
+	if !e.hasTmuxSession(id) {
+		t.Fatal("the restarted session has no tmux session")
+	}
+}
+
+// TestRebootResumesTheConversation is the reboot case end to end: the tmux
+// server is killed under the running Socrates, the session becomes one to
+// resume, and opening it starts the CLI again on its own conversation - with
+// --resume and the id it had, not a fresh one.
+func TestRebootResumesTheConversation(t *testing.T) {
+	e := newSessionEnv(t)
+	res, session := e.create(fmt.Sprintf(
+		`{"harness":"claude","workdir_mode":"custom","workdir":%q}`, filepath.Join(e.work, "resume")))
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d %#v", res.StatusCode, session)
+	}
+	id := sessionID(t, session)
+	e.waitForPane(id, "FAKE claude")
+
+	argv := e.planArgv(id)
+	cliID := ""
+	for i, a := range argv {
+		if a == "--session-id" && i+1 < len(argv) {
+			cliID = argv[i+1]
+		}
+	}
+	if cliID == "" {
+		t.Fatalf("the first launch chose no session id: %v", argv)
+	}
+
+	// The reboot, as far as Socrates can tell it apart from one: the tmux
+	// server is gone and the rows are not.
+	if _, err := e.tmux("kill-server"); err != nil {
+		t.Fatalf("kill-server: %v", err)
+	}
+	// It takes two consecutive failed polls to declare it - a busy moment must
+	// not flip every session at once - so the loop is nudged rather than
+	// waited on, and the state is then read back through the API.
+	ctx := context.Background()
+	e.srv.Sessions().Poll(ctx)
+	e.srv.Sessions().Poll(ctx)
+	e.waitForState(id, 10*time.Second, store.StateNeedsResume)
+
+	res, payload := e.do(t, e.client, "POST", "/api/sessions/"+id+"/resume", "")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("resume: %d %#v", res.StatusCode, payload)
+	}
+	resumed, _ := payload["session"].(map[string]any)
+	if resumed["state"] != store.StateRunning {
+		t.Fatalf("after a resume the session is %v (%v)", resumed["state"], resumed["fail_reason"])
+	}
+	if resumed["resumed"] != true || resumed["resume_count"] != float64(1) {
+		t.Fatalf("the resume was not recorded: %#v", resumed)
+	}
+
+	argv = e.planArgv(id)
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "--resume "+cliID) {
+		t.Fatalf("the relaunch did not resume the conversation: %s", joined)
+	}
+	if strings.Contains(joined, "--session-id") {
+		t.Fatalf("a resume must never re-use --session-id: %s", joined)
+	}
+	e.waitForPane(id, "FAKE claude")
+
+	res, payload = e.do(t, e.client, "POST", "/api/sessions/"+id+"/ack-resume", "")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("ack-resume: %d %#v", res.StatusCode, payload)
+	}
+	if payload["session"].(map[string]any)["resumed"] != false {
+		t.Fatal("the resumed banner was not cleared")
+	}
+}
+
+// TestAdoptAcrossARestart restarts the whole server in-process: a running
+// session is taken back, and a tmux session of ours with no row is taken in
+// rather than killed.
+func TestAdoptAcrossARestart(t *testing.T) {
+	e := newSessionEnv(t)
+	res, session := e.create(fmt.Sprintf(
+		`{"harness":"shell","workdir_mode":"custom","workdir":%q}`, filepath.Join(e.work, "adopt")))
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d %#v", res.StatusCode, session)
+	}
+	id := sessionID(t, session)
+
+	// A session of ours that the database has never heard of: what a restored
+	// backup, or a crash between the tmux session and its row, leaves behind.
+	orphan := termux.NewID()
+	if out, err := e.tmux("new-session", "-d", "-s", termux.TmuxName(orphan), "-c", e.work, "/bin/sh"); err != nil {
+		t.Fatalf("could not make an orphan session: %v: %s", err, out)
+	}
+
+	// The restart. Nothing tmux owns is stopped.
+	e.srv.StopSessions()
+	next, err := New(e.store, e.srv.dataDir)
+	if err != nil {
+		t.Fatalf("second server: %v", err)
+	}
+	e.start(next)
+
+	row, err := e.store.GetSession(id)
+	if err != nil || row.State != store.StateRunning {
+		t.Fatalf("the running session was not re-adopted: %#v %v", row, err)
+	}
+	if !e.hasTmuxSession(id) {
+		t.Fatal("re-adoption stopped a running session")
+	}
+	recovered, err := e.store.GetSession(orphan)
+	if err != nil {
+		t.Fatalf("the unrecorded session was not taken in: %v", err)
+	}
+	if recovered.State != store.StateRunning || recovered.Title != "Recovered session" {
+		t.Fatalf("recovered row = %#v", recovered)
+	}
+	if !e.hasTmuxSession(orphan) {
+		t.Fatal("an unrecorded session of ours was killed, and it never may be")
+	}
+}
+
+// TestHarnessCatalogue is what the new-session sheet reads: the four
+// harnesses, and the rules about where a session may work.
+func TestHarnessCatalogue(t *testing.T) {
+	e := newSessionEnv(t)
+	res, payload := e.do(t, e.client, "GET", "/api/harnesses", "")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("harnesses: %d %#v", res.StatusCode, payload)
+	}
+	if payload["sessions_available"] != true {
+		t.Fatalf("sessions should be available here: %#v", payload)
+	}
+	workspace, _ := payload["workspace"].(map[string]any)
+	if workspace["allow_custom"] != true || workspace["root"] != filepath.Join(e.home, "workspaces") {
+		t.Fatalf("workspace = %#v", workspace)
+	}
+	if presets, _ := workspace["presets"].([]any); len(presets) != 1 {
+		t.Fatalf("the preset list did not survive: %#v", workspace["presets"])
+	}
+}
+
+// TestSessionAPIRequiresAuth keeps the wall in front of the terminals: every
+// route needs a session cookie, and every state change a same-origin request.
+func TestSessionAPIRequiresAuth(t *testing.T) {
+	e := newSessionEnv(t)
+
+	for _, route := range []struct{ method, path string }{
+		{"GET", "/api/sessions"},
+		{"POST", "/api/sessions"},
+		{"GET", "/api/sessions/x"},
+		{"PATCH", "/api/sessions/x"},
+		{"DELETE", "/api/sessions/x"},
+		{"POST", "/api/sessions/x/archive"},
+		{"POST", "/api/sessions/x/restart"},
+		{"POST", "/api/sessions/x/resume"},
+		{"POST", "/api/sessions/x/ack-resume"},
+		{"GET", "/api/sessions/x/journal"},
+		{"GET", "/api/harnesses"},
+		{"POST", "/api/harnesses/refresh"},
+	} {
+		res, _ := e.do(t, e.anon, route.method, route.path, "")
+		if res.StatusCode != http.StatusUnauthorized {
+			t.Errorf("%s %s answered %d without a password, want 401", route.method, route.path, res.StatusCode)
+		}
+	}
+
+	// A signed-in browser on somebody else's page is refused too: the cookie
+	// travels, the origin does not.
+	req, err := http.NewRequest("POST", e.server.URL+"/api/sessions", strings.NewReader(`{"harness":"shell"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://evil.example")
+	res, err := e.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("a cross-origin create answered %d, want 403", res.StatusCode)
+	}
+	if _, payload := e.do(t, e.client, "GET", "/api/sessions", ""); len(payload["sessions"].([]any)) != 0 {
+		t.Fatal("the cross-origin create made a session")
+	}
+}

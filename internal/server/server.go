@@ -13,9 +13,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/saschazesiger/SocratesAgent/internal/catalog"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/piper"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
+	"github.com/saschazesiger/SocratesAgent/internal/termux"
 	"github.com/saschazesiger/SocratesAgent/internal/tunnel"
 	"github.com/saschazesiger/SocratesAgent/internal/web"
 )
@@ -27,10 +29,13 @@ const settingsKey = "settings"
 
 // Server wires storage, the terminal sessions and the HTTP handlers together.
 type Server struct {
-	store  *store.Store
-	tunnel *tunnel.Manager
-	voice  *piper.Engine
+	store   *store.Store
+	tunnel  *tunnel.Manager
+	voice   *piper.Engine
+	manager *termux.Manager
+	catalog *catalog.Catalog
 
+	dataDir  string
 	localURL string
 
 	mu       sync.RWMutex
@@ -52,6 +57,7 @@ type attempt struct {
 func New(st *store.Store, dataDir string) (*Server, error) {
 	s := &Server{
 		store:     st,
+		dataDir:   dataDir,
 		loginFail: map[string]*attempt{},
 	}
 
@@ -65,6 +71,17 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 		return nil, err
 	}
 
+	cfg := managerConfig(dataDir, settings)
+	// The manager plans a resume of its own accord after a reboot, so it reads
+	// the live settings rather than the copy it was built with.
+	cfg.Settings = s.Settings
+	manager, err := termux.New(st, cfg)
+	if err != nil {
+		return nil, err
+	}
+	s.manager = manager
+	s.catalog = catalog.New(st, s.Settings)
+
 	s.tunnel = tunnel.New(s.Settings, s.LocalURL, filepath.Join(dataDir, "bin"))
 	s.voice = piper.New(filepath.Join(dataDir, "voice"))
 	s.installVoice()
@@ -72,6 +89,53 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	s.routes()
 	return s, nil
 }
+
+// managerConfig is the terminal substrate as the dashboard has configured it.
+// The generated tmux configuration is written from these, so a change to them
+// reaches the sessions created after it and never the ones already running: a
+// terminal keeps the substrate it was started on.
+func managerConfig(dataDir string, settings config.Settings) termux.Config {
+	return termux.Config{
+		DataDir: dataDir,
+		Conf: termux.ConfOptions{
+			HistoryLimit: settings.Terminal.HistoryLimit,
+			Mouse:        settings.Terminal.Mouse,
+			ExtendedKeys: settings.Terminal.ExtendedKeys,
+		},
+		WindowSize: settings.Terminal.WindowSize,
+		Supervisor: termux.DetectSupervisor(),
+	}
+}
+
+// StartSessions brings the terminal substrate up: the generated configuration,
+// the socket the tmux hooks report to, the re-adoption of everything that
+// survived the last run, and the poll that watches for panes that die.
+//
+// Adoption runs before the listener accepts, because a browser that asks for
+// the session list in the first moment must not be told a running session is
+// gone. A failure here is reported and not fatal: a Socrates that cannot start
+// sessions still has to serve the dashboard that says why.
+func (s *Server) StartSessions(ctx context.Context) error {
+	if err := s.manager.Start(ctx); err != nil {
+		return err
+	}
+	if err := s.manager.Adopt(ctx); err != nil {
+		log.Printf("terminal sessions: could not reconcile with tmux: %v", err)
+	}
+	s.manager.StartPoll(ctx)
+	return nil
+}
+
+// StopSessions lets go of everything Socrates owns and nothing tmux owns: the
+// sessions themselves keep running, which is the whole point of them.
+func (s *Server) StopSessions() {
+	if err := s.manager.Close(); err != nil {
+		log.Printf("terminal sessions: %v", err)
+	}
+}
+
+// Sessions is the terminal manager, for the transport that attaches to it.
+func (s *Server) Sessions() *termux.Manager { return s.manager }
 
 // installVoice puts Piper on the machine while nobody is waiting for it. A
 // fresh installation downloads about 150 MB, and the worst moment to discover
@@ -188,6 +252,22 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/setup", s.handleSetup)
 	mux.HandleFunc("POST /api/login", s.handleLogin)
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
+
+	// Terminal sessions
+	mux.HandleFunc("GET /api/sessions", s.auth(s.handleListSessions))
+	mux.HandleFunc("POST /api/sessions", s.auth(s.handleCreateSession))
+	mux.HandleFunc("GET /api/sessions/{id}", s.auth(s.handleGetSession))
+	mux.HandleFunc("PATCH /api/sessions/{id}", s.auth(s.handleRenameSession))
+	mux.HandleFunc("DELETE /api/sessions/{id}", s.auth(s.handleDeleteSession))
+	mux.HandleFunc("POST /api/sessions/{id}/archive", s.auth(s.handleArchiveSession))
+	mux.HandleFunc("POST /api/sessions/{id}/resume", s.auth(s.handleResumeSession))
+	mux.HandleFunc("POST /api/sessions/{id}/restart", s.auth(s.handleRestartSession))
+	mux.HandleFunc("POST /api/sessions/{id}/ack-resume", s.auth(s.handleAckResume))
+	mux.HandleFunc("GET /api/sessions/{id}/journal", s.auth(s.handleJournal))
+
+	// The harness catalogue: what can be started, and where.
+	mux.HandleFunc("GET /api/harnesses", s.auth(s.handleHarnesses))
+	mux.HandleFunc("POST /api/harnesses/refresh", s.auth(s.handleRefreshHarnesses))
 
 	// Admin
 	mux.HandleFunc("GET /api/settings", s.auth(s.handleGetSettings))

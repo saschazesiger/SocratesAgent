@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
@@ -65,6 +66,10 @@ type Config struct {
 	// right answer everywhere except under systemd.
 	Supervisor Supervisor
 	Logf       func(format string, args ...any)
+	// Settings is the live configuration, read whenever a session has to be
+	// planned again. A resume after a reboot builds its own launch plan, and
+	// the plan is only ever as current as the settings it is built from.
+	Settings func() config.Settings
 	// OnExit and OnSize are how later layers hear about a pane that died and a
 	// window that changed size. The frames they turn into are not this
 	// package's business.
@@ -92,6 +97,12 @@ type Manager struct {
 	missed       map[string]int
 	hookLn       net.Listener
 	closed       bool
+
+	// discoverCtx ends every detached session-id watcher when the manager is
+	// closed. The watchers are patient by design - a quarter of an hour each -
+	// and none of them may outlive the store it would write to.
+	discoverCtx  context.Context
+	discoverStop context.CancelFunc
 }
 
 // New builds a Manager. It does not start anything, and it does not fail when
@@ -121,6 +132,7 @@ func New(st *store.Store, cfg Config) (*Manager, error) {
 		}
 	}
 	m := &Manager{st: st, cfg: cfg, live: map[string]*liveSession{}, missed: map[string]int{}}
+	m.discoverCtx, m.discoverStop = context.WithCancel(context.Background())
 
 	bin := cfg.TmuxBin
 	if bin == "" {
@@ -196,6 +208,7 @@ func (m *Manager) Close() error {
 		return nil
 	}
 	m.closed = true
+	stop := m.discoverStop
 	ln := m.hookLn
 	var viewers []*Viewer
 	for _, live := range m.live {
@@ -203,6 +216,9 @@ func (m *Manager) Close() error {
 	}
 	m.mu.Unlock()
 
+	if stop != nil {
+		stop()
+	}
 	for _, v := range viewers {
 		_ = v.Close()
 	}
@@ -376,6 +392,7 @@ func (m *Manager) launch(ctx context.Context, row *store.Session, plan harnesses
 	if err := m.writeSessionFiles(row, plan); err != nil {
 		return err
 	}
+	started := time.Now()
 	if err := m.newSession(ctx, row, plan); err != nil {
 		return err
 	}
@@ -389,6 +406,7 @@ func (m *Manager) launch(ctx context.Context, row *store.Session, plan harnesses
 	m.live[row.ID] = &liveSession{id: row.ID, tmuxName: row.TmuxName, cols: row.Cols, rows: row.Rows}
 	delete(m.missed, row.ID)
 	m.mu.Unlock()
+	m.watchCLISession(row.ID, plan, started)
 	return nil
 }
 
