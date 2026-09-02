@@ -402,6 +402,84 @@ func TestActivityWaitingIsReleasedByAScreen(t *testing.T) {
 	b.until("s1", StateBusy, ExactMissTicks+2, rows, func() map[string]paneLine { return b.pane(row, 0) })
 }
 
+// TestActivityWaitingIsReleasedByAnExactAnswer: the harness's own signal is
+// the best evidence there is, so a fresh non-waiting answer ends the prompt at
+// once - no keystroke, and with the pane still producing output.
+func TestActivityWaitingIsReleasedByAnExactAnswer(t *testing.T) {
+	b := newBench(t)
+	row := b.row("s1", "claude")
+	rows := []store.Session{row}
+	b.source(harnesses.KindClaude,
+		seen(StateWaiting, "permission prompt"),
+		seen(StateIdle, ""),
+	)
+	b.setScreen("")
+
+	b.tick(rows, b.pane(row, 0))
+	b.want("s1", StateWaiting)
+
+	// Nobody typed here as far as the detector knows, and the pane is noisy:
+	// only the exact layer can release this.
+	b.until("s1", StateIdle, IdleSettle+1, rows, func() map[string]paneLine { return b.pane(row, 0) })
+	if src := b.m.ActivityOf("s1").Source; src != sourceExact {
+		t.Fatalf("the release came from %q, want the exact layer", src)
+	}
+}
+
+// TestActivityRememberedExactAnswerSurvivesSilence: the runaway guard is for a
+// signal that has really dropped out, not for one that blinked while the file
+// was being rewritten. A busy answer being reused must not be overwritten by
+// thirty seconds of quiet.
+func TestActivityRememberedExactAnswerSurvivesSilence(t *testing.T) {
+	b := newBench(t)
+	row := b.row("s1", "claude")
+	rows := []store.Session{row}
+	src := b.source(harnesses.KindClaude, seen(StateBusy, ""))
+	b.setScreen("")
+
+	// A long silent tool run: busy on file, and the pane has said nothing for
+	// well over HardQuiet.
+	b.tick(rows, b.pane(row, HardQuiet))
+	b.want("s1", StateBusy)
+
+	// The file is unreadable for the whole reuse window.
+	src.mu.Lock()
+	src.answers, src.at = []observation{missing}, 0
+	src.mu.Unlock()
+	for i := 0; i < ExactMissTicks; i++ {
+		b.tick(rows, b.pane(row, HardQuiet))
+		b.want("s1", StateBusy)
+		if got := b.m.ActivityOf("s1").Source; got != sourceExact {
+			t.Fatalf("tick %d answered from %q, want the remembered exact answer", i, got)
+		}
+	}
+	// Once it has really gone, silence decides.
+	b.until("s1", StateIdle, IdleSettle+2, rows, func() map[string]paneLine { return b.pane(row, HardQuiet) })
+	if got := b.m.ActivityOf("s1").Source; got != sourceQuiet {
+		t.Fatalf("the release came from %q, want quiescence", got)
+	}
+}
+
+// TestActivityWaitingIsReleasedByAScreenTheGuardOverwrote: with no exact layer
+// and a silent pane, the runaway guard rewrites the answer to a quiet idle -
+// but the screen was still read this tick, and a recognised non-waiting screen
+// is what ends a prompt.
+func TestActivityWaitingIsReleasedByAScreenTheGuardOverwrote(t *testing.T) {
+	b := newBench(t)
+	row := b.row("s1", "codex")
+	rows := []store.Session{row}
+	b.source(harnesses.KindCodex, seen(StateWaiting, "approval required"), missing)
+
+	b.tick(rows, b.pane(row, 0))
+	b.want("s1", StateWaiting)
+
+	// The prompt is answered and the pane goes quiet, but the screen is back
+	// to Codex's ordinary furniture. Nobody typed at Socrates.
+	b.setScreen("Working (3s • esc to interrupt)")
+	b.until("s1", StateIdle, ExactMissTicks+IdleSettle+2, rows,
+		func() map[string]paneLine { return b.pane(row, HardQuiet) })
+}
+
 // TestActivityPaneDeathMarksUnreadAndInputClearsIt.
 func TestActivityPaneDeathMarksUnreadAndInputClearsIt(t *testing.T) {
 	b := newBench(t)
@@ -645,6 +723,63 @@ func TestActivityClaudeFileOlderThanItsProcessIsIgnored(t *testing.T) {
 	}
 }
 
+// TestActivityClaudeStatusIsFoundOnADescendant: a launcher wrapper means the
+// pane's own pid never writes a file, and the answer has to come from the
+// process tree below it.
+func TestActivityClaudeStatusIsFoundOnADescendant(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".claude", "sessions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	child := sleeper(t).Process.Pid
+	var seenChild bool
+	for _, pid := range descendants(os.Getpid(), 3, 64) {
+		if pid == child {
+			seenChild = true
+		}
+	}
+	if !seenChild {
+		t.Skip("this platform will not list a process's children")
+	}
+
+	path := filepath.Join(dir, strconv.Itoa(child)+".json")
+	write := func(status string) {
+		raw, _ := json.Marshal(map[string]any{"pid": child, "status": status})
+		if err := os.WriteFile(path, raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The pane pid is the wrapper's, and it has written nothing of its own.
+	src := newClaudeSource()
+	snap := snapshot{
+		row:  store.Session{ID: "s1"},
+		pane: paneLine{pid: os.Getpid()},
+		plan: harnesses.LaunchPlan{Env: map[string]string{"HOME": home}},
+		now:  time.Now(),
+	}
+
+	write("busy")
+	if got := src.Read(context.Background(), snap); !got.ok || got.state != StateBusy {
+		t.Fatalf("the descendant's file read as %#v, want busy", got)
+	}
+	// The pid is cached now, so the second read must follow the same process
+	// without walking the tree again.
+	write("waiting")
+	got := src.Read(context.Background(), snap)
+	if !got.ok || got.state != StateWaiting {
+		t.Fatalf("the remembered descendant read as %#v, want waiting", got)
+	}
+	// A different pane is a different process: the cache is keyed by it.
+	src.mu.Lock()
+	cached := src.cache["s1"]
+	src.mu.Unlock()
+	if cached.pid != child || cached.panePID != os.Getpid() {
+		t.Fatalf("the cache holds %+v, want pid %d under pane %d", cached, child, os.Getpid())
+	}
+}
+
 // TestActivityOpenCodeBusySetKeepsBusy: a parent session and its sub-agents
 // all emit session.status, and an idle for one of them must not clear
 // another's busy.
@@ -781,6 +916,26 @@ func TestActivityWaitIdleAnswersOnTheChange(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("WaitIdle never returned")
+	}
+}
+
+// TestActivitySubscriberStopRacesTheTick: WaitIdle unsubscribes on every
+// return, and the return it makes most often is the one a tick has just caused
+// - so the stop and the publish run at the same instant routinely. Closing a
+// channel the tick is sending on would panic the tick goroutine and take the
+// server with it.
+func TestActivitySubscriberStopRacesTheTick(t *testing.T) {
+	a := newBench(t).m.act
+	changes := []ActivityChange{{SessionID: "s1", Activity: Activity{State: StateIdle}}}
+	for i := 0; i < 20000; i++ {
+		ch, stop := a.m.SubscribeActivity()
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); a.fire(changes) }()
+		go func() { defer wg.Done(); stop() }()
+		wg.Wait()
+		for range ch {
+		}
 	}
 }
 

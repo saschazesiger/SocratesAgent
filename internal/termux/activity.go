@@ -405,10 +405,12 @@ func (m *Manager) SubscribeActivity() (<-chan ActivityChange, func()) {
 	var once sync.Once
 	return ch, func() {
 		once.Do(func() {
+			// Both under the lock: fire sends under it too, so a tick that is
+			// publishing cannot be holding this channel while it closes.
 			a.mu.Lock()
 			delete(a.subs, id)
-			a.mu.Unlock()
 			close(ch)
+			a.mu.Unlock()
 		})
 	}
 }
@@ -539,37 +541,48 @@ func (a *activity) evaluate(ctx context.Context, row store.Session, pane paneLin
 		obs, from = observation{state: StateUnknown, ok: true}, ""
 	}
 
+	// What the ladder answered before the runaway guard. Step 7 asks it as
+	// well: a screen that says the prompt is gone is evidence whether or not
+	// the guard has since rewritten the answer to a silent idle.
+	ladderObs, ladderFrom := obs, from
+
 	// 6. The runaway guard. A pane that is alive and silent for thirty seconds
 	//    with no exact signal is idle, whatever is still painted on it: this is
-	//    what makes "spins for ever" impossible. It never overrides a live
-	//    exact answer, so a five minute test suite that prints nothing stays
-	//    busy on every harness that has one.
-	if !fresh {
+	//    what makes "spins for ever" impossible. It only fires once the exact
+	//    layer has really dropped out - not while its last answer is still
+	//    being reused - so a five minute test suite that prints nothing stays
+	//    busy on every harness that has one, and a file that is unreadable for
+	//    a tick or two does not read as a turn ending.
+	if from != sourceExact {
 		if quiet := quiescence(pane, now); quiet.ok && quiet.state == StateIdle {
 			obs, from = quiet, sourceQuiet
 		}
-		if tr.committed.State == StateBusy && !tr.lastExactAt.IsZero() &&
-			now.Sub(tr.lastExactAt) >= BusyCeiling {
-			// The exact source has been gone for two minutes. Its last answer
-			// is not evidence any more, and the layers below decide until it
-			// answers again.
-			tr.dropped = true
-		}
+	}
+	if !fresh && tr.committed.State == StateBusy && !tr.lastExactAt.IsZero() &&
+		now.Sub(tr.lastExactAt) >= BusyCeiling {
+		// The exact source has been gone for two minutes. Its last answer is
+		// not evidence any more, and the layers below decide until it answers
+		// again.
+		tr.dropped = true
 	}
 
 	// 7. Waiting is sticky against quiescence. A permission prompt is silent by
 	//    nature and may sit for an hour while the user drives.
 	if tr.committed.State == StateWaiting && obs.state != StateWaiting {
-		switch from {
-		case sourceExact, sourceScreen:
-			// An exact answer and a recognised non-waiting screen both mean the
-			// prompt is gone.
-		default:
-			answered := obs.state == StateIdle && from == sourceQuiet && tr.inputAt.After(tr.waitingAt)
-			if !answered {
-				obs = seen(StateWaiting, tr.committed.Note)
-				from = tr.committed.Source
-			}
+		// An exact answer and a recognised non-waiting screen both mean the
+		// prompt is gone. The screen counts even when the guard has replaced
+		// it: it was read this tick either way.
+		released := from == sourceExact || from == sourceScreen
+		if !released && ladderObs.state != StateWaiting {
+			released = ladderFrom == sourceExact || ladderFrom == sourceScreen
+		}
+		if !released {
+			// Otherwise only silence after an answer releases it.
+			released = obs.state == StateIdle && from == sourceQuiet && tr.inputAt.After(tr.waitingAt)
+		}
+		if !released {
+			obs = seen(StateWaiting, tr.committed.Note)
+			from = tr.committed.Source
 		}
 	}
 
@@ -723,21 +736,20 @@ func (a *activity) take() []ActivityChange {
 	return out
 }
 
+// fire delivers what publish queued. The subscriber sends happen under the
+// lock and the callback outside it, and both halves of that are deliberate: a
+// send cannot block, because the channels are buffered and the select has a
+// default, so holding the lock across them costs nothing and is the whole of
+// what makes an unsubscribe safe - the stop function closes the channel in the
+// same locked section, so no send can ever land on a closed one. The callback
+// ends in a WebSocket write, and nothing that writes a socket may hold this.
 func (a *activity) fire(changes []ActivityChange) {
 	if len(changes) == 0 {
 		return
 	}
 	a.mu.Lock()
-	subs := make([]chan ActivityChange, 0, len(a.subs))
-	for _, ch := range a.subs {
-		subs = append(subs, ch)
-	}
-	a.mu.Unlock()
 	for _, change := range changes {
-		if a.m.cfg.OnActivity != nil {
-			a.m.cfg.OnActivity(change.SessionID, change.Activity)
-		}
-		for _, ch := range subs {
+		for _, ch := range a.subs {
 			// A subscriber that has stopped reading loses changes rather than
 			// stopping the tick.
 			select {
@@ -745,6 +757,13 @@ func (a *activity) fire(changes []ActivityChange) {
 			default:
 			}
 		}
+	}
+	a.mu.Unlock()
+	if a.m.cfg.OnActivity == nil {
+		return
+	}
+	for _, change := range changes {
+		a.m.cfg.OnActivity(change.SessionID, change.Activity)
 	}
 }
 
@@ -951,6 +970,10 @@ func psChildren(pid int) bool {
 
 // ------------------------------------------------------------- Claude, layer 1
 
+// claudeStatusSlack is how much older than its own process a status file may
+// compute and still be believed. See readClaudeStatus.
+const claudeStatusSlack = 2 * time.Second
+
 // claudeStatus is the file Claude Code keeps for its own process.
 type claudeStatus struct {
 	PID        int    `json:"pid"`
@@ -1080,7 +1103,12 @@ func readClaudeStatus(dir string, pid int) (claudeStatus, bool) {
 	if status.PID != 0 && status.PID != pid {
 		return claudeStatus{}, false
 	}
-	if started, ok := processStart(pid); ok && info.ModTime().Before(started) {
+	// The slack is for the clock, not the file: a process start is btime (one
+	// second of granularity, and it moves under NTP) plus the kernel's ticks,
+	// so a file written in the first moment after exec can compute as older
+	// than the process that wrote it. Two seconds is more than that error and
+	// far less than a recycled pid's file age.
+	if started, ok := processStart(pid); ok && info.ModTime().Add(claudeStatusSlack).Before(started) {
 		return claudeStatus{}, false
 	}
 	return status, true
@@ -1346,6 +1374,9 @@ func scrapeScreen(kind harnesses.Kind, screen string) observation {
 const (
 	openCodeBackoffMin = 1 * time.Second
 	openCodeBackoffMax = 15 * time.Second
+	// openCodeStreamShort is how long a stream has to last to count as a
+	// connection worth reconnecting to at once.
+	openCodeStreamShort = 5 * time.Second
 )
 
 // openCodeSource is one long lived event stream per running OpenCode session.
@@ -1446,9 +1477,17 @@ func (w *openCodeWatcher) run(ctx context.Context) {
 	backoff := openCodeBackoffMin
 	for ctx.Err() == nil {
 		w.poll(ctx)
-		if err := w.stream(ctx); err == nil {
+		opened := time.Now()
+		err := w.stream(ctx)
+		if err == nil {
 			backoff = openCodeBackoffMin
-			continue
+			// A stream that ends cleanly the moment it opens is a proxy or a
+			// half-started server answering 200 and hanging up, not a
+			// connection: reconnecting at once would dial it in a hot loop, so
+			// a short one waits out the floor first.
+			if time.Since(opened) >= openCodeStreamShort {
+				continue
+			}
 		}
 		deadline := time.Now().Add(backoff)
 		for time.Now().Before(deadline) {
@@ -1459,8 +1498,10 @@ func (w *openCodeWatcher) run(ctx context.Context) {
 			}
 			w.poll(ctx)
 		}
-		if backoff *= 2; backoff > openCodeBackoffMax {
-			backoff = openCodeBackoffMax
+		if err != nil {
+			if backoff *= 2; backoff > openCodeBackoffMax {
+				backoff = openCodeBackoffMax
+			}
 		}
 	}
 }
