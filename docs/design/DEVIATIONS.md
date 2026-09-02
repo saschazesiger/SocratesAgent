@@ -1440,3 +1440,60 @@ rather than a mode the page is in.
 
 `docs/design/ACTIVITY.md` §D.2, §D.3, §D.4 and §D.6 say what is there instead,
 and `docs/design/DESIGN.md` §E.6 (revision 4) is the binding text.
+
+## The terminal takes a finger (2026-09-02)
+
+**§E.4 — `term.js` turns a touch drag into wheel events, which the section does
+not ask for and the vendored bundle does not do.** §E.4 lists the options, the
+addons, the fitting and the input path, and says nothing about touch, because
+until xterm 6 there was nothing to say: the viewport was a `overflow-y: scroll`
+div and a phone scrolled it the way it scrolls anything else.
+
+`@xterm/xterm@6.0.0` replaced that viewport with VS Code's scrollable element,
+which moves its content itself and listens for `wheel` and for nothing else. The
+bundle even carries VS Code's touch gesture recogniser — `Gesture.addTarget` is
+in `xterm.js` — and never calls it on the viewport. The consequence on the
+device this product exists to be used from: a finger dragged down the pane moved
+nothing at all, and everything that had scrolled off the top of a session was
+unreachable. There is no option, no addon and no public API for it.
+
+So `touchScroll(host, term)` in `term.js` follows one finger and dispatches the wheel
+events a trackpad would have sent, in CSS pixels, on `.xterm-screen` — the
+element a real wheel lands on. Nothing downstream is reimplemented: xterm
+decides what a wheel means the way it always has. With `mouse on` in the tmux
+conf (§A.3, and the default) the pane is an alternate screen and the wheel
+becomes a mouse report, so it is **tmux's** history that scrolls, in copy mode,
+exactly as it does for a wheel at a desk; a program tracking the mouse itself
+gets the report instead; and a plain buffer scrolls xterm's own scrollback.
+
+Three details are load-bearing:
+
+* **A tap must survive.** Nothing is sent and nothing is prevented until the
+  finger has moved 8px, so a tap is still the click that focuses the pane and
+  raises the keyboard. Past the threshold `preventDefault()` is taken on every
+  `touchmove`, which is also what stops the browser synthesising the tap's mouse
+  events on release — a drag must not arrive at the program as a click.
+* **`touch-action: pan-x pinch-zoom` on `.term-host`** (`app.css`). Without it
+  the browser can claim the vertical drag as a pan of the page before the first
+  `touchmove` is delivered. `pinch-zoom` is kept in the list deliberately:
+  zooming stays available to whoever needs it.
+* **One drag is swallowed rather than passed on.** A pane under tmux is an
+  alternate screen, so with `terminal.mouse` off in the dashboard there is no
+  report to send and no scrollback of xterm's own to move, and xterm answers a
+  wheel with arrow keys. That is a fair reading of a wheel deliberately turned
+  in `less` and a terrible reading of the gesture a phone scrolls everything
+  with: measured, a downward drag walked the shell's last command back onto the
+  prompt. So when the buffer is alternate and `modes.mouseTrackingMode` is
+  `none`, the drag is taken from the browser and handed to nobody. It scrolls
+  nothing, exactly as it did before any of this, and it types nothing.
+
+A second finger hands the gesture back to the browser, and the listeners are
+removed in `dispose()`.
+
+The `touchscroll` e2e scenario proves it through Chrome's own touch pipeline
+(`Input.dispatchTouchEvent` over CDP, so `touch-action` is part of what is
+tested): a full-height drag on a 390×844 phone moves the pane 45 lines back
+through a 120-line history — about what the finger travelled — dragging up
+twice returns to the live bottom, and a tap in between moves nothing while
+still landing the focus in the pane. It then turns `terminal.mouse` off through
+the dashboard's own API and drags again, to hold the swallowed case where it is.

@@ -676,6 +676,117 @@ async function webglrenders() {
   } finally { await s.stop(); }
 }
 
+/* -------------------------------------------------------- 8b. touchscroll */
+
+// A phone has no wheel, and xterm 6 has no gesture of its own: it draws its
+// viewport with VS Code's scrollable element, which listens for `wheel` and for
+// nothing else. So a finger dragged down the pane used to move nothing at all,
+// and everything that had scrolled past the top of a session was out of reach
+// from the only device this product is carried on.
+//
+// The scrollback under test here is tmux's rather than xterm's - `mouse on` is
+// the default, so the pane is an alternate screen and the wheel is a mouse
+// report - which is exactly the path a desk with a real wheel already takes.
+async function touchscroll() {
+  const s = await start({ viewport: { width: 390, height: 844 }, touch: true });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+
+    // The browser is told the vertical axis is not its own, or it takes the
+    // drag for a pan of the page before the first touchmove is delivered.
+    const axis = await s.page.$eval('#term', (n) => getComputedStyle(n).touchAction);
+    ok(/pan-x/.test(axis) && !/pan-y/.test(axis),
+      'the browser does not take a vertical drag over the pane for itself', axis);
+
+    // More lines than the pane is tall, so the early ones are only reachable by
+    // scrolling. `mark-1` is written as its own row, and matched as one, so it
+    // is never confused with `mark-10`.
+    await typeLine(s.page, 'i=1; while [ $i -le 120 ]; do echo "mark-$i"; i=$((i+1)); done');
+    ok(await awaitScreen(s.page, 'mark-120'), 'the shell printed past the bottom of the pane',
+      oneLine(await screen(s.page)));
+    const before = await screen(s.page);
+    ok(!/^mark-1$/m.test(before), 'and the first line has gone off the top',
+      oneLine(before.split('\n').filter((l) => l.trim())[0] || ''));
+
+    const box = await s.page.$eval('#term .xterm-screen', (n) => {
+      const r = n.getBoundingClientRect();
+      return { x: Math.round(r.x + r.width / 2), top: Math.round(r.y + 60), bottom: Math.round(r.bottom - 60) };
+    });
+    const cdp = await s.context.newCDPSession(s.page);
+    // A finger, delivered by Chrome's own touch pipeline rather than made up in
+    // the page: `touch-action` and any gesture the browser might have claimed
+    // are part of what this proves.
+    const drag = async (from, to, steps = 15) => {
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: box.x, y: from }] });
+      for (let i = 1; i <= steps; i++) {
+        const y = Math.round(from + ((to - from) * i) / steps);
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: box.x, y }] });
+        await wait(16);
+      }
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await wait(350);
+    };
+
+    // A tap is not a drag. Under the slop nothing is sent, nothing is
+    // prevented, and the tap is still the click that puts the keyboard on the
+    // pane - which is the one thing a scroll must not cost.
+    await drag(box.top, box.top + 4, 4);
+    const tapped = await s.page.evaluate(() => {
+      const rows = document.querySelector('#term .xterm-rows');
+      return { screen: rows ? rows.innerText : '', focused: document.activeElement === document.querySelector('#term .xterm-helper-textarea') };
+    });
+    ok(tapped.screen === before && tapped.focused, 'a tap still lands as a tap and scrolls nothing',
+      'focused=' + tapped.focused + ' moved=' + (tapped.screen !== before));
+
+    // Down the screen: earlier lines come down with the finger.
+    await drag(box.top, box.bottom);
+    const back = await screen(s.page);
+    const top = (text) => Number((text.match(/^mark-(\d+)/m) || [0, 0])[1]);
+    ok(top(back) > 0 && top(back) < top(before),
+      'a finger dragged down the pane reaches what had scrolled off',
+      'mark-' + top(before) + ' -> mark-' + top(back));
+    ok(Math.abs((top(before) - top(back)) - Math.round((box.bottom - box.top) / 16)) < 30,
+      'and it moves about as far as the finger did',
+      (top(before) - top(back)) + ' lines for ' + (box.bottom - box.top) + 'px');
+
+    // And up again: the same gesture the other way ends back at the bottom,
+    // which is also how tmux leaves copy mode.
+    await drag(box.bottom, box.top);
+    await drag(box.bottom, box.top);
+    const bottom = await screen(s.page);
+    ok(/^mark-120/m.test(bottom), 'and dragging back up returns to the live bottom of the pane',
+      oneLine(bottom.split('\n').filter((l) => l.trim()).slice(-1)[0] || ''));
+
+    // And the one gesture that is deliberately swallowed. With tmux's mouse
+    // turned off in the dashboard there is no mouse report to send and no
+    // scrollback of xterm's own to move - a pane under tmux is an alternate
+    // screen - so a wheel is arrow keys, which is a fair reading of a wheel
+    // deliberately turned in `less` and a terrible one of the gesture a phone
+    // scrolls everything with. A drag must not walk the shell's history onto
+    // the prompt.
+    const off = await s.context.request.put(s.url + '/api/settings', {
+      data: { settings: { terminal: { webgl: false, mouse: false } } },
+    });
+    ok(off.ok(), 'the dashboard turned tmux\'s mouse off', String(off.status()));
+    await s.page.waitForFunction(
+      () => !document.querySelector('#term .xterm').classList.contains('enable-mouse-events'),
+      null, { timeout: 10000 });
+    const settled = await screen(s.page);
+    await drag(box.top, box.bottom);
+    const quiet = await screen(s.page);
+    ok(quiet === settled, 'with no mouse to report to, a drag scrolls nothing and types nothing',
+      oneLine(quiet.split('\n').filter((l) => l.trim()).slice(-1)[0] || ''));
+
+    await cdp.detach();
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 /* --------------------------------------------------------------- 9. live */
 
 // One real session against a real, logged in CLI. It types `/status`, which
@@ -4838,6 +4949,7 @@ const ALL = [
   ['daygroups', 'the list is grouped by day, and a row keeps its element when it moves', daygroups],
   ['exitoverlay', 'a pane that ends, its status under the sentence, and Restart', exitoverlay],
   ['webglrenders', 'the shipped renderer paints the terminal', webglrenders],
+  ['touchscroll', 'a finger scrolls the pane, and a tap is still a tap', touchscroll],
   ['keybar', 'no device gets the key bar unasked, and asked for it sends the right bytes', keybar],
   ['offlineonce', 'a line typed with no network arrives exactly once', offlineonce],
   ['sigtermreattach', 'a restarted server reattaches to the pane that kept running', sigtermreattach],

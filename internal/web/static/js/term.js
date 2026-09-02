@@ -90,6 +90,108 @@ export function measurePane(host, opts = {}) {
   return size;
 }
 
+// How far a finger has to travel before the drag is a scroll rather than a tap.
+// Under it nothing is sent and nothing is prevented, so a tap still reaches the
+// pane as the click it is.
+const TOUCH_SLOP = 8;
+
+/**
+ * touchScroll makes a finger scroll the pane, and returns the way to undo it.
+ *
+ * xterm 6 draws its viewport with VS Code's scrollable element, and that
+ * element listens for `wheel` and for nothing else. The bundle carries the
+ * gesture recogniser that would turn a drag into a scroll, and never registers
+ * the viewport as a target for it - so on a phone a finger on the terminal
+ * moved nothing at all, and the scrollback of a session was unreachable from
+ * the device this product is used from.
+ *
+ * A drag is therefore turned into the wheel events a trackpad would have sent,
+ * dispatched on the screen element, which is where a real wheel lands. What a
+ * wheel then means is xterm's own decision and not ours: with tmux tracking the
+ * mouse - the default - it is a mouse report, and tmux scrolls its own history
+ * in copy mode; a program tracking the mouse itself is handed the same report;
+ * and a plain buffer scrolls xterm's own scrollback. One path, and the same one
+ * a desk with a real wheel already takes.
+ *
+ * The pixels are passed through as they were measured, so the screen follows
+ * the finger at the speed a trackpad would have moved it.
+ *
+ * The one case a finger is not given to xterm is `scrollable` below.
+ */
+function touchScroll(host, term) {
+  // What a wheel is worth here. On an alternate screen with nobody tracking the
+  // mouse - a tmux pane with `mouse off` - xterm has no scrollback of its own to
+  // move and turns a wheel into arrow keys instead. That is a fair reading of a
+  // deliberate turn of a wheel in `less`; it is not a fair reading of a drag,
+  // which is how a phone scrolls everything. It would answer the gesture by
+  // walking the shell's history onto the prompt. So the drag is swallowed: it
+  // scrolls nothing, exactly as it did before any of this, and it types nothing.
+  const scrollable = () => term.buffer.active.type !== 'alternate'
+    || term.modes.mouseTrackingMode !== 'none';
+  let id = null;          // the finger being followed, or none
+  let originY = 0;        // where it went down, for the slop
+  let lastY = 0;          // where it was last seen, for the delta
+  let scrolling = false;  // past the slop: the drag is ours
+
+  const followed = (touches) => {
+    for (const touch of touches) if (touch.identifier === id) return touch;
+    return null;
+  };
+
+  const start = (ev) => {
+    // A second finger is a pinch, and a pinch is the browser's.
+    if (ev.touches.length !== 1) { id = null; return; }
+    id = ev.touches[0].identifier;
+    originY = lastY = ev.touches[0].clientY;
+    scrolling = false;
+  };
+
+  const move = (ev) => {
+    if (id === null) return;
+    const touch = followed(ev.touches);
+    if (!touch) return;
+    if (!scrolling && Math.abs(touch.clientY - originY) < TOUCH_SLOP) return;
+    scrolling = true;
+    const dy = touch.clientY - lastY;
+    lastY = touch.clientY;
+    // Whatever this drag turns out to scroll, it is not the page: taken before
+    // the browser can rubber-band, and before a release can synthesise the
+    // mouse events of a tap the pane would send on to the program.
+    if (ev.cancelable) ev.preventDefault();
+    if (!dy || !scrollable()) return;
+    const screen = host.querySelector('.xterm-screen');
+    if (!screen) return;
+    // A finger moving down brings earlier lines down with it, which is a wheel
+    // turned up. The delta is in CSS pixels, which is what a line of it is
+    // worth to xterm.
+    screen.dispatchEvent(new WheelEvent('wheel', {
+      deltaY: -dy,
+      deltaMode: 0,
+      clientX: touch.clientX,
+      clientY: touch.clientY,
+      bubbles: true,
+      cancelable: true,
+    }));
+  };
+
+  const end = (ev) => {
+    if (id === null || !followed(ev.changedTouches)) return;
+    id = null;
+    scrolling = false;
+  };
+
+  host.addEventListener('touchstart', start, { passive: true });
+  host.addEventListener('touchmove', move, { passive: false });
+  host.addEventListener('touchend', end, { passive: true });
+  host.addEventListener('touchcancel', end, { passive: true });
+  return () => {
+    host.removeEventListener('touchstart', start);
+    host.removeEventListener('touchmove', move);
+    host.removeEventListener('touchend', end);
+    host.removeEventListener('touchcancel', end);
+  };
+}
+
 export function createTerm(host, opts = {}) {
   const term = new Terminal({
     allowProposedApi: true,           // unicode11 throws without it
@@ -125,6 +227,9 @@ export function createTerm(host, opts = {}) {
       term.loadAddon(gl);
     } catch { /* the DOM renderer; 6.x has no canvas renderer to fall back to */ }
   }
+
+  // A finger, which xterm 6 does nothing with on its own.
+  const unwireTouch = touchScroll(host, term);
 
   // The hidden textarea is a text field like any other as far as a phone is
   // concerned, and a terminal is the one place autocorrect must never reach.
@@ -201,6 +306,7 @@ export function createTerm(host, opts = {}) {
     reset: () => { term.reset(); last = { cols: 0, rows: 0 }; },
     focus: () => term.focus(),
     dispose() {
+      unwireTouch();
       observer.disconnect();
       if (viewport) {
         viewport.removeEventListener('resize', refit);
