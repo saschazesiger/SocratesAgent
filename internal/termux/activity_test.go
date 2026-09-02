@@ -988,6 +988,11 @@ func TestScrapeScreens(t *testing.T) {
 		{"claude idle", harnesses.KindClaude,
 			"──────────────\n❯ \n──────────────\n  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents",
 			StateIdle, true},
+		// The screen a real `claude` paints with no auto mode and nothing
+		// typed: a placeholder in the prompt line and no `⏵⏵` anywhere.
+		{"claude idle in manual mode", harnesses.KindClaude,
+			"────────────\n❯ Try \"fix typecheck errors\"\n────────────\n  ⏸ manual mode on · ? for shortcuts · ← for agents",
+			StateIdle, true},
 		{"claude nothing", harnesses.KindClaude, "just some output\n", StateUnknown, false},
 
 		{"codex busy", harnesses.KindCodex, "Working (3s • esc to interrupt)", StateBusy, true},

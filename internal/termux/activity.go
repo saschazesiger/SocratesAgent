@@ -1320,7 +1320,13 @@ func scrapes(kind harnesses.Kind) bool { return kind != harnesses.KindShell }
 var (
 	claudeBusy    = regexp.MustCompile(`esc to interrupt`)
 	claudeWaiting = regexp.MustCompile(`Do you want to proceed\?`)
-	claudeIdle    = regexp.MustCompile(`(?m)^\s*❯\s*$|⏵⏵ `)
+	// The empty prompt line is only empty until Claude puts a placeholder in
+	// it (`❯ Try "fix typecheck errors"`), and `⏵⏵` is the auto mode bar - in
+	// `--permission-mode default` the bottom bar reads `⏸ manual mode on · ?
+	// for shortcuts · ← for agents` instead. Those last two are on the bar in
+	// both modes, and on the busy screen too, which is why busy is matched
+	// first.
+	claudeIdle = regexp.MustCompile(`(?m)^\s*❯\s*$|⏵⏵ |← for agents|\? for shortcuts`)
 
 	codexBusy    = regexp.MustCompile(`esc to interrupt`)
 	codexWaiting = regexp.MustCompile(`Press enter to confirm or esc to cancel|` +

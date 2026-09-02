@@ -1657,12 +1657,46 @@ func TestActivityUnreadIsClearedByTypingAndByTheReadRoute(t *testing.T) {
 		return a["state"] == "idle" && a["unread"] == true
 	})
 
-	// Typing clears it, through the input path and nothing else.
-	c.send(2, "\r")
+	// A focus report is not somebody looking. xterm sends one by itself when
+	// the tab loses or regains focus - including on the reconnect after a
+	// server restart - so a frame carrying nothing else leaves the mark on.
+	c.mu.Lock()
+	before := len(c.ctrl)
+	c.mu.Unlock()
+	c.send(2, "\x1b[I")
+	c.send(3, "\x1b[O")
+	c.await("the focus reports to be acknowledged", 20*time.Second, func() bool {
+		for _, frame := range c.ctrl {
+			if frame["t"] == "input_ack" && frame["seq"] == float64(3) {
+				return true
+			}
+		}
+		return false
+	})
+	// NoteInput fires its broadcast before it returns, so a moment after the
+	// acknowledgement is long enough for one to have arrived if it was coming.
+	time.Sleep(500 * time.Millisecond)
+	c.mu.Lock()
+	for _, frame := range c.ctrl[before:] {
+		if frame["t"] != "activity" {
+			continue
+		}
+		sessions, _ := frame["sessions"].(map[string]any)
+		entry, _ := sessions[id].(map[string]any)
+		if entry != nil && entry["unread"] == false {
+			c.mu.Unlock()
+			t.Fatalf("a focus report cleared the unread mark: %#v", entry)
+		}
+	}
+	c.mu.Unlock()
+
+	// Typing clears it, through the input path and nothing else. The kill
+	// character first, because the reports above are sitting on the line.
+	c.send(4, "\x15\r")
 	c.activityOf(id, func(a map[string]any) bool { return a["unread"] == false })
 
 	// And so does the REST route, which is what a page with no socket uses.
-	c.send(3, "sleep 3\r")
+	c.send(5, "sleep 3\r")
 	c.activityOf(id, func(a map[string]any) bool {
 		return a["state"] == "idle" && a["unread"] == true
 	})

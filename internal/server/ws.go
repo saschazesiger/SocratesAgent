@@ -1271,8 +1271,8 @@ func (e *protocolError) Error() string { return e.why }
 // check on the socket being replaced could be written a second time by the one
 // replacing it - which is the one half of the promise that is absolute.
 func (c *termConn) onInput(payload []byte) error {
-	wrote, err := c.writeInput(payload)
-	if wrote {
+	typed, err := c.writeInput(payload)
+	if typed {
 		// Typing at a session is the whole of having seen it. This is outside
 		// writeInput because clearing the mark ends in a broadcast, and a
 		// broadcast may not run under the viewer's own lock.
@@ -1281,8 +1281,41 @@ func (c *termConn) onInput(payload []byte) error {
 	return err
 }
 
+// The two focus reports, which a terminal with mode 1004 on sends by itself
+// when the tab gains or loses focus. tmux asks for them and reads them, so
+// they are written to the pane like anything else.
+const (
+	focusIn  = "\x1b[I"
+	focusOut = "\x1b[O"
+)
+
+// onlyFocusReports is a frame with nothing in it but those reports.
+//
+// The browser sends one on its own - a tab waking up, a socket reconnecting
+// after a server restart - and a program answering a question nobody asked is
+// not a person looking at the session. Counting it as input silently cleared
+// the unread mark of a session that had finished while the tab was in the
+// background. Anything typed alongside a report still counts, and every
+// keystroke counts.
+func onlyFocusReports(keys []byte) bool {
+	if len(keys) == 0 {
+		return false
+	}
+	for len(keys) > 0 {
+		if len(keys) < 3 {
+			return false
+		}
+		if head := string(keys[:3]); head != focusIn && head != focusOut {
+			return false
+		}
+		keys = keys[3:]
+	}
+	return true
+}
+
 // writeInput is onInput's body, under the viewer's lock. The boolean is
-// whether anything reached the pane.
+// whether somebody typed, which is not the same as whether anything reached
+// the pane.
 func (c *termConn) writeInput(payload []byte) (bool, error) {
 	if len(payload) < 9 || payload[0] != frameInput {
 		return false, &protocolError{why: "that is not an input frame"}
@@ -1333,7 +1366,7 @@ func (c *termConn) writeInput(payload []byte) (bool, error) {
 	}
 	tv.lastInput = seq
 	c.noteAck(seq)
-	return len(keys) > 0, nil
+	return len(keys) > 0 && !onlyFocusReports(keys), nil
 }
 
 // onControl handles the JSON half of the client's side. The result is whether

@@ -74,6 +74,8 @@ export function mountAssist(ctx) {
   // third transition replaces the second, because what a listener wants is
   // the latest state of the session, not a queue of old ones.
   let queuedAuto = false;
+  // Which utterance is the current one. See say().
+  let sayGen = 0;
   let run = null;
   let doneTimer = null;
   let stopDictation = null;
@@ -140,6 +142,13 @@ export function mountAssist(ctx) {
     }
     busyStatus = true;
     paint();
+    // Whether this answer reached the voice at all. say()'s finally is the
+    // one place a queued auto-status is drained, so an answer that is never
+    // read out - a request that failed, a screen with nothing to say about
+    // it - has to drain it here instead, or the queue survives and is spoken
+    // later, unasked, at the end of the next thing somebody presses Status
+    // for.
+    let voiced = false;
     try {
       const data = await api(path(session.id, '/status'), {
         method: 'POST', attempts: 1, timeout: 120000,
@@ -149,10 +158,11 @@ export function mountAssist(ctx) {
       ctx.notice('status', text, null, statusFacts(data || {}));
       busyStatus = false;
       paint();
-      if (spoken) await say(text);
+      if (spoken) { voiced = true; await say(text); }
     } catch (err) {
       toast(assistFailed(err, 'That session could not be summarised.'), 'error');
     } finally {
+      if (!voiced) queuedAuto = false;
       busyStatus = false;
       paint();
     }
@@ -162,19 +172,34 @@ export function mountAssist(ctx) {
   // render has already reached the page through onSpeechError, so it is not
   // said twice.
   async function say(text) {
+    // Every line read out belongs to a generation, the way voice.js's own
+    // utterances do. A second say() - a run's summary landing while an
+    // auto-status is still playing - takes the voice over, and the one it
+    // interrupted must not clear a flag, or drain a queue, that now belongs
+    // to a sentence still being spoken.
+    const mine = ++sayGen;
     speaking = true;
     paint();
     try {
       await speak(text);
     } catch { /* onSpeechError said why */ } finally {
-      speaking = false;
-      paint();
-      if (queuedAuto) { queuedAuto = false; runStatus({ spoken: true }); }
+      if (mine === sayGen) {
+        speaking = false;
+        paint();
+        if (queuedAuto) {
+          queuedAuto = false;
+          // Out of this call stack: the runStatus awaiting this say is about
+          // to run its own finally, and it would clear the busy flag the
+          // queued one has just set.
+          setTimeout(() => runStatus({ spoken: true }), 0);
+        }
+      }
     }
   }
 
   function stopReading() {
     queuedAuto = false;
+    sayGen++;
     stopSpeaking();
     speaking = false;
     paint();
@@ -385,6 +410,11 @@ export function mountAssist(ctx) {
       if (!audio) return;
       const session = ctx.current();
       if (!session || session.id !== id) return;
+      // A run that is still typing owns this line and this voice: every step
+      // of it ends in a busy-to-idle of the session, runStatus would refuse
+      // and overwrite the progress line with the refusal, and the sentence
+      // audio mode wants is the summary the run itself speaks when it ends.
+      if (run && !run.done) return;
       if (!prev || prev.state !== 'busy' || next.state === 'busy') return;
       if (speaking || busyStatus) { queuedAuto = true; return; }
       runStatus();

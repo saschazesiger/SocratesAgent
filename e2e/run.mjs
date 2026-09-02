@@ -3475,6 +3475,17 @@ async function audiomode() {
     ok(true, 'and the choice survives a reload, because it is this phone’s', 'audio mode still on');
     // The reload replaced the page, so the interception is re-armed on it.
     const again = await assistRoutes(s, id, { status: stub.text });
+    // Everything the one line under the terminal ever says, from here on. A
+    // run that is typing owns that line, and an auto-status that fired while
+    // it was live would replace it with the refusal below.
+    await s.page.evaluate(() => {
+      const host = document.getElementById('termNotice');
+      window.__notices = [];
+      new MutationObserver(() => {
+        const said = (host.textContent || '').trim();
+        if (said && window.__notices[window.__notices.length - 1] !== said) window.__notices.push(said);
+      }).observe(host, { subtree: true, childList: true, characterData: true });
+    });
 
     // The rule audio mode exists for: a turn that ends says so out loud, on
     // its own, for the session being listened to and for no other.
@@ -3506,6 +3517,16 @@ async function audiomode() {
       posted ? 'a run started' : 'nothing was posted');
     ok(again.posts.agent.length === 1 && again.posts.agent[0] === stub.text,
       'the transcript is the goal, verbatim', JSON.stringify(again.posts.agent));
+
+    // While a run is live the session's own busy-to-idle is the run typing,
+    // not a turn ending: it neither asks for a status nor replaces the
+    // progress line with the refusal that request would earn.
+    const notices = await s.page.evaluate(() => window.__notices || []);
+    const refused = notices.filter((n) => /agent is typing/i.test(n));
+    ok(refused.length === 0, 'the progress line is never pushed aside by a status refusal',
+      refused.length ? oneLine(refused[0]) : 'never shown');
+    ok(again.posts.status === 1, 'and no second status is asked for, then or later',
+      again.posts.status + ' request(s) in all');
 
     await shot(s.page, 'audio-mode');
     ok(unexpected(s.errors).length === 0, 'no console errors',
