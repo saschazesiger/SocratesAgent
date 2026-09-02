@@ -299,11 +299,15 @@ func (m *Manager) forgetSession(id string) {
 	stop := m.watchers[id]
 	delete(m.watchers, id)
 	delete(m.locks, id)
+	delete(m.plans, id)
 	m.mu.Unlock()
 	if stop != nil {
 		stop()
 	}
 	m.ClearResumeNote(id)
+	// The unread mark of a session that no longer exists is not news; it is
+	// clutter in a key nobody prunes.
+	m.act.forget(id)
 }
 
 // ---------------------------------------------------------- id discovery
@@ -414,6 +418,22 @@ func (m *Manager) discoverCLISession(ctx context.Context, id string, plan harnes
 		return harnesses.DiscoverOpenCodeSession(ctx, access, d)
 	}
 	return "", nil
+}
+
+// OpenCodeAccessOf is how anything outside a launch reaches one session's TUI
+// server: what the launcher remembered if this process started it, and
+// otherwise the plan the launch was written down as. It is the reason the
+// activity detector can subscribe to an OpenCode event stream after a restart
+// of Socrates that the OpenCode process itself survived.
+func (m *Manager) OpenCodeAccessOf(id string) (harnesses.ServerAccess, bool) {
+	if access, ok := harnesses.OpenCodeAccess(id); ok {
+		return access, true
+	}
+	plan, err := m.readPlan(id)
+	if err != nil {
+		return harnesses.ServerAccess{}, false
+	}
+	return openCodeAccess(id, plan)
 }
 
 // openCodeAccess is how to talk to one session's TUI server: what the

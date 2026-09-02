@@ -42,14 +42,15 @@ const journalDownloadMax = 16 << 20
 //	PATCH  /api/sessions/{id}       {"session":<session>}
 //	DELETE /api/sessions/{id}       {"ok":true,"workdir":"…","workdir_kept":true}
 //	POST   …/archive, …/resume,
-//	       …/restart, …/ack-resume  {"session":<session>}
+//	       …/restart, …/ack-resume,
+//	       …/read                   {"session":<session>}
 //	                                409 {"error":"…"} when a restart was asked
 //	                                    for on a session that is still running
 //	GET    …/journal                the raw bytes, as an attachment
 //	every route                     4xx/5xx {"error":"…"}
 //
-// <session> is store.Session as it serialises, plus the three fields
-// sessionView adds: cli_session_state, and after a resume resume_fresh and
+// <session> is store.Session as it serialises, plus the fields sessionView
+// adds: cli_session_state, activity, and after a resume resume_fresh and
 // resumed_from.
 //
 // handleListSessions answers the session list. scope=all includes the archived
@@ -77,10 +78,16 @@ type sessionView struct {
 	CLISessionState string `json:"cli_session_state"`
 	ResumeFresh     bool   `json:"resume_fresh,omitempty"`
 	ResumedFrom     string `json:"resumed_from,omitempty"`
+	// Activity is busy/idle/waiting and the unread mark. It is here as well as
+	// on the WebSocket because a browser with no socket open - the list on
+	// first load, a tab that has been asleep - has to see the sidebar the same
+	// way, and the poll is the catch-up path for exactly that.
+	Activity termux.Activity `json:"activity"`
 }
 
 func (s *Server) view(row *store.Session) sessionView {
 	v := sessionView{Session: row, CLISessionState: row.CLISessionState}
+	v.Activity = s.manager.ActivityOf(row.ID)
 	if row.Resumed {
 		if note, ok := s.manager.ResumeNoteOf(row.ID); ok {
 			v.ResumeFresh, v.ResumedFrom = note.Fresh, note.From
@@ -335,6 +342,9 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A run typing into a pane that is being torn down is the one way the
+	// operator could do something nobody asked for.
+	s.agents.cancel(row.ID, "the session was deleted")
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	if err := s.manager.Delete(ctx, row.ID); err != nil {
@@ -378,6 +388,10 @@ func (s *Server) ensure(w http.ResponseWriter, r *http.Request, restart bool) {
 	var next *store.Session
 	var err error
 	if restart {
+		// A restart is an interaction with the terminal, and the operator run
+		// that was driving the pane being replaced has no business carrying on
+		// into the fresh harness that comes up under the same tmux name.
+		s.agents.cancel(row.ID, "the session was restarted")
 		next, err = s.manager.Restart(ctx, row.ID)
 	} else {
 		next, err = s.manager.Ensure(ctx, row.ID)
@@ -413,6 +427,19 @@ func (s *Server) handleAckResume(w http.ResponseWriter, r *http.Request) {
 	}
 	// The banner and what it said go together.
 	s.manager.ClearResumeNote(row.ID)
+	s.answerWithSession(w, row.ID)
+}
+
+// handleMarkRead lowers the unread mark of one session. It is the REST half of
+// the `read` control frame, for a page with no socket open on that session -
+// which, since the mark is cleared for rows the user is *not* looking at, is
+// the ordinary case.
+func (s *Server) handleMarkRead(w http.ResponseWriter, r *http.Request) {
+	row, ok := s.session(w, r)
+	if !ok {
+		return
+	}
+	s.manager.MarkRead(row.ID)
 	s.answerWithSession(w, row.ID)
 }
 

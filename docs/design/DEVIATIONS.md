@@ -1140,3 +1140,88 @@ path, everything else is passed through byte for byte, and bracketed paste is re
 pasted text is delivered as it was pasted. The one keystroke this cannot tell from a report is
 shift with F3 under xterm's modified function key encoding, which is the same `CSI 1 ; 2 R` as
 a cursor at the top left; a corrupted command line is the worse of the two to keep.
+
+## Activity/assist features (2026-09-02)
+
+The four features of `ACTIVITY.md` — the per-session activity detector, the
+**Status** button, the **Agent** loop and **audio mode** — built as WP1 (the
+detector), WP2 (the server routes) and WP3 (the page and the e2e). Each item
+below is a deliberate departure from that specification, accepted at review.
+
+**WP1 / §A — the detector.**
+
+1. `StartActivity` is called from `Server.StartSessions` after `Adopt`, not from
+   `Manager.Start`: `Start` runs *before* `Adopt` and starts no goroutines, so
+   "in Start, after Adopt" could not both be true. `StartPoll` is the precedent.
+2. The source registry is keyed by `harnesses.Kind`, not `config.Harness` —
+   there is no such type; harness ids are plain strings in `config`.
+3. OpenCode watchers start lazily on the first tick that reads an OpenCode
+   session rather than on launch, adopt and `StartActivity` separately: the same
+   outcome one second later, through one code path instead of four.
+4. `ResetActivity` is called from `Relaunch` only. `resume` reaches a new pane
+   exclusively through `Relaunch`, so the second call was duplication.
+5. Arbitration step 6 is implemented as *no live L1 answer this tick + L2 idle ⇒
+   idle, overriding L3* — the sentence the step ends with, and what makes a
+   fallback session leave busy inside 35 s. `BusyCeiling` drops only a
+   *remembered* L1 answer; a live L1 busy wins over any amount of silence.
+6. `Activity.Source` is `""` when no layer answered. The spec names four values
+   and has no name for silence.
+7. The Shell layer's `Note` carries the foreground command, which is hover-only
+   detail and free.
+
+**WP2 / §B, §C — the routes and the operator loop.**
+
+1. `DefaultAgentModel` is `anthropic/claude-sonnet-5`, not `-4.5`: the spec said
+   to prefer a newer Sonnet if OpenRouter lists one, and sonnet-5 is newer and
+   cheaper at the same context. `DefaultStatusModel` stays
+   `google/gemini-2.5-flash`.
+2. `e2e/harness.mjs` was left to WP3, which owns `e2e/**`; the Go side proves
+   the same scripted-model behaviour with `scriptedGateway` in `assist_test.go`.
+3. Hitting `max_steps` ends the run with `phase:"done"`, not `"error"` — a bound
+   that was reached is not a failure, and audio mode still has a sentence.
+4. Key names are matched case-insensitively with a few aliases (`Ctrl-C`, `^C` →
+   `C-c`, `Esc`, `Return`, …). The vocabulary is still the spec's fixed 17.
+5. A `wait_ms` action does not reset "the last action was an interrupt", so
+   `C-c`, wait, `C-c` is still two in a row and the second is dropped.
+6. `GET …/agent` keeps a finished run for two minutes and answers `null` after
+   that: the only way to have both "answers null afterwards" and "a phone that
+   locks mid-run comes back to a finished run".
+7. The status endpoint calls the model even while a run is acting; refusing is a
+   UI decision, and WP3 makes it (below).
+
+**WP3 / §D, §E — the page.**
+
+1. `#audioModeBtn` stays enabled while the socket is down. §D.2 disables all
+   three header buttons, §D.5 only the four that start a request; asking a phone
+   in a tunnel to stay in a mode it cannot leave is the wrong half of that
+   contradiction to obey. The four that ask the server are disabled.
+2. `busyButton` was not reused: it lives in `admin.js`, is not exported, and
+   swaps a button's *text*, which an icon button has none of.
+3. `dictateOnce` takes `onReady` as well as `onTime` — "a second tap stops it"
+   cannot be expressed by a signature that only resolves with the transcript.
+4. No `GET …/agent` on attach: `attach()` always opens a socket, so
+   `hello.agent` is the only seed, and a `hello` carrying `agent: null` drops a
+   stale progress line and says so.
+5. `Activity.since` is shown as a time of day, not a duration: a duration is a
+   different string every second and the row's "i" is rebuilt whenever its facts
+   change. `Activity.source` is omitted when empty.
+6. The Status button refuses while a run is acting, per the WP2 reviewer's note:
+   it says the agent is typing rather than describing a half-typed screen.
+7. No `agent-cancel` scenario of its own; `agent-run` asserts the Cancel control
+   is on the progress line and `assist_test.go` covers the endpoint.
+
+**The final review's non-blocking notes** (`APPROVED WITH FIXES`, 2026-09-02;
+its three fixes F1–F3 and the Claude L3 idle pattern landed in the commit before
+this one, and are not deviations):
+
+- A `codex` update interstitial reads as `waiting` through L3 — the right state;
+  only the note's wording ("approval required") is slightly off.
+- Poll versus frame: `refreshList` can deliver a snapshot older than the last
+  `activity` frame, and audio mode would then hear one extra idle→busy→idle and
+  speak once more than the session deserved. Rare, and the cure is to ignore a
+  view whose `since` predates the map's entry.
+- `runStatus` captures the session at the start but writes its answer into
+  whatever is on screen when it returns; a switch mid-request should drop the
+  answer rather than show it against the new session.
+- A Restart the user pressed still leaves the row unread, per §A.5.
+- `agentDriver.runs` keeps one entry per session ever driven.

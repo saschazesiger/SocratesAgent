@@ -13,6 +13,12 @@
 //
 // because those paths are unreachable behind a fake that only echoes.
 //
+// It also carries the busy/idle signals the activity detector reads, because a
+// fake that is only ever idle would leave every layer of that ladder untested:
+// Claude's ~/.claude/sessions/<pid>.json, Codex's spinner title, OpenCode's
+// event stream and status map, and the screen furniture all three paint. The
+// commands that drive them are /busy, /hang, /ask, /nofile and /title.
+//
 // It also answers the white-background question end to end: on start it writes
 // the OSC 10 and OSC 11 queries its real counterpart writes, and its banner
 // says which background it was told about. Only OSC 11 decides that. It must
@@ -31,6 +37,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -148,6 +155,27 @@ func handle(line string, session *sessionState) (bool, int) {
 	case line == "/id":
 		out("session %s\r\n", session.id)
 		return false, 0
+	case strings.HasPrefix(line, "/busy"):
+		session.busy(millis(line, "/busy", 3000), true)
+		return false, 0
+	case strings.HasPrefix(line, "/hang"):
+		// The runaway guard's fixture: the furniture of a turn in flight, and
+		// then nothing at all - no output, no signal update.
+		session.busy(millis(line, "/hang", 20000), false)
+		return false, 0
+	case line == "/ask":
+		session.ask()
+		return false, 0
+	case line == "/nofile":
+		session.dropStatusFile()
+		return false, 0
+	case strings.HasPrefix(line, "/title"):
+		out("\x1b]2;%s\x07", strings.TrimSpace(strings.TrimPrefix(line, "/title")))
+		return false, 0
+	}
+	// A permission prompt takes its answer before anything else does.
+	if session.answerAsked(line) {
+		return false, 0
 	}
 	// A real turn is what makes Codex and OpenCode write their state down, so
 	// the fake does the same rather than writing it at start-up.
@@ -158,24 +186,45 @@ func handle(line string, session *sessionState) (bool, int) {
 
 // ------------------------------------------------------------ session state
 
-// sessionState is the per-name pretence about a session id.
+// sessionState is the per-name pretence about a session id, and about what the
+// program is doing: the busy/idle detector reads a different signal from each
+// of the three, and the fake has to tell all three of them the truth.
 type sessionState struct {
 	name string
 	id   string
 	cwd  string
 	turn func()
+
+	mu sync.Mutex
+	// nofile is /nofile having been given: the Claude status file is gone and
+	// is not written again, which is how the suite reaches the layers below it.
+	nofile bool
+	// asked is a permission prompt on screen, and askID the request id the
+	// OpenCode stream named it with.
+	asked  bool
+	askID  string
+	paint  chan struct{}
+	events *sseHub
 }
 
 func startSession(name string, args []string, cwd string) (*sessionState, error) {
-	s := &sessionState{name: name, cwd: cwd, turn: func() {}}
+	s := &sessionState{name: name, cwd: cwd, turn: func() {}, events: newSSEHub()}
+	var err error
 	switch name {
 	case "claude":
-		return s, s.startClaude(args)
+		err = s.startClaude(args)
 	case "codex":
-		return s, s.startCodex(args)
+		err = s.startCodex(args)
 	case "opencode":
-		return s, s.startOpenCode(args)
+		err = s.startOpenCode(args)
 	}
+	if err != nil {
+		return s, err
+	}
+	// A harness that has started is idle, and says so before anything is
+	// typed: a detector that had to wait for the first turn would have nothing
+	// to read while a session is starting up.
+	s.setStatus("idle", "")
 	return s, nil
 }
 
@@ -302,16 +351,31 @@ func (s *sessionState) startOpenCode(args []string) error {
 	if username == "" {
 		username = "opencode"
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/session", func(w http.ResponseWriter, r *http.Request) {
-		if password != "" {
-			user, pass, ok := r.BasicAuth()
-			if !ok || user != username || pass != password {
-				w.Header().Set("WWW-Authenticate", `Basic realm="Secure Area"`)
-				w.WriteHeader(http.StatusUnauthorized)
-				return
+	// authed is the Basic-auth layer the real server puts in front of
+	// everything: without OPENCODE_SERVER_PASSWORD there is none at all, and
+	// with one an unauthenticated request is a 401 carrying WWW-Authenticate.
+	authed := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if password != "" {
+				user, pass, ok := r.BasicAuth()
+				if !ok || user != username || pass != password {
+					w.Header().Set("WWW-Authenticate", `Basic realm="Secure Area"`)
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
 			}
+			next(w, r)
 		}
+	}
+
+	mux := http.NewServeMux()
+	// The busy/idle detector's two endpoints: the event stream it subscribes
+	// to, and the status map it seeds the stream from on every connect.
+	mux.HandleFunc("/event", authed(s.serveEvents))
+	mux.HandleFunc("/session/status", authed(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, s.events.snapshot())
+	}))
+	mux.HandleFunc("/session", authed(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			id := newOpenCodeID()
 			dir := r.URL.Query().Get("directory")
@@ -331,7 +395,7 @@ func (s *sessionState) startOpenCode(args []string) error {
 			return
 		}
 		writeJSON(w, sessions)
-	})
+	}))
 	go func() { _ = http.Serve(ln, mux) }()
 
 	// As with Codex, a session exists once there has been a turn.
@@ -580,7 +644,16 @@ func valueOf(args []string, flag string) string {
 	return ""
 }
 
-func out(format string, args ...any) { fmt.Fprintf(os.Stdout, format, args...) }
+// outMu serialises writes to the terminal: the busy painter is a goroutine of
+// its own, and two Fprintf calls interleaved would tear an escape sequence in
+// half.
+var outMu sync.Mutex
+
+func out(format string, args ...any) {
+	outMu.Lock()
+	defer outMu.Unlock()
+	fmt.Fprintf(os.Stdout, format, args...)
+}
 
 // ------------------------------------------------------------- the queries
 
@@ -681,4 +754,368 @@ func hasFlag(args []string, flag string) bool {
 		}
 	}
 	return false
+}
+
+// ------------------------------------------------------- the activity signals
+
+// Everything below exists so that the busy/idle detector can be tested end to
+// end against all three exact layers: Claude's status file, Codex's terminal
+// title and OpenCode's event stream, plus the screen furniture each of the
+// three paints and the output quiescence all of them have.
+
+// paintEvery is how often a busy harness repaints its spinner line. All three
+// real ones repaint several times a second, which is what makes "no bytes for
+// thirty seconds" a fact about the program rather than about the terminal.
+const paintEvery = 100 * time.Millisecond
+
+// spinners is the Braille frame set Codex animates its title with, and the
+// glyph Claude and OpenCode rotate in front of their busy line.
+var spinners = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// millis reads the argument of /busy and /hang.
+func millis(line, prefix string, fallback int) time.Duration {
+	rest := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+	if n, err := strconv.Atoi(rest); err == nil && n > 0 {
+		return time.Duration(n) * time.Millisecond
+	}
+	return time.Duration(fallback) * time.Millisecond
+}
+
+// busy runs a turn. With paint it looks like one for its whole length; without
+// it - /hang - the furniture is drawn once and then nothing at all is written
+// and no signal is updated, which is the only way to reach the runaway guard.
+func (s *sessionState) busy(d time.Duration, paint bool) {
+	s.stopPaint()
+	s.setStatus("busy", "")
+	s.paintBusy(0)
+	stop := make(chan struct{})
+	s.mu.Lock()
+	s.paint = stop
+	s.mu.Unlock()
+
+	go func() {
+		defer func() {
+			s.mu.Lock()
+			if s.paint == stop {
+				s.paint = nil
+			}
+			s.mu.Unlock()
+		}()
+		deadline := time.After(d)
+		frame := 0
+		for {
+			var tick <-chan time.Time
+			if paint {
+				tick = time.After(paintEvery)
+			}
+			select {
+			case <-stop:
+				return
+			case <-deadline:
+				s.setStatus("idle", "")
+				s.paintIdle()
+				return
+			case <-tick:
+				frame++
+				s.paintBusy(frame)
+			}
+		}
+	}()
+}
+
+func (s *sessionState) stopPaint() {
+	s.mu.Lock()
+	stop := s.paint
+	s.paint = nil
+	s.mu.Unlock()
+	if stop != nil {
+		close(stop)
+	}
+}
+
+// paintBusy writes the bottom line each real TUI writes while it works, with
+// the literals the detector's screen layer matches on - including OpenCode's
+// `esc interrupt`, which is not the other two's `esc to interrupt`.
+func (s *sessionState) paintBusy(frame int) {
+	glyph := spinners[frame%len(spinners)]
+	switch s.name {
+	case "claude":
+		out("\r%s Cooking… (%ds · esc to interrupt)  ⏵⏵ auto mode on", glyph, frame/10)
+	case "codex":
+		out("\r Working (%ds • esc to interrupt)", frame/10)
+		// Codex is the one whose title carries the state, spinner and all.
+		s.setTitle(glyph + " " + filepath.Base(s.cwd))
+	case "opencode":
+		out("\r%s Thinking   ⬝⬝⬝⬝⬝⬝■■  esc interrupt      tab agents  ctrl+p commands", glyph)
+	default:
+		out("\rworking %d", frame)
+	}
+}
+
+// paintIdle writes the furniture each TUI leaves behind when a turn ends.
+func (s *sessionState) paintIdle() {
+	switch s.name {
+	case "claude":
+		out("\r\n✻ Worked for 3s · done\r\n❯ \r\n  ⏵⏵ auto mode on (shift+tab to cycle)\r\n")
+	case "codex":
+		out("\r\n› Ask Codex to do anything\r\n")
+		s.setTitle(filepath.Base(s.cwd))
+	case "opencode":
+		out("\r\n▣  Build · fake · 3.0s\r\n  ⬝⬝⬝⬝⬝⬝  10.5K (1%%) · $0.02   ctrl+p commands\r\n")
+	default:
+		out("\r\ndone\r\n")
+	}
+	out("> ")
+}
+
+// ask puts the verbatim permission prompt of this harness on the screen and
+// says so through its own signal.
+func (s *sessionState) ask() {
+	s.stopPaint()
+	s.mu.Lock()
+	s.asked = true
+	s.askID = fmt.Sprintf("per_%d", time.Now().UnixNano())
+	askID := s.askID
+	s.mu.Unlock()
+
+	s.setStatus("waiting", "permission prompt")
+	switch s.name {
+	case "claude":
+		out("\r\n Do you want to proceed?\r\n ❯ 1. Yes\r\n   2. Yes, and don't ask again\r\n   4. No\r\n" +
+			" Esc to cancel · Tab to amend\r\n")
+	case "codex":
+		out("\r\n  Would you like to make the following edits?\r\n\r\n  › 1. Yes, proceed (y)\r\n" +
+			"    2. No, and tell Codex what to do differently (esc)\r\n\r\n" +
+			"  Press enter to confirm or esc to cancel\r\n")
+		s.setTitle("[ . ] Action Required | " + filepath.Base(s.cwd))
+	case "opencode":
+		// OpenCode's own prompt has no verified screen shape, so the fake
+		// paints a plain one and the event stream carries the fact.
+		out("\r\n  Allow this command?  [y/n]\r\n")
+		s.events.publish(map[string]any{
+			"type":       "permission.v2.asked",
+			"properties": map[string]any{"id": askID, "sessionID": s.statusID(), "action": "bash"},
+		})
+	}
+}
+
+// answerAsked takes the answer to a prompt that is on screen, and reports
+// whether the line was one.
+func (s *sessionState) answerAsked(line string) bool {
+	s.mu.Lock()
+	asked, askID := s.asked, s.askID
+	s.mu.Unlock()
+	if !asked {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "", "1", "y", "yes":
+	default:
+		return false
+	}
+	s.mu.Lock()
+	s.asked, s.askID = false, ""
+	s.mu.Unlock()
+	if s.name == "opencode" {
+		s.events.publish(map[string]any{
+			"type": "permission.v2.replied",
+			"properties": map[string]any{
+				"requestID": askID, "sessionID": s.statusID(), "reply": "once",
+			},
+		})
+	}
+	s.setStatus("idle", "")
+	s.paintIdle()
+	return true
+}
+
+// setStatus drives whichever exact signal this name is pretending to be.
+func (s *sessionState) setStatus(status, waitingFor string) {
+	switch s.name {
+	case "claude":
+		s.writeStatusFile(status, waitingFor)
+	case "codex":
+		switch status {
+		case "busy":
+			s.setTitle(spinners[0] + " " + filepath.Base(s.cwd))
+		case "waiting":
+			s.setTitle("[ . ] Action Required | " + filepath.Base(s.cwd))
+		default:
+			s.setTitle(filepath.Base(s.cwd))
+		}
+	case "opencode":
+		kind := "idle"
+		if status == "busy" {
+			kind = "busy"
+		}
+		s.events.setStatus(s.statusID(), kind)
+		s.events.publish(map[string]any{
+			"type": "session.status",
+			"properties": map[string]any{
+				"sessionID": s.statusID(),
+				"status":    map[string]any{"type": kind},
+			},
+		})
+	}
+}
+
+// setTitle is the OSC 2 the real Codex writes, and what /title writes by hand.
+func (s *sessionState) setTitle(text string) { out("\x1b]2;%s\x07", text) }
+
+// statusFilePath is where Claude Code keeps the file the detector reads:
+// ~/.claude/sessions/<pid>.json, keyed by the process's own pid.
+func (s *sessionState) statusFilePath() string {
+	home := os.Getenv("HOME")
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".claude", "sessions", strconv.Itoa(os.Getpid())+".json")
+}
+
+func (s *sessionState) writeStatusFile(status, waitingFor string) {
+	s.mu.Lock()
+	skip := s.nofile
+	s.mu.Unlock()
+	if skip {
+		return
+	}
+	path := s.statusFilePath()
+	if path == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	now := time.Now().UnixMilli()
+	record := map[string]any{
+		"pid": os.Getpid(), "status": status,
+		"updatedAt": now, "statusUpdatedAt": now,
+	}
+	if waitingFor != "" {
+		record["waitingFor"] = waitingFor
+	}
+	raw, err := json.Marshal(record)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(path, raw, 0o600)
+}
+
+// dropStatusFile is /nofile: the exact layer goes away and stays away, which
+// is what sends the detector down to the screen and then to quiescence.
+func (s *sessionState) dropStatusFile() {
+	s.mu.Lock()
+	s.nofile = true
+	s.mu.Unlock()
+	if path := s.statusFilePath(); path != "" {
+		_ = os.Remove(path)
+	}
+	out("status file dropped\r\n")
+}
+
+// statusID is the session id the OpenCode stream reports activity under.
+func (s *sessionState) statusID() string {
+	if s.id != "" {
+		return s.id
+	}
+	return "ses_fakestatus"
+}
+
+// ------------------------------------------------------------ the SSE server
+
+// sseHub is the fake OpenCode event stream: the subscribers, and the busy set
+// a reconnect is seeded from through GET /session/status.
+type sseHub struct {
+	mu     sync.Mutex
+	subs   map[chan string]bool
+	status map[string]string
+}
+
+func newSSEHub() *sseHub {
+	return &sseHub{subs: map[chan string]bool{}, status: map[string]string{}}
+}
+
+func (h *sseHub) setStatus(id, kind string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if kind == "busy" || kind == "retry" {
+		h.status[id] = kind
+		return
+	}
+	delete(h.status, id)
+}
+
+// snapshot is what GET /session/status answers with: the sessions that are
+// working, an idle one simply being absent from the map.
+func (h *sseHub) snapshot() map[string]map[string]string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := map[string]map[string]string{}
+	for id, kind := range h.status {
+		out[id] = map[string]string{"type": kind}
+	}
+	return out
+}
+
+func (h *sseHub) publish(event map[string]any) {
+	raw, err := json.Marshal(event)
+	if err != nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for sub := range h.subs {
+		select {
+		case sub <- string(raw):
+		default:
+			// A reader that has stopped reading loses events rather than
+			// stopping the pane.
+		}
+	}
+}
+
+func (h *sseHub) subscribe() chan string {
+	ch := make(chan string, 32)
+	h.mu.Lock()
+	h.subs[ch] = true
+	h.mu.Unlock()
+	return ch
+}
+
+func (h *sseHub) unsubscribe(ch chan string) {
+	h.mu.Lock()
+	delete(h.subs, ch)
+	h.mu.Unlock()
+}
+
+// serveEvents is GET /event: the stream the real TUI's server serves, with the
+// same heartbeat and the same `data: ` framing.
+func (s *sessionState) serveEvents(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "no streaming here", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, "data: {\"type\":\"server.connected\",\"properties\":{}}\n\n")
+	flusher.Flush()
+
+	ch := s.events.subscribe()
+	defer s.events.unsubscribe(ch)
+	heartbeat := time.NewTicker(10 * time.Second)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case event := <-ch:
+			fmt.Fprintf(w, "data: %s\n\n", event)
+			flusher.Flush()
+		case <-heartbeat.C:
+			fmt.Fprint(w, "data: {\"type\":\"server.heartbeat\",\"properties\":{}}\n\n")
+			flusher.Flush()
+		}
+	}
 }

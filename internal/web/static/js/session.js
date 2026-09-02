@@ -23,6 +23,7 @@ import { connectionSource } from './net.js';
 import { agentMark } from './logos.js';
 import * as harnesses from './harnesses.js';
 import { createTerm, measurePane } from './term.js';
+import { mountAssist, audioWanted } from './assist.js';
 import {
   mountKeyBar, mountComposer, keyBarWanted, setKeyBarWanted, followViewport,
 } from './keybar.js';
@@ -473,6 +474,17 @@ class TermSocket {
   lag(seq) {
     this.write(JSON.stringify({ t: 'lag', seq }));
   }
+
+  /**
+   * read clears the unread mark of a session - not necessarily this one.
+   *
+   * The id is explicit because the mark is a fact about a row in the sidebar,
+   * and the row that is being opened is by definition not the one this socket
+   * is attached to yet. Any open socket carries it.
+   */
+  read(id) {
+    return this.write(JSON.stringify({ t: 'read', id }));
+  }
 }
 
 function inputFrame(seq, bytes) {
@@ -534,6 +546,13 @@ const state = {
   // for the whole of it, so the pane's own overlay is the only place that
   // knows.
   resuming: false,
+  // What every session is doing, keyed by id: the busy ring, the waiting
+  // ring and the unread mark are all drawn from this and from nothing else.
+  // It is in memory only - the server re-derives it from a live pane every
+  // second, so a copy that outlived a reload could only ever be wrong.
+  activity: new Map(),
+  // Status, Agent and audio mode, mounted once in boot().
+  assist: null,
   // How the terminal is drawn, from the dashboard. The defaults here are what
   // a page that could not ask uses, and they are the same numbers the settings
   // document ships with.
@@ -542,8 +561,10 @@ const state = {
 
 const dom = {};
 const ids = ['sidebar', 'navScrim', 'menuBtn', 'newSession', 'sessionScope', 'sessionList',
-  'sessionHarness', 'sessionTitle', 'sessionArchived', 'termSize', 'sessionMenu',
-  'termWrap', 'term', 'termOverlay', 'termNotice', 'termEmpty', 'keybar', 'composer',
+  'activityLive', 'sessionHarness', 'sessionTitle', 'sessionArchived', 'termSize',
+  'statusBtn', 'agentBtn', 'audioModeBtn', 'sessionMenu',
+  'termWrap', 'term', 'termOverlay', 'termNotice', 'termEmpty',
+  'audioBar', 'audioStatus', 'audioAgent', 'keybar', 'composer',
   'lineInput', 'micBtn', 'recTime', 'logout'];
 for (const id of ids) dom[id] = document.getElementById(id);
 
@@ -557,6 +578,10 @@ const STATE_WORDS = {
   running: 'Running', starting: 'Starting', resuming: 'Resuming',
   needs_resume: 'Not running', exited: 'Ended', failed: 'Failed',
 };
+
+// What a session is doing, in the words the "i" uses. `unknown` has no word:
+// a row with no evidence yet says nothing rather than guessing.
+const ACTIVITY_WORDS = { busy: 'Working', idle: 'Waiting for an instruction', waiting: 'Needs an answer' };
 
 function sessionOf(id) { return state.sessions.find((s) => s.id === id) || null; }
 
@@ -629,6 +654,15 @@ function buildRow(session) {
 // an "i" and never in the words of the row.
 function rowFacts(session) {
   const facts = [STATE_WORDS[session.state] || session.state, session.workdir];
+  const act = state.activity.get(session.id);
+  if (act && ACTIVITY_WORDS[act.state]) {
+    // What it is doing, why the detector thinks so, and since when. All three
+    // are facts about the machine, so all three live behind the "i".
+    facts.push(ACTIVITY_WORDS[act.state]
+      + (act.note ? ' · ' + act.note : '')
+      + (act.source ? ' · ' + act.source : '')
+      + (act.since ? ' · since ' + clockOf(act.since) : ''));
+  }
   if (session.model) facts.push(session.model + (session.effort ? ' · ' + session.effort : ''));
   if (session.cli_session_state && session.cli_session_state !== 'none') {
     facts.push('conversation ' + session.cli_session_state);
@@ -637,13 +671,44 @@ function rowFacts(session) {
   return facts.filter(Boolean);
 }
 
+// clockOf is when a state was committed, as a time of day.
+//
+// A duration would read better and is what a person would say, but it would be
+// a different string every second - and the row's "i" is rebuilt whenever its
+// facts change, so a ticking fact means a node replaced once a second in every
+// row in the list. The moment it happened is the same fact, and it holds still.
+function clockOf(at) {
+  const when = new Date(Number(at));
+  if (Number.isNaN(when.getTime())) return '';
+  return String(when.getHours()).padStart(2, '0') + ':'
+    + String(when.getMinutes()).padStart(2, '0') + ':'
+    + String(when.getSeconds()).padStart(2, '0');
+}
+
 function updateRow(row, session) {
   row.querySelector('.label').textContent = session.title;
-  setClass(row, 'active', state.current && state.current.id === session.id);
+  const attached = !!(state.current && state.current.id === session.id);
+  setClass(row, 'active', attached);
   setClass(row, 'archived', !!session.archived);
   const dot = row.querySelector('.dot');
   dot.className = 'dot ' + (DOT[session.state] || 'faint');
   dot.title = STATE_WORDS[session.state] || session.state;
+
+  // The activity of a row is three marks and no words: the agent's own mark
+  // turns into a ring while the harness is working, the ring stands still and
+  // the dot goes amber while it is waiting for an answer, and a name that has
+  // finished something nobody has seen is bold. The session being looked at
+  // is never bold - it is not unread, it is open.
+  const act = state.activity.get(session.id) || null;
+  const mark = row.querySelector('.row-mark');
+  const live = session.state === 'running' || session.state === 'starting' || session.state === 'resuming';
+  setClass(mark, 'busy', live && !!act && act.state === 'busy');
+  setClass(mark, 'waiting', live && !!act && act.state === 'waiting');
+  if (live && act && act.state === 'waiting') {
+    dot.className = 'dot amber';
+    dot.title = ACTIVITY_WORDS.waiting;
+  }
+  setClass(row, 'unread', !!act && !!act.unread && !attached);
   const tipHost = row.querySelector('.row-tip');
   const facts = rowFacts(session).join('\n');
   if (tipHost.dataset.facts !== facts) {
@@ -653,11 +718,66 @@ function updateRow(row, session) {
   }
 }
 
+/**
+ * mergeActivity takes a map of committed changes and draws them.
+ *
+ * It is the one door: the poll, the handshake and the broadcast frame all
+ * come through here, so the sidebar, the announcement and audio mode's own
+ * rule cannot disagree about what changed.
+ */
+function mergeActivity(sessions) {
+  if (!sessions) return;
+  let changed = false;
+  for (const [id, next] of Object.entries(sessions)) {
+    if (!next || typeof next !== 'object') continue;
+    const prev = state.activity.get(id) || null;
+    state.activity.set(id, next);
+    if (prev && prev.state === next.state && prev.unread === next.unread && prev.note === next.note) continue;
+    changed = true;
+    announce(id, next, prev);
+    if (state.assist) state.assist.activity(id, next, prev);
+  }
+  if (changed) renderList();
+}
+
+// announce is the sidebar said out loud, for a reader who cannot see it. Only
+// the two changes that are worth interrupting somebody for are said, and at
+// most one every two seconds - a machine with six sessions on it would
+// otherwise talk continuously.
+const ANNOUNCE_EVERY = 2000;
+let announcedAt = 0;
+let announceTimer = null;
+let announcePending = '';
+
+function announce(id, next, prev) {
+  const session = sessionOf(id);
+  if (!session || !dom.activityLive) return;
+  const who = harnesses.label(session.harness) || session.title;
+  let line = '';
+  if (prev && prev.state === 'busy' && next.state !== 'busy' && next.state !== 'waiting') line = who + ' finished';
+  if (next.state === 'waiting' && (!prev || prev.state !== 'waiting')) line = who + ' needs an answer';
+  if (!line) return;
+  announcePending = line;
+  if (announceTimer) return;
+  const wait = Math.max(0, ANNOUNCE_EVERY - (Date.now() - announcedAt));
+  announceTimer = setTimeout(() => {
+    announceTimer = null;
+    announcedAt = Date.now();
+    dom.activityLive.textContent = announcePending;
+    announcePending = '';
+  }, wait);
+}
+
 async function refreshList() {
   try {
     const data = await api('/api/sessions?scope=' + (state.scope === 'all' ? 'all' : 'active'),
       { attempts: 2, timeout: 12000 });
     state.sessions = data.sessions || [];
+    // The list is the catch-up path for a sidebar nobody has a socket open
+    // for: every view carries the activity of its own session.
+    const seen = {};
+    for (const row of state.sessions) if (row && row.activity) seen[row.id] = row.activity;
+    mergeActivity(seen);
     state.loading = false;
     state.reachable = true;
     if (state.current) {
@@ -850,6 +970,7 @@ function showEmpty() {
   dom.sessionTitle.textContent = 'Socrates';
   dom.sessionHarness.hidden = true;
   dom.sessionMenu.hidden = true;
+  if (state.assist) state.assist.attached();
   dom.termSize.hidden = true;
   dom.sessionArchived.hidden = true;
   dom.termOverlay.hidden = true;
@@ -957,7 +1078,7 @@ function actionButton(session, label, busyLabel) {
 // resume came from, and anything else that is an identifier rather than a
 // sentence. §E.10 rule 3: it goes behind the "i" and never into the line
 // itself.
-function notice(kind, text, onDismiss, facts) {
+function notice(kind, text, onDismiss, facts, extra) {
   const host = dom.termNotice;
   host.innerHTML = '';
   host.dataset.kind = kind;
@@ -971,6 +1092,9 @@ function notice(kind, text, onDismiss, facts) {
   // appended when there is one, and not otherwise.
   host.append(el('span', { class: 'notice-text', text }));
   if (facts && facts.length) host.append(infoTip(facts, { label: 'Details', bubbleClass: 'mono' }));
+  // `extra` is the one control a notice may carry beside its "i" - the Cancel
+  // of a run in progress. Everything else a notice can say, it says in words.
+  if (extra) host.append(extra);
   host.append(close);
   host.hidden = false;
   return host;
@@ -1020,6 +1144,7 @@ function actionFailed(err, sentence) {
 }
 
 function detach() {
+  if (state.assist) state.assist.attached();
   if (state.composer) { state.composer.dispose(); state.composer = null; }
   if (state.keybar) { state.keybar.dispose(); state.keybar = null; }
   dom.keybar.hidden = true;
@@ -1103,6 +1228,10 @@ function attach(session) {
   dom.composer.hidden = false;
   dom.micBtn.hidden = false;
   showKeyBar(keyBarWanted());
+  // The three buttons and, when this device is in audio mode, the bar under
+  // the pane. It is done before the size is read, because the bar takes rows
+  // off the terminal and the size the session is told is the size it gets.
+  if (state.assist) state.assist.attached();
 
   const size = state.term.size();
   socket.start(size.cols, size.rows);
@@ -1131,12 +1260,23 @@ function onControl(sessionId, frame) {
     case 'hello':
       if (frame.session) applySession({ ...state.current, ...frame.session });
       if (frame.size) showSize(frame.size.cols, frame.size.rows);
+      // A handshake carries every running session's activity and this
+      // session's run, so a reconnect and a reload both re-draw the sidebar
+      // and the progress line without asking for anything.
+      mergeActivity(frame.activity);
+      if (state.assist) state.assist.helloAgent(frame.agent);
       if (!Number(frame.replay_from) && state.term) {
         state.term.reset();
         // Only worth saying when there was something to lose: a first attach
         // also replays from zero and is not a desync.
         if (frame.viewer_fresh === false) notice('desync', 'Reconnected — the screen was redrawn.');
       }
+      break;
+    case 'activity':
+      mergeActivity(frame.sessions);
+      break;
+    case 'agent':
+      if (state.assist) state.assist.agentFrame(frame);
       break;
     case 'state':
       replaceSession({ ...state.current, state: frame.state });
@@ -1196,6 +1336,7 @@ function onStatus(status) {
 }
 
 function updateStale() {
+  if (state.assist) state.assist.live();
   const stale = !state.live
     && (navigator.onLine === false || Date.now() - (state.lostAt || Date.now()) >= CONNECTION_GRACE);
   setClass(document.body, 'stale', stale);
@@ -1212,6 +1353,7 @@ function selectSession(id) {
   const session = sessionOf(id);
   if (!session) return;
   if (state.current && state.current.id === id && state.socket) return;
+  markRead(id);
   state.wanted = id;
   location.hash = '#' + id;
   closeNav();
@@ -1221,6 +1363,25 @@ function selectSession(id) {
     const fresh = sessionOf(id);
     if (fresh) attach(fresh);
   }, ATTACH_DEBOUNCE);
+}
+
+/**
+ * markRead clears the unread mark of the session that is being opened.
+ *
+ * Opening a row is seeing it, which is the whole of what the mark means. The
+ * socket carries it when there is one, because a control frame is free and
+ * already open; a page with no socket at all - the moment before the first
+ * attach - asks over HTTP instead. Either way the server broadcasts the
+ * change, so every other tab stops bolding it too.
+ */
+function markRead(id) {
+  const act = state.activity.get(id);
+  if (!act || !act.unread) return;
+  state.activity.set(id, { ...act, unread: false });
+  renderList();
+  if (state.socket && state.socket.read(id)) return;
+  api('/api/sessions/' + encodeURIComponent(id) + '/read', { method: 'POST', attempts: 1 })
+    .catch(() => { /* the next frame or poll says what the server thinks */ });
 }
 
 // measureNewPane is what the pane is about to be, measured before it exists.
@@ -1235,6 +1396,8 @@ function selectSession(id) {
 function measureNewPane() {
   const composerWas = dom.composer.hidden;
   const keybarWas = dom.keybar.hidden;
+  const audioWas = dom.audioBar.hidden;
+  dom.audioBar.hidden = !audioWanted();
   // The real bar, because its height is its buttons. Nothing is wired to it:
   // it exists for the length of one measurement.
   const bar = mountKeyBar(dom.keybar, null, null);
@@ -1244,6 +1407,7 @@ function measureNewPane() {
   bar.dispose();
   dom.composer.hidden = composerWas;
   dom.keybar.hidden = keybarWas;
+  dom.audioBar.hidden = audioWas;
   return size;
 }
 
@@ -1333,6 +1497,17 @@ function wire() {
 
 async function boot() {
   wire();
+  // Status, Agent and audio mode. Mounted before anything is measured,
+  // because whether this device is in audio mode decides how tall the pane
+  // is, and a layout applied afterwards resizes a terminal somebody is
+  // already looking at.
+  state.assist = mountAssist({
+    dom,
+    notice,
+    refit: () => { if (state.term) state.term.refit(); },
+    current: () => state.current,
+    live: () => state.live,
+  });
   followViewport();
   // Read before anything is fetched: on an offline reload this is the only
   // thing the page knows about what it was doing.

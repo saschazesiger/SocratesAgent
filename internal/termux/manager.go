@@ -75,6 +75,11 @@ type Config struct {
 	// package's business.
 	OnExit func(sessionID string, status int)
 	OnSize func(sessionID string, cols, rows int, owner string)
+	// OnActivity is the third of them: a session that started working, finished
+	// working, or started needing an answer. It fires on a committed change
+	// only, which is at most once a second per session and in practice a
+	// handful of times per turn.
+	OnActivity func(sessionID string, a Activity)
 }
 
 // Manager owns the Socrates tmux server: the sessions on it, the viewers
@@ -102,6 +107,14 @@ type Manager struct {
 	// holds the cancel of its detached session-id watcher.
 	locks    map[string]*sync.Mutex
 	watchers map[string]context.CancelFunc
+	// plans is the launch plan of each live session, remembered because the
+	// activity tick reads one per session per second and a plan never changes
+	// between two relaunches.
+	plans map[string]harnesses.LaunchPlan
+
+	// act is the busy/idle detector. It lives entirely in memory and has a
+	// lock of its own; see activity.go.
+	act *activity
 
 	// discoverCtx ends every detached session-id watcher when the manager is
 	// closed. The watchers are patient by design - a quarter of an hour each -
@@ -142,7 +155,9 @@ func New(st *store.Store, cfg Config) (*Manager, error) {
 		missed:   map[string]int{},
 		locks:    map[string]*sync.Mutex{},
 		watchers: map[string]context.CancelFunc{},
+		plans:    map[string]harnesses.LaunchPlan{},
 	}
+	m.act = newActivity(m)
 	m.discoverCtx, m.discoverStop = context.WithCancel(context.Background())
 
 	// The path check comes first, because it is the one failure that would
@@ -258,6 +273,9 @@ func (m *Manager) Close() error {
 	if stop != nil {
 		stop()
 	}
+	// The detector holds one event stream per running OpenCode session, and
+	// they are ours rather than tmux's: they go with us.
+	m.act.stop()
 	for _, v := range viewers {
 		_ = v.Close()
 	}
@@ -414,6 +432,10 @@ func (m *Manager) Relaunch(ctx context.Context, row *store.Session, plan harness
 		_ = m.st.SetSessionState(row.ID, store.StateFailed, -1, Stderr(err))
 		return err
 	}
+	// A new process, a new pid, a new event stream: everything the detector
+	// had derived about this session is about to be wrong. The unread mark is
+	// kept, because work that finished before the restart is still unread.
+	m.ResetActivity(row.ID)
 	return m.st.SetSessionState(row.ID, store.StateRunning, -1, "")
 }
 

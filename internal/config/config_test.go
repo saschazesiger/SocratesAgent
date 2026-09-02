@@ -317,3 +317,47 @@ func TestAutocompactAndSettingSourcesAreValidated(t *testing.T) {
 		t.Error("an invented setting source was accepted")
 	}
 }
+
+// The Status button and the operator loop each pick their own model, and
+// neither may be left without one: an empty field is a form nobody filled in,
+// and a button that answers "pick a model first" is a setup step nobody asked
+// for.
+func TestAssistModelsAndAgentBoundsAreDefaulted(t *testing.T) {
+	s := Settings{}
+	s.Normalize()
+	if s.OpenRouter.StatusModel != DefaultStatusModel {
+		t.Errorf("status model = %q", s.OpenRouter.StatusModel)
+	}
+	if s.OpenRouter.AgentModel != DefaultAgentModel {
+		t.Errorf("agent model = %q", s.OpenRouter.AgentModel)
+	}
+	// Zero steps is an empty number field, not a run that may take none.
+	if s.Agent.MaxSteps != DefaultAgentMaxSteps {
+		t.Errorf("max steps = %d", s.Agent.MaxSteps)
+	}
+	// A fresh installation is one person on one machine, so the operator may
+	// drive a shell until somebody says otherwise.
+	if !Default().Agent.AllowShell {
+		t.Error("the agent may not drive a shell out of the box")
+	}
+
+	// A chosen model is kept, and the ceiling is a ceiling.
+	s = Settings{}
+	s.OpenRouter.StatusModel, s.OpenRouter.AgentModel = "someone/cheap", "someone/careful"
+	s.Agent.MaxSteps = 400
+	s.Normalize()
+	if s.OpenRouter.StatusModel != "someone/cheap" || s.OpenRouter.AgentModel != "someone/careful" {
+		t.Errorf("a chosen model was replaced: %#v", s.OpenRouter)
+	}
+	if s.Agent.MaxSteps != MaxAgentMaxSteps {
+		t.Errorf("max steps = %d, want the ceiling", s.Agent.MaxSteps)
+	}
+
+	// And "one step, then stop" is a legitimate thing to ask for.
+	s = Settings{}
+	s.Agent.MaxSteps = 1
+	s.Normalize()
+	if s.Agent.MaxSteps != 1 {
+		t.Errorf("max steps = %d", s.Agent.MaxSteps)
+	}
+}

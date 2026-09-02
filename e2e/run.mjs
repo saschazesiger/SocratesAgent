@@ -2844,6 +2844,70 @@ async function design() {
       Math.round(Number(before.time)) + ' ms -> ' + Math.round(after.time) + ' ms, '
       + (after.sameRow ? 'the same row' : 'a new row'));
 
+    // Rule 4 again, on the mark that says a session is working. It is the
+    // agent's own mark with a hairline ring around it, one faint arc on white,
+    // and it turns once every 900 ms - the same beat as the resume spinner.
+    await typeLine(s.page, 'sleep 6');
+    const spinning = await awaitRow(s.page, id, (r) => r.busy, 10000);
+    ok(spinning.ok, 'a session that is working turns its own mark into a ring', took(spinning));
+    const ring = spinning.seen ? spinning.seen.ring : null;
+    ok(!!ring && ring.colour === 'rgb(155, 158, 166)',
+      'the arc is the faintest text colour, on white and on nothing else',
+      ring ? ring.colour : 'no ring');
+    const beat = ring ? Math.round(parseFloat(ring.motion) * 1000) : 0;
+    ok(beat >= 120 && beat <= 900, 'and it turns at the app\u2019s own pace', beat + ' ms');
+
+    // Turning decoration off must not turn off the one thing that says work is
+    // still happening, so the ring is drawn complete and still instead.
+    await s.page.emulateMedia({ reducedMotion: 'reduce' });
+    await wait(200);
+    const still = await rowActivity(s.page, id);
+    ok(!!still.ring && still.ring.name === 'none',
+      'with reduced motion the ring is drawn complete and does not turn',
+      still.ring ? still.ring.name : 'no ring');
+    await s.page.emulateMedia({ reducedMotion: null });
+
+    // Rule 2 and rule 3 on what audio mode adds: two buttons, one word each,
+    // white with a hairline, and nothing on the page that reads like a
+    // machine talking to itself.
+    await s.page.click('#audioModeBtn');
+    await s.page.waitForSelector('#audioBar:not([hidden])', { timeout: 10000 });
+    const audio = await s.page.evaluate(() => {
+      const buttons = [...document.querySelectorAll('#audioBar .audio-btn')];
+      return {
+        bar: getComputedStyle(document.getElementById('audioBar')).backgroundColor,
+        fills: buttons.map((b) => getComputedStyle(b).backgroundColor),
+        words: buttons.map((b) => b.textContent.trim()),
+        headers: ['statusBtn', 'agentBtn', 'audioModeBtn']
+          .map((one) => (document.getElementById(one) || {}).textContent || '')
+          .map((t) => t.trim()),
+      };
+    });
+    ok(white(audio.bar) && audio.fills.every(white), 'the audio bar is the same white',
+      JSON.stringify([audio.bar, ...audio.fills]));
+    ok(audio.words.every((w) => /^[A-Za-z]+$/.test(w)), 'its buttons are one plain word each',
+      audio.words.join(' / '));
+    ok(audio.headers.every((t) => t === ''),
+      'and the three header buttons are marks, with their words in the label',
+      JSON.stringify(audio.headers));
+
+    const spoken = await s.page.evaluate(() => {
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      const parts = [];
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const host = node.parentElement;
+        if (!host || host.closest('.tip-bubble') || host.closest('.sr-only')) continue;
+        if (host.closest('#term')) continue;
+        if (!host.checkVisibility || !host.checkVisibility()) continue;
+        parts.push(node.textContent);
+      }
+      return parts.join(' ');
+    });
+    ok(!/\b(exact|quiet|unknown|run_id|phase)\b/.test(spoken) && !spoken.includes(id),
+      'nothing the detector knows is written on the page in words',
+      oneLine((/\b(exact|quiet|unknown|run_id|phase)\b/.exec(spoken) || ['none'])[0]));
+    await s.page.click('#audioModeBtn');
+
     // Rule 1 again, on the other page, and rule 2 on the admin cards.
     await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
     await s.page.waitForSelector('.harness-card', { timeout: 20000 });
@@ -2882,6 +2946,597 @@ async function design() {
   } finally { await s.stop(); }
 }
 
+/* ------------------------------------ 28-33. activity, status, agent, audio */
+
+// Everything below is about a session saying what it is doing without being
+// asked, and about the two buttons that ask it something the terminal cannot
+// answer. The detector runs on the server and ticks once a second, so every
+// assertion here waits for a fact rather than for a fixed number of
+// milliseconds, and reports how long it actually took.
+
+const rowSel = (id) => '#sessionList .chat-item[data-id="' + id + '"]';
+
+// rowActivity is everything the sidebar says about one session, read out of
+// the drawn row rather than out of the API: the classes are the feature.
+const rowActivity = (page, id) => page.evaluate((sel) => {
+  const row = document.querySelector(sel);
+  if (!row) return null;
+  const mark = row.querySelector('.row-mark');
+  const label = row.querySelector('.label');
+  const ring = mark ? getComputedStyle(mark, '::after') : null;
+  return {
+    busy: !!mark && mark.classList.contains('busy'),
+    waiting: !!mark && mark.classList.contains('waiting'),
+    unread: row.classList.contains('unread'),
+    active: row.classList.contains('active'),
+    dot: (row.querySelector('.dot') || {}).className || '',
+    weight: label ? getComputedStyle(label).fontWeight : '',
+    ring: ring ? { colour: ring.borderTopColor, motion: ring.animationDuration, name: ring.animationName } : null,
+  };
+}, rowSel(id));
+
+// awaitRow waits for one fact about a row and hands back how long it took, so
+// a verdict can print "spun after 1.2 s" instead of "true".
+async function awaitRow(page, id, test, timeout = 15000) {
+  const started = Date.now();
+  let seen = null;
+  while (Date.now() - started < timeout) {
+    seen = await rowActivity(page, id);
+    if (seen && test(seen)) return { ok: true, ms: Date.now() - started, seen };
+    await wait(200);
+  }
+  return { ok: false, ms: Date.now() - started, seen };
+}
+
+const took = (r) => (r.ok ? (r.ms / 1000).toFixed(1) + ' s' : 'never, ' + JSON.stringify(r.seen));
+
+// clickRow opens another session from the list, which is what makes the one
+// left behind a row nobody is looking at.
+//
+// It waits for the row to become the active one, not merely for the address to
+// change. Attaching is debounced by a tenth of a second - a run of taps down
+// the list is one decision - so a second tap that lands inside that window is
+// deliberately ignored, and a scenario that only waited for the hash would
+// race the debounce and click into nothing.
+async function clickRow(page, id) {
+  await ensureNav(page);
+  // The name, not the row: a row also carries an "i" and a "…", and neither of
+  // them is what a person aiming at a session hits.
+  await page.click(rowSel(id) + ' .label');
+  await page.waitForFunction((want) => location.hash.slice(1) === want, id, { timeout: 15000 });
+  await page.waitForSelector(rowSel(id) + '.active', { timeout: 15000 });
+  await page.waitForSelector('#term .xterm', { timeout: 15000 });
+}
+
+/**
+ * secondTab opens another tab on one session.
+ *
+ * It is what makes "finished and nobody saw it" testable without cheating.
+ * Leaving a session by clicking another row blurs the terminal, and a blur is
+ * a real escape sequence that a real program asked for - so it reaches the
+ * pane as input, and input is what clears the unread mark. That is the right
+ * behaviour (you were looking at it when it happened), but it means the two
+ * things this suite has to prove separately - the mark appearing, and each of
+ * the two ways it goes away - have to happen to a session this tab is not the
+ * one typing into.
+ */
+async function secondTab(s, id) {
+  const page = await s.context.newPage();
+  page.on('pageerror', (err) => s.errors.push('pageerror: ' + err.message));
+  await page.goto(s.url + '/#' + id, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#term .xterm', { timeout: 20000 });
+  await wait(1200);
+  return page;
+}
+
+// A turn that takes a measurable amount of time, in the words each program
+// understands. The three fakes carry the real furniture and the real signals;
+// a shell is busy because something other than the shell is in the foreground.
+async function keepBusy(page, harness, ms) {
+  if (harness === 'shell') await typeLine(page, 'sleep ' + Math.round(ms / 1000));
+  else await typeLine(page, '/busy ' + ms);
+}
+
+// activityFor is one harness's whole story: it starts working and the row says
+// so, it finishes while nobody is looking, and the name goes bold.
+async function activityFor(harness) {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    // A second session to stand on. "Finished and nobody saw it" is only a
+    // fact about a row that is not the one being looked at.
+    const other = await startSession(s.page, 'shell');
+    const id = await startSession(s.page, harness);
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+
+    // Start from a row that is not already turning, or "it spins while it is
+    // working" would be a measurement of the moment before.
+    const settled = await awaitRow(s.page, id, (r) => !r.busy, 20000);
+    ok(settled.ok, harness + ' settles into idle before it is given anything to do', took(settled));
+
+    await keepBusy(s.page, harness, 8000);
+    const spun = await awaitRow(s.page, id, (r) => r.busy, 8000);
+    ok(spun.ok, 'the row spins while ' + harness + ' is working', took(spun));
+    ok(!spun.seen || spun.seen.ring === null || spun.seen.ring.name === 'spin',
+      'and the ring is what turns, not a glyph of its own',
+      spun.seen && spun.seen.ring ? spun.seen.ring.name + ' ' + spun.seen.ring.motion : 'no ring');
+
+    // Step off it while it is still working, so the end of the turn happens
+    // with nobody watching - which is the whole of what unread means.
+    await clickRow(s.page, other);
+    const done = await awaitRow(s.page, id, (r) => !r.busy && r.unread, 30000);
+    ok(done.ok, 'it stops spinning and its name goes bold when the turn ends', took(done));
+    ok(!done.seen || Number(done.seen.weight) >= 600, 'the bold is real weight, not a colour',
+      done.seen ? done.seen.weight : 'no row');
+
+    await shot(s.page, 'activity-' + harness);
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+const activityclaude = () => activityFor('claude');
+const activitycodex = () => activityFor('codex');
+const activityopencode = () => activityFor('opencode');
+const activityshell = () => activityFor('shell');
+
+// A permission prompt is the one state that may sit for an hour: the person it
+// is waiting for is driving. So it is drawn differently from working - a ring
+// that does not turn and an amber dot - and it does not time out.
+async function activitywaiting() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  let asking = null;
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    const other = await startSession(s.page, 'shell');
+    const id = await startSession(s.page, 'claude');
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    await clickRow(s.page, other);
+
+    // The prompt is raised from a tab of its own, so the tab that watches the
+    // row never touches the session and the mark is honestly unseen. With the
+    // exact layer gone the only things holding `waiting` are the screen and
+    // the stickiness rule, which is the case worth testing.
+    asking = await secondTab(s, id);
+    await typeLine(asking, '/nofile');
+    await wait(500);
+    await typeLine(asking, '/ask');
+
+    const asked = await awaitRow(s.page, id, (r) => r.waiting, 20000);
+    ok(asked.ok, 'a permission prompt draws a ring that does not turn', took(asked));
+    ok(!asked.seen || asked.seen.dot.includes('amber'), 'and turns the state dot amber',
+      asked.seen ? asked.seen.dot : 'no row');
+    ok(!asked.seen || !asked.seen.ring || asked.seen.ring.name === 'none',
+      'the waiting ring carries no animation at all',
+      asked.seen && asked.seen.ring ? asked.seen.ring.name : 'no ring');
+    const bold = await awaitRow(s.page, id, (r) => r.unread, 15000);
+    ok(bold.ok, 'needing an answer is unread too', took(bold));
+
+    // HardQuiet is thirty seconds of silence, and a prompt is silent by
+    // nature: somebody is driving. This is the assertion the whole stickiness
+    // rule exists for, so it is measured rather than reasoned about.
+    await wait(34000);
+    const still = await rowActivity(s.page, id);
+    ok(!!still && still.waiting && still.dot.includes('amber'),
+      'and thirty-four silent seconds later it is still waiting', JSON.stringify(still));
+
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally {
+    if (asking) await asking.close().catch(() => {});
+    await s.stop();
+  }
+}
+
+// The runaway guard. A harness that paints the furniture of a turn and then
+// stops writing anything at all - no output, no status file - must not spin
+// for ever: thirty seconds of silence with no exact signal is idle.
+async function activityfallback() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    const id = await startSession(s.page, 'claude');
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    await wait(1500);
+
+    await typeLine(s.page, '/nofile');
+    await wait(500);
+    await typeLine(s.page, '/hang 90000');
+    const spun = await awaitRow(s.page, id, (r) => r.busy, 10000);
+    ok(spun.ok, 'a hung turn starts out looking like work', took(spun));
+
+    const freed = await awaitRow(s.page, id, (r) => !r.busy, 45000);
+    ok(freed.ok, 'and the row leaves busy on its own, with the harness still hung', took(freed));
+
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+// The unread mark, and the two things that take it away: opening the row, and
+// typing into the session it belongs to.
+async function unread() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  let working = null;
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    const other = await startSession(s.page, 'shell');
+    const id = await startSession(s.page, 'claude');
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const watched = await rowActivity(s.page, id);
+    ok(!watched.unread && watched.active, 'the session being looked at is never bold',
+      JSON.stringify({ unread: watched.unread, active: watched.active }));
+
+    await clickRow(s.page, other);
+    working = await secondTab(s, id);
+    await typeLine(working, '/busy 2500');
+    const bold = await awaitRow(s.page, id, (r) => r.unread, 30000);
+    ok(bold.ok, 'a turn that ends where nobody is looking makes its name bold', took(bold));
+    ok(!bold.seen || Number(bold.seen.weight) >= 600, 'the bold is real weight, not a colour',
+      bold.seen ? bold.seen.weight : 'no row');
+
+    await clickRow(s.page, id);
+    const opened = await awaitRow(s.page, id, (r) => !r.unread, 10000);
+    ok(opened.ok, 'opening the row is seeing it, and clears the mark', took(opened));
+    const server = await sessionRow(s, id);
+    ok(server.activity && server.activity.unread === false,
+      'and the server agrees, so every other tab stops bolding it too',
+      JSON.stringify(server.activity));
+
+    // The other way it goes away: somebody typed into that session. It is the
+    // server that decides, on an input frame it accepted, so the tab that is
+    // not typing hears about it in the ordinary way.
+    await clickRow(s.page, other);
+    await typeLine(working, '/busy 2500');
+    const again = await awaitRow(s.page, id, (r) => r.unread, 30000);
+    ok(again.ok, 'a second turn ends unseen and the name is bold again', took(again));
+    await working.click('#term .xterm-screen');
+    await focusTerm(working);
+    await working.keyboard.type('x');
+    const typed = await awaitRow(s.page, id, (r) => !r.unread, 15000);
+    ok(typed.ok, 'and typing into that session clears it everywhere', took(typed));
+
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally {
+    if (working) await working.close().catch(() => {});
+    await s.stop();
+  }
+}
+
+/* ------------------------------------------ status, agent and audio helpers */
+
+// A 44 byte WAV header and one sample of silence: enough for the browser to
+// accept it as audio and play nothing. Piper is not installed on a test
+// machine, and what is under test is that the page asks for the render and
+// hands it the right words - not that this laptop can sing.
+function silentWav() {
+  const data = Buffer.alloc(46);
+  data.write('RIFF', 0);
+  data.writeUInt32LE(38, 4);
+  data.write('WAVEfmt ', 8);
+  data.writeUInt32LE(16, 16);
+  data.writeUInt16LE(1, 20);
+  data.writeUInt16LE(1, 22);
+  data.writeUInt32LE(16000, 24);
+  data.writeUInt32LE(32000, 28);
+  data.writeUInt16LE(2, 32);
+  data.writeUInt16LE(16, 34);
+  data.write('data', 36);
+  data.writeUInt32LE(2, 40);
+  return data;
+}
+
+// stubSpeech intercepts the one request the page makes to be read out loud and
+// records what it was asked to say.
+async function stubSpeech(context) {
+  const said = [];
+  await context.route('**/api/voice/speak', async (route) => {
+    let text = '';
+    try { text = (route.request().postDataJSON() || {}).text || ''; } catch { /* not JSON */ }
+    said.push(text);
+    await route.fulfill({ status: 200, contentType: 'audio/wav', body: silentWav() });
+  });
+  return said;
+}
+
+/**
+ * assistRoutes says whether this build already has the Status and Agent
+ * endpoints, and stands in for them when it does not.
+ *
+ * WP2 and WP3 were built in parallel against one written contract. A frontend
+ * scenario that could only run after the backend landed would have proved
+ * nothing until the last day, so the page is driven against the real routes
+ * when they exist and against the contract's own shapes when they do not - and
+ * the verdict says which of the two it was.
+ */
+async function assistRoutes(s, id, { status, replies = [] } = {}) {
+  const probe = await s.context.request.get(s.url + '/api/sessions/' + encodeURIComponent(id) + '/agent');
+  const real = probe.status() !== 404;
+  const posts = { status: 0, agent: [], cancel: 0 };
+  if (real) {
+    // Count what the page asks for without answering it: the server does.
+    await s.page.route('**/api/sessions/*/status', async (route) => { posts.status += 1; await route.fallback(); });
+    await s.page.route('**/api/sessions/*/agent', async (route) => {
+      if (route.request().method() === 'POST') {
+        try { posts.agent.push((route.request().postDataJSON() || {}).prompt || ''); } catch { posts.agent.push(''); }
+      }
+      await route.fallback();
+    });
+    return { real, posts };
+  }
+  await s.page.route('**/api/sessions/*/status', async (route) => {
+    posts.status += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ text: status || 'It is waiting for an instruction.', language: 'en', state: 'idle', model: 'stub/model' }),
+    });
+  });
+  await s.page.route('**/api/sessions/*/agent', async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ run: null }) });
+      return;
+    }
+    try { posts.agent.push((route.request().postDataJSON() || {}).prompt || ''); } catch { posts.agent.push(''); }
+    await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ run_id: 'stub-run' }) });
+  });
+  await s.page.route('**/api/sessions/*/agent/cancel', async (route) => {
+    posts.cancel += 1;
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
+  });
+  void replies;
+  return { real, posts };
+}
+
+const noticeText = (page) => page.evaluate(() => {
+  const host = document.getElementById('termNotice');
+  if (!host || host.hidden) return '';
+  const line = host.querySelector('.notice-text');
+  return line ? line.textContent : '';
+});
+
+// The Status button: one request, the answer on screen as words, and the same
+// words handed to the voice.
+async function statusspeak() {
+  const stub = await openRouterStub({ text: 'Claude Code has finished and is waiting for your next instruction.' });
+  const s = await start({
+    viewport: { width: 1280, height: 720 },
+    args: ['--autoplay-policy=no-user-gesture-required'],
+  });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    const saved = await s.context.request.put(s.url + '/api/settings', {
+      data: { settings: { openrouter: { api_key: 'e2e-key', base_url: stub.url } } },
+    });
+    ok(saved.ok(), 'the gateway is pointed at the stub', saved.status() + ' ' + stub.url);
+    const said = await stubSpeech(s.context);
+    await open(s);
+    const id = await startSession(s.page, 'claude');
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const wired = await assistRoutes(s, id, { status: stub.text });
+    ok(true, 'the Status endpoint is ' + (wired.real ? 'the real one' : 'stood in for by the contract shape'),
+      wired.real ? 'server' : 'stub');
+
+    await s.page.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 15000 });
+    await s.page.click('#statusBtn');
+    await s.page.waitForFunction(() => {
+      const host = document.getElementById('termNotice');
+      return !!host && !host.hidden && host.dataset.kind === 'status';
+    }, null, { timeout: 40000 });
+    const shown = await noticeText(s.page);
+    ok(shown.includes('finished') && shown === stub.text,
+      'what the model said is on screen, in words', oneLine(shown));
+
+    for (let i = 0; i < 60 && said.length === 0; i += 1) await wait(200);
+    ok(said.length === 1, 'and it was read out loud exactly once', said.length + ' render(s)');
+    ok(said[0] === stub.text, 'with the words that are on the screen', oneLine(said[0] || ''));
+
+    // The model id and the state are facts about the machine, so they are
+    // behind the "i" and never in the sentence.
+    const tip = await s.page.$eval('#termNotice .tip-bubble', (n) => n.textContent).catch(() => '');
+    ok(!shown.includes('stub/model') && !shown.includes('idle'),
+      'no identifier leaked into the line that is read out loud', oneLine(shown));
+    ok(tip.length > 0, 'and the details are under the "i" beside it', oneLine(tip));
+
+    await shot(s.page, 'status-speak');
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally {
+    await s.stop();
+    await stub.close();
+  }
+}
+
+// The Agent button: a sentence in, a progress line on screen, keystrokes in
+// the pane, and a run that ends by saying what it did.
+async function agentrun() {
+  const step1 = JSON.stringify({
+    actions: [{ text: 'hello from the operator' }, { key: 'Enter' }],
+    done: false, summary: 'typing the greeting', note: '',
+  });
+  const step2 = JSON.stringify({ actions: [], done: true, summary: 'the greeting was typed', note: '' });
+  const stub = await openRouterStub({ text: step1, replies: [step1, step2] });
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await s.context.request.put(s.url + '/api/settings', {
+      data: { settings: { openrouter: { api_key: 'e2e-key', base_url: stub.url } } },
+    });
+    await open(s);
+    const id = await startSession(s.page, 'claude');
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const wired = await assistRoutes(s, id, {});
+    ok(true, 'the Agent endpoint is ' + (wired.real ? 'the real one' : 'stood in for by the contract shape'),
+      wired.real ? 'server' : 'stub');
+
+    await s.page.waitForSelector('#agentBtn:not([hidden]):not([disabled])', { timeout: 15000 });
+    await s.page.click('#agentBtn');
+    await s.page.waitForSelector('dialog.modal[open]', { timeout: 10000 });
+    const asked = await s.page.$eval('dialog.modal .modal-title', (n) => n.textContent);
+    ok(/what should it do/i.test(asked), 'the button asks what it should do, in the app’s own dialog', asked);
+    await s.page.fill('dialog.modal input.input', 'say hello in the terminal');
+    await s.page.click('dialog.modal .btn.primary');
+
+    await s.page.waitForFunction(() => {
+      const host = document.getElementById('termNotice');
+      return !!host && !host.hidden && host.dataset.kind === 'agent';
+    }, null, { timeout: 20000 });
+    const line = await noticeText(s.page);
+    ok(/^Step \d/.test(line), 'a progress line appears as soon as the run is accepted', oneLine(line));
+    const cancel = await s.page.$eval('#termNotice .btn', (n) => n.textContent).catch(() => '');
+    ok(cancel === 'Cancel', 'and it carries the way to stop it', cancel || 'no button');
+    ok(wired.posts.agent[0] === 'say hello in the terminal', 'the goal reached the server whole',
+      JSON.stringify(wired.posts.agent));
+
+    if (wired.real) {
+      const typed = await awaitScreen(s.page, 'you said: hello from the operator', 90000);
+      ok(typed, 'the operator typed into the pane and pressed Enter', oneLine(await screen(s.page)).slice(-90));
+      const finished = await s.page.waitForFunction(() => {
+        const host = document.getElementById('termNotice');
+        return !!host && host.dataset.kind === 'agent' && /greeting/.test(host.textContent);
+      }, null, { timeout: 90000 }).then(() => true).catch(() => false);
+      ok(finished, 'and the run ends by saying what it did', oneLine(await noticeText(s.page)));
+    } else {
+      ok(true, 'the keystrokes and the summary need the server-side loop', 'not run against a stub');
+    }
+
+    await shot(s.page, 'agent-run');
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally {
+    await s.stop();
+    await stub.close();
+  }
+}
+
+// Audio mode: a phone in a car. Two buttons a thumb cannot miss, the terminal
+// still there and merely shorter, the choice remembered across a reload, and
+// one spoken summary per turn that ends - without anybody asking for it.
+async function audiomode() {
+  const stub = await openRouterStub({ text: 'The session has finished and is waiting for you.' });
+  const s = await start({
+    viewport: { width: 390, height: 844 },
+    touch: true,
+    permissions: ['microphone'],
+    args: [
+      '--use-fake-ui-for-media-stream',
+      '--use-fake-device-for-media-stream',
+      '--autoplay-policy=no-user-gesture-required',
+    ],
+  });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await s.context.request.put(s.url + '/api/settings', {
+      data: { settings: { openrouter: { api_key: 'e2e-key', base_url: stub.url } } },
+    });
+    const said = await stubSpeech(s.context);
+    await open(s);
+    const id = await startSession(s.page, 'claude');
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const wired = await assistRoutes(s, id, { status: stub.text });
+    ok(true, 'the Status endpoint is ' + (wired.real ? 'the real one' : 'stood in for by the contract shape'),
+      wired.real ? 'server' : 'stub');
+
+    await s.page.waitForSelector('#audioModeBtn:not([hidden])', { timeout: 15000 });
+    await s.page.click('#audioModeBtn');
+    await s.page.waitForSelector('#audioBar:not([hidden])', { timeout: 10000 });
+    const bar = await s.page.evaluate(() => {
+      const buttons = [...document.querySelectorAll('#audioBar .audio-btn')];
+      const term = document.querySelector('#term .xterm');
+      return {
+        labels: buttons.map((b) => b.textContent.trim()),
+        heights: buttons.map((b) => Math.round(b.getBoundingClientRect().height)),
+        fills: buttons.map((b) => getComputedStyle(b).backgroundColor),
+        termVisible: !!term && term.getBoundingClientRect().height > 80,
+        pressed: document.getElementById('audioModeBtn').getAttribute('aria-pressed'),
+      };
+    });
+    ok(bar.labels.join(',') === 'Status,Agent', 'two buttons, one word each', bar.labels.join(','));
+    ok(bar.heights.every((h) => h >= 64), 'each of them is big enough for a thumb', bar.heights.join(' / '));
+    ok(bar.fills.every((c) => c === WHITE), 'on the same white as everything else', bar.fills.join(' '));
+    ok(bar.termVisible, 'and the terminal is still there, merely shorter', 'the pane is drawn');
+    ok(bar.pressed === 'true', 'the toggle says it is on', bar.pressed);
+
+    await s.page.reload({ waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    await s.page.waitForSelector('#audioBar:not([hidden])', { timeout: 15000 });
+    ok(true, 'and the choice survives a reload, because it is this phone’s', 'audio mode still on');
+    // The reload replaced the page, so the interception is re-armed on it.
+    const again = await assistRoutes(s, id, { status: stub.text });
+    // Everything the one line under the terminal ever says, from here on. A
+    // run that is typing owns that line, and an auto-status that fired while
+    // it was live would replace it with the refusal below.
+    await s.page.evaluate(() => {
+      const host = document.getElementById('termNotice');
+      window.__notices = [];
+      new MutationObserver(() => {
+        const said = (host.textContent || '').trim();
+        if (said && window.__notices[window.__notices.length - 1] !== said) window.__notices.push(said);
+      }).observe(host, { subtree: true, childList: true, characterData: true });
+    });
+
+    // The rule audio mode exists for: a turn that ends says so out loud, on
+    // its own, for the session being listened to and for no other.
+    await typeLine(s.page, '/busy 3000');
+    await awaitRow(s.page, id, (r) => r.busy, 12000);
+    const spoke = await s.page.waitForFunction(() => {
+      const host = document.getElementById('termNotice');
+      return !!host && !host.hidden && host.dataset.kind === 'status';
+    }, null, { timeout: 60000 }).then(() => true).catch(() => false);
+    ok(spoke, 'a turn that ends asks for a status by itself', spoke ? 'unasked' : 'never');
+    ok(again.posts.status === 1, 'exactly once for one transition out of busy',
+      again.posts.status + ' request(s)');
+    for (let i = 0; i < 40 && said.length === 0; i += 1) await wait(200);
+    ok(said.length >= 1, 'and it is read out loud', said.length + ' render(s)');
+
+    // The Agent button in audio mode records instead of asking: what is said
+    // is the goal, and it is posted without a confirmation step.
+    await s.page.click('#audioAgent');
+    await s.page.waitForSelector('#audioAgent.rec', { timeout: 10000 });
+    await wait(1400);
+    const recording = await s.page.$eval('#audioAgent', (n) => n.textContent.trim());
+    ok(/^Stop/.test(recording), 'the same button is the way to stop the recording', recording);
+    await s.page.click('#audioAgent');
+    const posted = await s.page.waitForFunction(() => {
+      const host = document.getElementById('termNotice');
+      return !!host && !host.hidden && host.dataset.kind === 'agent';
+    }, null, { timeout: 60000 }).then(() => true).catch(() => false);
+    ok(posted, 'and what was heard becomes a run with no confirmation step',
+      posted ? 'a run started' : 'nothing was posted');
+    ok(again.posts.agent.length === 1 && again.posts.agent[0] === stub.text,
+      'the transcript is the goal, verbatim', JSON.stringify(again.posts.agent));
+
+    // While a run is live the session's own busy-to-idle is the run typing,
+    // not a turn ending: it neither asks for a status nor replaces the
+    // progress line with the refusal that request would earn.
+    const notices = await s.page.evaluate(() => window.__notices || []);
+    const refused = notices.filter((n) => /agent is typing/i.test(n));
+    ok(refused.length === 0, 'the progress line is never pushed aside by a status refusal',
+      refused.length ? oneLine(refused[0]) : 'never shown');
+    ok(again.posts.status === 1, 'and no second status is asked for, then or later',
+      again.posts.status + ' request(s) in all');
+
+    await shot(s.page, 'audio-mode');
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally {
+    await s.stop();
+    await stub.close();
+  }
+}
+
 // -------------------------------------------------------------------- run
 
 const ALL = [
@@ -2911,6 +3566,16 @@ const ALL = [
   ['createopencode', 'OpenCode names its session over its own authenticated server', createopencode],
   ['rebootresume', 'a machine that rebooted, and the session that comes back with its conversation', rebootresume],
   ['lighttheme', 'the white terminal, from the launch flag to the drawn pixel', lighttheme],
+  ['activity-claude', 'Claude Code working, finishing, and a name that goes bold', activityclaude],
+  ['activity-codex', 'Codex working, finishing, and a name that goes bold', activitycodex],
+  ['activity-opencode', 'OpenCode working, finishing, and a name that goes bold', activityopencode],
+  ['activity-shell', 'a shell with something running in it, and the row that says so', activityshell],
+  ['activity-waiting', 'a permission prompt: a still ring, an amber dot, and no timeout', activitywaiting],
+  ['activity-fallback', 'a harness that hangs, and the row that leaves busy anyway', activityfallback],
+  ['unread', 'bold when nobody saw it, gone when the row is opened or typed into', unread],
+  ['status-speak', 'Status says what the screen shows, on the page and out loud', statusspeak],
+  ['agent-run', 'a goal in words, a progress line, and keystrokes in the pane', agentrun],
+  ['audio-mode', 'two large buttons, a remembered choice, and a turn that speaks for itself', audiomode],
   ['design', 'white surfaces, marks, hover-only detail and motion that does not restart', design],
   ['livesession', 'one real session against the real Claude Code CLI', livesession, { live: true }],
 ];

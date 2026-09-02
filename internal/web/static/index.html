@@ -28,6 +28,10 @@
       </div>
     </div>
     <nav class="chat-list" id="sessionList"></nav>
+    <!-- What a session just did, for a reader that cannot see the sidebar. It
+         is the only place the activity of a row is put into words, and it is
+         throttled so a busy machine does not talk over itself. -->
+    <div class="sr-only" id="activityLive" role="status" aria-live="polite"></div>
     <div class="side-foot">
       <a class="btn" href="/admin">
         <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 9 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></svg>
@@ -62,6 +66,18 @@
            cross, quiet enough to sit beside the name, and it is hidden
            altogether on a narrow screen. -->
       <span class="term-size" id="termSize" hidden></span>
+      <!-- What this session is doing, said out loud; what it should do next,
+           done for you; and the mode that makes both of them thumb-sized.
+           All three are hidden until there is a session to ask about. -->
+      <button class="icon-btn" id="statusBtn" title="Say what this is doing" aria-label="Say what this is doing" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 0 1-8 8H5.5L4 21.5V12a8 8 0 1 1 16 0z"/></svg>
+      </button>
+      <button class="icon-btn" id="agentBtn" title="Have it do something" aria-label="Have it do something" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M18.5 16.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></svg>
+      </button>
+      <button class="icon-btn" id="audioModeBtn" title="Audio mode" aria-label="Audio mode" aria-pressed="false" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14v-2a8 8 0 0 1 16 0v2"/><path d="M4 14h2.5a1 1 0 0 1 1 1v3.5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1zM20 14h-2.5a1 1 0 0 0-1 1v3.5a1 1 0 0 0 1 1H19a1 1 0 0 0 1-1z"/></svg>
+      </button>
       <button class="icon-btn" id="sessionMenu" title="Session actions" hidden aria-haspopup="true" aria-expanded="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>
       </button>
@@ -77,6 +93,14 @@
       <div class="term-notice" id="termNotice" hidden></div>
       <!-- Before the first session exists there is nothing to attach to. -->
       <div class="term-empty" id="termEmpty" hidden></div>
+    </div>
+
+    <!-- Audio mode: the terminal stays where it is and simply gets shorter,
+         and everything a passenger needs is two buttons a thumb cannot miss.
+         assist.js fills them in and decides what they say. -->
+    <div class="audio-bar" id="audioBar" hidden>
+      <button class="audio-btn" id="audioStatus" type="button">Status</button>
+      <button class="audio-btn" id="audioAgent" type="button">Agent</button>
     </div>
 
     <!-- The keys a phone keyboard does not have, and the field a whole line is

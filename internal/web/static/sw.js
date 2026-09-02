@@ -55,6 +55,7 @@ const SHELL = [
   '/static/js/logos.js',
   '/static/js/combobox.js',
   '/static/js/voice.js',
+  '/static/js/assist.js',
   '/favicon.png',
   '/static/img/logo.png',
 ].map((path) => (path === '/' ? path : path + '?v=' + VERSION));
