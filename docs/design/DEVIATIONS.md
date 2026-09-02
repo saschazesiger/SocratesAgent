@@ -1389,6 +1389,40 @@ else in it was checked and left alone.
    nothing would ever have removed it again. `chatDriver.append` now drops a
    message for a session that is no longer in the store.
 
+## The title run waits half a minute (2026-09-02)
+
+**§B.6 — the moment is the first edge out of `busy` *after the session has been
+alive for 30 seconds*.** The section says "the first committed edge out of
+`busy` for that session", full stop, and that is what shipped. In use it names
+the session after the harness rather than after the work: a CLI starting up is
+work — it paints its box, reads its config, discovers its models and settles —
+and the detector commits `busy → idle` from that, seconds after the session
+exists and before anybody has typed anything. What is on the screen at that
+moment is a welcome box, so the name is "Claude Code in a directory", and
+because the turn is spent on the attempt (§B.6, *exactly once*) that is the
+name the session keeps.
+
+`titleDriver.run` therefore returns early, silently and **without marking the
+session**, while `now - sessions.created_at < titleMinAge` (30 s). Nothing is
+asked and nothing is spent, so the next turn to finish is still the one that
+names it — which is the whole of the rule: earliest after half a minute, and
+from there the first turn to finish. The clock is a field on the driver
+(`now func() time.Time`, moved with `setClock`, read under the driver's lock
+because the run that reads it is a goroutine) so that the gate can be proven
+against the real 30 s constant without a unit test standing still for it.
+
+The cost is the case where a session's very first turn both starts and finishes
+inside that half minute: it keeps its placeholder until the next turn ends.
+That is the right way round — a row that is briefly still called
+`Claude Code · 2 Sep 17:42` is a smaller loss than a row permanently called
+after the program running in it, and on a phone the first turn of real work
+rarely finishes in under thirty seconds.
+
+`session-title` in the e2e suite proves both halves in the browser: a first
+turn driven and finished while the session is young leaves the placeholder and
+the gateway untouched, and the turn after the mark renames the row and the
+header with no reload. It is why that scenario now takes about a minute.
+
 ## The controls those entries argue about are gone (2026-09-02)
 
 A closing note rather than a deviation. The line composer under the pane, the

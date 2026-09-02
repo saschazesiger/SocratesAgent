@@ -42,7 +42,22 @@ func (e *assistEnv) codingSession(dir string) string {
 // working and now is not. A real pane produces it through the detector; a test
 // produces it here, so that what is tested is the naming and not the timing of
 // a harness.
+//
+// The driver's clock is wound past the age gate first. A session a test has
+// just created is seconds old, and every test below is about what a finished
+// turn is named, not about when a turn counts - which is
+// TestTitleRunIgnoresATurnThatFinishesTooEarly, and the only test that leaves
+// the clock where it is.
 func (e *assistEnv) answered(id string) {
+	e.srv.titles.setClock(func() time.Time { return time.Now().Add(titleMinAge) })
+	e.srv.titles.observe(id, termux.StateBusy)
+	e.srv.titles.observe(id, termux.StateIdle)
+}
+
+// tooEarly drives the same edge with the clock left alone, which is what the
+// harness's own start-up looks like: a session that has been alive for a
+// moment and has already been busy once.
+func (e *assistEnv) tooEarly(id string) {
 	e.srv.titles.observe(id, termux.StateBusy)
 	e.srv.titles.observe(id, termux.StateIdle)
 }
@@ -204,6 +219,37 @@ func TestTitleRunSkipsTheShell(t *testing.T) {
 	if n := e.gw.count(); n != 0 {
 		t.Fatalf("the gateway saw %d calls for a shell session", n)
 	}
+}
+
+// A turn that finishes in the first half minute of a session's life is the
+// harness settling in, not an answer. Nothing is asked and nothing is spent:
+// the session is still nameless, and the next turn to finish names it.
+func TestTitleRunIgnoresATurnThatFinishesTooEarly(t *testing.T) {
+	e := newAssistEnv(t)
+	id := e.codingSession("early")
+	before, _ := e.srv.store.GetSession(id)
+	e.gw.always("Starting Claude Code in a directory")
+
+	e.tooEarly(id)
+	time.Sleep(700 * time.Millisecond)
+
+	if n := e.gw.count(); n != 0 {
+		t.Fatalf("the gateway saw %d calls for a session %s old", n,
+			time.Since(time.UnixMilli(before.CreatedAt)).Round(time.Millisecond))
+	}
+	row, _ := e.srv.store.GetSession(id)
+	if row.Title != before.Title {
+		t.Fatalf("the session was renamed to %q before it was worth naming", row.Title)
+	}
+	// Nothing was spent, so the turn after the session is old enough still
+	// names it.
+	if row.TitleSource != "" {
+		t.Fatalf("title_source = %q, want it still open", row.TitleSource)
+	}
+
+	e.gw.always("Fixing the failing parser test")
+	e.answered(id)
+	e.titleOf(id, "Fixing the failing parser test", 20*time.Second)
 }
 
 // A model that answers with nothing usable has still had its turn: the name

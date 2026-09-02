@@ -3569,14 +3569,21 @@ const noticeText = (page) => page.evaluate(() => {
   return line ? line.textContent : '';
 });
 
-// A session names itself. The first answer a harness gives is what the sidebar
-// row and the header are called from then on, and neither is reloaded to find
-// out: the name arrives on the socket every browser already has open.
+// TITLE_MIN_AGE is the server's own gate, in milliseconds: a turn that
+// finishes before a session is this old is the harness settling in, not an
+// answer, and it is not named after.
+const TITLE_MIN_AGE = 30000;
+
+// A session names itself. The first answer a harness gives *once the session is
+// old enough for that answer to be about the work* is what the sidebar row and
+// the header are called from then on, and neither is reloaded to find out: the
+// name arrives on the socket every browser already has open.
 async function sessiontitle() {
   const want = 'Fixing the failing parser test';
   // With the quotes and the full stop a model puts round a title, because
   // taking them off again is part of the feature.
   const stub = await openRouterStub({ text: '"' + want + '."' });
+  const asked = () => stub.calls.filter((c) => String(c.path).includes('chat/completions')).length;
   const s = await start({ viewport: { width: 1280, height: 720 } });
   try {
     await setup(s.page, s.url);
@@ -3588,32 +3595,50 @@ async function sessiontitle() {
     await open(s);
     const id = await startSession(s.page, 'claude');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const born = await createdAt(s, id);
 
     const before = await s.page.$eval(rowSel(id) + ' .label', (n) => n.textContent.trim());
     ok(before.startsWith('Claude Code'), 'it starts life under the placeholder name', before);
 
     const settled = await awaitRow(s.page, id, (r) => !r.busy, 20000);
     ok(settled.ok, 'it settles before it is given anything to do', took(settled));
+
+    // The turn that finishes too early. A harness starting up looks like work,
+    // and a name made from that screen is the name of the program.
     await keepBusy(s.page, 'claude', 3000);
     const spun = await awaitRow(s.page, id, (r) => r.busy, 10000);
     ok(spun.ok, 'it goes to work on the first thing it is asked', took(spun));
+    const stopped = await awaitRow(s.page, id, (r) => !r.busy, 20000);
+    ok(stopped.ok, 'and that first turn finishes', took(stopped));
+    const age = Date.now() - born;
+    ok(age < TITLE_MIN_AGE, 'it finished inside the first half minute of the session',
+      (age / 1000).toFixed(1) + ' s old');
+    await wait(2000);
+    const early = await s.page.$eval(rowSel(id) + ' .label', (n) => n.textContent.trim());
+    ok(asked() === 0 && early === before, 'so nothing was asked and the placeholder stayed',
+      asked() + ' calls, ' + early);
+
+    // Past the mark, the next turn to finish is the one that names it.
+    await wait(Math.max(0, TITLE_MIN_AGE - (Date.now() - born)) + 500);
+    await keepBusy(s.page, 'claude', 3000);
+    const again = await awaitRow(s.page, id, (r) => r.busy, 10000);
+    ok(again.ok, 'it is asked a second thing, now that it has been alive a while', took(again));
 
     await s.page.waitForFunction((arg) => {
       const node = document.querySelector(arg.sel);
       return !!node && node.textContent.trim() === arg.want;
     }, { sel: rowSel(id) + ' .label', want }, { timeout: 45000 });
-    ok(true, 'the row renames itself when the first answer arrives, with no reload', want);
+    ok(true, 'the row renames itself when that answer arrives, with no reload', want);
 
     const header = await s.page.$eval('#sessionTitle', (n) => n.textContent.trim());
     ok(header === want, 'and the header of the session being watched says the same', header);
 
-    // Once. A second turn is not a second name, and it is not asked for again.
-    const asks = stub.calls.filter((c) => String(c.path).includes('chat/completions')).length;
+    // Once. A third turn is not a second name, and it is not asked for again.
+    const asks = asked();
     await keepBusy(s.page, 'claude', 1500);
     await awaitRow(s.page, id, (r) => !r.busy, 20000);
     await wait(2000);
-    const after = stub.calls.filter((c) => String(c.path).includes('chat/completions')).length;
-    ok(asks === 1 && after === 1, 'the naming happened exactly once', asks + ' then ' + after);
+    ok(asks === 1 && asked() === 1, 'the naming happened exactly once', asks + ' then ' + asked());
     const still = await s.page.$eval(rowSel(id) + ' .label', (n) => n.textContent.trim());
     ok(still === want, 'and the name it was given stayed', still);
 
@@ -3624,6 +3649,17 @@ async function sessiontitle() {
     await s.stop();
     await stub.close();
   }
+}
+
+// createdAt is when the server thinks a session began, which is the clock the
+// age gate reads. A scenario that timed from its own `Date.now()` would be
+// measuring the browser instead.
+async function createdAt(s, id) {
+  const res = await s.context.request.get(s.url + '/api/sessions/' + encodeURIComponent(id));
+  const body = await res.json();
+  const born = body && body.session && body.session.created_at;
+  ok(typeof born === 'number' && born > 0, 'the session says when it began', String(born));
+  return born;
 }
 
 // The helpers the chat scenarios share.

@@ -1099,14 +1099,24 @@ const (
 	// titleMaxTokens is a handful of words. The model is asked for three to
 	// seven, and a ceiling stops a paragraph being paid for.
 	titleMaxTokens = 60
+	// titleMinAge is how old a session has to be before a finished turn is
+	// worth naming it after.
+	//
+	// A harness starting up is work: it paints its box, reads its config and
+	// settles, and the detector sees that as an edge out of busy before
+	// anybody has typed a word. Naming a session from that screen produces
+	// the name of the program - and spends the one go on it. Under this mark
+	// an edge is ignored rather than spent, so the next one still counts.
+	titleMinAge = 30 * time.Second
 )
 
 // titleDriver names a session once, the first time it has answered anything.
 //
-// The moment is the first committed edge out of `busy`: the harness has said
-// something, so there is a subject on the screen to name it after. It happens
-// whether or not anybody is looking, because the point of it is the sidebar of
-// the browser that is looking at a different session.
+// The moment is the first committed edge out of `busy` that lands after the
+// session has been alive for titleMinAge: the harness has said something, and
+// it is late enough for what it said to be the work rather than the start-up.
+// It happens whether or not anybody is looking, because the point of it is the
+// sidebar of the browser that is looking at a different session.
 //
 // It is once per session and the once is persisted (store.TitleAuto), so a
 // server restart does not rename a session that has already been named; a name
@@ -1115,6 +1125,10 @@ type titleDriver struct {
 	srv *Server
 
 	mu sync.Mutex
+	// now is the clock the age gate reads. It is a field so that the gate can
+	// be proven without a test standing still for half a minute; everything
+	// else reads time.Now directly.
+	now func() time.Time
 	// seen is the last committed state per session, which is where the edge
 	// out of busy is found: the callback carries the new state and not the old.
 	seen map[string]termux.State
@@ -1124,7 +1138,28 @@ type titleDriver struct {
 }
 
 func newTitleDriver(s *Server) *titleDriver {
-	return &titleDriver{srv: s, seen: map[string]termux.State{}, live: map[string]context.CancelFunc{}}
+	return &titleDriver{
+		srv:  s,
+		now:  time.Now,
+		seen: map[string]termux.State{},
+		live: map[string]context.CancelFunc{},
+	}
+}
+
+// clock is the driver's idea of the time, read under the lock because the run
+// that reads it is a goroutine and the tests that move it are not.
+func (d *titleDriver) clock() time.Time {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.now()
+}
+
+// setClock moves the age gate's clock. It exists for the tests of that gate
+// and for nothing else.
+func (d *titleDriver) setClock(now func() time.Time) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.now = now
 }
 
 // observe takes every committed activity change and starts the title run on
@@ -1183,6 +1218,12 @@ func (d *titleDriver) forget(sessionID string) {
 func (d *titleDriver) run(ctx context.Context, sessionID string) {
 	row, err := d.srv.store.GetSession(sessionID)
 	if err != nil || row.TitleSource != "" {
+		return
+	}
+	// Too young to be about anything yet. This is a silent return and not a
+	// spent turn: the session is named on the first turn that finishes after
+	// it has been alive for titleMinAge.
+	if d.clock().Sub(time.UnixMilli(row.CreatedAt)) < titleMinAge {
 		return
 	}
 	// A shell session is a directory and a prompt. There is nothing on its
