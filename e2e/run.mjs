@@ -3304,6 +3304,63 @@ const noticeText = (page) => page.evaluate(() => {
   return line ? line.textContent : '';
 });
 
+// A session names itself. The first answer a harness gives is what the sidebar
+// row and the header are called from then on, and neither is reloaded to find
+// out: the name arrives on the socket every browser already has open.
+async function sessiontitle() {
+  const want = 'Fixing the failing parser test';
+  // With the quotes and the full stop a model puts round a title, because
+  // taking them off again is part of the feature.
+  const stub = await openRouterStub({ text: '"' + want + '."' });
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    const saved = await s.context.request.put(s.url + '/api/settings', {
+      data: { settings: { openrouter: { api_key: 'e2e-key', base_url: stub.url } } },
+    });
+    ok(saved.ok(), 'the gateway is pointed at the stub', saved.status() + ' ' + stub.url);
+    await open(s);
+    const id = await startSession(s.page, 'claude');
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+
+    const before = await s.page.$eval(rowSel(id) + ' .label', (n) => n.textContent.trim());
+    ok(before.startsWith('Claude Code'), 'it starts life under the placeholder name', before);
+
+    const settled = await awaitRow(s.page, id, (r) => !r.busy, 20000);
+    ok(settled.ok, 'it settles before it is given anything to do', took(settled));
+    await keepBusy(s.page, 'claude', 3000);
+    const spun = await awaitRow(s.page, id, (r) => r.busy, 10000);
+    ok(spun.ok, 'it goes to work on the first thing it is asked', took(spun));
+
+    await s.page.waitForFunction((arg) => {
+      const node = document.querySelector(arg.sel);
+      return !!node && node.textContent.trim() === arg.want;
+    }, { sel: rowSel(id) + ' .label', want }, { timeout: 45000 });
+    ok(true, 'the row renames itself when the first answer arrives, with no reload', want);
+
+    const header = await s.page.$eval('#sessionTitle', (n) => n.textContent.trim());
+    ok(header === want, 'and the header of the session being watched says the same', header);
+
+    // Once. A second turn is not a second name, and it is not asked for again.
+    const asks = stub.calls.filter((c) => String(c.path).includes('chat/completions')).length;
+    await keepBusy(s.page, 'claude', 1500);
+    await awaitRow(s.page, id, (r) => !r.busy, 20000);
+    await wait(2000);
+    const after = stub.calls.filter((c) => String(c.path).includes('chat/completions')).length;
+    ok(asks === 1 && after === 1, 'the naming happened exactly once', asks + ' then ' + after);
+    const still = await s.page.$eval(rowSel(id) + ' .label', (n) => n.textContent.trim());
+    ok(still === want, 'and the name it was given stayed', still);
+
+    await shot(s.page, 'session-title');
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally {
+    await s.stop();
+    await stub.close();
+  }
+}
+
 // The Status button: one request, the answer on screen as words, and the same
 // words handed to the voice.
 async function statusspeak() {
@@ -3573,6 +3630,7 @@ const ALL = [
   ['activity-waiting', 'a permission prompt: a still ring, an amber dot, and no timeout', activitywaiting],
   ['activity-fallback', 'a harness that hangs, and the row that leaves busy anyway', activityfallback],
   ['unread', 'bold when nobody saw it, gone when the row is opened or typed into', unread],
+  ['session-title', 'a session that names itself the first time it answers', sessiontitle],
   ['status-speak', 'Status says what the screen shows, on the page and out loud', statusspeak],
   ['agent-run', 'a goal in words, a progress line, and keystrokes in the pane', agentrun],
   ['audio-mode', 'two large buttons, a remembered choice, and a turn that speaks for itself', audiomode],

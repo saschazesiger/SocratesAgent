@@ -298,6 +298,22 @@ Screen:
 
 **Language is `settings.voice.language`, not the language of the screen.** Piper renders with the voice of that one setting (voice.go `handleSpeak`), so German text in the English voice would be worse than English text; `config.LanguageName()` already exists to put the name into a prompt, exactly as `transcriptionHint` does. One setting, three sides, per the comment on `VoiceSettings.Language`.
 
+## B.6 The title run
+
+A session names itself the first time it has answered anything, so that the sidebar stops being a list of `Claude Code · 2 Sep 17:42`.
+
+**The moment.** The first committed edge **out of `busy`** for that session — the same edge §A.4 marks unread on. `onSessionActivity` hands every committed state to `titleDriver.observe`, which keeps the previous state per session (the callback carries only the new one) and fires on `busy → idle|waiting|unknown`. It fires whether or not anybody is watching: the point of it is the sidebar of the browser that is looking at a different session. A session first seen while already idle has no edge and is not named — this server never saw an answer arrive.
+
+**The run.** A goroutine owned by the `Server`, `context.WithTimeout` of 20 s, one entry per session in `titleDriver.live` so that two edges cannot start two runs, cancelled by `titleDriver.forget(id)` when the session is deleted. The tick is never made to wait for a gateway. It captures the pane (`CapturePane`, 200 lines) and asks the **agent model** (`openrouter.agent_model`, `config.DefaultAgentModel` when unset) with `temperature 0.3`, `max_tokens 60`. The prompt is assembled in English in `assist.go` beside the others (`titlePrompt`): 3 to 7 words, no quotes, no full stop, no markdown, **in the language the person on the screen is evidently writing in**, English when that is unclear. This is the one prompt whose language is the screen's and not `settings.voice.language`: a title is read, not spoken.
+
+**Who may be renamed.** Only the coding harnesses — a Shell's screen is a prompt and a directory, and `cd` is not a subject. Only a session still carrying the placeholder: `store.Session.TitleSource` is `""` (nameless), `user` (typed at creation or renamed since — `UpdateSessionTitle` sets it, so the rename endpoint does) or `auto` (Socrates has had its go). The column is `sessions.title_source`, **schema 4**, added by `addSessionColumns` because `CREATE TABLE IF NOT EXISTS` does nothing to a table that exists. Persisted, so a restart does not retitle.
+
+**Exactly once.** The turn is spent on the attempt, not on the answer: a model that refuses, answers with whitespace or is not a model at all still marks the session `auto`, or a wrong model id would be paid for at the end of every turn for ever. A missing API key is the exception — nothing was asked, nothing is marked, and the session is named the first time it answers after a key is added. No key, no model, a pane that cannot be read: all silent, nobody pressed anything.
+
+**Sanitising.** `cleanTitle` strips a fence, keeps the first line, drops `**`/`` ` ``/`#`, collapses whitespace, takes quotes and trailing punctuation off in as many passes as it takes (a quoted title that ends in a full stop hides its closing quote behind it), and caps at 60 runes on a word boundary. Empty is a refusal and the old name stays.
+
+**The frame.** `{"t":"title","id":"<sessionID>","title":"…"}` on `broadcastAll` — the name is in the sidebar of *every* browser and the session naming itself is usually not the one being watched. `session.js` handles it before the "is this my session" guard in `onControl`: the row and, when it is the attached session, the header. No animation; a row quietly getting a better name is not an event.
+
 ---
 
 # C. Settings
