@@ -116,6 +116,7 @@ scenario. Deleting `e2e/out/` is always safe.
 | `sessionlist` | rename, archive, unarchive and delete — and the working directory survives the delete |
 | `exitoverlay` | `/exit 7` raises the overlay with its status in a plain line under it, and **Restart** brings the session back |
 | `webglrenders` | the shipped renderer paints the terminal |
+| `touchscroll` | a finger dragged down the pane reaches what scrolled off it, a drag back up returns to the live bottom, a tap is still the tap that puts the keyboard on the pane, and with tmux's mouse off the drag types nothing |
 | `keybar` | no device gets the key bar until the ⋯ menu asks for it, on a phone or at a desk; asked for, it sends the right bytes, a sticky `Ctrl` turns the next letter into a control code, and a physical keystroke does not take it away again |
 | `offlineonce` | a whole command typed with the network off arrives **exactly once** when it comes back, the lost connection is visible while it is gone, and the app shell still opens offline |
 | `sigtermreattach` | the server is killed mid-session and restarted; the pane still holds what was typed and the session is running |
