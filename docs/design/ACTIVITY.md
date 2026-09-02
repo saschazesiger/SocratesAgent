@@ -296,6 +296,15 @@ Screen:
 <screen>
 ```
 
+**The phases.** The handler broadcasts `{"t":"status","id":"<sessionID>",
+"phase":"capturing|asking|speaking|done|error","text":"…"}` to the session's
+viewers as it goes: `capturing`/"Reading the screen", `asking`/"Asking <model>",
+`speaking`/"Speaking" and `done` carrying the final text, or `error` carrying a
+sentence. `speaking` is emitted immediately before the response, because the
+browser hands the text to Piper the moment it has it and a second round trip to
+announce that would arrive after the voice did. The page shows them in the
+ticker (§D.3); the response body is unchanged.
+
 **Language is `settings.voice.language`, not the language of the screen.** Piper renders with the voice of that one setting (voice.go `handleSpeak`), so German text in the English voice would be worse than English text; `config.LanguageName()` already exists to put the name into a prompt, exactly as `transcriptionHint` does. One setting, three sides, per the comment on `VoiceSettings.Language`.
 
 ## B.6 The title run
@@ -313,6 +322,65 @@ A session names itself the first time it has answered anything, so that the side
 **Sanitising.** `cleanTitle` strips a fence, keeps the first line, drops `**`/`` ` ``/`#`, collapses whitespace, takes quotes and trailing punctuation off in as many passes as it takes (a quoted title that ends in a full stop hides its closing quote behind it), and caps at 60 runes on a word boundary. Empty is a refusal and the old name stays.
 
 **The frame.** `{"t":"title","id":"<sessionID>","title":"…"}` on `broadcastAll` — the name is in the sidebar of *every* browser and the session naming itself is usually not the one being watched. `session.js` handles it before the "is this my session" guard in `onControl`: the row and, when it is the attached session, the header. No animation; a row quietly getting a better name is not an event.
+
+## B.7 The chat
+
+The Agent button was a form with one field. It is now a conversation, because
+"what should I do?" is a question and a question has an answer — and because
+the same model that can say what a screen means is the one that decides whether
+a request needs the keyboard at all.
+
+```
+GET  /api/sessions/{id}/chat            -> 200 {"messages":[<msg>…]}
+POST /api/sessions/{id}/chat {text,auto} -> 202 {"ok":true,"msg":<msg>}
+```
+
+`<msg>` is `{"role":"user"|"assistant","text":"…","ts":<unix ms>,"run_id"?,"failed"?}`.
+Every message is broadcast to the session's viewers as
+`{"t":"chat","id":"<sessionID>","msg":<msg>}`, and `helloFrame` gains
+`"chat": [<msg>…]` so a reconnect or a reload draws the panel without a request.
+
+**Where it lives.** The key/value store, key `chat.<sessionID>`, the last 50
+messages, written through `store.SetJSON` under one mutex; `store.DeleteKV`
+removes it when the session is deleted. No migration: this is a small document
+per session, like `activity.unread`.
+
+**The answer.** `POST` appends the user's message and returns 202; the answer is
+written by a goroutine that outlives the browser, exactly as an operator run
+does. It is given the **agent model**, `temperature 0.3`, `max_tokens 600`, a
+system prompt (`chatSystemPrompt`, assembled in `chat.go` beside the others,
+English) and the last 12 messages of the conversation as ordinary turns. The
+system prompt names the harness, carries `CapturePane(id, 150)` and the
+committed state, says to answer plainly with no markdown, and — when `auto` is
+set — that the reply is read out loud and should be one or two spoken
+sentences.
+
+**How it decides to act.** One bare JSON object and nothing else:
+
+```json
+{"reply":"what you say to the person","act":"<goal for the operator>"|null}
+```
+
+`act` is set **only** when the request cannot be answered in words because
+something has to be typed. A question about the screen is answered with words
+and `act: null`. When `act` is set, §B.4's operator run is started with that
+goal and the reply is stored carrying its `run_id`, which is what makes that
+bubble the place the Cancel button lives; the run's ending — its summary, or
+the reason it stopped — is appended to the conversation when it finishes, by an
+`onEnd` hook on `agentRun`. The steps in between are the `agent` frames the page
+already has, and are not stored.
+
+Tool calling was not used: `openrouter.Client` carries no tools field and no
+`tool_calls` on the way back, and a protocol for one call site is a protocol
+for nothing. An answer that is not an object is taken as the reply with
+`act: null` — a model that wrote prose answered the question.
+
+**Refusals.** No key → 400 with the "open /admin, add your key and pick an agent
+model" sentence, shown in the panel where the answer was expected. Everything
+else that can go wrong — an unknown model, a shell the operator may not drive, a
+session with no terminal, a run already going — is stored as an assistant
+message with `failed: true`, because the phone that reloads has to find out why
+nothing came back.
 
 ---
 
@@ -356,25 +424,106 @@ New module `internal/web/static/js/assist.js` — status, agent and audio mode �
 
 ## D.2 Header
 
-Three `.icon-btn`s in `.topbar` before `#sessionMenu`, hidden until a session is attached: `#statusBtn` (speech bubble), `#agentBtn` (spark), `#audioModeBtn` (headphones, `aria-pressed`). All three carry `disabled` whenever `!state.live` — offline, a run cannot be started and the button says so by being unavailable rather than by failing.
+Two `.icon-btn`s and one switch in the `.topbar` before `#sessionMenu`, hidden
+until a session is attached: `#statusBtn` (speech bubble), `#agentBtn` (spark,
+tooltip **"What should I do?"**) and `#audioModeBtn`. All three carry `disabled`
+whenever `!state.live` — offline, nothing can be started and the control says
+so by being unavailable rather than by failing.
 
-## D.3 Status and Agent
+`#audioModeBtn` is a real switch and not a pressed button: `role="switch"`,
+`aria-checked`, a 44 px hairline track with a 18 px knob that fills with
+`--text` when it is on, 150 ms, `prefers-reduced-motion` respected. It is
+labelled **Auto** beside the track, with "Auto mode" as its accessible name.
+The `localStorage['socrates.audio.mode'] = 'on'|'off'` semantics are unchanged;
+**Auto mode** is what the feature is called everywhere.
 
-- **Status** — `POST …/status`, the button in its busy state via the existing `busyButton` helper, then: the text in `#termNotice` (`kind:'status'`, dismissible) **and** `speak(text)` from `voice.js`. `onSpeechError((msg, kind) => toast(msg, kind))` is registered once in `boot()` — this is where Piper finally reaches the terminal UI.
-- **Agent** — in normal mode a one-field dialog built like `promptTitle()` ("What should it do?", Cancel / Run); in audio mode the button records instead (§D.4). Either way `POST …/agent {prompt}` → the run id.
-- **Progress** — reuse `#termNotice` with `kind:'agent'`: one line, "Step 3 · pressed Enter", a Cancel button, and an `infoTip` carrying the run id, the phase and the model's note. Driven by the `agent` frame, seeded from `hello.agent`, with one `GET …/agent` on attach when there is no socket. `done` fades the line after 6 s and speaks `summary` in audio mode; `error` becomes `toast(…, 'error')`.
+New modules: `internal/web/static/js/chat.js` (the panel) beside `assist.js`
+(status, the ticker, auto mode), both in `sw.js`'s `SHELL` and both reached by
+the import-graph assertion in `internal/web/embed_test.go`.
 
-## D.4 Audio mode
+## D.3 Status, the ticker and the chat
 
-`localStorage['socrates.audio.mode'] = 'on'|'off'`, per device, read in `boot()`. On: `document.body.classList.add('audio-mode')` and a `<div class="audio-bar" id="audioBar" hidden>` between `#termWrap` and `#keybar` with two full-width buttons at least 64 px tall, `#audioStatus` and `#audioAgent` — white, hairline border, one word each. The terminal stays visible and simply gets shorter; toggling calls `state.term.refit()` so the pane is resized rather than clipped.
+**Status** — `POST …/status`, and pressing it must visibly do something: the
+button takes a spinner (`.icon-btn.working`) at once and the ticker shows the
+first phase locally before the request has even left, then follows the server's
+`status` frames. The final text lands in `#termNotice` (`kind:'status'`,
+dismissible, model and state behind the "i") **and** in `speak()`.
+`onSpeechError((msg, kind) => toast(msg, kind))` is registered once in
+`mountAssist`.
 
-`#audioAgent` starts dictation instead of opening the dialog: a `Recorder` from `voice.js`, a second tap stops it, the WAV goes to `POST /api/voice/transcribe`, and the transcript is posted straight to `…/agent` with no confirmation — minimal clicks is the whole point; the transcript is shown in the progress line so a misheard prompt is visible. This lands in `voice.js` as `export async function dictateOnce({onTime})` returning the transcript; `keybar.js`'s mic path is left untouched, because it works.
+**The ticker** — `#termTicker`, one window one line high, inside `.term-lines`
+under `#termNotice`. Each new line is appended with `.enter`
+(`translateY(100%)`, transparent), the class is dropped on the next frame and
+the outgoing line takes `.leave` (`translateY(-100%)`): a departure board, 250
+ms, `transform`/`opacity` only. Under `prefers-reduced-motion` the transition is
+removed and the swap is plain.
 
-**Auto-status**: on a committed transition **out of `busy`** (to `idle`, `waiting` or `unknown`), **for the attached session only**, and only in audio mode, run the Status request and speak it. Other sessions are never spoken: three sessions talking over each other in a car is worse than silence, and they are already visible in the sidebar. If `isSpeaking()`, the new status is queued one deep; a third arrival replaces the queued one. The key bar, the composer and direct typing are all unchanged.
+There is **one** ticker and it is the only such indicator on the page. What it
+says, in order of precedence:
+
+1. a status being made, or one just finished (held 6 s);
+2. the live operator run — "Step 3 · pressed Enter" — held 6 s after it ends;
+3. in Auto mode only, and continuously, the attached session's activity:
+   "Claude Code is working", "Claude Code is waiting for you", "Claude Code is
+   idle".
+
+Outside Auto mode, with nothing happening, it is hidden.
+
+**The chat** — `#chatPanel`, opened by `#agentBtn`, by `#audioAgent` and by
+nothing else. On a desk it is a 360 px column beside the terminal inside
+`.stage`, and the pane refits when it opens or closes; under 860 px it is a
+full-height sheet over the terminal with a close button. The log is user and
+assistant bubbles, white with a hairline, distinguished by which edge they sit
+on; assistant text is markdown-lite (paragraphs and inline code, nothing
+heavier); a "Thinking…" placeholder stands where the answer will be. A message
+carrying `run_id` grows a run row — the step, what it just did, and **Cancel**.
+Everything arrives on the socket, so two devices watching one session see the
+same conversation.
+
+**The input row is one of two, never both.** With Auto mode **off** it is a text
+field and Send: Enter sends, Shift+Enter is a newline. With Auto mode **on**
+there is no text input anywhere in the panel — the row is one microphone at
+least 64 px tall, tap to start, tap again to stop, `dictateOnce` from
+`voice.js`, and the transcript is sent as the message with no confirmation
+step. Assistant replies are spoken with `speak()`.
+
+## D.4 Auto mode
+
+`localStorage['socrates.audio.mode']`, per device, read in `boot()`. On:
+`document.body.classList.add('audio-mode')` and the `<div class="audio-bar">`
+between `#termWrap` and `#keybar` with `#audioStatus` and `#audioAgent`, two
+full-width buttons at least 64 px tall. `#audioStatus` is Status (and Stop while
+the voice is reading); `#audioAgent` opens the chat panel with the microphone
+already recording, because opening it and then finding the button is two taps
+for one sentence.
+
+**Nothing in Auto mode may open a keyboard.** The composer and the key bar are
+taken out of the layout (`body.audio-mode`), the chat panel builds a microphone
+instead of a field, and the terminal's own hidden textarea is closed:
+`term.setTyping(false)` makes it `readonly`, takes it out of the tab order and
+blurs it on every focus attempt, so a tap on the pane cannot raise one. Output,
+scrolling, selection and every path that sends bytes from somewhere else are
+untouched. This is not conditional on a touch screen — a physical keyboard is
+blocked too, because deciding otherwise would mean trusting a media query with
+the one promise this mode makes. Leaving Auto mode gives all three back and
+refocuses the pane.
+
+**Auto-status**: on a committed transition **out of `busy`**, for the attached
+session only, run Status and speak it. If the voice is busy the new one is
+queued one deep and a third replaces the queued one. A live run owns the voice:
+its own busy-to-idle is the run typing, and the sentence that mode wants is the
+ending the run itself posts into the chat.
 
 ## D.5 Offline
 
-`#statusBtn`, `#agentBtn`, `#audioStatus` and `#audioAgent` are `disabled` while `!state.live`. A run already in flight keeps running on the server; the progress line stays on screen with the last step it knew and picks up from `hello.agent` on reconnect. Activity goes stale with the rest of the page under the existing `body.stale` rule, which already stops the dot pulsing and now stops the spinner too.
+`#statusBtn`, `#agentBtn`, `#audioModeBtn`, `#audioStatus`, `#audioAgent`, the
+chat's field, its Send and its microphone are all `disabled` while
+`!state.live`. The conversation stays on screen — it is history, not a live
+view — and a run in flight keeps running on the server: the ticker and the run
+row hold the last step they knew and pick up from `hello.agent` on reconnect,
+while `hello.chat` re-seeds the panel. Activity goes stale with the rest of the
+page under the existing `body.stale` rule, which stops the sidebar spinner and
+the Status button's.
 
 ---
 

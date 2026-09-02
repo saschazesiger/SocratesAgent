@@ -2988,9 +2988,10 @@ async function design() {
         bar: getComputedStyle(document.getElementById('audioBar')).backgroundColor,
         fills: buttons.map((b) => getComputedStyle(b).backgroundColor),
         words: buttons.map((b) => b.textContent.trim()),
-        headers: ['statusBtn', 'agentBtn', 'audioModeBtn']
+        headers: ['statusBtn', 'agentBtn']
           .map((one) => (document.getElementById(one) || {}).textContent || '')
           .map((t) => t.trim()),
+        auto: (document.querySelector('#audioModeBtn .auto-word') || {}).textContent || '',
       };
     });
     ok(white(audio.bar) && audio.fills.every(white), 'the audio bar is the same white',
@@ -2998,8 +2999,12 @@ async function design() {
     ok(audio.words.every((w) => /^[A-Za-z]+$/.test(w)), 'its buttons are one plain word each',
       audio.words.join(' / '));
     ok(audio.headers.every((t) => t === ''),
-      'and the three header buttons are marks, with their words in the label',
+      'the two header buttons are marks, with their words in the label',
       JSON.stringify(audio.headers));
+    // Auto mode is the one control in that row that is a setting rather than
+    // an action, so it is a switch and it carries its one word.
+    ok(audio.auto.trim() === 'Auto', 'and the switch beside them carries its one word',
+      JSON.stringify(audio.auto));
 
     const spoken = await s.page.evaluate(() => {
       const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
@@ -3480,8 +3485,77 @@ async function sessiontitle() {
   }
 }
 
-// The Status button: one request, the answer on screen as words, and the same
-// words handed to the voice.
+// The helpers the chat scenarios share.
+
+// pointGateway saves the key and the stub's address the way the dashboard
+// would, which is the only supported way to make this app talk to a mock.
+async function pointGateway(s, stub) {
+  const saved = await s.context.request.put(s.url + '/api/settings', {
+    data: { settings: { openrouter: { api_key: 'e2e-key', base_url: stub.url } } },
+  });
+  ok(saved.ok(), 'the gateway is pointed at the stub', saved.status() + ' ' + stub.url);
+}
+
+// watchTicker records every line the one-line ticker ever shows, in order. A
+// line that rises in and out again inside a poll interval is exactly what this
+// has to catch, so it is an observer and not a poll.
+async function watchTicker(page) {
+  await page.evaluate(() => {
+    window.__ticker = [];
+    const host = document.getElementById('tickerWindow');
+    new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          const said = (node.textContent || '').trim();
+          if (said) window.__ticker.push(said);
+        }
+      }
+    }).observe(host, { childList: true });
+  });
+  return () => page.evaluate(() => window.__ticker.slice());
+}
+
+// openChat is the header's spark button, which is the one way in on a device
+// with a keyboard.
+async function openChat(page) {
+  await page.waitForSelector('#agentBtn:not([hidden]):not([disabled])', { timeout: 15000 });
+  await page.click('#agentBtn');
+  await page.waitForSelector('#chatPanel:not([hidden])', { timeout: 10000 });
+}
+
+// askChat types a question into the panel and sends it with Enter, which is
+// the path a person takes.
+async function askChat(page, text) {
+  await page.waitForSelector('#chatText:not([disabled])', { timeout: 10000 });
+  await page.fill('#chatText', text);
+  await page.press('#chatText', 'Enter');
+}
+
+// chatBubbles is the conversation as it is drawn.
+const chatBubbles = (page) => page.evaluate(() => [...document.querySelectorAll('#chatLog .chat-msg')]
+  .map((n) => ({
+    who: n.classList.contains('user') ? 'user' : 'assistant',
+    text: n.innerText.trim(),
+    run: !!n.querySelector('.chat-run'),
+    failed: n.classList.contains('failed'),
+  })));
+
+// awaitBubble waits for the conversation to satisfy something about it.
+async function awaitBubble(page, test, timeout = 60000) {
+  const started = Date.now();
+  let seen = [];
+  while (Date.now() - started < timeout) {
+    seen = await chatBubbles(page);
+    if (test(seen)) return { ok: true, seen, ms: Date.now() - started };
+    await wait(200);
+  }
+  return { ok: false, seen, ms: Date.now() - started };
+}
+
+/* ------------------------------------------------------- 34. status-speak */
+
+// The Status button: one request, a spinner while it is being made, the answer
+// on screen as words, and the same words handed to the voice.
 async function statusspeak() {
   const stub = await openRouterStub({ text: 'Claude Code has finished and is waiting for your next instruction.' });
   const s = await start({
@@ -3491,20 +3565,22 @@ async function statusspeak() {
   try {
     await setup(s.page, s.url);
     await useDomRenderer(s);
-    const saved = await s.context.request.put(s.url + '/api/settings', {
-      data: { settings: { openrouter: { api_key: 'e2e-key', base_url: stub.url } } },
-    });
-    ok(saved.ok(), 'the gateway is pointed at the stub', saved.status() + ' ' + stub.url);
+    await pointGateway(s, stub);
     const said = await stubSpeech(s.context);
     await open(s);
-    const id = await startSession(s.page, 'claude');
+    await startSession(s.page, 'claude');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    const wired = await assistRoutes(s, id, { status: stub.text });
-    ok(true, 'the Status endpoint is ' + (wired.real ? 'the real one' : 'stood in for by the contract shape'),
-      wired.real ? 'server' : 'stub');
 
     await s.page.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 15000 });
     await s.page.click('#statusBtn');
+    // The tap has to land visibly before the answer does: the button spins and
+    // the one line under the top bar says what is being done.
+    const spinning = await s.page.waitForFunction(
+      () => document.getElementById('statusBtn').classList.contains('working'),
+      null, { timeout: 5000 }).then(() => true).catch(() => false);
+    ok(spinning, 'the button says the tap landed before the answer arrives',
+      spinning ? 'the spinner is on it' : 'nothing happened');
+
     await s.page.waitForFunction(() => {
       const host = document.getElementById('termNotice');
       return !!host && !host.hidden && host.dataset.kind === 'status';
@@ -3524,6 +3600,12 @@ async function statusspeak() {
       'no identifier leaked into the line that is read out loud', oneLine(shown));
     ok(tip.length > 0, 'and the details are under the "i" beside it', oneLine(tip));
 
+    const cleared = await s.page.waitForFunction(
+      () => !document.getElementById('statusBtn').classList.contains('working'),
+      null, { timeout: 10000 }).then(() => true).catch(() => false);
+    ok(cleared, 'and the spinner stops when there is nothing left to wait for',
+      cleared ? 'stopped' : 'still turning');
+
     await shot(s.page, 'status-speak');
     ok(unexpected(s.errors).length === 0, 'no console errors',
       unexpected(s.errors).join(' | ') || '0');
@@ -3533,59 +3615,122 @@ async function statusspeak() {
   }
 }
 
-// The Agent button: a sentence in, a progress line on screen, keystrokes in
-// the pane, and a run that ends by saying what it did.
+/* ------------------------------------------------------ 35. status-ticker */
+
+// Pressing Status is a question asked over a network, and the phases of it
+// arrive in the ticker in the order they happen: the screen is read, the model
+// is asked, the answer is spoken, and the answer itself is the last line.
+async function statusticker() {
+  const stub = await openRouterStub({ text: 'The tests passed and it is waiting.' });
+  const s = await start({
+    viewport: { width: 1280, height: 720 },
+    args: ['--autoplay-policy=no-user-gesture-required'],
+  });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await pointGateway(s, stub);
+    await stubSpeech(s.context);
+    await open(s);
+    await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const lines = await watchTicker(s.page);
+
+    await s.page.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 15000 });
+    await s.page.click('#statusBtn');
+    const arrived = await s.page.waitForFunction(
+      (want) => (window.__ticker || []).some((l) => l === want),
+      stub.text, { timeout: 45000 }).then(() => true).catch(() => false);
+    const said = await lines();
+    ok(arrived, 'the answer itself is the last thing the ticker says', oneLine(said.join(' → ')));
+
+    const order = said.map((l) => (
+      /^Reading the screen$/.test(l) ? 'capturing'
+        : /^Asking /.test(l) ? 'asking'
+          : /^Speaking$/.test(l) ? 'speaking'
+            : l === stub.text ? 'done' : 'other'));
+    const wanted = ['capturing', 'asking', 'speaking', 'done'];
+    // Every phase, in this order, with nothing of another kind between them.
+    const kept = order.filter((o) => o !== 'other');
+    ok(kept.join(',') === wanted.join(','), 'the phases appear in order and none is missing',
+      kept.join(',') + '  [' + oneLine(said.join(' → ')) + ']');
+
+    // One window, one line: the ticker never grows into a log.
+    const window = await s.page.evaluate(() => {
+      const host = document.getElementById('termTicker');
+      return {
+        hidden: host.hidden,
+        height: Math.round(document.getElementById('tickerWindow').getBoundingClientRect().height),
+        fill: getComputedStyle(host).backgroundColor,
+      };
+    });
+    ok(!window.hidden && window.height <= 24, 'it is one line high and no more',
+      JSON.stringify(window));
+    ok(window.fill === WHITE, 'on the same white as everything else', window.fill);
+
+    // And it gives the window back: outside auto mode, with nothing happening,
+    // there is nothing to say.
+    const gone = await s.page.waitForFunction(() => document.getElementById('termTicker').hidden,
+      null, { timeout: 20000 }).then(() => true).catch(() => false);
+    ok(gone, 'and when there is nothing happening it is not there at all',
+      gone ? 'hidden again' : 'still on screen');
+
+    await shot(s.page, 'status-ticker');
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally {
+    await s.stop();
+    await stub.close();
+  }
+}
+
+/* --------------------------------------------------------- 36. agent-run */
+
+// The operator run, asked for in the chat: a request that needs the keyboard,
+// a progress line while it types, real keystrokes in a real pane, and an
+// ending that lands in the conversation that asked for it.
 async function agentrun() {
+  const decide = JSON.stringify({ reply: 'Typing it for you now.', act: 'echo the greeting' });
   const step1 = JSON.stringify({
-    actions: [{ text: 'hello from the operator' }, { key: 'Enter' }],
+    actions: [{ text: 'echo hello-from-the-operator' }, { key: 'Enter' }],
     done: false, summary: 'typing the greeting', note: '',
   });
   const step2 = JSON.stringify({ actions: [], done: true, summary: 'the greeting was typed', note: '' });
-  const stub = await openRouterStub({ text: step1, replies: [step1, step2] });
+  const stub = await openRouterStub({ text: step2, replies: [decide, step1, step2] });
   const s = await start({ viewport: { width: 1280, height: 720 } });
   try {
     await setup(s.page, s.url);
     await useDomRenderer(s);
-    await s.context.request.put(s.url + '/api/settings', {
-      data: { settings: { openrouter: { api_key: 'e2e-key', base_url: stub.url } } },
-    });
+    await pointGateway(s, stub);
     await open(s);
-    const id = await startSession(s.page, 'claude');
+    // A shell, because a session that names itself would spend one of the
+    // scripted answers on its own title.
+    await startSession(s.page, 'shell');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    const wired = await assistRoutes(s, id, {});
-    ok(true, 'the Agent endpoint is ' + (wired.real ? 'the real one' : 'stood in for by the contract shape'),
-      wired.real ? 'server' : 'stub');
+    const lines = await watchTicker(s.page);
 
-    await s.page.waitForSelector('#agentBtn:not([hidden]):not([disabled])', { timeout: 15000 });
-    await s.page.click('#agentBtn');
-    await s.page.waitForSelector('dialog.modal[open]', { timeout: 10000 });
-    const asked = await s.page.$eval('dialog.modal .modal-title', (n) => n.textContent);
-    ok(/what should it do/i.test(asked), 'the button asks what it should do, in the app’s own dialog', asked);
-    await s.page.fill('dialog.modal input.input', 'say hello in the terminal');
-    await s.page.click('dialog.modal .btn.primary');
+    await openChat(s.page);
+    await askChat(s.page, 'say hello in the terminal');
 
-    await s.page.waitForFunction(() => {
-      const host = document.getElementById('termNotice');
-      return !!host && !host.hidden && host.dataset.kind === 'agent';
-    }, null, { timeout: 20000 });
-    const line = await noticeText(s.page);
-    ok(/^Step \d/.test(line), 'a progress line appears as soon as the run is accepted', oneLine(line));
-    const cancel = await s.page.$eval('#termNotice .btn', (n) => n.textContent).catch(() => '');
-    ok(cancel === 'Cancel', 'and it carries the way to stop it', cancel || 'no button');
-    ok(wired.posts.agent[0] === 'say hello in the terminal', 'the goal reached the server whole',
-      JSON.stringify(wired.posts.agent));
+    const replied = await awaitBubble(s.page, (msgs) => msgs.some((m) => m.run));
+    ok(replied.ok, 'the answer that starts a run carries the run inside it',
+      JSON.stringify(replied.seen.map((m) => m.who + ': ' + oneLine(m.text))));
+    const cancel = await s.page.$eval('#chatLog .chat-run .btn', (n) => n.textContent).catch(() => '');
+    ok(cancel === 'Cancel', 'and the way to stop it is in that same message', cancel || 'no button');
 
-    if (wired.real) {
-      const typed = await awaitScreen(s.page, 'you said: hello from the operator', 90000);
-      ok(typed, 'the operator typed into the pane and pressed Enter', oneLine(await screen(s.page)).slice(-90));
-      const finished = await s.page.waitForFunction(() => {
-        const host = document.getElementById('termNotice');
-        return !!host && host.dataset.kind === 'agent' && /greeting/.test(host.textContent);
-      }, null, { timeout: 90000 }).then(() => true).catch(() => false);
-      ok(finished, 'and the run ends by saying what it did', oneLine(await noticeText(s.page)));
-    } else {
-      ok(true, 'the keystrokes and the summary need the server-side loop', 'not run against a stub');
-    }
+    const stepped = await s.page.waitForFunction(
+      () => (window.__ticker || []).some((l) => /^Step \d/.test(l)),
+      null, { timeout: 45000 }).then(() => true).catch(() => false);
+    ok(stepped, 'the ticker says which step it is on', oneLine((await lines()).join(' → ')));
+
+    const typed = await awaitScreen(s.page, 'hello-from-the-operator', 90000);
+    ok(typed, 'the operator typed into the pane and pressed Enter',
+      oneLine(await screen(s.page)).slice(-90));
+
+    const ended = await awaitBubble(s.page, (msgs) =>
+      msgs.some((m) => m.who === 'assistant' && /greeting was typed/.test(m.text)), 90000);
+    ok(ended.ok, 'and the run ends by saying what it did, in the conversation that asked',
+      JSON.stringify(ended.seen.map((m) => oneLine(m.text)).slice(-2)));
 
     await shot(s.page, 'agent-run');
     ok(unexpected(s.errors).length === 0, 'no console errors',
@@ -3596,9 +3741,296 @@ async function agentrun() {
   }
 }
 
+/* --------------------------------------------------------- 37. chat-text */
+
+// The chat with a keyboard: a question that is answered in words, a reply that
+// survives a reload because it is stored, and a request that is not a question
+// at all - which reaches the pane as keystrokes.
+async function chattext() {
+  const answer = JSON.stringify({
+    reply: 'It is sitting at a prompt.\n\nNothing is running; type `ls` to look around.',
+    act: null,
+  });
+  const decide = JSON.stringify({ reply: 'Doing it now.', act: 'make the marker file' });
+  const step1 = JSON.stringify({
+    actions: [{ text: 'echo chat-typed-this' }, { key: 'Enter' }], done: false, summary: 'typing',
+  });
+  const step2 = JSON.stringify({ actions: [], done: true, summary: 'it was typed' });
+  const stub = await openRouterStub({ text: step2, replies: [answer, decide, step1, step2] });
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await pointGateway(s, stub);
+    await open(s);
+    await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+
+    // Before anything is asked, the pane has the width; the panel takes its
+    // own column and the terminal refits rather than being covered.
+    const before = await s.page.$eval('#termWrap', (n) => Math.round(n.getBoundingClientRect().width));
+    await openChat(s.page);
+    const layout = await s.page.evaluate(() => {
+      const panel = document.getElementById('chatPanel').getBoundingClientRect();
+      const term = document.getElementById('termWrap').getBoundingClientRect();
+      return {
+        panel: Math.round(panel.width),
+        term: Math.round(term.width),
+        beside: Math.round(term.right) <= Math.round(panel.left) + 2,
+        fill: getComputedStyle(document.getElementById('chatPanel')).backgroundColor,
+      };
+    });
+    ok(layout.beside && layout.panel >= 320 && layout.panel <= 400,
+      'on a desk it is a column beside the terminal', JSON.stringify(layout));
+    ok(layout.term < before, 'and the terminal gives up the width rather than being covered',
+      before + ' → ' + layout.term);
+    ok(layout.fill === WHITE, 'on the same white as everything else', layout.fill);
+
+    await askChat(s.page, 'what is this session doing?');
+    const said = await awaitBubble(s.page, (msgs) =>
+      msgs.length >= 2 && msgs[1].who === 'assistant' && /sitting at a prompt/.test(msgs[1].text));
+    ok(said.ok, 'a question is answered in words', JSON.stringify(said.seen.map((m) => m.who + ': ' + oneLine(m.text))));
+    ok(said.seen[0].who === 'user' && said.seen[0].text === 'what is this session doing?',
+      'and what was asked is in the thread above it', oneLine(said.seen[0].text));
+    ok(!said.seen[1].run, 'a question did not start a run', said.seen[1].run ? 'it did' : 'it did not');
+
+    // Markdown-lite and nothing heavier: paragraphs, and a backticked flag as
+    // code rather than as a word with two grave accents round it.
+    const shape = await s.page.evaluate(() => {
+      const bubble = [...document.querySelectorAll('#chatLog .chat-msg.assistant')].pop();
+      return { paras: bubble.querySelectorAll('p').length, code: (bubble.querySelector('code') || {}).textContent || '' };
+    });
+    ok(shape.paras === 2 && shape.code === 'ls', 'the answer is paragraphs and inline code, nothing heavier',
+      JSON.stringify(shape));
+
+    // It is stored, so a phone that reloads is not a phone that lost the
+    // conversation.
+    await s.page.reload({ waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    await openChat(s.page);
+    const kept = await awaitBubble(s.page, (msgs) => msgs.length >= 2, 20000);
+    ok(kept.ok && /sitting at a prompt/.test(kept.seen[1].text),
+      'a reload comes back to the conversation it was in',
+      JSON.stringify(kept.seen.map((m) => m.who)));
+
+    // And a request that is not a question reaches the keyboard.
+    await askChat(s.page, 'make a marker file');
+    const acted = await awaitBubble(s.page, (msgs) => msgs.some((m) => m.run));
+    ok(acted.ok, 'a request that needs the terminal starts a run instead of an answer',
+      JSON.stringify(acted.seen.map((m) => oneLine(m.text)).slice(-2)));
+    ok(await awaitScreen(s.page, 'chat-typed-this', 90000),
+      'and the keystrokes land in the pane', oneLine(await screen(s.page)).slice(-90));
+
+    await shot(s.page, 'chat-text');
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally {
+    await s.stop();
+    await stub.close();
+  }
+}
+
+/* -------------------------------------------------------- 38. chat-audio */
+
+// Auto mode on a phone: there is no field anywhere - not in the chat, not
+// under the terminal, and not the terminal's own - so a keyboard cannot come
+// up. Everything that is left is a microphone.
+async function chataudio() {
+  const stub = await openRouterStub({ text: 'It is waiting for you.' });
+  const s = await start({
+    viewport: { width: 390, height: 844 },
+    touch: true,
+    permissions: ['microphone'],
+    args: [
+      '--use-fake-ui-for-media-stream',
+      '--use-fake-device-for-media-stream',
+      '--autoplay-policy=no-user-gesture-required',
+    ],
+  });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await pointGateway(s, stub);
+    await stubSpeech(s.context);
+    await open(s);
+    await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+
+    await s.page.waitForSelector('#audioModeBtn:not([hidden])', { timeout: 15000 });
+    await s.page.click('#audioModeBtn');
+    await s.page.waitForSelector('#audioBar:not([hidden])', { timeout: 10000 });
+
+    await s.page.click('#agentBtn');
+    await s.page.waitForSelector('#chatPanel:not([hidden])', { timeout: 10000 });
+
+    const inputs = await s.page.evaluate(() => {
+      const panel = document.getElementById('chatPanel');
+      const fields = [...panel.querySelectorAll('input, textarea, [contenteditable="true"]')];
+      const mic = document.getElementById('chatMic');
+      const focusable = [...panel.querySelectorAll('*')].filter((n) => {
+        const tag = n.tagName.toLowerCase();
+        return (tag === 'input' || tag === 'textarea') && n.tabIndex >= 0;
+      });
+      return {
+        fields: fields.length,
+        focusable: focusable.length,
+        mic: !!mic,
+        micHeight: mic ? Math.round(mic.getBoundingClientRect().height) : 0,
+        sheet: Math.round(panel.getBoundingClientRect().width),
+        page: Math.round(document.querySelector('.main').getBoundingClientRect().width),
+      };
+    });
+    ok(inputs.fields === 0 && inputs.focusable === 0,
+      'there is no text input in the panel at all, focusable or otherwise',
+      JSON.stringify(inputs));
+    ok(inputs.mic && inputs.micHeight >= 64, 'what is there instead is a microphone a thumb cannot miss',
+      inputs.micHeight + ' px');
+    ok(Math.abs(inputs.sheet - inputs.page) <= 2, 'on a phone it is a sheet over the terminal, not a column',
+      inputs.sheet + ' of ' + inputs.page);
+
+    // Nothing under the terminal either.
+    const shelf = await s.page.evaluate(() => {
+      const seen = (id) => {
+        const n = document.getElementById(id);
+        return !!n && n.checkVisibility && n.checkVisibility();
+      };
+      return { composer: seen('composer'), keybar: seen('keybar') };
+    });
+    ok(!shelf.composer && !shelf.keybar, 'and the line input and the key bar are gone with it',
+      JSON.stringify(shelf));
+
+    // The one that matters: tapping the pane does not put the cursor in a
+    // field, which is what would bring a phone keyboard up.
+    await s.page.click('#chatClose');
+    await s.page.waitForFunction(() => document.getElementById('chatPanel').hidden,
+      null, { timeout: 10000 });
+    await s.page.click('#term .xterm-screen');
+    await wait(400);
+    const focus = await s.page.evaluate(() => {
+      const area = document.querySelector('#term .xterm-helper-textarea');
+      return {
+        focused: !!area && document.activeElement === area,
+        readonly: !!area && area.readOnly,
+        tabIndex: area ? area.tabIndex : null,
+        active: (document.activeElement && document.activeElement.tagName) || 'none',
+      };
+    });
+    ok(!focus.focused && focus.readonly && focus.tabIndex < 0,
+      'a tap on the terminal cannot open a keyboard, because nothing takes the focus',
+      JSON.stringify(focus));
+
+    // And the pane is still a pane: it draws, and it is not what is switched
+    // off, only its field.
+    const drawn = await s.page.evaluate(() =>
+      Math.round((document.querySelector('#term .xterm') || { getBoundingClientRect: () => ({ height: 0 }) })
+        .getBoundingClientRect().height));
+    ok(drawn > 80, 'the terminal is still there and still drawn', drawn + ' px tall');
+
+    // Leaving auto mode gives everything back.
+    await s.page.click('#audioModeBtn');
+    const back = await s.page.waitForFunction(() => {
+      const area = document.querySelector('#term .xterm-helper-textarea');
+      const composer = document.getElementById('composer');
+      return !!area && !area.readOnly && !!composer && composer.checkVisibility();
+    }, null, { timeout: 10000 }).then(() => true).catch(() => false);
+    ok(back, 'and leaving it gives the keyboard, the composer and the pane back',
+      back ? 'everything is back' : 'something stayed off');
+
+    await shot(s.page, 'chat-audio');
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally {
+    await s.stop();
+    await stub.close();
+  }
+}
+
+/* ------------------------------------------------------- 39. auto-switch */
+
+// Auto mode is a state, so it wears a switch: a track, a knob that travels,
+// and a choice this phone remembers.
+async function autoswitch() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    await s.page.waitForSelector('#audioModeBtn:not([hidden])', { timeout: 15000 });
+
+    const off = await s.page.evaluate(() => {
+      const btn = document.getElementById('audioModeBtn');
+      const track = btn.querySelector('.auto-track');
+      const knob = btn.querySelector('.auto-knob');
+      return {
+        role: btn.getAttribute('role'),
+        checked: btn.getAttribute('aria-checked'),
+        word: btn.querySelector('.auto-word').textContent.trim(),
+        name: btn.querySelector('.sr-only').textContent.trim(),
+        track: Math.round(track.getBoundingClientRect().width),
+        fill: getComputedStyle(knob).backgroundColor,
+        motion: getComputedStyle(knob).transitionDuration,
+        knobLeft: Math.round(knob.getBoundingClientRect().left - track.getBoundingClientRect().left),
+      };
+    });
+    ok(off.role === 'switch' && off.checked === 'false',
+      'it is a switch and it says which way it is set', off.role + ' / ' + off.checked);
+    ok(off.word === 'Auto' && /Auto mode/i.test(off.name),
+      'labelled Auto, and named Auto mode for a reader', off.word + ' · ' + off.name);
+    ok(off.track >= 40 && off.track <= 48, 'the track is about a thumb wide', off.track + ' px');
+    ok(off.fill === WHITE, 'and while it is off the knob is white like everything else', off.fill);
+    ok(off.motion.split(',').every((d) => d.trim() === '0.15s'), 'the knob travels in 150 ms', off.motion);
+
+    await s.page.click('#audioModeBtn');
+    await s.page.waitForSelector('#audioBar:not([hidden])', { timeout: 10000 });
+    // The knob is measured after it has travelled: getComputedStyle mid
+    // transition answers with where it still is, not where it is going.
+    await wait(400);
+    const on = await s.page.evaluate(() => {
+      const btn = document.getElementById('audioModeBtn');
+      const track = btn.querySelector('.auto-track');
+      const knob = btn.querySelector('.auto-knob');
+      return {
+        checked: btn.getAttribute('aria-checked'),
+        fill: getComputedStyle(knob).backgroundColor,
+        text: getComputedStyle(document.body).color,
+        knobLeft: Math.round(knob.getBoundingClientRect().left - track.getBoundingClientRect().left),
+        stored: localStorage.getItem('socrates.audio.mode'),
+      };
+    });
+    ok(on.checked === 'true', 'switching it says so', on.checked);
+    ok(on.knobLeft > off.knobLeft + 10, 'the knob travelled to the other end',
+      off.knobLeft + ' → ' + on.knobLeft);
+    ok(on.fill === on.text, 'and it fills with the page’s own ink rather than a new colour',
+      on.fill + ' vs ' + on.text);
+    ok(on.stored === 'on', 'the choice is written down for this device', String(on.stored));
+
+    await s.page.reload({ waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    await s.page.waitForSelector('#audioBar:not([hidden])', { timeout: 15000 });
+    const after = await s.page.$eval('#audioModeBtn', (n) => n.getAttribute('aria-checked'));
+    ok(after === 'true', 'and it survives a reload, because it is this phone’s choice', after);
+
+    await s.page.click('#audioModeBtn');
+    const gone = await s.page.waitForFunction(
+      () => document.getElementById('audioBar').hidden
+        && localStorage.getItem('socrates.audio.mode') === 'off',
+      null, { timeout: 10000 }).then(() => true).catch(() => false);
+    ok(gone, 'and it switches back off again', gone ? 'off' : 'stuck on');
+
+    await shot(s.page, 'auto-switch');
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+/* -------------------------------------------------------- 40. audio-mode */
+
 // Audio mode: a phone in a car. Two buttons a thumb cannot miss, the terminal
-// still there and merely shorter, the choice remembered across a reload, and
-// one spoken summary per turn that ends - without anybody asking for it.
+// still there and merely shorter, one spoken summary per turn that ends -
+// without anybody asking for it - and a ticker that says what the session is
+// doing for as long as the mode is on.
 async function audiomode() {
   const stub = await openRouterStub({ text: 'The session has finished and is waiting for you.' });
   const s = await start({
@@ -3614,16 +4046,11 @@ async function audiomode() {
   try {
     await setup(s.page, s.url);
     await useDomRenderer(s);
-    await s.context.request.put(s.url + '/api/settings', {
-      data: { settings: { openrouter: { api_key: 'e2e-key', base_url: stub.url } } },
-    });
+    await pointGateway(s, stub);
     const said = await stubSpeech(s.context);
     await open(s);
     const id = await startSession(s.page, 'claude');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    const wired = await assistRoutes(s, id, { status: stub.text });
-    ok(true, 'the Status endpoint is ' + (wired.real ? 'the real one' : 'stood in for by the contract shape'),
-      wired.real ? 'server' : 'stub');
 
     await s.page.waitForSelector('#audioModeBtn:not([hidden])', { timeout: 15000 });
     await s.page.click('#audioModeBtn');
@@ -3636,37 +4063,45 @@ async function audiomode() {
         heights: buttons.map((b) => Math.round(b.getBoundingClientRect().height)),
         fills: buttons.map((b) => getComputedStyle(b).backgroundColor),
         termVisible: !!term && term.getBoundingClientRect().height > 80,
-        pressed: document.getElementById('audioModeBtn').getAttribute('aria-pressed'),
       };
     });
     ok(bar.labels.join(',') === 'Status,Agent', 'two buttons, one word each', bar.labels.join(','));
     ok(bar.heights.every((h) => h >= 64), 'each of them is big enough for a thumb', bar.heights.join(' / '));
     ok(bar.fills.every((c) => c === WHITE), 'on the same white as everything else', bar.fills.join(' '));
     ok(bar.termVisible, 'and the terminal is still there, merely shorter', 'the pane is drawn');
-    ok(bar.pressed === 'true', 'the toggle says it is on', bar.pressed);
+
+    // In this mode the one line never goes away: it is what the session is
+    // doing, for somebody who cannot look at the screen.
+    const idle = await s.page.waitForFunction(() => {
+      const host = document.getElementById('termTicker');
+      return !host.hidden && /Claude Code is /.test(host.textContent);
+    }, null, { timeout: 30000 }).then(() => true).catch(() => false);
+    const line = await s.page.$eval('#termTicker', (n) => n.textContent.trim());
+    ok(idle, 'the ticker says what the session is doing, unasked', oneLine(line));
 
     await s.page.reload({ waitUntil: 'domcontentloaded' });
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
     await s.page.waitForSelector('#audioBar:not([hidden])', { timeout: 15000 });
     ok(true, 'and the choice survives a reload, because it is this phone’s', 'audio mode still on');
-    // The reload replaced the page, so the interception is re-armed on it.
     const again = await assistRoutes(s, id, { status: stub.text });
-    // Everything the one line under the terminal ever says, from here on. A
-    // run that is typing owns that line, and an auto-status that fired while
-    // it was live would replace it with the refusal below.
-    await s.page.evaluate(() => {
-      const host = document.getElementById('termNotice');
-      window.__notices = [];
-      new MutationObserver(() => {
-        const said = (host.textContent || '').trim();
-        if (said && window.__notices[window.__notices.length - 1] !== said) window.__notices.push(said);
-      }).observe(host, { subtree: true, childList: true, characterData: true });
-    });
 
     // The rule audio mode exists for: a turn that ends says so out loud, on
     // its own, for the session being listened to and for no other.
+    await s.page.evaluate(() => {
+      const area = document.querySelector('#term .xterm-helper-textarea');
+      return area && area.readOnly;
+    });
+    // Typing is off in this mode, so the turn is started the way a phone in a
+    // car would have to start one: through the socket, from the key bar's own
+    // path. The composer is gone, so this is the pane's input frame directly.
+    await s.page.click('#audioModeBtn');
+    await s.page.waitForFunction(() => document.getElementById('audioBar').hidden,
+      null, { timeout: 10000 });
     await typeLine(s.page, '/busy 3000');
+    await s.page.click('#audioModeBtn');
+    await s.page.waitForSelector('#audioBar:not([hidden])', { timeout: 10000 });
     await awaitRow(s.page, id, (r) => r.busy, 12000);
+
     const spoke = await s.page.waitForFunction(() => {
       const host = document.getElementById('termNotice');
       return !!host && !host.hidden && host.dataset.kind === 'status';
@@ -3677,32 +4112,23 @@ async function audiomode() {
     for (let i = 0; i < 40 && said.length === 0; i += 1) await wait(200);
     ok(said.length >= 1, 'and it is read out loud', said.length + ' render(s)');
 
-    // The Agent button in audio mode records instead of asking: what is said
-    // is the goal, and it is posted without a confirmation step.
+    // The Agent button in this mode opens the conversation with the
+    // microphone already running: one tap, which is the whole budget.
     await s.page.click('#audioAgent');
-    await s.page.waitForSelector('#audioAgent.rec', { timeout: 10000 });
+    await s.page.waitForSelector('#chatPanel:not([hidden])', { timeout: 10000 });
+    const recording = await s.page.waitForSelector('#chatMic.rec', { timeout: 15000 })
+      .then(() => true).catch(() => false);
+    ok(recording, 'and it is recording before anything else is pressed',
+      recording ? 'the microphone is live' : 'it opened but did not listen');
     await wait(1400);
-    const recording = await s.page.$eval('#audioAgent', (n) => n.textContent.trim());
-    ok(/^Stop/.test(recording), 'the same button is the way to stop the recording', recording);
-    await s.page.click('#audioAgent');
-    const posted = await s.page.waitForFunction(() => {
-      const host = document.getElementById('termNotice');
-      return !!host && !host.hidden && host.dataset.kind === 'agent';
-    }, null, { timeout: 60000 }).then(() => true).catch(() => false);
-    ok(posted, 'and what was heard becomes a run with no confirmation step',
-      posted ? 'a run started' : 'nothing was posted');
-    ok(again.posts.agent.length === 1 && again.posts.agent[0] === stub.text,
-      'the transcript is the goal, verbatim', JSON.stringify(again.posts.agent));
+    const word = await s.page.$eval('#chatMic', (n) => n.textContent.trim());
+    ok(/^Stop/.test(word), 'the same button is the way to stop it', word);
+    await s.page.click('#chatMic');
 
-    // While a run is live the session's own busy-to-idle is the run typing,
-    // not a turn ending: it neither asks for a status nor replaces the
-    // progress line with the refusal that request would earn.
-    const notices = await s.page.evaluate(() => window.__notices || []);
-    const refused = notices.filter((n) => /agent is typing/i.test(n));
-    ok(refused.length === 0, 'the progress line is never pushed aside by a status refusal',
-      refused.length ? oneLine(refused[0]) : 'never shown');
-    ok(again.posts.status === 1, 'and no second status is asked for, then or later',
-      again.posts.status + ' request(s) in all');
+    const posted = await awaitBubble(s.page, (msgs) =>
+      msgs.some((m) => m.who === 'user' && m.text === stub.text), 60000);
+    ok(posted.ok, 'and what was heard becomes the message, verbatim and unconfirmed',
+      JSON.stringify(posted.seen.map((m) => m.who + ': ' + oneLine(m.text))));
 
     await shot(s.page, 'audio-mode');
     ok(unexpected(s.errors).length === 0, 'no console errors',
@@ -3911,7 +4337,11 @@ const ALL = [
   ['unread', 'bold when nobody saw it, gone when the row is opened or typed into', unread],
   ['session-title', 'a session that names itself the first time it answers', sessiontitle],
   ['status-speak', 'Status says what the screen shows, on the page and out loud', statusspeak],
-  ['agent-run', 'a goal in words, a progress line, and keystrokes in the pane', agentrun],
+  ['status-ticker', 'the phases of a status, in order, in one line', statusticker],
+  ['agent-run', 'a request that needs the keyboard, and keystrokes in the pane', agentrun],
+  ['chat-text', 'a question answered in words, and a request that types', chattext],
+  ['chat-audio', 'auto mode: no field anywhere, and a keyboard that cannot open', chataudio],
+  ['auto-switch', 'a switch that travels, and a choice this phone keeps', autoswitch],
   ['audio-mode', 'two large buttons, a remembered choice, and a turn that speaks for itself', audiomode],
   ['typeafteroutage', 'a cut socket, a locked phone, and a pane that still takes keystrokes', typeafteroutage],
   ['typekeepsfocus', 'a dialog, the ⋯ menu and two sessions: the keys still land in the pane', typekeepsfocus],

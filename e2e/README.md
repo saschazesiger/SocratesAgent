@@ -134,10 +134,24 @@ scenario. Deleting `e2e/out/` is always safe.
 | `createopencode` | OpenCode gets a port and a password of its own, and the discoverer reads the session id over its authenticated HTTP server |
 | `rebootresume` | the tmux server is killed behind Socrates' back: the row goes to `needs_resume`, opening it relaunches with **--resume**, and the banner says so once and stays away after it is dismissed |
 | `lighttheme` | the theme Codex was told to wear, the `theme=light` it read back through tmux, the white pane, and all sixteen ANSI colours drawn at 4.5:1 or better |
+| `activity-claude`, `activity-codex`, `activity-opencode`, `activity-shell` | each harness working, finishing while nobody is looking, and the row that says so |
+| `activity-waiting` | a permission prompt: a still amber ring, and no timeout |
+| `activity-fallback` | a harness that hangs, and the row that leaves busy anyway |
+| `unread` | bold when nobody saw it, gone when the row is opened or typed into |
+| `session-title` | a session that names itself the first time it answers, exactly once |
+| `status-speak` | **Status** spins while it asks, the answer lands on screen as words, and the same words are read out loud once |
+| `status-ticker` | the phases of a status — reading the screen, asking the model, speaking, the answer — arrive in order in one line |
+| `agent-run` | a request that needs the keyboard: a run inside the message that asked for it, a **Cancel** beside it, real keystrokes in the pane, and an ending in the conversation |
+| `chat-text` | the chat as a column beside the terminal: a question answered in words with markdown-lite, a reload that comes back to it, and a request that types |
+| `chat-audio` | auto mode on a phone: no text input anywhere, a microphone instead, and a tap on the pane that cannot open a keyboard |
+| `auto-switch` | the Auto switch: a track, a knob that travels in 150 ms, and a choice this device keeps across a reload |
+| `audio-mode` | two thumb-sized buttons, a ticker that says what the session is doing, a turn that speaks for itself, and one tap from **Agent** to a live microphone |
+| `typeafteroutage` | a cut socket, a locked phone, and a pane that still takes keystrokes |
+| `typekeepsfocus` | a dialog, the ⋯ menu and two sessions: the keys still land in the pane |
 | `design` | white surfaces, a mark wherever a program is named, technical strings only in **Info**, and an animation that does not restart when a row re-renders |
 | `livesession` | one real session against the real Claude Code CLI (gated) |
 
-That is every row of the specification's table. `lighttheme` measures the
+`lighttheme` measures the
 colours the renderer actually **drew** rather than the palette they came from:
 eleven of `LIGHT_THEME`'s eighteen values are deliberately not 4.5:1 against
 white, and what makes them legible is `minimumContrastRatio: 4.5`, which

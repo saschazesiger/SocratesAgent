@@ -1296,3 +1296,59 @@ Five causes, and where the fix departs from what §D says:
 `sw.js` was checked and left alone: it is network-first and stamps every shell
 address with the build, so it can neither serve an old script to a new page nor
 touch a WebSocket.
+
+## The chat, the ticker and the Auto switch
+
+Against `docs/design/ACTIVITY.md` §B.4–B.6, §D.2–D.5, which described a Status
+button, a one-field Agent dialog and a headphones toggle. What is built is the
+same three features with the middle one turned into a conversation.
+
+1. **§D.3 — the Agent dialog is gone.** The one-field "What should it do?"
+   modal and the `#termNotice` line with `kind:'agent'` are removed. The spark
+   button (tooltip "What should I do?") opens the chat panel instead, and the
+   run a chat starts is rendered inside the message that started it, Cancel
+   included. Nothing else could be said about a run in a car, and a form is a
+   poor way to ask a question that has an answer.
+2. **§D.4 — the headphones button is a switch.** Auto mode is a state, so it
+   wears `role="switch"` with `aria-checked` and a 44 px track, not a pressed
+   icon button. The `localStorage` key and its `'on'|'off'` values are
+   unchanged. It carries the word "Auto", which is the one word in the top
+   bar's row of marks; the `design` scenario's assertion that all three header
+   controls are wordless was narrowed to the two that still are.
+3. **§B.4 — how the chat decides to act.** The assistant answers with one bare
+   JSON object, `{"reply":"…","act":"<goal>"|null}`, and `act` non-null starts
+   the existing operator run with that goal. OpenRouter tool calling was not
+   used: `openrouter.Client` has no tools field, no `tool_calls` on the way
+   back and no second round trip, and adding all three for one call site is a
+   protocol for nothing. An answer that is not an object at all is taken as the
+   reply with `act` null — a model that wrote prose answered the question, and
+   only the half that must never be guessed at is lost.
+4. **The run's progress is not stored in the chat.** §B.4 has a frame per phase;
+   replaying twelve of those into a persisted conversation would make a reload
+   read like a keystroke log. What is stored is the reply that started the run
+   (carrying `run_id`) and the run's ending; the steps in between are the
+   `agent` frames the page already receives, drawn inside that message and in
+   the ticker. A reload after the run finishes shows the reply and the ending.
+5. **The chat lives in the key/value store**, key `chat.<sessionID>`, capped at
+   the last 50 messages and deleted with the session — the pattern
+   `activity.unread` already uses, and no migration for a small per-session
+   document. `Store.DeleteKV` is new.
+6. **§D.3 — one line, not two.** The `#termNotice` progress line is replaced by
+   a ticker: one window in which each new line rises in and the old one leaves
+   upwards. It is the only place a status's phases, a run's steps and — in auto
+   mode, continuously — the session's activity are shown. `#termNotice` keeps
+   the dismissible status text, and the two now sit in a `.term-lines` column
+   rather than both claiming `top: 10px`.
+7. **§B.5 — the status streams.** `POST …/status` broadcasts
+   `{"t":"status","id","phase","text"}` for `capturing → asking → speaking →
+   done`, or `error`. "Speaking" is emitted by the server immediately before it
+   answers, because the browser hands the text to Piper the moment it has it and
+   a second round trip to announce that would arrive after the voice did.
+8. **Auto mode blocks typing everywhere, physical keyboards included.** The
+   composer and the key bar are removed from the layout, the chat panel builds
+   a microphone instead of a field, and `term.setTyping(false)` puts xterm's
+   hidden textarea into `readonly`, takes it out of the tab order and blurs it
+   on every focus attempt. That last one is not conditional on a touch screen:
+   distinguishing "trivially safe" from "not" would have meant trusting a
+   pointer media query with the one promise this mode makes. Leaving auto mode
+   restores all three and refocuses the pane.
