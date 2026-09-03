@@ -1335,6 +1335,16 @@ var (
 
 	openCodeBusy = regexp.MustCompile(`esc interrupt`)
 	openCodeIdle = regexp.MustCompile(`ctrl\+p commands`)
+	// The permission card OpenCode paints covers the bottom bar at the sizes
+	// we run, but not at every size, so this has to be asked before both the
+	// busy and the idle literal. It is anchored on the card's own furniture:
+	// the `△` that heads the title, and the button row with its `ctrl+f`
+	// hint. `Permission required` on its own is not enough — the composer
+	// paints the same `┃` gutter, so a session where somebody typed the words
+	// into the prompt box, or a transcript that quotes them, would scrape as
+	// waiting for as long as the line stayed in the 40 rows of history the
+	// capture reads.
+	openCodeWaiting = regexp.MustCompile(`△\s*Permission required|Allow once\s+Allow always\s+Reject\s+ctrl\+f`)
 )
 
 // scrapeScreen is the third layer: what the harness has painted, read the way
@@ -1361,9 +1371,9 @@ func scrapeScreen(kind harnesses.Kind, screen string) observation {
 			return seen(StateIdle, "")
 		}
 	case harnesses.KindOpenCode:
-		// Never infer waiting from an OpenCode screen: no verified pattern
-		// exists, and the event stream carries permissions exactly.
 		switch {
+		case openCodeWaiting.MatchString(screen):
+			return seen(StateWaiting, "permission prompt")
 		case openCodeBusy.MatchString(screen):
 			return seen(StateBusy, "")
 		case openCodeIdle.MatchString(screen):
@@ -1383,6 +1393,37 @@ const (
 	// openCodeStreamShort is how long a stream has to last to count as a
 	// connection worth reconnecting to at once.
 	openCodeStreamShort = 5 * time.Second
+	// openCodeReconcileEvery is how often the open prompts are re-read from
+	// GET /permission while the stream is up. A prompt can vanish without a
+	// `permission.replied` anybody can match — the session aborted or
+	// deleted, a frame lost, a reply whose `requestID` is not the id the
+	// prompt was keyed by — and without this nothing would ever clear it.
+	openCodeReconcileEvery = 12 * time.Second
+	// openCodePermissionTimeout is one GET /permission's own budget, so a
+	// slow permission read cannot eat the status poll's.
+	openCodePermissionTimeout = 5 * time.Second
+	// openCodePermissionFails is how many consecutive /permission failures it
+	// takes to drop the waiting set. The endpoint is the only thing that can
+	// confirm a prompt still stands, so a prompt nobody can confirm must not
+	// pin a row to waiting for the life of the session.
+	openCodePermissionFails = 3
+)
+
+// openCodePermissionOutcome is what one GET /permission answered, which is
+// three different things and not two: a server that does not have the endpoint
+// at all is not a server whose endpoint is broken.
+type openCodePermissionOutcome int
+
+const (
+	// openCodePermissionFailed is a transport error, a timeout, a 5xx or a
+	// body that will not decode: the endpoint exists, and this read of it is
+	// worth nothing.
+	openCodePermissionFailed openCodePermissionOutcome = iota
+	// openCodePermissionOK is a 200 with an array, empty or not.
+	openCodePermissionOK
+	// openCodePermissionAbsent is a 404 or a 405: this server does not serve
+	// the endpoint, so nothing it could have said is missing from the events.
+	openCodePermissionAbsent
 )
 
 // openCodeSource is one long lived event stream per running OpenCode session.
@@ -1411,7 +1452,8 @@ func (o *openCodeSource) Read(_ context.Context, s snapshot) observation {
 			o.mu.Unlock()
 			return missing
 		}
-		w = startOpenCodeWatcher(access, workdirOf(s))
+		w = newOpenCodeWatcher(access, workdirOf(s), openCodeReconcileEvery, o.m.logf)
+		w.start()
 		o.watchers[s.row.ID] = w
 	}
 	o.mu.Unlock()
@@ -1440,21 +1482,82 @@ type openCodeWatcher struct {
 	access  harnesses.ServerAccess
 	workdir string
 	cancel  context.CancelFunc
+	// reconcileEvery is the /permission reconcile period while the stream is
+	// up. Zero means openCodeReconcileEvery; tests shorten it.
+	reconcileEvery time.Duration
+	// logf is where the one line about a server without /permission goes. Nil
+	// is quiet, which is what the tests want.
+	logf func(format string, args ...any)
 
 	mu      sync.Mutex
 	ok      bool
 	busy    map[string]bool
-	waiting map[string]bool
+	waiting map[string]openCodePrompt
+	// permFails counts consecutive /permission failures. Absent answers are
+	// not failures and never touch it.
+	permFails int
+	// noPermissions is set once the endpoint has answered 404/405: the
+	// watcher then runs events-only and never asks again, because an absent
+	// endpoint has no opinion about the prompts the stream reported.
+	noPermissions bool
+}
+
+// openCodePrompt is one open permission request: the session holding it, and
+// when the server last confirmed it. The session is what lets an idle
+// `session.status` clear it — from the stream, or from a status poll that does
+// not list the session at all — because a session holding a prompt always
+// reports busy, so idle is proof the prompt is gone.
+// `confirmed` is whether GET /permission has ever listed this prompt, which
+// decides how much an empty answer is worth against it.
+type openCodePrompt struct {
+	session   string
+	seen      time.Time
+	confirmed bool
 }
 
 func startOpenCodeWatcher(access harnesses.ServerAccess, workdir string) *openCodeWatcher {
-	ctx, cancel := context.WithCancel(context.Background())
-	w := &openCodeWatcher{
-		access: access, workdir: workdir, cancel: cancel,
-		busy: map[string]bool{}, waiting: map[string]bool{},
-	}
-	go w.run(ctx)
+	return startOpenCodeWatcherEvery(access, workdir, openCodeReconcileEvery)
+}
+
+// startOpenCodeWatcherEvery is startOpenCodeWatcher with the reconcile period
+// spelled out, which only a test needs.
+func startOpenCodeWatcherEvery(access harnesses.ServerAccess, workdir string, every time.Duration) *openCodeWatcher {
+	w := newOpenCodeWatcher(access, workdir, every, nil)
+	w.start()
 	return w
+}
+
+// newOpenCodeWatcher builds a watcher without starting it, so a caller can
+// hand it a log sink first.
+func newOpenCodeWatcher(access harnesses.ServerAccess, workdir string, every time.Duration,
+	logf func(format string, args ...any)) *openCodeWatcher {
+	return &openCodeWatcher{
+		access: access, workdir: workdir, reconcileEvery: every, logf: logf,
+		busy: map[string]bool{}, waiting: map[string]openCodePrompt{},
+	}
+}
+
+func (w *openCodeWatcher) start() {
+	ctx, cancel := context.WithCancel(context.Background())
+	w.cancel = cancel
+	go w.run(ctx)
+}
+
+// reconcilePeriod is the reconcile interval this watcher actually runs at. It
+// is also the age at which an event-only prompt stops outranking an empty
+// /permission answer, so the two can never drift apart.
+func (w *openCodeWatcher) reconcilePeriod() time.Duration {
+	if w.reconcileEvery > 0 {
+		return w.reconcileEvery
+	}
+	return openCodeReconcileEvery
+}
+
+// permissionsSupported is false once the endpoint has answered 404/405.
+func (w *openCodeWatcher) permissionsSupported() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return !w.noPermissions
 }
 
 func (w *openCodeWatcher) stop() { w.cancel() }
@@ -1484,7 +1587,14 @@ func (w *openCodeWatcher) run(ctx context.Context) {
 	for ctx.Err() == nil {
 		w.poll(ctx)
 		opened := time.Now()
+		// While the stream is up the only thing that can retire a prompt is a
+		// reply event, and a prompt can go without one; this re-reads the open
+		// prompts underneath the stream, taking the same lock, so the two
+		// never interleave on the set.
+		streamCtx, stopReconcile := context.WithCancel(ctx)
+		go w.reconcile(streamCtx)
 		err := w.stream(ctx)
+		stopReconcile()
 		if err == nil {
 			backoff = openCodeBackoffMin
 			// A stream that ends cleanly the moment it opens is a proxy or a
@@ -1515,11 +1625,11 @@ func (w *openCodeWatcher) run(ctx context.Context) {
 // poll is the fallback and the seed both: GET /session/status answers with the
 // sessions that are working, and an idle session is simply absent from the map.
 func (w *openCodeWatcher) poll(ctx context.Context) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	statusCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	url := fmt.Sprintf("http://127.0.0.1:%d/session/status?directory=%s",
 		w.access.Port, neturl.QueryEscape(w.workdir))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(statusCtx, http.MethodGet, url, nil)
 	if err != nil {
 		return
 	}
@@ -1542,17 +1652,199 @@ func (w *openCodeWatcher) poll(ctx context.Context) {
 		Type string `json:"type"`
 	}
 	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&status); err != nil {
+		// A body that will not decode is no answer either: the same as a 500,
+		// and not an idle session.
+		w.mu.Lock()
+		w.ok = false
+		w.mu.Unlock()
 		return
 	}
+	// Past this point the status map was fetched and decoded, which is what
+	// makes it usable below as the second witness over the waiting set.
 	busy := map[string]bool{}
 	for id, entry := range status {
 		if entry.Type == "busy" || entry.Type == "retry" {
 			busy[id] = true
 		}
 	}
+	// The pending prompts are the second half of the seed. A session with one
+	// open reads `busy` in the status map, so without this a prompt raised
+	// while the stream was down would read as work in progress for ever. The
+	// read gets its own budget: it must not spend the status poll's.
+	var waiting map[string]openCodePrompt
+	outcome := openCodePermissionAbsent
+	// The read is timed from before it is sent, because a prompt that arrives
+	// on the stream while it is in flight is newer than the answer.
+	start := time.Now()
+	if w.permissionsSupported() {
+		permCtx, permCancel := context.WithTimeout(ctx, openCodePermissionTimeout)
+		waiting, outcome = w.pendingPermissions(permCtx)
+		permCancel()
+	}
+	// A watcher that was stopped mid-request did not learn anything: the
+	// cancellation is not the endpoint failing.
+	if ctx.Err() != nil {
+		return
+	}
 	w.mu.Lock()
 	w.busy, w.ok = busy, true
+	if outcome != openCodePermissionOK {
+		// The status map is the second witness, and it is one only because
+		// the fetch above succeeded. A session holding a prompt always
+		// reports busy, so a prompt on a session that is not in the map is
+		// gone, whatever the permission endpoint is doing — including not
+		// having the endpoint at all: on an events-only server this prune is
+		// the only thing that retires a prompt answered while the stream was
+		// down. An OK answer needs none of it, because it replaces the set
+		// below. A prompt whose event carried no sessionID is not retirable
+		// here — there is nothing to look up in the map — and is left to the
+		// reply event, to ageing out against an empty answer, or to the
+		// failure budget.
+		for id, prompt := range w.waiting {
+			if prompt.session != "" && !busy[prompt.session] {
+				delete(w.waiting, id)
+			}
+		}
+	}
+	w.applyPermissionsLocked(waiting, outcome, start)
 	w.mu.Unlock()
+}
+
+// reconcile re-reads the open prompts while the stream is up, until the stream
+// that started it ends.
+func (w *openCodeWatcher) reconcile(ctx context.Context) {
+	if !w.permissionsSupported() {
+		return
+	}
+	ticker := time.NewTicker(w.reconcilePeriod())
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			start := time.Now()
+			permCtx, cancel := context.WithTimeout(ctx, openCodePermissionTimeout)
+			waiting, outcome := w.pendingPermissions(permCtx)
+			cancel()
+			// Stopping the stream cancels this request; that is not a
+			// failure of the endpoint and must not be counted as one.
+			if ctx.Err() != nil {
+				return
+			}
+			w.mu.Lock()
+			w.applyPermissionsLocked(waiting, outcome, start)
+			w.mu.Unlock()
+			if outcome == openCodePermissionAbsent {
+				// Events-only from here: there is nothing to reconcile with.
+				return
+			}
+		}
+	}
+}
+
+// applyPermissionsLocked folds one /permission answer into the waiting set,
+// where `start` is when the request that produced it was sent.
+//
+// A successful answer is authoritative and replaces the set — it is the whole
+// truth about what was open when it was computed — with two exceptions, both
+// about what the answer cannot have known. A prompt whose event arrived after
+// the request was sent is newer than the answer, so it is carried over. And an
+// *empty* answer is believed against a prompt only if the endpoint has ever
+// confirmed that prompt, or the prompt is older than one reconcile interval:
+// `/permission?directory=` filters by directory, and a workdir that does not
+// match the server's would answer `[]` to a prompt that is genuinely open, so
+// a just-asked event-only prompt outranks `[]`. An older one does not — a real
+// directory mismatch would otherwise pin the row to waiting for the life of
+// the session, and the session-idle rule still covers the rest.
+//
+// A failure is only counted: one must not clear a real prompt, and enough of
+// them must not leave a phantom one pinning the row to waiting for ever. An
+// absent endpoint is neither: it says nothing, so it takes nothing.
+func (w *openCodeWatcher) applyPermissionsLocked(waiting map[string]openCodePrompt,
+	outcome openCodePermissionOutcome, start time.Time) {
+	switch outcome {
+	case openCodePermissionAbsent:
+		if !w.noPermissions {
+			w.noPermissions = true
+			if w.logf != nil {
+				w.logf("activity: OpenCode on port %d has no /permission endpoint; "+
+					"permission prompts come from the event stream only", w.access.Port)
+			}
+		}
+		return
+	case openCodePermissionOK:
+		if waiting == nil {
+			waiting = map[string]openCodePrompt{}
+		}
+		now, young := time.Now(), w.reconcilePeriod()
+		// Read before the loop below starts putting prompts back: whether the
+		// *answer* was empty is what the directory-mismatch carve-out turns
+		// on, not how many prompts have been carried over so far.
+		empty := len(waiting) == 0
+		for id, prompt := range w.waiting {
+			if _, listed := waiting[id]; listed {
+				continue
+			}
+			switch {
+			case !prompt.seen.Before(start):
+				// Asked while the request was in flight.
+				waiting[id] = prompt
+			case empty && !prompt.confirmed && now.Sub(prompt.seen) < young:
+				// An empty answer that may just be a directory mismatch.
+				waiting[id] = prompt
+			}
+		}
+		w.waiting, w.permFails = waiting, 0
+	default:
+		w.permFails++
+		if w.permFails >= openCodePermissionFails {
+			w.waiting = map[string]openCodePrompt{}
+		}
+	}
+}
+
+// pendingPermissions asks GET /permission for the prompts that are open right
+// now. A server that does not answer it is not an error worth failing the poll
+// over: the second result says what the answer is worth — a usable list, an
+// endpoint this server does not have, or a read that failed.
+func (w *openCodeWatcher) pendingPermissions(ctx context.Context) (map[string]openCodePrompt, openCodePermissionOutcome) {
+	url := fmt.Sprintf("http://127.0.0.1:%d/permission?directory=%s",
+		w.access.Port, neturl.QueryEscape(w.workdir))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, openCodePermissionFailed
+	}
+	req.SetBasicAuth(w.access.Username, w.access.Password)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, openCodePermissionFailed
+	}
+	defer func() { _ = res.Body.Close() }()
+	switch res.StatusCode {
+	case http.StatusOK:
+	case http.StatusNotFound, http.StatusMethodNotAllowed:
+		// This server does not have the endpoint. It is not failing to
+		// answer: there is no answer to be had, ever.
+		return nil, openCodePermissionAbsent
+	default:
+		return nil, openCodePermissionFailed
+	}
+	var pending []struct {
+		ID        string `json:"id"`
+		SessionID string `json:"sessionID"`
+	}
+	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&pending); err != nil {
+		return nil, openCodePermissionFailed
+	}
+	waiting := map[string]openCodePrompt{}
+	now := time.Now()
+	for _, p := range pending {
+		if p.ID != "" {
+			waiting[p.ID] = openCodePrompt{session: p.SessionID, seen: now, confirmed: true}
+		}
+	}
+	return waiting, openCodePermissionOK
 }
 
 // openCodeEvent is one `data:` line of the stream. The permission events were
@@ -1628,12 +1920,29 @@ func (w *openCodeWatcher) event(payload string) {
 		switch status.Status.Type {
 		case "busy", "retry":
 			w.busy[status.SessionID] = true
+		case "idle":
+			delete(w.busy, status.SessionID)
+			// A session holding a prompt reports busy for as long as it holds
+			// it, so an explicit idle is proof its prompts are gone — which is
+			// the only thing that retires a prompt whose reply never arrived.
+			for id, prompt := range w.waiting {
+				if prompt.session == status.SessionID {
+					delete(w.waiting, id)
+				}
+			}
 		default:
+			// A type this build does not know (`busy`, `retry` and `idle` are
+			// the ones OpenCode emits) is not busy, so it leaves the busy set
+			// — but it is not the idle OpenCode spells out either, and must
+			// not be read as proof that a prompt is gone.
 			delete(w.busy, status.SessionID)
 		}
 		w.ok = true
 		w.mu.Unlock()
-	case "permission.v2.asked":
+	// OpenCode 1.17.13 emits `permission.asked`/`permission.replied`; the
+	// `permission.v2.*` names an earlier pass recorded were never real, and are
+	// kept only so an older server would still be understood.
+	case "permission.asked", "permission.v2.asked":
 		var perm openCodePermission
 		if err := json.Unmarshal(body, &perm); err != nil {
 			return
@@ -1646,10 +1955,10 @@ func (w *openCodeWatcher) event(payload string) {
 			return
 		}
 		w.mu.Lock()
-		w.waiting[id] = true
+		w.waiting[id] = openCodePrompt{session: perm.SessionID, seen: time.Now()}
 		w.ok = true
 		w.mu.Unlock()
-	case "permission.v2.replied":
+	case "permission.replied", "permission.v2.replied":
 		var perm openCodePermission
 		if err := json.Unmarshal(body, &perm); err != nil {
 			return
@@ -1661,7 +1970,7 @@ func (w *openCodeWatcher) event(payload string) {
 		w.mu.Lock()
 		if id == "" {
 			// A reply nobody can match is still a reply: the prompt is gone.
-			w.waiting = map[string]bool{}
+			w.waiting = map[string]openCodePrompt{}
 		} else {
 			delete(w.waiting, id)
 		}

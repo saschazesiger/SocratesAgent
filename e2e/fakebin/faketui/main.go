@@ -375,6 +375,16 @@ func (s *sessionState) startOpenCode(args []string) error {
 	mux.HandleFunc("/session/status", authed(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, s.events.snapshot())
 	}))
+	// The prompts that are open right now, which is what a detector seeds its
+	// waiting set from when it (re)connects and re-reads while the stream is
+	// up. An empty array when there is none. The `directory` query the real
+	// server takes is ignored on purpose: one fake serves exactly one session
+	// in one working directory, so there is nothing to filter, and answering
+	// whatever is asked keeps the fake from having a second opinion about
+	// which directory a prompt belongs to.
+	mux.HandleFunc("/permission", authed(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, s.pendingPermissions())
+	}))
 	mux.HandleFunc("/session", authed(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			id := newOpenCodeID()
@@ -889,14 +899,36 @@ func (s *sessionState) ask() {
 			"  Press enter to confirm or esc to cancel\r\n")
 		s.setTitle("[ . ] Action Required | " + filepath.Base(s.cwd))
 	case "opencode":
-		// OpenCode's own prompt has no verified screen shape, so the fake
-		// paints a plain one and the event stream carries the fact.
-		out("\r\n  Allow this command?  [y/n]\r\n")
+		// The card OpenCode paints, bottom bar and all: the bar still carries
+		// `ctrl+p commands`, which is the idle literal, so a scraper has to
+		// read the permission rows first.
+		out("\r\n  ┃  △ Permission required\r\n  ┃    # Shell command\r\n" +
+			"  ┃  $ echo hello-from-bash\r\n" +
+			"  ┃   Allow once   Allow always   Reject" +
+			"          ctrl+f fullscreen  ⇆ select  enter confirm\r\n" +
+			"  ⬝⬝⬝⬝⬝⬝  10.5K (1%%) · $0.02   ctrl+p commands\r\n")
 		s.events.publish(map[string]any{
-			"type":       "permission.v2.asked",
-			"properties": map[string]any{"id": askID, "sessionID": s.statusID(), "action": "bash"},
+			"type": "permission.asked",
+			"properties": map[string]any{
+				"id": askID, "sessionID": s.statusID(),
+				"permission": "bash", "patterns": []string{"echo hello"},
+			},
 		})
 	}
+}
+
+// pendingPermissions is the prompt this fake is holding, if it is holding one,
+// in the shape GET /permission answers with.
+func (s *sessionState) pendingPermissions() []map[string]any {
+	s.mu.Lock()
+	asked, askID := s.asked, s.askID
+	s.mu.Unlock()
+	if !asked || s.name != "opencode" || askID == "" {
+		return []map[string]any{}
+	}
+	return []map[string]any{{
+		"id": askID, "sessionID": s.statusID(), "permission": "bash",
+	}}
 }
 
 // answerAsked takes the answer to a prompt that is on screen, and reports
@@ -918,7 +950,7 @@ func (s *sessionState) answerAsked(line string) bool {
 	s.mu.Unlock()
 	if s.name == "opencode" {
 		s.events.publish(map[string]any{
-			"type": "permission.v2.replied",
+			"type": "permission.replied",
 			"properties": map[string]any{
 				"requestID": askID, "sessionID": s.statusID(), "reply": "once",
 			},
@@ -944,8 +976,13 @@ func (s *sessionState) setStatus(status, waitingFor string) {
 			s.setTitle(filepath.Base(s.cwd))
 		}
 	case "opencode":
+		// A real OpenCode session holding a permission prompt keeps reporting
+		// busy until the prompt is answered — the stream and GET
+		// /session/status both — and it is that busy that the watcher's
+		// session-idle rule reads as "the prompt is still open". Anything
+		// else here would have the fake retire its own prompt.
 		kind := "idle"
-		if status == "busy" {
+		if status == "busy" || status == "waiting" {
 			kind = "busy"
 		}
 		s.events.setStatus(s.statusID(), kind)

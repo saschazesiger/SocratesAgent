@@ -1504,3 +1504,90 @@ through a 120-line history — about what the finger travelled — dragging up
 twice returns to the live bottom, and a tap in between moves nothing while
 still landing the focus in the pane. It then turns `terminal.mouse` off through
 the dashboard's own API and drags again, to hold the swallowed case where it is.
+
+## Bug fix — OpenCode permission events
+
+**§F.2 / ACTIVITY.md — `permission.v2.asked` / `permission.v2.replied` were never real.**
+The OpenCode source listened for those two event types, so `StateWaiting` was never once
+reported from layer 1: OpenCode 1.17.13 emits `permission.asked` and `permission.replied`
+(the payload shapes were right — only the names were wrong). Both names are now accepted,
+the real ones first and the `v2` spelling kept in case an older server ever answers with it.
+Two things follow from the same fix. The poll now also reads `GET /permission?directory=…`
+and seeds the waiting set from it, because a session holding a prompt reports `busy` in
+`/session/status` and a prompt raised while the stream was down would otherwise read as work
+in progress for ever; a `/permission` that fails is ignored so it cannot cost the busy seed.
+Because the endpoint can now clear prompts as well as seed them, three rules come with it.
+A successful `/permission` answer is authoritative and *replaces* the waiting set, and it is
+re-read every 12 s while the stream is up (under the same mutex as the event handling), because
+a prompt can vanish with no reply anybody can match — session aborted or deleted, a lost frame,
+a `requestID` that is not the id it was asked under — and on a live stream the reply event was
+otherwise the only thing that could retire one. Prompts are keyed by session, and an idle
+session drops that session's prompts: a session holding a prompt always reports busy, so idle is
+proof it is gone. And a failing endpoint is not
+believed either way — it gets its own 5 s budget, one failure changes nothing, and three
+consecutive failures drop the set, so an unconfirmable prompt cannot pin a row to `waiting` for
+the life of the session.
+
+**Third review — what "idle" means, on both sides.** Four smaller corrections, all in the
+OpenCode watcher. (1) The poll's second witness — a prompt whose session is not in the status
+map is gone — ran only on a `failed` `/permission` answer, so a server *without* the endpoint
+never got it: an events-only watcher that missed the `permission.replied` while its stream was
+down had nothing left that could retire the prompt, and the row said `waiting` for the life of
+the session. The guard is now "not `ok`", which covers `absent` as well; an `ok` answer needs no
+witness because it replaces the set outright. The limitation that remains is stated rather than
+papered over: a prompt whose `permission.asked` carried no `sessionID` has nothing to look up in
+the map, and is left to the reply event, to ageing out against an empty `[]`, or to the failure
+budget. (2) The empty-answer carve-out read `len(waiting) == 0` inside the loop that puts
+prompts back into `waiting`, so with two young event-only prompts against one `[]` the first
+one carried over made the set non-empty and the second was dropped — and which one that was
+depended on Go's map iteration order. Whether the *answer* was empty is now taken once, before
+the loop. (3) A prompt asked in the same nanosecond the request was sent was dropped by
+`seen.After(start)`; the comparison is now `!seen.Before(start)`. (4) On the stream, anything
+that was not `busy`/`retry` retired that session's prompts — an unrecognised or future status
+type included. OpenCode emits `busy`, `retry` and `idle`, and only `idle` is proof; an unknown
+type still leaves the busy set, because it is not busy, but takes no prompt with it. The fake
+TUI carried the mirror image of the same mistake: `/ask` published `session.status` `idle`
+before `permission.asked` and dropped the session from its own `/session/status`, which is the
+opposite of what a real OpenCode holding a prompt reports. It now reports busy for as long as
+the prompt is open, and goes idle when the reply is published.
+
+And `scrapeScreen` gained an OpenCode waiting pattern, which the earlier "**Never infer
+`waiting` from an OpenCode screen** — no verified pattern exists" note forbade: the card is
+now verified. The pattern is the card's own furniture — `△ Permission required`, or the
+`Allow once   Allow always   Reject … ctrl+f` button row — not the words `Permission required`
+alone. That looser first attempt was wrong twice over: `capture-pane -S -40` reads 40 rows of
+scrollback as well as the pane, and the composer paints the same `┃` gutter the card does, so
+a captured OpenCode screen with those two words typed into the prompt box scraped as waiting
+(the capture is kept as the negative case in `TestScrapeScreens`). Waiting is still asked
+before busy and idle: at 120×40 the card covers the bottom bar, but at taller sizes the bar
+survives beside it with `ctrl+p commands` — the idle literal — on it.
+
+**Second review of the same fix — `/permission` is three answers, not two.** Five things
+followed from reading the reconcile again. (1) A `permission.asked` that arrives *while* a
+`GET /permission` is in flight was replaced away by the answer, which describes the moment the
+server computed it: the request is now timed from before it is sent, and any prompt seen after
+that is carried over the replace, in the reconcile and in the poll both. (2) Stopping a watcher
+cancels its open request, and that cancellation was counted as an endpoint failure — a third of
+the budget that drops the whole waiting set, spent on the watcher's own shutdown; the outcome is
+now dropped before the lock whenever the context is done. (3) A server *without* the endpoint
+answered 404 and the 404 was read as a failure, so three of them destroyed waiting the event
+stream had reported correctly. `pendingPermissions` now returns a three-way outcome — `ok`,
+`absent` (404/405), `failed` — and `absent` takes nothing: the set is untouched, no failure is
+counted, the reconcile goroutine returns and the endpoint is never asked again, logged once as
+events-only. The same reasoning covers a subtler case of the same shape: `?directory=` filters
+by directory, so a workdir that does not match the server's answers `[]` to a prompt that is
+genuinely open. `openCodePrompt` gained `confirmed`, and an empty answer is authoritative only
+against a prompt the endpoint has listed at least once, or one older than a reconcile interval —
+a just-asked event-only prompt survives `[]`, an old one does not (otherwise a real mismatch
+would pin the row for the life of the session, and the session-idle rule covers it anyway).
+(4) The 60 s age-out under a failing endpoint was dead — three failures at 12 s apart clear the
+set in 36 s, so nothing ever reached 60 s — and is removed; the three-failure rule stays.
+(5) In the poll, the status map is used as the second witness over the waiting set only on a
+`failed` answer, and only past the point where the map itself was fetched *and decoded*, which
+is also where the decode error path now marks the watcher unusable instead of silently keeping
+the last state. The live test now asserts the assumption underneath that witness — at the
+waiting point, every pending prompt's session is `busy` in `/session/status` — rather than
+taking it on trust. On the screen side, captures at 45/60/80/100/120 columns show the button
+row wrapping onto its own `┃` line below about 80 columns: the `Allow once … Reject … ctrl+f`
+alternative fails at 60 and 45 while `△ Permission required` matches at every width, so the
+regexp is unchanged and the two narrow cards are now verbatim rows in `TestScrapeScreens`.
