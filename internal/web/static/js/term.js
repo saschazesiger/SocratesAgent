@@ -192,6 +192,106 @@ function touchScroll(host, term) {
   };
 }
 
+/* ------------------------------------------------------------ clipboard */
+
+// Whether this device's copy-and-paste key is Cmd rather than Ctrl. iPadOS
+// says "MacIntel" and an iPhone says "iPhone", and both of them are Cmd on
+// the keyboard somebody attaches to them.
+const IS_MAC = /Mac|iPhone|iPad|iPod/.test(
+  (navigator.platform || '') + ' ' + (navigator.userAgent || ''),
+);
+
+/** isPasteKey is Ctrl-V, Ctrl-Shift-V or Shift-Insert - Cmd-V on a Mac. */
+function isPasteKey(ev) {
+  if (ev.altKey) return false;
+  const v = ev.code === 'KeyV' || (ev.key || '').toLowerCase() === 'v';
+  if (v) return IS_MAC ? ev.metaKey && !ev.ctrlKey : ev.ctrlKey && !ev.metaKey;
+  return ev.key === 'Insert' && ev.shiftKey && !ev.ctrlKey && !ev.metaKey;
+}
+
+/** isCopyKey is Ctrl-C, Ctrl-Shift-C or Ctrl-Insert - Cmd-C on a Mac. */
+function isCopyKey(ev) {
+  if (ev.altKey) return false;
+  const c = ev.code === 'KeyC' || (ev.key || '').toLowerCase() === 'c';
+  if (c) return IS_MAC ? ev.metaKey && !ev.ctrlKey : ev.ctrlKey && !ev.metaKey;
+  return ev.key === 'Insert' && ev.ctrlKey && !ev.metaKey && !ev.shiftKey;
+}
+
+/**
+ * writeClipboard puts `text` on the clipboard, and answers whether it went.
+ *
+ * The async clipboard is the path, and it is not always there: it needs a
+ * secure context, and this app is reached over plain http on a LAN often
+ * enough - a tunnel is the usual way in, the address bar is not. So the old
+ * hidden-textarea copy is the fallback rather than an error message, and
+ * because it has to run inside the gesture that asked for it, the choice
+ * between the two is made synchronously.
+ */
+function writeClipboard(text) {
+  if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).catch((err) => console.error('copy', err));
+    return true;
+  }
+  const field = document.createElement('textarea');
+  field.value = text;
+  field.setAttribute('aria-hidden', 'true');
+  field.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;';
+  document.body.append(field);
+  field.select();
+  let done = false;
+  try { done = document.execCommand('copy'); } catch { /* answered below */ }
+  field.remove();
+  return done;
+}
+
+/**
+ * wireClipboard makes the copy and paste keys mean copy and paste.
+ *
+ * xterm.js turns Ctrl and a letter into that letter's control code and sends
+ * it, with no exception for V - so Ctrl-V arrived in the pane as 0x16, and
+ * 0x16 is what Claude Code has bound to "paste an image from the clipboard".
+ * A person pasting a line of text got "No image found in clipboard" and no
+ * text, because the text never left the browser: xterm cancels the keydown it
+ * handled, and a cancelled Ctrl-V is a paste the browser never performs.
+ *
+ * So the paste keys are handed back to the browser - the custom handler
+ * returning false is the one path out of xterm's key handling that does not
+ * cancel the event - and the `paste` event xterm already listens for on its
+ * textarea does the rest, bracketed when the program asked to be told that a
+ * paste is a paste. Nothing here reads the clipboard, so nothing here asks
+ * for permission to.
+ *
+ * Copying is the other half, and it was not there at all: xterm 6 keeps its
+ * selection in its own model and never puts one in the DOM, so the browser
+ * has nothing to copy and the `copy` event it fires is empty. Ctrl-C is
+ * therefore copy when there is a selection to copy, and the interrupt it has
+ * always been when there is not - the rule Windows Terminal and VS Code both
+ * settled on - and the selection is dropped once it is taken, so that the
+ * next Ctrl-C is an interrupt again. A copy that fails falls through to the
+ * interrupt rather than swallowing it.
+ */
+function wireClipboard(term) {
+  const copySelection = () => {
+    const text = term.getSelection();
+    if (!text) return false;
+    if (!writeClipboard(text)) return false;
+    term.clearSelection();
+    return true;
+  };
+  term.attachCustomKeyEventHandler((ev) => {
+    if (ev.type !== 'keydown') return true;
+    // Handed to the browser: it pastes into the textarea, which is where
+    // xterm's own paste listener is.
+    if (isPasteKey(ev)) return false;
+    if (isCopyKey(ev)) {
+      if (!term.hasSelection() || !copySelection()) return true;
+      ev.preventDefault();
+      return false;
+    }
+    return true;
+  });
+}
+
 export function createTerm(host, opts = {}) {
   const term = new Terminal({
     allowProposedApi: true,           // unicode11 throws without it
@@ -217,6 +317,9 @@ export function createTerm(host, opts = {}) {
   term.loadAddon(new WebLinksAddon.WebLinksAddon());
   term.loadAddon(new ClipboardAddon.ClipboardAddon());   // OSC 52
   term.open(host);
+
+  // Ctrl-C and Ctrl-V, which xterm on its own gets wrong in both directions.
+  wireClipboard(term);
 
   if (opts.webgl !== false) {
     try {

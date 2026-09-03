@@ -135,6 +135,21 @@ async function focusTerm(page, timeout = 5000) {
 
 const oneLine = (text) => text.replace(/\s+/g, ' ').trim().slice(0, 200);
 
+// contrastOf is the WCAG ratio between two colours as the browser reports
+// them - `rgb(r, g, b)` - which is term.js's contrast() reading computed style
+// instead of hex. A ratio is the only honest way to assert that a mark can be
+// seen: "it is a light grey" is a fact about the token, not about the eye.
+const contrastOf = (a, b) => {
+  const lum = (colour) => {
+    const [r, g, b] = (colour.match(/[\d.]+/g) || ['0', '0', '0']).slice(0, 3)
+      .map((n) => Number(n) / 255)
+      .map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
+  return (x + 0.05) / (y + 0.05);
+};
+
 // firstRow is the topmost line the pane is showing. It is the assertion that
 // catches a window that was resized under the program: tmux reflows on a
 // shrink, and on 3.6 that puts the head of the first wrapped line into the
@@ -2925,15 +2940,22 @@ async function design() {
       after.sameRow ? 'the same row' : 'a new row');
 
     // Rule 4 again, on the mark that says a session is working. It is the
-    // agent's own mark with a hairline ring around it, one faint arc on white,
-    // and it turns once every 900 ms - the same beat as the resume spinner.
+    // agent's own mark with a hairline ring around it, one arc in the page's
+    // own ink, and it turns once every 900 ms - the same beat as the resume
+    // spinner. The arc is the ink and not a grey, because the whole of the
+    // motion is that one arc: drawn in the faintest text colour on a ring in
+    // the faintest line, it turned and nobody could see it turning, which is
+    // the same thing as not turning at all.
     await typeLine(s.page, 'sleep 6');
     const spinning = await awaitRow(s.page, id, (r) => r.busy, 10000);
     ok(spinning.ok, 'a session that is working turns its own mark into a ring', took(spinning));
     const ring = spinning.seen ? spinning.seen.ring : null;
-    ok(!!ring && ring.colour === 'rgb(155, 158, 166)',
-      'the arc is the faintest text colour, on white and on nothing else',
-      ring ? ring.colour : 'no ring');
+    ok(!!ring && ring.colour === 'rgb(23, 24, 27)' && ring.rest === 'rgb(220, 221, 225)',
+      'the arc that moves is the page\u2019s ink, on a ring a shade under it',
+      ring ? ring.colour + ' on ' + ring.rest : 'no ring');
+    ok(!!ring && contrastOf(ring.colour, ring.rest) >= 3,
+      'so the arc is legible against the ring it turns on',
+      ring ? contrastOf(ring.colour, ring.rest).toFixed(1) + ':1' : 'no ring');
     const beat = ring ? Math.round(parseFloat(ring.motion) * 1000) : 0;
     ok(beat >= 120 && beat <= 900, 'and it turns at the app\u2019s own pace', beat + ' ms');
 
@@ -2959,13 +2981,25 @@ async function design() {
       Math.round(spunBefore) + ' ms -> ' + Math.round(spunAfter) + ' ms');
 
     // Turning decoration off must not turn off the one thing that says work is
-    // still happening, so the ring is drawn complete and still instead.
+    // still happening: the ring keeps turning, at a third of its pace. Drawn
+    // still it reads as a session that has stopped - which is exactly how it
+    // was read, from a desk whose system had "reduce motion" on.
     await s.page.emulateMedia({ reducedMotion: 'reduce' });
     await wait(200);
     const still = await rowActivity(s.page, id);
-    ok(!!still.ring && still.ring.name === 'none',
-      'with reduced motion the ring is drawn complete and does not turn',
-      still.ring ? still.ring.name : 'no ring');
+    ok(!!still.ring && still.ring.name === 'spin' && still.ring.motion === '2.4s',
+      'with reduced motion the ring still turns, at a third of the pace',
+      still.ring ? still.ring.name + ' ' + still.ring.motion : 'no ring');
+    const slow = await s.page.evaluate((sel) => {
+      const mark = document.querySelector(sel + ' .row-mark');
+      const anim = mark ? mark.getAnimations({ subtree: true })[0] : null;
+      if (!anim) return -1;
+      const was = Number(anim.currentTime);
+      return new Promise((done) => setTimeout(() =>
+        done(Number(anim.currentTime) - was), 400));
+    }, rowSel(id));
+    ok(slow > 100, 'and it is really running, not a still frame with a name on it',
+      Math.round(slow) + ' ms of turn in 400 ms');
     await s.page.emulateMedia({ reducedMotion: null });
 
     // Rule 2 and rule 3 in the top bar: the two things a session can be asked
@@ -3164,7 +3198,12 @@ const rowActivity = (page, id) => page.evaluate((sel) => {
     said: mark ? mark.title : '',
     weight: label ? getComputedStyle(label).fontWeight : '',
     ring: ring
-      ? { colour: ring.borderTopColor, motion: ring.animationDuration, name: ring.animationName }
+      ? {
+        colour: ring.borderTopColor,
+        rest: ring.borderBottomColor,
+        motion: ring.animationDuration,
+        name: ring.animationName,
+      }
       : null,
   };
 }, rowSel(id));
@@ -4967,6 +5006,155 @@ async function daygroups() {
   } finally { await s.stop(); }
 }
 
+/* -------------------------------------------------------- 46. clipboard */
+
+// Copy and paste, which is the one thing a terminal in a browser has to
+// borrow from the browser.
+//
+// The defect this scenario exists for: xterm.js turns Ctrl and a letter into
+// that letter's control code with no exception for V, so Ctrl-V reached the
+// pane as 0x16 - which Claude Code has bound to "paste an image from the
+// clipboard" - and the text never left the browser at all, because a keydown
+// xterm has cancelled is a paste the browser never performs. What was pasted
+// was "No image found in clipboard".
+//
+// So: 0x16 must not be sent, the text must arrive, a paste must be bracketed
+// when the program asked for bracketing, Ctrl-C over a selection must copy,
+// and Ctrl-C over nothing must still be the interrupt it has always been.
+async function clipboard() {
+  const s = await start({
+    viewport: { width: 1280, height: 720 },
+    // The clipboard is the assertion, so the page is allowed to read it back.
+    // Nothing in the app reads it on this path - the browser's own paste is
+    // what carries the text - but the scenario has to see what was copied.
+    permissions: ['clipboard-read', 'clipboard-write'],
+  });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await recordInput(s.page);
+    await open(s);
+    await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+    await s.page.click('#term .xterm-screen');
+    await focusTerm(s.page);
+
+    // Every byte the pane was sent since a moment ago, one hex pair per byte.
+    const since = async (mark) => (await sentBytes(s.page)).slice(mark)
+      .flatMap((frame) => frame.match(/../g) || []);
+    const mark = async () => (await sentBytes(s.page)).length;
+    const hexOf = (text) => Buffer.from(text, 'utf8').toString('hex').match(/../g);
+    const has = (bytes, want) => bytes.join(',').includes(want.join(','));
+
+    const line = 'paste-' + Math.random().toString(36).slice(2, 8);
+    await s.page.evaluate((text) => navigator.clipboard.writeText(text), 'echo ' + line);
+
+    const beforePaste = await mark();
+    await s.page.keyboard.press('Control+V');
+    await wait(400);
+    const pasted = await since(beforePaste);
+    ok(!pasted.includes('16'), 'Ctrl-V does not send 0x16 to the pane',
+      pasted.join(',') || 'nothing');
+    ok(has(pasted, hexOf('echo ' + line)), 'it sends the clipboard instead',
+      pasted.join(',') || 'nothing');
+    await s.page.keyboard.press('Enter');
+    ok(await awaitScreen(s.page, line, 20000), 'and the shell runs the line that was pasted',
+      oneLine(await screen(s.page)).slice(-60));
+
+    // Bracketed paste is the program's own request, and it is the shell that
+    // makes it here: with ?2004h set, what arrives has to be wrapped, which is
+    // what stops an editor from auto-indenting every line of a paste.
+    await typeLine(s.page, "printf '\\033[?2004h'");
+    await wait(500);
+    await s.page.evaluate(() => navigator.clipboard.writeText('bracketed'));
+    const beforeBracket = await mark();
+    await s.page.keyboard.press('Control+V');
+    await wait(400);
+    const bracketed = await since(beforeBracket);
+    ok(has(bracketed, hexOf('\x1b[200~bracketed\x1b[201~')),
+      'a paste is bracketed when the program asked to be told that a paste is a paste',
+      bracketed.join(',') || 'nothing');
+    await s.page.keyboard.press('Control+U');
+    await typeLine(s.page, "printf '\\033[?2004l'");
+    await wait(400);
+
+    // The other direction. xterm 6 keeps its selection in its own model and
+    // never puts one in the DOM, so the browser's copy event carries nothing:
+    // without this the pane could not be copied out of at all.
+    const said = 'copy-' + Math.random().toString(36).slice(2, 8);
+    await typeLine(s.page, 'echo ' + said);
+    ok(await awaitScreen(s.page, said, 20000), 'a line to copy is on the screen',
+      oneLine(await screen(s.page)).slice(-60));
+    // Selected the way a person selects it: the pointer dragged across the row
+    // the words are on, with Shift held - tmux tracks the mouse, so a plain
+    // drag is a mouse report and Shift is what takes the pointer back from
+    // the program. (A plain drag is not lost either: it puts tmux into its own
+    // copy mode, and what tmux copies reaches this clipboard over OSC 52.)
+    const box = await s.page.evaluate((want) => {
+      const rows = document.querySelector('#term .xterm-rows');
+      for (const row of rows.children) {
+        const text = row.innerText.replace(/ /g, ' ');
+        if (text.includes(want) && !text.includes('echo ' + want)) {
+          const r = row.getBoundingClientRect();
+          return { x: r.left, y: r.top + r.height / 2, right: r.right };
+        }
+      }
+      return null;
+    }, said);
+    ok(!!box, 'the row it printed on is where the pointer will go',
+      box ? Math.round(box.x) + ',' + Math.round(box.y) : 'not found');
+    await s.page.keyboard.down('Shift');
+    await s.page.mouse.move(box.x + 2, box.y);
+    await s.page.mouse.down();
+    await s.page.mouse.move(box.right - 2, box.y, { steps: 12 });
+    await s.page.mouse.up();
+    await s.page.keyboard.up('Shift');
+    await wait(200);
+    const selected = await s.page.evaluate(() => document
+      .querySelectorAll('#term .xterm-selection div').length > 0);
+    ok(selected, 'a drag across the pane selects it', selected ? 'selected' : 'no selection');
+
+    const beforeCopy = await mark();
+    await s.page.keyboard.press('Control+C');
+    await wait(300);
+    const onCopy = await since(beforeCopy);
+    ok(!onCopy.includes('03'), 'Ctrl-C over a selection does not interrupt the program',
+      onCopy.join(',') || 'nothing');
+    const held = await s.page.evaluate(() => navigator.clipboard.readText());
+    ok(held.includes(said), 'it copies the selection to the clipboard',
+      JSON.stringify(oneLine(held)));
+    const stillSelected = await s.page.evaluate(() => document
+      .querySelectorAll('#term .xterm-selection div').length > 0);
+    ok(!stillSelected, 'and the selection is spent, so the next Ctrl-C is a Ctrl-C again',
+      stillSelected ? 'still selected' : 'cleared');
+
+    // Which is the assertion that matters most: an interrupt that a stray
+    // selection could swallow is a terminal nobody can stop a program in.
+    const beforeIntr = await mark();
+    await s.page.keyboard.press('Control+C');
+    await wait(300);
+    const onIntr = await since(beforeIntr);
+    ok(onIntr.includes('03'), 'Ctrl-C with nothing selected still sends 0x03',
+      onIntr.join(',') || 'nothing');
+
+    // And the key bar's own Paste button, which is the only way in on a phone.
+    await s.page.evaluate(() => navigator.clipboard.writeText('from-the-bar'));
+    await s.page.click('#sessionMenu');
+    await s.page.click('.menu-item:has-text("Show key bar")');
+    await s.page.waitForSelector('#keybar:not([hidden])', { timeout: 10000 });
+    const beforeBar = await mark();
+    await s.page.click('#keybar .key[data-key="Paste"]');
+    await wait(400);
+    const fromBar = await since(beforeBar);
+    ok(has(fromBar, hexOf('from-the-bar')), 'the key bar’s Paste button pastes the same text',
+      fromBar.join(',') || 'nothing');
+
+    await shot(s.page, 'clipboard');
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 // -------------------------------------------------------------------- run
 
 const ALL = [
@@ -5015,6 +5203,7 @@ const ALL = [
   ['typeafteroutage', 'a cut socket, a locked phone, and a pane that still takes keystrokes', typeafteroutage],
   ['typekeepsfocus', 'a dialog, the ⋯ menu and two sessions: the keys still land in the pane', typekeepsfocus],
   ['design', 'white surfaces, marks, hover-only detail and motion that does not restart', design],
+  ['clipboard', 'Ctrl-V pastes text instead of 0x16, and Ctrl-C copies without losing the interrupt', clipboard],
   ['livesession', 'one real session against the real Claude Code CLI', livesession, { live: true }],
 ];
 

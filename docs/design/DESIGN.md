@@ -2,6 +2,12 @@
 
 **Revision 4** (2026-09-02). Supersedes revisions 1, 2 and 3 in full.
 
+- **rev 6** (2026-09-03) — copy and paste out of the pane: the paste keys are handed back to the
+  browser instead of being sent as control codes, and `Ctrl`/`Cmd`+`C` over a selection copies.
+  The busy ring in the sidebar is drawn in the page's ink, because the grey it was drawn in turned
+  where nobody could see it, and it keeps turning under `prefers-reduced-motion` instead of being
+  stopped. Passages changed by it carry `<!-- rev 6 -->`; §E.4 here and §D.5 of
+  `docs/design/ACTIVITY.md` are the detail.
 - **rev 4** (2026-09-02) — the line composer under the pane is gone, the key bar is off by default
   on every device and turned on from the session menu, one chat with dictation replaces Auto mode,
   and the session list is grouped by day with a chime and a notification when a session stops
@@ -2153,6 +2159,32 @@ spellcheck="false"` — set them on `term.textarea` right after `term.open()`.
 xterm.js replies to DA1/DA2 that tmux asks for on attach. **The input path must be wired before
 the first output frame is rendered**, because those replies travel browser → WS → PTY.
 
+<!-- rev 6 --> **Copy and paste**, through `term.attachCustomKeyEventHandler`. xterm.js gets both
+directions wrong on its own, and both are load-bearing for a product whose pane is where the work
+happens.
+
+- **The paste keys are handed back to the browser.** xterm turns `Ctrl` and a letter into that
+  letter's control code with no exception for `V`, so `Ctrl`+`V` reached the pane as `0x16` — and
+  `0x16` is what Claude Code has bound to "paste an image from the clipboard". What a person
+  pasting a line of text got was **"No image found in clipboard"** and no text at all, because a
+  keydown xterm has cancelled is a paste the browser never performs. The handler therefore returns
+  `false` for `Ctrl`/`Cmd`+`V`, `Ctrl`+`Shift`+`V` and `Shift`+`Insert` — returning `false` is the
+  one way out of xterm's key handling that does **not** cancel the event — and the browser's own
+  paste lands in the hidden textarea, where xterm's `paste` listener already is. It is bracketed
+  when the program set `?2004h`. Nothing on this path reads the clipboard, so nothing on it asks
+  the browser for permission to.
+- **`Ctrl`/`Cmd`+`C` copies when there is a selection, and interrupts when there is not** — with
+  `Ctrl`+`Shift`+`C` and `Ctrl`+`Insert` as the unconditional copies. xterm 6 keeps its selection
+  in its own model and never puts one in the DOM, so the browser's `copy` event carries nothing
+  and the pane could not be copied out of at all. The selection is **cleared once it is taken**,
+  so the next `Ctrl`+`C` is an interrupt again, and a copy that fails falls through to the
+  interrupt rather than swallowing it. `writeClipboard` picks between `navigator.clipboard` and a
+  hidden-textarea `execCommand('copy')` **synchronously**, because the fallback only works inside
+  the gesture that asked for it and this app is reached over plain http as often as not.
+- A plain drag is still tmux's: tmux tracks the mouse, so the pointer is a mouse report and
+  `Shift` is what takes it back for a selection. What tmux copies reaches the browser clipboard
+  over OSC 52, which is what `ClipboardAddon` is loaded for.
+
 ## E.5 Transport client and connection status
 
 `session.js` owns one `TermSocket`:
@@ -2797,6 +2829,8 @@ on the command line select a subset, `finish()` prints the table. Always
 | 20 | `recoveredsession` | create a `soc_*` session by hand on the socket, restart Socrates, assert it appears as "Recovered session" and was **not** killed | WP9b |
 | 21 | `lighttheme` | the fake's banner reads `theme=light`; the terminal's computed background is `rgb(255,255,255)`; every colour in `LIGHT_THEME` has ≥ 4.5:1 contrast against white; a screenshot of a real Codex session is inspected by eye to confirm `tui.theme` applied | WP10 |
 | 22 | `design` | white surfaces, one `agentMark` per harness reference, every version/path string only inside a `.tip-bubble`, and no animation restarting on a re-render (`getAnimations()[0].currentTime` across a state change) | WP10 |
+
+| 23 | `clipboard` | <!-- rev 6 --> `Ctrl`+`V` sends no `0x16` and the clipboard's text instead, bracketed when the program asked for it; a `Shift`-drag selects and `Ctrl`+`C` copies it without interrupting; with nothing selected `Ctrl`+`C` is `0x03` again; the key bar's **Paste** sends the same text | §E.4 |
 
 <!-- rev 4 --> The table is this revision's twenty-two; `ALL` in `e2e/run.mjs` is the live list,
 and the scenarios ACTIVITY.md added — `daygroups`, `notify`, `chat-text`, `chat-dictate`,

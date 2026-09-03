@@ -1004,11 +1004,14 @@ a { color: inherit; }
     animation-duration: 2.4s !important;
   }
   .spinner { animation-name: pulse !important; }
-  /* The ring is still the difference between working and finished, so it is
-     drawn - complete and still - rather than turned off. */
+  /* The ring keeps turning, at a third of its pace. It is the one mark on the
+     page whose whole meaning is "this is happening right now", and a mark that
+     says that has to be moving to say it: drawn still it reads as a session
+     that has stopped, which is what it was read as. Less motion is the ask,
+     not none - the same answer the marks above get, and a 26px hairline arc
+     turning once every 2.4s is the gentlest way to keep saying it. */
   .chat-item .row-mark.busy::after {
-    animation: none !important;
-    border-top-color: var(--line);
+    animation: spin 2.4s linear infinite !important;
   }
   .tip-bubble { transition: none !important; }
 }
@@ -1618,9 +1621,15 @@ body.stale .icon-btn.working svg { animation-play-state: paused; }
    on the ring rather than beside it: a complete amber circle, standing still.
    Working is the same ring in the page's own hairline, turning. */
 .chat-item .row-mark.waiting::after { border-color: var(--amber); }
-/* One faint arc on an otherwise even ring is the whole of the motion. */
+/* One arc on an otherwise even ring is the whole of the motion - and it is
+   the page's own ink, on the ring in the page's own hairline. Drawn any
+   quieter it is not a slower animation, it is no animation: a #ececee ring
+   with a grey arc on white is 26px of nothing at arm's length on a phone,
+   which is the device this is read on. The amber ring beside it is the
+   measure - working has to be as findable across a list as waiting is. */
 .chat-item .row-mark.busy::after {
-  border-top-color: var(--text-faint);
+  border-color: var(--line-strong);
+  border-top-color: var(--accent);
   animation: spin 900ms linear infinite;
 }
 /* A name whose session finished something nobody has seen. The session being
