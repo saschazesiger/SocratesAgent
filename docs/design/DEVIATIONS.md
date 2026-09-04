@@ -1591,3 +1591,86 @@ taking it on trust. On the screen side, captures at 45/60/80/100/120 columns sho
 row wrapping onto its own `┃` line below about 80 columns: the `Allow once … Reject … ctrl+f`
 alternative fails at 60 and 45 while `△ Permission required` matches at every width, so the
 regexp is unchanged and the two narrow cards are now verbatim rows in `TestScrapeScreens`.
+
+## Copy and paste that a person can rely on (2026-09-04)
+
+rev 6 fixed the two things xterm.js gets wrong about the copy and paste **keys**, and left the
+rest of the path resting on tmux. That path is where copy and paste actually broke, every day,
+and none of the four ways it broke were the keys.
+
+**A plain drag belonged to tmux.** tmux tracks the mouse by default, so as far as xterm was
+concerned the pointer was the program's: a drag was a stream of mouse reports, tmux answered them
+by opening its own copy mode, and on release it copied into a tmux buffer. Whether that ever
+reached the browser's clipboard depended on tmux emitting OSC 52, on the terminal admitting to
+the `clipboard` capability, and on an async `navigator.clipboard.writeText` with **no user
+gesture behind it** — which Safari refuses outright, which plain http has not got at all, and
+which Chrome refuses unless the page happens to hold the permission. The documented way round it
+was `Shift`+drag, and on a Mac there was no way round it: xterm 6 hands `Shift` to the program
+there and forces a selection on `Alt` only behind `macOptionClickForcesSelection`, which was off.
+So the pointer is now the person's. `wireMouse` holds every unmodified left press back from xterm
+with a capturing `mousedown` on the host; past `SLOP` it is a selection made through the public
+`term.select()` from the `.xterm-screen` rectangle, which is exactly `cols × rows` cells;
+released where it was pressed it is a click, and the press and release are **replayed** to xterm
+then (untrusted synthetic events, which the capture listener ignores) so a program waiting for a
+click still gets one. A double click takes the word, a triple the logical line, and dragging on
+from either grows by that unit. **The release copies**, inside the gesture — the one place every
+browser allows a clipboard write without asking, and what every native terminal does. `Shift`,
+`Ctrl`, `Alt` and `Cmd` with the button still go to xterm and the program, and
+`macOptionClickForcesSelection: true` makes `Alt`+drag on a Mac what `Shift`+drag is elsewhere.
+
+**A phone could not copy at all.** xterm 6 selects with a mouse and nothing else, and rev 4's
+finger gesture was scrolling. A finger held still for `HOLD_MS` now selects the word under it,
+grows the selection when it moves on, and copies when it lifts — with a **Copied** toast, because
+a phone shows nothing else, and with the browser's own long-press callout and Android's context
+menu cancelled so they do not sit on top of it. The release is cancelled too, so no click is
+made up from a hold; a short tap is still the tap it was.
+
+**The keys only worked while the pane held the focus.** After a click on the sidebar or a header
+button, `Ctrl`+`V` produced nothing at all: the browser fires `paste` on whatever has the focus,
+and that was not xterm's textarea. `document`-level `paste` and `copy` listeners now route both
+to the pane unless the target is xterm's own textarea, a field of its own, or the page itself
+holds a text selection. They are in the **capture** phase, which is the only place that runs
+before xterm's listeners on its own textarea.
+
+**What tmux copied never arrived.** `@xterm/addon-clipboard` 0.2.0 reads the selection parameter
+of `OSC 52 ; <selection> ; <base64>` and drops anything that is not `c` — and tmux names no
+selection at all, `52;;`, which the xterm spec defines as the default one. So every copy made in
+tmux's own copy mode was decoded and thrown away. The addon is **no longer vendored** (6,384 B
+less in the service worker's precache); `wireOSC52` registers `term.parser.registerOscHandler(52,
+…)`, takes an empty selection as the clipboard, decodes UTF-8 and writes **quietly** — a write
+nobody asked for must not put an error on screen when the browser refuses it, and what was copied
+is kept as the middle-click buffer either way. A query (`?`) is answered with nothing: a program
+does not get to read the clipboard through the pane. Two things on the tmux side had to change for
+this path to carry anything: the attach client is started with `TERM=xterm-256color`, because the
+terminal it is attached from *is* xterm.js and under a service manager the server's own
+environment says nothing, and tmux reads the `clipboard` feature (`Ms`) from `TERM`; and
+`set-clipboard on`, because the default `external` forwards tmux's own copies and silently drops
+a program's. `terminal-features` gained `clipboard` for `xterm*` with it, `apply.go` sets
+`set-clipboard` live when the terminal settings are saved, and `Manager.Start` sets it on a server
+that is already running — the configuration file is read when the tmux *server* starts, and the
+sessions outlive Socrates, so a line added to that file would otherwise reach an install that has
+been up for a week only when the machine was next rebooted, and every copy made in tmux until
+then would go on being thrown away.
+
+**Two smaller ones, both found in the browser.** A right press is now held back from xterm as
+well: tmux answers a right click with a menu of its own, and swallowing the report leaves the
+browser's context menu — which carries Paste — to come. And a middle press pastes the last thing
+selected on the page, as it has on X11 for thirty years, which turned out to arrive **twice**:
+Chrome on Linux pastes the primary selection itself whenever an editable element is under the
+pointer, which xterm's hidden textarea is once a right click has moved it there, and
+`preventDefault` on the press does not stop it. The browser's paste lands in the same millisecond
+as the click, so a 150 ms window swallows it — spent the moment it is used, and spent by any
+keydown, so that a paste key pressed after a middle click is never mistaken for it.
+
+The key bar's **Paste** button gained the same fallback, for the same reason the OSC 52 write is
+kept as a buffer: `navigator.clipboard.readText()` needs a secure context and a permission a phone
+over plain http has not got, and what it now falls back on is the last text copied out of the pane
+itself — which is the round trip a phone actually makes, hold a line to copy it and tap **Paste**
+to put it back.
+
+The `clipboard` scenario grew from 13 assertions to 36 and `touchcopy` is new: a plain drag sends
+tmux no report, selects, and is on the clipboard at release; a plain click is still reported; a
+double click copies the word; a right click is not reported; a middle click pastes once; both keys
+work with the focus on a header button; an OSC 52 printed by the program, through tmux, sets the
+clipboard; a drag down two rows copies both; and on a phone viewport a hold selects, a moved hold grows, a
+lift copies and toasts, and a tap is still a tap.

@@ -1004,15 +1004,13 @@ a { color: inherit; }
     animation-duration: 2.4s !important;
   }
   .spinner { animation-name: pulse !important; }
-  /* The ring keeps turning, at a third of its pace. It is the one mark on the
-     page whose whole meaning is "this is happening right now", and a mark that
-     says that has to be moving to say it: drawn still it reads as a session
-     that has stopped, which is what it was read as. Less motion is the ask,
-     not none - the same answer the marks above get, and a 26px hairline arc
-     turning once every 2.4s is the gentlest way to keep saying it. */
-  .chat-item .row-mark.busy::after {
-    animation: spin 2.4s linear infinite !important;
-  }
+  /* The ring has no reduced-motion behaviour of its own: it turns at the app's
+     own pace here as everywhere else. The line is still needed, because the
+     rule at the top of this block would otherwise squash it to .01ms - which
+     is not a slower ring, it is a still one, and a mark whose whole meaning is
+     "this is happening right now" cannot be drawn still. That is what it was
+     drawn as, and it was read as a session that had stopped. */
+  .chat-item .row-mark.busy::after { animation-duration: .9s !important; }
   .tip-bubble { transition: none !important; }
 }
 
@@ -1170,7 +1168,16 @@ a { color: inherit; }
    told not to take the vertical axis for a pan of the page - term.js turns the
    drag into the wheel xterm understands. Pinch is deliberately left out of the
    list: zooming stays where somebody needs it. */
-.term-host { width: 100%; height: 100%; touch-action: pan-x pinch-zoom; }
+.term-host {
+  width: 100%;
+  height: 100%;
+  touch-action: pan-x pinch-zoom;
+  /* A long press selects in the pane, through term.js; the browser's own
+     callout and text selection would sit on top of it. */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
 .term-host .xterm { height: 100%; }
 .term-host .xterm-viewport {
   background: var(--bg) !important;

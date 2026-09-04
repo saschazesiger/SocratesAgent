@@ -2981,14 +2981,15 @@ async function design() {
       Math.round(spunBefore) + ' ms -> ' + Math.round(spunAfter) + ' ms');
 
     // Turning decoration off must not turn off the one thing that says work is
-    // still happening: the ring keeps turning, at a third of its pace. Drawn
-    // still it reads as a session that has stopped - which is exactly how it
-    // was read, from a desk whose system had "reduce motion" on.
+    // still happening: the ring has no reduced-motion behaviour of its own and
+    // turns at the same pace here as everywhere else. Drawn still it reads as
+    // a session that has stopped - which is exactly how it was read, from a
+    // desk whose system had "reduce motion" on.
     await s.page.emulateMedia({ reducedMotion: 'reduce' });
     await wait(200);
     const still = await rowActivity(s.page, id);
-    ok(!!still.ring && still.ring.name === 'spin' && still.ring.motion === '2.4s',
-      'with reduced motion the ring still turns, at a third of the pace',
+    ok(!!still.ring && still.ring.name === 'spin' && still.ring.motion === '0.9s',
+      'with reduced motion the ring turns at the pace it always turns at',
       still.ring ? still.ring.name + ' ' + still.ring.motion : 'no ring');
     const slow = await s.page.evaluate((sel) => {
       const mark = document.querySelector(sel + ' .row-mark');
@@ -5148,8 +5149,272 @@ async function clipboard() {
     const fromBar = await since(beforeBar);
     ok(has(fromBar, hexOf('from-the-bar')), 'the key bar’s Paste button pastes the same text',
       fromBar.join(',') || 'nothing');
+    await s.page.keyboard.press('Control+U');
+
+
+    // The pointer, without Shift. tmux tracks the mouse, so xterm on its own
+    // hands a plain drag to tmux as mouse reports - and tmux's copy mode, its
+    // buffer and an OSC 52 with no gesture behind it were what a person's copy
+    // then depended on. On a Mac there was no Shift to fall back on either.
+    // Now a plain drag is a selection in the browser, copied on release; a
+    // plain click is still the click a program may be waiting for.
+    // rowOf is the row a word was printed on - the output, not the command
+    // that printed it - waited for, because a repaint after a resize empties
+    // the rows for a frame.
+    const rowOf = async (want) => {
+      const find = (want) => {
+        const rows = document.querySelector('#term .xterm-rows');
+        for (const row of rows.children) {
+          const text = row.innerText.replace(/\u00a0/g, ' ');
+          if (text.includes(want) && !text.includes('echo ' + want)) {
+            const r = row.getBoundingClientRect();
+            return { x: r.left, y: r.top + r.height / 2, right: r.right };
+          }
+        }
+        return null;
+      };
+      await s.page.waitForFunction(find, want, { timeout: 5000 }).catch(() => {});
+      return s.page.evaluate(find, want);
+    };
+    const selectedNow = () => s.page.evaluate(() => document
+      .querySelectorAll('#term .xterm-selection div').length > 0);
+    const REPORT = hexOf('\x1b[<');
+
+    await s.page.click('#sessionMenu');
+    await s.page.click('.menu-item:has-text("Hide key bar")');
+    await wait(300);
+    const plain = 'drag-' + Math.random().toString(36).slice(2, 8);
+    await typeLine(s.page, 'echo ' + plain + ' second-word');
+    ok(await awaitScreen(s.page, plain + ' second-word', 20000), 'a line for the pointer is on the screen',
+      oneLine(await screen(s.page)).slice(-60));
+    await wait(300);
+    const row = await rowOf(plain);
+    ok(!!row, 'and the row it is on is known', row ? Math.round(row.x) + ',' + Math.round(row.y)
+      : 'not found in: ' + JSON.stringify(await s.page.evaluate((want) => [...document.querySelector('#term .xterm-rows').children]
+        .map((r) => r.innerText).filter((t) => t.includes(want)), plain)));
+
+    await s.page.evaluate(() => navigator.clipboard.writeText('stale'));
+    const beforeDrag = await mark();
+    await s.page.mouse.move(row.x + 2, row.y);
+    await s.page.mouse.down();
+    await s.page.mouse.move(row.right - 2, row.y, { steps: 12 });
+    await s.page.mouse.up();
+    await wait(300);
+    const duringDrag = await since(beforeDrag);
+    ok(!has(duringDrag, REPORT), 'a plain drag - no Shift - sends no mouse report to tmux',
+      duringDrag.join(',') || 'nothing');
+    ok(await selectedNow(), 'it selects in the browser instead', 'selected');
+    const afterDrag = await s.page.evaluate(() => navigator.clipboard.readText());
+    ok(afterDrag.includes(plain + ' second-word'),
+      'and the selection is on the clipboard the moment the button is released',
+      JSON.stringify(oneLine(afterDrag)));
+
+    const beforeClick = await mark();
+    await s.page.mouse.click(row.x + 2, row.y);
+    await wait(300);
+    const onClick = await since(beforeClick);
+    ok(has(onClick, hexOf('\x1b[<0;')), 'a plain click is still reported to the program, at its release',
+      onClick.join(',') || 'nothing');
+    ok(!(await selectedNow()), 'and it clears the selection, as a click does', 'cleared');
+
+    await s.page.evaluate(() => navigator.clipboard.writeText('stale'));
+    await s.page.mouse.dblclick(row.x + 2, row.y);
+    await wait(300);
+    const word = await s.page.evaluate(() => navigator.clipboard.readText());
+    ok(word === plain, 'a double click takes the word under the pointer, and copies it',
+      JSON.stringify(oneLine(word)));
+
+    const beforeRight = await mark();
+    await s.page.mouse.click(row.x + 2, row.y, { button: 'right' });
+    await wait(300);
+    const onRight = await since(beforeRight);
+    ok(!has(onRight, REPORT), 'a right click is not reported, so tmux opens no menu of its own',
+      onRight.join(',') || 'nothing');
+
+    const beforeMiddle = await mark();
+    await s.page.mouse.click(row.x + 2, row.y, { button: 'middle' });
+    await wait(300);
+    const onMiddle = await since(beforeMiddle);
+    ok(has(onMiddle, hexOf(plain)), 'a middle click pastes the last thing selected, as it does on X11',
+      onMiddle.join(',') || 'nothing');
+    // Once, not twice: Chrome on Linux pastes the X11 primary selection on a
+    // middle click as well, and that paste is not stopped by preventDefault
+    // on the press.
+    const pastes = onMiddle.join(',').split(hexOf('\x1b[200~').join(',')).length - 1;
+    ok(pastes === 1, 'exactly once, not once from us and once from the browser', String(pastes));
+    ok(!has(onMiddle, REPORT), 'and is not reported to tmux, which would paste a buffer of its own',
+      onMiddle.join(',') || 'nothing');
+    await s.page.keyboard.press('Control+U');
+
+    // The keys with the focus somewhere else on the page - after a click on
+    // the sidebar, say. The browser fires paste and copy on whatever has the
+    // focus, and unless that is a field of its own they are the pane's.
+    await s.page.evaluate(() => document.querySelector('#sessionMenu').focus());
+    ok(await s.page.evaluate(() => document.activeElement === document.querySelector('#sessionMenu')),
+      'the focus is on a button in the header, not on the terminal', 'the session menu button');
+    const away = 'away-' + Math.random().toString(36).slice(2, 8);
+    await s.page.evaluate((text) => navigator.clipboard.writeText(text), away);
+    const beforeAway = await mark();
+    await s.page.keyboard.press('Control+V');
+    await wait(400);
+    const onAway = await since(beforeAway);
+    ok(has(onAway, hexOf(away)), 'Ctrl-V with the focus elsewhere on the page still pastes into the pane',
+      onAway.join(',') || 'nothing');
+    ok(await s.page.evaluate(() => document.activeElement === document.querySelector('#term .xterm-helper-textarea')),
+      'and the pane has the focus again', 'textarea');
+    await s.page.keyboard.press('Control+U');
+
+    await s.page.mouse.move(row.x + 2, row.y);
+    await s.page.mouse.down();
+    await s.page.mouse.move(row.right - 2, row.y, { steps: 8 });
+    await s.page.mouse.up();
+    await wait(200);
+    await s.page.evaluate(() => document.querySelector('#sessionMenu').focus());
+    await s.page.evaluate(() => navigator.clipboard.writeText('stale'));
+    const beforeAwayCopy = await mark();
+    await s.page.keyboard.press('Control+C');
+    await wait(300);
+    const awayCopy = await s.page.evaluate(() => navigator.clipboard.readText());
+    ok(awayCopy.includes(plain), 'Ctrl-C with the focus elsewhere copies the pane’s selection',
+      JSON.stringify(oneLine(awayCopy)));
+    ok(!(await since(beforeAwayCopy)).includes('03'), 'and interrupts nothing',
+      (await since(beforeAwayCopy)).join(',') || 'nothing');
+
+    // Two rows, which is how output is actually copied: xterm's `select()`
+    // takes a length in cells and wraps it across lines, so the selection has
+    // to be the block between the two points and not part of one row. Both
+    // rows are looked up again here, because every command typed since has
+    // pushed the screen up by one.
+    await s.page.click('#term .xterm-screen');
+    await focusTerm(s.page);
+    const second = 'wrap-' + Math.random().toString(36).slice(2, 8);
+    await typeLine(s.page, 'echo ' + second);
+    ok(await awaitScreen(s.page, second, 20000), 'a second row to select down to is on the screen',
+      oneLine(await screen(s.page)).slice(-60));
+    const upper = await rowOf(plain);
+    const lower = await rowOf(second);
+    ok(!!upper && !!lower && lower.y > upper.y, 'and the two rows are one above the other',
+      upper && lower ? Math.round(upper.y) + ' -> ' + Math.round(lower.y) : 'not found');
+    await s.page.evaluate(() => navigator.clipboard.writeText('stale'));
+    await s.page.mouse.move(upper.x + 2, upper.y);
+    await s.page.mouse.down();
+    await s.page.mouse.move(lower.right - 2, lower.y, { steps: 12 });
+    await s.page.mouse.up();
+    await wait(300);
+    const bothRows = await s.page.evaluate(() => navigator.clipboard.readText());
+    ok(bothRows.includes(plain) && bothRows.includes(second),
+      'a drag down two rows copies both of them', JSON.stringify(oneLine(bothRows)));
+
+    // What a program copies. OSC 52 is how tmux's own copy mode reaches the
+    // clipboard, and how a program inside it does; tmux forwards it with no
+    // selection named - `52;;` - which is what the stock addon threw away.
+    await s.page.click('#term .xterm-screen');
+    await focusTerm(s.page);
+    const osc = 'osc-' + Math.random().toString(36).slice(2, 8);
+    await s.page.evaluate(() => navigator.clipboard.writeText('stale'));
+    await typeLine(s.page, "printf '\\033]52;;" + Buffer.from(osc, 'utf8').toString('base64') + "\\a'");
+    await wait(800);
+    const fromProgram = await s.page.evaluate(() => navigator.clipboard.readText());
+    ok(fromProgram === osc, 'an OSC 52 from the program, through tmux, sets the clipboard',
+      JSON.stringify(oneLine(fromProgram)));
 
     await shot(s.page, 'clipboard');
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+/* ------------------------------------------------------- 46b. touchcopy */
+
+// A phone has no pointer to drag and no Ctrl to press, and xterm 6 selects
+// with a mouse and nothing else - so there was no way to copy a line out of a
+// pane on the device this product is carried on. A finger held still on the
+// pane now selects the word under it, grows the selection when it moves on,
+// and copies when it lifts, saying so with a toast.
+async function touchcopy() {
+  const s = await start({
+    viewport: { width: 390, height: 844 },
+    touch: true,
+    permissions: ['clipboard-read', 'clipboard-write'],
+  });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await recordInput(s.page);
+    await open(s);
+    await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+
+    const first = 'hold-' + Math.random().toString(36).slice(2, 6);
+    const line = first + ' more-' + Math.random().toString(36).slice(2, 6);
+    await typeLine(s.page, 'echo ' + line);
+    ok(await awaitScreen(s.page, line, 20000), 'a line to copy is on the screen',
+      oneLine(await screen(s.page)).slice(-60));
+    await wait(300);
+    const row = await s.page.evaluate((want) => {
+      const rows = document.querySelector('#term .xterm-rows');
+      for (const r of rows.children) {
+        if (r.innerText.includes(want) && !r.innerText.includes('echo ' + want)) {
+          const b = r.getBoundingClientRect();
+          return { x: b.left, y: b.top + b.height / 2, right: b.right };
+        }
+      }
+      return null;
+    }, first);
+    ok(!!row, 'and the row it is on is known', row ? Math.round(row.x) + ',' + Math.round(row.y)
+      : 'not found in: ' + JSON.stringify(await s.page.evaluate((want) => [...document.querySelector('#term .xterm-rows').children]
+        .map((r) => r.innerText).filter((t) => t.includes(want)), plain)));
+    const cdp = await s.context.newCDPSession(s.page);
+    const finger = async (x, y, type) => cdp.send('Input.dispatchTouchEvent', {
+      type, touchPoints: type === 'touchEnd' ? [] : [{ x, y }],
+    });
+    const sent = async () => (await sentBytes(s.page)).length;
+    const hexOf = (text) => Buffer.from(text, 'utf8').toString('hex').match(/../g);
+    const has = (frames, want) => frames.flatMap((f) => f.match(/../g) || []).join(',').includes(want.join(','));
+
+    // Held still: the word under the finger.
+    await s.page.evaluate(() => navigator.clipboard.writeText('stale'));
+    const before = await sent();
+    await finger(row.x + 4, row.y, 'touchStart');
+    await wait(700);
+    await finger(row.x + 4, row.y, 'touchEnd');
+    await wait(300);
+    const word = await s.page.evaluate(() => navigator.clipboard.readText());
+    ok(word === first, 'a finger held on the pane selects the word under it, and lifting it copies',
+      JSON.stringify(oneLine(word)));
+    const toasted = await s.page.evaluate(() => [...document.querySelectorAll('.toast')].map((t) => t.textContent));
+    ok(toasted.some((t) => /Copied/.test(t)), 'and says so, because a phone shows nothing else',
+      toasted.join(' | ') || 'no toast');
+    const after = (await sentBytes(s.page)).slice(before);
+    ok(!has(after, hexOf('\x1b[<')), 'the hold was not a tap: no click reached the program',
+      after.join(',') || 'nothing');
+
+    // Held then moved: the selection grows with the finger.
+    await s.page.evaluate(() => navigator.clipboard.writeText('stale'));
+    await finger(row.x + 4, row.y, 'touchStart');
+    await wait(700);
+    for (let i = 1; i <= 8; i++) {
+      await finger(row.x + 4 + ((row.right - 8 - row.x) * i) / 8, row.y, 'touchMove');
+      await wait(30);
+    }
+    await finger(row.right - 4, row.y, 'touchEnd');
+    await wait(300);
+    const grown = await s.page.evaluate(() => navigator.clipboard.readText());
+    ok(grown.startsWith(line), 'moved on, the finger grows the selection to where it lifts',
+      JSON.stringify(oneLine(grown)));
+    ok(await s.page.evaluate(() => window.scrollY === 0), 'and the page did not scroll under it',
+      String(await s.page.evaluate(() => window.scrollY)));
+
+    // A tap is still a tap.
+    const beforeTap = await sent();
+    await finger(row.x + 4, row.y, 'touchStart');
+    await wait(60);
+    await finger(row.x + 4, row.y, 'touchEnd');
+    await wait(400);
+    const onTap = (await sentBytes(s.page)).slice(beforeTap);
+    ok(has(onTap, hexOf('\x1b[<0;')), 'a short tap is the click it always was', onTap.join(',') || 'nothing');
+
+    await shot(s.page, 'touchcopy');
     ok(unexpected(s.errors).length === 0, 'no console errors',
       unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
@@ -5203,7 +5468,8 @@ const ALL = [
   ['typeafteroutage', 'a cut socket, a locked phone, and a pane that still takes keystrokes', typeafteroutage],
   ['typekeepsfocus', 'a dialog, the ⋯ menu and two sessions: the keys still land in the pane', typekeepsfocus],
   ['design', 'white surfaces, marks, hover-only detail and motion that does not restart', design],
-  ['clipboard', 'Ctrl-V pastes text instead of 0x16, and Ctrl-C copies without losing the interrupt', clipboard],
+  ['clipboard', 'copy and paste: the keys, a plain drag, a click, a middle click, and OSC 52', clipboard],
+  ['touchcopy', 'a finger held on the pane selects, grows and copies', touchcopy],
   ['livesession', 'one real session against the real Claude Code CLI', livesession, { live: true }],
 ];
 

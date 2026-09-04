@@ -2,11 +2,19 @@
 
 **Revision 4** (2026-09-02). Supersedes revisions 1, 2 and 3 in full.
 
+- **rev 7** (2026-09-04) — copy and paste made reliable: a plain drag, a double and a triple
+  click select in the browser and copy on release, whatever tmux is doing with the mouse; a plain
+  click still reaches the program; a right click is kept from tmux so the browser's own menu can
+  carry Paste; a middle click pastes the last selection; a finger held on the pane selects and
+  copies; the paste and copy keys work with the focus anywhere on the page that is not a field of
+  its own; OSC 52 is handled in `term.js` rather than by the clipboard addon, which dropped what
+  tmux sent; tmux is attached from a client that says `TERM=xterm-256color` and runs with
+  `set-clipboard on`. Passages changed by it carry `<!-- rev 7 -->`; §E.4 is the detail.
 - **rev 6** (2026-09-03) — copy and paste out of the pane: the paste keys are handed back to the
   browser instead of being sent as control codes, and `Ctrl`/`Cmd`+`C` over a selection copies.
   The busy ring in the sidebar is drawn in the page's ink, because the grey it was drawn in turned
-  where nobody could see it, and it keeps turning under `prefers-reduced-motion` instead of being
-  stopped. Passages changed by it carry `<!-- rev 6 -->`; §E.4 here and §D.5 of
+  where nobody could see it, and it turns at the same pace under `prefers-reduced-motion` as
+  everywhere else instead of being stopped. Passages changed by it carry `<!-- rev 6 -->`; §E.4 here and §D.5 of
   `docs/design/ACTIVITY.md` are the detail.
 - **rev 4** (2026-09-02) — the line composer under the pane is gone, the key bar is off by default
   on every device and turned on from the session menu, one chat with dictation replaces Auto mode,
@@ -201,10 +209,11 @@ set -g  remain-on-exit on                # WINDOW option
 set -g  destroy-unattached off           # session option
 set -g  exit-empty off                   # SERVER option
 set -g  allow-passthrough on             # required by Claude Code's docs for notifications
+set -s  set-clipboard on                 # <!-- rev 7 --> a program's OSC 52 reaches the browser; `external` drops it
 set -g  set-titles off
 set -g  focus-events on
 set -s  extended-keys {{.ExtendedKeys}}  # default off; see §F.3
-set -as terminal-features 'xterm*:extkeys'
+set -as terminal-features 'xterm*:extkeys:clipboard'
 set -g  remain-on-exit-format ''         # we render the exit overlay ourselves (§A.9)
 set -g  window-style        'fg=#17181b,bg=#ffffff'   # THE white-background mechanism (§A.2)
 set -g  window-active-style 'fg=#17181b,bg=#ffffff'
@@ -1936,7 +1945,6 @@ internal/web/static/
     addon-unicode11.js       @xterm/addon-unicode11 0.9.0
     addon-web-links.js       @xterm/addon-web-links 0.12.0
     addon-webgl.js           @xterm/addon-webgl 0.19.0
-    addon-clipboard.js       @xterm/addon-clipboard 0.2.0
     LICENSE-xterm            the MIT text from @xterm/xterm
 ```
 
@@ -2022,14 +2030,13 @@ which is why the `DELETED` above no longer holds), `daygroups.js` (the sidebar's
   <script src="/static/vendor/addon-fit.js"></script>
   <script src="/static/vendor/addon-unicode11.js"></script>
   <script src="/static/vendor/addon-web-links.js"></script>
-  <script src="/static/vendor/addon-clipboard.js"></script>
   <script src="/static/vendor/addon-webgl.js"></script>
   <script type="module" src="/static/js/session.js"></script>
 </body>
 ```
 
 The classic `<script>` tags come **before** the module script, so the globals (`Terminal`,
-`FitAddon`, `Unicode11Addon`, `WebLinksAddon`, `ClipboardAddon`, `WebglAddon`) exist when
+`FitAddon`, `Unicode11Addon`, `WebLinksAddon`, `WebglAddon`) exist when
 `term.js` runs. They are not ESM; do not try to `import` them.
 
 <!-- rev 4 --> **There is nothing under the pane but the key bar.** The `<form class="composer">`
@@ -2137,8 +2144,8 @@ Addons, in this order:
 term.loadAddon(new Unicode11Addon.Unicode11Addon()); term.unicode.activeVersion = '11';
 const fit = new FitAddon.FitAddon(); term.loadAddon(fit);
 term.loadAddon(new WebLinksAddon.WebLinksAddon());
-term.loadAddon(new ClipboardAddon.ClipboardAddon());   // OSC 52
 term.open(host);
+// OSC 52 is term.js's own handler (wireOSC52), not @xterm/addon-clipboard: see §E.4.
 if (opts.webgl) {
   try {
     const gl = new WebglAddon.WebglAddon();
@@ -2159,31 +2166,98 @@ spellcheck="false"` — set them on `term.textarea` right after `term.open()`.
 xterm.js replies to DA1/DA2 that tmux asks for on attach. **The input path must be wired before
 the first output frame is rendered**, because those replies travel browser → WS → PTY.
 
-<!-- rev 6 --> **Copy and paste**, through `term.attachCustomKeyEventHandler`. xterm.js gets both
-directions wrong on its own, and both are load-bearing for a product whose pane is where the work
-happens.
+<!-- rev 7 --> **Copy and paste.** xterm.js gets both directions wrong on its own, and both are
+load-bearing for a product whose pane is where the work happens. `term.js` owns all of it: the
+keys (`wireClipboard`), the pointer and the finger (`selectionController`, `wireMouse`,
+`wireTouch`) and what a program copies (`wireOSC52`). What rev 6 did with the keys stands; the
+rest is what made it unreliable, and is new.
 
 - **The paste keys are handed back to the browser.** xterm turns `Ctrl` and a letter into that
   letter's control code with no exception for `V`, so `Ctrl`+`V` reached the pane as `0x16` — and
   `0x16` is what Claude Code has bound to "paste an image from the clipboard". What a person
   pasting a line of text got was **"No image found in clipboard"** and no text at all, because a
-  keydown xterm has cancelled is a paste the browser never performs. The handler therefore returns
-  `false` for `Ctrl`/`Cmd`+`V`, `Ctrl`+`Shift`+`V` and `Shift`+`Insert` — returning `false` is the
-  one way out of xterm's key handling that does **not** cancel the event — and the browser's own
-  paste lands in the hidden textarea, where xterm's `paste` listener already is. It is bracketed
-  when the program set `?2004h`. Nothing on this path reads the clipboard, so nothing on it asks
-  the browser for permission to.
+  keydown xterm has cancelled is a paste the browser never performs. The custom key handler
+  therefore returns `false` for `Ctrl`/`Cmd`+`V`, `Ctrl`+`Shift`+`V` and `Shift`+`Insert` —
+  returning `false` is the one way out of xterm's key handling that does **not** cancel the event
+  — and the browser's own paste lands in the hidden textarea, where xterm's `paste` listener
+  already is. It is bracketed when the program set `?2004h`. Nothing on this path reads the
+  clipboard, so nothing on it asks the browser for permission to.
 - **`Ctrl`/`Cmd`+`C` copies when there is a selection, and interrupts when there is not** — with
-  `Ctrl`+`Shift`+`C` and `Ctrl`+`Insert` as the unconditional copies. xterm 6 keeps its selection
-  in its own model and never puts one in the DOM, so the browser's `copy` event carries nothing
-  and the pane could not be copied out of at all. The selection is **cleared once it is taken**,
-  so the next `Ctrl`+`C` is an interrupt again, and a copy that fails falls through to the
-  interrupt rather than swallowing it. `writeClipboard` picks between `navigator.clipboard` and a
-  hidden-textarea `execCommand('copy')` **synchronously**, because the fallback only works inside
-  the gesture that asked for it and this app is reached over plain http as often as not.
-- A plain drag is still tmux's: tmux tracks the mouse, so the pointer is a mouse report and
-  `Shift` is what takes it back for a selection. What tmux copies reaches the browser clipboard
-  over OSC 52, which is what `ClipboardAddon` is loaded for.
+  `Ctrl`+`Shift`+`C` and `Ctrl`+`Insert` as the unconditional copies. The selection is cleared
+  once it is taken, so the next `Ctrl`+`C` is an interrupt again, and a copy that fails falls
+  through to the interrupt rather than swallowing it. `writeClipboard` picks between
+  `navigator.clipboard` and a hidden-textarea `execCommand('copy')` **synchronously**, because the
+  fallback only works inside the gesture that asked for it and this app is reached over plain
+  http as often as not; the fallback gives the focus back to the pane afterwards, which is what it
+  used to lose. A copy the async clipboard refuses is toasted, once.
+- **Both keys work with the focus anywhere on the page that is not a field.** After a click on
+  the sidebar or a header button the browser fires `paste` and `copy` on whatever has the focus;
+  `document`-level listeners route them to the pane unless the target is xterm's own textarea
+  (which xterm handles correctly itself), an input, textarea, select or contenteditable, or the
+  page itself has a text selection. This was the everyday "I pressed `Ctrl`+`V` and nothing
+  happened". Both listeners are registered in the **capture** phase, which is the only place that
+  runs before xterm's own listeners on its textarea — a paste this page has already performed has
+  to be stopped before xterm sees it.
+- **The pointer is the person's.** tmux tracks the mouse, so as far as xterm is concerned a plain
+  drag is a stream of mouse reports, and what tmux did with them — its own copy mode, its own
+  buffer, then OSC 52 through an async clipboard call with no gesture behind it — is what a copy
+  used to depend on. Safari refuses that call, plain http has not got it, and on a Mac there was
+  no way to take the pointer back at all: xterm 6 gives `Shift` to the program there and forces a
+  selection on `Alt` only behind `macOptionClickForcesSelection`. So `wireMouse` holds every
+  unmodified left press back from xterm (a capturing `mousedown` on the host that stops
+  propagation). Moved past `SLOP` (8 px) it is a **selection**, made through the public
+  `term.select()` from cells worked out from the `.xterm-screen` rectangle, which is exactly
+  `cols × rows` cells. Released where it was pressed it is a **click**, and the press and release
+  are replayed to xterm then — synthetic `mousedown`/`mouseup` on the screen element, ignored by
+  the capture listener because they are not `isTrusted` — so a program that asked for clicks
+  still gets them, a moment late; the browser's own `click` follows the real release regardless,
+  which is what a link in the pane opens on. A **double click** takes the word (by
+  `wordSeparator`), a **triple click** the line with the rows wrapped into it, and dragging on
+  from either grows by the same unit. **On release the selection is copied**, inside the
+  gesture, which is the one place every browser lets a page write the clipboard without asking —
+  and it is what iTerm2, Windows Terminal and every X11 terminal do. The selection stays on
+  screen, so the copy key still works over it, and any key that sends something clears it
+  (xterm's own `onUserInput` rule). `Shift`, `Alt`, `Ctrl` and `Cmd` with the button are left to
+  xterm and the program as before; `macOptionClickForcesSelection: true` makes `Alt`-drag on a Mac
+  xterm's own selection, as `Shift`-drag is elsewhere.
+- **A right press is held back too** — tmux 3.2+ answers a right click with a menu of its own —
+  and the browser's context menu, which carries Paste, is left to come; xterm's `contextmenu`
+  listener still puts its textarea under the pointer. **A middle press pastes the last thing
+  selected or copied on this page** (`primary` in `term.js`; what a middle click has meant on X11
+  for thirty years) through `term.paste()`, bracketed when the program asked, and is not handed to
+  tmux, which would paste a buffer of its own. Chrome on Linux *also* pastes the X11 primary
+  selection on a middle click whenever an editable element is under the pointer — which xterm's
+  hidden textarea is, once a right click has moved it there (`moveTextAreaUnderMouseCursor`) — and
+  `preventDefault` on the press does not stop it, so the line arrived twice. That paste lands in
+  the same millisecond as the click, so a `MIDDLE_MS` (150 ms) window swallows it; the window is
+  **spent the moment it is used**, and any keydown spends it too, so a paste key pressed after a
+  middle click is never mistaken for the browser answering the click.
+- **A finger held still for `HOLD_MS` (450 ms) selects the word under it**, moved on it grows the
+  selection, and lifted it copies and toasts **Copied**, because a phone shows nothing else. The
+  touch handler (`wireTouch`, which also carries the drag-to-scroll of rev 4) cancels the
+  `touchend` so no click is made up from the release, and cancels the `contextmenu` Android raises
+  on a long press; `.term-host` has `-webkit-touch-callout: none` and `user-select: none` so the
+  browser's own callout and selection stay out of the way. A short tap is still the click it was.
+- **OSC 52 is handled in `term.js`.** `ESC ] 52 ; <selection> ; <base64> BEL` is how tmux's copy
+  mode and any program inside it set the clipboard. tmux names no selection — `52;;` — and
+  `@xterm/addon-clipboard` 0.2.0 treats anything but `c` as "not the clipboard" and drops it, so
+  nothing tmux copied ever arrived. `wireOSC52` registers its own handler through
+  `term.parser.registerOscHandler(52, …)`, takes an empty selection as the default one (which is
+  what the xterm spec says), decodes UTF-8 and hands the text to `writeClipboard` — **quietly**:
+  nothing the person did asked for this write, so a browser refusing a clipboard call with no
+  gesture behind it (which is the ordinary case) must not put an error on their screen for a copy
+  they made in tmux by accident. The text is still kept as the middle-click buffer, which is where
+  it stays reachable from. A query (`?`) is answered with nothing: a program does not get to read
+  the clipboard through the pane. The
+  addon is no longer vendored. Two things on the tmux side are needed for this path: the attach
+  client is started with `TERM=xterm-256color` (`Manager.Attach`) — the terminal it is attached
+  from *is* xterm.js, and under a service manager the server's own environment says nothing —
+  because tmux reads its `clipboard` terminal feature (the `Ms` capability) from it; and
+  `set-clipboard on`, because the default `external` forwards tmux's own copies and silently
+  drops a program's. The configuration file is read when the tmux **server** starts and the
+  sessions outlive Socrates, so `Manager.Start` also sets `set-clipboard` on a server that is
+  already running (`ensureClipboard`) — otherwise an install that upgrades would keep throwing
+  copies away until the machine was next rebooted.
 
 ## E.5 Transport client and connection status
 
@@ -2260,7 +2334,7 @@ Keys, one row, horizontally scrollable, each `button.key[data-send]`:
 | `^C` | `\x03` |
 | `^D` | `\x04` |
 | `^Z` | `\x1a` |
-| `Paste` | `navigator.clipboard.readText()` then send, bracketed if the term asked for it |
+| `Paste` | <!-- rev 7 --> `navigator.clipboard.readText()` then send, bracketed if the term asked for it; a clipboard that cannot be read falls back to `lastCopied()` from `term.js` — the last text copied out of the pane on this page — because a phone over plain http has no readable clipboard at all, and "hold a line to copy it, tap **Paste** to put it back" is the round trip a phone makes |
 | `⌨` | `term.textarea.focus()` **synchronously inside the touchend/click handler** |
 
 Sticky `Ctrl`/`Alt`: tapping arms the modifier (`.on`), the next key press is transformed
@@ -2382,7 +2456,6 @@ const SHELL = [
   '/static/vendor/addon-fit.js',
   '/static/vendor/addon-unicode11.js',
   '/static/vendor/addon-web-links.js',
-  '/static/vendor/addon-clipboard.js',
   '/static/vendor/addon-webgl.js',
   '/static/js/net.js',
   '/static/js/api.js',
@@ -2398,10 +2471,11 @@ const SHELL = [
 ].map((path) => (path === '/' ? path : path + '?v=' + VERSION));
 ```
 
-Total precache: **about 807 KB uncompressed, 206 KB over the wire** with the gzip the server
+Total precache: **about 801 KB uncompressed, 204 KB over the wire** with the gzip the server
 already applies. Measured from the real tarballs: `xterm.js` 488,663 B, `addon-webgl.js`
-247,535 B, `addon-unicode11.js` 52,489 B, `xterm.css` 7,112 B, `addon-clipboard.js` 6,384 B,
-`addon-web-links.js` 3,100 B, `addon-fit.js` 1,521 B. (The multi-megabyte figures in the research
+247,535 B, `addon-unicode11.js` 52,489 B, `xterm.css` 7,112 B,
+`addon-web-links.js` 3,100 B, `addon-fit.js` 1,521 B. (<!-- rev 7 --> `addon-clipboard.js`,
+6,384 B, is no longer shipped.) (The multi-megabyte figures in the research
 table are *tarball* sizes, which are dominated by the `.js.map` files we do not ship.) That is a
 comfortable app shell; every addon stays in `SHELL`. WP7 records the measured number in the
 README so a future addition is noticed.
@@ -2830,7 +2904,8 @@ on the command line select a subset, `finish()` prints the table. Always
 | 21 | `lighttheme` | the fake's banner reads `theme=light`; the terminal's computed background is `rgb(255,255,255)`; every colour in `LIGHT_THEME` has ≥ 4.5:1 contrast against white; a screenshot of a real Codex session is inspected by eye to confirm `tui.theme` applied | WP10 |
 | 22 | `design` | white surfaces, one `agentMark` per harness reference, every version/path string only inside a `.tip-bubble`, and no animation restarting on a re-render (`getAnimations()[0].currentTime` across a state change) | WP10 |
 
-| 23 | `clipboard` | <!-- rev 6 --> `Ctrl`+`V` sends no `0x16` and the clipboard's text instead, bracketed when the program asked for it; a `Shift`-drag selects and `Ctrl`+`C` copies it without interrupting; with nothing selected `Ctrl`+`C` is `0x03` again; the key bar's **Paste** sends the same text | §E.4 |
+| 23 | `clipboard` | <!-- rev 7 --> `Ctrl`+`V` sends no `0x16` and the clipboard's text instead, bracketed when the program asked for it; a `Shift`-drag selects and `Ctrl`+`C` copies it without interrupting; with nothing selected `Ctrl`+`C` is `0x03` again; the key bar's **Paste** sends the same text; a plain drag sends no mouse report, selects, and is on the clipboard at release; a plain click is still reported and clears the selection; a double click copies the word; a right click is not reported; a middle click pastes the last selection exactly once and is not reported; `Ctrl`+`V` and `Ctrl`+`C` with the focus on a header button still paste into and copy from the pane; an OSC 52 printed by the program, through tmux, sets the clipboard; and a drag down two rows copies both | §E.4 |
+| 24 | `touchcopy` | <!-- rev 7 --> on a phone viewport, a finger held on the pane selects the word under it and lifting it copies, with a **Copied** toast and no click reported; held then moved it grows the selection to where it lifts without scrolling the page; a short tap is still the click it was | §E.4 |
 
 <!-- rev 4 --> The table is this revision's twenty-two; `ALL` in `e2e/run.mjs` is the live list,
 and the scenarios ACTIVITY.md added — `daygroups`, `notify`, `chat-text`, `chat-dictate`,

@@ -131,8 +131,8 @@ func TestVendoredTerminalIsStampedAndPrecached(t *testing.T) {
 	worker := string(assets["sw.js"])
 
 	refs := regexp.MustCompile(`(?:src|href)="(/static/vendor/[^"?]+)\?v=([0-9a-f]{12})"`).FindAllStringSubmatch(page, -1)
-	if len(refs) < 7 {
-		t.Fatalf("index.html loads %d vendored files; the terminal is six scripts and a stylesheet", len(refs))
+	if len(refs) < 6 {
+		t.Fatalf("index.html loads %d vendored files; the terminal is five scripts and a stylesheet", len(refs))
 	}
 	for _, ref := range refs {
 		if ref[2] != version {

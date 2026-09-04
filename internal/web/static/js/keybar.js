@@ -12,6 +12,7 @@
 // remembered for this device.
 
 import { el, toast, setClass } from './api.js';
+import { lastCopied } from './term.js';
 
 /* ---------------------------------------------------------- the key bar */
 
@@ -172,13 +173,21 @@ export function mountKeyBar(host, term, socket) {
 // paste puts the clipboard into the pane, bracketed when the program asked to
 // be told that a paste is a paste - which is what stops an editor from
 // auto-indenting every line of it.
+//
+// A phone reaching this app over plain http has no `navigator.clipboard` at
+// all, and one that has it can still refuse to be read - so what was last
+// copied out of the pane itself is the fallback. That is the round trip a
+// phone actually makes: hold a line to copy it, tap Paste to put it back.
 async function paste(term, send) {
   let text = '';
   try {
     text = await navigator.clipboard.readText();
   } catch {
-    toast('The clipboard could not be read — paste with the keyboard instead.', 'error');
-    return;
+    text = lastCopied();
+    if (!text) {
+      toast('The browser would not let the clipboard be read.', 'error');
+      return;
+    }
   }
   if (!text) return;
   const bracketed = !!(term && term.modes && term.modes.bracketedPasteMode);

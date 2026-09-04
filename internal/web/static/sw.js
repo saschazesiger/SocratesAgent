@@ -29,7 +29,7 @@ const CACHE = 'socrates-shell-' + VERSION;
 // arrive before anything can be served offline at all is a file worth not
 // having in the list.
 //
-// The vendored terminal alone is 807 KB uncompressed and 212 KB gzipped -
+// The vendored terminal alone is 801 KB uncompressed and 210 KB gzipped -
 // xterm.js is 489 KB of that and the WebGL renderer 248 KB - and both earn it,
 // because a terminal that has to be fetched is a terminal that is not there in
 // a tunnel. Socrates itself serves the files as they are: the compression is
@@ -44,7 +44,6 @@ const SHELL = [
   '/static/vendor/addon-fit.js',
   '/static/vendor/addon-unicode11.js',
   '/static/vendor/addon-web-links.js',
-  '/static/vendor/addon-clipboard.js',
   '/static/vendor/addon-webgl.js',
   '/static/js/net.js',
   '/static/js/api.js',

@@ -59,6 +59,61 @@ func TestCreateAttachEcho(t *testing.T) {
 	waitForRing(t, v, 5*time.Second, "hello-from-the-pane")
 }
 
+// TestProgramClipboardReachesTheViewer is the server half of copy and paste.
+//
+// A program that copies - or tmux copying on the person's behalf in its own
+// copy mode - says so with `OSC 52`, and the browser turns that into a
+// clipboard write. Whether tmux forwards it at all rests on two things that
+// have nothing to do with the browser: the `clipboard` terminal feature, which
+// tmux takes from the `TERM` of the client it is attached from, and
+// `set-clipboard`, whose default `external` forwards tmux's own copies and
+// drops a program's. Neither is visible from the page, and with either one
+// wrong the copy is decoded and thrown away in silence - so both are asserted
+// here, and then the whole chain is: print the sequence in the pane, read it
+// back off the viewer's ring.
+func TestProgramClipboardReachesTheViewer(t *testing.T) {
+	l := newLab(t)
+	row := l.create(shellSpec(t.TempDir()))
+	v := l.attach(row.ID, 100, 30)
+
+	if got := l.tmuxOut("list-clients", "-t", row.TmuxName, "-F", "#{client_termname}"); got != "xterm-256color" {
+		t.Errorf("the attached client's terminal is %q, want xterm-256color", got)
+	}
+	if got := l.tmuxOut("show", "-sv", "set-clipboard"); got != "on" {
+		t.Errorf("set-clipboard is %q, want on", got)
+	}
+
+	// "hello-clipboard", which is what the browser would decode and put on the
+	// clipboard.
+	const payload = "aGVsbG8tY2xpcGJvYXJk"
+	if _, err := v.Write([]byte("printf '\\033]52;;" + payload + "\\a'\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitForRing(t, v, 5*time.Second, "]52;;"+payload)
+}
+
+// TestStartFixesClipboardForwardingOnAServerThatIsAlreadyRunning is the
+// upgrade path: the tmux server outlives Socrates, and it read its
+// configuration once, when it started. A line added to that file for this
+// release would reach an install that has been running for a week only when
+// the machine is next rebooted - and until then every copy made in tmux would
+// go on being thrown away.
+func TestStartFixesClipboardForwardingOnAServerThatIsAlreadyRunning(t *testing.T) {
+	l := newLab(t)
+	l.create(shellSpec(t.TempDir()))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// The server as an older release left it.
+	if _, err := l.tmux.Run(ctx, "set", "-s", "set-clipboard", "external"); err != nil {
+		t.Fatal(err)
+	}
+	l.ensureClipboard(ctx)
+	if got := l.tmuxOut("show", "-sv", "set-clipboard"); got != "on" {
+		t.Errorf("set-clipboard is %q after a start, want on", got)
+	}
+}
+
 // TestAttachRedrawsCurrentScreen is the "no replay of megabytes" guarantee: a
 // browser that connects late gets the current screen because tmux repaints it
 // for that client, not because we replayed anything.

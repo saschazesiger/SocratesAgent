@@ -250,7 +250,32 @@ func (m *Manager) Start(ctx context.Context) error {
 	if err := WriteConf(m.tmux.Conf, m.confOptions()); err != nil {
 		return err
 	}
+	m.ensureClipboard(ctx)
 	return m.listenHooks()
+}
+
+// ensureClipboard puts the one option the browser's clipboard path depends on
+// onto a tmux server that is already running.
+//
+// The generated configuration is read when the tmux *server* starts, and the
+// whole point of the substrate is that the sessions outlive us - so an install
+// that upgrades keeps the server it has, and a new line in the file reaches it
+// only when the machine is next rebooted. `set-clipboard` cannot wait for
+// that: with the default `external`, every copy made in tmux's own copy mode
+// is decoded and thrown away instead of being sent to the browser. It is a
+// server option, so one command is the whole of it, and a failure is not fatal
+// - a Socrates that cannot set it still runs sessions.
+func (m *Manager) ensureClipboard(ctx context.Context) {
+	if m.Available() != nil {
+		return
+	}
+	running, err := m.tmux.Running(ctx)
+	if err != nil || !running {
+		return
+	}
+	if _, err := m.tmux.Run(ctx, "set", "-s", "set-clipboard", "on"); err != nil {
+		log.Printf("terminal sessions: could not turn tmux's clipboard forwarding on: %v", err)
+	}
 }
 
 // Close lets go of everything Socrates owns and nothing tmux owns. The whole
@@ -739,7 +764,12 @@ func (m *Manager) Attach(ctx context.Context, sessionID, viewerID string, cols, 
 	}
 
 	cmd := exec.Command(m.tmuxPath, "-S", m.tmux.Sock, "attach", "-t", row.TmuxName)
-	cmd.Env = append(os.Environ(), "TMUX=")
+	// The terminal this client is attached from is xterm.js, whatever the
+	// server's own environment says - and under a service manager it says
+	// nothing at all. TERM is what tmux reads its terminal-features from, and
+	// the clipboard feature (the Ms capability) is what decides whether a copy
+	// made in tmux is sent to the browser as OSC 52 or kept to itself.
+	cmd.Env = append(os.Environ(), "TMUX=", "TERM=xterm-256color")
 	master, tty, err := startPTY(cmd, cols, rows)
 	if err != nil {
 		return nil, err
