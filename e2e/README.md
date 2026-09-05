@@ -139,7 +139,7 @@ gitignored. Deleting `e2e/out/` is always safe.
 | `activity-fallback` | a harness that hangs, and the row that leaves busy anyway |
 | `unread` | bold when nobody saw it, gone when the row is opened or typed into |
 | `session-title` | a session that names itself the first time it answers, exactly once |
-| `status-speak` | **Status** spins while it asks, the answer lands on screen as words, and the same words go to `/api/voice/speak` once — the request is intercepted in the browser, so no scenario ever calls Google |
+| `status-speak` | **Status** wears a turning ring around its mark — never the mark itself, and still turning under `prefers-reduced-motion` — while it asks, the answer lands on screen as words, and the same words go to `/api/voice/speak` once — the request is intercepted in the browser, so no scenario ever calls Google |
 | `status-ticker` | the phases of a status — reading the screen, asking the model, speaking, the answer — arrive in order in one line |
 | `agent-run` | a request that needs the keyboard: a run inside the message that asked for it, a **Cancel** beside it, real keystrokes in the pane, and an ending in the conversation |
 | `chat-text` | the chat as a column beside the terminal: a question answered in words with markdown-lite, a reload that comes back to it, and a request that types |
@@ -147,6 +147,7 @@ gitignored. Deleting `e2e/out/` is always safe.
 | `no-overlap` | speech-to-text and text-to-speech are never open at once: **Status** while the microphone runs says nothing out loud, the same press with it closed does, and a recording that starts silences what is playing |
 | `typeafteroutage` | a cut socket, a locked phone, and a pane that still takes keystrokes |
 | `typekeepsfocus` | a dialog, the ⋯ menu and two sessions: the keys still land in the pane |
+| `handsfree` | the mode in which nothing opens the on-screen keyboard: armed from the top bar and remembered across a reload, the pane and every field muted with `inputmode="none"` **and** `readonly`, the key bar on with its `⌨` key stood down, the ⋯ menu no longer offering to hide it, a field filled by speaking into it, and everything given back when it is disarmed |
 | `design` | white surfaces, a mark wherever a program is named, technical strings only in **Info**, and an animation that does not restart when a row re-renders |
 | `daygroups` | the session list read by day: Today, Yesterday, This week, This month, Older — a header only over a group with something in it, and a row that keeps its element when it moves to another day |
 | `notify` | a session that stops working while nobody is looking: one chime and one notification named after it, a speaker and a bell in the header that each turn one of them off and are remembered on this device, and nothing fired for a handshake replay |
@@ -160,7 +161,7 @@ re-derives them at draw time.
 
 ## Dictation needs a microphone and a gateway
 
-`chat-dictate` asks Chromium for its own fake microphone
+`dictate` and `handsfree` ask Chromium for their own fake microphone
 (`--use-fake-device-for-media-stream`) and points `openrouter.base_url` at a
 small HTTP stub the scenario starts. It has to be a real server rather than a
 Playwright route: the browser posts the recording to `/api/voice/transcribe`

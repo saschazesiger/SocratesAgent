@@ -77,14 +77,42 @@
            cross, quiet enough to sit beside the name, and it is hidden
            altogether on a narrow screen. -->
       <span class="term-size" id="termSize" hidden></span>
-      <!-- What this session is doing, said out loud, and what it should do
-           next, done for you. Both are hidden until there is a session to ask
-           about. -->
+      <!-- What this session is doing, said out loud, and how to talk into it
+           without a keyboard. Both are hidden until there is a session to
+           attach them to. -->
+      <!-- The drawing is what the button does: a screen with words on it, and
+           the same two arcs the loudspeaker beside it uses coming off the
+           side. Not a speech bubble - a bubble is somebody talking, and what
+           this does is read out what is already on the pane. -->
       <button class="icon-btn" id="statusBtn" title="Summarize this session" aria-label="Summarize this session" hidden>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 0 1-8 8H5.5L4 21.5V12a8 8 0 1 1 16 0z"/></svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="13.5" height="12" rx="2"/><path d="M5.2 10.4h7M5.2 13.6h4"/><path d="M17.6 9.4a4 4 0 0 1 0 5.2"/><path d="M20.4 7.2a7.5 7.5 0 0 1 0 9.6"/></svg>
       </button>
-      <button class="icon-btn" id="agentBtn" title="Ask the agent" aria-label="Ask the agent" hidden>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M18.5 16.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></svg>
+      <!-- Speaking into the session. It is a pill rather than an icon because
+           it is the control this app is used with: a thumb in a car finds a
+           word and 44px of border, and does not find a 20px glyph between two
+           other glyphs. On a bar too narrow for the word, the word is what
+           goes and the ring stays. -->
+      <button class="pill" id="micBtn" type="button" title="Speak" aria-label="Speak" hidden>
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+        <span class="pill-text" id="micText">Speak</span>
+      </button>
+      <!-- Hands-free. On a tablet or a phone the on-screen keyboard is what is
+           in the way, and in a car it is worse than in the way: it opens on
+           every tap, over the pane, over whatever was being read. Armed,
+           nothing on this page may raise it - the pane, every field and the
+           key bar's own keyboard key all stand down, the key bar comes on
+           because it is the only keyboard left, and everything is dictated
+           instead.
+
+           A keyboard going away, which is the platform's own drawing for it,
+           rather than a keyboard with a stroke through it: struck through, at
+           17px, all that survives is a crossed box, and it was read as one.
+           And one drawing rather than two, filled while it is armed, like a
+           modifier armed on the key bar - this is a mode somebody turned on,
+           not a facility that is on by default. -->
+      <button class="icon-btn" id="handsBtn" type="button" aria-pressed="false"
+              title="Hands-free is off" aria-label="Hands-free is off">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="3.5" width="19" height="11" rx="2"/><path d="M6.3 7.1h.01M10.1 7.1h.01M13.9 7.1h.01M17.7 7.1h.01M8 11h8"/><path d="M8.5 17.4l3.5 3.6 3.5-3.6"/></svg>
       </button>
       <!-- How a session that has finished reaches somebody who is not looking
            at this page. Both are facts about this device rather than about a
@@ -106,9 +134,7 @@
       </button>
     </header>
 
-    <!-- The terminal and, beside it, the conversation about it. On a desk they
-         are two columns and the pane refits; on a phone the chat is a sheet
-         over the pane with a way out of it. -->
+    <!-- The terminal takes the whole area under the bar. -->
     <div class="stage" id="stage">
       <div class="term-wrap" id="termWrap">
         <div class="term-host" id="term"></div>
@@ -127,34 +153,6 @@
         <!-- Before the first session exists there is nothing to attach to. -->
         <div class="term-empty" id="termEmpty" hidden></div>
       </div>
-
-      <!-- The chat with the agent. chat.js fills the log and builds the input
-           row: a field, a microphone and a Send. -->
-      <aside class="chat-panel" id="chatPanel" hidden aria-label="Ask the agent">
-        <header class="chat-head">
-          <span class="chat-head-title">Ask</span>
-          <!-- The microphone is a pill rather than an icon because it is the
-               control this app is used with: a thumb in a car finds a word and
-               44px of border, and does not find a 20px glyph in a text row. -->
-          <button class="pill" id="chatMic" type="button" title="Speak" aria-label="Speak">
-            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
-            <span class="pill-text" id="chatMicText">Speak</span>
-          </button>
-          <!-- Whether answers are read out loud, as the same on/off drawing the
-               header's sound toggle uses. Off until it is asked for, and asked
-               for by dictating once. -->
-          <button class="icon-btn toggle" id="chatSpeak" type="button" aria-pressed="false"
-                  title="Answers are not read aloud" aria-label="Answers are not read aloud">
-            <svg class="ico-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6 9H3v6h3l5 4z"/><path d="M15.4 8.6a4.8 4.8 0 0 1 0 6.8"/><path d="M18.4 5.6a9 9 0 0 1 0 12.8"/></svg>
-            <svg class="ico-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6 9H3v6h3l5 4z"/><path d="M15.4 8.6a4.8 4.8 0 0 1 0 6.8"/><path d="M3 3l18 18"/></svg>
-          </button>
-          <button class="icon-btn" id="chatClose" type="button" aria-label="Close the chat">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
-          </button>
-        </header>
-        <div class="chat-log" id="chatLog"></div>
-        <div class="chat-foot" id="chatFoot"></div>
-      </aside>
     </div>
 
     <!-- The keys a phone keyboard does not have. keybar.js fills them in; the
@@ -195,13 +193,13 @@
      what is being asked of it - keep this, or throw it away - is the only thing
      being asked, and both answers have to be findable without looking. The
      meter is there so that a microphone that hears nothing looks like one. -->
-<dialog class="sheet rec-sheet" id="chatRecSheet" aria-label="Recording">
+<dialog class="sheet rec-sheet" id="recSheet" aria-label="Recording">
   <h2 class="sheet-title">Listening…</h2>
-  <div class="rec-meter" id="chatRecMeter" aria-hidden="true"></div>
-  <div class="rec-time mono" id="chatRecTime">0:00</div>
+  <div class="rec-meter" id="recMeter" aria-hidden="true"></div>
+  <div class="rec-time mono" id="recTime">0:00</div>
   <div class="rec-buttons">
-    <button class="btn primary rec-big" type="button" id="chatRecSend">Send</button>
-    <button class="btn rec-big" type="button" id="chatRecCancel">Cancel</button>
+    <button class="btn primary rec-big" type="button" id="recSend">Send</button>
+    <button class="btn rec-big" type="button" id="recCancel">Cancel</button>
   </div>
 </dialog>
 

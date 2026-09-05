@@ -49,16 +49,10 @@ let defaults = null;
 // so it is not in FIELDS. There is no model catalogue endpoint any more - it
 // went with the chat API - so the combobox is what it is with no items: a text
 // field that takes any id, with the id already in use offered back.
-//
-// `openrouter.title_model` is deliberately not here. It named a chat, and
-// nothing generates a name any more: a session is named after the program and
-// the moment it started, and renamed by hand. The setting survives in the
-// document because it costs nothing there; a control for it would promise
-// something that does not happen.
 const MODEL_PICKERS = [
   ['orTranscribe', 'openrouter.transcribe_model'],
   ['orStatus', 'openrouter.status_model'],
-  ['orAgent', 'openrouter.agent_model'],
+  ['orTitle', 'openrouter.title_model'],
 ];
 
 // FIELDS is every control that is one element and one path. Everything with a
@@ -75,8 +69,6 @@ const FIELDS = [
   ['mouseOn', 'terminal.mouse', 'bool'],
   ['extendedKeys', 'terminal.extended_keys', 'bool'],
   ['webgl', 'terminal.webgl', 'bool'],
-  ['agentAllowShell', 'agent.allow_shell', 'bool'],
-  ['agentMaxSteps', 'agent.max_steps', 'int'],
   ['voiceLanguage', 'voice.language'],
   ['sttPrompt', 'voice.stt_prompt'],
   ['googleKey', 'voice.google_api_key'],

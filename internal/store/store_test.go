@@ -808,6 +808,44 @@ func TestMigrateAddsTheTitleSource(t *testing.T) {
 	}
 }
 
+// The conversations of the chat that used to sit beside a terminal were kept
+// in the key/value table, one document per session, and the only thing that
+// ever removed one was the chat itself. With the chat gone they are rows
+// nothing can reach - including for sessions that have since been deleted - so
+// opening a database written by an older build sweeps them out.
+func TestOpeningSweepsOutTheOldConversations(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "socrates.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetKV("chat.a1", `[{"role":"user","text":"hello"}]`); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetKV("settings", `{"voice":{"language":"de"}}`); err != nil {
+		t.Fatal(err)
+	}
+	// The build that wrote those rows did not know about the sweep.
+	if _, err := st.db.Exec(`PRAGMA user_version = 4`); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	st, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopening: %v", err)
+	}
+	defer st.Close()
+	if _, err := st.GetKV("chat.a1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("the old conversation is still there: %v", err)
+	}
+	if got, err := st.GetKV("settings"); err != nil || got == "" {
+		t.Fatalf("the sweep took the settings with it: %q %v", got, err)
+	}
+}
+
 // The title run reads the row, then spends up to twenty seconds asking a
 // model. Somebody who renames the session inside that window has said what it
 // is called, and the answer that arrives afterwards must not take the name

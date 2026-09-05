@@ -111,6 +111,23 @@ async function awaitScreen(page, needle, timeout = 20000) {
   }
 }
 
+// packed is the pane with every space and line break taken out. A narrow pane
+// wraps a long line wherever the column runs out, so a scenario that is asking
+// which characters arrived - rather than how they were laid out - has to read
+// it this way or it is asserting about the width of a phone.
+const packed = async (page) => (await screen(page)).replace(/\s+/g, '');
+
+// awaitPacked is awaitScreen against that reading.
+async function awaitPacked(page, needle, timeout = 20000) {
+  const want = needle.replace(/\s+/g, '');
+  const started = Date.now();
+  while (Date.now() - started < timeout) {
+    if ((await packed(page)).includes(want)) return true;
+    await wait(200);
+  }
+  return false;
+}
+
 // typeLine types into the terminal itself - not into a field beside it - which
 // is the path every keystroke on a laptop takes.
 //
@@ -1316,12 +1333,12 @@ async function keybar() {
       'a third tap puts it away', 'off');
 
     // A modifier is for the next key the person presses, and the terminal's
-    // own reports are not keys. Leaving the pane for the chat's field, and
-    // coming back to it through the keyboard button, both make xterm send a
-    // focus report on the same channel - and neither may spend an armed Ctrl.
-    await s.page.click('#agentBtn');
-    await s.page.waitForSelector('#chatPanel:not([hidden])', { timeout: 10000 });
-    await s.page.click('#chatText');
+    // own reports are not keys. Leaving the pane for a control in the bar -
+    // the sound toggle, which is about this device and nothing about the pane
+    // - and coming back to it through the keyboard button, both make xterm
+    // send a focus report on the same channel, and neither may spend an armed
+    // Ctrl.
+    await s.page.click('#soundBtn');
     await s.page.click('#keybar .key[data-key="Control"]');
     const beforeKeyboard = (await sentBytes(s.page)).length;
     await s.page.click('#keybar .key[data-key="Keyboard"]');
@@ -1335,21 +1352,17 @@ async function keybar() {
       throughFocus.join(',') || 'nothing');
 
     // A locked Alt must not put an ESC in front of what the terminal answers.
-    // On a phone the panel is a sheet over the pane, so it is closed before
-    // the pane is tapped and opened again to take the focus off it.
-    await s.page.click('#chatClose');
     await s.page.click('#term .xterm-screen');
     await focusTerm(s.page);
     await s.page.click('#keybar .key[data-key="Alt"]');
     await s.page.click('#keybar .key[data-key="Alt"]');
     const beforeBlur = (await sentBytes(s.page)).length;
-    await s.page.click('#agentBtn');
-    await s.page.waitForSelector('#chatPanel:not([hidden])', { timeout: 10000 });
+    // The same toggle again, which puts this device's sound back where it was.
+    await s.page.click('#soundBtn');
     await wait(250);
     const reports = (await sentBytes(s.page)).slice(beforeBlur);
     ok(!reports.some((hex) => hex.startsWith('1b1b')),
       'a locked Alt leaves the terminal\u2019s own reports alone', reports.join(',') || 'nothing');
-    await s.page.click('#chatClose');
 
     // And a bar that is put away takes its modifiers with it, rather than
     // transforming keys with nothing on screen to say why.
@@ -3003,24 +3016,31 @@ async function design() {
       Math.round(slow) + ' ms of turn in 400 ms');
     await s.page.emulateMedia({ reducedMotion: null });
 
-    // Rule 2 and rule 3 in the top bar: the two things a session can be asked
-    // are marks, their words are in the label a reader gets, and there is no
-    // mode switch beside them any more - what the answer sounds like follows
-    // from how the question was asked.
-    const header = await s.page.evaluate(() => ['statusBtn', 'agentBtn'].map((id) => {
-      const node = document.getElementById(id);
-      return {
-        text: (node.textContent || '').trim(),
-        label: node.getAttribute('aria-label'),
-        title: node.title,
-        svg: node.querySelectorAll('svg').length,
+    // Rule 2 and rule 3 in the top bar: Status is a mark with its words in
+    // the label a reader gets, and the microphone beside it is the one control
+    // that carries a word, because it is the one a thumb has to find.
+    const header = await s.page.evaluate(() => {
+      const read = (id) => {
+        const node = document.getElementById(id);
+        return {
+          text: (node.textContent || '').trim(),
+          label: node.getAttribute('aria-label'),
+          title: node.title,
+          svg: node.querySelectorAll('svg').length,
+          height: Math.round(node.getBoundingClientRect().height),
+        };
       };
-    }));
-    ok(header.every((one) => one.text === '' && one.svg === 1 && one.label === one.title),
-      'the two header buttons are marks, with their words in the label',
-      JSON.stringify(header));
-    ok(header[0].label === 'Summarize this session' && header[1].label === 'Ask the agent',
-      'and the words say what pressing them does', header.map((one) => one.label).join(' / '));
+      return { status: read('statusBtn'), mic: read('micBtn') };
+    });
+    ok(header.status.text === '' && header.status.svg === 1
+      && header.status.label === header.status.title,
+      'Status is a mark, with its words in the label', JSON.stringify(header.status));
+    ok(header.status.label === 'Summarize this session' && header.mic.label === 'Speak',
+      'and the words say what pressing them does',
+      header.status.label + ' / ' + header.mic.label);
+    ok(header.mic.text === 'Speak' && header.mic.height >= 44,
+      'the microphone is the one that carries its word, at a size a thumb can hit',
+      JSON.stringify(header.mic));
     const gone = await s.page.evaluate(() => ({
       auto: document.querySelectorAll('.auto-switch').length,
       bar: !!document.getElementById('audioBar'),
@@ -3909,8 +3929,6 @@ async function createdAt(s, id) {
   return born;
 }
 
-// The helpers the chat scenarios share.
-
 // pointGateway saves the key and the stub's address the way the dashboard
 // would, which is the only supported way to make this app talk to a mock.
 async function pointGateway(s, stub) {
@@ -3939,43 +3957,6 @@ async function watchTicker(page) {
   return () => page.evaluate(() => window.__ticker.slice());
 }
 
-// openChat is the header's spark button, which is the one way in on a device
-// with a keyboard.
-async function openChat(page) {
-  await page.waitForSelector('#agentBtn:not([hidden]):not([disabled])', { timeout: 15000 });
-  await page.click('#agentBtn');
-  await page.waitForSelector('#chatPanel:not([hidden])', { timeout: 10000 });
-}
-
-// askChat types a question into the panel and sends it with Enter, which is
-// the path a person takes.
-async function askChat(page, text) {
-  await page.waitForSelector('#chatText:not([disabled])', { timeout: 10000 });
-  await page.fill('#chatText', text);
-  await page.press('#chatText', 'Enter');
-}
-
-// chatBubbles is the conversation as it is drawn.
-const chatBubbles = (page) => page.evaluate(() => [...document.querySelectorAll('#chatLog .chat-msg')]
-  .map((n) => ({
-    who: n.classList.contains('user') ? 'user' : 'assistant',
-    text: n.innerText.trim(),
-    run: !!n.querySelector('.chat-run'),
-    failed: n.classList.contains('failed'),
-  })));
-
-// awaitBubble waits for the conversation to satisfy something about it.
-async function awaitBubble(page, test, timeout = 60000) {
-  const started = Date.now();
-  let seen = [];
-  while (Date.now() - started < timeout) {
-    seen = await chatBubbles(page);
-    if (test(seen)) return { ok: true, seen, ms: Date.now() - started };
-    await wait(200);
-  }
-  return { ok: false, seen, ms: Date.now() - started };
-}
-
 /* ------------------------------------------------------- 34. status-speak */
 
 // The Status button: one request, a spinner while it is being made, the answer
@@ -3995,6 +3976,12 @@ async function statusspeak() {
     await startSession(s.page, 'claude');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
 
+    // The status is held for a moment on its way out, so that what the button
+    // does while it waits is measured rather than caught in passing.
+    await s.page.route('**/api/sessions/*/status', async (route) => {
+      await new Promise((done) => setTimeout(done, 2500));
+      await route.fallback();
+    });
     await s.page.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 15000 });
     await s.page.click('#statusBtn');
     // The tap has to land visibly before the answer does: the button spins and
@@ -4004,6 +3991,56 @@ async function statusspeak() {
       null, { timeout: 5000 }).then(() => true).catch(() => false);
     ok(spinning, 'the button says the tap landed before the answer arrives',
       spinning ? 'the spinner is on it' : 'nothing happened');
+
+    // And what it spins is a ring around the mark, never the mark itself. The
+    // drawing is a screen being read out; a screen that is turning is a
+    // drawing of nothing, and it was read as one. It is the same ring, the
+    // same hairline, the same arc in the page's own ink and the same 900 ms as
+    // the one a working session wears in the sidebar, because it means the
+    // same thing in both places.
+    const ring = await s.page.evaluate(() => {
+      const btn = document.getElementById('statusBtn');
+      const after = getComputedStyle(btn, '::after');
+      const mark = getComputedStyle(btn.querySelector('svg'));
+      return {
+        name: after.animationName,
+        beat: after.animationDuration,
+        size: Math.round(parseFloat(after.width) || 0),
+        arc: after.borderTopColor,
+        rest: after.borderRightColor,
+        onTheMark: mark.animationName,
+        glyph: Math.round(parseFloat(mark.width) || 0),
+      };
+    });
+    ok(ring.name === 'spin' && ring.onTheMark === 'none',
+      'and it is a ring that turns, not the drawing',
+      'ring: ' + ring.name + ', mark: ' + ring.onTheMark);
+    ok(ring.size > ring.glyph,
+      'drawn outside the mark, the way a working session is drawn in the sidebar',
+      ring.size + 'px around a ' + ring.glyph + 'px mark');
+    ok(ring.beat === '0.9s' && ring.arc === 'rgb(23, 24, 27)' && ring.rest === 'rgb(220, 221, 225)',
+      'in the page\u2019s own ink, on a ring a shade under it, at the app\u2019s own pace',
+      ring.beat + ' ' + ring.arc + ' on ' + ring.rest);
+    ok(contrastOf(ring.arc, ring.rest) >= 3,
+      'so the arc is legible against the ring it turns on',
+      contrastOf(ring.arc, ring.rest).toFixed(1) + ':1');
+
+    // Turning decoration off must not turn off the one thing that says the
+    // answer is still being made, so the ring keeps its own pace here as the
+    // sidebar's does. Squashed to .01ms it is not a slower ring, it is a still
+    // one - and a still ring says the opposite of what it is there to say.
+    await s.page.emulateMedia({ reducedMotion: 'reduce' });
+    await wait(120);
+    const calm = await s.page.evaluate(() => {
+      const after = getComputedStyle(document.getElementById('statusBtn'), '::after');
+      const node = document.getElementById('statusBtn');
+      const anim = node.getAnimations({ subtree: true })[0] || null;
+      return { name: after.animationName, beat: after.animationDuration, running: !!anim };
+    });
+    ok(calm.name === 'spin' && calm.beat === '0.9s' && calm.running,
+      'with reduced motion it turns at the pace it always turns at, rather than standing still',
+      calm.name + ' ' + calm.beat + (calm.running ? ', running' : ', not running'));
+    await s.page.emulateMedia({ reducedMotion: null });
 
     await s.page.waitForFunction(() => {
       const host = document.getElementById('termNotice');
@@ -4115,157 +4152,11 @@ async function statusticker() {
   }
 }
 
-/* --------------------------------------------------------- 36. agent-run */
+/* ---------------------------------------------------------- 36. dictate */
 
-// The operator run, asked for in the chat: a request that needs the keyboard,
-// a progress line while it types, real keystrokes in a real pane, and an
-// ending that lands in the conversation that asked for it.
-async function agentrun() {
-  const decide = JSON.stringify({ reply: 'Typing it for you now.', act: 'echo the greeting' });
-  const step1 = JSON.stringify({
-    actions: [{ text: 'echo hello-from-the-operator' }, { key: 'Enter' }],
-    done: false, summary: 'typing the greeting', note: '',
-  });
-  const step2 = JSON.stringify({ actions: [], done: true, summary: 'the greeting was typed', note: '' });
-  const stub = await openRouterStub({ text: step2, replies: [decide, step1, step2] });
-  const s = await start({ viewport: { width: 1280, height: 720 } });
-  try {
-    await setup(s.page, s.url);
-    await useDomRenderer(s);
-    await pointGateway(s, stub);
-    await open(s);
-    // A shell, because a session that names itself would spend one of the
-    // scripted answers on its own title.
-    await startSession(s.page, 'shell');
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    const lines = await watchTicker(s.page);
-
-    await openChat(s.page);
-    await askChat(s.page, 'say hello in the terminal');
-
-    const replied = await awaitBubble(s.page, (msgs) => msgs.some((m) => m.run));
-    ok(replied.ok, 'the answer that starts a run carries the run inside it',
-      JSON.stringify(replied.seen.map((m) => m.who + ': ' + oneLine(m.text))));
-    const cancel = await s.page.$eval('#chatLog .chat-run .btn', (n) => n.textContent).catch(() => '');
-    ok(cancel === 'Cancel', 'and the way to stop it is in that same message', cancel || 'no button');
-
-    const stepped = await s.page.waitForFunction(
-      () => (window.__ticker || []).some((l) => /^Step \d/.test(l)),
-      null, { timeout: 45000 }).then(() => true).catch(() => false);
-    ok(stepped, 'the ticker says which step it is on', oneLine((await lines()).join(' → ')));
-
-    const typed = await awaitScreen(s.page, 'hello-from-the-operator', 90000);
-    ok(typed, 'the operator typed into the pane and pressed Enter',
-      oneLine(await screen(s.page)).slice(-90));
-
-    const ended = await awaitBubble(s.page, (msgs) =>
-      msgs.some((m) => m.who === 'assistant' && /greeting was typed/.test(m.text)), 90000);
-    ok(ended.ok, 'and the run ends by saying what it did, in the conversation that asked',
-      JSON.stringify(ended.seen.map((m) => oneLine(m.text)).slice(-2)));
-
-    await shot(s.page, 'agent-run');
-    ok(unexpected(s.errors).length === 0, 'no console errors',
-      unexpected(s.errors).join(' | ') || '0');
-  } finally {
-    await s.stop();
-    await stub.close();
-  }
-}
-
-/* --------------------------------------------------------- 37. chat-text */
-
-// The chat with a keyboard: a question that is answered in words, a reply that
-// survives a reload because it is stored, and a request that is not a question
-// at all - which reaches the pane as keystrokes.
-async function chattext() {
-  const answer = JSON.stringify({
-    reply: 'It is sitting at a prompt.\n\nNothing is running; type `ls` to look around.',
-    act: null,
-  });
-  const decide = JSON.stringify({ reply: 'Doing it now.', act: 'make the marker file' });
-  const step1 = JSON.stringify({
-    actions: [{ text: 'echo chat-typed-this' }, { key: 'Enter' }], done: false, summary: 'typing',
-  });
-  const step2 = JSON.stringify({ actions: [], done: true, summary: 'it was typed' });
-  const stub = await openRouterStub({ text: step2, replies: [answer, decide, step1, step2] });
-  const s = await start({ viewport: { width: 1280, height: 720 } });
-  try {
-    await setup(s.page, s.url);
-    await useDomRenderer(s);
-    await pointGateway(s, stub);
-    await open(s);
-    await startSession(s.page, 'shell');
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-
-    // Before anything is asked, the pane has the width; the panel takes its
-    // own column and the terminal refits rather than being covered.
-    const before = await s.page.$eval('#termWrap', (n) => Math.round(n.getBoundingClientRect().width));
-    await openChat(s.page);
-    const layout = await s.page.evaluate(() => {
-      const panel = document.getElementById('chatPanel').getBoundingClientRect();
-      const term = document.getElementById('termWrap').getBoundingClientRect();
-      return {
-        panel: Math.round(panel.width),
-        term: Math.round(term.width),
-        beside: Math.round(term.right) <= Math.round(panel.left) + 2,
-        fill: getComputedStyle(document.getElementById('chatPanel')).backgroundColor,
-      };
-    });
-    ok(layout.beside && layout.panel >= 320 && layout.panel <= 400,
-      'on a desk it is a column beside the terminal', JSON.stringify(layout));
-    ok(layout.term < before, 'and the terminal gives up the width rather than being covered',
-      before + ' → ' + layout.term);
-    ok(layout.fill === WHITE, 'on the same white as everything else', layout.fill);
-
-    await askChat(s.page, 'what is this session doing?');
-    const said = await awaitBubble(s.page, (msgs) =>
-      msgs.length >= 2 && msgs[1].who === 'assistant' && /sitting at a prompt/.test(msgs[1].text));
-    ok(said.ok, 'a question is answered in words', JSON.stringify(said.seen.map((m) => m.who + ': ' + oneLine(m.text))));
-    ok(said.seen[0].who === 'user' && said.seen[0].text === 'what is this session doing?',
-      'and what was asked is in the thread above it', oneLine(said.seen[0].text));
-    ok(!said.seen[1].run, 'a question did not start a run', said.seen[1].run ? 'it did' : 'it did not');
-
-    // Markdown-lite and nothing heavier: paragraphs, and a backticked flag as
-    // code rather than as a word with two grave accents round it.
-    const shape = await s.page.evaluate(() => {
-      const bubble = [...document.querySelectorAll('#chatLog .chat-msg.assistant')].pop();
-      return { paras: bubble.querySelectorAll('p').length, code: (bubble.querySelector('code') || {}).textContent || '' };
-    });
-    ok(shape.paras === 2 && shape.code === 'ls', 'the answer is paragraphs and inline code, nothing heavier',
-      JSON.stringify(shape));
-
-    // It is stored, so a phone that reloads is not a phone that lost the
-    // conversation.
-    await s.page.reload({ waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    await openChat(s.page);
-    const kept = await awaitBubble(s.page, (msgs) => msgs.length >= 2, 20000);
-    ok(kept.ok && /sitting at a prompt/.test(kept.seen[1].text),
-      'a reload comes back to the conversation it was in',
-      JSON.stringify(kept.seen.map((m) => m.who)));
-
-    // And a request that is not a question reaches the keyboard.
-    await askChat(s.page, 'make a marker file');
-    const acted = await awaitBubble(s.page, (msgs) => msgs.some((m) => m.run));
-    ok(acted.ok, 'a request that needs the terminal starts a run instead of an answer',
-      JSON.stringify(acted.seen.map((m) => oneLine(m.text)).slice(-2)));
-    ok(await awaitScreen(s.page, 'chat-typed-this', 90000),
-      'and the keystrokes land in the pane', oneLine(await screen(s.page)).slice(-90));
-
-    await shot(s.page, 'chat-text');
-    ok(unexpected(s.errors).length === 0, 'no console errors',
-      unexpected(s.errors).join(' | ') || '0');
-  } finally {
-    await s.stop();
-    await stub.close();
-  }
-}
-
-/* ------------------------------------------------------ 38. chat-dictate */
-
-// micRow is the chat's header and its recording sheet as the panel is actually
-// drawing them: the pill, the loudspeaker switch, and - while one is running -
-// the sheet with the two endings a recording has.
+// micRow is the microphone and its recording sheet as the page is actually
+// drawing them: the pill in the top bar and - while one is running - the sheet
+// with the two endings a recording has.
 const micRow = (page) => page.evaluate(() => {
   const node = (id) => document.getElementById(id);
   const box = (id) => {
@@ -4274,37 +4165,31 @@ const micRow = (page) => page.evaluate(() => {
     const r = n.getBoundingClientRect();
     return { w: Math.round(r.width), h: Math.round(r.height) };
   };
-  const sheet = node('chatRecSheet');
-  const clock = node('chatRecTime');
-  const pill = node('chatMic');
+  const sheet = node('recSheet');
+  const clock = node('recTime');
+  const pill = node('micBtn');
   return {
-    pillInHead: !!pill && !!pill.closest('.chat-head'),
+    pillInBar: !!pill && !!pill.closest('.topbar'),
     pillText: pill ? pill.textContent.trim() : '',
-    pillBox: box('chatMic'),
+    pillBox: box('micBtn'),
     pillDisabled: !!pill && pill.disabled,
-    micInRow: !!document.querySelector('.chat-compose #chatMic'),
-    composeParts: [...document.querySelectorAll('.chat-compose > *')].map((n) => n.id || n.tagName),
-    speak: node('chatSpeak') ? node('chatSpeak').getAttribute('aria-pressed') : 'missing',
-    speakInHead: !!node('chatSpeak') && !!node('chatSpeak').closest('.chat-head'),
+    panel: !!node('chatPanel'),
     open: !!sheet && sheet.open,
-    keep: box('chatRecSend'),
-    drop: box('chatRecCancel'),
-    labels: ['chatRecSend', 'chatRecCancel'].map((id) => (node(id) || {}).textContent || '').join(','),
-    bars: document.querySelectorAll('#chatRecMeter .rec-bar').length,
+    keep: box('recSend'),
+    drop: box('recCancel'),
+    labels: ['recSend', 'recCancel'].map((id) => (node(id) || {}).textContent || '').join(','),
+    bars: document.querySelectorAll('#recMeter .rec-bar').length,
     clock: clock ? clock.textContent.trim() : '',
-    stored: (() => { try { return localStorage.getItem('socrates.chat.speak'); } catch { return 'blocked'; } })(),
   };
 });
 
-// The microphone in the chat, which is the only microphone there is: a pill in
-// the header that opens a sheet, two endings while it records, a discarded
-// recording that costs nothing, a loudspeaker switch that the first dictation
-// turns on and a hand can turn off again, and any answer readable again by
-// double-tapping it.
-async function chatdictate() {
-  const spoken = JSON.stringify({ reply: 'It is waiting for you.', act: null });
-  const written = JSON.stringify({ reply: 'Nothing is running in it.', act: null });
-  const stub = await openRouterStub({ text: 'what is this session doing', replies: [spoken, written] });
+// The microphone, which is the only way into a session that is not a keyboard:
+// a pill in the top bar that opens a sheet, two endings while it records, a
+// discarded recording that costs nothing, and a kept one whose words are put
+// on the prompt of the pane - and left there, because the Enter that runs them
+// is the person's.
+async function dictate() {
+  const stub = await openRouterStub({ text: 'echo dictated-into-the-pane' });
   const s = await start({
     viewport: { width: 390, height: 844 },
     touch: true,
@@ -4318,9 +4203,8 @@ async function chatdictate() {
   try {
     await setup(s.page, s.url);
     await useDomRenderer(s);
-    // A dedicated transcriber, so that a recording and a question arrive at
-    // the stub on different routes: the transcript is its fixed answer and
-    // the conversation gets the scripted ones.
+    // A dedicated transcriber, so what comes back is the stub's fixed answer
+    // rather than anything the page had to reason about.
     const saved = await s.context.request.put(s.url + '/api/settings', {
       data: {
         settings: {
@@ -4329,41 +4213,54 @@ async function chatdictate() {
       },
     });
     ok(saved.ok(), 'the gateway is pointed at the stub', saved.status() + ' ' + stub.url);
-    // The answer is held back for a moment, which is the window in which the
-    // page is reliably reading - a headless browser's audio clock is not.
-    const said = await stubSpeech(s.context, { seconds: 1, delay: 1200 });
     const transcribes = [];
     await s.page.route('**/api/voice/transcribe', async (route) => {
       transcribes.push(route.request().method());
-      await route.fallback();
-    });
-    const asked = [];
-    await s.page.route('**/api/sessions/*/chat', async (route) => {
-      if (route.request().method() === 'POST') {
-        try { asked.push(route.request().postDataJSON() || {}); } catch { asked.push({}); }
-      }
       await route.fallback();
     });
 
     await open(s);
     await startSession(s.page, 'shell');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    await openChat(s.page);
 
     const idle = await micRow(s.page);
-    ok(idle.pillInHead && /Speak/.test(idle.pillText) && !idle.micInRow,
-      'the microphone is a pill in the header, and the input row is a field and a Send',
-      JSON.stringify(idle.composeParts) + ' / ' + idle.pillText);
+    ok(idle.pillInBar && /Speak/.test(idle.pillText),
+      'the microphone is a pill in the top bar', idle.pillText);
     ok(idle.pillBox && idle.pillBox.h >= 44,
-      'the pill is big enough to be hit by a thumb', JSON.stringify(idle.pillBox));
-    ok(idle.speakInHead && idle.speak === 'false',
-      'the loudspeaker switch is beside it and starts off', idle.speak);
-    ok(!idle.open, 'and no recording sheet is open', String(idle.open));
+      'big enough to be hit by a thumb', JSON.stringify(idle.pillBox));
+    ok(!idle.panel, 'and there is no chat panel behind it any more', String(idle.panel));
+    ok(!idle.open, 'no recording sheet is open', String(idle.open));
+
+    // The bar it moved into was already the tightest row on the page, and this
+    // is the narrowest width the stylesheet has a rule for. The pill gives up
+    // its word there and keeps its 44px - what makes it findable by a thumb is
+    // the ring - and nothing may be pushed past the edge to make room for it.
+    await s.page.setViewportSize({ width: 320, height: 844 });
+    await wait(400);
+    const tight = await s.page.evaluate(() => {
+      const bar = document.querySelector('.topbar').getBoundingClientRect();
+      const parts = [...document.querySelectorAll('.topbar > *')]
+        .map((n) => n.getBoundingClientRect())
+        .filter((box) => box.width > 0 && box.height > 0);
+      const pill = document.getElementById('micBtn').getBoundingClientRect();
+      return {
+        over: Math.round(Math.max(0, Math.max(...parts.map((b) => b.right)) - bar.right)),
+        doc: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        pill: { w: Math.round(pill.width), h: Math.round(pill.height) },
+        word: getComputedStyle(document.getElementById('micText')).display,
+      };
+    });
+    ok(tight.over === 0 && tight.doc <= 1,
+      'at 320px every control is still inside the bar', JSON.stringify(tight));
+    ok(tight.pill.w === 44 && tight.pill.h >= 44 && tight.word === 'none',
+      'and the microphone gave up its word rather than its size', JSON.stringify(tight.pill));
+    await s.page.setViewportSize({ width: 390, height: 844 });
+    await wait(400);
 
     // Recording: a sheet with the level it is hearing and the two things that
     // can happen to a recording, both of them large.
-    await s.page.click('#chatMic');
-    await s.page.waitForSelector('#chatRecSheet[open]', { timeout: 15000 });
+    await s.page.click('#micBtn');
+    await s.page.waitForSelector('#recSheet[open]', { timeout: 15000 });
     await wait(1300);
     const rec = await micRow(s.page);
     ok(rec.open && rec.keep && rec.drop,
@@ -4376,112 +4273,70 @@ async function chatdictate() {
     ok(/^\d+:\d\d$/.test(rec.clock),
       'the clock says how long it has been listening', rec.clock);
     ok(rec.pillDisabled, 'and the pill cannot start a second one', String(rec.pillDisabled));
-    await shot(s.page, 'chat-dictate-recording');
+    await shot(s.page, 'dictate-recording');
     const fits = await s.page.evaluate(() => {
-      const head = document.querySelector('.chat-head').getBoundingClientRect();
+      const bar = document.querySelector('.topbar').getBoundingClientRect();
       const middle = (box) => (box.top + box.bottom) / 2;
-      const parts = [...document.querySelectorAll('.chat-head > *')]
-        .map((n) => n.getBoundingClientRect());
-      const buttons = [...document.querySelectorAll('#chatRecSheet .rec-big')]
+      // Only what is actually on screen: a control the bar has hidden - the
+      // size, at this width - lays out to nothing, and nothing is not
+      // misaligned.
+      const parts = [...document.querySelectorAll('.topbar > *')]
+        .map((n) => n.getBoundingClientRect())
+        .filter((box) => box.width > 0 && box.height > 0);
+      const buttons = [...document.querySelectorAll('#recSheet .rec-big')]
         .map((n) => n.getBoundingClientRect());
       return {
-        aligned: parts.every((box) => Math.abs(middle(box) - middle(head)) <= 2),
-        inside: parts.every((box) => box.left >= head.left - 1 && box.right <= head.right + 1),
-        title: Math.round(parts[0].width),
+        aligned: parts.every((box) => Math.abs(middle(box) - middle(bar)) <= 2),
+        inside: parts.every((box) => box.left >= bar.left - 1 && box.right <= bar.right + 1),
         buttonsInside: buttons.every((box) => box.left >= 0 && box.right <= window.innerWidth + 1),
       };
     });
-    ok(fits.aligned && fits.inside && fits.title > 0 && fits.buttonsInside,
-      'the header still fits on a phone, and so does the sheet', JSON.stringify(fits));
+    ok(fits.aligned && fits.inside && fits.buttonsInside,
+      'the bar still fits on a phone, and so does the sheet', JSON.stringify(fits));
 
-    // Discard: the audio is thrown away. Nothing is transcribed, nothing is
-    // asked, and nothing is said about it.
-    await s.page.click('#chatRecCancel');
-    await s.page.waitForSelector('#chatRecSheet:not([open])', { state: 'attached', timeout: 10000 });
+    // Discard: the audio is thrown away. Nothing is transcribed, and nothing
+    // reaches the pane.
+    await s.page.click('#recCancel');
+    await s.page.waitForSelector('#recSheet:not([open])', { state: 'attached', timeout: 10000 });
     await wait(800);
     const after = await micRow(s.page);
     ok(!after.open && !after.pillDisabled, 'Cancel closes it and gives the microphone back',
       JSON.stringify(after));
-    ok(transcribes.length === 0 && asked.length === 0 && (await chatBubbles(s.page)).length === 0,
-      'and it costs nothing: no transcription, no question, no message',
-      transcribes.length + ' transcribe, ' + asked.length + ' chat');
+    ok(transcribes.length === 0, 'and it costs nothing: nothing was transcribed',
+      transcribes.length + ' transcribe(s)');
+    ok(!(await packed(s.page)).includes(stub.text.replace(/\s+/g, '')),
+      'nothing reached the pane', oneLine(await screen(s.page)).slice(-60));
 
-    // Send: transcribed, posted as a question that was spoken, answered, and
-    // the answer read out loud without anybody asking for that.
-    await s.page.click('#chatMic');
-    await s.page.waitForSelector('#chatRecSheet[open]', { timeout: 15000 });
+    // Send: transcribed once, and the words are put on the prompt verbatim.
+    await s.page.click('#micBtn');
+    await s.page.waitForSelector('#recSheet[open]', { timeout: 15000 });
     await wait(1300);
-    await s.page.click('#chatRecSend');
-    const posted = await awaitBubble(s.page, (msgs) =>
-      msgs.some((m) => m.who === 'user' && m.text === stub.text), 60000);
-    ok(posted.ok, 'Send makes what was heard the message, verbatim and unconfirmed',
-      JSON.stringify(posted.seen.map((m) => m.who + ': ' + oneLine(m.text))));
+    await s.page.click('#recSend');
+    const landed = await awaitPacked(s.page, stub.text, 60000);
+    ok(landed, 'Send types what was heard into the pane, verbatim and unconfirmed',
+      oneLine(await screen(s.page)).slice(-90));
     ok(transcribes.length === 1, 'and it was transcribed exactly once',
       transcribes.length + ' request(s)');
-    const replied = await awaitBubble(s.page, (msgs) =>
-      msgs.some((m) => m.who === 'assistant' && /waiting for you/.test(m.text)), 60000);
-    ok(replied.ok, 'the agent answers it',
-      JSON.stringify(replied.seen.map((m) => oneLine(m.text)).slice(-1)));
-    ok(asked.length === 1 && asked[0].auto === true,
-      'a question that was spoken is sent as one', JSON.stringify(asked));
-    const switched = await micRow(s.page);
-    ok(switched.speak === 'true' && switched.stored === 'on',
-      'dictating once turns the loudspeaker on, and this device remembers it',
-      switched.speak + ', stored ' + switched.stored);
-    for (let i = 0; i < 80 && said.length === 0; i += 1) await wait(200);
-    ok(said.length === 1 && /waiting for you/.test(said[0] || ''),
-      'and its answer is read out loud, unasked', said.length + ': ' + oneLine(said[0] || ''));
 
-    await s.page.waitForFunction(() => !document.getElementById('statusBtn').classList.contains('speaking'),
-      null, { timeout: 20000 }).catch(() => {});
-
-    // The switch is the only rule, and a hand can turn it off again: from here
-    // on the answers are written and nothing is read out loud.
-    await s.page.click('#chatSpeak');
-    const off = await micRow(s.page);
-    ok(off.speak === 'false' && off.stored === 'off',
-      'and it can be turned off again by hand', off.speak + ', stored ' + off.stored);
-    await askChat(s.page, 'and what should I do next?');
-    const second = await awaitBubble(s.page, (msgs) =>
-      msgs.some((m) => m.who === 'assistant' && /Nothing is running/.test(m.text)), 60000);
-    ok(second.ok, 'a typed question is answered in words',
-      JSON.stringify(second.seen.map((m) => oneLine(m.text)).slice(-1)));
+    // And it stops there. The words are on the prompt, not run: the shell has
+    // not echoed anything, because nothing pressed Enter for it.
     await wait(1500);
-    ok(asked.length === 2 && asked[1].auto === false,
-      'with the loudspeaker off a question is sent to be read rather than heard',
-      JSON.stringify(asked.map((a) => a.auto)));
-    ok(said.length === 1, 'so nothing was read out loud for it', said.length + ' render(s)');
+    const before = await packed(s.page);
+    ok(before.split('dictated-into-the-pane').length === 2,
+      'the line is on the prompt once and was not run', oneLine(await screen(s.page)).slice(-90));
 
-    // Any answer can be asked for out loud afterwards: two taps on the bubble.
-    const bubble = '#chatLog .chat-msg.assistant';
-    const hint = await s.page.$eval(bubble, (n) => n.title);
-    ok(hint === 'Double-tap to read aloud', 'an answer says it can be read out loud', hint);
-    await s.page.tap(bubble);
-    await s.page.tap(bubble);
-    for (let i = 0; i < 80 && said.length === 1; i += 1) await wait(200);
-    ok(said.length === 2 && /waiting for you/.test(said[1] || ''),
-      'a double-tap on it reads that answer, and only that one',
-      said.length + ': ' + oneLine(said[1] || ''));
-    const reading = await s.page.waitForFunction(
-      () => document.getElementById('statusBtn').classList.contains('speaking'),
-      null, { timeout: 10000 }).then(() => true).catch(() => false);
-    ok(reading, 'and while it is being read the page says so',
-      reading ? 'the header button offers to stop' : 'nothing said it was reading');
+    // The Enter is the person's, and it is the ordinary keyboard that sends it.
+    // The focus is already in the pane, because that is where the words went.
+    await s.page.keyboard.press('Enter');
+    let ran = false;
+    for (const started = Date.now(); !ran && Date.now() - started < 30000;) {
+      ran = (await packed(s.page)).split('dictated-into-the-pane').length > 2;
+      if (!ran) await wait(200);
+    }
+    ok(ran, 'and pressing it runs the line that was dictated, and the shell answers',
+      oneLine(await screen(s.page)).slice(-90));
 
-    // The same gesture again is silence, not a second reading. It is the
-    // mouse's double-click this time, far enough after the taps that it
-    // cannot be one of them being replayed - which is a gesture, not a
-    // second one.
-    await wait(900);
-    await s.page.dblclick(bubble);
-    const stopped = await s.page.waitForFunction(
-      () => !document.getElementById('statusBtn').classList.contains('speaking'),
-      null, { timeout: 10000 }).then(() => true).catch(() => false);
-    await wait(800);
-    ok(stopped && said.length === 2, 'a second double-tap stops the reading rather than starting another',
-      (stopped ? 'stopped' : 'still reading') + ', ' + said.length + ' render(s)');
-
-    await shot(s.page, 'chat-dictate');
+    await shot(s.page, 'dictate');
     ok(unexpected(s.errors).length === 0, 'no console errors',
       unexpected(s.errors).join(' | ') || '0');
   } finally {
@@ -4490,7 +4345,7 @@ async function chatdictate() {
   }
 }
 
-/* -------------------------------------------------------- 39. no-overlap */
+/* -------------------------------------------------------- 37. no-overlap */
 
 // Speech-to-text and text-to-speech are one device talking to itself, so they
 // never overlap: while a microphone is open nothing is read out loud, and a
@@ -4515,12 +4370,11 @@ async function nooverlap() {
     await open(s);
     await startSession(s.page, 'shell');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    await openChat(s.page);
 
     // A recording is running, and Status is pressed: the answer arrives on
     // the screen, and it is not read into the microphone.
-    await s.page.click('#chatMic');
-    await s.page.waitForSelector('#chatRecSheet[open]', { timeout: 15000 });
+    await s.page.click('#micBtn');
+    await s.page.waitForSelector('#recSheet[open]', { timeout: 15000 });
     // The recording sheet is modal, so Status is pressed through the page
     // rather than through the pointer the backdrop is holding.
     await s.page.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 15000 });
@@ -4535,8 +4389,8 @@ async function nooverlap() {
 
     // The recording is thrown away, and the same button says the same thing
     // out loud - so what stopped the voice was the microphone and nothing else.
-    await s.page.click('#chatRecCancel');
-    await s.page.waitForSelector('#chatRecSheet:not([open])', { state: 'attached', timeout: 10000 });
+    await s.page.click('#recCancel');
+    await s.page.waitForSelector('#recSheet:not([open])', { state: 'attached', timeout: 10000 });
     await s.page.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 20000 });
     await s.page.click('#statusBtn');
     for (let i = 0; i < 120 && said.length === 0; i += 1) await wait(200);
@@ -5420,6 +5274,237 @@ async function touchcopy() {
   } finally { await s.stop(); }
 }
 
+/* --------------------------------------------------------- 47. handsfree */
+
+// keyboardable is the whole promise, measured: what may raise the on-screen
+// keyboard, what may not, and what stands in for it. `inputmode="none"` is the
+// request a browser is asked to honour and `readonly` is the fact it cannot
+// argue with; both are checked, because the promise is "never", and a promise
+// that holds on some phones is not one.
+const keyboardable = (page) => page.evaluate(() => {
+  const muted = (node) => !!node && node.getAttribute('inputmode') === 'none';
+  const btn = document.getElementById('handsBtn');
+  const pane = document.querySelector('#term textarea');
+  const key = document.querySelector('#keybar [data-key="Keyboard"]');
+  return {
+    armed: btn.getAttribute('aria-pressed'),
+    filled: btn.classList.contains('on'),
+    label: btn.getAttribute('aria-label'),
+    stored: (() => { try { return localStorage.getItem('socrates.handsfree'); } catch { return 'blocked'; } })(),
+    pane: muted(pane),
+    fields: [...document.querySelectorAll('input.input')]
+      .filter((n) => n.checkVisibility && n.checkVisibility())
+      .map((n) => ({ id: n.id || n.className, muted: muted(n), readonly: n.readOnly })),
+    mics: [...document.querySelectorAll('.dictate')]
+      .filter((n) => n.checkVisibility && n.checkVisibility())
+      .map((row) => ({
+        field: !!row.querySelector('input'),
+        mic: !!row.querySelector('.mic-btn'),
+      })),
+    keybar: !document.getElementById('keybar').hidden,
+    keyboardKey: key ? !key.hidden : null,
+    pill: (() => {
+      const n = document.getElementById('micBtn');
+      return { there: !!n && !n.hidden, disabled: !!n && n.disabled };
+    })(),
+  };
+});
+
+// Hands-free: the mode a tablet in a case and a phone in a car are used in.
+// Armed, nothing on this page may raise the on-screen keyboard - not the pane,
+// not a field, not the key bar's own keyboard key - the key bar comes on
+// because it is the only keyboard left, and every field has the microphone
+// that replaces it. It is a fact about this device, so it survives a reload.
+async function handsfree() {
+  // What the stub hears is what a person would say to filter that list, so the
+  // words land somewhere with a visible consequence rather than in a field
+  // nobody looks at again.
+  const stub = await openRouterStub({ text: 'dynamic' });
+  // Wide enough that the session list is a column rather than a drawer: what
+  // is being measured here is what may open a keyboard, and a drawer over the
+  // sheet would only be in the way of measuring it. The touch screen is the
+  // part that matters and it is on.
+  const s = await start({
+    viewport: { width: 1100, height: 900 },
+    touch: true,
+    permissions: ['microphone'],
+    args: [
+      '--use-fake-ui-for-media-stream',
+      '--use-fake-device-for-media-stream',
+      '--autoplay-policy=no-user-gesture-required',
+    ],
+  });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    const saved = await s.context.request.put(s.url + '/api/settings', {
+      data: {
+        settings: {
+          openrouter: { api_key: 'e2e-key', base_url: stub.url, transcribe_model: 'openai/whisper-1' },
+        },
+      },
+    });
+    ok(saved.ok(), 'the gateway is pointed at the stub', saved.status() + ' ' + stub.url);
+
+    await open(s);
+    await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+
+    // Off until it is asked for, like every other mode this app has. Nothing
+    // is muted, and the key bar is where this device left it.
+    const off = await keyboardable(s.page);
+    ok(off.armed === 'false' && !off.filled && !off.pane,
+      'the mode is off until it is armed, and nothing is muted while it is',
+      JSON.stringify({ armed: off.armed, filled: off.filled, pane: off.pane }));
+    ok(!off.keybar, 'and the key bar is still only there if this device asked for it',
+      String(off.keybar));
+
+    // The microphones are not part of the mode: a field that can be spoken
+    // into is worth having on a desk too, and a control that only appears in a
+    // mode is a control nobody finds.
+    await s.page.click('#newSession');
+    await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 10000 });
+    const sheet = await keyboardable(s.page);
+    ok(sheet.mics.length >= 1 && sheet.mics.every((row) => row.field && row.mic),
+      'every field on the sheet has its microphone whether the mode is armed or not',
+      JSON.stringify(sheet.mics));
+    ok(sheet.fields.length >= 1 && sheet.fields.every((f) => !f.muted && !f.readonly),
+      'and with the mode off they are ordinary fields',
+      JSON.stringify(sheet.fields));
+    await s.page.click('#nsCancel');
+    await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 10000 })
+      .catch(() => {});
+
+    /* ------------------------------------------------------------- armed */
+
+    await s.page.click('#handsBtn');
+    await wait(300);
+    const on = await keyboardable(s.page);
+    ok(on.armed === 'true' && on.filled && on.stored === 'on',
+      'one tap arms it, it is filled while it is armed, and this device remembers',
+      JSON.stringify({ armed: on.armed, filled: on.filled, stored: on.stored }));
+    ok(/keyboard/i.test(on.label || ''),
+      'and it says what it does rather than what it is called', on.label);
+    ok(on.pane, 'the pane cannot raise the keyboard any more',
+      on.pane ? 'inputmode=none' : 'still an ordinary text field');
+    ok(on.keybar && on.keyboardKey === false,
+      'the key bar comes on because it is the only keyboard left, and its keyboard key stands down',
+      'bar ' + on.keybar + ', keyboard key shown: ' + on.keyboardKey);
+    ok(on.pill.there && !on.pill.disabled,
+      'and the way to say something into the pane is still there', JSON.stringify(on.pill));
+    await shot(s.page, 'handsfree-armed');
+
+    // Tapping the pane is the gesture that opened the keyboard on every tap.
+    // It still puts the focus where it belongs - the terminal is the only
+    // thing there is to type into - and now that is all it does.
+    await s.page.click('#term');
+    await wait(200);
+    const focused = await s.page.evaluate(() => {
+      const node = document.activeElement;
+      return {
+        inPane: !!node && !!node.closest('#term'),
+        muted: !!node && node.getAttribute('inputmode') === 'none',
+      };
+    });
+    ok(focused.inPane && focused.muted,
+      'a tap on the pane still takes the focus, and takes it with the keyboard shut',
+      JSON.stringify(focused));
+
+    // Every field, everywhere, and the microphone beside each of them.
+    await s.page.click('#newSession');
+    await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 10000 });
+    const muted = await keyboardable(s.page);
+    ok(muted.fields.length >= 1 && muted.fields.every((f) => f.muted && f.readonly),
+      'every field on the sheet is muted, and read-only so that no browser can argue',
+      JSON.stringify(muted.fields));
+
+    // And a field is filled by speaking to it. What comes back is what would
+    // have been typed: it goes in the field and the field is told, so the list
+    // filters exactly as it does under a finger.
+    await s.page.click('#nsDir .mic-btn');
+    await s.page.waitForSelector('#recSheet[open]', { timeout: 15000 });
+    await wait(1200);
+    const working = await s.page.$eval('#nsDir .mic-btn',
+      (n) => ({ ring: getComputedStyle(n, '::after').animationName, shut: n.disabled }));
+    await s.page.click('#recSend');
+    const heard = await s.page.waitForFunction(
+      (want) => document.querySelector('#nsDir .combo-input').value === want,
+      stub.text, { timeout: 60000 }).then(() => true).catch(() => false);
+    ok(heard, 'a field is filled by speaking into it',
+      await s.page.$eval('#nsDir .combo-input', (n) => n.value));
+    ok(working.ring === 'spin' && working.shut,
+      'and while it listens the microphone wears the same ring every other control does',
+      working.ring + ', shut: ' + working.shut);
+    const filtered = await s.page.$$eval('#nsDir .combo-option',
+      (nodes) => nodes.map((n) => n.dataset.value));
+    ok(filtered.includes('dynamic'),
+      'and what was said filtered the list, exactly as typing it would',
+      JSON.stringify(filtered));
+    // A click on the sheet's own heading puts the list away; Escape would put
+    // the whole sheet away with it.
+    await s.page.click('#newSessionSheet .sheet-title');
+    await s.page.click('#nsCancel');
+    await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 10000 })
+      .catch(() => {});
+
+    // The dialog that asks for one line of text is a field like any other.
+    await s.page.click('#sessionMenu');
+    await s.page.click('.menu-item:has-text("Rename")');
+    await s.page.waitForSelector('dialog.modal', { timeout: 10000 });
+    const rename = await s.page.evaluate(() => {
+      const input = document.querySelector('dialog.modal input.input');
+      return {
+        muted: !!input && input.getAttribute('inputmode') === 'none',
+        readonly: !!input && input.readOnly,
+        mic: !!document.querySelector('dialog.modal .dictate .mic-btn'),
+      };
+    });
+    ok(rename.muted && rename.readonly && rename.mic,
+      'so is the one field the rename dialog has, and it has a microphone too',
+      JSON.stringify(rename));
+    // The key bar item is not offered while the bar is not optional.
+    await s.page.keyboard.press('Escape');
+    await s.page.waitForSelector('dialog.modal', { state: 'detached', timeout: 10000 }).catch(() => {});
+    await s.page.click('#sessionMenu');
+    const items = await s.page.$$eval('.menu-item', (nodes) => nodes.map((n) => n.textContent));
+    ok(!items.some((one) => /key bar/i.test(one)),
+      'and the menu does not offer to hide the only keyboard there is',
+      JSON.stringify(items));
+    // A click anywhere else is how a menu is put away, and the pane is where
+    // that click belongs.
+    await s.page.click('#term');
+    await wait(200);
+
+    /* ----------------------------------------------------- and it sticks */
+
+    await s.page.reload({ waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    await wait(600);
+    const back = await keyboardable(s.page);
+    ok(back.armed === 'true' && back.pane && back.keybar,
+      'a reload comes back with the mode still armed, because it is a fact about this device',
+      JSON.stringify({ armed: back.armed, pane: back.pane, keybar: back.keybar }));
+
+    /* --------------------------------------------------------- and off */
+
+    await s.page.click('#handsBtn');
+    await wait(300);
+    const done = await keyboardable(s.page);
+    ok(done.armed === 'false' && !done.pane && done.stored === 'off',
+      'and one more tap gives the keyboard back',
+      JSON.stringify({ armed: done.armed, pane: done.pane, stored: done.stored }));
+    ok(!done.keybar && done.keyboardKey === true,
+      'the key bar goes back to what this device asked for, which was nothing, '
+      + 'and its keyboard key is standing again',
+      'bar ' + done.keybar + ', keyboard key shown: ' + done.keyboardKey);
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally {
+    await s.stop();
+    await stub.close();
+  }
+}
+
 // -------------------------------------------------------------------- run
 
 const ALL = [
@@ -5461,12 +5546,11 @@ const ALL = [
   ['session-title', 'a session that names itself the first time it answers', sessiontitle],
   ['status-speak', 'Status says what the screen shows, on the page and out loud', statusspeak],
   ['status-ticker', 'the phases of a status, in order, in one line', statusticker],
-  ['agent-run', 'a request that needs the keyboard, and keystrokes in the pane', agentrun],
-  ['chat-text', 'a question answered in words, and a request that types', chattext],
-  ['chat-dictate', 'a recording with two endings, a spoken answer, and a bubble read again', chatdictate],
+  ['dictate', 'a recording with two endings, and the words it kept on the prompt', dictate],
   ['no-overlap', 'the microphone and the voice are never open at the same time', nooverlap],
   ['typeafteroutage', 'a cut socket, a locked phone, and a pane that still takes keystrokes', typeafteroutage],
   ['typekeepsfocus', 'a dialog, the ⋯ menu and two sessions: the keys still land in the pane', typekeepsfocus],
+  ['handsfree', 'a mode in which nothing opens the on-screen keyboard, and everything is dictated', handsfree],
   ['design', 'white surfaces, marks, hover-only detail and motion that does not restart', design],
   ['clipboard', 'copy and paste: the keys, a plain drag, a click, a middle click, and OSC 52', clipboard],
   ['touchcopy', 'a finger held on the pane selects, grows and copies', touchcopy],

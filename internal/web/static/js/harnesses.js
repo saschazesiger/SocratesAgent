@@ -11,6 +11,7 @@
 
 import { api, el, toast } from './api.js';
 import { combobox } from './combobox.js';
+import { dictated } from './handsfree.js';
 import { agentMark } from './logos.js';
 
 const CACHE_KEY = 'socrates.harnesses';
@@ -313,6 +314,15 @@ export async function openNewSessionSheet() {
     },
   });
   dirRow.append(dirPicker.node);
+  // The free-form path is a field like any other: it can be spoken, and in
+  // hands-free that is the only way it can be filled. The row is what is
+  // hidden and shown from here on, because hiding the field alone would leave
+  // its microphone standing on the sheet with nothing beside it.
+  const dirPathRow = dictated(dirPath, dirPath);
+  // The sheet always opens on Dynamic, so the path starts put away - and the
+  // field itself is never hidden again: from here the row is what carries it.
+  dirPath.hidden = false;
+  dirPathRow.hidden = true;
   dirPath.addEventListener('input', () => {
     if (pick.mode !== CUSTOM) return;
     pick.workdir = dirPath.value.trim();
@@ -342,7 +352,7 @@ export async function openNewSessionSheet() {
     pick.workdir = mode === DYNAMIC ? '' : path;
     // Only "Custom path…" has anything left to ask, so it is the only choice
     // that puts a second field on the sheet.
-    dirPath.hidden = mode !== CUSTOM;
+    dirPathRow.hidden = mode !== CUSTOM;
     if (mode === CUSTOM) dirPath.focus();
     renderDir();
     renderHint();

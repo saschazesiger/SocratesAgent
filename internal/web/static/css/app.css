@@ -117,6 +117,9 @@ a { color: inherit; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  /* The ring a working button wears is drawn around the mark, so the button
+     is what it is positioned against. */
+  position: relative;
   width: 34px;
   height: 34px;
   border: none;
@@ -190,6 +193,23 @@ a { color: inherit; }
 }
 .textarea { min-height: 96px; resize: vertical; line-height: 1.6; }
 .mono { font-family: var(--mono); font-size: 13px; }
+
+/* A field and the microphone that fills it. Every field this app has is
+   dictatable, because the device it is used from is one nobody can type on -
+   and hands-free (handsfree.js) is the mode in which the microphone is not a
+   convenience but the only way in. The microphone is the height of the field
+   rather than the height of an icon button, because a control beside a field
+   that is shorter than it reads as an afterthought. */
+.dictate { display: flex; align-items: center; gap: 6px; }
+.dictate > :first-child { flex: 1; min-width: 0; }
+.mic-btn {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+}
+.mic-btn svg { width: 18px; height: 18px; }
 
 .switch {
   position: relative;
@@ -1011,6 +1031,10 @@ a { color: inherit; }
      "this is happening right now" cannot be drawn still. That is what it was
      drawn as, and it was read as a session that had stopped. */
   .chat-item .row-mark.busy::after { animation-duration: .9s !important; }
+  /* And the ring a working button wears is the same ring for the same reason:
+     it is the only thing on the page that says the tap landed and the answer
+     is being made. Drawn still it says the opposite. */
+  .icon-btn.working::after { animation-duration: .9s !important; }
   .tip-bubble { transition: none !important; }
 }
 
@@ -1118,19 +1142,27 @@ a { color: inherit; }
   }
   /* Mobile first: the session's name comes before the caption beside it. The
      harness is its mark and the mark stays; the model is what goes, and it is
-     still in the bubble under a tap. With Status and Agent in the bar the
-     caption goes at this width rather than at 380, because a model id
+     still in the bubble under a tap. With Status and the microphone in the bar
+     the caption goes at this width rather than at 380, because a model id
      squeezed to one letter is not a caption. */
   .agent-badge { max-width: 40%; gap: 5px; padding: 0 5px; }
   .agent-badge > .b-model { display: none; }
   .term-size { display: none; }
+  /* The microphone gives up its word rather than its size. What makes it
+     findable by a thumb is the 44px, not the label, and a bar that squeezed
+     the ring down to fit "Speak" would lose the half that matters. */
+  .topbar .pill { padding: 0; width: 44px; }
+  .topbar .pill .pill-text { display: none; }
 }
 /* Narrower than this the title has room for one letter and an ellipsis that
    does not fit, which reads as a glitch rather than as a name. It keeps its
    place in the row as the spacer that pushes the controls apart, and stops
-   showing the one letter. */
+   showing the one letter - and it gives up the width it was holding for a
+   word, because a name nobody can read is not worth 5.5em of a 320px bar.
+   Still `flex: 1 1 auto`, so it goes on being the space between the name and
+   the controls wherever there is any to give. */
 @container (max-width: 345px) {
-  .topbar .title { visibility: hidden; }
+  .topbar .title { visibility: hidden; min-width: 0; }
 }
 @container (max-width: 380px) {
   /* Narrower still: the controls give up the last of their spacing. */
@@ -1400,16 +1432,34 @@ a { color: inherit; }
   .ticker-line.enter, .ticker-line.leave { transform: none; }
   .ticker-line.leave { display: none; }
 }
-/* The spinner the Status button wears while its answer is being made. */
-.icon-btn.working svg { animation: spin 900ms linear infinite; }
-body.stale .icon-btn.working svg { animation-play-state: paused; }
-@media (prefers-reduced-motion: reduce) {
-  .icon-btn.working svg { animation: none; opacity: .5; }
+/* The ring an icon button wears while what it was tapped for is being made.
+   It goes around the mark, never on it: the mark is what says which button
+   this is, and a mark that is turning is one nobody can read any more - a
+   screen being read out, spinning, is a drawing of nothing. It is the same
+   ring, the same hairline, the same arc in the page's own ink and the same
+   900 ms as the one a working session wears in the sidebar, because it means
+   the same thing there and here. */
+.icon-btn.working::after {
+  content: "";
+  position: absolute;
+  width: 25px;
+  height: 25px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  border-top-color: var(--accent);
+  animation: spin 900ms linear infinite;
+  pointer-events: none;
 }
+/* A button that is working is shut so it cannot be pressed twice, but it is
+   not an unavailable button: dimmed to .35 the ring is the one thing on the
+   page nobody could see, and the ring is the whole message. */
+.icon-btn.working:disabled { opacity: 1; }
+.icon-btn.working:disabled svg { opacity: .45; }
+body.stale .icon-btn.working::after { animation-play-state: paused; opacity: .4; }
 
-/* ----------------------------------------------------------- the chat panel */
+/* -------------------------------------------------------------- the stage */
 
-/* The terminal and the conversation about it, side by side. */
+/* The terminal takes the whole area under the bar. */
 .stage {
   display: flex;
   flex: 1;
@@ -1419,29 +1469,10 @@ body.stale .icon-btn.working svg { animation-play-state: paused; }
 }
 .stage .term-wrap { min-width: 0; }
 
-.chat-panel {
-  flex: none;
-  width: 360px;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg);
-  border-left: 1px solid var(--line);
-}
-.chat-panel[hidden] { display: none; }
-.chat-head {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 56px;
-  padding: 6px 8px 6px 16px;
-  border-bottom: 1px solid var(--line);
-}
-.chat-head-title { flex: 1; min-width: 0; font-size: 13.5px; font-weight: 560; letter-spacing: -.01em; }
-/* The microphone. Outlined rather than filled, because Send is the filled
-   thing on this screen and two black buttons would be a question about which
-   one is the action. Big enough to be hit by a thumb that is driving. */
+/* The microphone, in the top bar. Outlined rather than filled, because it is
+   the one control in that row that carries a word and a filled one would
+   outshout the name of the session beside it. Big enough to be hit by a thumb
+   that is driving, which is the whole reason it is not an icon. */
 .pill {
   flex: none;
   display: inline-flex;
@@ -1465,68 +1496,6 @@ body.stale .icon-btn.working svg { animation-play-state: paused; }
 .pill:hover:not(:disabled) { background: var(--bg-hover); border-color: #cfd0d5; }
 .pill:active:not(:disabled) { transform: scale(.985); }
 .pill:disabled { opacity: .45; cursor: not-allowed; }
-.chat-log {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 14px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  scrollbar-width: thin;
-}
-.chat-empty { color: var(--text-faint); font-size: 12.5px; line-height: 1.6; }
-/* Both sides are white with a hairline. Which of the two said it is said by
-   which edge it is on and by the weight, not by a colour. */
-.chat-msg {
-  max-width: 92%;
-  padding: 9px 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--r);
-  background: var(--bg);
-  font-size: 13.5px;
-  line-height: 1.55;
-  overflow-wrap: anywhere;
-}
-.chat-msg.user { align-self: flex-end; border-color: var(--line-strong); }
-.chat-msg.assistant { align-self: flex-start; }
-/* A double-tap reads an answer out loud. Where there is a pointer it says so
-   by not being plain text; on a touch screen a cursor is nothing at all. */
-@media (hover: hover) and (pointer: fine) {
-  .chat-msg.assistant { cursor: pointer; }
-}
-.chat-msg.failed { border-color: var(--red); color: var(--red); }
-.chat-msg.thinking { color: var(--text-faint); }
-.chat-msg p { margin: 0 0 8px; }
-.chat-msg p:last-child { margin-bottom: 0; }
-.chat-msg code {
-  font-family: var(--mono);
-  font-size: 12.5px;
-  padding: 1px 4px;
-  border-radius: 4px;
-  background: var(--bg-sunken);
-}
-/* The run a message started: the steps it is on, and the way to stop it. */
-.chat-run {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--line);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--text-soft);
-}
-.chat-run .chat-run-line { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.chat-foot {
-  flex: none;
-  border-top: 1px solid var(--line);
-  padding: 10px 12px 14px;
-}
-.chat-compose { display: flex; align-items: center; gap: 8px; }
-.chat-compose .input { flex: 1; min-width: 0; }
-
 /* The recording sheet: what the microphone is hearing, how long it has been
    hearing it, and the two endings a recording has. Both endings are large
    enough to be hit without looking, because that is when they are hit. */
@@ -1583,24 +1552,6 @@ body.stale .icon-btn.working svg { animation-play-state: paused; }
   border-radius: 14px;
   font-size: 15px;
   font-weight: 550;
-}
-
-/* On a phone the chat is a sheet over the terminal rather than a column
-   beside it: 360px of chat and 30px of terminal would be neither. */
-@media (max-width: 860px) {
-  .chat-panel {
-    position: absolute;
-    inset: 0;
-    width: auto;
-    border-left: none;
-    z-index: 9;
-  }
-  /* As a sheet it is the bottom of the screen, so its row is what has to
-     stay clear of the home bar - unless the key bar is under it and already
-     doing that. */
-  .main:has(#keybar[hidden]) .chat-foot {
-    padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
-  }
 }
 
 /* ------------------------------------------------------- the session list */

@@ -1615,9 +1615,6 @@ func TestActivityReachesEveryOpenSocket(t *testing.T) {
 	if _, ok := hello["activity"].(map[string]any); !ok {
 		t.Fatalf("hello carried no activity map: %#v", hello)
 	}
-	if agent, ok := hello["agent"]; !ok || agent != nil {
-		t.Fatalf("hello carried %#v for agent, want an explicit null", hello["agent"])
-	}
 
 	// A session nobody is watching starts working. Its state has to reach the
 	// socket that is attached to a different session altogether.

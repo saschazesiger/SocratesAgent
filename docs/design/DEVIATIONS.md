@@ -1674,3 +1674,59 @@ double click copies the word; a right click is not reported; a middle click past
 work with the focus on a header button; an OSC 52 printed by the program, through tmux, sets the
 clipboard; a drag down two rows copies both; and on a phone viewport a hold selects, a moved hold grows, a
 lift copies and toasts, and a tap is still a tap.
+
+## The operator and the chat are gone; the microphone types (2026-09-04)
+
+ACTIVITY.md §B.4 (the operator run), §D.3 (the chat panel) and the second half of §D.1 (the Agent
+button) are **withdrawn**. Nothing on the session page asks a model to press keys any more, and
+there is no conversation beside the terminal. What is left of those work packages is the Status
+button (§D.1's first half), the ticker (§D.4, now a status line and nothing else) and the namer
+(§B.5).
+
+**Why.** The operator was the one feature here that acted on somebody's code without being told
+which keys to press, and everything it needed — a step budget, a wall clock, a shell lever, a
+cancel that reaches a run waiting on a busy pane, an interrupt counter — was machinery for
+guessing well rather than for doing what was asked. The thing it was reached for in a car is
+narrower and has none of that: say the instruction, and put the words on the prompt.
+
+**What went.** `internal/server/chat.go` and `chat_test.go`; the operator half of `assist.go`
+(≈840 lines: `agentRun`, `agentDriver`, `planActions`, the decision parser, the key vocabulary);
+the four routes `POST/GET …/agent`, `POST …/agent/cancel`, `GET/POST …/chat`; the `agent` and
+`chat` WebSocket frames and the two hello keys that carried them; `config.AgentSettings`,
+`OpenRouterSettings.AgentModel` and the step bounds; the admin card's two agent controls;
+`js/chat.js`, the chat panel and `#agentBtn`. The e2e scenarios `agent-run` and `chat-text` went
+with them, and `typekeepsfocus` now leaves the pane for the sidebar row of the session it is
+already on — which selects nothing and only takes the focus — instead of for the chat's field.
+
+**The namer changed model.** It asked `openrouter.agent_model`, which no longer exists. It now
+asks `openrouter.title_model`, which is the setting named for it and was until now written to the
+document and never read — so the admin card offers **Title model** where it offered **Agent
+model**, and the namer costs what a flash-lite call costs rather than what a Sonnet call costs.
+
+**The microphone moved and changed what it does.** It was a pill in the chat panel's header whose
+transcript was posted as a question. It is now a pill in the **top bar**, where `#agentBtn` was,
+and the transcript is put into the pane through the ordinary input path — `sendInput(line, {text:
+line})`, so a socket that forgot this viewer hands the words back in the words they were spoken in
+rather than counting them as keystrokes, which is what `opts.text` was built for and nothing had
+used yet. Line breaks in a transcript become spaces: a newline in a pane is the Enter that was
+deliberately not sent. **No Enter goes with it.** A transcript is a guess about what was said, and
+running a guess is the person's decision — so the words land on the prompt and wait there. The
+recording sheet is unchanged, down to **Send** and **Cancel**.
+
+`js/dictate.js` is `chat.js` with the conversation taken out: the meter, the sheet and the one
+recording are what was worth keeping — plus one thing the chat did not need. A transcript takes a
+moment to come back, and a session switched inside that moment would have been typed into by a
+sentence that was never about it, so the recording remembers which session it was spoken to and
+says so instead. On a top bar narrower than 440px the pill gives up its word and keeps its 44px,
+because what makes it findable by a thumb is the ring and not the label; and at 345px the title,
+which is already invisible there, gives up the 5.5em it was holding for a word nobody can read —
+without which the bar overflowed by 4px at 320px, measured.
+
+The store gained schema 5, which is a single `DELETE FROM kv WHERE key LIKE 'chat.%'`: the
+conversations lived one document per session in the key/value table, and the only thing that ever
+removed one was the chat.
+
+**Verification.** `go vet ./...` and `go test -race ./...` green (the two `internal/harnesses`
+Codex-rollout failures pre-date this change and are unrelated). e2e: the new `dictate` scenario,
+plus `no-overlap`, `status-speak`, `status-ticker`, `design`, `typekeepsfocus`, `pages` and
+`session-title`. The whole suite was run: 46 scenarios, 613 assertions, all passing.

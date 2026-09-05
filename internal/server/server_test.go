@@ -192,9 +192,9 @@ func TestSetupAndTheAuthWall(t *testing.T) {
 	}
 }
 
-// The chat API went with the chat. Nothing in the tree may answer on those
-// paths any more: a route that survived a deletion is how a browser ends up
-// talking to half a product.
+// The chat API went with the chat, and the operator's routes went with the
+// operator. Nothing in the tree may answer on those paths any more: a route
+// that survived a deletion is how a browser ends up talking to half a product.
 func TestTheChatRoutesAreGone(t *testing.T) {
 	env := newEnv(t)
 	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
@@ -205,6 +205,8 @@ func TestTheChatRoutesAreGone(t *testing.T) {
 		"/api/agents",
 		"/api/models",
 		"/api/terminals/anything",
+		"/api/sessions/anything/agent",
+		"/api/sessions/anything/chat",
 	} {
 		res, _ := env.do(t, env.client, "GET", path, "")
 		if res.StatusCode != http.StatusNotFound {

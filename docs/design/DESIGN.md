@@ -2,6 +2,14 @@
 
 **Revision 4** (2026-09-02). Supersedes revisions 1, 2 and 3 in full.
 
+- **rev 8** (2026-09-04) — **hands-free**, a mode armed from the top bar and remembered for this
+  device, in which nothing on the page may raise the on-screen keyboard: every field is muted and
+  read-only, the pane's hidden textarea is muted with them, the key bar's keyboard key stands down
+  and the bar itself comes on because it is the only keyboard left, and every field has a
+  microphone beside it that opens the one recording sheet. And the ring a working button wears is
+  drawn **around** its mark rather than by turning the mark, which is what the sidebar has always
+  done. Passages changed by it carry `<!-- rev 8 -->`; §D.2 and §D.7 of
+  `docs/design/ACTIVITY.md` are the detail.
 - **rev 7** (2026-09-04) — copy and paste made reliable: a plain drag, a double and a triple
   click select in the browser and copy on release, whatever tmux is doing with the mouse; a plain
   click still reaches the program; a right click is kept from tmux so the browser's own menu can
@@ -1932,6 +1940,8 @@ internal/web/static/
     session.js               NEW: the page entry — sidebar, terminal, transport
     term.js                  NEW: xterm.js wiring, theme, addons, fit
     keybar.js                NEW: the key bar, off until the session menu asks for it
+    dictate.js               NEW: the one microphone, the one recording sheet, and the top bar's pill
+    handsfree.js             NEW: <!-- rev 8 --> the mode in which nothing opens the keyboard
     voice.js                 kept verbatim
     admin.js                 rewritten for the new sections
     markdown.js              DELETED (no transcript any more)
@@ -2321,6 +2331,13 @@ and being wrong about it means either a row of buttons nobody wanted or the miss
 to be found. One tap in the ⋯ menu is cheaper than either, and the answer is remembered for this
 device.
 
+<!-- rev 8 --> **Hands-free overrules that answer, and overrules it on.** With the on-screen
+keyboard shut for good (`ACTIVITY.md` §D.7) this bar is where `Esc`, `Tab`, the arrows and the
+`⏎` that runs a dictated line are, and there is nowhere else they could be — so `session.js`
+shows it on `keyBarWanted() || handsFree()`, the ⋯ menu stops offering to hide it while the mode
+is armed, and the `⌨` key, whose only purpose is to raise the keyboard, is `hidden` for the whole
+of it. Disarming puts all three back where this device left them.
+
 Keys, one row, horizontally scrollable, each `button.key[data-send]`:
 
 | label | sends |
@@ -2497,7 +2514,11 @@ Every UI package is reviewed against these; a package that breaks one is rejecte
 3. **Technical strings are hover-only** — version, binary path, exit status, stderr, workdir, CLI
    session id, tmux session name all live behind `infoTip`, never in visible text.
 4. **Motion is subtle** — 120–200 ms, `--ease`, and everything is disabled under
-   `prefers-reduced-motion`. The terminal itself has `smoothScrollDuration: 0`.
+   `prefers-reduced-motion`. The terminal itself has `smoothScrollDuration: 0`. The exception is
+   the pair of marks whose whole meaning is "this is happening right now": the busy ring on a
+   session row (rev 6) and <!-- rev 8 --> the ring a working button wears. Both keep turning at
+   900 ms under reduced motion, because drawn still they say the opposite of what they are there
+   to say, and both were read that way.
 5. **Everything in English.**
 6. The `design` e2e scenario asserts 1, 2, 3 and 4 by measurement, not by screenshot.
 
@@ -2886,7 +2907,7 @@ on the command line select a subset, `finish()` prints the table. Always
 | 3 | `reloadkeepsscreen` | type, reload, the same screen returns without a full clear | WP6 |
 | 4 | `pages` | `/`, `/admin`, `/login`, `/setup` are clean (no console errors) at 390×844 and 1280×720 | WP6 |
 | 5 | `keybar` | <!-- rev 4 --> no device gets the bar unasked; **Show key bar** in the session menu puts it up and the answer survives a reload; `Esc`, `^C`, arrows and the sticky `Ctrl` send the right bytes | WP7 |
-| 6 | `chat-dictate` | <!-- rev 5 --> with `mockOpenRouter`, the **Speak** pill in `.chat-head` opens the recording sheet with its level meter and its two 56px endings, **Send** and **Cancel**; a sent one is transcribed, submitted with `auto:true` and answered out loud, and it turns the loudspeaker switch on; a cancelled one costs nothing; the switch turned off by hand makes the next question `auto:false` and silent. Replaces `dictation`, which typed into a field that no longer exists | ACTIVITY.md |
+| 6 | `dictate` | <!-- 2026-09-04 --> the **Speak** pill in `.topbar` opens the recording sheet with its level meter and its two 56px endings, **Send** and **Cancel**; a cancelled one is transcribed nowhere and reaches the pane not at all; a sent one is transcribed exactly once and its words are typed onto the prompt and left there, so the `⏎` that runs them is the person's. Replaces `chat-dictate`, which posted the transcript to a chat that no longer exists | DEVIATIONS.md |
 | 7 | `offlineonce` | offline, type 20 characters, online: each appears **exactly once** in the pane and in `journal.raw` | WP7 |
 | 8 | `sigtermreattach` | `SIGTERM` the server mid-session, restart on the same port and data dir, reattach; the pane still holds what was typed and the state is `running` | WP7 |
 | 9 | `takeover` | open the same session in a second tab with the same `viewer` id; the first socket closes within 1 s and the second one works | WP7 |
@@ -2908,8 +2929,8 @@ on the command line select a subset, `finish()` prints the table. Always
 | 24 | `touchcopy` | <!-- rev 7 --> on a phone viewport, a finger held on the pane selects the word under it and lifting it copies, with a **Copied** toast and no click reported; held then moved it grows the selection to where it lifts without scrolling the page; a short tap is still the click it was | §E.4 |
 
 <!-- rev 4 --> The table is this revision's twenty-two; `ALL` in `e2e/run.mjs` is the live list,
-and the scenarios ACTIVITY.md added — `daygroups`, `notify`, `chat-text`, `chat-dictate`,
-`no-overlap`, `session-title`, the `activity-*` set, `status-*` and `agent-run` — are specified
+and the scenarios ACTIVITY.md added — `daygroups`, `notify`, `dictate`,
+`no-overlap`, `session-title`, the `activity-*` set and `status-*` — are specified
 there. `audio-mode` and `dictation` were deleted with the controls they exercised.
 
 `liveclaude` is kept, gated on `SOCRATES_LIVE_AGENTS=1`, and becomes `livesession`: start a real
@@ -3138,10 +3159,12 @@ Delete `chat.js`, `markdown.js`, `models.js`.
 (`#termOverlay`), the `.stale` treatment, the `viewer_fresh` client behaviour and its toast, the
 precache measurement. The composer, the line input, the dictation wiring in it and the draft
 persistence were in this package's scope in revisions 1–3 and are now removed (§E.6); dictation
-belongs to the chat panel (ACTIVITY.md §D.3).
+belongs to the chat panel (ACTIVITY.md §D.3). <!-- 2026-09-04: the chat panel is gone; the
+microphone is a pill in the top bar and its transcript is typed into the pane. See
+DEVIATIONS.md, "The operator and the chat are gone; the microphone types". -->
 **Acceptance**
 - Scenarios `keybar`, `offlineonce`, `sigtermreattach`, `takeover`, `exitoverlay` pass, and
-  `chat-dictate` in place of `dictation`.
+  `dictate` in place of `dictation`.
 - `offlineonce` is the centrepiece: it must prove exactly-once delivery, not merely that something
   arrived.
 - The precache size is measured and written into the README.

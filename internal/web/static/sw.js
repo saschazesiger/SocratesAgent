@@ -57,7 +57,8 @@ const SHELL = [
   '/static/js/voice.js',
   '/static/js/assist.js',
   '/static/js/notify.js',
-  '/static/js/chat.js',
+  '/static/js/dictate.js',
+  '/static/js/handsfree.js',
   '/favicon.png',
   '/static/img/logo.png',
 ].map((path) => (path === '/' ? path : path + '?v=' + VERSION));

@@ -443,6 +443,28 @@ New modules: `internal/web/static/js/chat.js` (the panel) beside `assist.js`
 (status, the ticker, auto mode), both in `sw.js`'s `SHELL` and both reached by
 the import-graph assertion in `internal/web/embed_test.go`.
 
+<!-- rev 8 --> **What `#statusBtn` is drawn as, and what it does while it
+works.** The mark is a screen with two lines of text on it and the loudspeaker's
+own two arcs coming off the side — not a speech bubble: a bubble is somebody
+talking, and what this button does is read out what is already on the pane.
+While the answer is being made it takes `.icon-btn.working`, which is **a ring
+around the mark and never the mark itself**: `.icon-btn.working::after`, 25 px
+across on a 17 px glyph, a 1 px `--line-strong` ring with one `--accent` arc,
+`animation: spin 900ms linear infinite`. The button turning as a whole was the
+bug — a drawing of a screen, spinning, is a drawing of nothing, and the one
+moment the mark has to be readable is the moment somebody is waiting on it. It
+is the same ring, ink, hairline and beat as the one a working session wears in
+the sidebar (§D.1), for the same reason and with the same
+`prefers-reduced-motion` carve-out: still, it says the opposite of what it is
+for. `.icon-btn.working:disabled` keeps `opacity: 1` and dims only the glyph,
+because the button *is* shut while it works and the `:disabled` rule would
+otherwise take the ring down to 35 % — which is the one thing on the page
+nobody could then see.
+
+<!-- rev 8 --> **`#handsBtn`** sits with the sound and notification switches
+rather than with Status, because like them it is a fact about this device and
+is in the bar whether or not a session is attached. §D.7 is what it does.
+
 ## D.3 Status, the ticker and the chat
 
 **Status** — `POST …/status`, and pressing it must visibly do something: the
@@ -594,6 +616,64 @@ nothing, a reload during a running turn firing nothing on the replay, and a
 refused permission leaving the switch off with the reason in a toast.
 
 ---
+
+## D.7 Hands-free
+
+<!-- rev 8 --> `internal/web/static/js/handsfree.js`, imported by `session.js`,
+`keybar.js`, `combobox.js` and `harnesses.js`; in `sw.js`'s `SHELL` and reached
+by the import-graph assertion in `internal/web/embed_test.go`.
+
+**The problem.** A tablet in a case and a phone in a car have the same one, and
+it is not the screen: it is the keyboard. Touch anything on a device with no
+keys of its own and half the display becomes a keyboard — over the pane, over
+the sheet somebody was reading, over the control they were about to press — and
+it opens again on the next tap. In a CLI, where the pane takes the focus back by
+design so that what is typed lands in the session, that is not an inconvenience,
+it is the interaction ending.
+
+**The mode.** `#handsBtn` in the `.topbar` before `#soundBtn`, `aria-pressed`,
+remembered in `localStorage['socrates.handsfree']` per device and per browser —
+the same rule as the sound switch, the notification switch and the key bar, and
+for the same reason. It is **one drawing, filled while it is armed**
+(`.icon-btn.on`), like a modifier armed on the key bar: this is a mode somebody
+turned on, not a facility that is on by default, so it is not an `.icon-btn.toggle`
+with two drawings. The drawing is a keyboard **going away** — the platform's own
+glyph for it, a keyboard with a chevron under it — rather than a keyboard with a
+stroke through it: struck through at 17 px all that survives is a crossed box,
+and that is what it was read as.
+
+**What it guarantees**, while it is armed:
+
+- **Every field is muted.** `inputmode="none"` *and* `readOnly`. One of the two
+  is a request a browser is asked to honour and the other is a fact it cannot
+  argue with; a promise that says "never" and holds on only some phones is not
+  one. Fields register themselves with `guard(input)` — the app's fields are
+  built by scripts and half of them live in dialogs that come and go, so there
+  is no moment at which they could all be found by a selector.
+- **The pane is muted with them**, through `term.screenKeyboard(false)`
+  (`term.js`), which sets `inputmode="none"` on xterm's hidden textarea. The
+  textarea keeps taking keydowns from a real keyboard and keeps receiving
+  pastes, so nothing about the input path changes and only the on-screen
+  keyboard goes. `inputmode` is read when a field takes the focus, not while it
+  holds it, so a field or a pane that already has the keyboard up is blurred and
+  given the focus straight back.
+- **The key bar comes on and stays on**, and its `⌨` key stands down
+  (`DESIGN.md` §E.6). Dictation puts a line on the prompt and never the `⏎` that
+  runs it, so with no keyboard at all there would be no way to run anything.
+- **Every field has a microphone beside it** — `dictated(control, input)`, which
+  wraps the field in `.dictate` and adds a `.mic-btn` that opens the one
+  recording sheet `dictate.js` owns (`record()`). It wears the same working ring
+  every other control wears. The microphones are **not** part of the mode: a
+  control that only appears in a mode is a control nobody finds, and dictating
+  into a field is worth having on a desk too. What the mode adds is the
+  guarantee that nothing else can happen.
+
+**Which fields.** Everything on the session page: both comboboxes on the
+new-session sheet, its free-form working directory, and the rename dialog's one
+field. The pane's own microphone is the top bar's pill (§D.3), which is why it
+does not get a second one. `login.html` and `setup.html` are not covered — they
+are separate documents that load none of this, and a password is not something
+to dictate. The dashboard is not covered either.
 
 # E. Work packages
 

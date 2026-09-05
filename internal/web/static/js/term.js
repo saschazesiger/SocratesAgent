@@ -294,7 +294,7 @@ function wireClipboard(term) {
   const onCopy = (ev) => {
     if (isTermField(ev.target) || isEditable(ev.target)
       || !term.hasSelection() || !ev.clipboardData) return;
-    // A selection made on the page itself - in the chat, say - is the one the
+    // A selection made on the page itself - in a sheet, say - is the one the
     // person means.
     const page = window.getSelection ? String(window.getSelection() || '') : '';
     if (page.trim()) return;
@@ -843,6 +843,30 @@ export function createTerm(host, opts = {}) {
     /** reset is the full repaint a `replay_from: 0` hello asks for. */
     reset: () => { term.reset(); last = { cols: 0, rows: 0 }; },
     focus: () => term.focus(),
+    /**
+     * screenKeyboard says whether a tap on the pane may raise the phone's own
+     * keyboard.
+     *
+     * The pane takes the focus back by design, so on a device with no keys of
+     * its own the keyboard opens again on every tap - which is what hands-free
+     * exists to stop. `inputmode="none"` is the one way to say "focus this,
+     * but do not open a keyboard for it": the textarea keeps taking keydowns
+     * from a real keyboard and keeps receiving pastes, so nothing about the
+     * input path changes, and only the on-screen keyboard goes.
+     *
+     * The attribute is read when a field takes the focus, not while it holds
+     * it, so a textarea that already has the keyboard up is blurred and given
+     * the focus straight back.
+     */
+    screenKeyboard(allowed) {
+      if (!term.textarea) return;
+      if (allowed) term.textarea.removeAttribute('inputmode');
+      else term.textarea.setAttribute('inputmode', 'none');
+      if (document.activeElement === term.textarea) {
+        term.textarea.blur();
+        term.focus();
+      }
+    },
     dispose() {
       unwireTouch();
       unwireMouse();

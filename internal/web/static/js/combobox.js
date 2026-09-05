@@ -7,6 +7,7 @@
 // the ARIA combobox pattern so it works with a keyboard and a screen reader.
 
 import { el } from './api.js';
+import { guard, micButton } from './handsfree.js';
 
 let openInstance = null;
 
@@ -78,8 +79,23 @@ export function combobox(options = {}) {
     'aria-label': 'Show the list',
   }, el('span', { class: 'combo-caret' }));
 
-  const root = el('div', { class: 'combo' }, input, toggle, list);
+  const combo = el('div', { class: 'combo' }, input, toggle, list);
 
+  // The field can be spoken into as well as typed into, and what is said is
+  // what would have been typed: it filters the list, and the entry is still
+  // chosen by hand. In hands-free it is the only way this control can be used
+  // at all, which is why the microphone is beside the field rather than
+  // inside it - the caret button is already in there, and two glyphs in the
+  // corner of one field is a puzzle rather than a control.
+  const mic = micButton((text) => {
+    input.value = text;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  guard(input);
+  const root = el('div', { class: 'dictate' }, combo, mic);
+
+  // The instance owns the whole row, microphone included: a click on the
+  // microphone must not read as a click outside the list that is open.
   const instance = { root, close };
 
   function setValue(next, notify = true) {

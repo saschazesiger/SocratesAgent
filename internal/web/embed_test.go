@@ -154,15 +154,12 @@ func TestVendoredTerminalIsStampedAndPrecached(t *testing.T) {
 	}
 }
 
-// The old web chat's modules went with it. A file that survived a deletion is
-// how a page ends up importing half a product.
-//
-// js/chat.js is not among them any more: the name has come back for something
-// else entirely - the conversation beside a terminal, which asks a model about
-// the pane and can have it typed into. What was deleted was a chat that *was*
-// the product; this one is a panel on the session page.
+// The old web chat's modules went with it, and so did the panel that later
+// took the name: nothing on the session page asks a model to type any more.
+// A file that survived a deletion is how a page ends up importing half a
+// product.
 func TestTheChatModulesAreGone(t *testing.T) {
-	for _, name := range []string{"js/markdown.js", "js/models.js", "js/agents.js"} {
+	for _, name := range []string{"js/markdown.js", "js/models.js", "js/agents.js", "js/chat.js"} {
 		if assets[name] != nil {
 			t.Errorf("%s is still embedded", name)
 		}

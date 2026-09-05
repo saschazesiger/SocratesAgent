@@ -27,6 +27,7 @@ import { createTerm, measurePane } from './term.js';
 import { mountAssist } from './assist.js';
 import { mountNotify } from './notify.js';
 import { mountKeyBar, keyBarWanted, setKeyBarWanted, followViewport } from './keybar.js';
+import { handsFree, setHandsFree, onHandsFree, dictated } from './handsfree.js';
 
 /* ------------------------------------------------------------- transport */
 
@@ -642,7 +643,7 @@ const state = {
   // It is in memory only - the server re-derives it from a live pane every
   // second, so a copy that outlived a reload could only ever be wrong.
   activity: new Map(),
-  // Status, Agent and the chat, mounted once in boot().
+  // Status and the microphone, mounted once in boot().
   assist: null,
   // How the terminal is drawn, from the dashboard. The defaults here are what
   // a page that could not ask uses, and they are the same numbers the settings
@@ -653,12 +654,11 @@ const state = {
 const dom = {};
 const ids = ['sidebar', 'navScrim', 'menuBtn', 'sideCollapse', 'newSession', 'sessionScope', 'sessionList',
   'activityLive', 'sessionHarness', 'sessionTitle', 'sessionArchived', 'termSize',
-  'statusBtn', 'agentBtn', 'soundBtn', 'notifyBtn', 'sessionMenu',
+  'statusBtn', 'handsBtn', 'soundBtn', 'notifyBtn', 'sessionMenu',
   'stage', 'termWrap', 'term', 'termOverlay', 'termLines', 'termNotice',
   'termTicker', 'tickerWindow', 'termEmpty',
-  'chatPanel', 'chatLog', 'chatFoot', 'chatClose',
-  'chatMic', 'chatMicText', 'chatSpeak',
-  'chatRecSheet', 'chatRecMeter', 'chatRecTime', 'chatRecSend', 'chatRecCancel',
+  'micBtn', 'micText',
+  'recSheet', 'recMeter', 'recTime', 'recSend', 'recCancel',
   'keybar', 'logout'];
 for (const id of ids) dom[id] = document.getElementById(id);
 
@@ -955,7 +955,10 @@ function promptTitle(current) {
     const accept = el('button', { class: 'btn sm primary', type: 'button', text: 'Rename' });
     dialog.append(
       el('h2', { class: 'modal-title', text: 'Rename this session' }),
-      el('div', { class: 'field' }, input),
+      // A name is a sentence somebody says about a session, so it is one of
+      // the fields that can be spoken instead of typed - and in hands-free it
+      // is the only way this dialog can be answered at all.
+      el('div', { class: 'field' }, dictated(input, input)),
       el('div', { class: 'modal-actions' }, cancel, accept),
     );
     let settled = false;
@@ -1067,7 +1070,10 @@ function openRowMenu(anchor, id) {
   const menu = el('div', { class: 'menu', role: 'menu' },
     item('Info', () => infoDialog(session)),
     item('Rename', () => renameSession(session)),
-    item(dom.keybar.hidden ? 'Show key bar' : 'Hide key bar', () => {
+    // Hands-free is holding the bar on, and it is the only keyboard there is
+    // while it does, so there is nothing here to offer: an item that answered
+    // "hide" with a bar still on screen would be the menu lying.
+    handsFree() ? null : item(dom.keybar.hidden ? 'Show key bar' : 'Hide key bar', () => {
       const on = dom.keybar.hidden;
       setKeyBarWanted(on);
       showKeyBar(on);
@@ -1448,11 +1454,13 @@ function attach(session) {
   socketRef.socket = socket;
   state.socket = socket;
   state.keybar = mountKeyBar(dom.keybar, state.term.term, socket);
-  showKeyBar(keyBarWanted());
-  // The two buttons in the header, and the conversation behind one of them.
-  // It is done before the size is read, because a chat panel that reopens
-  // takes width off the pane, and the size the session is told at attach is
-  // the size it gets.
+  showKeyBar(keyBarShown());
+  // A pane that has just been built has an ordinary text field behind it, and
+  // hands-free is a promise about every one of them.
+  state.term.screenKeyboard(!handsFree());
+  // The two controls in the header. A recording that belonged to the session
+  // before this one is cancelled here, so its words can never be typed into
+  // the terminal that has just taken the screen.
   if (state.assist) state.assist.attached();
 
   const size = state.term.size();
@@ -1464,6 +1472,13 @@ function attach(session) {
 // whether it has a keyboard, because the two that matter - a tablet in a
 // case, a laptop with a touch screen - are the two it would get wrong. The
 // session menu is the one way in, and the answer is kept per device.
+//
+// Hands-free is the one thing that overrules the answer, and it overrules it
+// on: with the on-screen keyboard shut for good, this bar is where Escape,
+// Tab, the arrows and the Enter that runs a dictated line are, and there is
+// nowhere else they could be.
+function keyBarShown() { return keyBarWanted() || handsFree(); }
+
 function showKeyBar(on) {
   dom.keybar.hidden = !on;
   // A modifier armed on a bar nobody can see would transform the next key
@@ -1496,6 +1511,29 @@ function showSize(cols, rows) {
   dom.termSize.textContent = cols + '×' + rows;
 }
 
+/**
+ * insertIntoTerm puts one line into the pane as if it had been typed.
+ *
+ * The frame carries the line as `text` rather than as loose bytes, which is
+ * what decides its fate if the server turns out to have forgotten this
+ * viewer: keystrokes are counted, a composed line is handed back in the words
+ * it was written in. No Enter goes with it. A transcript is a guess about
+ * what was said, and running a guess is the person's decision, not this
+ * page's - so the words land on the prompt and wait there.
+ */
+function insertIntoTerm(text) {
+  const line = String(text || '');
+  if (!line) return;
+  if (!state.socket) {
+    toast('There is no session to type into.', 'error');
+    return;
+  }
+  state.socket.sendInput(line, { text: line });
+  // The cursor goes back where the words did, so the Enter that runs them is
+  // the next key pressed rather than a tap on the pane first.
+  if (state.term) state.term.focus();
+}
+
 function onControl(sessionId, frame) {
   // A session that names itself does it while another one is being watched,
   // so this frame is about whichever session it names and not about the one
@@ -1506,14 +1544,9 @@ function onControl(sessionId, frame) {
     case 'hello':
       if (frame.session) applySession({ ...state.current, ...frame.session });
       if (frame.size) showSize(frame.size.cols, frame.size.rows);
-      // A handshake carries every running session's activity and this
-      // session's run, so a reconnect and a reload both re-draw the sidebar
-      // and the progress line without asking for anything.
+      // A handshake carries every running session's activity, so a reconnect
+      // and a reload both re-draw the sidebar without asking for anything.
       mergeActivity(frame.activity);
-      if (state.assist) {
-        state.assist.helloAgent(frame.agent);
-        state.assist.helloChat(frame.chat);
-      }
       if (!Number(frame.replay_from) && state.term) {
         state.term.reset();
         // Only worth saying when there was something to lose: a first attach
@@ -1524,14 +1557,8 @@ function onControl(sessionId, frame) {
     case 'activity':
       mergeActivity(frame.sessions);
       break;
-    case 'agent':
-      if (state.assist) state.assist.agentFrame(frame);
-      break;
     case 'status':
       if (state.assist) state.assist.statusFrame(frame);
-      break;
-    case 'chat':
-      if (state.assist) state.assist.chatFrame(frame);
       break;
     case 'state':
       replaceSession({ ...state.current, state: frame.state });
@@ -1561,6 +1588,12 @@ function onControl(sessionId, frame) {
       if (frame.keystrokes) {
         toast(frame.keystrokes + ' keystroke' + (frame.keystrokes === 1 ? '' : 's')
           + ' may not have been delivered.', 'error');
+      }
+      // A composed line is given back in full rather than counted: it was
+      // spoken once, and a person who is not looking at the screen has no
+      // other way to find out that it never arrived.
+      for (const line of frame.lines || []) {
+        toast('That was not typed into the terminal: “' + line + '”', 'error');
       }
       break;
     case 'error':
@@ -1774,6 +1807,23 @@ function wire() {
   dom.sessionTitle.addEventListener('click', () => {
     if (state.current) renameSession(state.current);
   });
+  // Hands-free, and everything that has to change with it. The mode belongs
+  // to this device rather than to a session, so the button is in the bar
+  // whether or not one is attached, and the answer outlives every one of them.
+  dom.handsBtn.addEventListener('click', () => setHandsFree(!handsFree()));
+  onHandsFree((on) => {
+    setClass(dom.handsBtn, 'on', on);
+    dom.handsBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    const words = on
+      ? 'Hands-free is on: nothing opens the keyboard'
+      : 'Hands-free is off: fields open the keyboard';
+    dom.handsBtn.title = words;
+    dom.handsBtn.setAttribute('aria-label', words);
+    if (state.term) state.term.screenKeyboard(!on);
+    // With nothing attached there is no keyboard to replace, and `detach` and
+    // `showEmpty` put the bar away for exactly that reason.
+    showKeyBar(!!state.term && keyBarShown());
+  });
   dom.logout.addEventListener('click', async () => {
     try { await api('/api/logout', { method: 'POST' }); } catch { /* going anyway */ }
     location.href = '/login';
@@ -1822,15 +1872,14 @@ async function boot() {
   // terminal fitted to the wide one and then narrowed is a terminal that
   // reflows in front of the person.
   restoreSidebar();
-  // Status, Agent and the chat, mounted before anything is measured: the
-  // panel takes width off the pane, and a layout applied afterwards resizes a
-  // terminal somebody is already looking at.
+  // Status and the microphone, mounted before anything is measured so that
+  // the bar is its final height before the pane is fitted into what is left.
   state.assist = mountAssist({
     dom,
     notice,
-    refit: () => { if (state.term) state.term.refit(); },
     current: () => state.current,
     live: () => state.live,
+    insert: (text) => insertIntoTerm(text),
   });
   // The chime and the notification. Mounted here rather than in mountAssist
   // because they are not about the session on screen: they fire for whichever

@@ -13,6 +13,7 @@
 
 import { el, toast, setClass } from './api.js';
 import { lastCopied } from './term.js';
+import { onHandsFree } from './handsfree.js';
 
 /* ---------------------------------------------------------- the key bar */
 
@@ -72,6 +73,8 @@ export function mountKeyBar(host, term, socket) {
   // 'ctrl' | 'alt' -> 'on' (next key only) | 'lock' (until tapped again)
   const armed = new Map();
   const buttons = new Map();
+  // The key that raises the phone's own keyboard, which hands-free takes away.
+  let keyboardKey = null;
 
   const paint = () => {
     for (const [mod, button] of buttons) {
@@ -146,6 +149,7 @@ export function mountKeyBar(host, term, socket) {
     } else if (key.paste) {
       button.addEventListener('click', () => { consume(); paste(term, send); });
     } else if (key.keyboard) {
+      keyboardKey = button;
       // Synchronously, inside the handler: iOS raises the keyboard for a
       // focus() that a tap caused and for nothing else, and an `await`
       // anywhere before this line is what loses that permission.
@@ -160,13 +164,18 @@ export function mountKeyBar(host, term, socket) {
   }
 
   paint();
+  // The one key on this bar whose whole purpose is to raise the on-screen
+  // keyboard. Hands-free is the promise that nothing does, so while it is
+  // armed the key is not there - and the bar itself is, whatever this device
+  // asked for, because it is now the only keyboard left (session.js).
+  const unwatch = onHandsFree((hands) => { if (keyboardKey) keyboardKey.hidden = hands; });
   return {
     apply,
     /** clear disarms everything, for a bar that is being put away. */
     clear() { if (armed.size) { armed.clear(); paint(); } },
     /** armedNow is what the scenarios and the bar itself read back. */
     armedNow: () => [...armed.entries()].map(([mod, state]) => mod + ':' + state).join(','),
-    dispose() { host.innerHTML = ''; armed.clear(); buttons.clear(); },
+    dispose() { unwatch(); host.innerHTML = ''; armed.clear(); buttons.clear(); },
   };
 }
 
@@ -201,11 +210,10 @@ async function paste(term, send) {
  *
  * When a phone raises its keyboard the layout viewport does not change - only
  * the visual one does - so a page sized to 100% puts the bottom of itself
- * under the keyboard, and the bottom of the chat panel is the field somebody
- * is typing the question into. The height goes into a custom property the
- * shell is sized by, and the window is scrolled back to the top, because iOS
- * scrolls the page instead of resizing it and a scrolled shell hides the top
- * bar.
+ * under the keyboard, and the bottom of this one is the key bar. The height
+ * goes into a custom property the shell is sized by, and the window is
+ * scrolled back to the top, because iOS scrolls the page instead of resizing
+ * it and a scrolled shell hides the top bar.
  */
 export function followViewport() {
   const vv = window.visualViewport;

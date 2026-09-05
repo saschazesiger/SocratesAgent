@@ -1,54 +1,39 @@
-// Status, the ticker and the chat: the things you can ask a session for
-// without typing into it.
+// Status and the ticker: what you can ask a session for without typing into
+// it, and the one line that says what is happening right now.
 //
-// They are one module because they are one idea. A terminal is a picture, and
-// a picture is the one thing a phone in a car cannot use: Status turns the
-// screen into a sentence and reads it out loud, and the chat turns sentences
-// back into keystrokes - and an answer to a question that was spoken is read
-// out loud in turn, because the person who asked it that way is not looking.
+// A terminal is a picture, and a picture is the one thing a phone in a car
+// cannot use. Status turns the screen into a sentence and reads it out loud;
+// the microphone beside it (dictate.js) is the way back, and this module
+// mounts it because the two are one gesture: listen, then answer.
 //
-// The one line that says what is happening right now is here too, and there is
-// exactly one of it: a status being made, or a run taking a step. A second
-// indicator would be a second thing to read at a traffic light.
+// There is exactly one ticker line, and this is the only thing that writes it.
+// A second indicator would be a second thing to read at a traffic light.
 
-import { api, el, toast, setClass, errorMessage, isOffline, isBusyConflict } from './api.js';
+import { api, toast, setClass, errorMessage, isOffline, el } from './api.js';
 import { speak, stopSpeaking, onSpeechError } from './voice.js';
-import { mountChat } from './chat.js';
+import { mountDictation } from './dictate.js';
 
-// How long a finished status or a finished run keeps the ticker before it goes
-// back to whatever is true underneath. Long enough to read one line, and the
-// same number as NOTICE_LINGER in session.js on purpose: the notice and the
-// ticker are two lines stacked over the same pane, and one rhythm is easier to
-// live with than two. A line that is still true - a run taking a step - is not
-// on a timer at all; it goes when it stops being true.
+// How long a finished status keeps the ticker before the line goes. Long
+// enough to read one line, and the same number as NOTICE_LINGER in session.js
+// on purpose: the notice and the ticker are two lines stacked over the same
+// pane, and one rhythm is easier to live with than two.
 const TICKER_LINGER = 6000;
 
 // How long a leaving line is given to leave. It is the CSS transition plus a
 // frame, and it only decides when a detached element is removed.
 const TICKER_SWAP = 320;
 
-// What a phase of a run is called in the ticker. The technical words - the
-// phase itself, the run id, the model's note - are not on the page at all any
-// more; the chat message the run belongs to is where a run is looked at.
-const PHASE_WORDS = {
-  thinking: 'thinking',
-  acting: 'working',
-  waiting: 'waiting for the session',
-  done: 'done',
-  error: 'stopped',
-};
-
 const path = (id, suffix) => '/api/sessions/' + encodeURIComponent(id) + suffix;
 
 /**
- * mountAssist wires the header, the ticker and the chat to one session page.
+ * mountAssist wires the header buttons and the ticker to one session page.
  *
  * `ctx` is everything this module is not allowed to own:
  *   dom       the shared id map
  *   notice    session.js's one-line banner, (kind, text, onDismiss, facts, extra)
- *   refit     re-measure the pane after the layout changed
  *   current   the session on screen, or null
  *   live      whether the socket is up
+ *   insert    put one line of text into the pane, as if it had been typed
  */
 export function mountAssist(ctx) {
   const { dom } = ctx;
@@ -63,12 +48,10 @@ export function mountAssist(ctx) {
   let speaking = false;
   // Which utterance is the current one. See say().
   let sayGen = 0;
-  let run = null;
   // The line a status is currently putting in the ticker, and the timer that
   // takes it away again once it has been read.
   let statusLine = '';
   let statusTimer = null;
-  let runTimer = null;
 
   /* ------------------------------------------------------------ the ticker */
 
@@ -104,40 +87,20 @@ export function mountAssist(ctx) {
     };
   })();
 
-  // What the ticker should be saying, from what is true. There is one of these
-  // and it is the only writer: a status being made wins, then a run in
-  // progress, and with neither of them there is nothing to say.
-  function tickerText() {
-    const session = ctx.current();
-    if (!session) return '';
-    if (statusLine) return statusLine;
-    if (run) {
-      // A finished run holds the window for a moment - `linger` is what lets
-      // go of it - because a line that vanished the instant it ended would be
-      // one nobody read.
-      if (run.done) return run.error ? 'The run stopped before it finished.' : 'The run finished.';
-      const step = Math.max(1, Number(run.step) || 1);
-      const said = String(run.action || '').trim() || PHASE_WORDS[run.phase] || 'working';
-      return 'Step ' + step + ' · ' + said;
-    }
-    return '';
-  }
-
+  // What the ticker should be saying, from what is true. The line is written
+  // in exactly one place - setStatusPhase - and read in exactly this one, and
+  // with no session on screen there is nothing to say at all.
   function paintTicker() {
-    const text = tickerText();
+    const text = ctx.current() ? statusLine : '';
     if (text) ticker.show(text); else ticker.hide();
   }
 
-  // linger keeps a finished line up for a moment and then lets whatever is
-  // true underneath take the window back.
-  function linger(which) {
-    if (which === 'status') {
-      if (statusTimer) clearTimeout(statusTimer);
-      statusTimer = setTimeout(() => { statusTimer = null; statusLine = ''; paintTicker(); }, TICKER_LINGER);
-      return;
-    }
-    if (runTimer) clearTimeout(runTimer);
-    runTimer = setTimeout(() => { runTimer = null; run = null; paintTicker(); }, TICKER_LINGER);
+  // linger keeps a finished line up for a moment and then gives the window
+  // back, because a line that vanished the instant it ended would be one
+  // nobody read.
+  function linger() {
+    if (statusTimer) clearTimeout(statusTimer);
+    statusTimer = setTimeout(() => { statusTimer = null; statusLine = ''; paintTicker(); }, TICKER_LINGER);
   }
 
   /* ------------------------------------------------------------- painting */
@@ -145,10 +108,6 @@ export function mountAssist(ctx) {
   function paint() {
     const session = ctx.current();
     const usable = !!session && ctx.live();
-    if (dom.agentBtn) {
-      dom.agentBtn.hidden = !session;
-      dom.agentBtn.disabled = !usable;
-    }
     // The stop is the same button: what is being asked for while the voice is
     // reading is silence, and a second control for it is a second thing to
     // find on a screen nobody is looking at.
@@ -165,7 +124,7 @@ export function mountAssist(ctx) {
       // already on this device and turning it off asks the server nothing.
       dom.statusBtn.disabled = speaking ? false : (!usable || busyStatus);
     }
-    chat.live();
+    dictation.live();
     paintTicker();
   }
 
@@ -185,12 +144,6 @@ export function mountAssist(ctx) {
   async function runStatus() {
     const session = ctx.current();
     if (!session || busyStatus) return;
-    // A run that is typing is halfway through a screen, and a description of
-    // half a keystroke is worse than saying what is actually going on.
-    if (run && !run.done) {
-      ctx.notice('status', 'The agent is typing — ask again when it is done.');
-      return;
-    }
     busyStatus = true;
     // The first phase locally, before the request has even left: on a bad
     // connection the server's own first frame is a second away, and a tap with
@@ -228,7 +181,7 @@ export function mountAssist(ctx) {
     if (!text) return;
     statusLine = text;
     if (statusTimer) { clearTimeout(statusTimer); statusTimer = null; }
-    if (phase === 'done' || phase === 'error') linger('status');
+    if (phase === 'done' || phase === 'error') linger();
     paintTicker();
   }
 
@@ -260,17 +213,13 @@ export function mountAssist(ctx) {
     paint();
   }
 
-  /* ----------------------------------------------------------- the chat */
+  /* ------------------------------------------------------- the microphone */
 
-  const chat = mountChat({
+  const dictation = mountDictation({
     dom,
     current: () => ctx.current(),
     live: () => ctx.live(),
-    refit: () => ctx.refit(),
-    say: (text) => say(text),
-    // The same gesture twice is the way to stop: what somebody double-taps an
-    // answer for while it is being read is silence, not a second reading.
-    read: (text) => { if (speaking) stopReading(); else say(text); },
+    insert: (text) => ctx.insert(text),
   });
 
   /* --------------------------------------------------------------- wiring */
@@ -280,22 +229,15 @@ export function mountAssist(ctx) {
       if (speaking) stopReading(); else runStatus();
     });
   }
-  // The former Agent button. It opens the conversation rather than a one-field
-  // dialog, because asking an agent something is a question and a question has
-  // an answer, not a form.
-  if (dom.agentBtn) dom.agentBtn.addEventListener('click', () => chat.open());
-
   paint();
 
   return {
     /** attached is a session becoming the one on screen, or nothing being. */
     attached() {
       if (statusTimer) { clearTimeout(statusTimer); statusTimer = null; }
-      if (runTimer) { clearTimeout(runTimer); runTimer = null; }
-      run = null;
       statusLine = '';
       stopReading();
-      chat.attached();
+      dictation.attached();
       paint();
     },
 
@@ -306,46 +248,6 @@ export function mountAssist(ctx) {
     statusFrame(frame) {
       setStatusPhase(frame.phase || '', String(frame.text || '').trim());
     },
-
-    /** chatFrame is one message of this session's conversation. */
-    chatFrame(frame) {
-      if (frame && frame.msg) chat.message(frame.msg);
-    },
-
-    /** helloChat is the conversation a fresh socket found. */
-    helloChat(list) { chat.history(list); },
-
-    /** agentFrame is one phase change of the run on this session. */
-    agentFrame(frame) {
-      if (runTimer) { clearTimeout(runTimer); runTimer = null; }
-      run = {
-        run_id: frame.run_id || '', step: frame.step || 0, phase: frame.phase || '',
-        action: frame.action || '', note: frame.note || '', prompt: frame.prompt || '',
-        summary: frame.summary || '', done: !!frame.done, error: frame.error || '',
-      };
-      chat.run(run);
-      // The words a run ended with are the chat's, which stores them; the
-      // ticker only says that it ended, and then gives the window back.
-      if (run.done) linger('run');
-      paintTicker();
-    },
-
-    /**
-     * helloAgent is the run a fresh socket found, or null.
-     *
-     * A run lives in the server's memory only, so a server that restarted
-     * mid-run answers null - and a progress line left over from before it
-     * would go on claiming a run that no longer exists.
-     */
-    helloAgent(payload) {
-      if (payload && payload.run_id) { this.agentFrame(payload); return; }
-      if (run && !run.done) {
-        run = null;
-        chat.runGone();
-        paintTicker();
-        toast('That run is no longer running.');
-      }
-    },
   };
 }
 
@@ -354,8 +256,7 @@ export function mountAssist(ctx) {
 // identifier in it, and those belong behind an "i" or nowhere.
 function assistFailed(err, sentence) {
   if (isOffline(err)) return errorMessage(err);
-  if (isBusyConflict(err)) return 'That session already has a run going.';
-  // A 400 from these routes is the one case where the server's own words are
+  // A 400 from this route is the one case where the server's own words are
   // the instruction - "open /admin and pick a model" - and there is nothing
   // else the page could say instead.
   if (err && err.status === 400) return errorMessage(err);

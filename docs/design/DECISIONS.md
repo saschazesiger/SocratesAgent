@@ -90,6 +90,10 @@ These are binding. The design spec must implement them; it may add detail but no
     type into. The microphone is in the chat panel and its transcript is sent as a question. TTS
     is wired to that chat — a dictated question is answered out loud — and still not to the pane.
     See "Revised with the owner" below.
+  - **Restored 2026-09-04**, in the terms it was first asked for: the agent and the chat are gone,
+    the microphone is a pill in the session's top bar, and its transcript is typed into the pane
+    itself — on the prompt, without the `⏎`, because a transcript is a guess. TTS is now only
+    **Status**, which reads a summary of the screen; nothing else is read out loud.
 - Design rules: all-white, agent marks (logos.js), technical detail hover-only, subtle motion.
 
 ## Delete
@@ -138,12 +142,15 @@ superseded text stays where it is, because the history is the reason.
 - **Auto mode is gone** — the switch, the audio bar, and the summary spoken on every transition
   out of busy. Being read to is a property of a question, not a mode a device is in, and unasked
   speech in a car is worse than silence. The header keeps two buttons: **Summarize this session**
-  and **Ask the agent**.
+  and **Ask the agent**. — *Superseded 2026-09-04: the agent is gone, and the second button is
+  the **Speak** pill.*
 - **Notifications and sound: two header toggles, per device.** When any session goes from busy to
   idle or waiting, a chime (Web Audio, no audio file to fetch) and a browser notification. Sound
   defaults on; notifications default off, because they cannot be honoured without asking and
   asking unprompted is how a page gets blocked for good.
-- **Speaking is a pill and listening is a switch (2026-09-02).** In the chat header: a **Speak**
+- **Speaking is a pill and listening is a switch (2026-09-02).** *Half superseded 2026-09-04: the
+  pill moved to the top bar and its transcript goes into the pane, so the speaker toggle and the
+  `auto` phrasing went with the chat.* In the chat header: a **Speak**
   pill (outlined, 44px, microphone and the word) that opens a recording sheet with a live level
   meter, the clock, and two 56px buttons — **Send** and **Cancel**; Escape or the backdrop is
   Cancel, and closing the sheet for any reason gives the microphone back. The input row is a field

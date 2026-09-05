@@ -27,8 +27,9 @@ var ErrNotFound = errors.New("not found")
 // is the terminal harness: sessions are tmux sessions, and the chat transcript
 // tables of versions 1 and 2 are gone. Version 4 adds title_source, which
 // records who named a session and is what keeps the automatic title from
-// running twice or overwriting a name the user chose.
-const SchemaVersion = 4
+// running twice or overwriting a name the user chose. Version 5 sweeps out the
+// conversations of the chat that sat beside a terminal, which no longer exists.
+const SchemaVersion = 5
 
 // Store wraps the database handle.
 type Store struct {
@@ -211,6 +212,12 @@ func migrate(db *sql.DB, path string) error {
 
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("create schema: %w", err)
+	}
+	// The chat beside the terminal is gone, and so is the only thing that ever
+	// deleted its rows. What is left is a document per session that nothing
+	// can reach, including for sessions that were deleted afterwards.
+	if _, err := db.Exec(`DELETE FROM kv WHERE key LIKE 'chat.%'`); err != nil {
+		return fmt.Errorf("drop the old conversations: %w", err)
 	}
 	// CREATE TABLE IF NOT EXISTS does nothing to a table that is already
 	// there, so a column added to an existing table has to be added by hand.

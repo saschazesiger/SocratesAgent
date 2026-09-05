@@ -135,9 +135,9 @@ opens on a phone with no signal: the shell, the terminal engine and the styles
 come from the cache, the connection bar says the truth about the network, and
 nothing old is presented as current.
 
-Measured on this build, the precached shell is **23 files, 1 145 KiB
-uncompressed and 364 KiB gzipped** — of which the vendored terminal (xterm.js
-and its five addons plus its stylesheet) is 788 KiB and 206 KiB. Adding a file
+Measured on this build, the precached shell is **23 files, 1 168 KiB
+uncompressed and 371 KiB gzipped** — of which the vendored terminal (xterm.js
+and its four addons plus its stylesheet) is 782 KiB and 203 KiB. Adding a file
 to `SHELL` in `internal/web/static/sw.js` adds to that number, and it is
 recorded here so that an addition is noticed. Socrates serves the files as they
 are; the compression is whatever is in front of it.
@@ -329,12 +329,15 @@ you are holding has a keyboard.
 - **Microphones need a secure context.** Browsers only allow recording on
   `localhost` or over HTTPS. On a server, put Socrates behind TLS or the
   Cloudflare tunnel, or the microphone will report that it is blocked.
-- **Speech to text** is the microphone in the chat panel: hold it, and while it
-  records the two things that can happen to a recording are on screen — send it
-  or discard it. It goes through the transcription model chosen in the
-  dashboard — an audio-capable chat model such as `google/gemini-2.5-flash`, or
-  a dedicated transcriber such as `openai/gpt-transcribe`. The browser records
-  raw PCM and sends a 16 kHz WAV, so no ffmpeg is involved.
+- **Speech to text** is the microphone in the session's top bar: tap it, and
+  while it records the two things that can happen to a recording are on screen
+  — send it or discard it. What comes back is typed into the pane, on the
+  prompt, and left there: the `⏎` that runs it is yours, because a transcript
+  is a guess about what was said. It goes through the transcription model
+  chosen in the dashboard — an audio-capable chat model such as
+  `google/gemini-2.5-flash`, or a dedicated transcriber such as
+  `openai/gpt-transcribe`. The browser records raw PCM and sends a 16 kHz WAV,
+  so no ffmpeg is involved.
 - **Text to speech** is [Google Cloud Text-to-Speech](https://cloud.google.com/text-to-speech),
   called with a single API key — no service account, no SDK, nothing installed
   on this machine. **Admin → Voice** has the five steps that get you a key:
@@ -347,10 +350,9 @@ you are holding has a keyboard.
   million characters a month — Studio voices 100,000 bytes a month, and all of
   them cost more per character beyond it. The speaking rate is a setting beside
   them.
-  Reading out loud happens in the chat panel: a question you dictated is
-  answered out loud, and any answer can be read again by double-tapping it.
-  **It is not wired into a terminal session** — a pane is a program, not an
-  answer.
+  Reading out loud is what **Status** does: it has a model read the screen of a
+  session and say what it is doing, in a sentence or two. **The pane itself is
+  never read out** — a pane is a program, not an answer.
 - **Spoken language** is one setting, English or Deutsch, and it picks both the
   language a recording is transcribed into and the voice that reads an answer.
 

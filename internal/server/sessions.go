@@ -354,14 +354,8 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// A run typing into a pane that is being torn down is the one way the
-	// operator could do something nobody asked for.
-	s.agents.cancel(row.ID, "the session was deleted")
-	// And a title run writing into a row that is being removed is the same
-	// kind of nothing-good.
+	// A title run writing into a row that is being removed is nothing good.
 	s.titles.forget(row.ID)
-	// And the conversation about a screen that is about to stop existing.
-	s.chats.forget(row.ID)
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	if err := s.manager.Delete(ctx, row.ID); err != nil {
@@ -405,10 +399,6 @@ func (s *Server) ensure(w http.ResponseWriter, r *http.Request, restart bool) {
 	var next *store.Session
 	var err error
 	if restart {
-		// A restart is an interaction with the terminal, and the operator run
-		// that was driving the pane being replaced has no business carrying on
-		// into the fresh harness that comes up under the same tmux name.
-		s.agents.cancel(row.ID, "the session was restarted")
 		next, err = s.manager.Restart(ctx, row.ID)
 	} else {
 		next, err = s.manager.Ensure(ctx, row.ID)

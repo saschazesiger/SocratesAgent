@@ -120,7 +120,7 @@ func TestTitleRunNamesASessionOnItsFirstAnswer(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("the gateway saw %d calls, want one", len(calls))
 	}
-	if calls[0].Model != "test/agent-model" {
+	if calls[0].Model != "test/title-model" {
 		t.Fatalf("the namer used %q", calls[0].Model)
 	}
 	if calls[0].MaxTokens != titleMaxTokens {

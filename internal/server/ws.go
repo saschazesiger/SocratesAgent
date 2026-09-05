@@ -636,15 +636,6 @@ func helloFrame(s *Server, row *store.Session, viewer *termux.Viewer, tv *termVi
 		// Every running session's activity, not just this one's: the sidebar
 		// is drawn from a reconnect without a request of its own.
 		"activity": s.manager.Activities(),
-		// The operator run, if one is live on this session. It is null until
-		// WP2 fills it, and the page renders a run from hello, from the frame
-		// and from the REST route with one function either way.
-		"agent": s.agentSnapshot(row.ID),
-		// The conversation this session has had with the assistant. It is
-		// small, it is already in memory's reach, and carrying it here is what
-		// makes a phone that reloaded show the chat it was in the middle of
-		// without a request of its own.
-		"chat": s.chats.history(row.ID),
 	}
 }
 
@@ -1601,16 +1592,6 @@ func (s *Server) onSessionTitle(sessionID, title string) {
 	s.broadcastAll(func(*termViewer) any { return frame })
 }
 
-// emitAgent carries one step of an operator run to the viewers of its session.
-// WP1 owns the transport; the payload is the run's.
-func (s *Server) emitAgent(sessionID string, payload map[string]any) {
-	frame := map[string]any{"t": "agent"}
-	for key, value := range payload {
-		frame[key] = value
-	}
-	s.broadcast(sessionID, func(*termViewer) any { return frame })
-}
-
 // emitStatus carries one phase of a spoken status to the viewers of its
 // session.
 //
@@ -1622,26 +1603,4 @@ func (s *Server) emitAgent(sessionID string, payload map[string]any) {
 func (s *Server) emitStatus(sessionID, phase, text string) {
 	frame := map[string]any{"t": "status", "id": sessionID, "phase": phase, "text": text}
 	s.broadcast(sessionID, func(*termViewer) any { return frame })
-}
-
-// emitChat carries one message of a session's chat to its viewers, so that two
-// devices watching one session see the same conversation.
-func (s *Server) emitChat(sessionID string, msg map[string]any) {
-	frame := map[string]any{"t": "chat", "id": sessionID, "msg": msg}
-	s.broadcast(sessionID, func(*termViewer) any { return frame })
-}
-
-// agentSnapshot is the live operator run of a session as hello reports it.
-//
-// The loop itself belongs to WP2, which installs agentRunOf; until then, and
-// after any restart of the server, the answer is null - which is what the page
-// is written for either way, because a run lives only in memory.
-func (s *Server) agentSnapshot(sessionID string) any {
-	s.mu.RLock()
-	of := s.agentRunOf
-	s.mu.RUnlock()
-	if of == nil {
-		return nil
-	}
-	return of(sessionID)
 }
