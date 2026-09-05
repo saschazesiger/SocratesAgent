@@ -643,6 +643,10 @@ const state = {
   // It is in memory only - the server re-derives it from a live pane every
   // second, so a copy that outlived a reload could only ever be wrong.
   activity: new Map(),
+  // The current session's quota/cost poll. A generation number makes a slow
+  // answer for the previous session harmless after a quick row switch.
+  usageTimer: null,
+  usageGeneration: 0,
   // Status and the microphone, mounted once in boot().
   assist: null,
   // How the terminal is drawn, from the dashboard. The defaults here are what
@@ -653,7 +657,7 @@ const state = {
 
 const dom = {};
 const ids = ['sidebar', 'navScrim', 'menuBtn', 'sideCollapse', 'newSession', 'sessionScope', 'sessionList',
-  'activityLive', 'sessionHarness', 'sessionTitle', 'sessionArchived', 'termSize',
+  'activityLive', 'sessionHarness', 'sessionTitle', 'sessionArchived', 'sessionUsage', 'termSize',
   'statusBtn', 'handsBtn', 'soundBtn', 'notifyBtn', 'sessionMenu',
   'stage', 'termWrap', 'term', 'termOverlay', 'termLines', 'termNotice',
   'termTicker', 'tickerWindow', 'termEmpty',
@@ -1159,6 +1163,7 @@ function showEmpty() {
   );
   dom.sessionTitle.textContent = 'Socrates';
   dom.sessionHarness.hidden = true;
+  stopUsage();
   dom.sessionMenu.hidden = true;
   if (state.assist) state.assist.attached();
   dom.termSize.hidden = true;
@@ -1184,9 +1189,68 @@ function applySession(session) {
     agentMark(session.harness, 16),
     el('span', { class: 'b-model', text: session.model || harnesses.label(session.harness) }),
   );
+  startUsage(session);
 
   drawOverlay(session);
   renderList();
+}
+
+const USAGE_REFRESH = 30000;
+
+function stopUsage() {
+  state.usageGeneration += 1;
+  if (state.usageTimer) clearInterval(state.usageTimer);
+  state.usageTimer = null;
+  dom.sessionUsage.hidden = true;
+  dom.sessionUsage.innerHTML = '';
+  dom.sessionUsage.title = '';
+  dom.sessionUsage.closest('.topbar').classList.remove('has-usage');
+}
+
+function startUsage(session) {
+  stopUsage();
+  if (!session || (session.harness !== 'claude' && session.harness !== 'codex')) return;
+  const generation = state.usageGeneration;
+  const refresh = async () => {
+    try {
+      const usage = await api('/api/sessions/' + encodeURIComponent(session.id) + '/usage', {
+        attempts: 1, timeout: 10000,
+      });
+      if (generation !== state.usageGeneration || !state.current || state.current.id !== session.id) return;
+      drawUsage(usage);
+    } catch { /* quota is useful context, never a reason to disturb the terminal */ }
+  };
+  refresh();
+  state.usageTimer = setInterval(refresh, USAGE_REFRESH);
+}
+
+function drawUsage(usage) {
+  const windows = Array.isArray(usage && usage.windows) ? usage.windows : [];
+  const parts = [];
+  const details = [];
+  for (const window of windows) {
+    const used = Math.max(0, Math.min(100, Math.round(Number(window.used_percent) || 0)));
+    parts.push(el('span', { class: 'usage-part' },
+      el('span', { class: 'usage-label', text: window.label }),
+      el('span', { text: used + '%' })));
+    let detail = window.label + ': ' + used + '% used';
+    if (window.resets_at) {
+      const reset = new Date(window.resets_at);
+      if (!Number.isNaN(reset.getTime())) detail += ' · resets ' + reset.toLocaleString();
+    }
+    details.push(detail);
+  }
+  if (Number.isFinite(usage && usage.cost_usd)) {
+    const value = Number(usage.cost_usd);
+    const shown = value < .01 ? '<$0.01' : '$' + value.toFixed(2);
+    parts.push(el('span', { class: 'usage-part usage-cost', text: (usage.cost_estimated ? '~' : '') + shown }));
+    details.push('Session API-equivalent cost: ' + (usage.cost_estimated ? 'about ' : '') + '$' + value.toFixed(4));
+  }
+  dom.sessionUsage.innerHTML = '';
+  dom.sessionUsage.append(...parts);
+  dom.sessionUsage.title = details.join('\n');
+  dom.sessionUsage.hidden = parts.length === 0;
+  dom.sessionUsage.closest('.topbar').classList.toggle('has-usage', parts.length > 0);
 }
 
 // drawOverlay is §E.7's table. Everything it can say is a state the session is

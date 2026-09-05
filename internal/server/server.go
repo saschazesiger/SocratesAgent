@@ -63,6 +63,15 @@ type Server struct {
 	// wsRate is the per address ceiling on WebSocket handshakes, guarded by
 	// loginMu because it is the same kind of defence.
 	wsRate map[string]*attempt
+
+	// usage holds the short-lived account limit reading shared by every tab.
+	// Session costs are read from each CLI's own transcript and are not cached
+	// here: the files are already local and change after every answer.
+	usageMu       sync.Mutex
+	claudeUsage   usageLimits
+	claudeUsageAt time.Time
+	usageHTTP     *http.Client
+	usageURL      string
 }
 
 type attempt struct {
@@ -82,6 +91,8 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 		writeTimeout: defaultWriteTimeout,
 		loginFail:    map[string]*attempt{},
 		wsRate:       map[string]*attempt{},
+		usageHTTP:    &http.Client{Timeout: 8 * time.Second},
+		usageURL:     "https://api.anthropic.com/api/oauth/usage",
 	}
 
 	settings := config.Default()
@@ -278,6 +289,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/sessions/{id}/restart", s.auth(s.handleRestartSession))
 	mux.HandleFunc("POST /api/sessions/{id}/ack-resume", s.auth(s.handleAckResume))
 	mux.HandleFunc("POST /api/sessions/{id}/read", s.auth(s.handleMarkRead))
+	mux.HandleFunc("GET /api/sessions/{id}/usage", s.auth(s.handleSessionUsage))
 	// What a terminal is doing, said out loud.
 	mux.HandleFunc("POST /api/sessions/{id}/status", s.auth(s.handleSessionStatus))
 	mux.HandleFunc("GET /api/sessions/{id}/journal", s.auth(s.handleJournal))

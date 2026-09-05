@@ -47,6 +47,7 @@ const journalDownloadMax = 16 << 20
 //	                                409 {"error":"…"} when a restart was asked
 //	                                    for on a session that is still running
 //	GET    …/journal                the raw bytes, as an attachment
+//	GET    …/usage                  {"windows":[…],"cost_usd":…}
 //	every route                     4xx/5xx {"error":"…"}
 //
 // <session> is store.Session as it serialises, plus the fields sessionView

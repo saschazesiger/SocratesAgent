@@ -664,11 +664,12 @@ func TestCodexResumeKeepsTheOptionBlock(t *testing.T) {
 func TestCodexVerifyPrefersRolloutGlob(t *testing.T) {
 	l := newLab(t)
 	id := uuid.NewString()
-	dir := filepath.Join(codexHome(), "sessions", "2026", "09", "02")
+	now := time.Now()
+	dir := filepath.Join(codexHome(), "sessions", now.Format("2006"), now.Format("01"), now.Format("02"))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, "rollout-2026-09-02T08-00-00-"+id+".jsonl")
+	path := filepath.Join(dir, "rollout-"+now.Format("2006-01-02")+"T08-00-00-"+id+".jsonl")
 	if err := os.WriteFile(path, []byte("{}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -694,7 +695,8 @@ func TestCodexVerifyPrefersRolloutGlob(t *testing.T) {
 func TestCodexWatchRolloutMatchesCwdAndOriginator(t *testing.T) {
 	l := newLab(t)
 	home := codexHome()
-	dir := filepath.Join(home, "sessions", "2026", "09", "02")
+	now := time.Now()
+	dir := filepath.Join(home, "sessions", now.Format("2006"), now.Format("01"), now.Format("02"))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -706,7 +708,7 @@ func TestCodexWatchRolloutMatchesCwdAndOriginator(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		name := filepath.Join(dir, "rollout-2026-09-02T08-00-00-"+id+".jsonl")
+		name := filepath.Join(dir, "rollout-"+now.Format("2006-01-02")+"T08-00-00-"+id+".jsonl")
 		if err := os.WriteFile(name, append(meta, '\n'), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -899,7 +901,8 @@ func TestDiscoverySkipsIdsAnotherSessionHolds(t *testing.T) {
 	// The same for Codex, over real rollout files in one directory.
 	l := newLab(t)
 	home := codexHome()
-	dir := filepath.Join(home, "sessions", "2026", "09", "02")
+	now := time.Now()
+	dir := filepath.Join(home, "sessions", now.Format("2006"), now.Format("01"), now.Format("02"))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -912,7 +915,7 @@ func TestDiscoverySkipsIdsAnotherSessionHolds(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, "rollout-2026-09-02T08-00-00-"+id+".jsonl"), append(meta, '\n'), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "rollout-"+now.Format("2006-01-02")+"T08-00-00-"+id+".jsonl"), append(meta, '\n'), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}

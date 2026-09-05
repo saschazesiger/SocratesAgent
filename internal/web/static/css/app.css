@@ -573,6 +573,24 @@ a { color: inherit; }
   white-space: nowrap;
 }
 
+.usage-strip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-soft);
+  font: 11.5px/1 var(--mono);
+  white-space: nowrap;
+}
+.usage-part { display: inline-flex; gap: 3px; }
+.usage-part + .usage-part::before { content: "·"; color: var(--text-faint); margin-right: 4px; }
+.usage-label { color: var(--text-faint); }
+.usage-cost { color: var(--text); }
+
 /* What this session runs: the harness's mark, the model, and everything else
    behind the "i". It is not a control - a session is bound to its program for
    its whole life - so it is the quietest thing in the bar that is still
@@ -1153,6 +1171,24 @@ a { color: inherit; }
      the ring down to fit "Speak" would lose the half that matters. */
   .topbar .pill { padding: 0; width: 44px; }
   .topbar .pill .pill-text { display: none; }
+}
+
+/* On a phone the same compact reading gets a quiet second line. The existing
+   controls keep their full tap targets and the terminal is fitted to the
+   slightly shorter stage, so neither can overflow the other. */
+@container (max-width: 700px) {
+  .topbar.has-usage { height: 82px; padding-bottom: 26px; }
+  .topbar.has-usage .usage-strip {
+    position: absolute;
+    left: calc(10px + env(safe-area-inset-left, 0px));
+    right: calc(10px + env(safe-area-inset-right, 0px));
+    bottom: 3px;
+    justify-content: center;
+    height: 24px;
+    border: 0;
+    padding: 0;
+    overflow: hidden;
+  }
 }
 /* Narrower than this the title has room for one letter and an ellipsis that
    does not fit, which reads as a glitch rather than as a name. It keeps its

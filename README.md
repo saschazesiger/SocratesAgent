@@ -66,6 +66,9 @@ password guards the lot.
   an answer, a chime plays and the browser puts up a notification — including
   for the session you are not looking at. Two toggles in the header, one for the
   sound and one for the notifications, remembered on this device.
+- **Quota where the work is.** Claude Code sessions show the account's 5-hour,
+  weekly and Fable-weekly usage in the header; Codex sessions show its weekly
+  window. Both also show the current conversation's API-equivalent cost.
 - **Reachable from anywhere, without opening a port.** A managed Cloudflare
   tunnel publishes the local server: a throwaway `trycloudflare.com` address in
   one click, or your own hostname with a tunnel token. `cloudflared` is
