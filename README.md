@@ -68,7 +68,8 @@ password guards the lot.
   sound and one for the notifications, remembered on this device.
 - **Quota where the work is.** Claude Code sessions show the account's 5-hour,
   weekly and Fable-weekly usage in the header; Codex sessions show its weekly
-  window. Both also show the current conversation's API-equivalent cost.
+  window. Every harness also shows the current conversation's estimated
+  API-equivalent cost (zero for Shell).
 - **Reachable from anywhere, without opening a port.** A managed Cloudflare
   tunnel publishes the local server: a throwaway `trycloudflare.com` address in
   one click, or your own hostname with a tunnel token. `cloudflared` is

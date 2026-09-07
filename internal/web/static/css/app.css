@@ -552,8 +552,8 @@ a { color: inherit; }
   flex: none;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 0 18px;
+  gap: 0;
+  padding: 0 10px;
   position: relative;
   border-bottom: 1px solid var(--line);
   background: var(--bg);
@@ -571,20 +571,41 @@ a { color: inherit; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  padding: 0 14px;
 }
 
 .usage-strip {
+  position: relative;
   flex: none;
   display: flex;
   align-items: center;
   gap: 7px;
-  height: 26px;
-  padding: 0 9px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
+  align-self: stretch;
+  padding: 0 13px;
   color: var(--text-soft);
   font: 11.5px/1 var(--mono);
   white-space: nowrap;
+}
+.usage-strip::before,
+.topbar > .icon-btn::before,
+.topbar > .pill::before,
+.term-size::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 1px;
+  background: var(--line);
+}
+.menu-btn::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 1px;
+  background: var(--line);
 }
 .usage-part { display: inline-flex; gap: 3px; }
 .usage-part + .usage-part::before { content: "·"; color: var(--text-faint); margin-right: 4px; }
@@ -606,22 +627,36 @@ a { color: inherit; }
   display: flex;
   align-items: center;
   gap: 6px;
-  height: 28px;
+  align-self: stretch;
   font-size: 12px;
   color: var(--text-soft);
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 0 10px 0 7px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 0 12px 0 8px;
   white-space: nowrap;
   cursor: default;
-  transition: border-color .16s var(--ease), box-shadow .16s var(--ease);
 }
-.agent-badge:hover { border-color: var(--line-strong); }
 .agent-badge > span:not(.tip) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .agent-badge > .agent-mark { flex: none; }
 .agent-badge > .tip { flex: none; }
 .menu-btn { display: none; }
+
+/* Each action owns one full-height cell. The line is attached to the visible
+   control itself, so hidden session actions leave no orphaned separator. */
+.topbar > .icon-btn {
+  width: 46px;
+  height: 55px;
+  border-radius: 0;
+}
+.topbar > .pill {
+  position: relative;
+  min-height: 0;
+  height: 55px;
+  border: 0;
+  border-radius: 0;
+  padding: 0 14px;
+}
 
 
 /* --------------------------------------------------------------- modal */
@@ -1097,7 +1132,6 @@ a { color: inherit; }
   body.nav-open .nav-scrim { opacity: 1; pointer-events: auto; }
   .menu-btn { display: inline-flex; }
   .topbar {
-    gap: 8px;
     padding: 0
              calc(12px + env(safe-area-inset-right, 0px))
              0
@@ -1152,7 +1186,6 @@ a { color: inherit; }
    in two steps rather than spilling off the edge. */
 @container (max-width: 440px) {
   .topbar {
-    gap: 6px;
     padding: 0
              calc(10px + env(safe-area-inset-right, 0px))
              0
@@ -1163,14 +1196,13 @@ a { color: inherit; }
      still in the bubble under a tap. With Status and the microphone in the bar
      the caption goes at this width rather than at 380, because a model id
      squeezed to one letter is not a caption. */
-  .agent-badge { max-width: 40%; gap: 5px; padding: 0 5px; }
+  .agent-badge { max-width: 40%; gap: 5px; padding: 0 8px; }
   .agent-badge > .b-model { display: none; }
   .term-size { display: none; }
-  /* The microphone gives up its word rather than its size. What makes it
-     findable by a thumb is the 44px, not the label, and a bar that squeezed
-     the ring down to fit "Speak" would lose the half that matters. */
-  .topbar .pill { padding: 0; width: 44px; }
+  /* The microphone gives up its word before its touch area. */
+  .topbar .pill { padding: 0; width: 40px; }
   .topbar .pill .pill-text { display: none; }
+  .topbar > .icon-btn { width: 36px; }
 }
 
 /* On a phone the same compact reading gets a quiet second line. The existing
@@ -1189,6 +1221,7 @@ a { color: inherit; }
     padding: 0;
     overflow: hidden;
   }
+  .topbar.has-usage .usage-strip::before { display: none; }
 }
 /* Narrower than this the title has room for one letter and an ellipsis that
    does not fit, which reads as a glitch rather than as a name. It keeps its
@@ -1203,13 +1236,12 @@ a { color: inherit; }
 @container (max-width: 380px) {
   /* Narrower still: the controls give up the last of their spacing. */
   .topbar {
-    gap: 5px;
     padding: 0
              calc(8px + env(safe-area-inset-right, 0px))
              0
              calc(8px + env(safe-area-inset-left, 0px));
   }
-  .topbar .icon-btn { width: 32px; height: 32px; }
+  .topbar > .icon-btn { width: 34px; }
 }
 
 /* ------------------------------------------------------------- terminal */
@@ -1262,6 +1294,11 @@ a { color: inherit; }
 /* The size the pane is wearing. It is a number, so it is quiet, and it is
    beside the name rather than inside it. */
 .term-size {
+  position: relative;
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 11px;
   flex: none;
   font-size: 11.5px;
   font-variant-numeric: tabular-nums;
@@ -1505,10 +1542,8 @@ body.stale .icon-btn.working::after { animation-play-state: paused; opacity: .4;
 }
 .stage .term-wrap { min-width: 0; }
 
-/* The microphone, in the top bar. Outlined rather than filled, because it is
-   the one control in that row that carries a word and a filled one would
-   outshout the name of the session beside it. Big enough to be hit by a thumb
-   that is driving, which is the whole reason it is not an icon. */
+/* The microphone carries a word at a desk and uses the same borderless action
+   cell as every icon beside it. */
 .pill {
   flex: none;
   display: inline-flex;
@@ -1517,8 +1552,8 @@ body.stale .icon-btn.working::after { animation-play-state: paused; opacity: .4;
   gap: 7px;
   min-height: 44px;
   padding: 0 16px;
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
+  border: 0;
+  border-radius: 9px;
   background: var(--bg);
   color: var(--text);
   font: inherit;
@@ -1526,10 +1561,10 @@ body.stale .icon-btn.working::after { animation-play-state: paused; opacity: .4;
   font-weight: 540;
   letter-spacing: -.01em;
   cursor: pointer;
-  transition: background .16s var(--ease), border-color .16s var(--ease), transform .16s var(--ease);
+  transition: background .16s var(--ease), transform .16s var(--ease);
 }
 .pill .ico { width: 17px; height: 17px; flex: none; }
-.pill:hover:not(:disabled) { background: var(--bg-hover); border-color: #cfd0d5; }
+.pill:hover:not(:disabled) { background: var(--bg-hover); }
 .pill:active:not(:disabled) { transform: scale(.985); }
 .pill:disabled { opacity: .45; cursor: not-allowed; }
 /* The recording sheet: what the microphone is hearing, how long it has been

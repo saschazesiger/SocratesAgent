@@ -1209,7 +1209,7 @@ function stopUsage() {
 
 function startUsage(session) {
   stopUsage();
-  if (!session || (session.harness !== 'claude' && session.harness !== 'codex')) return;
+  if (!session) return;
   const generation = state.usageGeneration;
   const refresh = async () => {
     try {
@@ -1242,9 +1242,9 @@ function drawUsage(usage) {
   }
   if (Number.isFinite(usage && usage.cost_usd)) {
     const value = Number(usage.cost_usd);
-    const shown = value < .01 ? '<$0.01' : '$' + value.toFixed(2);
-    parts.push(el('span', { class: 'usage-part usage-cost', text: (usage.cost_estimated ? '~' : '') + shown }));
-    details.push('Session API-equivalent cost: ' + (usage.cost_estimated ? 'about ' : '') + '$' + value.toFixed(4));
+    const shown = value > 0 && value < .01 ? '<$0.01' : '$' + value.toFixed(2);
+    parts.push(el('span', { class: 'usage-part usage-cost', text: '~' + shown }));
+    details.push('Estimated session API-equivalent cost: $' + value.toFixed(4));
   }
   dom.sessionUsage.innerHTML = '';
   dom.sessionUsage.append(...parts);

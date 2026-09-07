@@ -73,9 +73,8 @@
            Enter or leaving it commits. -->
       <div class="title" id="sessionTitle">Socrates</div>
       <span class="tag" id="sessionArchived" hidden>Archived</span>
-      <!-- Account limits and this conversation's API-equivalent cost. The
-           compact line stays in the header; exact reset times live in its
-           native tooltip so the bar does not become a dashboard. -->
+      <!-- Account limits and this conversation's estimated API-equivalent
+           cost. Exact reset times live in the native tooltip. -->
       <div class="usage-strip" id="sessionUsage" hidden></div>
       <!-- The size the pane is actually wearing. It is two numbers and a
            cross, quiet enough to sit beside the name, and it is hidden
@@ -91,11 +90,8 @@
       <button class="icon-btn" id="statusBtn" title="Summarize this session" aria-label="Summarize this session" hidden>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="13.5" height="12" rx="2"/><path d="M5.2 10.4h7M5.2 13.6h4"/><path d="M17.6 9.4a4 4 0 0 1 0 5.2"/><path d="M20.4 7.2a7.5 7.5 0 0 1 0 9.6"/></svg>
       </button>
-      <!-- Speaking into the session. It is a pill rather than an icon because
-           it is the control this app is used with: a thumb in a car finds a
-           word and 44px of border, and does not find a 20px glyph between two
-           other glyphs. On a bar too narrow for the word, the word is what
-           goes and the ring stays. -->
+      <!-- Speaking into the session. It keeps its word and a generous touch
+           area at a desk; on a narrow bar the word gives way before the icon. -->
       <button class="pill" id="micBtn" type="button" title="Speak" aria-label="Speak" hidden>
         <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
         <span class="pill-text" id="micText">Speak</span>

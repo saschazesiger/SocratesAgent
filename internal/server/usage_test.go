@@ -3,11 +3,16 @@ package server
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
+
+	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
 )
 
 func TestClaudeLimitsAndSessionCost(t *testing.T) {
@@ -79,5 +84,41 @@ func TestLastJSONIgnoresPartialFirstLine(t *testing.T) {
 	}
 	if !lastJSON(path, func(line []byte) bool { return string(line) == `{"wanted":true}` }) {
 		t.Fatal("did not find final complete line")
+	}
+}
+
+func TestOpenCodeSessionCostUsesItsAuthenticatedSessionAPI(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, password, ok := r.BasicAuth()
+		if !ok || user != "agent" || password != "secret" {
+			t.Errorf("basic auth = %q, %q, %v", user, password, ok)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if r.URL.Path != "/session/ses_one" || r.URL.Query().Get("directory") != "/work tree" {
+			t.Errorf("request URL = %s", r.URL.String())
+			http.Error(w, "bad URL", http.StatusBadRequest)
+			return
+		}
+		fmt.Fprint(w, `{"id":"ses_one","cost":2.3456}`)
+	}))
+	defer api.Close()
+	u, err := url.Parse(api.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, portText, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cost := openCodeSessionCost(context.Background(), api.Client(), harnesses.ServerAccess{
+		Port: port, Username: "agent", Password: "secret",
+	}, "ses_one", "/work tree")
+	if cost == nil || *cost != 2.3456 {
+		t.Fatalf("cost = %v", cost)
 	}
 }

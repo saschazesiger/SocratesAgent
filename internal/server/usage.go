@@ -10,8 +10,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,9 +38,8 @@ type usageLimits struct {
 }
 
 type sessionUsageView struct {
-	Windows       []usageWindow `json:"windows,omitempty"`
-	CostUSD       *float64      `json:"cost_usd,omitempty"`
-	CostEstimated bool          `json:"cost_estimated,omitempty"`
+	Windows []usageWindow `json:"windows,omitempty"`
+	CostUSD *float64      `json:"cost_usd,omitempty"`
 }
 
 func (s *Server) handleSessionUsage(w http.ResponseWriter, r *http.Request) {
@@ -60,7 +61,13 @@ func (s *Server) handleSessionUsage(w http.ResponseWriter, r *http.Request) {
 	case "codex":
 		path := codexRollout(row.CLISessionID)
 		view.Windows, view.CostUSD = codexUsage(path, row.Model)
-		view.CostEstimated = view.CostUSD != nil
+	case "opencode":
+		if access, ok := s.manager.OpenCodeAccessOf(row.ID); ok {
+			view.CostUSD = openCodeSessionCost(r.Context(), s.usageHTTP, access, row.CLISessionID, row.Workdir)
+		}
+	case "shell":
+		zero := 0.0
+		view.CostUSD = &zero
 	}
 	writeJSON(w, http.StatusOK, view)
 }
@@ -276,6 +283,36 @@ func codexUsage(path, model string) ([]usageWindow, *float64) {
 	plain := max(0, u.Input-u.Cached-u.CacheWrite)
 	cost := (plain*price.Input + u.Cached*price.Cached + u.CacheWrite*price.CacheWrite + u.Output*price.Output) / 1e6
 	return windows, &cost
+}
+
+func openCodeSessionCost(ctx context.Context, client *http.Client, access harnesses.ServerAccess, id, directory string) *float64 {
+	if client == nil || access.Port <= 0 || id == "" {
+		return nil
+	}
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d/session/%s", access.Port, neturl.PathEscape(id))
+	if directory != "" {
+		endpoint += "?directory=" + neturl.QueryEscape(directory)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil
+	}
+	req.SetBasicAuth(access.Username, access.Password)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	var session struct {
+		Cost *float64 `json:"cost"`
+	}
+	if json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&session) != nil {
+		return nil
+	}
+	return session.Cost
 }
 
 type codexWindow struct {

@@ -385,6 +385,22 @@ func (s *sessionState) startOpenCode(args []string) error {
 	mux.HandleFunc("/permission", authed(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, s.pendingPermissions())
 	}))
+	// Session details carry the running cost in current OpenCode, which is the
+	// value Socrates mirrors into the header. A fixed non-zero number makes the
+	// browser scenario prove both the authenticated endpoint and its rendering.
+	mux.HandleFunc("/session/", authed(func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/session/")
+		exists, err := openCodeHasSession(id)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !exists {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, map[string]any{"id": id, "directory": s.cwd, "cost": 1.25})
+	}))
 	mux.HandleFunc("/session", authed(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			id := newOpenCodeID()

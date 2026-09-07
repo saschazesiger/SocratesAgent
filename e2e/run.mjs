@@ -2201,7 +2201,32 @@ async function createopencode() {
     const conversation = await conversationOf(s.page);
     ok(/^ses_/.test(conversation), 'which is the session the program itself is in',
       conversation || 'none');
+    await s.page.waitForFunction(() => document.getElementById('sessionUsage')?.innerText.includes('~$1.25'),
+      null, { timeout: 20000 });
+    const cost = await s.page.$eval('#sessionUsage', (node) => node.innerText.trim());
+    ok(cost.includes('~$1.25'), 'its estimated cost is in the header', cost);
     await shot(s.page, 'createopencode');
+
+    await s.page.setViewportSize({ width: 390, height: 844 });
+    await wait(300);
+    const mobileHeader = await s.page.evaluate(() => {
+      const bar = document.querySelector('.topbar');
+      const speak = document.getElementById('micBtn');
+      const status = document.getElementById('statusBtn');
+      return {
+        height: Math.round(bar.getBoundingClientRect().height),
+        usage: document.getElementById('sessionUsage').innerText.trim(),
+        speakBorder: getComputedStyle(speak).borderTopWidth,
+        separator: getComputedStyle(status, '::before').width,
+        overflow: document.documentElement.scrollWidth - innerWidth,
+      };
+    });
+    ok(mobileHeader.usage.includes('~$1.25') && mobileHeader.height === 82,
+      'the borderless usage line stays visible in the narrow header', JSON.stringify(mobileHeader));
+    ok(mobileHeader.speakBorder === '0px' && mobileHeader.separator === '1px' && mobileHeader.overflow <= 0,
+      'header actions use separators without overflowing', JSON.stringify(mobileHeader));
+    await shot(s.page, 'createopencode-phone');
+    await s.page.setViewportSize({ width: 1280, height: 720 });
 
     const before = await endAndRestart(s, 'opencode', 0);
     ok(await awaitScreen(s.page, 'FAKE opencode', 25000), 'Restart brought OpenCode back',
