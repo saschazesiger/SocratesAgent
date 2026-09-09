@@ -41,9 +41,9 @@ const journalDownloadMax = 16 << 20
 //	GET    /api/sessions/{id}       {"session":<session>}
 //	PATCH  /api/sessions/{id}       {"session":<session>}
 //	DELETE /api/sessions/{id}       {"ok":true,"workdir":"…","workdir_kept":true}
-//	POST   …/archive, …/resume,
-//	       …/restart, …/ack-resume,
-//	       …/read                   {"session":<session>}
+//	POST   …/archive, …/flag,
+//	       …/resume, …/restart,
+//	       …/ack-resume, …/read     {"session":<session>}
 //	                                409 {"error":"…"} when a restart was asked
 //	                                    for on a session that is still running
 //	GET    …/journal                the raw bytes, as an attachment
@@ -343,6 +343,27 @@ func (s *Server) handleArchiveSession(w http.ResponseWriter, r *http.Request) {
 	// Archiving does not touch tmux. An archived session keeps running, which
 	// is the point of it: it is put away, not stopped.
 	if err := s.store.SetSessionArchived(row.ID, body.Archived); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.answerWithSession(w, row.ID)
+}
+
+// handleFlagSession raises or lowers the flag on a session. A flag is a mark
+// the person puts on a row to find it again; it moves nothing and stops
+// nothing.
+func (s *Server) handleFlagSession(w http.ResponseWriter, r *http.Request) {
+	row, ok := s.session(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Flagged bool `json:"flagged"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	if err := s.store.SetSessionFlagged(row.ID, body.Flagged); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

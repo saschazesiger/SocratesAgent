@@ -556,6 +556,97 @@ async function harnesses() {
 // What a row can do to a session: rename it, put it away, take it back out,
 // and delete it - which is the only thing in Socrates that kills a tmux
 // session, and which keeps the working directory.
+// Exercise real popup geometry and font measurements independently of the
+// fonts installed in the host browser. This is not a Tesla firmware emulator.
+async function browserlayout() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    const id = await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm');
+    const row = '#sessionList .chat-item[data-id="' + id + '"]';
+    const geometry = () => s.page.evaluate((sel) => {
+      const box = document.querySelector(sel + ' .act').getBoundingClientRect();
+      const menu = document.querySelector('.menu');
+      const rect = menu.getBoundingClientRect();
+      return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right,
+        anchorTop: box.top, anchorBottom: box.bottom, height: innerHeight, width: innerWidth,
+        scrollable: menu.scrollHeight > menu.clientHeight };
+    }, row);
+    await s.page.click(row + ' .act');
+    await wait(180);
+    let g = await geometry();
+    ok(g.top >= g.anchorBottom && g.bottom <= g.height - 9,
+      'an upper row opens downwards inside the viewport', JSON.stringify(g));
+    await s.page.mouse.click(750, 75);
+    await s.page.$eval(row, (node) => {
+      node.style.marginTop = (document.querySelector('#sessionList').clientHeight - node.offsetHeight - 40) + 'px';
+    });
+    await s.page.click(row + ' .act');
+    await wait(180);
+    g = await geometry();
+    ok(g.bottom <= g.anchorTop && g.top >= 10,
+      'a lower row opens upwards inside the viewport', JSON.stringify(g));
+    await s.page.setViewportSize({ width: 800, height: 240 });
+    await s.page.$eval(row, (node) => { node.style.marginTop = '0px'; });
+    await wait(200);
+    g = await geometry();
+    ok(g.top >= 9 && g.bottom <= g.height - 9 && g.left >= 9 && g.right <= g.width - 9 && g.scrollable,
+      'an open menu stays visible and scrollable in a short viewport', JSON.stringify(g));
+    await s.page.$eval('.menu', (node) => { node.scrollTop = node.scrollHeight; });
+    await wait(100);
+    const scrolled = await s.page.$eval('.menu', (node) => node.scrollTop > 0
+      && node.lastElementChild.getBoundingClientRect().bottom <= node.getBoundingClientRect().bottom);
+    ok(scrolled, 'the last menu action remains reachable by scrolling', String(scrolled));
+    await s.page.mouse.click(750, 75);
+    await s.page.setViewportSize({ width: 1280, height: 720 });
+
+    // Delay both webfonts on reload: the existing session must only attach
+    // after loading, otherwise xterm measures the system fallback first.
+    await s.page.evaluate(async () => {
+      for (const registration of await navigator.serviceWorker.getRegistrations()) await registration.unregister();
+    });
+    let fontResponses = 0;
+    await s.page.route('**/*.woff2*', async (route) => {
+      await wait(400);
+      await route.continue();
+      fontResponses++;
+    });
+    await s.page.reload({ waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#term .xterm');
+    const fonts = await s.page.evaluate(async () => {
+      const url = document.querySelector('script[type="module"]').src.replace('session.js', 'term.js');
+      const { createTerm, measurePane } = await import(url);
+      const host = document.createElement('div');
+      host.style.cssText = 'position:fixed;width:600px;height:300px;top:0;left:0';
+      document.body.append(host);
+      const results = [];
+      for (const webgl of [false, true]) {
+        const initial = measurePane(host, { webgl });
+        const pane = createTerm(host, { webgl });
+        const ctx = document.createElement('canvas').getContext('2d');
+        ctx.font = '14px ' + pane.term.options.fontFamily;
+        const widths = [...'iWm0 .'].map((ch) => ctx.measureText(ch).width);
+        results.push({ family: pane.term.options.fontFamily, widths,
+          cell: pane.term._core._renderService.dimensions.css.cell.width,
+          sameSize: initial.cols === pane.term.cols && initial.rows === pane.term.rows });
+        pane.dispose();
+      }
+      host.remove();
+      return results;
+    });
+    ok(fontResponses === 2 && fonts.every((f) => f.family.startsWith('"Source Code Pro"') && f.sameSize
+      && Math.max(...f.widths) - Math.min(...f.widths) < 0.01 && Math.abs(f.cell - f.widths[0]) < 1),
+      'delayed local fonts give DOM and WebGL matching monospaced cells and initial sizes', JSON.stringify({ fontResponses, fonts }));
+    await typeLine(s.page, 'echo font-layout-ok');
+    ok(await awaitScreen(s.page, 'font-layout-ok'), 'the terminal still accepts input after reload', 'font-layout-ok');
+    await shot(s.page, 'browserlayout');
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 async function sessionlist() {
   const s = await start({ viewport: { width: 1280, height: 720 } });
   try {
@@ -585,6 +676,34 @@ async function sessionlist() {
     ok(named === 'Renamed by the suite', 'the new name is in the row and in the header', named);
     const stored = await (await s.context.request.get(s.url + '/api/sessions/' + id)).json();
     ok(stored.session.title === 'Renamed by the suite', 'the rename was stored', stored.session.title);
+
+    // Flag: a mark in front of the name, in the row and in the header, that
+    // the same menu takes away again.
+    const flagShown = (sel) => s.page.evaluate((sel) => {
+      const row = document.querySelector(sel);
+      const shown = (node) => !!node && !node.hidden && getComputedStyle(node).display !== 'none';
+      return {
+        row: !!row && row.classList.contains('flagged') && shown(row.querySelector('.row-flag')),
+        head: shown(document.getElementById('sessionFlag')),
+        before: !!row && row.querySelector('.row-flag').nextElementSibling === row.querySelector('.label'),
+      };
+    }, sel);
+    const unflagged = await flagShown(rowSelector);
+    ok(!unflagged.row && !unflagged.head, 'a session is born without a flag', JSON.stringify(unflagged));
+    await menu('Flag');
+    await s.page.waitForFunction((sel) => document.querySelector(sel)?.classList.contains('flagged'),
+      rowSelector, { timeout: 8000 });
+    const flagged = await flagShown(rowSelector);
+    ok(flagged.row && flagged.head && flagged.before,
+      'Flag puts a flag in front of the name in the row and in the header', JSON.stringify(flagged));
+    await shot(s.page, 'sessionlist-flagged');
+    const flaggedStored = await (await s.context.request.get(s.url + '/api/sessions/' + id)).json();
+    ok(flaggedStored.session.flagged === true, 'the flag was stored', String(flaggedStored.session.flagged));
+    await menu('Remove flag');
+    await s.page.waitForFunction((sel) => !document.querySelector(sel)?.classList.contains('flagged'),
+      rowSelector, { timeout: 8000 });
+    const cleared = await flagShown(rowSelector);
+    ok(!cleared.row && !cleared.head, 'Remove flag takes it away again, in both places', JSON.stringify(cleared));
 
     // Archive: it goes out of the active list and keeps running.
     await menu('Archive');
@@ -4631,17 +4750,17 @@ async function typekeepsfocus() {
 
 // backdate rewrites when a session was last used.
 //
-// There is no API for it and there should not be: `updated_at` is the store's
-// own record of things that happened to a session, not something a client gets
-// to choose. So the scenario writes the two columns itself, with node's own
-// SQLite against the same file the server has open, which is the smallest
+// There is no API for it and there should not be: `active_at` is the store's
+// own record of when a session's status last changed, not something a client
+// gets to choose. So the scenario writes the three clocks itself, with node's
+// own SQLite against the same file the server has open, which is the smallest
 // thing that can produce a "last month".
 function backdate(s, moments) {
   const db = new DatabaseSync(join(s.data, 'socrates.db'), { timeout: 10000 });
   try {
-    const set = db.prepare('UPDATE sessions SET updated_at = ?, created_at = ? WHERE id = ?');
+    const set = db.prepare('UPDATE sessions SET active_at = ?, updated_at = ?, created_at = ? WHERE id = ?');
     for (const [id, at] of Object.entries(moments)) {
-      const done = set.run(at, at, id);
+      const done = set.run(at, at, at, id);
       if (Number(done.changes) !== 1) throw new Error('no session ' + id + ' to backdate');
     }
   } finally { db.close(); }
@@ -4747,7 +4866,11 @@ async function daygroups() {
           ['the last of the month before', at(2026, 7, 31)],
           ['a row with no timestamp at all', 0],
         ].map(([what, ts]) => what + ': ' + day.bucketOf(ts, now)).join(' | '),
-        moment: day.momentOf({ updated_at: 7, created_at: 3 }) + ',' + day.momentOf({ created_at: 3 }),
+        moment: day.momentOf({ active_at: 9, updated_at: 7, created_at: 3 }) + ','
+          + day.momentOf({ updated_at: 7, created_at: 3 }) + ',' + day.momentOf({ created_at: 3 }),
+        moves: [['idle', 'busy'], ['busy', 'idle'], ['busy', 'waiting'], ['idle', 'waiting'],
+          ['unknown', 'idle'], ['waiting', 'idle'], ['busy', 'busy'], ['', 'idle']]
+          .map(([from, to]) => (from || 'nothing') + '>' + to + '=' + day.movesRow(from, to)).join(' '),
       };
     });
     ok(calendar.groups === 'today=Today | yesterday=Yesterday | week=This week'
@@ -4759,8 +4882,12 @@ async function daygroups() {
       + ' | the first of this month: month | the last of the month before: older'
       + ' | a row with no timestamp at all: older',
       'and every boundary of the local calendar is where a person would put it', calendar.said);
-    ok(calendar.moment === '7,3', 'a session is grouped by its last use, and by its creation if it has none',
+    ok(calendar.moment === '9,7,3',
+      'a session is grouped by its last status change, by its last write from an older server, else by its creation',
       calendar.moment);
+    ok(calendar.moves === 'idle>busy=true busy>idle=true busy>waiting=true idle>waiting=true'
+      + ' unknown>idle=false waiting>idle=false busy>busy=false nothing>idle=false',
+      'starting, finishing and needing an answer move a row; a detector catching up does not', calendar.moves);
 
     const plan = dayPlan();
     const create = async (title) => {
@@ -4842,16 +4969,46 @@ async function daygroups() {
       'and every header and row that was already there survived the re-render',
       kept.length + ' of ' + before.size + ' elements kept');
 
-    // A rename is a use, so the row moves to Today - taking its element with
-    // it, and leaving no empty header behind.
-    await stampAll(s.page);
+    // Opening a session to read it is not a status change, and neither is a
+    // rename: the row stays under the day it was, in the place it was. This
+    // is the complaint the ordering exists for - a row that jumped to the
+    // top for being looked at.
+    const olderRow = '#sessionList .chat-item[data-id="' + ids.older + '"]';
+    const unmoved = all.filter((n) => n.id).map((n) => n.id).join(',');
+    await s.page.click(olderRow);
+    await s.page.waitForFunction((sel) => document.querySelector(sel)?.classList.contains('active'),
+      olderRow, { timeout: 15000 });
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
     const renamed = 'Group older, used again';
     await s.context.request.patch(s.url + '/api/sessions/' + ids.older, { data: { title: renamed } });
     // A wake is how the page is told to look again: the same event a phone
-    // sends when it comes back.
+    // sends when it comes back - and it fetches the list from the server, so
+    // the order asserted here is the server's as much as the page's.
     await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
     await s.page.waitForFunction((want) => [...document.querySelectorAll('#sessionList .chat-item .label')]
       .some((n) => n.textContent === want), renamed, { timeout: 20000 });
+    const read = await listing(s.page);
+    ok(read.filter((n) => n.id).map((n) => n.id).join(',') === unmoved && under(read).get(renamed) === 'Older',
+      'opening a session and renaming it leave the row where it was, under the day it was',
+      under(read).get(renamed) + ', order unchanged: ' + (read.filter((n) => n.id).map((n) => n.id).join(',') === unmoved));
+
+    // The shell ending is a status change, so now the row moves to Today -
+    // taking its element with it, and leaving no empty header behind.
+    await stampAll(s.page);
+    // The pane is proven to be taking keystrokes before the one that ends it
+    // is typed: a shell that has not drawn its prompt yet would swallow it.
+    await typeLine(s.page, 'echo about-to-exit');
+    ok(await awaitScreen(s.page, 'about-to-exit'), 'the opened session takes keystrokes', 'about-to-exit');
+    await typeLine(s.page, 'exit');
+    await s.page.waitForFunction(({ sel, want }) => {
+      const first = document.querySelector('#sessionList .chat-item');
+      return !!first && first.matches(sel) && first.querySelector('.label').textContent === want;
+    }, { sel: olderRow, want: renamed }, { timeout: 30000 }).catch(async (err) => {
+      const shown = await listing(s.page);
+      const row = await (await s.context.request.get(s.url + '/api/sessions/' + ids.older)).json();
+      throw new Error(err.message + ' - list: ' + shown.map((n) => n.group || n.row).join(' | ')
+        + ' - session: ' + row.session.state + ' active_at ' + row.session.active_at);
+    });
     const moved = await listing(s.page);
     const movedRow = moved.find((n) => n.id === ids.older);
     ok(!!movedRow && movedRow.stamp === ids.older,
@@ -4859,7 +5016,12 @@ async function daygroups() {
       movedRow ? movedRow.stamp || 'a new row' : 'gone');
     const first = moved.filter((n) => n.id)[0] || {};
     ok(under(moved).get(renamed) === 'Today' && first.id === ids.older,
-      'and it is the newest row of Today', under(moved).get(renamed) + ', row 1 of the list');
+      'and, its status having changed, it is the newest row of Today', under(moved).get(renamed) + ', row 1 of the list');
+    // The server agrees, so the next fetch of the list draws the same thing.
+    const relisted = await (await s.context.request.get(s.url + '/api/sessions')).json();
+    ok((relisted.sessions || [])[0]?.id === ids.older && relisted.sessions[0].state === 'exited',
+      'the server lists it first too, and it is the ending that moved it',
+      ((relisted.sessions || [])[0] || {}).state + ', row 1 of the server\'s list');
     const movedHeads = moved.filter((n) => n.group).map((n) => n.group);
     ok(movedHeads.join(' | ') === plan.map((g) => g.label).filter((label) => label !== 'Older').join(' | '),
       'the day it left is gone with it, and the rest of the headers are unchanged',
@@ -5316,7 +5478,8 @@ const keyboardable = (page) => page.evaluate(() => {
     filled: btn.classList.contains('on'),
     label: btn.getAttribute('aria-label'),
     stored: (() => { try { return localStorage.getItem('socrates.handsfree'); } catch { return 'blocked'; } })(),
-    pane: muted(pane),
+    pane: muted(pane) && !!pane && pane.readOnly,
+    paneOpen: !!pane && !muted(pane) && !pane.readOnly,
     fields: [...document.querySelectorAll('input.input')]
       .filter((n) => n.checkVisibility && n.checkVisibility())
       .map((n) => ({ id: n.id || n.className, muted: muted(n), readonly: n.readOnly })),
@@ -5378,9 +5541,9 @@ async function handsfree() {
     // Off until it is asked for, like every other mode this app has. Nothing
     // is muted, and the key bar is where this device left it.
     const off = await keyboardable(s.page);
-    ok(off.armed === 'false' && !off.filled && !off.pane,
+    ok(off.armed === 'false' && !off.filled && off.paneOpen,
       'the mode is off until it is armed, and nothing is muted while it is',
-      JSON.stringify({ armed: off.armed, filled: off.filled, pane: off.pane }));
+      JSON.stringify({ armed: off.armed, filled: off.filled, paneOpen: off.paneOpen }));
     ok(!off.keybar, 'and the key bar is still only there if this device asked for it',
       String(off.keybar));
 
@@ -5410,8 +5573,8 @@ async function handsfree() {
       JSON.stringify({ armed: on.armed, filled: on.filled, stored: on.stored }));
     ok(/keyboard/i.test(on.label || ''),
       'and it says what it does rather than what it is called', on.label);
-    ok(on.pane, 'the pane cannot raise the keyboard any more',
-      on.pane ? 'inputmode=none' : 'still an ordinary text field');
+    ok(on.pane, 'the pane cannot raise the keyboard any more: inputmode=none, and read-only for the phones that ignore it',
+      on.pane ? 'inputmode=none and readonly' : 'still an ordinary text field');
     ok(on.keybar && on.keyboardKey === false,
       'the key bar comes on because it is the only keyboard left, and its keyboard key stands down',
       'bar ' + on.keybar + ', keyboard key shown: ' + on.keyboardKey);
@@ -5428,7 +5591,7 @@ async function handsfree() {
       const node = document.activeElement;
       return {
         inPane: !!node && !!node.closest('#term'),
-        muted: !!node && node.getAttribute('inputmode') === 'none',
+        muted: !!node && node.getAttribute('inputmode') === 'none' && node.readOnly,
       };
     });
     ok(focused.inPane && focused.muted,
@@ -5515,9 +5678,9 @@ async function handsfree() {
     await s.page.click('#handsBtn');
     await wait(300);
     const done = await keyboardable(s.page);
-    ok(done.armed === 'false' && !done.pane && done.stored === 'off',
+    ok(done.armed === 'false' && done.paneOpen && done.stored === 'off',
       'and one more tap gives the keyboard back',
-      JSON.stringify({ armed: done.armed, pane: done.pane, stored: done.stored }));
+      JSON.stringify({ armed: done.armed, paneOpen: done.paneOpen, stored: done.stored }));
     ok(!done.keybar && done.keyboardKey === true,
       'the key bar goes back to what this device asked for, which was nothing, '
       + 'and its keyboard key is standing again',
@@ -5538,6 +5701,7 @@ const ALL = [
   ['reloadkeepsscreen', 'a reload keeps the screen and the input path', reloadkeepsscreen],
   ['pages', 'every page is clean at a phone and at a desk', pages],
   ['harnesses', 'all four session types start and are seen in the browser', harnesses],
+  ['browserlayout', 'popup placement and bundled terminal font metrics', browserlayout],
   ['sessionlist', 'rename, archive, unarchive and delete', sessionlist],
   ['daygroups', 'the list is grouped by day, and a row keeps its element when it moves', daygroups],
   ['exitoverlay', 'a pane that ends, its status under the sentence, and Restart', exitoverlay],

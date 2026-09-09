@@ -34,7 +34,33 @@ export const LIGHT_THEME = {
 // The stack the terminal is drawn in. xterm.js measures a character cell, so
 // it needs a resolved font list rather than a var() that means nothing to its
 // measuring canvas.
-const MONO = 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace';
+let MONO = 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace';
+
+// Both the initial pane measurement and the renderer must use loaded fonts.
+// Keep the system fallback for this visit if loading fails or stalls, so a
+// late font cannot change glyph widths underneath an existing terminal grid.
+export async function loadTerminalFonts() {
+  if (!document.fonts) return;
+  let timer;
+  try {
+    const loaded = await Promise.race([
+      Promise.all([400, 700].map((weight) => document.fonts.load(`${weight} 14px "Source Code Pro"`))),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(null), 8000); }),
+    ]);
+    if (loaded && loaded.every((faces) => faces.length > 0)) MONO = '"Source Code Pro", ' + MONO;
+  } catch { /* the system stack still lets the session open */ }
+  finally { clearTimeout(timer); }
+}
+
+function loadRenderer(term, opts) {
+  if (opts.webgl === false) return;
+  try {
+    const gl = new WebglAddon.WebglAddon();
+    // A lost context must be disposed of to fall back to the DOM renderer.
+    gl.onContextLoss(() => { gl.dispose(); });
+    term.loadAddon(gl);
+  } catch { /* 6.x falls back to the DOM renderer when WebGL is unavailable */ }
+}
 
 /** contrast is the WCAG ratio between two `#rrggbb` colours, 1 to 21. */
 export function contrast(a, b) {
@@ -85,6 +111,9 @@ export function measurePane(host, opts = {}) {
   let size = { cols: 0, rows: 0 };
   try {
     term.open(host);
+    // WebGL rounds cell widths to device pixels; measure with the renderer
+    // the live pane will use so creating it does not immediately reflow it.
+    loadRenderer(term, opts);
     fit.fit();
     size = { cols: term.cols, rows: term.rows };
   } catch { /* an unmeasurable pane leaves the choice to the server */ }
@@ -759,15 +788,7 @@ export function createTerm(host, opts = {}) {
   const unwireMouse = wireMouse(host, term, sel);
   const unwireTouch = wireTouch(host, term, sel);
 
-  if (opts.webgl !== false) {
-    try {
-      const gl = new WebglAddon.WebglAddon();
-      // iOS drops the WebGL context whenever the tab goes to the background,
-      // and a lost context that is not disposed of paints nothing at all.
-      gl.onContextLoss(() => { gl.dispose(); });
-      term.loadAddon(gl);
-    } catch { /* the DOM renderer; 6.x has no canvas renderer to fall back to */ }
-  }
+  loadRenderer(term, opts);
 
   // The hidden textarea is a text field like any other as far as a phone is
   // concerned, and a terminal is the one place autocorrect must never reach.
@@ -854,14 +875,28 @@ export function createTerm(host, opts = {}) {
      * from a real keyboard and keeps receiving pastes, so nothing about the
      * input path changes, and only the on-screen keyboard goes.
      *
-     * The attribute is read when a field takes the focus, not while it holds
-     * it, so a textarea that already has the keyboard up is blurred and given
-     * the focus straight back.
+     * `inputmode` is only a request, though, and a phone is free to ignore
+     * it - the ones this app is used on did, and raised the keyboard on every
+     * tap regardless. `readonly` is the fact no browser argues with: a
+     * read-only field takes the focus and never opens a keyboard. It costs
+     * nothing here, because xterm reads keys from `keydown` and pastes from
+     * the `paste` event, and both still arrive at a read-only textarea; only
+     * the `input` events of an on-screen keyboard stop, which is the point.
+     * The same two are put on every other field of the app (handsfree.js).
+     *
+     * Both are read when a field takes the focus, not while it holds it, so
+     * a textarea that already has the keyboard up is blurred and given the
+     * focus straight back.
      */
     screenKeyboard(allowed) {
       if (!term.textarea) return;
-      if (allowed) term.textarea.removeAttribute('inputmode');
-      else term.textarea.setAttribute('inputmode', 'none');
+      if (allowed) {
+        term.textarea.removeAttribute('inputmode');
+        term.textarea.readOnly = !!term.options.disableStdin;
+      } else {
+        term.textarea.setAttribute('inputmode', 'none');
+        term.textarea.readOnly = true;
+      }
       if (document.activeElement === term.textarea) {
         term.textarea.blur();
         term.focus();

@@ -29,7 +29,7 @@ var ErrNotFound = errors.New("not found")
 // records who named a session and is what keeps the automatic title from
 // running twice or overwriting a name the user chose. Version 5 sweeps out the
 // conversations of the chat that sat beside a terminal, which no longer exists.
-const SchemaVersion = 5
+const SchemaVersion = 6
 
 // Store wraps the database handle.
 type Store struct {
@@ -77,7 +77,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at     INTEGER NOT NULL,
   updated_at     INTEGER NOT NULL,
   last_attached  INTEGER NOT NULL DEFAULT 0,
-  archived_at    INTEGER NOT NULL DEFAULT 0
+  archived_at    INTEGER NOT NULL DEFAULT 0,
+  active_at      INTEGER NOT NULL DEFAULT 0,
+  flagged_at     INTEGER NOT NULL DEFAULT 0
 );
 -- The unique index on client_id is what makes creating a session safe to
 -- retry: the same key can only ever produce one session.
@@ -376,6 +378,8 @@ func backup(db *sql.DB, path string) error {
 func addSessionColumns(db *sql.DB) error {
 	for _, col := range [][2]string{
 		{"title_source", `TEXT NOT NULL DEFAULT ''`},
+		{"active_at", `INTEGER NOT NULL DEFAULT 0`},
+		{"flagged_at", `INTEGER NOT NULL DEFAULT 0`},
 	} {
 		has, err := hasColumn(db, "sessions", col[0])
 		if err != nil {
@@ -387,6 +391,17 @@ func addSessionColumns(db *sql.DB) error {
 		if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN ` + col[0] + ` ` + col[1]); err != nil {
 			return fmt.Errorf("add sessions.%s: %w", col[0], err)
 		}
+	}
+	// A row from before the list was ordered by status changes has no record
+	// of one, so the last thing that happened to it stands in: the order the
+	// upgrade shows is the order the build before it showed.
+	if _, err := db.Exec(`UPDATE sessions SET active_at = updated_at WHERE active_at = 0`); err != nil {
+		return fmt.Errorf("seed sessions.active_at: %w", err)
+	}
+	// The index is made here rather than in the schema because the schema runs
+	// first, against a table that may not have the column yet.
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_active ON sessions(active_at DESC)`); err != nil {
+		return fmt.Errorf("index sessions.active_at: %w", err)
 	}
 	return nil
 }

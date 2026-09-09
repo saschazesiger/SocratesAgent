@@ -28,6 +28,14 @@ is no third party code involved in it at all. What is still downloaded is
 `cloudflared`: `<data>/bin/cloudflared`, with `<data>` defaulting to
 `~/.socrates`, and `/usr/local/bin/cloudflared` in the Docker image.
 
+## Shipped fonts
+
+The web assets also include Adobe's **Source Code Pro** (Regular and Bold),
+under the SIL Open Font License 1.1. The unmodified WOFF2 files come from
+[adobe-fonts/source-code-pro, commit 803b7e23](https://github.com/adobe-fonts/source-code-pro/tree/803b7e23ec97ae58b6232ea76519a76d428ba268/WOFF2/OTF).
+The complete copyright and licence notice is shipped alongside them in
+[`internal/web/static/fonts/LICENSE.md`](internal/web/static/fonts/LICENSE.md).
+
 ## Compiled into the binary
 
 These are the Go modules linked into `socrates`. Their full licence texts are in

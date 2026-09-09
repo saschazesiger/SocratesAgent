@@ -179,8 +179,8 @@ func TestListSessionsOrdersAndHidesArchived(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Touching a1 puts it in front: the list is ordered by activity.
-	if err := st.NoteAttach("a1"); err != nil {
+	// a1 coming up puts it in front: the list is ordered by status change.
+	if err := st.SetSessionState("a1", StateRunning, -1, ""); err != nil {
 		t.Fatal(err)
 	}
 	list, err := st.ListSessions(false)
@@ -207,6 +207,122 @@ func TestListSessionsOrdersAndHidesArchived(t *testing.T) {
 	}
 	if list, _ = st.ListSessions(false); len(list) != 2 || list[1].Archived {
 		t.Fatalf("restored session = %#v", list)
+	}
+}
+
+// The list is ordered by when a session's status last changed, and by nothing
+// else: opening a session to read it, renaming it or resizing it are things
+// that happen to the row, and a row that moved for being looked at was the
+// complaint. A state that is actually new moves it; the same state written
+// again does not.
+func TestListSessionsMovesOnlyOnAStatusChange(t *testing.T) {
+	st := openTest(t)
+	for _, id := range []string{"a1", "a2"} {
+		if err := st.CreateSession(newSession(id)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A known order to start from: a2's status changed after a1's.
+	if err := st.NoteSessionActivity("a1", 1000); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.NoteSessionActivity("a2", 2000); err != nil {
+		t.Fatal(err)
+	}
+	order := func() string {
+		t.Helper()
+		list, err := st.ListSessions(true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids := make([]string, 0, len(list))
+		for _, one := range list {
+			ids = append(ids, one.ID)
+		}
+		return strings.Join(ids, ",")
+	}
+	if got := order(); got != "a2,a1" {
+		t.Fatalf("order = %s, want a2,a1", got)
+	}
+
+	// Everything a person does to the row of a1 leaves it where it is.
+	if err := st.NoteAttach("a1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateSessionTitle("a1", "Read again"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSessionSize("a1", 100, 30); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSessionFlagged("a1", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSessionArchived("a1", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSessionArchived("a1", false); err != nil {
+		t.Fatal(err)
+	}
+	if got := order(); got != "a2,a1" {
+		t.Fatalf("after being read, renamed, resized, flagged and archived the order is %s, want a2,a1", got)
+	}
+	got, _ := st.GetSession("a1")
+	if got.ActiveAt != 1000 || got.UpdatedAt == 1000 {
+		t.Fatalf("active_at = %d and updated_at = %d: the two must not be the same clock", got.ActiveAt, got.UpdatedAt)
+	}
+
+	// The program of a1 coming up is a status change, and moves it.
+	if err := st.SetSessionState("a1", StateRunning, -1, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := order(); got != "a1,a2" {
+		t.Fatalf("after a state change the order is %s, want a1,a2", got)
+	}
+	moved, _ := st.GetSession("a1")
+	// The same state written again - the lifecycle poll confirming what it
+	// already knew - is not a change.
+	if err := st.SetSessionState("a2", StateStarting, -1, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := order(); got != "a1,a2" {
+		t.Fatalf("after the same state again the order is %s, want a1,a2", got)
+	}
+	// And a status change the detector reports moves the row to that moment.
+	if err := st.NoteSessionActivity("a2", moved.ActiveAt+1); err != nil {
+		t.Fatal(err)
+	}
+	if got := order(); got != "a2,a1" {
+		t.Fatalf("after the detector's change the order is %s, want a2,a1", got)
+	}
+}
+
+// A flag is a mark and nothing more: it comes back as set, it goes away when
+// lowered, and a session is born without one whatever the caller's struct says.
+func TestSessionFlagRoundTrip(t *testing.T) {
+	st := openTest(t)
+	born := newSession("a1")
+	born.Flagged = true
+	if err := st.CreateSession(born); err != nil {
+		t.Fatal(err)
+	}
+	if born.Flagged {
+		t.Fatal("a new session must not be flagged")
+	}
+	if err := st.SetSessionFlagged("a1", true); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.GetSession("a1"); !got.Flagged {
+		t.Fatalf("flagged session = %#v", got)
+	}
+	if err := st.SetSessionFlagged("a1", false); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.GetSession("a1"); got.Flagged {
+		t.Fatalf("unflagged session = %#v", got)
+	}
+	if err := st.SetSessionFlagged("nope", true); err != ErrNotFound {
+		t.Fatalf("flagging a missing session = %v", err)
 	}
 }
 
@@ -799,6 +915,12 @@ func TestMigrateAddsTheTitleSource(t *testing.T) {
 	}
 	if got.TitleSource != "" {
 		t.Fatalf("the migrated session is named by %q", got.TitleSource)
+	}
+	// The order the upgrade shows is the order the build before it showed:
+	// the last thing that happened to the row stands in for its last status
+	// change, and the flag is down.
+	if got.ActiveAt != 1 || got.Flagged {
+		t.Fatalf("the migrated session has active_at %d and flagged %v", got.ActiveAt, got.Flagged)
 	}
 	if err := st.SetAutoSessionTitle("a1", "A name"); err != nil {
 		t.Fatal(err)

@@ -359,6 +359,27 @@ func TestSessionLifecycle(t *testing.T) {
 		t.Fatalf("unarchive: %d", res.StatusCode)
 	}
 
+	// A flag is a mark the person puts on a row: it comes back on the session
+	// and in the list, and it goes away again.
+	res, payload = e.do(t, e.client, "POST", "/api/sessions/"+id+"/flag", `{"flagged":true}`)
+	if res.StatusCode != http.StatusOK || payload["session"].(map[string]any)["flagged"] != true {
+		t.Fatalf("flag: %d %#v", res.StatusCode, payload)
+	}
+	_, payload = e.do(t, e.client, "GET", "/api/sessions", "")
+	flagged := 0
+	for _, one := range payload["sessions"].([]any) {
+		if one.(map[string]any)["flagged"] == true {
+			flagged++
+		}
+	}
+	if flagged != 1 {
+		t.Fatalf("the list shows %d flagged sessions, want 1", flagged)
+	}
+	res, payload = e.do(t, e.client, "POST", "/api/sessions/"+id+"/flag", `{"flagged":false}`)
+	if res.StatusCode != http.StatusOK || payload["session"].(map[string]any)["flagged"] != false {
+		t.Fatalf("unflag: %d %#v", res.StatusCode, payload)
+	}
+
 	// Delete is the one path that kills a tmux session, and it keeps the
 	// working directory.
 	for _, c := range cases {
@@ -623,6 +644,7 @@ func TestSessionAPIRequiresAuth(t *testing.T) {
 		{"PATCH", "/api/sessions/x"},
 		{"DELETE", "/api/sessions/x"},
 		{"POST", "/api/sessions/x/archive"},
+		{"POST", "/api/sessions/x/flag"},
 		{"POST", "/api/sessions/x/restart"},
 		{"POST", "/api/sessions/x/resume"},
 		{"POST", "/api/sessions/x/ack-resume"},

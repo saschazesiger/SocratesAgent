@@ -235,6 +235,41 @@ func TestActivityBusyIsImmediateAndIdleSettles(t *testing.T) {
 	if got := b.states(); len(got) != 2 || got[0] != StateBusy || got[1] != StateIdle {
 		t.Fatalf("the callback saw %v, want exactly [busy idle]", got)
 	}
+	// Both commits are status changes in the list's sense, so both were
+	// written into the row: finishing is the moment the list orders by. The
+	// last commit happened on the last tick, and the bench's clock has moved
+	// one interval past it since.
+	last := b.at().Add(-ActivityInterval).UnixMilli()
+	if got, _ := b.st.GetSession("s1"); got == nil || got.ActiveAt != last {
+		t.Fatalf("active_at = %v, want the moment of the last commit %d", got, last)
+	}
+}
+
+// TestMovesRow is the one rule for what moves a session in the list, which the
+// browser applies to its frames as well. Coming to rest from busy, starting,
+// and starting to need an answer move it; a detector that comes up after a
+// restart and finds every pane idle moves nothing.
+func TestMovesRow(t *testing.T) {
+	for _, c := range []struct {
+		prev, next State
+		want       bool
+	}{
+		{StateIdle, StateBusy, true},
+		{StateUnknown, StateBusy, true},
+		{StateBusy, StateIdle, true},
+		{StateBusy, StateWaiting, true},
+		{StateBusy, StateUnknown, true},
+		{StateIdle, StateWaiting, true},
+		{StateUnknown, StateIdle, false},
+		{StateWaiting, StateIdle, false},
+		{StateIdle, StateUnknown, false},
+		{StateBusy, StateBusy, false},
+		{StateWaiting, StateWaiting, false},
+	} {
+		if got := MovesRow(c.prev, c.next); got != c.want {
+			t.Errorf("MovesRow(%s, %s) = %v, want %v", c.prev, c.next, got, c.want)
+		}
+	}
 }
 
 // TestActivityLongSilentToolRunStaysBusy: a five minute test suite that prints

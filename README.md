@@ -139,8 +139,9 @@ opens on a phone with no signal: the shell, the terminal engine and the styles
 come from the cache, the connection bar says the truth about the network, and
 nothing old is presented as current.
 
-Measured on this build, the precached shell is **23 files, 1 168 KiB
-uncompressed and 371 KiB gzipped** — of which the vendored terminal (xterm.js
+Measured on this build, the precached shell is **26 files, 1 394 KiB
+uncompressed and 581 KiB gzipped**, including the local Regular and Bold
+terminal fonts — of which the vendored terminal (xterm.js
 and its four addons plus its stylesheet) is 782 KiB and 203 KiB. Adding a file
 to `SHELL` in `internal/web/static/sw.js` adds to that number, and it is
 recorded here so that an addition is noticed. Socrates serves the files as they

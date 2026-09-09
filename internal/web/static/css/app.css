@@ -5,6 +5,22 @@
    second shade of background. The only greys are the ones a control needs to
    be a control - a pressed row, a hovered button, a bubble of your own. */
 
+/* Bundled fonts keep terminal cell metrics independent of device fonts. */
+@font-face {
+  font-family: 'Source Code Pro';
+  src: url('/static/fonts/SourceCodePro-Regular.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Source Code Pro';
+  src: url('/static/fonts/SourceCodePro-Bold.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
 :root {
   --bg: #ffffff;
   --bg-soft: #ffffff;
@@ -28,7 +44,7 @@
   --shadow: 0 1px 2px rgba(16, 17, 20, .04), 0 8px 24px rgba(16, 17, 20, .06);
   --shadow-sm: 0 1px 2px rgba(16, 17, 20, .05);
   --font: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --mono: 'Source Code Pro', ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 }
 
 * { box-sizing: border-box; }
@@ -54,6 +70,9 @@
 html, body {
   height: 100%;
   margin: 0;
+  /* Font inflation changes DOM measurements without changing canvas glyphs. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 body {
@@ -467,6 +486,13 @@ a { color: inherit; }
 }
 /* An archived chat reads as put away: still legible, plainly not in use. */
 .chat-item.archived .label { color: var(--text-faint); }
+/* The flag is the one mark a person puts on a row by hand. It sits in front
+   of the name, in the same amber the waiting ring uses, and it is not there
+   at all on a row that has none. */
+.chat-item .row-flag { display: none; flex: none; width: 13px; height: 13px; color: var(--amber); }
+.chat-item.flagged .row-flag { display: inline-flex; }
+.row-flag svg, .head-flag svg { width: 100%; height: 100%; display: block; }
+.head-flag { flex: none; width: 14px; height: 14px; color: var(--amber); }
 .tag {
   flex: none;
   font-size: 10.5px;
@@ -520,6 +546,7 @@ a { color: inherit; }
   body.side-collapsed .list-empty { display: none; }
   body.side-collapsed .chat-item { justify-content: center; gap: 0; padding: 8px 0; }
   body.side-collapsed .chat-item .label,
+  body.side-collapsed .chat-item .row-flag,
   body.side-collapsed .chat-item .act,
   body.side-collapsed .chat-item .tag { display: none; }
   body.side-collapsed .side-foot { flex-direction: column; align-items: center; padding: 8px 6px; gap: 4px; }
@@ -1676,9 +1703,11 @@ body.stale .icon-btn.working::after { animation-play-state: paused; opacity: .4;
   box-shadow: var(--shadow);
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
   animation: rise .14s var(--ease) both;
 }
 .menu-item {
+  flex-shrink: 0;
   border: 0;
   background: none;
   border-radius: var(--r-sm);

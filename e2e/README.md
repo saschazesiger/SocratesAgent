@@ -111,7 +111,8 @@ gitignored. Deleting `e2e/out/` is always safe.
 | `reloadkeepsscreen` | type, reload: the same tab, the same session, the same screen, and typing still works |
 | `pages` | `/`, `/admin`, `/login` and `/setup` are clean at 390×844 and 1280×720, and the sheet is a bottom sheet on one and a dialog on the other |
 | `harnesses` | all four session types start and are seen in the browser, each with its own mark and its detail behind **Info** in the row menu |
-| `sessionlist` | rename, archive, unarchive and delete — and the working directory survives the delete |
+| `sessionlist` | rename, flag and unflag, archive, unarchive and delete — and the working directory survives the delete |
+| `browserlayout` | row menus flip upwards near the bottom and stay scrollable in short viewports; delayed local fonts give DOM and WebGL equal-width cells and matching initial pane sizes |
 | `exitoverlay` | `/exit 7` raises the overlay with its status in a plain line under it, and **Restart** brings the session back |
 | `webglrenders` | the shipped renderer paints the terminal |
 | `touchscroll` | a finger dragged down the pane reaches what scrolled off it, a drag back up returns to the live bottom, a tap is still the tap that puts the keyboard on the pane, and with tmux's mouse off the drag types nothing |
@@ -149,7 +150,7 @@ gitignored. Deleting `e2e/out/` is always safe.
 | `typekeepsfocus` | a dialog, the ⋯ menu and two sessions: the keys still land in the pane |
 | `handsfree` | the mode in which nothing opens the on-screen keyboard: armed from the top bar and remembered across a reload, the pane and every field muted with `inputmode="none"` **and** `readonly`, the key bar on with its `⌨` key stood down, the ⋯ menu no longer offering to hide it, a field filled by speaking into it, and everything given back when it is disarmed |
 | `design` | white surfaces, a mark wherever a program is named, technical strings only in **Info**, and an animation that does not restart when a row re-renders |
-| `daygroups` | the session list read by day: Today, Yesterday, This week, This month, Older — a header only over a group with something in it, and a row that keeps its element when it moves to another day |
+| `daygroups` | the session list read by day: Today, Yesterday, This week, This month, Older — a header only over a group with something in it; a row that stays put when it is opened or renamed and moves, keeping its element, when its status changes |
 | `notify` | a session that stops working while nobody is looking: one chime and one notification named after it, a speaker and a bell in the header that each turn one of them off and are remembered on this device, and nothing fired for a handshake replay |
 | `livesession` | one real session against the real Claude Code CLI (gated) |
 

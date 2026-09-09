@@ -66,13 +66,34 @@ export function bucketOf(ts, now = Date.now()) {
 }
 
 /**
- * momentOf is the last time a session was used, as the list understands it.
+ * momentOf is the last time a session's status changed, as the list
+ * understands it - which is the moment the list orders and groups by.
  *
- * `updated_at` is bumped by everything that happens to a session - a state
- * change, an attach, a rename - so it is the moment of use. `created_at` is
- * the fallback for a row that has somehow never been written to since.
+ * `active_at` is written by the server when the session did something: it
+ * started working, finished, began needing an answer, or its program came up
+ * or went down. It is deliberately not `updated_at`, which every attach,
+ * rename and resize bumps: a row that jumped to the top of the list for
+ * being opened and read was the complaint that made this column exist.
+ * `updated_at` is the fallback for a row from a server that did not know the
+ * column yet, and `created_at` for a row that has never been written to.
  */
 export function momentOf(session) {
   if (!session) return 0;
-  return Number(session.updated_at) || Number(session.created_at) || 0;
+  return Number(session.active_at) || Number(session.updated_at) || Number(session.created_at) || 0;
+}
+
+/**
+ * movesRow says whether a committed change of activity from `prev` to `next`
+ * is a status change in the sense the list orders by: the agent started
+ * working, finished, or began needing an answer.
+ *
+ * It is the same rule the server applies when it writes `active_at`, and it
+ * is applied here too so a row moves the moment the frame arrives rather
+ * than at the next fetch of the list. A change into idle from anything but
+ * busy is not on the list on purpose: it is what every running session
+ * reports when the detector comes up after a restart.
+ */
+export function movesRow(prev, next) {
+  if (!next || prev === next) return false;
+  return next === 'busy' || prev === 'busy' || next === 'waiting';
 }

@@ -39,6 +39,8 @@ const CACHE = 'socrates-shell-' + VERSION;
 const SHELL = [
   '/',
   '/static/css/app.css',
+  '/static/fonts/SourceCodePro-Regular.woff2',
+  '/static/fonts/SourceCodePro-Bold.woff2',
   '/static/vendor/xterm.css',
   '/static/vendor/xterm.js',
   '/static/vendor/addon-fit.js',

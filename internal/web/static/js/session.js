@@ -21,9 +21,9 @@ import {
 } from './api.js';
 import { connectionSource } from './net.js';
 import { agentMark } from './logos.js';
-import { DAY_GROUPS, bucketOf, momentOf } from './daygroups.js';
+import { DAY_GROUPS, bucketOf, momentOf, movesRow } from './daygroups.js';
 import * as harnesses from './harnesses.js';
-import { createTerm, measurePane } from './term.js';
+import { createTerm, measurePane, loadTerminalFonts } from './term.js';
 import { mountAssist } from './assist.js';
 import { mountNotify } from './notify.js';
 import { mountKeyBar, keyBarWanted, setKeyBarWanted, followViewport } from './keybar.js';
@@ -657,7 +657,7 @@ const state = {
 
 const dom = {};
 const ids = ['sidebar', 'navScrim', 'menuBtn', 'sideCollapse', 'newSession', 'sessionScope', 'sessionList',
-  'activityLive', 'sessionHarness', 'sessionTitle', 'sessionArchived', 'sessionUsage', 'termSize',
+  'activityLive', 'sessionHarness', 'sessionFlag', 'sessionTitle', 'sessionArchived', 'sessionUsage', 'termSize',
   'statusBtn', 'handsBtn', 'soundBtn', 'notifyBtn', 'sessionMenu',
   'stage', 'termWrap', 'term', 'termOverlay', 'termLines', 'termNotice',
   'termTicker', 'tickerWindow', 'termEmpty',
@@ -675,6 +675,12 @@ const STATE_WORDS = {
 // a row with no evidence yet says nothing rather than guessing.
 const ACTIVITY_WORDS = { busy: 'Working', idle: 'Waiting for an instruction', waiting: 'Needs an answer' };
 
+// The flag a person puts on a session to find it again. One shape, drawn
+// before the name in the row and before the name in the header, so a flagged
+// session is recognised the same way wherever it is looked at.
+const FLAG_SVG = '<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true">'
+  + '<path d="M5 3v18M5 4h11l-2.5 4L16 12H5"/></svg>';
+
 function sessionOf(id) { return state.sessions.find((s) => s.id === id) || null; }
 
 /* -------------------------------------------------------- the session list */
@@ -690,10 +696,12 @@ function renderList() {
     host.append(el('div', { class: 'list-empty', text: empty }));
     return;
   }
-  // Which day each session was last used on. The server hands the list over
-  // newest first, and grouping keeps that order inside every group, so the
-  // rows never move relative to each other - only a header appears between
-  // them.
+  // Which day each session's status last changed on. The server hands the
+  // list over in that order, newest first, and a frame that changes a status
+  // between two fetches bumps the moment locally, so the list is sorted here
+  // by the same moment it is grouped by. The sort is stable: two rows that
+  // moved at the same instant keep the order the server gave them.
+  wanted.sort((a, b) => momentOf(b) - momentOf(a));
   const now = Date.now();
   const byGroup = new Map();
   for (const session of wanted) {
@@ -705,8 +713,8 @@ function renderList() {
   // the page and putting it back restarts its animations, and a row that
   // fades in again every few seconds is a page that looks broken. The headers
   // are patched the same way and for the same reason - and because a row that
-  // crosses midnight, or is renamed and so becomes today's, has to keep the
-  // element it already had while it moves under a different header.
+  // crosses midnight, or finishes a turn and so becomes today's, has to keep
+  // the element it already had while it moves under a different header.
   const seen = new Set();
   const headers = new Set();
   let previous = null;
@@ -748,6 +756,7 @@ function buildRow(session) {
     tabindex: '0',
   },
   el('span', { class: 'row-mark' }, agentMark(session.harness, 18)),
+  el('span', { class: 'row-flag', 'aria-label': 'Flagged', html: FLAG_SVG }),
   el('span', { class: 'label' }),
   el('button', {
     class: 'icon-btn act', type: 'button', 'aria-label': 'Session actions',
@@ -811,6 +820,7 @@ function updateRow(row, session) {
   const attached = !!(state.current && state.current.id === session.id);
   setClass(row, 'active', attached);
   setClass(row, 'archived', !!session.archived);
+  setClass(row, 'flagged', !!session.flagged);
 
   // The activity of a row is two marks and no words: the agent's own mark
   // turns into a ring that spins while the harness is working and stands
@@ -852,6 +862,13 @@ function mergeActivity(sessions) {
     state.activity.set(id, next);
     if (prev && prev.state === next.state && prev.unread === next.unread && prev.note === next.note) continue;
     changed = true;
+    // A status change moves the row, and it moves it now rather than at the
+    // next fetch: the server wrote the same moment into the same row under
+    // the same rule, so the list a fetch would bring is the list drawn here.
+    if (movesRow(prev ? prev.state : '', next.state)) {
+      const session = sessionOf(id);
+      if (session) session.active_at = Math.max(momentOf(session), Number(next.since) || Date.now());
+    }
     announce(id, next, prev);
     if (notifier) notifier.completed(id, next, prev);
   }
@@ -1030,6 +1047,17 @@ async function archiveSession(session, archived) {
   } catch (err) { toast(errorMessage(err), 'error'); }
 }
 
+// flagSession raises or lowers the flag. No toast: the flag appears on the
+// row, in front of the name, and that is the whole of the feedback it needs.
+async function flagSession(session, flagged) {
+  try {
+    const data = await api('/api/sessions/' + encodeURIComponent(session.id) + '/flag', {
+      method: 'POST', body: { flagged },
+    });
+    replaceSession(data.session);
+  } catch (err) { toast(errorMessage(err), 'error'); }
+}
+
 async function deleteSession(session) {
   const yes = await confirmDialog({
     title: 'Delete “' + session.title + '”?',
@@ -1074,6 +1102,7 @@ function openRowMenu(anchor, id) {
   const menu = el('div', { class: 'menu', role: 'menu' },
     item('Info', () => infoDialog(session)),
     item('Rename', () => renameSession(session)),
+    item(session.flagged ? 'Remove flag' : 'Flag', () => flagSession(session, !session.flagged)),
     // Hands-free is holding the bar on, and it is the only keyboard there is
     // while it does, so there is nothing here to offer: an item that answered
     // "hide" with a bar still on screen would be the menu lying.
@@ -1086,9 +1115,36 @@ function openRowMenu(anchor, id) {
     item('Download scrollback', () => downloadJournal(session)),
     item('Delete', () => deleteSession(session), 'danger'));
   document.body.append(menu);
-  const box = anchor.getBoundingClientRect();
-  menu.style.top = Math.round(box.bottom + 6) + 'px';
-  menu.style.left = Math.round(Math.min(box.left, window.innerWidth - menu.offsetWidth - 10)) + 'px';
+  const position = (event) => {
+    if (event?.target === menu) return;
+    const box = anchor.getBoundingClientRect();
+    const viewport = window.visualViewport;
+    const left = (viewport?.offsetLeft || 0) + 10;
+    const top = (viewport?.offsetTop || 0) + 10;
+    const right = left + (viewport?.width || window.innerWidth) - 20;
+    const bottom = top + (viewport?.height || window.innerHeight) - 20;
+    menu.style.minWidth = Math.min(190, right - left) + 'px';
+    menu.style.maxWidth = Math.max(0, right - left) + 'px';
+    menu.style.maxHeight = 'none';
+    const below = Math.max(0, bottom - box.bottom - 6);
+    const above = Math.max(0, box.top - 6 - top);
+    const upwards = menu.offsetHeight > below && above > below;
+    menu.style.maxHeight = Math.max(0, Math.min(bottom - top, upwards ? above : below)) + 'px';
+    const y = upwards ? box.top - 6 - menu.offsetHeight : box.bottom + 6;
+    menu.style.top = Math.max(top, Math.min(y, bottom - menu.offsetHeight)) + 'px';
+    menu.style.left = Math.max(left, Math.min(box.left, right - menu.offsetWidth)) + 'px';
+  };
+  position();
+  window.addEventListener('resize', position);
+  document.addEventListener('scroll', position, true);
+  window.visualViewport?.addEventListener('resize', position);
+  window.visualViewport?.addEventListener('scroll', position);
+  state.menuCleanup = () => {
+    window.removeEventListener('resize', position);
+    document.removeEventListener('scroll', position, true);
+    window.visualViewport?.removeEventListener('resize', position);
+    window.visualViewport?.removeEventListener('scroll', position);
+  };
   state.menu = menu;
   // The button that opened the menu keeps the focus while it is open, and a
   // button with the focus answers Enter and space - so it is handed back when
@@ -1107,6 +1163,8 @@ function openRowMenu(anchor, id) {
 
 function closeMenu() {
   if (!state.menu) return;
+  state.menuCleanup?.();
+  state.menuCleanup = null;
   state.menu.remove();
   state.menu = null;
   const anchor = state.menuAnchor;
@@ -1162,6 +1220,7 @@ function showEmpty() {
     unreachable ? null : el('button', { class: 'btn primary', type: 'button', text: 'New session', onclick: newSession }),
   );
   dom.sessionTitle.textContent = 'Socrates';
+  dom.sessionFlag.hidden = true;
   dom.sessionHarness.hidden = true;
   stopUsage();
   dom.sessionMenu.hidden = true;
@@ -1177,6 +1236,7 @@ function showEmpty() {
 function applySession(session) {
   state.current = session;
   dom.sessionTitle.textContent = session.title;
+  dom.sessionFlag.hidden = !session.flagged;
   dom.sessionArchived.hidden = !session.archived;
   dom.sessionMenu.hidden = false;
   dom.termEmpty.hidden = true;
@@ -1625,10 +1685,14 @@ function onControl(sessionId, frame) {
       if (state.assist) state.assist.statusFrame(frame);
       break;
     case 'state':
-      replaceSession({ ...state.current, state: frame.state });
+      // The program coming up or going down is a status change, so the row
+      // moves - the same moment the server wrote into it.
+      replaceSession({ ...state.current, state: frame.state,
+        active_at: frame.state === state.current.state ? state.current.active_at : Date.now() });
       break;
     case 'exit':
-      replaceSession({ ...state.current, state: 'exited', exit_status: frame.status });
+      replaceSession({ ...state.current, state: 'exited', exit_status: frame.status,
+        active_at: Number(frame.at) || Date.now() });
       break;
     case 'size':
       if (frame.by === 'other') {
@@ -1746,7 +1810,7 @@ function measureNewPane() {
   // it exists for the length of one measurement.
   const bar = mountKeyBar(dom.keybar, null, null);
   dom.keybar.hidden = !keyBarWanted();
-  const size = measurePane(dom.term, { fontSize: state.terminal.font_size });
+  const size = measurePane(dom.term, { fontSize: state.terminal.font_size, webgl: state.terminal.webgl });
   bar.dispose();
   dom.keybar.hidden = keybarWas;
   return size;
@@ -1931,6 +1995,7 @@ function wire() {
 }
 
 async function boot() {
+  await loadTerminalFonts();
   wire();
   // Before anything is measured: the rail is a different stage width, and a
   // terminal fitted to the wide one and then narrowed is a terminal that

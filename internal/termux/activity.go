@@ -698,7 +698,33 @@ func (a *activity) commit(id string, tr *track, obs observation, from string, no
 		a.unread[id] = now.UnixMilli()
 		a.saveUnread()
 	}
+	// The same three changes, plus starting to work, are what move a session
+	// up the list. Anything else - a restarted detector finding a pane idle,
+	// a read that failed for a tick - is the machine catching up, not the
+	// session doing something, and must not shuffle the sidebar.
+	if MovesRow(prev.State, next) {
+		if err := a.m.st.NoteSessionActivity(id, now.UnixMilli()); err != nil {
+			a.m.logf("could not record the activity of %s: %v", id, err)
+		}
+	}
 	a.publish(id, tr)
+}
+
+// MovesRow says whether a committed change from one state to another is a
+// status change in the sense the list orders by: the session started working,
+// finished, or began needing an answer.
+//
+// It is the one rule, and the browser applies the same one to the frames it
+// hears, so a row moves at the same moment on both sides of the socket. A
+// change into idle from anything but busy is not on the list on purpose: it
+// is what every running session reports when the detector comes up after a
+// restart, and forty rows moving to "now" at once would be an order nobody
+// chose.
+func MovesRow(prev, next State) bool {
+	if prev == next {
+		return false
+	}
+	return next == StateBusy || prev == StateBusy || next == StateWaiting
 }
 
 func (a *activity) clearUnread(id string, tr *track) {

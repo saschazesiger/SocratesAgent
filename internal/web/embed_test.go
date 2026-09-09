@@ -41,6 +41,22 @@ func TestPagesAskForStampedAssets(t *testing.T) {
 	}
 }
 
+func TestTerminalFontsAreVersionedAndPrecached(t *testing.T) {
+	css := string(asset("css/app.css"))
+	worker := string(asset("sw.js"))
+	for _, name := range []string{"SourceCodePro-Regular.woff2", "SourceCodePro-Bold.woff2"} {
+		if !strings.Contains(css, "/static/fonts/"+name+"?v="+version) {
+			t.Errorf("font %s has no versioned CSS URL", name)
+		}
+		if !strings.Contains(worker, "'/static/fonts/"+name+"'") {
+			t.Errorf("font %s is not precached", name)
+		}
+		if data := asset("fonts/" + name); len(data) < 4 || string(data[:4]) != "wOF2" {
+			t.Errorf("font %s is not an embedded WOFF2 file", name)
+		}
+	}
+}
+
 // A relative import does not inherit the query of the file it is written in,
 // so every module has to be stamped or only the entry point is versioned.
 func TestModuleImportsAreStamped(t *testing.T) {

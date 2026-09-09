@@ -285,6 +285,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("PATCH /api/sessions/{id}", s.auth(s.handleRenameSession))
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.auth(s.endingViewers(s.handleDeleteSession)))
 	mux.HandleFunc("POST /api/sessions/{id}/archive", s.auth(s.handleArchiveSession))
+	mux.HandleFunc("POST /api/sessions/{id}/flag", s.auth(s.handleFlagSession))
 	mux.HandleFunc("POST /api/sessions/{id}/resume", s.auth(s.handleResumeSession))
 	mux.HandleFunc("POST /api/sessions/{id}/restart", s.auth(s.handleRestartSession))
 	mux.HandleFunc("POST /api/sessions/{id}/ack-resume", s.auth(s.handleAckResume))

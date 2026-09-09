@@ -99,9 +99,14 @@ func stamp(name string, data []byte) []byte {
 		return stampedImport.ReplaceAll(data, []byte("${1}?v="+version+"${2}"))
 	case strings.HasSuffix(name, ".js"):
 		return stampedImport.ReplaceAll(data, []byte("${1}?v="+version+"${2}"))
+	case strings.HasSuffix(name, ".css"):
+		return stampedCSSURL.ReplaceAll(data, []byte("${1}?v="+version+"${2}"))
 	}
 	return data
 }
+
+// Font requests must use the same build addresses as the offline shell.
+var stampedCSSURL = regexp.MustCompile(`(url\(['"]?/static/[^)'"?#]+)(['"]?\))`)
 
 // asset returns a file as it is served, or nil when there is no such file.
 func asset(name string) []byte { return assets[path.Clean(strings.TrimPrefix(name, "/"))] }
