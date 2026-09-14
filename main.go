@@ -34,6 +34,12 @@ func main() {
 		switch args[0] {
 		case "serve":
 			args = args[1:]
+		case "export":
+			exportSettings(args[1:])
+			return
+		case "import":
+			importSettings(args[1:])
+			return
 		case "journal-sink":
 			journalSink(args[1:])
 			return
@@ -49,7 +55,10 @@ func main() {
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Socrates %s - a terminal harness for Shell, Claude Code, Codex and OpenCode\n\n", version)
-		fmt.Fprintf(os.Stderr, "Usage:\n  socrates [flags]        start the web server\n\nFlags:\n")
+		fmt.Fprintf(os.Stderr, "Usage:\n  socrates [flags]        start the web server\n"+
+			"  socrates export         write this installation's settings and password to stdout\n"+
+			"  socrates import         read that document into this data directory\n\n"+
+			"Each subcommand takes -h of its own.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {

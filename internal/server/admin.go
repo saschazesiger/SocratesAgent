@@ -217,7 +217,7 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 // tmuxChecks are the terminal engine's three rows: the binary and its version,
 // the socket this Socrates owns, and how many sessions are on it.
 func (s *Server) tmuxChecks(ctx context.Context) []checkResult {
-	report := s.tmuxAdmin.detect(ctx, false)
+	report := s.tmuxAdmin.detect(ctx)
 	engine := checkResult{Name: "tmux", OK: report.OK}
 	switch {
 	case report.OK:

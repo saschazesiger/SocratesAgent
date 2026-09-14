@@ -424,16 +424,18 @@ func Slug(in string) string {
 	return strings.Trim(b.String(), "-")
 }
 
+// DefaultDataDir is where the data directory is in the image, and the only
+// place it is without being asked for. Socrates is run as the container; a
+// home-directory fallback would be a second answer for a deployment that no
+// longer exists.
+const DefaultDataDir = "/data"
+
 // DataDir is the directory that holds the database and the workspaces.
 func DataDir() string {
 	if v := strings.TrimSpace(os.Getenv("SOCRATES_DATA_DIR")); v != "" {
 		return v
 	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ".socrates"
-	}
-	return filepath.Join(home, ".socrates")
+	return DefaultDataDir
 }
 
 // DefaultWorkspaceRoot is where a session with a dynamic working directory

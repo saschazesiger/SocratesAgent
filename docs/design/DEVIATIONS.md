@@ -1730,3 +1730,55 @@ removed one was the chat.
 Codex-rollout failures pre-date this change and are unrelated). e2e: the new `dictate` scenario,
 plus `no-overlap`, `status-speak`, `status-ticker`, `design`, `typekeepsfocus`, `pages` and
 `session-title`. The whole suite was run: 46 scenarios, 613 assertions, all passing.
+
+---
+
+## Docker is the only deployment (2026-09-14)
+
+Socrates is run as the Docker image and nothing else. The image is the product; a binary on a
+host is no longer a shape this repository supports. Everything below is history, and the code
+that implemented it is gone.
+
+**§A.12 — the systemd shape.** `deploy/socrates.service`, `internal/termux/supervise.go`, the
+`Supervisor` interface and `SystemdScope`, `DetectSupervisor`, and the `Supervisor` field on
+`termux.Config` and `termux.Tmux` are removed. `Tmux.RunStart` now runs tmux directly. The trap
+§A.12 was built around — `KillMode=control-group` turning `systemctl restart socrates` into the
+reboot path — cannot be reached from a container, and the reparent that remains is handled where
+it always was: `tini` as the entrypoint reaps the tmux server at PID 1, and Socrates still
+installs no SIGCHLD reaper of its own, for the ECHILD reason §A.12 already gives.
+`TestSessionSurvivesManagerKill` keeps its meaning — it proves a process kill is survived — and
+its comment no longer points at a unit file that does not exist. J7 in the risk table is now
+answered by `tini` and the restart policy on `docker run` alone.
+
+**§F.1 — the tmux installer.** `internal/termux/install.go` (the package-manager matrix for
+apt-get, apk, dnf, yum, pacman, zypper and brew, the sudo probe, `Install`, `ErrInstalling`,
+`InstallTimeout`, `InstallLogLines`) is gone, and with it `POST /api/tmux/install`, `GET
+/api/tmux/events`, the `tmux_install_log` document, the SSE fan-out in `internal/server/tmux.go`
+and the install button, log, result line and manual-command field on the dashboard card. What is
+left is `internal/termux/detect.go`: `Detector.Detect` and a `Report` of `installed`, `path`,
+`version`, `ok`, `min` and `reason`. The card reports and nothing more — the image ships tmux, so
+a container without it is a broken image rather than a machine waiting for a package manager, and
+the honest answer is a sentence rather than a button. The e2e `tmuxinstaller` scenario became
+`tmuxcard`, which asserts the same detection half against a stub tmux 3.2a.
+
+**Platform paths.** `pty_windows.go`, `proc_windows.go` and `disk_other.go` are removed and their
+`!windows` / `linux || darwin` counterparts lost their build tags (`pty.go`, `proc.go`,
+`disk.go`); `termux.ErrUnsupported`, which existed only for the Windows pty stubs, is gone with
+them. `readClaudeCredentials` no longer falls back to the macOS login keychain. The cloudflared
+installer publishes for one operating system: `assetFor` takes an architecture, every Linux asset
+is a bare binary, and `binaryFromArchive` — which unpacked the macOS tarballs — is removed.
+`config.DataDir()` defaults to `/data` (`config.DefaultDataDir`) instead of `~/.socrates`, and
+`harnesses.homeDir()` reads `HOME` and nothing else, because the image puts `HOME` inside the data
+volume and both the e2e suite and the tests point it at a scratch directory.
+
+**The image.** `HOME=/data/home`, created by `deploy/docker-entrypoint.sh` on a volume that
+predates the image, so the CLI credentials and the transcripts a resume reads survive `docker rm`.
+`deploy/docker-compose.yml` is the supported run written down. `socrates export` / `socrates
+import` (`migrate.go`) and `scripts/migrate-to-docker.sh` carry a settings document, the password
+hash and the CLI credentials of an older non-Docker installation into the volume — they are the
+on-ramp off that shape, not support for it.
+
+**The Makefile** lost `run` and `install`: the binary is built for the tests and for a compile
+check, and it is started as the image.
+
+**Verification.** `gofmt`, `go vet ./...`, `go mod tidy -diff` and `go test ./...` green.

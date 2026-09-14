@@ -1,11 +1,8 @@
 package tunnel
 
 import (
-	"archive/tar"
 	"bytes"
-	"compress/gzip"
 	"context"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,36 +15,14 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 )
 
-// releasePayload builds what Cloudflare would serve for THIS platform: a bare
-// binary on Linux and Windows, a gzipped tarball on macOS.
+// releasePayload builds what Cloudflare would serve for this architecture.
+// Every Linux asset is a bare binary, so there is nothing to wrap.
 func releasePayload(t *testing.T, version string) []byte {
 	t.Helper()
-	binary := fakeBinary(version)
-	_, archive, err := assetFor(runtime.GOOS, runtime.GOARCH)
-	if err != nil {
-		t.Skipf("no published build for this platform: %v", err)
+	if _, err := assetFor(runtime.GOARCH); err != nil {
+		t.Skipf("no published build for this architecture: %v", err)
 	}
-	if !archive {
-		return binary
-	}
-	var raw bytes.Buffer
-	gz := gzip.NewWriter(&raw)
-	tarball := tar.NewWriter(gz)
-	if err := tarball.WriteHeader(&tar.Header{
-		Name: "cloudflared", Mode: 0o755, Size: int64(len(binary)), Typeflag: tar.TypeReg,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tarball.Write(binary); err != nil {
-		t.Fatal(err)
-	}
-	if err := tarball.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := gz.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return raw.Bytes()
+	return fakeBinary(version)
 }
 
 // fakeBinary is a script that behaves enough like cloudflared, padded past the
@@ -59,25 +34,6 @@ func fakeBinary(version string) []byte {
 	buf.WriteString("exit 0\n")
 	buf.WriteString("# " + strings.Repeat("padding ", 160000))
 	return buf.Bytes()
-}
-
-// wrapForPlatform packages arbitrary content like a release asset would be.
-func wrapForPlatform(t *testing.T, content []byte) []byte {
-	t.Helper()
-	_, archive, err := assetFor(runtime.GOOS, runtime.GOARCH)
-	if err != nil || !archive {
-		return content
-	}
-	var raw bytes.Buffer
-	gz := gzip.NewWriter(&raw)
-	tarball := tar.NewWriter(gz)
-	_ = tarball.WriteHeader(&tar.Header{
-		Name: "cloudflared", Mode: 0o755, Size: int64(len(content)), Typeflag: tar.TypeReg,
-	})
-	_, _ = tarball.Write(content)
-	_ = tarball.Close()
-	_ = gz.Close()
-	return raw.Bytes()
 }
 
 func releaseServer(t *testing.T, payload []byte, hits *atomic.Int32) *httptest.Server {
@@ -93,9 +49,6 @@ func releaseServer(t *testing.T, payload []byte, hits *atomic.Int32) *httptest.S
 }
 
 func TestInstallerDownloadsAndVerifies(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake binary is a POSIX script")
-	}
 	var hits atomic.Int32
 	payload := releasePayload(t, "9.9.9")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -136,12 +89,9 @@ func TestInstallerDownloadsAndVerifies(t *testing.T) {
 }
 
 func TestInstallerRejectsSomethingElse(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake binary is a POSIX script")
-	}
 	other := append([]byte("#!/bin/sh\necho \"totally different tool\"\n"),
 		[]byte("# "+strings.Repeat("x", 1200000))...)
-	server := releaseServer(t, wrapForPlatform(t, other), nil)
+	server := releaseServer(t, other, nil)
 
 	installer := NewInstaller(filepath.Join(t.TempDir(), "bin"))
 	installer.BaseURL = server.URL
@@ -181,53 +131,25 @@ func TestInstallerReportsServerErrors(t *testing.T) {
 	}
 }
 
-func TestBinaryFromArchive(t *testing.T) {
-	var raw bytes.Buffer
-	gz := gzip.NewWriter(&raw)
-	archive := tar.NewWriter(gz)
-	content := []byte("the real binary")
-	_ = archive.WriteHeader(&tar.Header{Name: "README", Mode: 0o644, Size: 4, Typeflag: tar.TypeReg})
-	_, _ = archive.Write([]byte("junk"))
-	_ = archive.WriteHeader(&tar.Header{Name: "cloudflared", Mode: 0o755, Size: int64(len(content)), Typeflag: tar.TypeReg})
-	_, _ = archive.Write(content)
-	_ = archive.Close()
-	_ = gz.Close()
-
-	reader, err := binaryFromArchive(bytes.NewReader(raw.Bytes()))
-	if err != nil {
-		t.Fatalf("unpack: %v", err)
-	}
-	got, _ := io.ReadAll(reader)
-	if string(got) != string(content) {
-		t.Fatalf("got %q", got)
-	}
-}
-
 func TestAssetFor(t *testing.T) {
-	cases := []struct {
-		goos, goarch, want string
-		archive            bool
-	}{
-		{"linux", "amd64", "cloudflared-linux-amd64", false},
-		{"linux", "arm64", "cloudflared-linux-arm64", false},
-		{"darwin", "arm64", "cloudflared-darwin-arm64.tgz", true},
-		{"windows", "amd64", "cloudflared-windows-amd64.exe", false},
+	cases := map[string]string{
+		"amd64": "cloudflared-linux-amd64",
+		"arm64": "cloudflared-linux-arm64",
+		"arm":   "cloudflared-linux-arm",
+		"386":   "cloudflared-linux-386",
 	}
-	for _, c := range cases {
-		asset, archive, err := assetFor(c.goos, c.goarch)
-		if err != nil || asset != c.want || archive != c.archive {
-			t.Errorf("assetFor(%s,%s) = %q,%v,%v", c.goos, c.goarch, asset, archive, err)
+	for goarch, want := range cases {
+		asset, err := assetFor(goarch)
+		if err != nil || asset != want {
+			t.Errorf("assetFor(%s) = %q, %v; want %q", goarch, asset, err, want)
 		}
 	}
-	if _, _, err := assetFor("plan9", "mips"); err == nil {
-		t.Error("unsupported platforms must be reported")
+	if _, err := assetFor("mips"); err == nil {
+		t.Error("an architecture Cloudflare does not publish must be reported")
 	}
 }
 
 func TestManagerInstallsCloudflaredOnDemand(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake binary is a POSIX script")
-	}
 	// An empty PATH makes the lookup miss deterministically.
 	t.Setenv("PATH", t.TempDir())
 
@@ -262,9 +184,6 @@ func TestManagerInstallsCloudflaredOnDemand(t *testing.T) {
 // A configured path that does not exist must not become a dead end: the whole
 // point of the managed copy is that remote access works anyway.
 func TestResolveFallsBackWhenConfiguredCommandIsMissing(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake binary is a POSIX script")
-	}
 	t.Setenv("PATH", t.TempDir())
 	server := releaseServer(t, releasePayload(t, "9.9.9"), nil)
 

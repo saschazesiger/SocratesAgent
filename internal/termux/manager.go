@@ -62,10 +62,7 @@ type Config struct {
 	WindowSize      string
 	JournalMaxBytes int64
 	JournalKeep     int
-	// Supervisor wraps the command that starts the tmux server. Nil is the
-	// right answer everywhere except under systemd.
-	Supervisor Supervisor
-	Logf       func(format string, args ...any)
+	Logf            func(format string, args ...any)
 	// Settings is the live configuration, read whenever a session has to be
 	// planned again. A resume after a reboot builds its own launch plan, and
 	// the plan is only ever as current as the settings it is built from.
@@ -193,11 +190,10 @@ func New(st *store.Store, cfg Config) (*Manager, error) {
 		m.tmuxVersion = v
 	}
 	m.tmux = &Tmux{
-		Sock:       filepath.Join(cfg.DataDir, "tmux.sock"),
-		Conf:       filepath.Join(cfg.DataDir, "tmux.conf"),
-		Bin:        bin,
-		Supervisor: cfg.Supervisor,
-		Logf:       cfg.Logf,
+		Sock: filepath.Join(cfg.DataDir, "tmux.sock"),
+		Conf: filepath.Join(cfg.DataDir, "tmux.conf"),
+		Bin:  bin,
+		Logf: cfg.Logf,
 	}
 	m.tmux.Env = m.serverEnv()
 	return m, nil

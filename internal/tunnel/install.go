@@ -1,8 +1,6 @@
 package tunnel
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -42,11 +40,7 @@ func NewInstaller(dir string) *Installer {
 
 // Path is where the managed binary lives.
 func (i *Installer) Path() string {
-	name := "cloudflared"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
-	return filepath.Join(i.Dir, name)
+	return filepath.Join(i.Dir, "cloudflared")
 }
 
 // Installed reports whether a usable managed binary is already there.
@@ -56,15 +50,15 @@ func (i *Installer) Installed() bool {
 	if err != nil || info.IsDir() || info.Size() < 1<<20 {
 		return false
 	}
-	if runtime.GOOS != "windows" && info.Mode()&0o111 == 0 {
+	if info.Mode()&0o111 == 0 {
 		return false
 	}
 	return true
 }
 
-// Supported reports whether this platform has a published build.
+// Supported reports whether this architecture has a published build.
 func Supported() bool {
-	_, _, err := assetFor(runtime.GOOS, runtime.GOARCH)
+	_, err := assetFor(runtime.GOARCH)
 	return err == nil
 }
 
@@ -80,7 +74,7 @@ func (i *Installer) Ensure(ctx context.Context, progress func(string)) (string, 
 		return i.Path(), nil
 	}
 
-	asset, archive, err := assetFor(runtime.GOOS, runtime.GOARCH)
+	asset, err := assetFor(runtime.GOARCH)
 	if err != nil {
 		return "", err
 	}
@@ -117,13 +111,6 @@ func (i *Installer) Ensure(ctx context.Context, progress func(string)) (string, 
 		report: progress,
 		last:   time.Now(),
 	})
-	if archive {
-		body, err = binaryFromArchive(body)
-		if err != nil {
-			temp.Close()
-			return "", err
-		}
-	}
 	written, err := io.Copy(temp, body)
 	if closeErr := temp.Close(); err == nil {
 		err = closeErr
@@ -158,60 +145,22 @@ func (i *Installer) Ensure(ctx context.Context, progress func(string)) (string, 
 	return i.Path(), nil
 }
 
-// binaryFromArchive pulls the cloudflared entry out of the macOS tarball.
-func binaryFromArchive(r io.Reader) (io.Reader, error) {
-	gz, err := gzip.NewReader(r)
-	if err != nil {
-		return nil, fmt.Errorf("unpack cloudflared: %w", err)
+// assetFor names the Linux build for an architecture. Cloudflare publishes
+// every one of these as a bare binary, so there is nothing to unpack: the
+// macOS builds, which are tarballs, were the reason that distinction used to
+// exist here.
+func assetFor(goarch string) (asset string, err error) {
+	switch goarch {
+	case "amd64":
+		return "cloudflared-linux-amd64", nil
+	case "arm64":
+		return "cloudflared-linux-arm64", nil
+	case "arm":
+		return "cloudflared-linux-arm", nil
+	case "386":
+		return "cloudflared-linux-386", nil
 	}
-	archive := tar.NewReader(gz)
-	for {
-		header, err := archive.Next()
-		if err == io.EOF {
-			return nil, fmt.Errorf("unpack cloudflared: no binary inside the archive")
-		}
-		if err != nil {
-			return nil, fmt.Errorf("unpack cloudflared: %w", err)
-		}
-		if header.Typeflag != tar.TypeReg {
-			continue
-		}
-		if filepath.Base(header.Name) == "cloudflared" {
-			return io.LimitReader(archive, 512<<20), nil
-		}
-	}
-}
-
-// assetFor maps a platform onto the published release asset.
-func assetFor(goos, goarch string) (asset string, archive bool, err error) {
-	switch goos {
-	case "linux":
-		switch goarch {
-		case "amd64":
-			return "cloudflared-linux-amd64", false, nil
-		case "arm64":
-			return "cloudflared-linux-arm64", false, nil
-		case "arm":
-			return "cloudflared-linux-arm", false, nil
-		case "386":
-			return "cloudflared-linux-386", false, nil
-		}
-	case "darwin":
-		switch goarch {
-		case "amd64":
-			return "cloudflared-darwin-amd64.tgz", true, nil
-		case "arm64":
-			return "cloudflared-darwin-arm64.tgz", true, nil
-		}
-	case "windows":
-		switch goarch {
-		case "amd64":
-			return "cloudflared-windows-amd64.exe", false, nil
-		case "386":
-			return "cloudflared-windows-386.exe", false, nil
-		}
-	}
-	return "", false, fmt.Errorf("Cloudflare publishes no cloudflared build for %s/%s - install it yourself and set the path in the admin dashboard", goos, goarch)
+	return "", fmt.Errorf("Cloudflare publishes no cloudflared build for linux/%s - install it yourself and set the path in the admin dashboard", goarch)
 }
 
 // countingReader reports download progress at a readable pace.

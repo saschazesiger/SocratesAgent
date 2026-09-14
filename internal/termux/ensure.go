@@ -489,8 +489,8 @@ func codexHome(env map[string]string) string {
 	if dir := strings.TrimSpace(os.Getenv("CODEX_HOME")); dir != "" {
 		return dir
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
+	home := strings.TrimSpace(os.Getenv("HOME"))
+	if home == "" {
 		return ""
 	}
 	return filepath.Join(home, ".codex")

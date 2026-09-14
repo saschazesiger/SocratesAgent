@@ -125,7 +125,7 @@ gitignored. Deleting `e2e/out/` is always safe.
 | `offlinerestart` | the server is restarted inside an outage and the phone wakes with `online`, `focus` and `visibilitychange` at once: one handshake, and nothing typed is lost in silence |
 | `latehello` | what is typed before a slow `hello` arrives is delivered, exactly once, and leaves nothing behind |
 | `adminoptions` | every harness option round-trips and reaches the command line |
-| `tmuxinstaller` | the engine card, and an install that streams and survives a reload |
+| `tmuxcard` | the engine card on a machine whose tmux is too old |
 | `twoviewers` | two devices on one session: both see the same pane, and the size notice is shown once |
 | `backpressure` | two hundred lines printed as fast as they can be arrive whole, on screen and in the journal |
 | `deletekeepsdir` | delete kills the tmux session and removes the row, and leaves the work on disk |
@@ -177,3 +177,15 @@ real browser, with the fake CLI standing in for the three programs.
 `docs/screenshot-tunnel.png` is hand-made and is not regenerated. It is not part
 of `make e2e`: the pictures are committed, so this is only run when they need
 redoing.
+
+### Browser IDE
+
+The optional `vscode-check.mjs` smoke test uses a real code-server installation.
+It checks loading the embedded workbench, editing and saving a project file,
+switching between IDE and shell, surviving a Socrates restart, and resuming
+following loss of the tmux server. It creates and removes its own sessions.
+
+```bash
+CODE_SERVER_BINARY=/absolute/path/to/code-server node e2e/vscode-check.mjs
+# Set SOCRATES_E2E_CHROME if Chromium is installed outside the harness default.
+```

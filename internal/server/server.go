@@ -24,7 +24,11 @@ import (
 // Version is stamped at build time.
 var Version = "dev"
 
-const settingsKey = "settings"
+// SettingsKey is where the settings document lives in the key/value table.
+// It is exported because `socrates export` and `socrates import` read and
+// write that document without a server, and two spellings of one key is one
+// spelling too many.
+const SettingsKey = "settings"
 
 // Server wires storage, the terminal sessions and the HTTP handlers together.
 type Server struct {
@@ -96,12 +100,12 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	}
 
 	settings := config.Default()
-	if err := st.GetJSON(settingsKey, &settings); err != nil && err != store.ErrNotFound {
+	if err := st.GetJSON(SettingsKey, &settings); err != nil && err != store.ErrNotFound {
 		return nil, err
 	}
 	settings.Normalize()
 	s.settings = settings
-	if err := st.SetJSON(settingsKey, settings); err != nil {
+	if err := st.SetJSON(SettingsKey, settings); err != nil {
 		return nil, err
 	}
 
@@ -144,7 +148,6 @@ func managerConfig(dataDir string, settings config.Settings) termux.Config {
 			ExtendedKeys: settings.Terminal.ExtendedKeys,
 		},
 		WindowSize: settings.Terminal.WindowSize,
-		Supervisor: termux.DetectSupervisor(),
 	}
 }
 
@@ -191,7 +194,7 @@ func (s *Server) Settings() config.Settings {
 func (s *Server) saveSettings(next config.Settings) error {
 	next.Normalize()
 	previous := s.Settings().Tunnel
-	if err := s.store.SetJSON(settingsKey, next); err != nil {
+	if err := s.store.SetJSON(SettingsKey, next); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -278,6 +281,8 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/login", s.handleLogin)
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
 
+	mux.HandleFunc("/ide/{id}/", s.auth(s.handleVSCode))
+
 	// Terminal sessions
 	mux.HandleFunc("GET /api/sessions", s.auth(s.handleListSessions))
 	mux.HandleFunc("POST /api/sessions", s.auth(s.handleCreateSession))
@@ -307,10 +312,8 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/preferences", s.auth(s.handlePreferences))
 	mux.HandleFunc("POST /api/diagnostics", s.auth(s.handleDiagnostics))
 
-	// The terminal engine: is tmux here, and the install that puts it there.
+	// The terminal engine: is tmux here and can it run a session.
 	mux.HandleFunc("GET /api/tmux", s.auth(s.handleTmux))
-	mux.HandleFunc("POST /api/tmux/install", s.auth(s.handleTmuxInstall))
-	mux.HandleFunc("GET /api/tmux/events", s.auth(s.handleTmuxEvents))
 
 	// Cloudflare tunnel
 	mux.HandleFunc("GET /api/tunnel", s.auth(s.handleTunnelStatus))

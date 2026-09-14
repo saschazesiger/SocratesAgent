@@ -1184,30 +1184,19 @@ async function adminoptions() {
   } finally { await s.stop(); }
 }
 
-/* ------------------------------------------------------ 11. tmuxinstaller */
+/* ----------------------------------------------------------- 11. tmuxcard */
 
-// The engine card against a machine that has the wrong tmux and a package
-// manager that only pretends. Nothing is installed: `tmux` on this run's PATH
-// is a script that says 3.2a, and `apt-get` is a script that prints what
-// apt-get prints and exits.
+// The engine card against a machine whose tmux is too old. There is no
+// installer any more - Socrates runs as the Docker image and the image ships
+// tmux - so all the card owes anybody is an honest, actionable sentence.
 function stubMachine() {
-  // Through the harness, so that the run's own cleanup takes it away: this
-  // directory used to survive every tmuxinstaller run.
+  // Through the harness, so that the run's own cleanup takes it away.
   const dir = scratchDir('socrates-e2e-stub-');
   writeFileSync(join(dir, 'tmux'), '#!/bin/sh\necho "tmux 3.2a"\n', { mode: 0o755 });
-  writeFileSync(join(dir, 'apt-get'), `#!/bin/sh
-if [ "$1" = "update" ]; then
-  echo "Reading package lists..."
-  exit 0
-fi
-echo "Setting up tmux (3.6a-2) ..."
-echo "Processing triggers for ncurses-term ..."
-exit 0
-`, { mode: 0o755 });
   return dir;
 }
 
-async function tmuxinstaller() {
+async function tmuxcard() {
   const stub = stubMachine();
   const s = await start({
     viewport: { width: 1280, height: 900 },
@@ -1225,48 +1214,22 @@ async function tmuxinstaller() {
       dot: document.querySelector('#tmuxStatus .state-dot').className,
       label: document.querySelector('#tmuxStatus .state-label').textContent,
       detail: document.querySelector('#tmuxStatus').textContent,
-      install: document.getElementById('tmuxInstall').hidden
-        ? '' : document.getElementById('tmuxInstall').textContent,
+      reason: document.getElementById('tmuxReason').textContent,
     }));
     // The checklist item: 3.2a is amber and "too old", never green and "ok".
     ok(/\bold\b/.test(card.dot) && /too old/.test(card.label),
-      'tmux 3.2a is reported as too old, not as ok', card.dot + ' · ' + card.label);
+      'tmux 3.2a is reported as too old, not as ok', card.dot + ' \u00b7 ' + card.label);
     ok(card.detail.includes('3.2a') && card.detail.includes('3.3'),
       'the card shows the version it found and the one it needs', oneLine(card.detail));
-    ok(card.install.includes('apt-get'), 'and it offers the package manager it found', card.install);
+    ok(/too old/.test(card.reason),
+      'and says in a sentence what is wrong with it', oneLine(card.reason));
 
     await shot(s.page, 'tmux-card');
-    await s.page.click('#tmuxInstall');
-    // The output arrives over the event stream, line by line.
-    await s.page.waitForFunction(
-      () => /Setting up tmux/.test(document.getElementById('tmuxLog').textContent),
-      null, { timeout: 30000 });
-    const streamed = await s.page.$eval('#tmuxLog', (n) => n.textContent);
-    ok(streamed.includes('apt-get update') && streamed.includes('Reading package lists'),
-      'the installer streamed its output into the page', oneLine(streamed));
-
-    // And it survives the page being thrown away, because it is in the
-    // database and not only in the tab that watched it.
-    await s.page.reload({ waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('#tmuxLogToggle:not([hidden])', { timeout: 20000 });
-    await s.page.click('#tmuxLogToggle');
-    await s.page.waitForFunction(
-      () => /Setting up tmux/.test(document.getElementById('tmuxLog').textContent),
-      null, { timeout: 15000 });
-    const kept = await s.page.$eval('#tmuxLog', (n) => n.textContent);
-    ok(kept.includes('Setting up tmux'), 'and it is still there after a reload', oneLine(kept));
-    // The exit code is half the result: a log with no verdict makes somebody
-    // read package-manager output to find out whether it worked.
-    const verdict = await s.page.$eval('#tmuxInstallResult',
-      (n) => (n.hidden ? '' : n.textContent));
-    ok(/The last install finished/.test(verdict),
-      'and the reload says what the last install did, and when', verdict || 'nothing shown');
 
     ok(unexpected(s.errors).length === 0, 'no console errors',
       unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
-
 
 /* ------------------------------------------------------------ 12. keybar */
 
@@ -5714,7 +5677,7 @@ const ALL = [
   ['offlinerestart', 'a restart during an outage, a wake storm, and nothing lost in silence', offlinerestart],
   ['latehello', 'what is typed before a late hello is delivered, exactly once', latehello],
   ['adminoptions', 'the basics round-trip and the fixed policy reaches the command line', adminoptions],
-  ['tmuxinstaller', 'the engine card, and an install that streams and survives a reload', tmuxinstaller],
+  ['tmuxcard', 'the engine card on a machine whose tmux is too old', tmuxcard],
   ['twoviewers', 'two devices on one session, and one notice about the size', twoviewers],
   ['backpressure', 'two hundred lines arrive whole, on screen and in the journal', backpressure],
   ['deletekeepsdir', 'delete kills the tmux session and keeps the work', deletekeepsdir],

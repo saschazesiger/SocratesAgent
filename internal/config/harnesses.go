@@ -23,8 +23,9 @@ import (
 // keeps its dead keys; they decode into nothing and are dropped on the next
 // save.
 
-// Harness ids. The set is closed: these four are what a session can be.
+// Harness ids. The set is closed: these five are what a session can be.
 const (
+	HarnessVSCode   = "vscode"
 	HarnessShell    = "shell"
 	HarnessClaude   = "claude"
 	HarnessCodex    = "codex"
@@ -32,7 +33,7 @@ const (
 )
 
 // KnownHarnesses is every harness, in the order the picker offers them.
-var KnownHarnesses = []string{HarnessShell, HarnessClaude, HarnessCodex, HarnessOpenCode}
+var KnownHarnesses = []string{HarnessShell, HarnessClaude, HarnessCodex, HarnessOpenCode, HarnessVSCode}
 
 // IsHarness reports whether id names one of them.
 func IsHarness(id string) bool {
@@ -44,11 +45,12 @@ func IsHarness(id string) bool {
 	return false
 }
 
-// HarnessSettings is what the user decides about the four programs a session
+// HarnessSettings is what the user decides about the five programs a session
 // can be. Everything else about them - how they are attached to, what their
 // screen looks like, what they are allowed to do - is the app's business, not
 // a setting.
 type HarnessSettings struct {
+	VSCode   VSCodeOptions   `json:"vscode"`
 	Shell    ShellOptions    `json:"shell"`
 	Claude   ClaudeOptions   `json:"claude"`
 	Codex    CodexOptions    `json:"codex"`
@@ -86,6 +88,11 @@ type ShellOptions struct {
 	Common
 }
 
+// VSCodeOptions configures the browser IDE executable; it has no model picker.
+type VSCodeOptions struct {
+	Common
+}
+
 // ClaudeOptions is the Claude Code launch surface: which binary, and what a
 // session starts on when it was started without a choice of its own. The
 // permission policy, the settings file, the theme and the environment are
@@ -116,10 +123,11 @@ type OpenCodeOptions struct {
 // itself: a typo would reach the model as configuration and be ignored.
 var CodexEfforts = []string{"minimal", "low", "medium", "high", "xhigh"}
 
-// DefaultHarnesses is the launch surface of a fresh installation: all four
+// DefaultHarnesses is the launch surface of a fresh installation: all five
 // offered, none of them overridden.
 func DefaultHarnesses() HarnessSettings {
 	return HarnessSettings{
+		VSCode:   VSCodeOptions{Common: Common{Enabled: true}},
 		Shell:    ShellOptions{Common: Common{Enabled: true}},
 		Claude:   ClaudeOptions{Common: Common{Enabled: true}},
 		Codex:    CodexOptions{Common: Common{Enabled: true}},
@@ -132,6 +140,8 @@ func DefaultHarnesses() HarnessSettings {
 // offered, where does it live, and which models did the user shortlist.
 func (h HarnessSettings) Entry(id string) (Common, bool) {
 	switch id {
+	case HarnessVSCode:
+		return h.VSCode.Common, true
 	case HarnessShell:
 		return h.Shell.Common, true
 	case HarnessClaude:
@@ -154,6 +164,7 @@ func (c *Common) normalize() {
 
 func (h *HarnessSettings) normalize() {
 	h.Shell.Common.normalize()
+	h.VSCode.Common.normalize()
 
 	c := &h.Claude
 	c.Common.normalize()

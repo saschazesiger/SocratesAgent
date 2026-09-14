@@ -253,7 +253,7 @@ func (m *Manager) Resolve(ctx context.Context) (string, error) {
 		return m.installer.Path(), nil
 	}
 	if !Supported() {
-		_, _, err := assetFor(runtime.GOOS, runtime.GOARCH)
+		_, err := assetFor(runtime.GOARCH)
 		return "", err
 	}
 

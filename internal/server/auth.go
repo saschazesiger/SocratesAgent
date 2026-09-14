@@ -21,7 +21,9 @@ import (
 )
 
 const (
-	passwordKey    = "password_hash"
+	// PasswordKey holds the PBKDF2 hash of the password, and is exported for
+	// the same reason as SettingsKey: `socrates export` carries it.
+	PasswordKey    = "password_hash"
 	sessionCookie  = "socrates_session"
 	sessionTTL     = 30 * 24 * time.Hour
 	pbkdf2Rounds   = 210000
@@ -67,7 +69,7 @@ func verifyPassword(encoded, password string) bool {
 }
 
 func (s *Server) hasPassword() bool {
-	v, err := s.store.GetKV(passwordKey)
+	v, err := s.store.GetKV(PasswordKey)
 	return err == nil && strings.TrimSpace(v) != ""
 }
 
@@ -247,7 +249,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := s.store.SetKV(passwordKey, hash); err != nil {
+	if err := s.store.SetKV(PasswordKey, hash); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -303,7 +305,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &body) {
 		return
 	}
-	stored, err := s.store.GetKV(passwordKey)
+	stored, err := s.store.GetKV(PasswordKey)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not read the stored password")
 		return
@@ -344,7 +346,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &body) {
 		return
 	}
-	stored, err := s.store.GetKV(passwordKey)
+	stored, err := s.store.GetKV(PasswordKey)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not read the stored password")
 		return
@@ -362,7 +364,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := s.store.SetKV(passwordKey, hash); err != nil {
+	if err := s.store.SetKV(PasswordKey, hash); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

@@ -71,7 +71,7 @@ function isShellRequest(request) {
   if (request.method !== 'GET') return false;
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return false;
-  if (url.pathname.startsWith('/api/')) return false;
+  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/ide/')) return false;
   return true;
 }
 

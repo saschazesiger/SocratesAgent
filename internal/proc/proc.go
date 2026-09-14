@@ -1,7 +1,6 @@
-//go:build !windows
-
-// Package proc holds the small platform specific bits of child process
-// handling that both the delegate agents and the Cloudflare tunnel need.
+// Package proc holds the child process handling the coding agents and the
+// Cloudflare tunnel need: a process group of their own, so that stopping one
+// stops what it started.
 package proc
 
 import (

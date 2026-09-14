@@ -152,3 +152,10 @@ from the same repository.
 The pin is `internal/web/static/vendor/VERSIONS` and `make vendor-xterm`
 re-downloads exactly that set, checking it against `vendor/SHA256SUMS`. The
 `.js.map` files the tarballs also carry are deliberately not shipped.
+
+## code-server
+
+The optional browser IDE and Docker image use [code-server](https://github.com/coder/code-server),
+licensed under the [MIT License](https://github.com/coder/code-server/blob/main/LICENSE).
+Its distribution includes VS Code OSS and dependencies with their own notices,
+retained in `/opt/code-server` in the Docker image.

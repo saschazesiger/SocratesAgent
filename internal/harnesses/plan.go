@@ -3,7 +3,7 @@
 // configuration files it reads, and what is known about the session id the
 // program keeps for itself.
 //
-// This file holds the types alone. The four harnesses and the registry that
+// This file holds the types alone. The five harnesses and the registry that
 // offers them live beside it.
 package harnesses
 

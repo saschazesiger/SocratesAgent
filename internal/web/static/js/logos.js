@@ -19,6 +19,10 @@ const NS = 'http://www.w3.org/2000/svg';
 
 // Each mark is a 24-unit viewBox, the paths as published, and the brand colour.
 const MARKS = {
+  vscode: {
+    name: 'VS Code', color: '#007acc', viewBox: '0 0 24 24', tile: true,
+    paths: ['M8 6 2 12l6 6 1.5-1.5L5 12l4.5-4.5zM16 6l-1.5 1.5L19 12l-4.5 4.5L16 18l6-6z'],
+  },
   shell: {
     name: 'Shell',
     color: '#131010',

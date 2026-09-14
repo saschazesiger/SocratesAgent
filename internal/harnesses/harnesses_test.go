@@ -24,7 +24,7 @@ import (
 func fakePATH(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	for _, name := range []string{"claude", "codex", "opencode"} {
+	for _, name := range []string{"claude", "codex", "opencode", "code-server", "env"} {
 		path := filepath.Join(dir, name)
 		if err := os.WriteFile(path, []byte("#!/bin/sh\necho "+name+" 0.0.0-test\n"), 0o755); err != nil {
 			t.Fatal(err)
@@ -1018,8 +1018,8 @@ func TestEnvAlwaysCarriesWhite(t *testing.T) {
 }
 
 // The registry is a fixed order, and every id in it is one config knows.
-func TestRegistryIsTheFourInOrder(t *testing.T) {
-	want := []string{config.HarnessShell, config.HarnessClaude, config.HarnessCodex, config.HarnessOpenCode}
+func TestRegistryOrder(t *testing.T) {
+	want := []string{config.HarnessShell, config.HarnessClaude, config.HarnessCodex, config.HarnessOpenCode, config.HarnessVSCode}
 	got := Registry()
 	if len(got) != len(want) {
 		t.Fatalf("the registry has %d harnesses", len(got))

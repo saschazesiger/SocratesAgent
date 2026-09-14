@@ -1106,13 +1106,14 @@ function openRowMenu(anchor, id) {
     // Hands-free is holding the bar on, and it is the only keyboard there is
     // while it does, so there is nothing here to offer: an item that answered
     // "hide" with a bar still on screen would be the menu lying.
-    handsFree() ? null : item(dom.keybar.hidden ? 'Show key bar' : 'Hide key bar', () => {
+    (handsFree() || session.harness === 'vscode') ? null : item(dom.keybar.hidden ? 'Show key bar' : 'Hide key bar', () => {
       const on = dom.keybar.hidden;
       setKeyBarWanted(on);
       showKeyBar(on);
     }),
     item(session.archived ? 'Unarchive' : 'Archive', () => archiveSession(session, !session.archived)),
-    item('Download scrollback', () => downloadJournal(session)),
+    session.harness === 'vscode' && state.current?.id === session.id ? item('Reload editor', () => attach(session)) : null,
+    item(session.harness === 'vscode' ? 'Download server log' : 'Download scrollback', () => downloadJournal(session)),
     item('Delete', () => deleteSession(session), 'danger'));
   document.body.append(menu);
   const position = (event) => {
@@ -1269,7 +1270,7 @@ function stopUsage() {
 
 function startUsage(session) {
   stopUsage();
-  if (!session) return;
+  if (!session || session.harness === 'vscode') return;
   const generation = state.usageGeneration;
   const refresh = async () => {
     try {
@@ -1507,7 +1508,11 @@ function actionFailed(err, sentence) {
   return sentence;
 }
 
+let ideGeneration = 0;
+
 function detach() {
+  ideGeneration += 1;
+  document.body.classList.remove('ide-open');
   if (state.assist) state.assist.attached();
   if (state.keybar) { state.keybar.dispose(); state.keybar = null; }
   dom.keybar.hidden = true;
@@ -1529,6 +1534,12 @@ function detach() {
 function attach(session) {
   detach();
   applySession(session);
+  if (session.harness === 'vscode') {
+    document.body.classList.add('ide-open');
+    dom.termSize.hidden = true;
+    openIDE(session, ideGeneration);
+    return;
+  }
 
   // Opening a session that is not running is what relaunches it (§C.8), and
   // the relaunch happens inside the handshake: the program has to be started,
@@ -1590,6 +1601,46 @@ function attach(session) {
   const size = state.term.size();
   socket.start(size.cols, size.rows);
   state.term.focus();
+}
+
+// Start through the existing resume API, then wait for the IDE's HTTP server.
+// A generation keeps a slow launch from replacing a subsequently selected pane.
+async function openIDE(session, generation) {
+  if (['failed', 'exited'].includes(session.state)) return;
+  const current = () => generation === ideGeneration;
+  const base = '/ide/' + encodeURIComponent(session.id) + '/';
+  const loading = el('p', { class: 'ide-loading', text: 'Opening VS Code…' });
+  dom.term.append(loading);
+  try {
+    const data = await api('/api/sessions/' + encodeURIComponent(session.id) + '/resume', {
+      method: 'POST', timeout: 60000,
+    });
+    if (!current()) return;
+    replaceSession(data.session);
+    if (data.error) throw new Error(data.error);
+    for (let attempt = 0; attempt < 60 && current(); attempt += 1) {
+      try {
+        const response = await fetch(base + 'healthz', { cache: 'no-store', signal: AbortSignal.timeout(3000) });
+        if (response.ok) {
+          if (!current()) return;
+          const frame = el('iframe', {
+            class: 'ide-frame', title: 'VS Code',
+            src: base + '?folder=' + encodeURIComponent(session.workdir),
+            allow: 'clipboard-read; clipboard-write',
+          });
+          dom.term.replaceChildren(frame);
+          onStatus('live');
+          return;
+        }
+      } catch { /* code-server may still be starting */ }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    if (current()) throw new Error('VS Code did not become ready. Check the session log or retry.');
+  } catch (err) {
+    if (!current()) return;
+    loading.textContent = errorMessage(err);
+    dom.term.append(el('button', { class: 'btn', text: 'Retry', onclick: () => attach(sessionOf(session.id) || session) }));
+  }
 }
 
 // The key bar is asked for or it is not there: no device decides for itself
@@ -1763,7 +1814,7 @@ function updateStale() {
 function selectSession(id) {
   const session = sessionOf(id);
   if (!session) return;
-  if (state.current && state.current.id === id && state.socket) return;
+  if (state.current && state.current.id === id && (state.socket || document.body.classList.contains('ide-open'))) return;
   markRead(id);
   state.wanted = id;
   location.hash = '#' + id;

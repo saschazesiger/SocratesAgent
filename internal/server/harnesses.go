@@ -9,7 +9,7 @@ import (
 )
 
 // handleHarnesses is the whole of what the new-session sheet needs: which of
-// the four programs are on this machine, what each can be run on, where a
+// the five programs are on this machine, what each can be run on, where a
 // session is allowed to work, and whether sessions can be created at all.
 //
 // It replaces both of the endpoints the chat app had - the agent list and the

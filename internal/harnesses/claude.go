@@ -130,7 +130,8 @@ func (c Claude) plan(req PlanRequest, lead []string, id string) (LaunchPlan, err
 	// The pane's environment is built here rather than inherited, so this is
 	// not a variable Socrates' own environment can be relied on to carry: a
 	// server started from a login shell that happened to export IS_SANDBOX
-	// would work and the same server started by systemd would not.
+	// would work and the same server started as the container entrypoint,
+	// which is how Socrates actually runs, would not.
 	if os.Geteuid() == 0 {
 		env["IS_SANDBOX"] = "1"
 	}

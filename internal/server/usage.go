@@ -15,9 +15,7 @@ import (
 	"net/http"
 	neturl "net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -88,7 +86,7 @@ func (s *Server) claudeLimits(ctx context.Context) usageLimits {
 			ExpiresAt   int64  `json:"expiresAt"`
 		} `json:"claudeAiOauth"`
 	}
-	raw, err := readClaudeCredentials(ctx)
+	raw, err := readClaudeCredentials()
 	if err != nil || json.Unmarshal(raw, &creds) != nil || creds.OAuth.AccessToken == "" ||
 		(creds.OAuth.ExpiresAt > 0 && creds.OAuth.ExpiresAt <= time.Now().UnixMilli()) {
 		s.claudeUsageAt = time.Now()
@@ -153,14 +151,8 @@ func (s *Server) claudeLimits(ctx context.Context) usageLimits {
 	return limits
 }
 
-func readClaudeCredentials(ctx context.Context) ([]byte, error) {
-	raw, err := os.ReadFile(filepath.Join(harnesses.ClaudeConfigDir(), ".credentials.json"))
-	if err == nil || runtime.GOOS != "darwin" {
-		return raw, err
-	}
-	// Claude Code uses the login keychain on macOS. `security` is part of the
-	// OS and prints the same JSON document Linux keeps in .credentials.json.
-	return exec.CommandContext(ctx, "security", "find-generic-password", "-s", "Claude Code-credentials", "-w").Output()
+func readClaudeCredentials() ([]byte, error) {
+	return os.ReadFile(filepath.Join(harnesses.ClaudeConfigDir(), ".credentials.json"))
 }
 
 func claudeSessionCost(id string) *float64 {

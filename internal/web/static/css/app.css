@@ -2070,5 +2070,11 @@ body.stale .chat-item .row-mark.busy::after { animation-play-state: paused; opac
 
 /* The verdict of the last install, above its output: the one line that says
    whether it worked, for a page that was reloaded after it finished. */
-.install-result { margin-top: 12px; }
-.install-result.bad { color: var(--red); }
+
+/* An IDE session occupies the same stage as a terminal. */
+.ide-open .term-host { padding: 0; }
+.ide-frame { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
+.ide-loading { padding: 24px; }
+.ide-open #keybar, .ide-open #termLines, .ide-open #termSize { display: none !important; }
+.ide-open #statusBtn, .ide-open #micBtn, .ide-open #handsBtn { display: none !important; }
+.ide-open .term-wrap, .ide-open .main:has(#keybar[hidden]) .term-wrap { padding: 0; }

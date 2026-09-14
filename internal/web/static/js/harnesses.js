@@ -173,7 +173,7 @@ export function defaultModelFor(id) {
 // choose. §E.3: the whole step is hidden, not disabled.
 export function needsModel(id) {
   const found = harness(id);
-  if (!found) return id !== 'shell';
+  if (!found) return !['shell', 'vscode'].includes(id);
   return (found.models || []).length > 0 || !!found.default_model;
 }
 

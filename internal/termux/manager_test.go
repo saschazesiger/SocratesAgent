@@ -441,10 +441,9 @@ func TestGlobalHooksFireForEverySession(t *testing.T) {
 // that made it.
 //
 // It proves survival of a *process* kill - the crash and the SIGTERM case -
-// and nothing else. It says nothing about a cgroup kill, which is what
-// `systemctl restart` does by default; that is what KillMode=process in
-// deploy/socrates.service and `systemd-run --scope` in supervise.go exist to
-// prevent, and it is verified by hand on a machine with systemd, not here.
+// and nothing else. It says nothing about the container going away, which
+// takes the tmux server with it: that is the reboot path, and a session comes
+// back through resume rather than through this.
 func TestSessionSurvivesManagerKill(t *testing.T) {
 	bin := requireTmux(t)
 	dir := t.TempDir()
