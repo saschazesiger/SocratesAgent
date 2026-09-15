@@ -429,21 +429,77 @@ a { color: inherit; }
   padding: 4px 8px 12px;
   scrollbar-width: thin;
 }
-/* Which day the rows below it were last used on. It is a label rather than a
-   band: a hairline above it separates the group, and the surface stays the one
-   white the whole page is. The first group needs no line - the list's own top
-   is the separation. */
-.chat-group {
-  margin-top: 10px;
+/* The project the rows below it work in. It is a label rather than a band: a
+   hairline above it separates the folder, and the surface stays the one white
+   the whole page is. The first folder needs no line - the list's own top is
+   the separation. */
+.folder-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin: 10px 0 0;
   padding: 10px 10px 5px;
+  border: 0;
   border-top: 1px solid var(--line);
+  border-radius: 0;
+  background: none;
+  font: inherit;
   font-size: 10.5px;
   font-weight: 600;
   letter-spacing: .04em;
   text-transform: uppercase;
   color: var(--text-faint);
+  cursor: pointer;
+  text-align: left;
 }
-.chat-group:first-child { margin-top: 0; padding-top: 2px; border-top: 0; }
+.folder:first-child .folder-head { margin-top: 0; padding-top: 2px; border-top: 0; }
+.folder-head:hover { color: var(--text-soft); }
+.folder-head .folder-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The caret is the whole of the control: pointing down at an open folder,
+   right at a shut one. It turns, because the turn is what says the two are
+   the same folder in two states. */
+.folder-head .caret {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  display: inline-flex;
+  opacity: .75;
+  transform: rotate(90deg);
+  transition: transform .16s var(--ease);
+}
+.folder-head .caret svg { width: 100%; height: 100%; display: block; }
+.folder.closed .folder-head .caret { transform: none; }
+/* Shut, the folder says how much is behind it, and whether any of it wants
+   somebody: the same amber a row waiting wears, and the same weight an unread
+   row's name has. Open, the rows say all of it themselves. */
+.folder-head .folder-count,
+.folder-head .folder-dot { display: none; }
+.folder.closed .folder-head .folder-count {
+  display: inline;
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.folder.closed .folder-head.unread .folder-count { color: var(--text); }
+.folder.closed .folder-head.waiting .folder-dot,
+.folder.closed .folder-head.busy .folder-dot {
+  display: inline-block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+.folder.closed .folder-head.busy .folder-dot { background: var(--text-faint); }
+.folder.closed .folder-head.waiting .folder-dot { background: var(--amber); }
 .chat-item {
   display: flex;
   align-items: center;
@@ -540,9 +596,12 @@ a { color: inherit; }
   body.side-collapsed .btn-label { display: none; }
   body.side-collapsed .scope { display: none; }
   body.side-collapsed .chat-list { padding: 4px 6px 12px; }
-  /* The day header keeps its hairline - which is what actually separates the
-     groups - and loses the word, which does not fit in a rail. */
-  body.side-collapsed .chat-group { font-size: 0; padding: 8px 4px 0; }
+  /* The folder head keeps its hairline - which is what actually separates the
+     folders - and its caret, which is the control. The name does not fit in a
+     rail, and is in the tooltip the head already carries. */
+  body.side-collapsed .folder-head { justify-content: center; padding: 8px 4px 4px; }
+  body.side-collapsed .folder .folder-head .folder-name,
+  body.side-collapsed .folder .folder-head .folder-count { display: none; }
   body.side-collapsed .list-empty { display: none; }
   body.side-collapsed .chat-item { justify-content: center; gap: 0; padding: 8px 0; }
   body.side-collapsed .chat-item .label,
@@ -825,6 +884,13 @@ a { color: inherit; }
 .seg-row .seg:disabled { opacity: .45; cursor: default; }
 .seg-row .seg-sub { font-size: 10.5px; color: var(--text-faint); }
 .seg-row.agents .seg { min-height: 46px; }
+/* A row with nothing in it is still a hairline box, and an empty box on a
+   sheet is a control that failed to draw. */
+.seg-row:empty { display: none; }
+/* The sheet's first question is two rows: the agents, and under them the two
+   programs that are not agents. The gap between the pair is smaller than the
+   gap to the field below, so they read as one question rather than two. */
+.seg-row.agents:has(+ .seg-row.tools:not(:empty)) { margin-bottom: 7px; }
 /* On a phone the four agents share the same row, so a name that would not fit
    beside its mark goes under it instead. */
 @media (max-width: 620px) {
@@ -1136,6 +1202,10 @@ a { color: inherit; }
     transition: transform .22s cubic-bezier(.3,.8,.4,1);
     box-shadow: var(--shadow);
   }
+  /* A drawer is the shape a finger uses, and a folder head is a control: shut
+     and open is one tap, so the head is a target worth aiming at rather than
+     the 24px a label needs. */
+  .folder-head { min-height: 36px; }
   .side-foot { padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)); }
   body.nav-open .sidebar { transform: none; }
   /* A drawer is already the narrow state, and one that was also a rail could
@@ -2072,9 +2142,32 @@ body.stale .chat-item .row-mark.busy::after { animation-play-state: paused; opac
    whether it worked, for a page that was reloaded after it finished. */
 
 /* An IDE session occupies the same stage as a terminal. */
-.ide-open .term-host { padding: 0; }
+.ide-open .term-host { padding: 0; position: relative; }
 .ide-frame { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
-.ide-loading { padding: 24px; }
+/* code-server answers /healthz several seconds before the workbench has
+   painted anything, so the frame is white for as long again as the launch
+   took. The loading card stays on top of it until the workbench is really
+   there: a blank white rectangle is the one thing that reads as broken. */
+.ide-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px;
+  text-align: center;
+  background: var(--bg);
+  color: var(--text-soft);
+  font-size: 13.5px;
+  transition: opacity .28s var(--ease);
+}
+.ide-loading p { margin: 0; }
+/* Faded out rather than removed at once, so the workbench arrives instead of
+   replacing something. */
+.ide-loading.done { opacity: 0; pointer-events: none; }
 .ide-open #keybar, .ide-open #termLines, .ide-open #termSize { display: none !important; }
 .ide-open #statusBtn, .ide-open #micBtn, .ide-open #handsBtn { display: none !important; }
 .ide-open .term-wrap, .ide-open .main:has(#keybar[hidden]) .term-wrap { padding: 0; }

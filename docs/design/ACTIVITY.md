@@ -116,6 +116,8 @@ On a committed change (state, note or unread) the manager fires `Config.OnActivi
 
 One server-side rule: `markUnread = (prev == busy && next != busy) || (prev != waiting && next == waiting)` — work finished, or the agent started needing you. `unknown` counts as "not busy", so a pane that dies mid-turn also marks unread: something ended and nobody saw it.
 
+<!-- rev: fable --> **And only for a session that has been asked something.** Every harness is busy while it starts up and idle the moment it is ready, so the rule above fired once on the first second of every session that was ever created — a bold row, a chime and a notification saying that a window had finished opening. `track.asked()` is the test: has anything been typed into this pane since it was launched (`NoteInput` from the socket, `NoteTyped` from `SendKeys`). A relaunch clears it with the rest of the track. The browser chimes and notifies on `unread` for the same reason, so this one test covers all three. See DEVIATIONS.md, "Starting a session is not work that finished".
+
 Cleared by, and only by: any input frame accepted for that session (`termConn.onInput`, after the write succeeds → `manager.NoteInput(id)`), the `read` control frame, or `POST /api/sessions/{id}/read`. Focus alone does not clear it; the frontend never bolds the attached session (§D.1), so "focus it and type" is covered by the input rule without the server knowing about focus.
 
 ## A.5 Lifecycle edges
@@ -425,7 +427,8 @@ New module `internal/web/static/js/assist.js` — status, the ticker and the cha
 - **waiting** — the same ring, static, and the state dot turns `--amber`. Distinct from busy at a glance without introducing a second colour.
 - **unread** — `.chat-item.unread .label { font-weight: 600 }`, applied only when `session.id !== state.current?.id`: the session being looked at is never bold.
 - `Activity.source`, `.note` and `.since` join `rowFacts()` behind the existing `infoTip` — technical strings stay hover-only.
-- One visually-hidden `<div id="activityLive" aria-live="polite">` in the sidebar, written on a committed change ("Claude Code finished", "Codex needs an answer"), throttled to one message per 2 s.
+- One visually-hidden `<div id="activityLive" aria-live="polite">` in the sidebar, written on a committed change ("Claude Code finished", "Codex needs an answer"), throttled to one message per 2 s. <!-- rev: fable --> On the same edge the chime fires on, so it says nothing a phone would not have said (§D.6).
+- <!-- rev: fable --> **A Shell and a VS Code row carry none of it.** `activityOf(session)` — the one accessor the rows, the folder heads, `rowFacts`, the announcement and the chime all read through — answers `null` for the two harnesses in `harnesses.TOOLS`. "Working" and "finished" are words about a turn, and neither of those programs takes one: a shell is busy for as long as `ls` runs and an editor is busy while it boots. The detector still watches them, because the server needs to know whether a pane is doing anything; what changes is that the page does not draw it.
 
 `onControl` gains `case 'activity':` — merge `frame.sessions` into a new `state.activity` Map, `renderList()` and update the header. <!-- rev: fable --> Nothing else hangs off a committed change any more: the auto-status trigger went with Auto mode (§D.4). `hello` seeds the same map; `refreshList()` seeds it from each view's `activity` field. `selectSession(id)` sends `{"t":"read","id":id}` on the open socket, or `POST /api/sessions/{id}/read` when there is none.
 
@@ -564,7 +567,11 @@ session, attached or not — the session nobody is watching is the point of it.
 It fires for none of: a first sighting (`prev` is null, which is also what a
 `hello` replay and a reload look like), `unknown → anything` (nothing
 finished; the detector merely found its footing), or a state that did not
-change.
+change. <!-- rev: fable --> It fires for none of: a session whose `next.unread`
+is false — that is the server's own answer to whether anything happened that
+nobody has seen, and it is only set for a session somebody has typed at (§A.4),
+so a harness finishing its own start-up is silent — and a session running Shell
+or VS Code, which have no status at all (§D.1).
 
 **The chime.** Two sine notes on one oscillator — 880 Hz then 1175 Hz, ~120 ms
 each, a gentle envelope with a dip between them, the whole of it under 400 ms —

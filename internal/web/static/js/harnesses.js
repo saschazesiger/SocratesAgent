@@ -16,6 +16,15 @@ import { agentMark } from './logos.js';
 
 const CACHE_KEY = 'socrates.harnesses';
 
+// The two programs that are not agents. Nothing is asked of a shell or of an
+// editor and nothing is reported back by them, so they have no model to run
+// on and no status to be in: they are a window onto the machine, and a window
+// is either open or it is not. Everywhere those two facts are needed - the
+// second row of the sheet, the marks a session row wears - this is the list.
+export const TOOLS = ['shell', 'vscode'];
+
+export function isTool(id) { return TOOLS.includes(id); }
+
 // The three ways of choosing a working directory, as internal/harnesses names
 // them.
 export const DYNAMIC = 'dynamic';
@@ -173,7 +182,7 @@ export function defaultModelFor(id) {
 // choose. §E.3: the whole step is hidden, not disabled.
 export function needsModel(id) {
   const found = harness(id);
-  if (!found) return !['shell', 'vscode'].includes(id);
+  if (!found) return !isTool(id);
   return (found.models || []).length > 0 || !!found.default_model;
 }
 
@@ -259,6 +268,9 @@ export async function openNewSessionSheet() {
   const sheet = document.getElementById('newSessionSheet');
   if (!sheet) return null;
   const harnessRow = document.getElementById('nsHarness');
+  // The second row of the first question. A page that predates it falls back
+  // to the one row, which is what it used to be.
+  const toolsRow = document.getElementById('nsTools') || harnessRow;
   const dirRow = document.getElementById('nsDir');
   const dirPath = document.getElementById('nsDirPath');
   const dirHint = document.getElementById('nsDirHint');
@@ -275,6 +287,7 @@ export async function openNewSessionSheet() {
   const pick = { harness: '', model: '', effort: '', mode: DYNAMIC, workdir: '' };
 
   harnessRow.innerHTML = '';
+  toolsRow.innerHTML = '';
   if (!entries.length) {
     // A first ever visit that is already offline has nothing to show. Saying
     // so is the only honest answer; there is no id to guess at.
@@ -290,7 +303,9 @@ export async function openNewSessionSheet() {
     button.addEventListener('click', () => selectHarness(entry.id));
     // The mark and the name are what a person picks by. The build a CLI is and
     // where it was found are not part of that choice, and are not on the sheet.
-    harnessRow.append(button);
+    // Which of the two rows it lands in is the one other thing the choice is:
+    // an agent to give work to, or a window onto the machine.
+    (isTool(entry.id) ? toolsRow : harnessRow).append(button);
   }
 
   // Where a session works is a dropdown rather than a row of cells: a machine
@@ -416,7 +431,10 @@ export async function openNewSessionSheet() {
 
   function selectHarness(id) {
     pick.harness = id;
+    // Both rows are one choice, so both are told what was picked: the row that
+    // does not hold it is the row that has to let go of it.
     pressed(harnessRow, id);
+    if (toolsRow !== harnessRow) pressed(toolsRow, id);
     // Shell has nothing to run on, so the step is not there at all.
     modelField.hidden = !needsModel(id);
     pick.model = modelField.hidden ? '' : defaultModelFor(id);

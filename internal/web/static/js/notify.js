@@ -189,11 +189,18 @@ export function mountNotify(ctx) {
    * handshake replay - both of which arrive with no previous state - say
    * nothing. A session coming back from `unknown` says nothing either: nothing
    * finished, the detector merely found its footing again.
+   *
+   * `next.unread` is the server's own answer to whether this is news at all,
+   * and it is the same edge the sidebar goes bold on. A harness is busy while
+   * it starts up and idle the moment it is ready, and that is not a turn
+   * ending: the server marks a completion unread only for a session somebody
+   * has actually typed at, and this is where a phone is told the difference.
    */
   function completed(id, next, prev) {
     if (!prev || !next) return;
     if (prev.state !== 'busy') return;
     if (next.state !== 'idle' && next.state !== 'waiting') return;
+    if (!next.unread) return;
     if (next.since && rung.get(id) === next.since) return;
     rung.set(id, next.since || Date.now());
     if (sound) {

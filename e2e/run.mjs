@@ -15,7 +15,7 @@ import {
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 // The one thing the harness cannot hand over: when a session was last used is
-// the store's own record of what happened to it, so `daygroups` writes it in
+// the store's own record of what happened to it, so `folders` writes it in
 // the store itself.
 import { DatabaseSync } from 'node:sqlite';
 
@@ -63,8 +63,8 @@ async function startSession(page, harness) {
   await ensureNav(page);
   await page.click('#newSession');
   await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-  await page.waitForSelector('#nsHarness .seg[data-value="' + harness + '"]', { timeout: 10000 });
-  await page.click('#nsHarness .seg[data-value="' + harness + '"]');
+  await page.waitForSelector('#newSessionSheet .seg[data-value="' + harness + '"]', { timeout: 10000 });
+  await page.click('#newSessionSheet .seg[data-value="' + harness + '"]');
   await pickModelIfNeeded(page);
   await page.click('#nsStart');
   await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
@@ -406,10 +406,13 @@ async function pages() {
         ok(rect.left <= 1 && Math.round(rect.width) >= viewport.width - 2,
           `the sheet is a full-width bottom sheet at ${tag}`, JSON.stringify(rect));
       }
-      // Four harnesses, each with its own mark: §E.10 rule 2.
-      const marks = await s.page.$$eval('#nsHarness .seg .agent-mark', (nodes) => nodes.map((n) => n.dataset.agent));
-      ok(marks.join(',') === 'shell,claude,codex,opencode',
-        `the sheet offers all four harnesses, each with its mark at ${tag}`, marks.join(',') || 'none');
+      // Every harness with its own mark: §E.10 rule 2. The agents come first
+      // and the two programs that are not agents are the row beneath them.
+      const marks = await s.page.$$eval('#nsHarness .seg .agent-mark, #nsTools .seg .agent-mark',
+        (nodes) => nodes.map((n) => n.dataset.agent));
+      ok(marks.join(',') === 'claude,codex,opencode,shell,vscode',
+        `the sheet offers the agents and then the tools, each with its mark at ${tag}`,
+        marks.join(',') || 'none');
 
       // Nothing on the sheet is hover-only any more: a choice is a mark and a
       // name, and the prose that explained the choice is gone with it.
@@ -1143,7 +1146,7 @@ async function adminoptions() {
       await s.page.waitForFunction(() =>
         document.getElementById('nsDirHint').textContent.length > 0, null, { timeout: 5000 });
     }
-    await s.page.click('#nsHarness .seg[data-value="claude"]');
+    await s.page.click('#newSessionSheet .seg[data-value="claude"]');
     await s.page.click('#nsStart');
     await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
     await s.page.waitForFunction(() => location.hash.length > 1, null, { timeout: 30000 });
@@ -1959,8 +1962,8 @@ async function startWithModel(page, harness, modelLabel) {
   await ensureNav(page);
   await page.click('#newSession');
   await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-  await page.waitForSelector('#nsHarness .seg[data-value="' + harness + '"]', { timeout: 10000 });
-  await page.click('#nsHarness .seg[data-value="' + harness + '"]');
+  await page.waitForSelector('#newSessionSheet .seg[data-value="' + harness + '"]', { timeout: 10000 });
+  await page.click('#newSessionSheet .seg[data-value="' + harness + '"]');
   // The model step is hidden for Shell and pre-filled for a harness that names
   // a default. Where it is neither - OpenCode reports models and no default -
   // the sheet waits for a choice, which is what a person would make.
@@ -2069,7 +2072,7 @@ async function createclaude() {
     await ensureNav(s.page);
     await s.page.click('#newSession');
     await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-    await s.page.click('#nsHarness .seg[data-value="claude"]');
+    await s.page.click('#newSessionSheet .seg[data-value="claude"]');
     await s.page.click('#nsModel .combo-input');
     await s.page.waitForSelector('#nsModel .combo-option', { timeout: 5000 });
     const shown = await s.page.$$eval('#nsModel .combo-option .combo-label', (nodes) => nodes.map((n) => n.textContent));
@@ -2958,16 +2961,16 @@ async function design() {
     ok(Object.values(surfaces).every(white),
       'every surface on the session page is the same white', JSON.stringify(surfaces));
 
-    // Rule 2 - a mark wherever a harness is named. The sheet names all four,
+    // Rule 2 - a mark wherever a harness is named. The sheet names them all,
     // the header names this session's, and the row in the list names it again.
     await s.page.click('#newSession');
     await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-    const sheetMarks = await s.page.$$eval('#nsHarness .seg', (nodes) =>
+    const sheetMarks = await s.page.$$eval('#nsHarness .seg, #nsTools .seg', (nodes) =>
       nodes.map((n) => ({
         harness: n.dataset.value,
         mark: (n.querySelector('.agent-mark') || { dataset: {} }).dataset.agent || 'none',
       })));
-    ok(sheetMarks.length === 4 && sheetMarks.every((one) => one.mark === one.harness),
+    ok(sheetMarks.length === 5 && sheetMarks.every((one) => one.mark === one.harness),
       'the sheet gives every harness its own mark', JSON.stringify(sheetMarks));
 
     // Where a session works is a dropdown, and it opens on a list of places
@@ -3066,8 +3069,20 @@ async function design() {
     // motion is that one arc: drawn in the faintest text colour on a ring in
     // the faintest line, it turned and nobody could see it turning, which is
     // the same thing as not turning at all.
-    await typeLine(s.page, 'sleep 6');
-    const spinning = await awaitRow(s.page, id, (r) => r.busy, 10000);
+    //
+    // It takes an agent session: a shell and an editor are the two programs
+    // nothing is asked of and nothing is reported back by, so their rows carry
+    // no status at all and there is no ring on them to look at. The shell is
+    // stepped back onto afterwards, because the rest of this scenario is about
+    // the pane it owns.
+    const working = await startSession(s.page, 'claude');
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    await awaitRow(s.page, working, (r) => !r.busy, 20000);
+    const workingRow = await sessionRow(s, working);
+    await typeLine(s.page, '/busy 20000');
+    await clickRow(s.page, id);
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const spinning = await awaitRow(s.page, working, (r) => r.busy, 10000);
     ok(spinning.ok, 'a session that is working turns its own mark into a ring', took(spinning));
     const ring = spinning.seen ? spinning.seen.ring : null;
     ok(!!ring && ring.colour === 'rgb(23, 24, 27)' && ring.rest === 'rgb(220, 221, 225)',
@@ -3085,17 +3100,18 @@ async function design() {
       const mark = document.querySelector(sel + ' .row-mark');
       const anim = mark ? mark.getAnimations({ subtree: true })[0] : null;
       return anim ? Number(anim.currentTime) : -1;
-    }, rowSel(id));
-    await s.context.request.patch(s.url + '/api/sessions/' + id, { data: { title: renamed + ' again' } });
+    }, rowSel(working));
+    const spinnerName = workingRow.title + ' renamed';
+    await s.context.request.patch(s.url + '/api/sessions/' + working, { data: { title: spinnerName } });
     await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
     await s.page.waitForFunction((want) =>
       [...document.querySelectorAll('#sessionList .chat-item .label')].some((n) => n.textContent === want),
-    renamed + ' again', { timeout: 20000 });
+    spinnerName, { timeout: 20000 });
     const spunAfter = await s.page.evaluate((sel) => {
       const mark = document.querySelector(sel + ' .row-mark');
       const anim = mark ? mark.getAnimations({ subtree: true })[0] : null;
       return anim ? Number(anim.currentTime) : -1;
-    }, rowSel(id));
+    }, rowSel(working));
     ok(spunBefore >= 0 && spunAfter > spunBefore,
       'and a re-render of its row does not restart it',
       Math.round(spunBefore) + ' ms -> ' + Math.round(spunAfter) + ' ms');
@@ -3107,7 +3123,7 @@ async function design() {
     // desk whose system had "reduce motion" on.
     await s.page.emulateMedia({ reducedMotion: 'reduce' });
     await wait(200);
-    const still = await rowActivity(s.page, id);
+    const still = await rowActivity(s.page, working);
     ok(!!still.ring && still.ring.name === 'spin' && still.ring.motion === '0.9s',
       'with reduced motion the ring turns at the pace it always turns at',
       still.ring ? still.ring.name + ' ' + still.ring.motion : 'no ring');
@@ -3118,7 +3134,7 @@ async function design() {
       const was = Number(anim.currentTime);
       return new Promise((done) => setTimeout(() =>
         done(Number(anim.currentTime) - was), 400));
-    }, rowSel(id));
+    }, rowSel(working));
     ok(slow > 100, 'and it is really running, not a still frame with a name on it',
       Math.round(slow) + ' ms of turn in 400 ms');
     await s.page.emulateMedia({ reducedMotion: null });
@@ -3169,7 +3185,8 @@ async function design() {
       }
       return parts.join(' ');
     });
-    ok(!/\b(exact|quiet|unknown|run_id|phase)\b/.test(spoken) && !spoken.includes(id),
+    ok(!/\b(exact|quiet|unknown|run_id|phase)\b/.test(spoken)
+      && !spoken.includes(id) && !spoken.includes(working),
       'nothing the detector knows is written on the page in words',
       oneLine((/\b(exact|quiet|unknown|run_id|phase)\b/.exec(spoken) || ['none'])[0]));
 
@@ -3391,11 +3408,11 @@ async function secondTab(s, id) {
 }
 
 // A turn that takes a measurable amount of time, in the words each program
-// understands. The three fakes carry the real furniture and the real signals;
-// a shell is busy because something other than the shell is in the foreground.
-async function keepBusy(page, harness, ms) {
-  if (harness === 'shell') await typeLine(page, 'sleep ' + Math.round(ms / 1000));
-  else await typeLine(page, '/busy ' + ms);
+// understands. The three fakes carry the real furniture and the real signals.
+// There is no shell here: a shell is never given a turn, so it has no status
+// to watch and nothing to wait for the end of.
+async function keepBusy(page, ms) {
+  await typeLine(page, '/busy ' + ms);
 }
 
 // activityFor is one harness's whole story: it starts working and the row says
@@ -3417,7 +3434,7 @@ async function activityFor(harness) {
     const settled = await awaitRow(s.page, id, (r) => !r.busy, 20000);
     ok(settled.ok, harness + ' settles into idle before it is given anything to do', took(settled));
 
-    await keepBusy(s.page, harness, 8000);
+    await keepBusy(s.page, 8000);
     const spun = await awaitRow(s.page, id, (r) => r.busy, 8000);
     ok(spun.ok, 'the row spins while ' + harness + ' is working', took(spun));
     ok(!spun.seen || spun.seen.ring === null || spun.seen.ring.name === 'spin',
@@ -3441,7 +3458,6 @@ async function activityFor(harness) {
 const activityclaude = () => activityFor('claude');
 const activitycodex = () => activityFor('codex');
 const activityopencode = () => activityFor('opencode');
-const activityshell = () => activityFor('shell');
 
 // A permission prompt is the one state that may sit for an hour: the person it
 // is waiting for is driving. So it is drawn differently from working - an amber
@@ -3694,10 +3710,14 @@ const rang = (page) => page.evaluate(() => ({
   toasts: (window.__toasts || []).slice(),
 }));
 
-// drive makes one turn happen in a Shell session and waits for it to be over,
-// which is the edge the whole feature hangs off.
-async function drive(s, id, seconds = 2) {
-  await keepBusy(s.page, 'shell', seconds * 1000);
+// drive makes one turn happen and waits for it to be over, which is the edge
+// the whole feature hangs off.
+//
+// It is a Claude session and not a shell because a shell has no turns: nothing
+// is asked of it and nothing is reported back, so its row carries no status
+// and it never chimes.
+async function drive(s, id, ms = 2000) {
+  await keepBusy(s.page, ms);
   const spun = await awaitRow(s.page, id, (r) => r.busy, 10000);
   const done = spun.ok && (await awaitRow(s.page, id, (r) => !r.busy, 20000)).ok;
   // The frame that ends the turn and the call it makes are the same tick, but
@@ -3757,13 +3777,21 @@ async function notify() {
         sound: kept.sound.pressed, notify: kept.notify.pressed,
       }));
 
-    const id = await startSession(s.page, 'shell');
+    const opened = await rang(s.page);
+    const id = await startSession(s.page, 'claude');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    // A session that has only just been made goes through its own first
-    // busy-to-idle, and that one is real: the count is taken afterwards.
+    // Every harness is busy while it starts up and idle the moment it is
+    // ready, and that is not a turn ending: a session that has just been made
+    // has been asked nothing, so nothing it does on its way to a prompt is
+    // worth a sound on a phone in somebody's pocket.
     const settled = await awaitRow(s.page, id, (r) => !r.busy, 20000);
-    ok(settled.ok, 'the new session settles before anything is counted', took(settled));
+    ok(settled.ok, 'the new session settles into idle', took(settled));
     await wait(1200);
+    const started = await rang(s.page);
+    ok(started.beeps === opened.beeps && started.notes.length === opened.notes.length,
+      'and starting one says nothing at all, with both switches on',
+      (started.beeps - opened.beeps) + ' chime(s), '
+      + (started.notes.length - opened.notes.length) + ' note(s)');
     const title = await s.page.$eval(rowSel(id) + ' .label', (n) => n.textContent);
 
     // Two more controls that are never hidden is two more things a phone's
@@ -3797,7 +3825,7 @@ async function notify() {
     await wait(500);
 
     let before = await rang(s.page);
-    ok(await drive(s, id, 3), 'a turn in the shell starts and finishes', 'sleep 3');
+    ok(await drive(s, id, 3000), 'a turn starts and finishes', '/busy 3000');
     let after = await rang(s.page);
     ok(after.beeps - before.beeps === 1, 'it chimed exactly once',
       (after.beeps - before.beeps) + ' chime(s)');
@@ -3818,7 +3846,7 @@ async function notify() {
       && muted.sound.shown === 'ico-off',
       'muting shows the crossed-out speaker and says the words', JSON.stringify(muted.sound));
     before = await rang(s.page);
-    ok(await drive(s, id, 3), 'a second turn starts and finishes', 'sleep 3');
+    ok(await drive(s, id, 3000), 'a second turn starts and finishes', '/busy 3000');
     after = await rang(s.page);
     ok(after.beeps - before.beeps === 0 && after.notes.length - before.notes.length === 1,
       'muted, it is silent and still notifies',
@@ -3830,7 +3858,7 @@ async function notify() {
       () => document.getElementById('notifyBtn').getAttribute('aria-pressed') === 'false',
       null, { timeout: 5000 });
     before = await rang(s.page);
-    ok(await drive(s, id, 3), 'a third turn starts and finishes', 'sleep 3');
+    ok(await drive(s, id, 3000), 'a third turn starts and finishes', '/busy 3000');
     after = await rang(s.page);
     ok(after.notes.length - before.notes.length === 0 && after.beeps - before.beeps === 0,
       'with both off, a finished turn says nothing at all',
@@ -3853,7 +3881,7 @@ async function notify() {
     // The handshake replays every running session's state, and a replay is not
     // news: a page that reloads while a turn is running must not ring for a
     // turn that started before it existed.
-    await keepBusy(s.page, 'shell', 12000);
+    await keepBusy(s.page, 12000);
     const running = await awaitRow(s.page, id, (r) => r.busy, 10000);
     ok(running.ok, 'a turn is still running when the page is reloaded', took(running));
     await s.page.reload({ waitUntil: 'domcontentloaded' });
@@ -3979,7 +4007,7 @@ async function sessiontitle() {
 
     // The turn that finishes too early. A harness starting up looks like work,
     // and a name made from that screen is the name of the program.
-    await keepBusy(s.page, 'claude', 3000);
+    await keepBusy(s.page, 3000);
     const spun = await awaitRow(s.page, id, (r) => r.busy, 10000);
     ok(spun.ok, 'it goes to work on the first thing it is asked', took(spun));
     const stopped = await awaitRow(s.page, id, (r) => !r.busy, 20000);
@@ -3994,7 +4022,7 @@ async function sessiontitle() {
 
     // Past the mark, the next turn to finish is the one that names it.
     await wait(Math.max(0, TITLE_MIN_AGE - (Date.now() - born)) + 500);
-    await keepBusy(s.page, 'claude', 3000);
+    await keepBusy(s.page, 3000);
     const again = await awaitRow(s.page, id, (r) => r.busy, 10000);
     ok(again.ok, 'it is asked a second thing, now that it has been alive a while', took(again));
 
@@ -4009,7 +4037,7 @@ async function sessiontitle() {
 
     // Once. A third turn is not a second name, and it is not asked for again.
     const asks = asked();
-    await keepBusy(s.page, 'claude', 1500);
+    await keepBusy(s.page, 1500);
     await awaitRow(s.page, id, (r) => !r.busy, 20000);
     await wait(2000);
     ok(asks === 1 && asked() === 1, 'the naming happened exactly once', asks + ' then ' + asked());
@@ -4702,11 +4730,11 @@ async function typekeepsfocus() {
   } finally { await s.stop(); }
 }
 
-/* --------------------------------------------------------- 41. daygroups */
+/* ----------------------------------------------------------- 41. folders */
 
-// The sidebar is read by day - today's sessions, yesterday's, what is left of
-// the week, of the month, and everything older - so it is drawn that way, with
-// a quiet header over each group and no group that has nothing in it.
+// The sidebar is read by project - one folder per directory sessions work in,
+// "More Chats" at the bottom for the ones Socrates housed itself, and a folder
+// a person can shut and find shut again tomorrow.
 //
 // A list with history in it cannot be waited for, so it is made: the moment a
 // session was last used is written straight into the store.
@@ -4717,7 +4745,7 @@ async function typekeepsfocus() {
 // own record of when a session's status last changed, not something a client
 // gets to choose. So the scenario writes the three clocks itself, with node's
 // own SQLite against the same file the server has open, which is the smallest
-// thing that can produce a "last month".
+// thing that can produce a folder that was worked in last week.
 function backdate(s, moments) {
   const db = new DatabaseSync(join(s.data, 'socrates.db'), { timeout: 10000 });
   try {
@@ -4729,283 +4757,382 @@ function backdate(s, moments) {
   } finally { db.close(); }
 }
 
-// dayPlan is the groups today can have, in the order the list draws them, each
-// with a moment that is certainly inside it. The calendar is this machine's own
-// local one, which is the calendar the browser groups by.
-//
-// Not every group exists on every day of the year: on a Monday or a Tuesday the
-// week has no room for a third group, and in the first days of a month the
-// month has none for a fourth. Those are ordinary days, so the scenario asks
-// for what today can have rather than pretending every day is a Friday.
-function dayPlan(now = Date.now()) {
-  const midnight = new Date(now);
-  midnight.setHours(0, 0, 0, 0);
-  // Days are moved by the calendar rather than by subtracting hours, because
-  // twice a year a day is 23 or 25 hours long.
-  const back = (days) => {
-    const day = new Date(midnight);
-    day.setDate(day.getDate() - days);
-    return day;
-  };
-  const noon = (day) => new Date(day).setHours(12, 0, 0, 0);
-  const yesterday = back(1);
-  const week = back((midnight.getDay() + 6) % 7);
-  const month = new Date(midnight.getFullYear(), midnight.getMonth(), 1);
-  const plan = [
-    { key: 'today', label: 'Today', at: now },
-    { key: 'yesterday', label: 'Yesterday', at: noon(yesterday) },
-  ];
-  if (week.getTime() < yesterday.getTime()) plan.push({ key: 'week', label: 'This week', at: noon(week) });
-  if (month.getTime() < week.getTime()) plan.push({ key: 'month', label: 'This month', at: noon(month) });
-  // Older is half a day before the earliest boundary above it - the first of
-  // the month, or the Monday of this week when the month started after it,
-  // which is what the first days of a month look like. Half a day is enough
-  // whatever the clocks did that night.
-  const oldest = Math.min(month.getTime(), week.getTime());
-  plan.push({ key: 'older', label: 'Older', at: oldest - 12 * 3600 * 1000 });
-  return plan;
-}
-
-// listing is what the sidebar is actually showing: every child in order,
-// headers and rows alike, with whatever marker it was stamped with.
+// listing is what the sidebar is actually showing: every folder in order, with
+// the rows under it and whatever marker each was stamped with.
 const listing = (page) => page.evaluate(() => [...document.getElementById('sessionList').children]
   .map((node) => ({
-    group: node.classList.contains('chat-group') ? node.textContent : '',
-    row: node.classList.contains('chat-item') ? node.querySelector('.label').textContent : '',
-    id: node.dataset.id || '',
+    folder: node.dataset.folder || '',
+    name: (node.querySelector('.folder-name') || {}).textContent || '',
+    title: (node.querySelector('.folder-head') || {}).title || '',
+    open: (node.querySelector('.folder-head') || {}).getAttribute
+      ? node.querySelector('.folder-head').getAttribute('aria-expanded') : '',
+    count: (node.querySelector('.folder-count') || {}).textContent || '',
+    shown: !!node.querySelector('.folder-rows') && node.querySelector('.folder-rows').checkVisibility(),
     stamp: node.dataset.stamp || '',
-    archived: node.classList.contains('archived'),
-    other: node.classList.contains('chat-group') || node.classList.contains('chat-item')
-      ? '' : node.className || node.tagName,
+    rows: [...node.querySelectorAll('.chat-item')].map((row) => ({
+      id: row.dataset.id,
+      row: row.querySelector('.label').textContent,
+      archived: row.classList.contains('archived'),
+      stamp: row.dataset.stamp || '',
+      seen: row.checkVisibility(),
+    })),
+    other: node.classList.contains('folder') ? '' : node.className || node.tagName,
   })));
 
-// under is which header each row is below, by the name the row reads.
+// under is which folder each row is in, by the name the row reads.
 function under(shown) {
   const out = new Map();
-  let head = '';
-  for (const node of shown) {
-    if (node.group) head = node.group;
-    else if (node.row) out.set(node.row, head);
-  }
+  for (const folder of shown) for (const row of folder.rows) out.set(row.row, folder.name);
   return out;
 }
 
-// stampAll marks every header and row on screen, so the next render can be
+// stampAll marks every folder and row on screen, so the next render can be
 // asked whether it kept them or built new ones.
 const stampAll = (page) => page.evaluate(() => {
-  for (const node of document.getElementById('sessionList').children) {
-    node.dataset.stamp = node.dataset.id || node.dataset.group || 'other';
+  for (const folder of document.getElementById('sessionList').children) {
+    folder.dataset.stamp = folder.dataset.folder || 'other';
+    for (const row of folder.querySelectorAll('.chat-item')) row.dataset.stamp = row.dataset.id;
   }
 });
 
-async function daygroups() {
+async function folders() {
   const s = await start({ viewport: { width: 1280, height: 720 } });
   try {
     await setup(s.page, s.url);
     await useDomRenderer(s);
     await open(s);
 
-    // The calendar first, on its own. Which day a moment belongs to is a pure
-    // function in a module of its own, so it can be asked directly - and it
-    // has to be, because a group the plan below cannot reach today (a month
-    // that started inside this week, which is what the first days of a month
-    // look like) is still a group the page draws on other days.
-    const calendar = await s.page.evaluate(async () => {
-      const day = await import('/static/js/daygroups.js');
-      // A Thursday, so every group has room: the week started on the Monday
-      // and the month before that.
-      const now = new Date(2026, 8, 17, 10, 30).getTime();
-      const at = (year, month, date, hour = 12) => new Date(year, month, date, hour).getTime();
+    // The grouping first, on its own. Which folder a session belongs in, what
+    // that folder is called and where it sits are a pure function in a module
+    // of its own, so they can be asked directly - and they have to be,
+    // because two projects with the same name in different places is the case
+    // the naming exists for and not one a running server can be made to have
+    // cheaply.
+    const pure = await s.page.evaluate(async () => {
+      const mod = await import('/static/js/folders.js');
+      const at = (n) => ({ active_at: n });
+      const dirs = (list) => mod.foldersOf(list).map((f) => f.label + '(' + f.sessions.length + ')').join(' | ');
       return {
-        groups: day.DAY_GROUPS.map((one) => one.key + '=' + one.label).join(' | '),
-        said: [
-          ['the small hours of today', at(2026, 8, 17, 0)],
-          ['tonight', at(2026, 8, 17, 23)],
-          ['a clock that runs ahead', at(2026, 8, 18, 1)],
-          ['last night', at(2026, 8, 16, 23)],
-          ['the Monday this week started on', at(2026, 8, 14, 0)],
-          ['the Sunday before it', at(2026, 8, 13, 23)],
-          ['the first of this month', at(2026, 8, 1)],
-          ['the last of the month before', at(2026, 7, 31)],
-          ['a row with no timestamp at all', 0],
-        ].map(([what, ts]) => what + ': ' + day.bucketOf(ts, now)).join(' | '),
-        moment: day.momentOf({ active_at: 9, updated_at: 7, created_at: 3 }) + ','
-          + day.momentOf({ updated_at: 7, created_at: 3 }) + ',' + day.momentOf({ created_at: 3 }),
+        keys: [
+          ['a project', { workdir: '/root/browser', workdir_mode: 'preset' }],
+          ['the same one with a trailing slash', { workdir: '/root/browser/', workdir_mode: 'custom' }],
+          ['a directory Socrates made up', { workdir: '/data/workspaces/claude-1', workdir_mode: 'dynamic' }],
+          ['a row from a server that never said', { workdir: '/root/browser' }],
+          ['a row with no directory at all', { workdir: '' }],
+        ].map(([what, row]) => what + ': ' + mod.folderKeyOf(row)).join(' | '),
+        order: dirs([
+          { ...at(30), workdir: '/root/old', workdir_mode: 'preset' },
+          { ...at(90), workdir: '/data/w/x', workdir_mode: 'dynamic' },
+          { ...at(50), workdir: '/root/new', workdir_mode: 'preset' },
+          { ...at(70), workdir: '/root/new', workdir_mode: 'preset' },
+        ]),
+        clash: dirs([
+          { ...at(9), workdir: '/srv/one/web', workdir_mode: 'preset' },
+          { ...at(8), workdir: '/srv/two/web', workdir_mode: 'preset' },
+          { ...at(7), workdir: '/srv/one/api', workdir_mode: 'preset' },
+        ]),
+        inside: mod.foldersOf([
+          { active_at: 10, id: 'old', workdir: '/root/browser', workdir_mode: 'preset' },
+          { active_at: 30, id: 'new', workdir: '/root/browser', workdir_mode: 'preset' },
+          { active_at: 20, id: 'mid', workdir: '/root/browser', workdir_mode: 'preset' },
+        ])[0].sessions.map((one) => one.id).join(','),
+        moment: mod.momentOf({ active_at: 9, updated_at: 7, created_at: 3 }) + ','
+          + mod.momentOf({ updated_at: 7, created_at: 3 }) + ',' + mod.momentOf({ created_at: 3 }),
         moves: [['idle', 'busy'], ['busy', 'idle'], ['busy', 'waiting'], ['idle', 'waiting'],
           ['unknown', 'idle'], ['waiting', 'idle'], ['busy', 'busy'], ['', 'idle']]
-          .map(([from, to]) => (from || 'nothing') + '>' + to + '=' + day.movesRow(from, to)).join(' '),
+          .map(([from, to]) => (from || 'nothing') + '>' + to + '=' + mod.movesRow(from, to)).join(' '),
       };
     });
-    ok(calendar.groups === 'today=Today | yesterday=Yesterday | week=This week'
-      + ' | month=This month | older=Older',
-      'the five groups, in the order the list draws them', calendar.groups);
-    ok(calendar.said === 'the small hours of today: today | tonight: today'
-      + ' | a clock that runs ahead: today | last night: yesterday'
-      + ' | the Monday this week started on: week | the Sunday before it: month'
-      + ' | the first of this month: month | the last of the month before: older'
-      + ' | a row with no timestamp at all: older',
-      'and every boundary of the local calendar is where a person would put it', calendar.said);
-    ok(calendar.moment === '9,7,3',
-      'a session is grouped by its last status change, by its last write from an older server, else by its creation',
-      calendar.moment);
-    ok(calendar.moves === 'idle>busy=true busy>idle=true busy>waiting=true idle>waiting=true'
+    ok(pure.keys === 'a project: /root/browser | the same one with a trailing slash: /root/browser'
+      + ' | a directory Socrates made up: #more | a row from a server that never said: /root/browser'
+      + ' | a row with no directory at all: #more',
+      'a session belongs to the directory it works in, and one of Socrates’ own making to "More Chats"',
+      pure.keys);
+    ok(pure.order === 'new(2) | old(1) | More Chats(1)',
+      'the folders are ordered by the session that moved most recently, and "More Chats" is last whatever is in it',
+      pure.order);
+    ok(pure.clash === 'one/web(1) | two/web(1) | api(1)',
+      'a folder is named after its directory, and takes a parent when that would not tell it from another',
+      pure.clash);
+    ok(pure.inside === 'new,mid,old', 'inside a folder the sessions are newest first', pure.inside);
+    ok(pure.moment === '9,7,3',
+      'a session is ordered by its last status change, by its last write from an older server, else by its creation',
+      pure.moment);
+    ok(pure.moves === 'idle>busy=true busy>idle=true busy>waiting=true idle>waiting=true'
       + ' unknown>idle=false waiting>idle=false busy>busy=false nothing>idle=false',
-      'starting, finishing and needing an answer move a row; a detector catching up does not', calendar.moves);
+      'starting, finishing and needing an answer move a row; a detector catching up does not', pure.moves);
 
-    const plan = dayPlan();
-    const create = async (title) => {
-      const made = await s.context.request.post(s.url + '/api/sessions',
-        { data: { harness: 'shell', title } });
+    // Now the real thing: three projects and two sessions with no project at
+    // all. A typed-in directory is a decision the dashboard has to allow, so
+    // it is allowed the way a person would allow it.
+    const allowed = await s.context.request.put(s.url + '/api/settings',
+      { data: { settings: { workspace: { allow_custom: true } } } });
+    ok(allowed.ok(), 'a typed-in working directory is allowed on this Socrates', allowed.status());
+
+    const projects = {
+      browser: join(s.data, 'projects', 'browser'),
+      socrates: join(s.data, 'projects', 'socrates'),
+      // The same name in another place, which is what makes a bare name a lie.
+      other: join(s.data, 'elsewhere', 'browser'),
+    };
+    for (const dir of Object.values(projects)) mkdirSync(dir, { recursive: true });
+
+    const create = async (title, workdir, harness = 'shell') => {
+      const made = await s.context.request.post(s.url + '/api/sessions', {
+        data: workdir
+          ? { harness, title, workdir_mode: 'custom', workdir }
+          : { harness, title },
+      });
       if (!made.ok()) throw new Error('could not create ' + title + ': ' + made.status());
       return (await made.json()).session.id;
     };
-    // One session per group, oldest group first, and a second one for today so
-    // that the order inside a group can be asserted at all. They are made over
-    // the API rather than through the sheet: `createshell` is where starting a
-    // session is proven, and what is under test here is when it was last used.
-    const ids = {};
-    for (const group of [...plan].reverse()) ids[group.key] = await create('Group ' + group.key);
-    const second = await create('Group today two');
+    // Oldest first, so that the order the server lists them in is the order
+    // the folders are asserted in below.
+    const ids = {
+      socrates: await create('Socrates one', projects.socrates),
+      otherBrowser: await create('The other browser', projects.other),
+      browserOld: await create('Browser one', projects.browser),
+      loose: await create('No project one'),
+      browserNew: await create('Browser two', projects.browser),
+      looseNew: await create('No project two'),
+    };
+    // A week apart, so that the order of the folders is a fact about when each
+    // project was last worked in rather than about the second they were made.
+    const day = 24 * 3600 * 1000;
+    const now = Date.now();
+    backdate(s, {
+      [ids.socrates]: now - 9 * day,
+      [ids.otherBrowser]: now - 7 * day,
+      [ids.browserOld]: now - 5 * day,
+      [ids.loose]: now - 4 * day,
+      [ids.browserNew]: now - 3 * day,
+      [ids.looseNew]: now - 2 * day,
+    });
 
-    // The one session of the Yesterday group is archived, which is how "only
-    // groups with something in them" gets a group that is empty in Active and
-    // not in All - and how an archived row gets asserted to be in its own day
-    // like every other row.
-    const archived = ids.yesterday;
-    const away = await s.context.request.post(s.url + '/api/sessions/' + archived + '/archive',
+    // The oldest project's one session is archived: that is how "a folder with
+    // nothing in it is not drawn" gets a folder that is empty in Active and
+    // not in All.
+    const away = await s.context.request.post(s.url + '/api/sessions/' + ids.socrates + '/archive',
       { data: { archived: true } });
-    if (!away.ok()) throw new Error('could not archive: ' + away.status());
-
-    // Written after the archive, because archiving is something that happened
-    // to the session and bumped the very column being set here.
-    const moments = {};
-    for (const group of plan) if (group.key !== 'today') moments[ids[group.key]] = group.at;
-    backdate(s, moments);
-    ok(true, 'a session for every group today can have, backdated in the store',
-      plan.map((g) => g.label).join(' | '));
+    ok(away.ok(), 'the oldest project’s one session is put away', away.status());
+    backdate(s, { [ids.socrates]: now - 9 * day });
 
     await open(s);
     await s.page.waitForFunction((n) => document.querySelectorAll('#sessionList .chat-item').length === n,
-      plan.length, { timeout: 20000 });
+      5, { timeout: 20000 });
 
     const active = await listing(s.page);
-    const heads = active.filter((n) => n.group).map((n) => n.group);
-    const wantActive = plan.map((g) => g.label).filter((label) => label !== 'Yesterday');
-    ok(heads.join(' | ') === wantActive.join(' | '),
-      'the list is grouped by day, in order, and a group with nothing in it is not drawn',
-      heads.join(' | '));
-    ok(active.every((n) => !n.other), 'and the list holds nothing but headers and rows',
-      active.filter((n) => n.other).map((n) => n.other).join(' | ') || 'headers and rows');
+    // Two of the three projects are called `browser`, so both of them take a
+    // parent: a name that is a name for one of them and a lie for the other
+    // would be worse than the path either of them came from.
+    ok(active.map((f) => f.name).join(' | ') === 'projects/browser | elsewhere/browser | More Chats',
+      'the list is folders: the project worked in most recently first, and "More Chats" after every project',
+      active.map((f) => f.name).join(' | '));
+    ok(active.every((f) => !f.other), 'and the list holds nothing but folders',
+      active.filter((f) => f.other).map((f) => f.other).join(' | ') || 'folders');
+    ok(active[0].title === projects.browser && active[2].title === 'Sessions in a directory of their own',
+      'the whole path is on the folder rather than in it, and "More Chats" says what it holds instead',
+      active[0].title + ' | ' + active[2].title);
+    ok(!active.some((f) => f.name.startsWith('/')),
+      'no folder reads as a path', active.map((f) => f.name).join(' | '));
 
     const where = under(active);
-    const misplaced = plan.filter((g) => g.key !== 'yesterday')
-      .filter((g) => where.get('Group ' + g.key) !== g.label);
-    ok(misplaced.length === 0 && where.get('Group today two') === 'Today',
-      'every session is under the day it was last used on',
-      [...where].map(([title, head]) => head + ': ' + title).join(' | '));
+    ok(where.get('Browser two') === 'projects/browser' && where.get('Browser one') === 'projects/browser'
+      && where.get('No project one') === 'More Chats' && where.get('No project two') === 'More Chats'
+      && where.get('The other browser') === 'elsewhere/browser',
+      'every session is in the directory it works in, and the ones with a directory of their own are together',
+      [...where].map(([title, folder]) => folder + ': ' + title).join(' | '));
+    ok(active[0].rows.map((r) => r.row).join(',') === 'Browser two,Browser one',
+      'and inside a folder the newest is first', active[0].rows.map((r) => r.row).join(','));
 
-    const listed = await (await s.context.request.get(s.url + '/api/sessions')).json();
-    const server = (listed.sessions || []).map((one) => one.id);
-    const drawn = active.filter((n) => n.id).map((n) => n.id);
-    ok(drawn.join(',') === server.join(',') && drawn.includes(second),
-      'and the rows keep the order the server gave them, newest first',
-      drawn.length + ' rows in the order the server listed them');
-
-    // All: the archived session comes back, in its own day, and everything
+    // All: the archived session comes back, in its own project, and everything
     // that was on screen is still the element it was.
-    const before = new Set(active.filter((n) => n.group || n.row).map((n) => n.id || n.group));
+    const before = new Set(active.flatMap((f) => [f.folder, ...f.rows.map((r) => r.id)]));
     await stampAll(s.page);
     await s.page.click('#sessionScope .seg[data-scope="all"]');
     await s.page.waitForFunction((n) => document.querySelectorAll('#sessionList .chat-item').length === n,
-      plan.length + 1, { timeout: 15000 });
+      6, { timeout: 15000 });
     const all = await listing(s.page);
-    const allHeads = all.filter((n) => n.group).map((n) => n.group);
-    ok(allHeads.join(' | ') === plan.map((g) => g.label).join(' | '),
-      'All is grouped the same way, and brings back the group Active had nothing in',
-      allHeads.join(' | '));
-    const archivedRow = all.find((n) => n.id === archived);
-    ok(!!archivedRow && archivedRow.archived && under(all).get('Group yesterday') === 'Yesterday',
-      'an archived session is in its own day like any other row',
-      archivedRow ? under(all).get('Group yesterday') + (archivedRow.archived ? ' (archived)' : '') : 'no row');
-    const kept = all.filter((n) => before.has(n.id || n.group) && n.stamp);
-    ok(kept.length === before.size,
-      'and every header and row that was already there survived the re-render',
-      kept.length + ' of ' + before.size + ' elements kept');
+    ok(all.map((f) => f.name).join(' | ') === 'projects/browser | elsewhere/browser | socrates | More Chats',
+      'All brings back the project Active had nothing in, last of the projects because it is the oldest',
+      all.map((f) => f.name).join(' | '));
+    const archivedRow = all.flatMap((f) => f.rows).find((r) => r.id === ids.socrates);
+    ok(!!archivedRow && archivedRow.archived && under(all).get('Socrates one') === 'socrates',
+      'an archived session is in its own project like any other row',
+      archivedRow ? under(all).get('Socrates one') + (archivedRow.archived ? ' (archived)' : '') : 'no row');
+    const kept = all.filter((f) => before.has(f.folder) && f.stamp).length
+      + all.flatMap((f) => f.rows).filter((r) => before.has(r.id) && r.stamp).length;
+    ok(kept === before.size,
+      'and every folder and row that was already there survived the re-render',
+      kept + ' of ' + before.size + ' elements kept');
 
-    // Opening a session to read it is not a status change, and neither is a
-    // rename: the row stays under the day it was, in the place it was. This
-    // is the complaint the ordering exists for - a row that jumped to the
-    // top for being looked at.
-    const olderRow = '#sessionList .chat-item[data-id="' + ids.older + '"]';
-    const unmoved = all.filter((n) => n.id).map((n) => n.id).join(',');
-    await s.page.click(olderRow);
-    await s.page.waitForFunction((sel) => document.querySelector(sel)?.classList.contains('active'),
-      olderRow, { timeout: 15000 });
-    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
-    const renamed = 'Group older, used again';
-    await s.context.request.patch(s.url + '/api/sessions/' + ids.older, { data: { title: renamed } });
-    // A wake is how the page is told to look again: the same event a phone
-    // sends when it comes back - and it fetches the list from the server, so
-    // the order asserted here is the server's as much as the page's.
-    await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
-    await s.page.waitForFunction((want) => [...document.querySelectorAll('#sessionList .chat-item .label')]
-      .some((n) => n.textContent === want), renamed, { timeout: 20000 });
-    const read = await listing(s.page);
-    ok(read.filter((n) => n.id).map((n) => n.id).join(',') === unmoved && under(read).get(renamed) === 'Older',
-      'opening a session and renaming it leave the row where it was, under the day it was',
-      under(read).get(renamed) + ', order unchanged: ' + (read.filter((n) => n.id).map((n) => n.id).join(',') === unmoved));
+    // Shutting a folder. The rows go, the count says how many went, and the
+    // caret turns rather than the words changing.
+    const browserHead = '#sessionList .folder[data-folder="' + projects.browser + '"] .folder-head';
+    const caretBefore = await s.page.$eval(browserHead + ' .caret', (n) => getComputedStyle(n).transform);
+    await s.page.click(browserHead);
+    await s.page.waitForFunction((sel) => document.querySelector(sel)
+      .getAttribute('aria-expanded') === 'false', browserHead, { timeout: 5000 });
+    const shut = await listing(s.page);
+    // The caret turns rather than jumps, so it is waited for: what is asserted
+    // is where it ends up, not where it was a frame after the click.
+    await s.page.waitForFunction((sel) => getComputedStyle(document.querySelector(sel + ' .caret'))
+      .transform === 'none', browserHead, { timeout: 5000 });
+    const caretAfter = await s.page.$eval(browserHead + ' .caret', (n) => getComputedStyle(n).transform);
+    ok(shut[0].open === 'false' && !shut[0].shown && shut[0].rows.every((r) => !r.seen),
+      'a folder that is shut hides its sessions and says so to a reader that cannot see it',
+      shut[0].open + ', rows shown: ' + shut[0].rows.filter((r) => r.seen).length);
+    ok(shut[0].count === '2' && caretBefore !== caretAfter,
+      'and says how many are behind it, with the caret turned', shut[0].count + ', ' + caretAfter);
+    ok(shut.slice(1).every((f) => f.shown), 'the other folders are untouched',
+      shut.filter((f) => f.shown).map((f) => f.name).join(' | '));
+    const visibleCount = await s.page.$$eval('#sessionList .folder-count',
+      (nodes) => nodes.filter((n) => n.checkVisibility()).length);
+    ok(visibleCount === 1, 'an open folder counts nothing: the rows under it are the count', visibleCount);
+    await shot(s.page, 'folders-shut');
 
-    // The shell ending is a status change, so now the row moves to Today -
-    // taking its element with it, and leaving no empty header behind.
+    // It is a fact about this device, so a reload finds it the way it was
+    // left - and the sessions in it are still there, not gone.
     await stampAll(s.page);
-    // The pane is proven to be taking keystrokes before the one that ends it
-    // is typed: a shell that has not drawn its prompt yet would swallow it.
-    await typeLine(s.page, 'echo about-to-exit');
-    ok(await awaitScreen(s.page, 'about-to-exit'), 'the opened session takes keystrokes', 'about-to-exit');
-    await typeLine(s.page, 'exit');
-    await s.page.waitForFunction(({ sel, want }) => {
-      const first = document.querySelector('#sessionList .chat-item');
-      return !!first && first.matches(sel) && first.querySelector('.label').textContent === want;
-    }, { sel: olderRow, want: renamed }, { timeout: 30000 }).catch(async (err) => {
-      const shown = await listing(s.page);
-      const row = await (await s.context.request.get(s.url + '/api/sessions/' + ids.older)).json();
-      throw new Error(err.message + ' - list: ' + shown.map((n) => n.group || n.row).join(' | ')
-        + ' - session: ' + row.session.state + ' active_at ' + row.session.active_at);
-    });
-    const moved = await listing(s.page);
-    const movedRow = moved.find((n) => n.id === ids.older);
-    ok(!!movedRow && movedRow.stamp === ids.older,
-      'a row that moves to another day keeps the element it had',
-      movedRow ? movedRow.stamp || 'a new row' : 'gone');
-    const first = moved.filter((n) => n.id)[0] || {};
-    ok(under(moved).get(renamed) === 'Today' && first.id === ids.older,
-      'and, its status having changed, it is the newest row of Today', under(moved).get(renamed) + ', row 1 of the list');
-    // The server agrees, so the next fetch of the list draws the same thing.
-    const relisted = await (await s.context.request.get(s.url + '/api/sessions')).json();
-    ok((relisted.sessions || [])[0]?.id === ids.older && relisted.sessions[0].state === 'exited',
-      'the server lists it first too, and it is the ending that moved it',
-      ((relisted.sessions || [])[0] || {}).state + ', row 1 of the server\'s list');
-    const movedHeads = moved.filter((n) => n.group).map((n) => n.group);
-    ok(movedHeads.join(' | ') === plan.map((g) => g.label).filter((label) => label !== 'Older').join(' | '),
-      'the day it left is gone with it, and the rest of the headers are unchanged',
-      movedHeads.join(' | '));
-    ok(movedHeads.length > 1 && moved.filter((n) => n.group).every((n) => n.stamp),
-      'and the headers that stay are the elements that were already there',
-      moved.filter((n) => n.group).map((n) => n.stamp).join(' | '));
+    await open(s);
+    await s.page.waitForFunction((n) => document.querySelectorAll('#sessionList .chat-item').length === n,
+      5, { timeout: 20000 });
+    const reloaded = await listing(s.page);
+    ok(reloaded[0].name === 'projects/browser' && reloaded[0].open === 'false' && !reloaded[0].shown
+      && reloaded[0].rows.length === 2,
+      'a reload finds the folder shut, with its sessions still in it',
+      reloaded[0].name + ': ' + reloaded[0].open + ', ' + reloaded[0].rows.length + ' rows');
 
-    // The header is a label, not a band: the surface under it is the page's one
-    // white, and a hairline is what separates the groups.
-    const style = await s.page.evaluate(() => [...document.querySelectorAll('#sessionList .chat-group')]
+    // Opening the session that is inside it is what opens the folder: a row
+    // nobody can see is a session nobody can get back to.
+    await s.page.goto(s.url + '/#' + ids.browserNew, { waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    await s.page.waitForFunction((id) => {
+      const row = document.querySelector('.chat-item[data-id="' + id + '"]');
+      return !!row && row.classList.contains('active') && row.checkVisibility();
+    }, ids.browserNew, { timeout: 15000 });
+    const opened = await listing(s.page);
+    ok(opened[0].open === 'true' && opened[0].rows.every((r) => r.seen),
+      'attaching a session inside a shut folder opens it', opened[0].name + ': ' + opened[0].open);
+
+    // And shutting it again is one click, from the state the page is in.
+    await s.page.click(browserHead);
+    await s.page.waitForFunction((sel) => document.querySelector(sel)
+      .getAttribute('aria-expanded') === 'false', browserHead, { timeout: 5000 });
+    await s.page.click(browserHead);
+    await s.page.waitForFunction((sel) => document.querySelector(sel)
+      .getAttribute('aria-expanded') === 'true', browserHead, { timeout: 5000 });
+    ok(true, 'and the same head shuts and opens it again', 'twice');
+
+    // A session started in a directory nothing has used yet makes the folder
+    // for it, at the top, because it is the newest thing that happened.
+    const fresh = join(s.data, 'projects', 'brandnew');
+    mkdirSync(fresh, { recursive: true });
+    const freshId = await create('Brand new', fresh);
+    await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await s.page.waitForFunction((id) => !!document.querySelector('.chat-item[data-id="' + id + '"]'),
+      freshId, { timeout: 20000 });
+    const made = await listing(s.page);
+    ok(made[0].name === 'brandnew' && made[0].open === 'true' && made[0].rows.length === 1,
+      'the first session in a new directory makes its folder, open, at the top',
+      made[0].name + ': ' + made[0].open);
+
+    // A folder that is shut must not be able to hide the two things this page
+    // exists to make noticeable. A session in the project is given something
+    // to do, the page steps off it, and the folder is shut over the top of it
+    // - and the head has to say both that something is running in there and,
+    // when it ends, that nobody has seen it.
+    //
+    // It takes an agent session, because a shell is one of the two programs
+    // nothing is asked of: its row carries no status, so there would be
+    // nothing for a shut folder to roll up.
+    const agent = await create('Browser agent', projects.browser, 'claude');
+    await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await s.page.waitForFunction((id) => !!document.querySelector('.chat-item[data-id="' + id + '"]'),
+      agent, { timeout: 20000 });
+    await clickRow(s.page, agent);
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const ready = await awaitRow(s.page, agent, (r) => !r.busy, 20000);
+    ok(ready.ok, 'the agent session in the project settles before it is given anything', took(ready));
+    await typeLine(s.page, '/busy 6000');
+    const busyRow = await awaitRow(s.page, agent, (r) => r.busy, 10000);
+    ok(busyRow.ok, 'the session in the project is working', took(busyRow));
+    await clickRow(s.page, ids.looseNew);
+    await s.page.click(browserHead);
+    await s.page.waitForFunction((sel) => document.querySelector(sel)
+      .getAttribute('aria-expanded') === 'false', browserHead, { timeout: 5000 });
+    const rollup = (page) => page.evaluate((sel) => {
+      const head = document.querySelector(sel);
+      const dot = head.querySelector('.folder-dot');
+      return {
+        busy: head.classList.contains('busy'),
+        waiting: head.classList.contains('waiting'),
+        unread: head.classList.contains('unread'),
+        dot: dot.checkVisibility(),
+        count: head.querySelector('.folder-count').textContent,
+      };
+    }, browserHead);
+    const working = await rollup(s.page);
+    ok(working.busy && working.dot && !working.unread && working.count === '3',
+      'a shut folder says that something inside it is working', JSON.stringify(working));
+    const started = Date.now();
+    let finished = working;
+    while (Date.now() - started < 30000) {
+      finished = await rollup(s.page);
+      if (finished.unread && !finished.busy) break;
+      await wait(300);
+    }
+    ok(finished.unread && !finished.busy,
+      'and when the turn ends with nobody looking, that nobody has seen it',
+      JSON.stringify(finished) + ' after ' + ((Date.now() - started) / 1000).toFixed(1) + ' s');
+    await s.page.click(browserHead);
+    await s.page.waitForFunction((sel) => document.querySelector(sel)
+      .getAttribute('aria-expanded') === 'true', browserHead, { timeout: 5000 });
+
+    // The head is a label, not a band: the surface under it is the page's one
+    // white, and a hairline is what separates the folders.
+    const style = await s.page.evaluate(() => [...document.querySelectorAll('#sessionList .folder-head')]
       .map((node) => {
         const css = getComputedStyle(node);
         return { fill: css.backgroundColor, top: css.borderTopWidth, size: css.fontSize };
       }));
     ok(style.length > 1 && style.every((one) => one.fill === 'rgba(0, 0, 0, 0)')
       && style[0].top === '0px' && style.slice(1).every((one) => one.top === '1px'),
-      'a header is a quiet label on white, hairline-separated below the first',
+      'a head is a quiet label on white, hairline-separated below the first',
       JSON.stringify(style));
 
-    await shot(s.page, 'daygroups');
+    await shot(s.page, 'folders');
+
+    // On a phone the sidebar is a drawer, and a folder in it is tapped rather
+    // than clicked: the head has to be a target a thumb can hit, and the whole
+    // of it has to be inside the drawer.
+    await s.page.setViewportSize({ width: 390, height: 844 });
+    // The sidebar only becomes a drawer once the narrow layout has been
+    // applied, and asking for the drawer before that would find the column
+    // already where it belongs and never open anything.
+    await wait(400);
+    await ensureNav(s.page);
+    // The drawer slides in over 220 ms, and a control that is still moving is
+    // one Playwright refuses to click.
+    await wait(600);
+    const thumb = await s.page.evaluate((sel) => {
+      const box = document.querySelector(sel).getBoundingClientRect();
+      return {
+        height: Math.round(box.height),
+        width: Math.round(box.width),
+        // Against the window, not against the list: a drawer that never came
+        // out holds a head that is perfectly placed inside a list nobody can
+        // see.
+        inside: box.left >= 0 && box.right <= window.innerWidth,
+      };
+    }, browserHead);
+    ok(thumb.height >= 30 && thumb.width >= 200 && thumb.inside,
+      'on a phone a folder head is a target a thumb can hit', JSON.stringify(thumb));
+    await s.page.click(browserHead);
+    await s.page.waitForFunction((sel) => document.querySelector(sel)
+      .getAttribute('aria-expanded') === 'false', browserHead, { timeout: 5000 });
+    await shot(s.page, 'folders-phone');
+
     ok(unexpected(s.errors).length === 0, 'no console errors',
       unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
@@ -5666,7 +5793,7 @@ const ALL = [
   ['harnesses', 'all four session types start and are seen in the browser', harnesses],
   ['browserlayout', 'popup placement and bundled terminal font metrics', browserlayout],
   ['sessionlist', 'rename, archive, unarchive and delete', sessionlist],
-  ['daygroups', 'the list is grouped by day, and a row keeps its element when it moves', daygroups],
+  ['folders', 'the list is folders per project, shut and reopened, and a row keeps its element', folders],
   ['exitoverlay', 'a pane that ends, its status under the sentence, and Restart', exitoverlay],
   ['webglrenders', 'the shipped renderer paints the terminal', webglrenders],
   ['touchscroll', 'a finger scrolls the pane, and a tap is still a tap', touchscroll],
@@ -5690,7 +5817,6 @@ const ALL = [
   ['activity-claude', 'Claude Code working, finishing, and a name that goes bold', activityclaude],
   ['activity-codex', 'Codex working, finishing, and a name that goes bold', activitycodex],
   ['activity-opencode', 'OpenCode working, finishing, and a name that goes bold', activityopencode],
-  ['activity-shell', 'a shell with something running in it, and the row that says so', activityshell],
   ['activity-waiting', 'a permission prompt: a still amber ring, and no timeout', activitywaiting],
   ['activity-fallback', 'a harness that hangs, and the row that leaves busy anyway', activityfallback],
   ['unread', 'bold when nobody saw it, gone when the row is opened or typed into', unread],

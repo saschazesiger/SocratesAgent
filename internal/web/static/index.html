@@ -169,7 +169,11 @@
      rather than guessed at and corrected afterwards. -->
 <dialog class="sheet" id="newSessionSheet" aria-label="Start a new session">
   <h2 class="sheet-title">What should this session run?</h2>
-  <div class="seg-row agents" id="nsHarness" role="group" aria-label="Harness"></div>
+  <div class="seg-row agents" id="nsHarness" role="group" aria-label="Agent"></div>
+  <!-- Shell and VS Code are not agents: nothing is asked of them and nothing
+       is reported back. They sit on a row of their own under the agents, so
+       the choice reads as two kinds of thing rather than five of one. -->
+  <div class="seg-row agents tools" id="nsTools" role="group" aria-label="Tool"></div>
   <div class="field" id="nsDirField">
     <label>Working directory</label>
     <div id="nsDir"></div>

@@ -223,6 +223,16 @@ type track struct {
 	inputAt   time.Time
 }
 
+// asked reports whether anybody has typed at this session since it was
+// launched. Until somebody has, nothing the program does is news: it is
+// starting up, and being told that a window finished opening is the one
+// notification nobody wants.
+//
+// A relaunch clears it with the rest of the track (ResetActivity): a new
+// process has a new start-up, and the turn that was in flight before it
+// belongs to a program that is no longer there.
+func (tr *track) asked() bool { return !tr.inputAt.IsZero() }
+
 // activity is the whole detector: the per session tracks, the unread marks,
 // the exact sources and the subscribers. It has a lock of its own rather than
 // the Manager's, because the tick holds it across a capture-pane and the
@@ -334,10 +344,20 @@ func (m *Manager) Activities() map[string]Activity {
 	return out
 }
 
-// NoteInput records a keystroke that reached the pane. It clears the unread
-// mark - typing at a session is the whole of having seen it - and it is what
-// lets thirty seconds of silence release a permission prompt that was
-// answered.
+// NoteTyped records that something reached the pane, without claiming that
+// anybody has read what is on it. It is what lets thirty seconds of silence
+// release a permission prompt that was answered, and it is what tells the
+// detector that this session has been asked something: see track.asked.
+func (m *Manager) NoteTyped(id string) {
+	a := m.act
+	a.mu.Lock()
+	a.trackOf(id).inputAt = a.now()
+	a.mu.Unlock()
+}
+
+// NoteInput records a keystroke that reached the pane from a person. It is
+// NoteTyped and one thing more: it clears the unread mark, because typing at a
+// session is the whole of having seen it.
 func (m *Manager) NoteInput(id string) {
 	a := m.act
 	a.mu.Lock()
@@ -693,7 +713,15 @@ func (a *activity) commit(id string, tr *track, obs observation, from string, no
 	// Work finished, or the agent started needing you. Unknown counts as "not
 	// busy", so a pane that dies mid-turn also marks unread: something ended
 	// and nobody saw it.
-	if (prev.State == StateBusy && next != StateBusy) || (prev.State != StateWaiting && next == StateWaiting) {
+	//
+	// Only for a session that has been asked something. Every harness is busy
+	// while it starts up and idle the moment it is ready, so without this a
+	// session that has just been created ends its first second by marking
+	// itself unread - and the browser, which chimes and notifies on this same
+	// edge, announces that a window opened as work that finished.
+	finished := prev.State == StateBusy && next != StateBusy
+	needsYou := prev.State != StateWaiting && next == StateWaiting
+	if tr.asked() && (finished || needsYou) {
 		tr.committed.Unread = true
 		a.unread[id] = now.UnixMilli()
 		a.saveUnread()

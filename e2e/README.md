@@ -135,7 +135,7 @@ gitignored. Deleting `e2e/out/` is always safe.
 | `createopencode` | OpenCode gets a port and a password of its own, and the discoverer reads the session id over its authenticated HTTP server |
 | `rebootresume` | the tmux server is killed behind Socrates' back: the row goes to `needs_resume`, opening it relaunches with **--resume**, and the banner says so once and stays away after it is dismissed |
 | `lighttheme` | the theme Codex was told to wear, the `theme=light` it read back through tmux, the white pane, and all sixteen ANSI colours drawn at 4.5:1 or better |
-| `activity-claude`, `activity-codex`, `activity-opencode`, `activity-shell` | each harness working, finishing while nobody is looking, and the row that says so |
+| `activity-claude`, `activity-codex`, `activity-opencode` | each agent working, finishing while nobody is looking, and the row that says so. There is no `activity-shell`: a shell is never given a turn, so its row carries no status at all |
 | `activity-waiting` | a permission prompt: a still amber ring, and no timeout |
 | `activity-fallback` | a harness that hangs, and the row that leaves busy anyway |
 | `unread` | bold when nobody saw it, gone when the row is opened or typed into |
@@ -150,8 +150,8 @@ gitignored. Deleting `e2e/out/` is always safe.
 | `typekeepsfocus` | a dialog, the ⋯ menu and two sessions: the keys still land in the pane |
 | `handsfree` | the mode in which nothing opens the on-screen keyboard: armed from the top bar and remembered across a reload, the pane and every field muted with `inputmode="none"` **and** `readonly`, the key bar on with its `⌨` key stood down, the ⋯ menu no longer offering to hide it, a field filled by speaking into it, and everything given back when it is disarmed |
 | `design` | white surfaces, a mark wherever a program is named, technical strings only in **Info**, and an animation that does not restart when a row re-renders |
-| `daygroups` | the session list read by day: Today, Yesterday, This week, This month, Older — a header only over a group with something in it; a row that stays put when it is opened or renamed and moves, keeping its element, when its status changes |
-| `notify` | a session that stops working while nobody is looking: one chime and one notification named after it, a speaker and a bell in the header that each turn one of them off and are remembered on this device, and nothing fired for a handshake replay |
+| `folders` | the session list read by project: one folder per working directory, named after it with the whole path on hover, ordered by the project worked in most recently, `More Chats` last for the sessions Socrates housed itself; a folder shuts, says how many are behind it, is found shut after a reload and is opened again by attaching a session inside it; a folder with nothing in it is not drawn, and a row keeps its element across a re-render |
+| `notify` | a session that stops working while nobody is looking: one chime and one notification named after it, a speaker and a bell in the header that each turn one of them off and are remembered on this device, and nothing fired for a handshake replay or for a session that has only just been started |
 | `livesession` | one real session against the real Claude Code CLI (gated) |
 
 `lighttheme` measures the

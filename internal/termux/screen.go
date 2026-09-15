@@ -93,6 +93,11 @@ func (m *Manager) SendKeys(ctx context.Context, id string, keys []Key) error {
 		if err := m.sendKey(ctx, name, id, key); err != nil {
 			return err
 		}
+		// The same rules a keystroke from a browser arms: whatever the pane
+		// does after this was asked for, so its end is worth a chime, and a
+		// permission prompt that goes quiet afterwards has been answered. The
+		// unread mark is not touched - nobody has read anything.
+		m.NoteTyped(id)
 		if key.Wait > 0 {
 			wait := key.Wait
 			if wait > MaxKeyWait {

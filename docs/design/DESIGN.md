@@ -2063,10 +2063,13 @@ Verify this in `embed_test.go`.
 
 Three steps in one sheet, revealed progressively; `harnesses.js` owns it.
 
-1. **Harness** — a `.seg-row` of four `button.seg.with-mark` cells, each with `agentMark(id, 22)`
+1. **Harness** — a `.seg-row` of `button.seg.with-mark` cells, each with `agentMark(id, 22)`
    from `logos.js` and an `infoTip` carrying the version and binary path (`bubbleClass:'mono'`).
    `shell` gets a new mark in `logos.js`: a `>_` glyph, tile style, `#131010`.
-   Ids: `#nsHarness`, cells `data-value="shell|claude|codex|opencode"`.
+   Ids: `#nsHarness`, cells `data-value="claude|codex|opencode"`. <!-- rev: fable --> The two
+   programs that are not agents are a second row under it, `#nsTools`, cells
+   `data-value="shell|vscode"` — same control, same handler, one choice across both rows. See
+   DEVIATIONS.md, "Shell and VS Code are tools, not agents".
 2. **Directory** — `#nsDirField`: <!-- rev 5 --> a `combobox` (`combobox.js`, `strict:true`) over
    `Dynamic` (default, sub-text *a fresh directory for every session*), one entry per admin preset
    (label = the directory's name, sub-text = its full path) and `Custom path…`. It was a

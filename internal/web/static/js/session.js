@@ -21,7 +21,7 @@ import {
 } from './api.js';
 import { connectionSource } from './net.js';
 import { agentMark } from './logos.js';
-import { DAY_GROUPS, bucketOf, momentOf, movesRow } from './daygroups.js';
+import { MORE_KEY, foldersOf, folderKeyOf, momentOf, movesRow } from './folders.js';
 import * as harnesses from './harnesses.js';
 import { createTerm, measurePane, loadTerminalFonts } from './term.js';
 import { mountAssist } from './assist.js';
@@ -675,6 +675,22 @@ const STATE_WORDS = {
 // a row with no evidence yet says nothing rather than guessing.
 const ACTIVITY_WORDS = { busy: 'Working', idle: 'Waiting for an instruction', waiting: 'Needs an answer' };
 
+/**
+ * activityOf is what a session is doing, for the page to draw.
+ *
+ * A shell and an editor have none. The detector still watches them - the
+ * server needs to know whether a pane is doing anything - but "working" and
+ * "finished" are words about a turn, and neither of those two programs takes
+ * one: a shell is busy for as long as `ls` runs and an editor is busy while it
+ * boots, and a spinner, a bold name or a chime for either of those is the page
+ * announcing that a window opened. So the row of a tool carries no status at
+ * all, which is also the whole of why it can never chime.
+ */
+function activityOf(session) {
+  if (!session || harnesses.isTool(session.harness)) return null;
+  return state.activity.get(session.id) || null;
+}
+
 // The flag a person puts on a session to find it again. One shape, drawn
 // before the name in the row and before the name in the header, so a flagged
 // session is recognised the same way wherever it is looked at.
@@ -692,61 +708,183 @@ function renderList() {
     host.innerHTML = '';
     let empty = 'No sessions yet.';
     if (state.loading) empty = 'Loading…';
-    else if (!state.reachable) empty = 'Can\u2019t reach Socrates.';
+    else if (!state.reachable) empty = 'Can’t reach Socrates.';
     host.append(el('div', { class: 'list-empty', text: empty }));
     return;
   }
-  // Which day each session's status last changed on. The server hands the
-  // list over in that order, newest first, and a frame that changes a status
-  // between two fetches bumps the moment locally, so the list is sorted here
-  // by the same moment it is grouped by. The sort is stable: two rows that
-  // moved at the same instant keep the order the server gave them.
-  wanted.sort((a, b) => momentOf(b) - momentOf(a));
-  const now = Date.now();
-  const byGroup = new Map();
-  for (const session of wanted) {
-    const key = bucketOf(momentOf(session), now);
-    const rows = byGroup.get(key);
-    if (rows) rows.push(session); else byGroup.set(key, [session]);
-  }
+  // Which project each session belongs to, and in what order. The server
+  // hands the list over newest first, and a frame that changes a status
+  // between two fetches bumps the moment locally, so the order inside a
+  // folder - and the order of the folders themselves - is worked out here,
+  // from the same moment the server sorted by.
+  const folders = foldersOf(wanted);
   // The list is patched rather than rebuilt: taking a connected node out of
   // the page and putting it back restarts its animations, and a row that
-  // fades in again every few seconds is a page that looks broken. The headers
-  // are patched the same way and for the same reason - and because a row that
-  // crosses midnight, or finishes a turn and so becomes today's, has to keep
-  // the element it already had while it moves under a different header.
-  const seen = new Set();
-  const headers = new Set();
-  let previous = null;
-  // place puts a node where the walk has got to, and only if it is not there
-  // already.
-  const place = (node) => {
-    if (previous ? previous.nextElementSibling !== node : host.firstElementChild !== node) {
-      if (previous) previous.after(node); else host.prepend(node);
-    }
-    previous = node;
+  // fades in again every few seconds is a page that looks broken. The folders
+  // are patched the same way and for the same reason - and because a row
+  // whose session finishes a turn, and so moves to the top of its folder, has
+  // to keep the element it already had while it moves.
+  const seenFolders = new Set();
+  const seenRows = new Set();
+  // placer walks one parent: it puts a node where the walk has got to, and
+  // only if it is not there already. The list is two walks - the folders, and
+  // the rows inside each - so it is a maker of walkers rather than one walk.
+  const placer = (into) => {
+    let previous = null;
+    return (node) => {
+      if (previous ? previous.nextElementSibling !== node : into.firstElementChild !== node) {
+        if (previous) previous.after(node); else into.prepend(node);
+      }
+      previous = node;
+    };
   };
-  for (const { key, label } of DAY_GROUPS) {
-    const rows = byGroup.get(key);
-    if (!rows || !rows.length) continue;
-    headers.add(key);
-    place(host.querySelector('.chat-group[data-group="' + key + '"]')
-      || el('div', { class: 'chat-group', 'data-group': key, text: label }));
-    for (const session of rows) {
-      seen.add(session.id);
-      const row = host.querySelector('.chat-item[data-id="' + cssId(session.id) + '"]');
-      if (row) updateRow(row, session);
-      place(row || buildRow(session));
+  const placeFolder = placer(host);
+  for (const folder of folders) {
+    seenFolders.add(folder.key);
+    const section = host.querySelector('.folder[data-folder="' + cssId(folder.key) + '"]')
+      || buildFolder(folder);
+    placeFolder(section);
+    const rows = section.querySelector('.folder-rows');
+    const placeRow = placer(rows);
+    for (const session of folder.sessions) {
+      seenRows.add(session.id);
+      // A row is looked for in the whole list rather than under this folder:
+      // whichever folder it was drawn in last time, it is the same session,
+      // and it keeps the element - and the animation - it already had.
+      const found = host.querySelector('.chat-item[data-id="' + cssId(session.id) + '"]');
+      if (found) updateRow(found, session);
+      placeRow(found || buildRow(session));
     }
+    updateFolder(section, folder);
+  }
+  // What is left over: a session that was deleted or archived out of view, and
+  // a folder whose last session went with it. The rows are swept after every
+  // folder has been walked rather than folder by folder, because a row that
+  // moved to a folder further down the list has not been drawn yet while the
+  // one it left is being tidied, and sweeping it there would throw away the
+  // element it is about to be put back into.
+  for (const row of [...host.querySelectorAll('.chat-item')]) {
+    if (!seenRows.has(row.dataset.id)) row.remove();
   }
   for (const node of [...host.children]) {
-    if (node.dataset.id) { if (!seen.has(node.dataset.id)) node.remove(); }
-    else if (node.dataset.group) { if (!headers.has(node.dataset.group)) node.remove(); }
-    else node.remove();
+    if (!node.classList.contains('folder') || !seenFolders.has(node.dataset.folder)) node.remove();
   }
 }
 
-function cssId(id) { return String(id).replace(/"/g, '\\"'); }
+// An id or a directory, as an attribute selector can carry it. Both come from
+// the machine rather than from a person, but a directory is a name somebody
+// chose, and a quote or a backslash in one must not be able to become part of
+// the selector around it.
+function cssId(id) { return String(id).replace(/\\/g, '\\\\').replace(/"/g, '\\"'); }
+
+/* ------------------------------------------------------------- the folders
+
+   Which project a session belongs to is folders.js's answer; what is left
+   here is the drawing of it, and the one thing a person does to a folder,
+   which is to shut it. */
+
+// Which folders this device keeps shut. Only the shut ones are written down,
+// so a project that appears while the browser was closed - the first session
+// in a new directory - is open when it arrives, which is what a folder that
+// has just been made should be. It is a fact about this screen rather than
+// about the account, for the same reason the rail is: a column tidied on a
+// desk is not a column tidied on a phone.
+const FOLDERS_KEY = 'socrates.folders';
+const closedFolders = new Set();
+// aria-controls needs something to point at, and a path is not an id.
+let folderSeq = 0;
+
+function restoreFolders() {
+  let raw = '';
+  try { raw = localStorage.getItem(FOLDERS_KEY) || ''; } catch { /* private window */ }
+  if (!raw) return;
+  try {
+    const shut = JSON.parse(raw);
+    if (Array.isArray(shut)) for (const key of shut) if (typeof key === 'string') closedFolders.add(key);
+  } catch { /* a value from a version that wrote something else */ }
+}
+
+function saveFolders() {
+  try { localStorage.setItem(FOLDERS_KEY, JSON.stringify([...closedFolders])); } catch { /* private window */ }
+}
+
+function toggleFolder(key) {
+  if (closedFolders.has(key)) closedFolders.delete(key); else closedFolders.add(key);
+  saveFolders();
+  renderList();
+}
+
+/**
+ * openFolder makes sure a session can be seen.
+ *
+ * It is called when one is attached rather than when one is clicked: a row
+ * inside a shut folder cannot be clicked at all, and the session this tab is
+ * meant to be on - the one in the address, or the one just started - has to
+ * be on screen whatever the folder it landed in was left as.
+ */
+function openFolder(session) {
+  if (!session || !closedFolders.delete(folderKeyOf(session))) return;
+  saveFolders();
+  renderList();
+}
+
+const CARET_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"'
+  + ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
+
+function buildFolder(folder) {
+  folderSeq += 1;
+  const id = 'folder-rows-' + folderSeq;
+  return el('section', { class: 'folder', 'data-folder': folder.key },
+    el('button', {
+      class: 'folder-head',
+      type: 'button',
+      'aria-expanded': 'true',
+      'aria-controls': id,
+      onclick: () => toggleFolder(folder.key),
+    },
+    el('span', { class: 'caret', html: CARET_SVG }),
+    el('span', { class: 'folder-name' }),
+    el('span', { class: 'folder-dot', 'aria-hidden': 'true' }),
+    el('span', { class: 'folder-count' })),
+    el('div', { class: 'folder-rows', id }));
+}
+
+function updateFolder(section, folder) {
+  const open = !closedFolders.has(folder.key);
+  const head = section.querySelector('.folder-head');
+  const rows = section.querySelector('.folder-rows');
+  setClass(section, 'closed', !open);
+  head.setAttribute('aria-expanded', open ? 'true' : 'false');
+  rows.hidden = !open;
+  head.querySelector('.folder-name').textContent = folder.label;
+  // The whole path is technical detail, so it is where every technical string
+  // on this page is: on hover, and nowhere in the words. "More Chats" has no
+  // path, so its tooltip says what it holds instead.
+  head.title = folder.path || 'Sessions in a directory of their own';
+  // Shut, a folder has to say what is behind it: the two things this page
+  // exists to make noticeable - an agent that needs an answer, and one that
+  // finished something nobody has seen - would otherwise be hidden by the
+  // person's own tidying. So it carries a count, the amber of a session
+  // waiting, and the weight of one nobody has read. Open, the rows say all
+  // three themselves and the head says none of them.
+  let waiting = false;
+  let busy = false;
+  let unread = false;
+  for (const session of folder.sessions) {
+    const act = activityOf(session);
+    if (!act) continue;
+    const attached = !!(state.current && state.current.id === session.id);
+    if (act.unread && !attached) unread = true;
+    const live = session.state === 'running' || session.state === 'starting' || session.state === 'resuming';
+    if (!live) continue;
+    if (act.state === 'waiting') waiting = true;
+    if (act.state === 'busy') busy = true;
+  }
+  setClass(head, 'waiting', waiting);
+  setClass(head, 'busy', busy && !waiting);
+  setClass(head, 'unread', unread);
+  head.querySelector('.folder-count').textContent = String(folder.sessions.length);
+}
 
 function buildRow(session) {
   const row = el('div', {
@@ -781,7 +919,7 @@ function rowFacts(session) {
     STATE_WORDS[session.state] || session.state,
     session.workdir,
   ];
-  const act = state.activity.get(session.id);
+  const act = activityOf(session);
   if (act && ACTIVITY_WORDS[act.state]) {
     // What it is doing, why the detector thinks so, and since when. All three
     // are facts about the machine, so all three live behind the "i".
@@ -827,7 +965,7 @@ function updateRow(row, session) {
   // still, in amber, while it is waiting for an answer, and a name that has
   // finished something nobody has seen is bold. The session being looked at
   // is never bold - it is not unread, it is open.
-  const act = state.activity.get(session.id) || null;
+  const act = activityOf(session);
   const mark = row.querySelector('.row-mark');
   const live = session.state === 'running' || session.state === 'starting' || session.state === 'resuming';
   const busy = live && !!act && act.state === 'busy';
@@ -862,13 +1000,16 @@ function mergeActivity(sessions) {
     state.activity.set(id, next);
     if (prev && prev.state === next.state && prev.unread === next.unread && prev.note === next.note) continue;
     changed = true;
+    const session = sessionOf(id);
     // A status change moves the row, and it moves it now rather than at the
     // next fetch: the server wrote the same moment into the same row under
     // the same rule, so the list a fetch would bring is the list drawn here.
-    if (movesRow(prev ? prev.state : '', next.state)) {
-      const session = sessionOf(id);
-      if (session) session.active_at = Math.max(momentOf(session), Number(next.since) || Date.now());
+    if (session && movesRow(prev ? prev.state : '', next.state)) {
+      session.active_at = Math.max(momentOf(session), Number(next.since) || Date.now());
     }
+    // Only a session the page can name is worth saying anything about, and a
+    // tool has nothing to say: see activityOf.
+    if (!session || harnesses.isTool(session.harness)) continue;
     announce(id, next, prev);
     if (notifier) notifier.completed(id, next, prev);
   }
@@ -887,6 +1028,12 @@ let announcePending = '';
 function announce(id, next, prev) {
   const session = sessionOf(id);
   if (!session || !dom.activityLive) return;
+  // The unread mark is the server's own answer to "did something happen that
+  // nobody has seen", and it is only set for a session that has been given
+  // something to do. Without that test this line, the chime and the
+  // notification all fire the moment a harness finishes starting up - which
+  // is the page announcing that a window opened.
+  if (!next.unread) return;
   const who = harnesses.label(session.harness) || session.title;
   let line = '';
   if (prev && prev.state === 'busy' && next.state !== 'busy' && next.state !== 'waiting') line = who + ' finished';
@@ -1533,6 +1680,10 @@ function detach() {
  */
 function attach(session) {
   detach();
+  // A session nobody can see is a session nobody can leave: the row is the
+  // only way back to it, so the folder it is in is opened if the person had
+  // shut it.
+  openFolder(session);
   applySession(session);
   if (session.harness === 'vscode') {
     document.body.classList.add('ide-open');
@@ -1609,8 +1760,13 @@ async function openIDE(session, generation) {
   if (['failed', 'exited'].includes(session.state)) return;
   const current = () => generation === ideGeneration;
   const base = '/ide/' + encodeURIComponent(session.id) + '/';
-  const loading = el('p', { class: 'ide-loading', text: 'Opening VS Code…' });
-  dom.term.append(loading);
+  // What stands on the stage until there is an editor on it: a turning mark
+  // and a line of words, the same shape the pane's own overlay uses for a
+  // session that is coming back.
+  const words = el('p', { text: 'Opening VS Code…' });
+  const spinner = el('div', { class: 'spinner' });
+  const loading = el('div', { class: 'ide-loading' }, spinner, words);
+  dom.term.replaceChildren(loading);
   try {
     const data = await api('/api/sessions/' + encodeURIComponent(session.id) + '/resume', {
       method: 'POST', timeout: 60000,
@@ -1628,8 +1784,14 @@ async function openIDE(session, generation) {
             src: base + '?folder=' + encodeURIComponent(session.workdir),
             allow: 'clipboard-read; clipboard-write',
           });
-          dom.term.replaceChildren(frame);
+          // The card stays on top of the frame rather than being replaced by
+          // it. `healthz` answers as soon as code-server's HTTP server is
+          // listening, and the workbench is ten more seconds of white after
+          // that - which is the one thing on this page that reads as broken.
+          words.textContent = 'Loading the editor…';
+          dom.term.replaceChildren(frame, loading);
           onStatus('live');
+          revealIDE(frame, loading, current);
           return;
         }
       } catch { /* code-server may still be starting */ }
@@ -1638,9 +1800,54 @@ async function openIDE(session, generation) {
     if (current()) throw new Error('VS Code did not become ready. Check the session log or retry.');
   } catch (err) {
     if (!current()) return;
-    loading.textContent = errorMessage(err);
-    dom.term.append(el('button', { class: 'btn', text: 'Retry', onclick: () => attach(sessionOf(session.id) || session) }));
+    // A mark that turns is a promise that something is still happening, and
+    // nothing is.
+    spinner.remove();
+    words.textContent = errorMessage(err);
+    loading.append(el('button', { class: 'btn', text: 'Retry', onclick: () => attach(sessionOf(session.id) || session) }));
   }
+}
+
+// How long the card waits for a workbench that never arrives. Past this the
+// frame is uncovered whatever is in it: a page that is going to be white is
+// better white than behind a mark that turns for ever.
+const IDE_REVEAL_CEILING = 30000;
+// The fade in app.css, plus a frame to start it in.
+const IDE_FADE = 400;
+
+/**
+ * revealIDE takes the loading card away once there is an editor behind it.
+ *
+ * The frame is served from this origin, so the honest test is the workbench's
+ * own root element: `load` fires when code-server's shell has been fetched,
+ * which is several seconds before it has drawn anything. A frame that cannot
+ * be read at all - which should not happen, and would mean the IDE route has
+ * moved - falls back to `load` rather than waiting for a document it will
+ * never see.
+ */
+function revealIDE(frame, loading, current) {
+  const started = Date.now();
+  const uncover = () => {
+    if (!loading.isConnected) return;
+    loading.classList.add('done');
+    setTimeout(() => loading.remove(), IDE_FADE);
+  };
+  const look = () => {
+    // A session that was stepped off takes its card with it.
+    if (!current() || !loading.isConnected) return;
+    if (Date.now() - started >= IDE_REVEAL_CEILING) { uncover(); return; }
+    let ready = false;
+    try {
+      const doc = frame.contentDocument;
+      ready = !!(doc && doc.querySelector('.monaco-workbench'));
+    } catch {
+      ready = frame.dataset.loaded === 'true';
+    }
+    if (ready) { uncover(); return; }
+    setTimeout(look, 150);
+  };
+  frame.addEventListener('load', () => { frame.dataset.loaded = 'true'; }, { once: true });
+  look();
 }
 
 // The key bar is asked for or it is not there: no device decides for itself
@@ -2048,6 +2255,8 @@ function wire() {
 async function boot() {
   await loadTerminalFonts();
   wire();
+  // Which folders this device keeps shut, before the first list is drawn.
+  restoreFolders();
   // Before anything is measured: the rail is a different stage width, and a
   // terminal fitted to the wide one and then narrowed is a terminal that
   // reflows in front of the person.

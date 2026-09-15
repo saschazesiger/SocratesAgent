@@ -521,6 +521,9 @@ func TestActivityPaneDeathMarksUnreadAndInputClearsIt(t *testing.T) {
 	row := b.row("s1", "claude")
 	rows := []store.Session{row}
 	b.source(harnesses.KindClaude, seen(StateBusy, ""))
+	// Somebody typed at it, so what it does from here is work that was asked
+	// for rather than a program starting up.
+	b.m.NoteTyped("s1")
 
 	b.tick(rows, b.pane(row, 0))
 	b.want("s1", StateBusy)
@@ -550,6 +553,7 @@ func TestActivityWaitingMarksUnreadAndMarkReadClearsIt(t *testing.T) {
 	row := b.row("s1", "claude")
 	rows := []store.Session{row}
 	b.source(harnesses.KindClaude, seen(StateWaiting, "permission prompt"))
+	b.m.NoteTyped("s1")
 
 	b.tick(rows, b.pane(row, 0))
 	if a := b.m.ActivityOf("s1"); a.State != StateWaiting || !a.Unread {
@@ -561,6 +565,34 @@ func TestActivityWaitingMarksUnreadAndMarkReadClearsIt(t *testing.T) {
 	}
 }
 
+// TestActivityStartUpIsNotWorkThatFinished: every harness is busy while it
+// starts and idle the moment it is ready, and that first edge is not a turn
+// ending. It must leave no unread mark - the browser chimes and notifies on
+// exactly that mark, and a session that has just been created would otherwise
+// announce itself as work somebody missed.
+func TestActivityStartUpIsNotWorkThatFinished(t *testing.T) {
+	b := newBench(t)
+	row := b.row("s1", "claude")
+	rows := []store.Session{row}
+	b.source(harnesses.KindClaude, seen(StateBusy, ""), seen(StateIdle, ""))
+
+	b.tick(rows, b.pane(row, 0))
+	b.until("s1", StateIdle, IdleSettle+1, rows, func() map[string]paneLine { return b.pane(row, 0) })
+	if a := b.m.ActivityOf("s1"); a.Unread {
+		t.Fatalf("a session nobody has typed at yet marked itself unread: %#v", a)
+	}
+
+	// And the very next turn, the one that was asked for, does mark it.
+	b.m.NoteTyped("s1")
+	b.source(harnesses.KindClaude, seen(StateBusy, ""))
+	b.until("s1", StateBusy, 2, rows, func() map[string]paneLine { return b.pane(row, 0) })
+	b.source(harnesses.KindClaude, seen(StateIdle, ""))
+	b.until("s1", StateIdle, IdleSettle+1, rows, func() map[string]paneLine { return b.pane(row, 0) })
+	if a := b.m.ActivityOf("s1"); !a.Unread {
+		t.Fatalf("a turn that was asked for and ended is unread, got %#v", a)
+	}
+}
+
 // TestActivityUnreadSurvivesAManagerRebuild: a restart of Socrates must not
 // lose "this finished while you were away".
 func TestActivityUnreadSurvivesAManagerRebuild(t *testing.T) {
@@ -568,6 +600,7 @@ func TestActivityUnreadSurvivesAManagerRebuild(t *testing.T) {
 	row := b.row("s1", "claude")
 	rows := []store.Session{row}
 	b.source(harnesses.KindClaude, seen(StateBusy, ""), seen(StateIdle, ""))
+	b.m.NoteTyped("s1")
 
 	b.tick(rows, b.pane(row, 0))
 	b.until("s1", StateIdle, IdleSettle+1, rows, func() map[string]paneLine { return b.pane(row, 0) })
@@ -606,6 +639,7 @@ func TestActivityResetKeepsUnreadAndDropsTheState(t *testing.T) {
 	row := b.row("s1", "claude")
 	rows := []store.Session{row}
 	b.source(harnesses.KindClaude, seen(StateBusy, ""), seen(StateIdle, ""))
+	b.m.NoteTyped("s1")
 
 	b.tick(rows, b.pane(row, 0))
 	b.until("s1", StateIdle, IdleSettle+1, rows, func() map[string]paneLine { return b.pane(row, 0) })
@@ -968,6 +1002,7 @@ func TestActivityListSkipsSessionsThatAreNotRunning(t *testing.T) {
 	b := newBench(t)
 	row := b.row("s1", "claude")
 	b.source(harnesses.KindClaude, seen(StateBusy, ""))
+	b.m.NoteTyped("s1")
 	b.tick([]store.Session{row}, b.pane(row, 0))
 	if len(b.m.Activities()) != 1 {
 		t.Fatalf("a running session is not in the map: %#v", b.m.Activities())

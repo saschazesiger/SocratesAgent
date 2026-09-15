@@ -55,6 +55,12 @@ RUN if [ "$INSTALL_VSCODE" = "1" ]; then \
 COPY --from=build /out/socrates /usr/local/bin/socrates
 COPY deploy/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
+# The host shell. It is what a Shell session runs when the container was started
+# with --pid=host and the right to enter namespaces, and it is unreachable and
+# therefore never named when it was not: internal/harnesses/shell.go probes
+# before it offers. See "A shell on the host" in the README.
+COPY deploy/host-shell.sh /usr/local/bin/socrates-host-shell
+
 # HOME is inside the volume on purpose. Every credential the three CLIs hold,
 # and every transcript Socrates resumes a session from, is written under $HOME
 # by the CLI itself - ~/.claude and ~/.claude.json, ~/.codex,

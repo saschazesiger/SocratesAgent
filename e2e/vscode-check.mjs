@@ -15,7 +15,7 @@ try {
  assert(catalogue.harnesses.find(h=>h.id==='vscode').installed);
  await s.page.reload();
  await s.page.locator('#newSession').click();
- await s.page.locator('#nsHarness [data-value="vscode"]').click();
+ await s.page.locator('#nsTools [data-value="vscode"]').click();
  assert(await s.page.locator('#nsModelField').isHidden());
  await s.page.locator('#nsCancel').click();
  console.log('VS Code picker offered without a model step');

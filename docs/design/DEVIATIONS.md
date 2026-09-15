@@ -1782,3 +1782,135 @@ on-ramp off that shape, not support for it.
 check, and it is started as the image.
 
 **Verification.** `gofmt`, `go vet ./...`, `go mod tidy -diff` and `go test ./...` green.
+
+## The sidebar is folders, not days (2026-09-14)
+
+§E.10's rev 4 grouped the list by day — Today, Yesterday, This week, This
+month, Older, in the browser's own local calendar — because a phone's call
+list is read that way. It is the right shape for six sessions and the wrong
+one for sixty: after a week of work the thing being looked for is not "the one
+from Tuesday", it is "the one in the browser project", and a list sorted by
+day scatters a project's sessions across five headers where none of them can
+be seen together. So the day buckets are gone and the sidebar is grouped by
+the directory a session works in.
+
+1. **`daygroups.js` became `folders.js`.** `momentOf` and `movesRow` are
+   unchanged and still the rule the ordering is built on; `DAY_GROUPS` and
+   `bucketOf` are deleted, and `dirOf`, `folderKeyOf` and `foldersOf` take
+   their place. The service-worker `SHELL` names the new file.
+2. **One folder per working directory, `More Chats` for the rest.** A session
+   whose directory Socrates made up for it — `workdir_mode` `dynamic`, a
+   generated name under the workspace root — names no project anybody would
+   recognise, so all of them share one folder instead of getting a folder each.
+   A row from a server too old to have said how its directory was chosen is
+   judged by whether it has one at all.
+3. **A folder is named after its directory, not spelled as one.** The label is
+   the directory's own name — `browser`, not `/root/browser` — because §E.10
+   rule 3 keeps every technical string on this page behind a hover, and the
+   whole path is on the head's `title`. Two projects with the same name in
+   different places each take a parent (`one/web`, `two/web`) until they
+   differ, and a folder with no more parents to take falls back to its whole
+   path, which is unique by construction.
+4. **The folders are ordered by the session that moved most recently in each,
+   and `More Chats` is last whatever is in it.** Inside a folder the sessions
+   are newest first, by the same `active_at` the rows were always ordered by,
+   so nothing about "a row that jumped to the top for being looked at" changed.
+5. **A folder shuts.** `.folder-head` is a button with `aria-expanded` and a
+   caret that turns; the rows under it are a `.folder-rows` region that is
+   `hidden` rather than removed. Shut, the head carries the count, the amber of
+   a session waiting and the weight of one nobody has read — the two things
+   ACTIVITY.md exists to make noticeable must not be hidden by the person's own
+   tidying. Which folders are shut is kept per device in `localStorage`
+   (`socrates.folders`), and only the shut ones are written down, so a project
+   that appears while the browser was closed arrives open. Attaching a session
+   inside a shut folder opens it: a row nobody can see is a session nobody can
+   get back to.
+6. **The rail keeps the hairline and the caret** and loses the name and the
+   count, the way it lost the day word; the dot of a folder holding a session
+   that needs an answer stays.
+7. **In the drawer the head is 36px**, because it is a control now and a
+   drawer is the shape a finger uses; at desk width it is the 24px the day
+   header was.
+8. **The e2e `daygroups` scenario became `folders`**, and asserts the grouping
+   as a pure function (including the two-projects-one-name case, which a
+   running server cannot be made to have cheaply) and then the drawn list:
+   the order of the folders, the order inside one, an archived session in its
+   own project, shutting a folder and finding it shut after a reload, opening
+   it by attaching a session inside it, the folder a brand-new directory makes,
+   a shut folder that says a session inside it is working and then that nobody
+   has seen the end of it, and a head a thumb can hit at 390px.
+
+**Verification.** `gofmt`, `go vet ./...` and `go test ./...` green; the e2e
+suite green apart from the twelve `pages`/`design`/`twoviewers`/`dictate`
+assertions this branch already failed before the change.
+
+## Shell and VS Code are tools, not agents (2026-09-15)
+
+§E.3 put all the harnesses in one `.seg-row` and §A.4/§D.1/§D.6 gave every one
+of them the same status. Both read the five programs as five of a kind, and
+they are not: three of them are agents that take a turn, and two of them are a
+window onto the machine. Three changes, all of them about that one line.
+
+1. **The sheet asks the question in two rows.** `#nsHarness` holds the agents
+   and a new `#nsTools` under it holds Shell and VS Code. It is the same
+   control and the same handler — one choice across both rows, so picking in
+   one releases the other — and the gap between the two rows (7px) is smaller
+   than the gap to the field below (16px), so they read as one question. A row
+   with nothing in it is `display: none`, because an empty hairline box is a
+   control that failed to draw. `harnesses.TOOLS` is the list, and
+   `needsModel` already had it inline.
+2. **A tool has no status.** `activityOf(session)` in `session.js` answers
+   `null` for those two, and every drawing of activity goes through it: the
+   ring on the row, the bold of an unread name, the roll-up on a shut folder
+   head, the `Working`/`Finished` line in Info, the `aria-live` announcement
+   and the chime. The detector is untouched — the server still needs to know
+   whether a pane is doing anything, and `WaitIdle` still answers for a shell
+   — so this is presentation and only presentation. The e2e `activity-shell`
+   scenario is gone with it; `design`, `folders` and `notify` each grew an
+   agent session where they used to watch a shell's row.
+3. **Starting a session is not work that finished.** See the section below.
+
+**Verification.** `go vet` and `go test ./...` could not be run in this
+environment: there is no Go toolchain on the machine the change was written
+on. The JavaScript was syntax-checked with `node --check`; the Go change is
+three call sites and one predicate, and its table test is written.
+
+## Starting a session is not work that finished (2026-09-15)
+
+§A.4's rule fired on the first second of every session ever created. Every
+harness is busy while it starts up and idle the moment it is ready, and that
+edge is `busy → idle`: the row went bold, the chime played and the browser
+raised a notification saying **Finished** about a window that had just been
+opened, before anybody had asked the program for anything.
+
+- **`track.asked()`** — has anything been typed into this pane since it was
+  launched — is now a condition of the unread rule. `NoteInput` (a keystroke
+  from a socket) sets it as it always did; `SendKeys` sets it through a new
+  `NoteTyped`, which is `NoteInput` without the clearing of the mark, because
+  an operator typing is not a person reading. `ResetActivity` clears it with
+  the rest of the track: a relaunch is a new program with a new start-up.
+- **The browser keys off the same mark.** `notify.completed` and the
+  `aria-live` announcement both require `next.unread`, which is what the
+  module's own comment always claimed they did. One rule, one place, and a
+  phone in a pocket and a sidebar on a desk cannot disagree about it.
+- The cost is that a turn still running across a Socrates restart finishes
+  quietly, because `inputAt` lives only in memory. The alternative is
+  announcing every session that starts, which is the defect.
+
+## A white iframe is not a loading editor (2026-09-15)
+
+`openIDE` waited for code-server's `/healthz` and then swapped the iframe in,
+which is correct and is not what a person sees: `healthz` answers as soon as
+the HTTP server is listening, and the workbench is about ten more seconds of
+plain white after that. A white rectangle where an editor should be is the one
+thing on this page that reads as broken.
+
+The loading card — now a `.spinner` and a line of words rather than a bare
+paragraph — stays **on top of** the frame instead of being replaced by it, and
+`revealIDE` takes it away when there is something behind it: the frame is
+served from this origin, so the test is `contentDocument.querySelector('.monaco-workbench')`,
+polled every 150 ms. It fades out over 280 ms rather than vanishing, so the
+workbench arrives instead of replacing something. A ceiling of 30 s uncovers
+the frame whatever is in it — a page that is going to be white is better white
+than behind a mark that turns for ever — and a frame that cannot be read at all
+falls back to its `load` event.

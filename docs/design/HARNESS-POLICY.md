@@ -237,6 +237,15 @@ A login shell reads the profile that sets up PATH and the prompt, which is
 what makes the pane look like the machine's own terminal — a shell that did
 not read it is a shell missing the very programs it was opened for.
 
+`<binary>` is the host machine's shell rather than this container's when the
+container can reach it: started with `--pid=host` and the right to enter
+namespaces, which is a decision taken on the `docker run` and deliberately not
+in the dashboard. `deploy/host-shell.sh` is the wrapper the image ships for it,
+and `internal/harnesses/shell.go` probes before it ever names it — PID 1 has to
+live in another mount namespace, and `nsenter` into it has to succeed — so a
+normal container and a host installation both keep the shell they had. A binary
+path in the dashboard still wins over both.
+
 ## What is left in the dashboard
 
 Per harness: **enabled**, **binary path** (with discovery), the **model short

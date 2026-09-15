@@ -49,8 +49,8 @@ async function newSession(page, harness) {
   await ensureNav(page);
   await page.click('#newSession');
   await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-  await page.waitForSelector('#nsHarness .seg[data-value="' + harness + '"]', { timeout: 10000 });
-  await page.click('#nsHarness .seg[data-value="' + harness + '"]');
+  await page.waitForSelector('#newSessionSheet .seg[data-value="' + harness + '"]', { timeout: 10000 });
+  await page.click('#newSessionSheet .seg[data-value="' + harness + '"]');
   await page.click('#nsStart');
   await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
   await page.waitForFunction((before) => location.hash.length > 1 && location.hash.slice(1) !== before,
