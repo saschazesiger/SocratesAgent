@@ -919,6 +919,9 @@ function rowFacts(session) {
     STATE_WORDS[session.state] || session.state,
     session.workdir,
   ];
+  if (session.harness === 'shell' && session.options?.shell_execution) {
+    facts.push('Execution: ' + (session.options.shell_execution === 'host' ? 'Host' : 'Container'));
+  }
   const act = activityOf(session);
   if (act && ACTIVITY_WORDS[act.state]) {
     // What it is doing, why the detector thinks so, and since when. All three
@@ -1033,7 +1036,11 @@ function announce(id, next, prev) {
   // something to do. Without that test this line, the chime and the
   // notification all fire the moment a harness finishes starting up - which
   // is the page announcing that a window opened.
-  if (!next.unread) return;
+  //
+  // And it has to be a mark this change set. A relaunch keeps the one it
+  // found, so a session started with unseen work on it would otherwise have
+  // its start-up read out as a turn that finished: see notify.completed.
+  if (!next.unread || (prev && prev.unread)) return;
   const who = harnesses.label(session.harness) || session.title;
   let line = '';
   if (prev && prev.state === 'busy' && next.state !== 'busy' && next.state !== 'waiting') line = who + ' finished';
@@ -2092,6 +2099,7 @@ async function newSession() {
         harness: pick.harness,
         model: pick.model,
         effort: pick.effort,
+        shell_execution: pick.shell_execution,
         workdir_mode: pick.workdir_mode,
         workdir: pick.workdir,
         cols: size.cols || undefined,

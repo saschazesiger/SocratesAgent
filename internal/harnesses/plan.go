@@ -64,14 +64,17 @@ type LaunchPlan struct {
 
 // PlanRequest is what a plan is built from.
 type PlanRequest struct {
-	SessionID  string
-	Title      string
-	Cwd        string
-	Model      string
-	Effort     string
-	CLISession string
-	Settings   config.Settings
-	DataDir    string
+	SessionID string
+	Title     string
+	Cwd       string
+	Model     string
+	Effort    string
+	// ShellExecution selects the machine for a Shell session. Empty keeps the
+	// launch behavior of sessions created before this choice existed.
+	ShellExecution string
+	CLISession     string
+	Settings       config.Settings
+	DataDir        string
 	// Logf is the caller's log, for the one thing a plan does that can fail
 	// without stopping the launch: pinning Claude Code's global config, whose
 	// failure costs the session its trust entry and therefore its prompt. It

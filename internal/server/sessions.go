@@ -111,14 +111,15 @@ type createSessionBody struct {
 	// that dropped finds the session it already made instead of making a
 	// second one, which is the whole of "start a session in a tunnel and come
 	// back to one session".
-	ClientID    string          `json:"client_id"`
-	Harness     string          `json:"harness"`
-	Model       string          `json:"model"`
-	Effort      string          `json:"effort"`
-	WorkdirMode string          `json:"workdir_mode"`
-	Workdir     string          `json:"workdir"`
-	Title       string          `json:"title"`
-	Options     json.RawMessage `json:"options"`
+	ClientID       string          `json:"client_id"`
+	Harness        string          `json:"harness"`
+	Model          string          `json:"model"`
+	Effort         string          `json:"effort"`
+	ShellExecution string          `json:"shell_execution"`
+	WorkdirMode    string          `json:"workdir_mode"`
+	Workdir        string          `json:"workdir"`
+	Title          string          `json:"title"`
+	Options        json.RawMessage `json:"options"`
 	// Cols and Rows are the size the sheet is about to open the terminal at.
 	// Absent, the session is created at the default size and the first attach
 	// corrects it a moment later.
@@ -162,6 +163,39 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, h.Label()+" is switched off in the dashboard")
 		return
 	}
+	shellExecution := body.ShellExecution
+	if body.ShellExecution != "" && harnessID != string(harnesses.KindShell) {
+		writeError(w, http.StatusBadRequest, "shell_execution is only valid for Shell sessions")
+		return
+	}
+	if harnessID == string(harnesses.KindShell) {
+		if shellExecution == "" {
+			shellExecution = harnesses.DefaultShellExecution(settings.Harnesses.Shell.Binary)
+		}
+		switch shellExecution {
+		case harnesses.ShellExecutionContainer:
+		case harnesses.ShellExecutionHost:
+			if !harnesses.HostShellAvailable() {
+				writeError(w, http.StatusBadRequest, "host shell is unavailable on this installation")
+				return
+			}
+		default:
+			writeError(w, http.StatusBadRequest, "shell_execution must be host or container")
+			return
+		}
+	}
+	options := body.Options
+	if shellExecution != "" {
+		fields := map[string]json.RawMessage{}
+		if len(options) > 0 && string(options) != "null" {
+			if err := json.Unmarshal(options, &fields); err != nil || fields == nil {
+				writeError(w, http.StatusBadRequest, "options must be a JSON object")
+				return
+			}
+		}
+		fields["shell_execution"], _ = json.Marshal(shellExecution)
+		options, _ = json.Marshal(fields)
+	}
 
 	if err := checkSize(body.Cols, body.Rows); err != nil {
 		// Before the row, before the directory: a size that cannot be a
@@ -187,14 +221,15 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), createTimeout)
 	defer cancel()
 	plan, err := h.Plan(ctx, harnesses.PlanRequest{
-		SessionID: id,
-		Title:     body.Title,
-		Cwd:       workdir,
-		Model:     strings.TrimSpace(body.Model),
-		Effort:    strings.TrimSpace(body.Effort),
-		Settings:  settings,
-		DataDir:   s.dataDir,
-		Logf:      log.Printf,
+		SessionID:      id,
+		Title:          body.Title,
+		Cwd:            workdir,
+		Model:          strings.TrimSpace(body.Model),
+		Effort:         strings.TrimSpace(body.Effort),
+		ShellExecution: shellExecution,
+		Settings:       settings,
+		DataDir:        s.dataDir,
+		Logf:           log.Printf,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -211,7 +246,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		Effort:      strings.TrimSpace(body.Effort),
 		Workdir:     workdir,
 		WorkdirMode: mode,
-		Options:     body.Options,
+		Options:     options,
 		Cols:        body.Cols,
 		Rows:        body.Rows,
 		Plan:        plan,

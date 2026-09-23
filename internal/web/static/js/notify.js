@@ -195,12 +195,21 @@ export function mountNotify(ctx) {
    * it starts up and idle the moment it is ready, and that is not a turn
    * ending: the server marks a completion unread only for a session somebody
    * has actually typed at, and this is where a phone is told the difference.
+   *
+   * It has to be a mark that was just set, though, and not one that was
+   * already there. A start, a restart and a resume all keep the unread mark
+   * they found - work that finished before the relaunch is still work nobody
+   * has seen - and the new process then runs its own start-up, which is a
+   * busy that ends in idle carrying that old mark. Chiming there would
+   * announce the press of the Start button as a turn that finished. Every
+   * real completion begins with a keystroke, and typing clears the mark, so
+   * on a genuine one `prev.unread` is false.
    */
   function completed(id, next, prev) {
     if (!prev || !next) return;
     if (prev.state !== 'busy') return;
     if (next.state !== 'idle' && next.state !== 'waiting') return;
-    if (!next.unread) return;
+    if (!next.unread || prev.unread) return;
     if (next.since && rung.get(id) === next.since) return;
     rung.set(id, next.since || Date.now());
     if (sound) {

@@ -95,6 +95,7 @@ export async function load(force = false) {
       cached = {
         harnesses: data.harnesses || [],
         workspace: data.workspace || EMPTY_WORKSPACE,
+        shell_execution: data.shell_execution || { host_available: false, default: 'container' },
         sessions_available: data.sessions_available !== false,
         sessions_error: data.sessions_error || '',
         refreshed_at: data.refreshed_at || Date.now(),
@@ -272,6 +273,9 @@ export async function openNewSessionSheet() {
   // to the one row, which is what it used to be.
   const toolsRow = document.getElementById('nsTools') || harnessRow;
   const dirRow = document.getElementById('nsDir');
+  const shellExecutionField = document.getElementById('nsShellExecutionField');
+  const shellExecutionRow = document.getElementById('nsShellExecution');
+  const shellExecutionHint = document.getElementById('nsShellExecutionHint');
   const dirPath = document.getElementById('nsDirPath');
   const dirHint = document.getElementById('nsDirHint');
   const modelField = document.getElementById('nsModelField');
@@ -284,7 +288,22 @@ export async function openNewSessionSheet() {
 
   const entries = list();
   const space = workspace();
-  const pick = { harness: '', model: '', effort: '', mode: DYNAMIC, workdir: '' };
+  const shellCapability = snapshot().shell_execution || { host_available: false, default: 'container' };
+  const pick = { harness: '', model: '', effort: '', mode: DYNAMIC, workdir: '',
+    shellExecution: shellCapability.default === 'host' && shellCapability.host_available ? 'host' : 'container' };
+
+  const hostButton = shellExecutionRow.querySelector('[data-value="host"]');
+  hostButton.disabled = !shellCapability.host_available;
+  shellExecutionHint.textContent = shellCapability.host_available
+    ? 'Host uses the host login shell and credentials. Container uses the shell and tools installed inside Socrates.'
+    : 'Host execution needs a container started with host namespace access.';
+  for (const button of shellExecutionRow.querySelectorAll('.seg')) {
+    button.onclick = () => {
+      pick.shellExecution = button.dataset.value;
+      pressed(shellExecutionRow, pick.shellExecution);
+    };
+  }
+  pressed(shellExecutionRow, pick.shellExecution);
 
   harnessRow.innerHTML = '';
   toolsRow.innerHTML = '';
@@ -431,6 +450,7 @@ export async function openNewSessionSheet() {
 
   function selectHarness(id) {
     pick.harness = id;
+    shellExecutionField.hidden = id !== 'shell';
     // Both rows are one choice, so both are told what was picked: the row that
     // does not hold it is the row that has to let go of it.
     pressed(harnessRow, id);
@@ -481,6 +501,7 @@ export async function openNewSessionSheet() {
         harness: pick.harness,
         model: pick.model,
         effort: pick.effort,
+        shell_execution: pick.harness === 'shell' ? pick.shellExecution : undefined,
         workdir_mode: pick.mode,
         workdir: pick.workdir,
       });

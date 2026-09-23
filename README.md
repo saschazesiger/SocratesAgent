@@ -52,17 +52,18 @@ stay signed in across `docker rm`, because `HOME` is in the volume.
 
 ## A shell on the host
 
-Panes run inside the container, because the tmux server does. Started with
-`--pid=host` and the right to enter namespaces, a Shell session runs on the host
-machine instead — as the default, with nothing to set: the image ships the
-wrapper, and Socrates names it only when the jump actually works, so a container
-started without those flags keeps the shell it had.
+Panes run inside the container, because the tmux server does. When creating a
+Shell session, choose **Host** or **Container**. Host redirects to the host's
+login shell and credentials; Container runs the shell and installed tools inside
+Socrates, for example to update an agent CLI. Host is offered when Socrates was
+started with `--pid=host` and the right to enter namespaces. It remains the
+default when available, and the choice is kept when the session restarts.
 
 The working directory carries over when it is a bind mount of the same name on
 both sides, and falls back to `/root` when it is not. Shell only — the three
 agents are handed generated files under `/data`, which is the volume and not a
-path the host has. A binary path in Admin → Harnesses → Shell overrides all of
-it.
+path the host has. A binary path in Admin → Harnesses → Shell is used for
+Container sessions; an explicit Host choice uses the image's host wrapper.
 
 ## Keys
 

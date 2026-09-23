@@ -35,6 +35,10 @@ func (s *Server) answerCatalog(w http.ResponseWriter, snap catalog.Snapshot) {
 	payload := map[string]any{
 		"harnesses":    snap.Agents,
 		"refreshed_at": snap.RefreshedAt,
+		"shell_execution": map[string]any{
+			"host_available": harnesses.HostShellAvailable(),
+			"default":        harnesses.DefaultShellExecution(settings.Harnesses.Shell.Binary),
+		},
 		"workspace": map[string]any{
 			"root":            settings.Workspace.Root,
 			"default_harness": settings.Workspace.DefaultHarness,

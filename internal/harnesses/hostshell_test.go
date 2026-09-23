@@ -63,3 +63,27 @@ func TestShellDefaultBinaryIsSomethingToRun(t *testing.T) {
 		t.Fatalf("the default shell %q is not something to run: %v", bin, info.Mode())
 	}
 }
+
+func TestShellExecutionSelectsTheRequestedMachine(t *testing.T) {
+	for _, tc := range []struct {
+		name, execution, configured, host, want string
+		fails                                   bool
+	}{
+		{"old default on host", "", "", hostShellPath, hostShellPath, false},
+		{"old configured binary", "", "/opt/custom-shell", hostShellPath, "/opt/custom-shell", false},
+		{"host overrides configured binary", ShellExecutionHost, "/opt/custom-shell", hostShellPath, hostShellPath, false},
+		{"container bypasses redirect", ShellExecutionContainer, "", hostShellPath, "/bin/sh", false},
+		{"container uses configured binary", ShellExecutionContainer, "/opt/custom-shell", hostShellPath, "/opt/custom-shell", false},
+		{"container bypasses configured wrapper", ShellExecutionContainer, hostShellPath, hostShellPath, "/bin/sh", false},
+		{"unavailable host is rejected", ShellExecutionHost, "", "", "", true},
+		{"unknown choice is rejected", "remote", "", hostShellPath, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := shellBinaryFor(tc.execution, tc.configured, tc.host, "/bin/sh")
+			if (err != nil) != tc.fails || got != tc.want {
+				t.Fatalf("shellBinaryFor(%q, %q, %q) = %q, %v; want %q, error=%v",
+					tc.execution, tc.configured, tc.host, got, err, tc.want, tc.fails)
+			}
+		})
+	}
+}

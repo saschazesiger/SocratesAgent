@@ -2,8 +2,10 @@ package harnesses
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -22,15 +24,35 @@ func (Shell) VersionArgs() []string { return []string{"--version"} }
 // then the user's own shell, then the two that are on nearly every machine. A
 // shell is never "not installed": there is always something to fall back to.
 //
-// The host comes first because a container that can reach it was started to
-// reach it - see hostShell - and because the alternative is the more
-// surprising of the two: a shell confined to a container that shares the
-// host's processes anyway. A container that cannot reach the host is
-// unaffected, and so is a binary path set in the dashboard.
+// The host comes first for sessions without an explicit execution choice,
+// preserving the behavior of shells created before the toggle existed. A
+// container that cannot reach the host keeps its local shell.
 func (Shell) DefaultBinary() string {
 	if bin := hostShell(); bin != "" {
 		return bin
 	}
+	return containerShellBinary()
+}
+
+const (
+	ShellExecutionHost      = "host"
+	ShellExecutionContainer = "container"
+)
+
+// HostShellAvailable is the actual capability used by the session picker and
+// by Plan. A host choice is never offered on a plain container installation.
+func HostShellAvailable() bool { return hostShell() != "" }
+
+// DefaultShellExecution describes what an omitted choice will do, including
+// an admin binary override that already selected a container-local program.
+func DefaultShellExecution(binary string) string {
+	if HostShellAvailable() && (strings.TrimSpace(binary) == "" || isHostShellBinary(binary)) {
+		return ShellExecutionHost
+	}
+	return ShellExecutionContainer
+}
+
+func containerShellBinary() string {
 	for _, candidate := range []string{strings.TrimSpace(os.Getenv("SHELL")), "/bin/bash", "/bin/sh"} {
 		if candidate == "" {
 			continue
@@ -45,9 +67,13 @@ func (Shell) DefaultBinary() string {
 // Plan is the whole of the shell launcher. If the resolved program is not one
 // of the shells this app has heard of it is still run: the user configured it,
 // and they know what they configured.
-func (s Shell) Plan(ctx context.Context, req PlanRequest) (LaunchPlan, error) {
+func (Shell) Plan(ctx context.Context, req PlanRequest) (LaunchPlan, error) {
 	opts := req.Settings.Harnesses.Shell
-	bin, err := resolveBinary(opts.Binary, s.DefaultBinary())
+	requested, err := shellBinaryFor(req.ShellExecution, opts.Binary, hostShell(), containerShellBinary())
+	if err != nil {
+		return LaunchPlan{}, err
+	}
+	bin, err := resolveBinary(requested, "")
 	if err != nil {
 		return LaunchPlan{}, err
 	}
@@ -65,6 +91,52 @@ func (s Shell) Plan(ctx context.Context, req PlanRequest) (LaunchPlan, error) {
 		Cwd:      req.Cwd,
 		Discover: DiscoverNone,
 	}, nil
+}
+
+// shellBinaryFor makes an explicit choice authoritative while keeping the
+// previous default for old sessions with no stored execution choice.
+func shellBinaryFor(execution, configured, host, container string) (string, error) {
+	switch execution {
+	case "":
+		if strings.TrimSpace(configured) != "" {
+			return configured, nil
+		}
+		if host != "" {
+			return host, nil
+		}
+		return container, nil
+	case ShellExecutionHost:
+		if host == "" {
+			return "", fmt.Errorf("host shell is unavailable; start Socrates with host namespace access or choose container")
+		}
+		return host, nil
+	case ShellExecutionContainer:
+		if strings.TrimSpace(configured) != "" && !isHostShellBinary(configured) {
+			return configured, nil
+		}
+		return container, nil
+	default:
+		return "", fmt.Errorf("unknown shell execution %q", execution)
+	}
+}
+
+// isHostShellBinary recognizes the shipped wrapper even when Admin names it
+// through PATH or a symlink. The Container choice must not accidentally run
+// that wrapper through an old binary override.
+func isHostShellBinary(binary string) bool {
+	name := strings.TrimSpace(binary)
+	if name == hostShellPath {
+		return true
+	}
+	path, err := exec.LookPath(name)
+	if err != nil {
+		return false
+	}
+	if path == hostShellPath {
+		return true
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	return err == nil && resolved == hostShellPath
 }
 
 // ResumePlan says there is nothing to resume. A shell restarted in the same
@@ -104,12 +176,9 @@ var (
 // hostShell is the wrapper's path when a shell on the host is both shipped and
 // reachable, and "" when a pane should simply be a shell in this container.
 //
-// Nobody has to switch this on. A container started with --pid=host and the
-// right to enter namespaces is a container whose operator asked for the host;
-// one started without them cannot reach it whatever any setting said, and
-// answering "" here is the difference between that being a plain shell and
-// being a pane that dies on a permission error. The binary path in the
-// dashboard still overrides both.
+// A container without the required namespace access cannot use the Host
+// choice. Answering "" here lets the picker disable it and makes an explicit
+// request fail before a pane is started.
 func hostShell() string {
 	hostShellOnce.Do(func() { hostShellBin = findHostShell(hostShellPath, hostReachable) })
 	return hostShellBin
@@ -143,7 +212,9 @@ func hostReachable() bool {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), hostShellTimeout)
 	defer cancel()
-	return exec.CommandContext(ctx, "nsenter", "-t", "1", "-m", "/bin/sh", "-c", ":").Run() == nil
+	// Probe every namespace the wrapper will enter. Testing only the mount
+	// namespace can offer Host even when its actual shell would be refused.
+	return exec.CommandContext(ctx, "nsenter", "-t", "1", "-m", "-u", "-i", "-n", "-p", "/bin/sh", "-c", ":").Run() == nil
 }
 
 // initElsewhere reports whether PID 1 lives in a mount namespace other than

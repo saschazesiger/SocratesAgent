@@ -174,6 +174,18 @@
        is reported back. They sit on a row of their own under the agents, so
        the choice reads as two kinds of thing rather than five of one. -->
   <div class="seg-row agents tools" id="nsTools" role="group" aria-label="Tool"></div>
+  <div class="field" id="nsShellExecutionField" hidden>
+    <label>Shell execution</label>
+    <div class="seg-row" id="nsShellExecution" role="group" aria-label="Shell execution">
+      <button class="seg" type="button" data-value="host" aria-pressed="false">
+        <span class="seg-text"><span class="seg-label">Host</span><span class="seg-sub">redirect to host</span></span>
+      </button>
+      <button class="seg" type="button" data-value="container" aria-pressed="false">
+        <span class="seg-text"><span class="seg-label">Container</span><span class="seg-sub">run inside container</span></span>
+      </button>
+    </div>
+    <div class="hint" id="nsShellExecutionHint"></div>
+  </div>
   <div class="field" id="nsDirField">
     <label>Working directory</label>
     <div id="nsDir"></div>

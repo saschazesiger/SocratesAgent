@@ -154,6 +154,15 @@ func (m *Manager) resume(ctx context.Context, row *store.Session) (*store.Sessio
 		DataDir:    m.cfg.DataDir,
 		Logf:       m.logf,
 	}
+	if row.Harness == string(harnesses.KindShell) && len(row.Options) > 0 {
+		var options struct {
+			ShellExecution string `json:"shell_execution"`
+		}
+		if err := json.Unmarshal(row.Options, &options); err != nil {
+			return m.planFailed(row, err)
+		}
+		req.ShellExecution = options.ShellExecution
+	}
 	if row.CLISessionState == store.CLILost {
 		req.CLISession = ""
 	}

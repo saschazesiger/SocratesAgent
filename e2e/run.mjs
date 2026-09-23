@@ -54,7 +54,7 @@ async function open(s) {
 
 // startSession drives the sheet the way a person would and waits until the
 // session it made is the one on screen.
-async function startSession(page, harness) {
+async function startSession(page, harness, shellExecution = '') {
   // The hash already names whatever session this tab is on, so the wait below
   // is for it to become a different one: a second session started in the same
   // tab is otherwise "finished" before it has begun, and the id handed back is
@@ -65,6 +65,9 @@ async function startSession(page, harness) {
   await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
   await page.waitForSelector('#newSessionSheet .seg[data-value="' + harness + '"]', { timeout: 10000 });
   await page.click('#newSessionSheet .seg[data-value="' + harness + '"]');
+  if (harness === 'shell' && shellExecution) {
+    await page.click('#nsShellExecution .seg[data-value="' + shellExecution + '"]');
+  }
   await pickModelIfNeeded(page);
   await page.click('#nsStart');
   await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
@@ -193,8 +196,11 @@ async function createshell() {
     await useDomRenderer(s);
     await open(s);
 
-    const id = await startSession(s.page, 'shell');
+    const id = await startSession(s.page, 'shell', 'container');
     ok(!!id, 'the sheet made a session and opened it', id || 'no id in the hash');
+    const created = await (await s.context.request.get(s.url + '/api/sessions/' + id)).json();
+    ok(created.session?.options?.shell_execution === 'container',
+      'the shell toggle saved container execution', JSON.stringify(created.session?.options));
 
     await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
     const marker = 'socrates-' + Date.now();
