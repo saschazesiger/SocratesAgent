@@ -132,7 +132,7 @@ func TestCreateSessionIsIdempotentOnClientID(t *testing.T) {
 	if retry.ID != "a1" {
 		t.Fatalf("retry created a second session: %#v", retry)
 	}
-	list, err := st.ListSessions(true)
+	list, err := st.ListSessions()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestCreateSessionIsIdempotentOnClientID(t *testing.T) {
 	if err := st.CreateSession(newSession("b2")); err != nil {
 		t.Fatal(err)
 	}
-	if list, _ = st.ListSessions(true); len(list) != 3 {
+	if list, _ = st.ListSessions(); len(list) != 3 {
 		t.Fatalf("sessions = %d", len(list))
 	}
 }
@@ -172,7 +172,7 @@ func TestTmuxNameIsUnique(t *testing.T) {
 	}
 }
 
-func TestListSessionsOrdersAndHidesArchived(t *testing.T) {
+func TestListSessionsOrdersAndListsEveryStatus(t *testing.T) {
 	st := openTest(t)
 	for _, id := range []string{"a1", "a2"} {
 		if err := st.CreateSession(newSession(id)); err != nil {
@@ -183,7 +183,7 @@ func TestListSessionsOrdersAndHidesArchived(t *testing.T) {
 	if err := st.SetSessionState("a1", StateRunning, -1, ""); err != nil {
 		t.Fatal(err)
 	}
-	list, err := st.ListSessions(false)
+	list, err := st.ListSessions()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,22 +191,12 @@ func TestListSessionsOrdersAndHidesArchived(t *testing.T) {
 		t.Fatalf("list = %#v", list)
 	}
 
-	if err := st.SetSessionArchived("a2", true); err != nil {
+	// A done session is still listed: the page files it, the store does not.
+	if err := st.SetSessionStatus("a2", StatusDone); err != nil {
 		t.Fatal(err)
 	}
-	if list, _ = st.ListSessions(false); len(list) != 1 || list[0].ID != "a1" {
-		t.Fatalf("archived session still listed: %#v", list)
-	}
-	list, _ = st.ListSessions(true)
-	if len(list) != 2 {
-		t.Fatalf("archived session missing from the full list: %#v", list)
-	}
-	// A restored session is indistinguishable from one that was never away.
-	if err := st.SetSessionArchived("a2", false); err != nil {
-		t.Fatal(err)
-	}
-	if list, _ = st.ListSessions(false); len(list) != 2 || list[1].Archived {
-		t.Fatalf("restored session = %#v", list)
+	if list, _ = st.ListSessions(); len(list) != 2 || list[1].Status != StatusDone {
+		t.Fatalf("done session = %#v", list)
 	}
 }
 
@@ -231,7 +221,7 @@ func TestListSessionsMovesOnlyOnAStatusChange(t *testing.T) {
 	}
 	order := func() string {
 		t.Helper()
-		list, err := st.ListSessions(true)
+		list, err := st.ListSessions()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -255,17 +245,14 @@ func TestListSessionsMovesOnlyOnAStatusChange(t *testing.T) {
 	if err := st.SetSessionSize("a1", 100, 30); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetSessionFlagged("a1", true); err != nil {
+	if err := st.SetSessionStatus("a1", StatusReview); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetSessionArchived("a1", true); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.SetSessionArchived("a1", false); err != nil {
+	if err := st.SetSessionStatus("a1", StatusInProgress); err != nil {
 		t.Fatal(err)
 	}
 	if got := order(); got != "a2,a1" {
-		t.Fatalf("after being read, renamed, resized, flagged and archived the order is %s, want a2,a1", got)
+		t.Fatalf("after being read, renamed, resized and refiled the order is %s, want a2,a1", got)
 	}
 	got, _ := st.GetSession("a1")
 	if got.ActiveAt != 1000 || got.UpdatedAt == 1000 {
@@ -297,32 +284,35 @@ func TestListSessionsMovesOnlyOnAStatusChange(t *testing.T) {
 	}
 }
 
-// A flag is a mark and nothing more: it comes back as set, it goes away when
-// lowered, and a session is born without one whatever the caller's struct says.
-func TestSessionFlagRoundTrip(t *testing.T) {
+// A status comes back as set and starts its own clock, a session is born in
+// progress whatever the caller's struct says, and a status that is not one of
+// the five is refused.
+func TestSessionStatusRoundTrip(t *testing.T) {
 	st := openTest(t)
 	born := newSession("a1")
-	born.Flagged = true
+	born.Status, born.StatusAt = StatusDone, 5
 	if err := st.CreateSession(born); err != nil {
 		t.Fatal(err)
 	}
-	if born.Flagged {
-		t.Fatal("a new session must not be flagged")
+	if born.Status != StatusInProgress || born.StatusAt != born.CreatedAt {
+		t.Fatalf("a new session is %q since %d, want in progress since it was created", born.Status, born.StatusAt)
 	}
-	if err := st.SetSessionFlagged("a1", true); err != nil {
-		t.Fatal(err)
+	for _, status := range []string{StatusReview, StatusPending, StatusDone, StatusBackground, StatusInProgress} {
+		if err := st.SetSessionStatus("a1", status); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := st.GetSession("a1")
+		if got.Status != status || got.StatusAt < born.CreatedAt {
+			t.Fatalf("after setting %q the session is %q since %d", status, got.Status, got.StatusAt)
+		}
 	}
-	if got, _ := st.GetSession("a1"); !got.Flagged {
-		t.Fatalf("flagged session = %#v", got)
+	for _, bad := range []string{"", "archived", "Done"} {
+		if err := st.SetSessionStatus("a1", bad); err == nil {
+			t.Fatalf("status %q was accepted", bad)
+		}
 	}
-	if err := st.SetSessionFlagged("a1", false); err != nil {
-		t.Fatal(err)
-	}
-	if got, _ := st.GetSession("a1"); got.Flagged {
-		t.Fatalf("unflagged session = %#v", got)
-	}
-	if err := st.SetSessionFlagged("nope", true); err != ErrNotFound {
-		t.Fatalf("flagging a missing session = %v", err)
+	if err := st.SetSessionStatus("nope", StatusPending); err != ErrNotFound {
+		t.Fatalf("filing a missing session = %v", err)
 	}
 }
 
@@ -681,7 +671,7 @@ func TestCreateSessionRefusesInvalidOptions(t *testing.T) {
 	if err := st.CreateSession(sess); err != nil {
 		t.Fatal(err)
 	}
-	list, err := st.ListSessions(true)
+	list, err := st.ListSessions()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -697,12 +687,13 @@ func TestCreateSessionOverwritesTheFieldsTheRowOwns(t *testing.T) {
 	sess := newSession("a1")
 	sess.Resumed = true
 	sess.LastAttached = 5
-	sess.Archived, sess.ArchivedAt = true, 5
+	sess.Status, sess.StatusAt = StatusDone, 5
 	sess.ExitStatus = 3
 	if err := st.CreateSession(sess); err != nil {
 		t.Fatal(err)
 	}
-	if sess.Resumed || sess.LastAttached != 0 || sess.Archived || sess.ArchivedAt != 0 || sess.ExitStatus != -1 {
+	if sess.Resumed || sess.LastAttached != 0 || sess.Status != StatusInProgress || sess.StatusAt != sess.CreatedAt ||
+		sess.ExitStatus != -1 {
 		t.Fatalf("the caller's struct disagrees with the row: %#v", sess)
 	}
 	stored, err := st.GetSession("a1")
@@ -710,7 +701,7 @@ func TestCreateSessionOverwritesTheFieldsTheRowOwns(t *testing.T) {
 		t.Fatal(err)
 	}
 	if stored.Resumed != sess.Resumed || stored.LastAttached != sess.LastAttached ||
-		stored.Archived != sess.Archived || stored.ExitStatus != sess.ExitStatus {
+		stored.Status != sess.Status || stored.StatusAt != sess.StatusAt || stored.ExitStatus != sess.ExitStatus {
 		t.Fatalf("stored = %#v, caller holds = %#v", stored, sess)
 	}
 }
@@ -899,6 +890,10 @@ func TestMigrateAddsTheTitleSource(t *testing.T) {
 		VALUES('a1', 'claude', '/srv/repo', 'preset', 1, 1)`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := old.Exec(`INSERT INTO sessions(id, harness, workdir, workdir_mode, created_at, updated_at, archived_at)
+		VALUES('a2', 'claude', '/srv/repo', 'preset', 1, 1, 5)`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := old.Exec(`PRAGMA user_version = 3`); err != nil {
 		t.Fatal(err)
 	}
@@ -918,9 +913,21 @@ func TestMigrateAddsTheTitleSource(t *testing.T) {
 	}
 	// The order the upgrade shows is the order the build before it showed:
 	// the last thing that happened to the row stands in for its last status
-	// change, and the flag is down.
-	if got.ActiveAt != 1 || got.Flagged {
-		t.Fatalf("the migrated session has active_at %d and flagged %v", got.ActiveAt, got.Flagged)
+	// change. A session that was not archived is left unsorted for the
+	// activity detector, and an archived one is done from now on - not from
+	// when it was archived, or the upgrade would delete it on the spot.
+	if got.ActiveAt != 1 || got.Status != StatusUnsorted {
+		t.Fatalf("the migrated session has active_at %d and status %q", got.ActiveAt, got.Status)
+	}
+	archived, err := st.GetSession("a2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archived.Status != StatusDone || archived.StatusAt < time.Now().Add(-time.Minute).UnixMilli() {
+		t.Fatalf("the archived session is %q since %d, want done since now", archived.Status, archived.StatusAt)
+	}
+	if has, err := hasColumn(st.db, "sessions", "archived_at"); err != nil || has {
+		t.Fatalf("archived_at is still there (%v)", err)
 	}
 	if err := st.SetAutoSessionTitle("a1", "A name"); err != nil {
 		t.Fatal(err)

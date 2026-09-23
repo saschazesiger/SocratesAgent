@@ -16,7 +16,7 @@
 // of it per session.
 
 import {
-  api, el, toast, infoTip, confirmDialog, errorMessage, isOffline, isBusyConflict,
+  api, el, toast, infoTip, confirmDialog, alertDialog, errorMessage, isOffline, isBusyConflict,
   setClass, onWake, clientKey, CONNECTION_GRACE, restoreFocus, setFocusFallback,
 } from './api.js';
 import { connectionSource } from './net.js';
@@ -606,7 +606,6 @@ const ATTACH_DEBOUNCE = 120;
 
 const state = {
   sessions: [],
-  scope: 'active',
   current: null,      // the session row being shown
   socket: null,
   term: null,
@@ -643,6 +642,9 @@ const state = {
   // It is in memory only - the server re-derives it from a live pane every
   // second, so a copy that outlived a reload could only ever be wrong.
   activity: new Map(),
+  // The sessions whose automatic name is being asked for right now. Their
+  // name pulses, in the list and in the header, until the answer is in.
+  titling: new Set(),
   // The current session's quota/cost poll. A generation number makes a slow
   // answer for the previous session harmless after a quick row switch.
   usageTimer: null,
@@ -656,8 +658,8 @@ const state = {
 };
 
 const dom = {};
-const ids = ['sidebar', 'navScrim', 'menuBtn', 'sideCollapse', 'newSession', 'sessionScope', 'sessionList',
-  'activityLive', 'sessionHarness', 'sessionFlag', 'sessionTitle', 'sessionArchived', 'sessionUsage', 'termSize',
+const ids = ['sidebar', 'navScrim', 'menuBtn', 'sideCollapse', 'newSession', 'sessionList',
+  'activityLive', 'sessionHarness', 'sessionTitle', 'sessionStatus', 'sessionUsage', 'termSize',
   'statusBtn', 'handsBtn', 'soundBtn', 'notifyBtn', 'sessionMenu',
   'stage', 'termWrap', 'term', 'termOverlay', 'termLines', 'termNotice',
   'termTicker', 'tickerWindow', 'termEmpty',
@@ -691,11 +693,51 @@ function activityOf(session) {
   return state.activity.get(session.id) || null;
 }
 
-// The flag a person puts on a session to find it again. One shape, drawn
-// before the name in the row and before the name in the header, so a flagged
-// session is recognised the same way wherever it is looked at.
-const FLAG_SVG = '<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true">'
-  + '<path d="M5 3v18M5 4h11l-2.5 4L16 12H5"/></svg>';
+// Where the work in a session stands, as the person files it. In progress is
+// what every session starts as and says nothing; the others carry a mark in
+// the row and a word in the header. Done is the one that does something: the
+// server closes the terminal and deletes the session a day later. Background
+// is a service left running on purpose: out of the way, never refiled, never
+// deleted.
+const STATUSES = [
+  { id: 'in_progress', label: 'In progress' },
+  { id: 'review', label: 'Review pending' },
+  { id: 'pending', label: 'Pending' },
+  { id: 'background', label: 'Background' },
+  { id: 'done', label: 'Done' },
+];
+const STATUS_WORDS = Object.fromEntries(STATUSES.map((s) => [s.id, s.label]));
+
+// One small drawing per status that has a mark: an eye for a review, a clock
+// for pending, stacked layers for background, a tick for done.
+const STATUS_SVG = {
+  review: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    + '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
+  pending: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    + '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  background: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    + '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg>',
+  done: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    + '<path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
+};
+
+// A session a row upgraded from flags and an archive may still be unsorted for
+// its first seconds; until the server files it, it reads as in progress.
+function statusOf(session) {
+  return (session && STATUS_WORDS[session.status]) ? session.status : 'in_progress';
+}
+
+function isDone(session) { return statusOf(session) === 'done'; }
+
+// deleteWords is when a done session goes, as a person would say it.
+function deleteWords(session) {
+  const at = Number(session && session.delete_at);
+  if (!at) return '';
+  const hours = Math.max(0, Math.round((at - Date.now()) / 3600000));
+  const when = new Date(at);
+  const clock = String(when.getHours()).padStart(2, '0') + ':' + String(when.getMinutes()).padStart(2, '0');
+  return hours >= 1 ? 'Deleted in ' + hours + ' h, at ' + clock : 'Deleted within the hour';
+}
 
 function sessionOf(id) { return state.sessions.find((s) => s.id === id) || null; }
 
@@ -703,7 +745,7 @@ function sessionOf(id) { return state.sessions.find((s) => s.id === id) || null;
 
 function renderList() {
   const host = dom.sessionList;
-  const wanted = state.sessions.filter((s) => state.scope === 'all' || !s.archived);
+  const wanted = state.sessions;
   if (!wanted.length) {
     host.innerHTML = '';
     let empty = 'No sessions yet.';
@@ -717,7 +759,16 @@ function renderList() {
   // between two fetches bumps the moment locally, so the order inside a
   // folder - and the order of the folders themselves - is worked out here,
   // from the same moment the server sorted by.
-  const folders = foldersOf(wanted);
+  // Background and done sessions are not part of the project work: each sits
+  // in one folder of its own at the bottom, shut until it is opened - the
+  // services first, then what is finished, most recently filed first, until
+  // the server deletes it.
+  const folders = foldersOf(wanted.filter((s) => !OWN_FOLDER[statusOf(s)]));
+  for (const [status, key] of Object.entries(OWN_FOLDER)) {
+    const filed = wanted.filter((s) => statusOf(s) === status)
+      .sort((a, b) => (Number(b.status_at) || 0) - (Number(a.status_at) || 0));
+    if (filed.length) folders.push({ key, label: STATUS_WORDS[status], path: '', sessions: filed });
+  }
   // The list is patched rather than rebuilt: taking a connected node out of
   // the page and putting it back restarts its animations, and a row that
   // fades in again every few seconds is a page that looks broken. The folders
@@ -757,7 +808,7 @@ function renderList() {
     }
     updateFolder(section, folder);
   }
-  // What is left over: a session that was deleted or archived out of view, and
+  // What is left over: a session that was deleted, and
   // a folder whose last session went with it. The rows are swept after every
   // folder has been walked rather than folder by folder, because a row that
   // moved to a folder further down the list has not been drawn yet while the
@@ -791,6 +842,24 @@ function cssId(id) { return String(id).replace(/\\/g, '\\\\').replace(/"/g, '\\"
 // desk is not a column tidied on a phone.
 const FOLDERS_KEY = 'socrates.folders';
 const closedFolders = new Set();
+
+// The folders of background and done sessions. They are the two that start
+// shut - a service is meant to run unseen, and what is done is finished - so
+// for them the set records the opposite: being in it means the person opened
+// it. The order here is the order they are drawn in.
+const BACKGROUND_KEY = '#background';
+const DONE_KEY = '#done';
+const OWN_FOLDER = { background: BACKGROUND_KEY, done: DONE_KEY };
+const FOLDER_TITLES = {
+  [BACKGROUND_KEY]: 'Background sessions: services left running on purpose, never deleted',
+  [DONE_KEY]: 'Done sessions: their terminals are closed, and each is deleted a day after it was marked done',
+};
+
+function shutByDefault(key) { return key === BACKGROUND_KEY || key === DONE_KEY; }
+
+function folderOpen(key) {
+  return shutByDefault(key) ? closedFolders.has(key) : !closedFolders.has(key);
+}
 // aria-controls needs something to point at, and a path is not an id.
 let folderSeq = 0;
 
@@ -823,7 +892,14 @@ function toggleFolder(key) {
  * be on screen whatever the folder it landed in was left as.
  */
 function openFolder(session) {
-  if (!session || !closedFolders.delete(folderKeyOf(session))) return;
+  if (!session) return;
+  const own = OWN_FOLDER[statusOf(session)];
+  if (own) {
+    if (closedFolders.has(own)) return;
+    closedFolders.add(own);
+  } else if (!closedFolders.delete(folderKeyOf(session))) {
+    return;
+  }
   saveFolders();
   renderList();
 }
@@ -850,7 +926,7 @@ function buildFolder(folder) {
 }
 
 function updateFolder(section, folder) {
-  const open = !closedFolders.has(folder.key);
+  const open = folderOpen(folder.key);
   const head = section.querySelector('.folder-head');
   const rows = section.querySelector('.folder-rows');
   setClass(section, 'closed', !open);
@@ -860,7 +936,7 @@ function updateFolder(section, folder) {
   // The whole path is technical detail, so it is where every technical string
   // on this page is: on hover, and nowhere in the words. "More Chats" has no
   // path, so its tooltip says what it holds instead.
-  head.title = folder.path || 'Sessions in a directory of their own';
+  head.title = FOLDER_TITLES[folder.key] || folder.path || 'Sessions in a directory of their own';
   // Shut, a folder has to say what is behind it: the two things this page
   // exists to make noticeable - an agent that needs an answer, and one that
   // finished something nobody has seen - would otherwise be hidden by the
@@ -894,8 +970,8 @@ function buildRow(session) {
     tabindex: '0',
   },
   el('span', { class: 'row-mark' }, agentMark(session.harness, 18)),
-  el('span', { class: 'row-flag', 'aria-label': 'Flagged', html: FLAG_SVG }),
   el('span', { class: 'label' }),
+  el('span', { class: 'row-status' }),
   el('button', {
     class: 'icon-btn act', type: 'button', 'aria-label': 'Session actions',
     html: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>',
@@ -953,15 +1029,29 @@ function clockOf(at) {
 }
 
 function updateRow(row, session) {
-  row.querySelector('.label').textContent = session.title;
+  const label = row.querySelector('.label');
+  label.textContent = session.title;
+  setClass(label, 'titling', state.titling.has(session.id));
   // Collapsed, a row is one mark and no words, so the name moves into the
   // tooltip - the only place left where it can be read. Expanded it is written
   // on the row, and a tooltip repeating it would be noise.
   row.title = sidebarCollapsed() ? session.title : '';
   const attached = !!(state.current && state.current.id === session.id);
   setClass(row, 'active', attached);
-  setClass(row, 'archived', !!session.archived);
-  setClass(row, 'flagged', !!session.flagged);
+  // The status is a mark after the name, and in progress has none: it is
+  // what a session is unless somebody said otherwise.
+  const status = statusOf(session);
+  setClass(row, 'done', status === 'done');
+  const statusMark = row.querySelector('.row-status');
+  if (statusMark.dataset.status !== status) {
+    statusMark.dataset.status = status;
+    statusMark.innerHTML = STATUS_SVG[status] || '';
+  }
+  const said = status === 'done'
+    ? [STATUS_WORDS.done, deleteWords(session)].filter(Boolean).join(' · ')
+    : STATUS_WORDS[status];
+  statusMark.title = status === 'in_progress' ? '' : said;
+  if (status === 'in_progress') statusMark.removeAttribute('aria-label'); else statusMark.setAttribute('aria-label', said);
 
   // The activity of a row is two marks and no words: the agent's own mark
   // turns into a ring that spins while the harness is working and stands
@@ -1010,9 +1100,16 @@ function mergeActivity(sessions) {
     if (session && movesRow(prev ? prev.state : '', next.state)) {
       session.active_at = Math.max(momentOf(session), Number(next.since) || Date.now());
     }
+    // A pending session, or one waiting for a review, that starts working may
+    // just have been filed as in progress again by the server. The frame does
+    // not carry the status, so the list is asked for it.
+    const status = statusOf(session);
+    if (session && next.state === 'busy' && (!prev || prev.state !== 'busy')
+      && (status === 'pending' || status === 'review')) refreshSoon();
     // Only a session the page can name is worth saying anything about, and a
-    // tool has nothing to say: see activityOf.
-    if (!session || harnesses.isTool(session.harness)) continue;
+    // tool has nothing to say: see activityOf. Neither does a service somebody
+    // put in the background, which is there so as not to interrupt anyone.
+    if (!session || harnesses.isTool(session.harness) || statusOf(session) === 'background') continue;
     announce(id, next, prev);
     if (notifier) notifier.completed(id, next, prev);
   }
@@ -1057,10 +1154,17 @@ function announce(id, next, prev) {
   }, wait);
 }
 
+// refreshSoon asks for the list once, a moment from now, however many
+// changes ask for it in between.
+let refreshTimer = null;
+function refreshSoon() {
+  if (refreshTimer) return;
+  refreshTimer = setTimeout(() => { refreshTimer = null; refreshList(); }, 1500);
+}
+
 async function refreshList() {
   try {
-    const data = await api('/api/sessions?scope=' + (state.scope === 'all' ? 'all' : 'active'),
-      { attempts: 2, timeout: 12000 });
+    const data = await api('/api/sessions', { attempts: 2, timeout: 12000 });
     state.sessions = data.sessions || [];
     // The list is the catch-up path for a sidebar nobody has a socket open
     // for: every view carries the activity of its own session.
@@ -1191,25 +1295,21 @@ function infoDialog(session) {
   close.focus();
 }
 
-async function archiveSession(session, archived) {
+// setStatus files a session. Done closes its terminal on the server, so a
+// session that is being looked at loses its socket and shows what happened
+// instead; every other status changes nothing but the mark.
+async function setStatus(session, status) {
+  if (statusOf(session) === status) return;
   try {
-    const data = await api('/api/sessions/' + encodeURIComponent(session.id) + '/archive', {
-      method: 'POST', body: { archived },
+    const data = await api('/api/sessions/' + encodeURIComponent(session.id) + '/file', {
+      method: 'POST', body: { status },
     });
+    const open = state.current && state.current.id === session.id;
+    if (status === 'done' && open) detach();
     replaceSession(data.session);
-    toast(archived ? 'Archived. It keeps running.' : 'Back in the active list.');
-  } catch (err) { toast(errorMessage(err), 'error'); }
-}
-
-// flagSession raises or lowers the flag. No toast: the flag appears on the
-// row, in front of the name, and that is the whole of the feedback it needs.
-async function flagSession(session, flagged) {
-  try {
-    const data = await api('/api/sessions/' + encodeURIComponent(session.id) + '/flag', {
-      method: 'POST', body: { flagged },
-    });
-    replaceSession(data.session);
-  } catch (err) { toast(errorMessage(err), 'error'); }
+    if (status === 'done') toast('Done. Its terminal was closed; the session is deleted in 24 hours.');
+    else if (isDone(session) && open) attach(data.session);
+  } catch (err) { toast(actionFailed(err, 'That session could not be refiled.'), 'error'); }
 }
 
 async function deleteSession(session) {
@@ -1225,7 +1325,7 @@ async function deleteSession(session) {
     state.sessions = state.sessions.filter((s) => s.id !== session.id);
     if (state.current && state.current.id === session.id) {
       detach();
-      const next = state.sessions.find((s) => !s.archived) || state.sessions[0];
+      const next = state.sessions.find((s) => !isDone(s)) || state.sessions[0];
       if (next) selectSession(next.id); else showEmpty();
     }
     renderList();
@@ -1256,7 +1356,6 @@ function openRowMenu(anchor, id) {
   const menu = el('div', { class: 'menu', role: 'menu' },
     item('Info', () => infoDialog(session)),
     item('Rename', () => renameSession(session)),
-    item(session.flagged ? 'Remove flag' : 'Flag', () => flagSession(session, !session.flagged)),
     // Hands-free is holding the bar on, and it is the only keyboard there is
     // while it does, so there is nothing here to offer: an item that answered
     // "hide" with a bar still on screen would be the menu lying.
@@ -1265,7 +1364,10 @@ function openRowMenu(anchor, id) {
       setKeyBarWanted(on);
       showKeyBar(on);
     }),
-    item(session.archived ? 'Unarchive' : 'Archive', () => archiveSession(session, !session.archived)),
+    el('div', { class: 'menu-label', text: 'Status' }),
+    ...STATUSES.map((one) => item(one.label, () => setStatus(session, one.id),
+      statusOf(session) === one.id ? 'checked' : '')),
+    el('div', { class: 'menu-sep' }),
     session.harness === 'vscode' && state.current?.id === session.id ? item('Reload editor', () => attach(session)) : null,
     item(session.harness === 'vscode' ? 'Download server log' : 'Download scrollback', () => downloadJournal(session)),
     item('Delete', () => deleteSession(session), 'danger'));
@@ -1375,13 +1477,12 @@ function showEmpty() {
     unreachable ? null : el('button', { class: 'btn primary', type: 'button', text: 'New session', onclick: newSession }),
   );
   dom.sessionTitle.textContent = 'Socrates';
-  dom.sessionFlag.hidden = true;
   dom.sessionHarness.hidden = true;
   stopUsage();
   dom.sessionMenu.hidden = true;
   if (state.assist) state.assist.attached();
   dom.termSize.hidden = true;
-  dom.sessionArchived.hidden = true;
+  dom.sessionStatus.hidden = true;
   dom.termOverlay.hidden = true;
   clearNotice();
   if (state.reachable) { state.wanted = ''; location.hash = ''; }
@@ -1391,8 +1492,11 @@ function showEmpty() {
 function applySession(session) {
   state.current = session;
   dom.sessionTitle.textContent = session.title;
-  dom.sessionFlag.hidden = !session.flagged;
-  dom.sessionArchived.hidden = !session.archived;
+  setClass(dom.sessionTitle, 'titling', state.titling.has(session.id));
+  const status = statusOf(session);
+  dom.sessionStatus.hidden = status === 'in_progress';
+  dom.sessionStatus.textContent = STATUS_WORDS[status];
+  dom.sessionStatus.dataset.status = status;
   dom.sessionMenu.hidden = false;
   dom.termEmpty.hidden = true;
 
@@ -1482,6 +1586,21 @@ function drawOverlay(session) {
   // answering with what it became. The row still says needs_resume for all of
   // it, and a list refresh in the middle must not redraw the button that has
   // already been pressed.
+  // A done session's terminal was closed on purpose, and that is the whole of
+  // what there is to say about it, whatever state the row is in.
+  if (isDone(session)) {
+    show(
+      el('p', { class: 'overlay-title', text: 'This session is done.' }),
+      el('p', { class: 'overlay-detail', text: 'Its terminal was closed. ' + (deleteWords(session) || 'It is deleted soon') + '.' }),
+      el('div', { class: 'overlay-actions' },
+        el('button', {
+          class: 'btn primary', type: 'button', text: 'Pick it up again',
+          onclick: () => setStatus(session, 'in_progress'),
+        }),
+        el('button', { class: 'btn', type: 'button', text: 'Delete now', onclick: () => deleteSession(session) })),
+    );
+    return;
+  }
   let drawn = session.state;
   if (state.resuming) {
     if (drawn === 'needs_resume' || drawn === 'starting') drawn = 'resuming';
@@ -1692,6 +1811,11 @@ function attach(session) {
   // shut it.
   openFolder(session);
   applySession(session);
+  // A done session has no terminal to open, and opening it must not start one:
+  // the overlay applySession drew is all there is until it is picked up.
+  if (isDone(session)) return;
+  // A session that was just opened is still settling: see notify.hush.
+  if (notifier) notifier.hush(session.id);
   if (session.harness === 'vscode') {
     document.body.classList.add('ide-open');
     dom.termSize.hidden = true;
@@ -1895,6 +2019,29 @@ function renameRow(id, title) {
   renderList();
 }
 
+// titleFrame follows the automatic naming of a session: the name pulses from
+// the moment the model is asked until it has answered, and an answer that is
+// a failure is said in a dialog - a name that silently never arrives is a
+// sidebar nobody can explain.
+function titleFrame(frame) {
+  const id = frame.id;
+  if (!id) return;
+  if (frame.phase === 'start') state.titling.add(id);
+  else state.titling.delete(id);
+  if (state.current && state.current.id === id) {
+    setClass(dom.sessionTitle, 'titling', state.titling.has(id));
+  }
+  if (frame.title) renameRow(id, frame.title);
+  else renderList();
+  if (frame.phase === 'error') {
+    const session = sessionOf(id);
+    alertDialog({
+      title: 'Could not name the session',
+      body: (session ? '“' + session.title + '”: ' : '') + (frame.text || 'the title model failed.'),
+    });
+  }
+}
+
 function showSize(cols, rows) {
   dom.termSize.hidden = false;
   dom.termSize.textContent = cols + '×' + rows;
@@ -1927,10 +2074,14 @@ function onControl(sessionId, frame) {
   // A session that names itself does it while another one is being watched,
   // so this frame is about whichever session it names and not about the one
   // this socket is attached to.
-  if (frame.t === 'title') { renameRow(frame.id, frame.title); return; }
+  if (frame.t === 'title') { titleFrame(frame); return; }
   if (!state.current || state.current.id !== sessionId) return;
   switch (frame.t) {
     case 'hello':
+      // The handshake is where a relaunched program has just come up, so the
+      // settling window starts again from here. A plain reconnect is not a
+      // start, and a turn that finished while it was away is still news.
+      if (notifier && state.resuming) notifier.hush(sessionId);
       if (frame.session) applySession({ ...state.current, ...frame.session });
       if (frame.size) showSize(frame.size.cols, frame.size.rows);
       // A handshake carries every running session's activity, so a reconnect
@@ -1950,6 +2101,7 @@ function onControl(sessionId, frame) {
       if (state.assist) state.assist.statusFrame(frame);
       break;
     case 'state':
+      if (notifier && frame.state !== state.current.state) notifier.hush(sessionId);
       // The program coming up or going down is a status change, so the row
       // moves - the same moment the server wrote into it.
       replaceSession({ ...state.current, state: frame.state,
@@ -2183,17 +2335,6 @@ function wire() {
   if (dom.sideCollapse) {
     dom.sideCollapse.addEventListener('click', () => showSidebar(!sidebarCollapsed()));
   }
-  dom.sessionScope.addEventListener('click', (event) => {
-    const button = event.target.closest('.seg');
-    if (!button) return;
-    state.scope = button.dataset.scope;
-    for (const seg of dom.sessionScope.querySelectorAll('.seg')) {
-      const on = seg === button;
-      seg.classList.toggle('on', on);
-      seg.setAttribute('aria-pressed', on ? 'true' : 'false');
-    }
-    refreshList();
-  });
   dom.sessionMenu.addEventListener('click', (event) => {
     if (state.current) openRowMenu(event.currentTarget, state.current.id);
   });
@@ -2303,7 +2444,7 @@ async function boot() {
   // `openWanted` is the only thing that attaches on its own, so there is one
   // rule about when that is allowed and one place it lives.
   if (!state.wanted || !sessionOf(state.wanted)) {
-    const first = state.sessions.find((s) => !s.archived) || state.sessions[0];
+    const first = state.sessions.find((s) => !isDone(s)) || state.sessions[0];
     state.wanted = first ? first.id : state.wanted;
   }
   openWanted();

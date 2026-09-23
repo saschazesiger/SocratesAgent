@@ -146,7 +146,17 @@ func (o OpenCode) plan(req PlanRequest, session []string) (LaunchPlan, error) {
 	if err != nil {
 		return LaunchPlan{}, err
 	}
-	inline, err := openCodeConfig(opts, req)
+	tuiPath := SessionFile(req.DataDir, req.SessionID, openCodeTUIFile)
+	files := []GenFile{{Path: tuiPath, Mode: 0o600, Data: tui}}
+	// OpenCode takes extra instructions only as files, which it reads next to
+	// its own and to any AGENTS.md.
+	var instructions []string
+	if text := onHostInstructions(); text != "" {
+		path := SessionFile(req.DataDir, req.SessionID, onHostFile)
+		files = append(files, GenFile{Path: path, Mode: 0o600, Data: []byte(text)})
+		instructions = append(instructions, path)
+	}
+	inline, err := openCodeConfig(opts, req, instructions)
 	if err != nil {
 		return LaunchPlan{}, err
 	}
@@ -154,7 +164,6 @@ func (o OpenCode) plan(req PlanRequest, session []string) (LaunchPlan, error) {
 	if err != nil {
 		return LaunchPlan{}, err
 	}
-	tuiPath := SessionFile(req.DataDir, req.SessionID, openCodeTUIFile)
 
 	env := baseEnv(req)
 	env["OPENCODE_DISABLE_AUTOUPDATE"] = "1"
@@ -181,7 +190,7 @@ func (o OpenCode) plan(req PlanRequest, session []string) (LaunchPlan, error) {
 		Argv:       argv,
 		Env:        env,
 		Cwd:        req.Cwd,
-		Files:      []GenFile{{Path: tuiPath, Mode: 0o600, Data: tui}},
+		Files:      files,
 		CLISession: strings.TrimSpace(req.CLISession),
 		Discover:   DiscoverOpenCodeAPI,
 		Port:       port,
@@ -207,7 +216,7 @@ func openCodeTUI() ([]byte, error) {
 
 // openCodeConfig is OPENCODE_CONFIG_CONTENT, which is merged last of every
 // file source and is therefore the one lever that reliably wins.
-func openCodeConfig(opts config.OpenCodeOptions, req PlanRequest) ([]byte, error) {
+func openCodeConfig(opts config.OpenCodeOptions, req PlanRequest, instructions []string) ([]byte, error) {
 	doc := map[string]any{
 		"$schema": "https://opencode.ai/config.json",
 		// Nothing a session does is published anywhere.
@@ -217,6 +226,9 @@ func openCodeConfig(opts config.OpenCodeOptions, req PlanRequest) ([]byte, error
 	}
 	if model := pick(req.Model, opts.DefaultModel); model != "" {
 		doc["model"] = model
+	}
+	if len(instructions) > 0 {
+		doc["instructions"] = instructions
 	}
 	return json.Marshal(doc)
 }

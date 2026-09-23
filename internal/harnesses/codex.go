@@ -72,6 +72,11 @@ func (c Codex) plan(req PlanRequest, lead []string) (LaunchPlan, error) {
 	}
 	argv = append(argv, "-c", trustLevelOverride(req.Cwd))
 	argv = append(argv, "-c", tomlAssign("tui.theme", codexTheme))
+	// developer_instructions is added to Codex's own instructions and to any
+	// AGENTS.md, and replaces neither.
+	if text := onHostInstructions(); text != "" {
+		argv = append(argv, "-c", tomlAssign("developer_instructions", text))
+	}
 	// Inline rather than the alternate screen, so the pane keeps its
 	// scrollback - which is the whole of what a web terminal has.
 	argv = append(argv, "--no-alt-screen")

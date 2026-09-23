@@ -5,6 +5,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -342,46 +343,51 @@ func TestSessionLifecycle(t *testing.T) {
 		t.Fatalf("an empty name should be refused, got %d", res.StatusCode)
 	}
 
-	// Archiving hides a session from the default list and leaves it running.
-	res, _ = e.do(t, e.client, "POST", "/api/sessions/"+id+"/archive", `{"archived":true}`)
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("archive: %d", res.StatusCode)
-	}
-	_, payload = e.do(t, e.client, "GET", "/api/sessions", "")
-	if list, _ := payload["sessions"].([]any); len(list) != len(cases)-1 {
-		t.Fatalf("an archived session should be hidden, %d of %d left", len(list), len(cases))
-	}
-	_, payload = e.do(t, e.client, "GET", "/api/sessions?scope=all", "")
-	if list, _ := payload["sessions"].([]any); len(list) != len(cases) {
-		t.Fatalf("scope=all should show it again, got %d", len(list))
+	// A status is where the person files a session. Anything but done is the
+	// row and nothing more: the terminal keeps running and the list keeps it.
+	res, payload = e.do(t, e.client, "POST", "/api/sessions/"+id+"/file", `{"status":"review"}`)
+	if res.StatusCode != http.StatusOK || payload["session"].(map[string]any)["status"] != store.StatusReview {
+		t.Fatalf("review: %d %#v", res.StatusCode, payload)
 	}
 	if !e.hasTmuxSession(id) {
-		t.Fatal("archiving must not stop a session")
+		t.Fatal("filing a session for review must not stop it")
 	}
-	res, _ = e.do(t, e.client, "POST", "/api/sessions/"+id+"/archive", `{"archived":false}`)
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("unarchive: %d", res.StatusCode)
+	res, _ = e.do(t, e.client, "POST", "/api/sessions/"+id+"/file", `{"status":"archived"}`)
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a status that is not one should be refused, got %d", res.StatusCode)
 	}
 
-	// A flag is a mark the person puts on a row: it comes back on the session
-	// and in the list, and it goes away again.
-	res, payload = e.do(t, e.client, "POST", "/api/sessions/"+id+"/flag", `{"flagged":true}`)
-	if res.StatusCode != http.StatusOK || payload["session"].(map[string]any)["flagged"] != true {
-		t.Fatalf("flag: %d %#v", res.StatusCode, payload)
+	// Done closes the terminal and keeps the session, with the moment it is
+	// deleted on it, and opening it does not bring the terminal back.
+	res, payload = e.do(t, e.client, "POST", "/api/sessions/"+id+"/file", `{"status":"done"}`)
+	done, _ := payload["session"].(map[string]any)
+	if res.StatusCode != http.StatusOK || done["status"] != store.StatusDone || done["state"] != store.StateNeedsResume {
+		t.Fatalf("done: %d %#v", res.StatusCode, payload)
+	}
+	if e.hasTmuxSession(id) {
+		t.Fatal("a done session kept its tmux session")
+	}
+	if at, _ := done["status_at"].(float64); done["delete_at"] != at+float64(DoneRetention.Milliseconds()) {
+		t.Fatalf("a done session is deleted at %v, want %v after %v", done["delete_at"], DoneRetention, at)
 	}
 	_, payload = e.do(t, e.client, "GET", "/api/sessions", "")
-	flagged := 0
-	for _, one := range payload["sessions"].([]any) {
-		if one.(map[string]any)["flagged"] == true {
-			flagged++
-		}
+	if list, _ := payload["sessions"].([]any); len(list) != len(cases) {
+		t.Fatalf("a done session should still be listed, got %d of %d", len(list), len(cases))
 	}
-	if flagged != 1 {
-		t.Fatalf("the list shows %d flagged sessions, want 1", flagged)
+	res, _ = e.do(t, e.client, "POST", "/api/sessions/"+id+"/resume", "")
+	if res.StatusCode != http.StatusConflict || e.hasTmuxSession(id) {
+		t.Fatalf("resuming a done session: %d, tmux session back: %v", res.StatusCode, e.hasTmuxSession(id))
 	}
-	res, payload = e.do(t, e.client, "POST", "/api/sessions/"+id+"/flag", `{"flagged":false}`)
-	if res.StatusCode != http.StatusOK || payload["session"].(map[string]any)["flagged"] != false {
-		t.Fatalf("unflag: %d %#v", res.StatusCode, payload)
+
+	// Taken out of done, it is resumed the next time it is opened.
+	res, _ = e.do(t, e.client, "POST", "/api/sessions/"+id+"/file", `{"status":"in_progress"}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("back in progress: %d", res.StatusCode)
+	}
+	res, payload = e.do(t, e.client, "POST", "/api/sessions/"+id+"/resume", "")
+	if res.StatusCode != http.StatusOK || payload["session"].(map[string]any)["state"] != store.StateRunning ||
+		!e.hasTmuxSession(id) {
+		t.Fatalf("resume after done: %d %#v", res.StatusCode, payload)
 	}
 
 	// Delete is the one path that kills a tmux session, and it keeps the
@@ -693,8 +699,7 @@ func TestSessionAPIRequiresAuth(t *testing.T) {
 		{"GET", "/api/sessions/x"},
 		{"PATCH", "/api/sessions/x"},
 		{"DELETE", "/api/sessions/x"},
-		{"POST", "/api/sessions/x/archive"},
-		{"POST", "/api/sessions/x/flag"},
+		{"POST", "/api/sessions/x/file"},
 		{"POST", "/api/sessions/x/restart"},
 		{"POST", "/api/sessions/x/resume"},
 		{"POST", "/api/sessions/x/ack-resume"},
@@ -1215,5 +1220,55 @@ func TestRestartAndDeleteWorkWhenTheTmuxSessionIsGone(t *testing.T) {
 	}
 	if _, err := e.store.GetSession(id); err == nil {
 		t.Fatal("the row survived a delete that answered 200")
+	}
+}
+
+// The sweep is what keeps done sessions cheap and short-lived: a done session
+// that still has a terminal - an archived one from before statuses, or a park
+// that did not finish - has it closed, and one whose retention has run out is
+// deleted, working directory kept. A background session is left alone.
+func TestSweepParksAndDeletesDoneSessions(t *testing.T) {
+	e := newSessionEnv(t)
+	dir := filepath.Join(e.work, "done")
+	res, session := e.create(fmt.Sprintf(`{"harness":"shell","workdir_mode":"custom","workdir":%q}`, dir))
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d %#v", res.StatusCode, session)
+	}
+	id := sessionID(t, session)
+	// A background session is a service, and the sweep never touches it.
+	res, service := e.create(fmt.Sprintf(`{"harness":"shell","workdir_mode":"custom","workdir":%q}`,
+		filepath.Join(e.work, "service")))
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d %#v", res.StatusCode, service)
+	}
+	serviceID := sessionID(t, service)
+	if err := e.store.SetSessionStatus(serviceID, store.StatusBackground); err != nil {
+		t.Fatal(err)
+	}
+	// Filed as done behind the manager's back, which is what the upgrade does.
+	if err := e.store.SetSessionStatus(id, store.StatusDone); err != nil {
+		t.Fatal(err)
+	}
+	e.srv.sweep(context.Background(), time.Now())
+	row, err := e.store.GetSession(id)
+	if err != nil {
+		t.Fatalf("a done session inside its retention was deleted: %v", err)
+	}
+	if e.hasTmuxSession(id) || row.State != store.StateNeedsResume {
+		t.Fatalf("the sweep left a done session running: state %s, tmux %v", row.State, e.hasTmuxSession(id))
+	}
+
+	e.srv.sweep(context.Background(), time.Now().Add(DoneRetention+time.Minute))
+	if !e.hasTmuxSession(serviceID) {
+		t.Fatal("the sweep stopped a background session")
+	}
+	if _, err := e.store.GetSession(serviceID); err != nil {
+		t.Fatalf("the sweep deleted a background session: %v", err)
+	}
+	if _, err := e.store.GetSession(id); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a done session past its retention is still there: %v", err)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("the sweep removed the working directory: %v", err)
 	}
 }

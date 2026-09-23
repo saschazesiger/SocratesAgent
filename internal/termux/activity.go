@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -51,6 +52,11 @@ type Activity struct {
 	Since  int64  `json:"since"`          // unix ms of the last committed change
 	Source string `json:"source"`         // "exact"|"screen"|"quiet"|"pane" - hover-only detail
 	Note   string `json:"note,omitempty"` // e.g. "permission prompt" - hover-only
+	// Asked is whether anybody had typed at the session when this change was
+	// committed (track.asked). It is for the server's own subscribers - the
+	// first busy that was asked for is the first prompt being taken up - and
+	// never goes to a browser.
+	Asked bool `json:"-"`
 }
 
 // Where an answer came from, which the page shows only on hover.
@@ -88,6 +94,10 @@ const (
 	// anything between is no answer.
 	HardQuiet = 30 * time.Second
 	QuietBusy = 2 * time.Second
+	// SortWithin is how long the detector may take to see a session left
+	// unsorted by the upgrade that introduced statuses working, before it is
+	// filed as pending.
+	SortWithin = 30 * time.Second
 )
 
 // unreadKey is where the unread marks live in the store's key/value table. A
@@ -199,6 +209,9 @@ type forgetter interface {
 type track struct {
 	committed Activity
 	running   bool
+	// status is the row's status as the last tick read it, which is what
+	// decides whether starting to work files the session as in progress.
+	status string
 
 	// The candidate state and how many consecutive ticks have proposed it.
 	pending      State
@@ -250,6 +263,9 @@ type activity struct {
 	pending  []ActivityChange
 	started  bool
 	stopOnce sync.Once
+	// firstTick is when the detector first looked, which is where the time an
+	// unsorted session gets to show that it is working starts.
+	firstTick time.Time
 
 	// capture is how the screen layer reads a pane, and now is the clock the
 	// two out-of-band writers read. Both are fields so that the ladder's table
@@ -472,7 +488,7 @@ func (a *activity) tick(ctx context.Context, now time.Time) {
 	if a.m.Available() != nil {
 		return
 	}
-	rows, err := a.m.st.ListSessions(true)
+	rows, err := a.m.st.ListSessions()
 	if err != nil {
 		return
 	}
@@ -489,18 +505,29 @@ func (a *activity) tick(ctx context.Context, now time.Time) {
 // drive.
 func (a *activity) apply(ctx context.Context, rows []store.Session, panes map[string]paneLine, now time.Time) {
 	a.mu.Lock()
+	if a.firstTick.IsZero() {
+		a.firstTick = now
+	}
 	seenRows := map[string]bool{}
 	for i := range rows {
 		row := rows[i]
 		running := row.State == store.StateRunning || row.State == store.StateStarting
 		_, tracked := a.tracks[row.ID]
 		if !running && !tracked {
-			// Nothing was ever said about this row, and nothing has to be.
+			// Nothing was ever said about this row, and nothing has to be -
+			// except where it is filed, if nobody has filed it yet: a session
+			// that is not running is not working.
+			if row.Status == store.StatusUnsorted {
+				a.file(row.ID, store.StatusPending)
+			}
 			continue
 		}
 		seenRows[row.ID] = true
 		pane, ok := panes[row.TmuxName]
 		a.evaluate(ctx, row, pane, ok, running, now)
+		if row.Status == store.StatusUnsorted {
+			a.sort(row.ID, now)
+		}
 		// A session that has ended and settled on unknown is no longer the
 		// detector's business; its unread mark is the store's.
 		if tr := a.tracks[row.ID]; !running && tr.committed.State == StateUnknown && tr.pendingCount == 0 {
@@ -529,6 +556,7 @@ func (a *activity) apply(ctx context.Context, rows []store.Session, panes map[st
 func (a *activity) evaluate(ctx context.Context, row store.Session, pane paneLine, alive, running bool, now time.Time) {
 	tr := a.trackOf(row.ID)
 	tr.running = running
+	tr.status = row.Status
 
 	// 1. The pane is gone or dead. Nothing else is asked, and everything this
 	//    session was keeping open is closed.
@@ -726,6 +754,18 @@ func (a *activity) commit(id string, tr *track, obs observation, from string, no
 		a.unread[id] = now.UnixMilli()
 		a.saveUnread()
 	}
+	// A session that was put aside and has been given work again is in
+	// progress again. Only work somebody asked for counts, for the reason the
+	// unread mark has the same test: every harness is busy while it starts,
+	// so a resume or a restarted detector would otherwise file every pending
+	// session as in progress. A done session has no terminal to work in, a
+	// background one is a service that is meant to keep working where it is
+	// filed, and an unsorted one is sorted below.
+	if tr.asked() && next == StateBusy && prev.State != StateBusy &&
+		(tr.status == store.StatusPending || tr.status == store.StatusReview) {
+		a.file(id, store.StatusInProgress)
+		tr.status = store.StatusInProgress
+	}
 	// The same three changes, plus starting to work, are what move a session
 	// up the list. Anything else - a restarted detector finding a pane idle,
 	// a read that failed for a tick - is the machine catching up, not the
@@ -755,6 +795,34 @@ func MovesRow(prev, next State) bool {
 	return next == StateBusy || prev == StateBusy || next == StateWaiting
 }
 
+// sort files a session the upgrade left unsorted, as soon as the detector
+// can tell whether it is working: a session that is working is in progress,
+// and one that is idle, waiting for an answer, or still undecided once
+// SortWithin has passed is pending. The activity lock is held.
+func (a *activity) sort(id string, now time.Time) {
+	tr := a.tracks[id]
+	if tr == nil {
+		return
+	}
+	switch {
+	case tr.committed.State == StateBusy:
+		a.file(id, store.StatusInProgress)
+	case tr.committed.State != StateUnknown, now.Sub(a.firstTick) >= SortWithin:
+		a.file(id, store.StatusPending)
+	}
+}
+
+// file writes a status the detector decided on. A session deleted in the
+// meantime is not worth a line in the log.
+func (a *activity) file(id, status string) {
+	if tr := a.tracks[id]; tr != nil {
+		tr.status = status
+	}
+	if err := a.m.st.SetSessionStatus(id, status); err != nil && !errors.Is(err, store.ErrNotFound) {
+		a.m.logf("could not file session %s as %s: %v", id, status, err)
+	}
+}
+
 func (a *activity) clearUnread(id string, tr *track) {
 	if _, ok := a.unread[id]; !ok && !tr.committed.Unread {
 		return
@@ -781,7 +849,9 @@ func (a *activity) trackOf(id string) *track {
 // only queues: the callback runs outside the lock, because it ends in a
 // WebSocket write and nothing that writes a socket may hold this.
 func (a *activity) publish(id string, tr *track) {
-	a.pending = append(a.pending, ActivityChange{SessionID: id, Activity: tr.committed})
+	change := ActivityChange{SessionID: id, Activity: tr.committed}
+	change.Activity.Asked = tr.asked()
+	a.pending = append(a.pending, change)
 }
 
 func (a *activity) take() []ActivityChange {
@@ -835,7 +905,7 @@ func (a *activity) load() {
 	if err := a.m.st.GetJSON(unreadKey, &marks); err != nil {
 		return
 	}
-	rows, err := a.m.st.ListSessions(true)
+	rows, err := a.m.st.ListSessions()
 	if err != nil {
 		return
 	}

@@ -170,6 +170,7 @@ func (s *Server) StartSessions(ctx context.Context) error {
 	// The detector starts after Adopt, so that its first tick sees the
 	// sessions that survived the last run rather than an empty server.
 	s.manager.StartActivity(ctx)
+	s.startSweep(ctx)
 	return nil
 }
 
@@ -289,8 +290,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/sessions/{id}", s.auth(s.handleGetSession))
 	mux.HandleFunc("PATCH /api/sessions/{id}", s.auth(s.handleRenameSession))
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.auth(s.endingViewers(s.handleDeleteSession)))
-	mux.HandleFunc("POST /api/sessions/{id}/archive", s.auth(s.handleArchiveSession))
-	mux.HandleFunc("POST /api/sessions/{id}/flag", s.auth(s.handleFlagSession))
+	mux.HandleFunc("POST /api/sessions/{id}/file", s.auth(s.handleSetStatus))
 	mux.HandleFunc("POST /api/sessions/{id}/resume", s.auth(s.handleResumeSession))
 	mux.HandleFunc("POST /api/sessions/{id}/restart", s.auth(s.handleRestartSession))
 	mux.HandleFunc("POST /api/sessions/{id}/ack-resume", s.auth(s.handleAckResume))

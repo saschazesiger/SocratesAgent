@@ -432,6 +432,12 @@ func cliStateFor(plan harnesses.LaunchPlan) string {
 // overlay.
 var ErrStillRunning = errors.New("the session is still running; it will not be replaced")
 
+// ErrDone is the refusal to start the program of a session that is done. Its
+// terminal was closed on purpose, and opening the session to read it must
+// not bring the terminal back: the session has to be given another status
+// first.
+var ErrDone = errors.New("the session is done; give it another status to resume it")
+
 // Relaunch starts a session's program again under the name its row already
 // carries: the reboot case, where the row survived and the tmux server did
 // not, and the restart-from-the-exit-overlay case, where the tmux session is
@@ -906,6 +912,52 @@ func (m *Manager) Viewers(sessionID string) []*Viewer {
 
 // ---------------------------------------------------------------- deleting
 
+// Park closes the terminal of a session that is done and keeps everything
+// else: the row, the journal, the working directory and the program's own
+// conversation id. What is left is exactly what a reboot leaves behind, so
+// the row says needs_resume and a later resume picks the conversation up
+// again - but only once the session is no longer done, which Ensure checks.
+//
+// It takes the session's lock, so a resume that is under way finishes before
+// the terminal it made is closed rather than racing it.
+func (m *Manager) Park(ctx context.Context, sessionID string) error {
+	unlock := m.lockSession(sessionID)
+	defer unlock()
+	row, err := m.st.GetSession(sessionID)
+	if err != nil {
+		return err
+	}
+	if err := m.stop(ctx, row); err != nil {
+		return err
+	}
+	if row.State == store.StateNeedsResume {
+		return nil
+	}
+	return m.st.SetSessionState(sessionID, store.StateNeedsResume, -1, "")
+}
+
+// stop closes every viewer of a session and kills its tmux session, which is
+// what deleting a session and parking one have in common. A session that is
+// already gone is not an error: that is the state being asked for.
+func (m *Manager) stop(ctx context.Context, row *store.Session) error {
+	for _, v := range m.Viewers(row.ID) {
+		_ = v.Close()
+	}
+	if m.Available() == nil && row.TmuxName != "" {
+		// A bare pipe-pane closes the journal; then the session goes.
+		_, _ = m.tmux.Run(ctx, "pipe-pane", "-t", row.TmuxName)
+		if _, err := m.tmux.Run(ctx, "kill-session", "-t", row.TmuxName); err != nil && !serverGone(err) &&
+			!noSuchTarget(err) {
+			return err
+		}
+	}
+	m.mu.Lock()
+	delete(m.live, row.ID)
+	delete(m.missed, row.ID)
+	m.mu.Unlock()
+	return nil
+}
+
 // Delete kills a session, and is the only thing in Socrates that ever does.
 // The working directory is left alone: work the user did is not ours to throw
 // away.
@@ -914,24 +966,12 @@ func (m *Manager) Delete(ctx context.Context, sessionID string) error {
 	if err != nil {
 		return err
 	}
-	for _, v := range m.Viewers(sessionID) {
-		_ = v.Close()
-	}
-	if m.Available() == nil && row.TmuxName != "" {
-		// A bare pipe-pane closes the journal; then the session goes.
-		_, _ = m.tmux.Run(ctx, "pipe-pane", "-t", row.TmuxName)
-		if _, err := m.tmux.Run(ctx, "kill-session", "-t", row.TmuxName); err != nil && !serverGone(err) &&
-			!strings.Contains(strings.ToLower(Stderr(err)), "can't find session") {
-			return err
-		}
+	if err := m.stop(ctx, row); err != nil {
+		return err
 	}
 	if err := m.st.DeleteSession(sessionID); err != nil {
 		return err
 	}
-	m.mu.Lock()
-	delete(m.live, sessionID)
-	delete(m.missed, sessionID)
-	m.mu.Unlock()
 	// The watcher would otherwise keep looking for a conversation id for
 	// another quarter of an hour and then write it to a row that is gone.
 	m.forgetSession(sessionID)

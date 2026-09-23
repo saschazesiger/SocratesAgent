@@ -182,15 +182,71 @@ export function combobox(options = {}) {
     active = filtered.findIndex((item) => item.value === current);
     isOpen = true;
     list.hidden = false;
-    // The list is as tall as the screen below the field allows, and scrolls
-    // inside itself beyond that. On a phone with the keyboard up a fixed
-    // height ran past the bottom of the sheet, and the options down there
-    // could only be reached by scrolling the sheet under the list.
-    const room = window.innerHeight - input.getBoundingClientRect().bottom - 16;
-    list.style.maxHeight = Math.max(140, Math.min(300, room)) + 'px';
     input.setAttribute('aria-expanded', 'true');
     render();
+    place();
     if (active >= 0) setActive(active);
+    follow(true);
+  }
+
+  // place pins the open list to the field on the screen itself rather than
+  // inside the field's box. A dialog scrolls its own contents, and a list
+  // positioned inside it was cut off at the dialog's bottom edge; a fixed one
+  // is drawn over the dialog's edge and past it.
+  //
+  // It opens downwards when it fits there, and upwards when the room above
+  // the field is what it needs. Either way it is as tall as the screen allows
+  // and scrolls inside itself beyond that: on a phone with the keyboard up
+  // the room is what the visual viewport has left, not the window.
+  function place() {
+    if (!isOpen) return;
+    const box = input.getBoundingClientRect();
+    const view = window.visualViewport;
+    const top = view ? view.offsetTop : 0;
+    const height = view ? view.height : window.innerHeight;
+    const gap = 4;
+    const edge = 8;
+    const below = top + height - box.bottom - gap - edge;
+    const above = box.top - top - gap - edge;
+    list.style.maxHeight = '';
+    const wanted = Math.min(300, list.scrollHeight + 2);
+    const down = below >= wanted || below >= above;
+    const room = Math.max(0, down ? below : above);
+    const tall = Math.min(wanted, room);
+    list.style.width = box.width + 'px';
+    list.style.maxHeight = tall + 'px';
+    const wantLeft = box.left;
+    const wantTop = down ? box.bottom + gap : box.top - gap - tall;
+    list.style.left = wantLeft + 'px';
+    list.style.top = wantTop + 'px';
+    // A dialog that is still animating in has a transform, and a transform
+    // makes it the box a fixed element is placed in. Whatever that shifts is
+    // measured and taken back out, and the dialog's animationend places the
+    // list again once there is nothing left to correct for.
+    const drawn = list.getBoundingClientRect();
+    if (Math.abs(drawn.left - wantLeft) > 0.5 || Math.abs(drawn.top - wantTop) > 0.5) {
+      list.style.left = (2 * wantLeft - drawn.left) + 'px';
+      list.style.top = (2 * wantTop - drawn.top) + 'px';
+    }
+  }
+
+  // follow keeps an open list on its field while anything under it moves: the
+  // dialog scrolling, the window resizing, the keyboard coming up.
+  function follow(on) {
+    const how = on ? 'addEventListener' : 'removeEventListener';
+    document[how]('scroll', onMove, true);
+    document[how]('animationend', onMove, true);
+    window[how]('resize', onMove);
+    if (window.visualViewport) {
+      window.visualViewport[how]('resize', onMove);
+      window.visualViewport[how]('scroll', onMove);
+    }
+  }
+
+  function onMove(event) {
+    // The list scrolling through its own options is not the field moving.
+    if (event && event.target === list) return;
+    place();
   }
 
   function close() {
@@ -200,6 +256,7 @@ export function combobox(options = {}) {
     // that was used to find one.
     if (strict) input.value = shown(current);
     list.hidden = true;
+    follow(false);
     input.setAttribute('aria-expanded', 'false');
     input.removeAttribute('aria-activedescendant');
     if (openInstance === instance) openInstance = null;

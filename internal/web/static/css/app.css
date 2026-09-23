@@ -394,34 +394,6 @@ a { color: inherit; }
 .btn.is-busy { opacity: .75; cursor: default; }
 .btn.is-busy .ico { display: none; }
 
-/* Active or all: two words, one tap, and it stays where it was put. */
-.scope {
-  display: flex;
-  gap: 2px;
-  padding: 2px;
-  border-radius: 9px;
-  background: var(--bg-hover);
-}
-.scope .seg {
-  flex: 1;
-  border: 0;
-  background: transparent;
-  border-radius: 7px;
-  padding: 5px 8px;
-  font: inherit;
-  font-size: 12.5px;
-  color: var(--text-soft);
-  cursor: pointer;
-  transition: background .12s ease, color .12s ease;
-}
-.scope .seg:hover { color: var(--text); }
-.scope .seg.on {
-  background: var(--bg);
-  color: var(--text);
-  font-weight: 550;
-  box-shadow: var(--shadow-sm);
-}
-
 .chat-list {
   flex: 1;
   min-height: 0;
@@ -518,7 +490,7 @@ a { color: inherit; }
    until the row is the one you are on. */
 .chat-item .agent-mark { opacity: .7; transition: opacity .16s var(--ease); }
 .chat-item:hover .agent-mark, .chat-item.active .agent-mark { opacity: 1; }
-.chat-item.archived .agent-mark { opacity: .4; filter: grayscale(1); }
+.chat-item.done .agent-mark { opacity: .4; filter: grayscale(1); }
 .chat-item .label {
   flex: 1;
   min-width: 0;
@@ -540,15 +512,25 @@ a { color: inherit; }
 @media (hover: none) {
   .chat-item .act { opacity: .45; }
 }
-/* An archived chat reads as put away: still legible, plainly not in use. */
-.chat-item.archived .label { color: var(--text-faint); }
-/* The flag is the one mark a person puts on a row by hand. It sits in front
-   of the name, in the same amber the waiting ring uses, and it is not there
-   at all on a row that has none. */
-.chat-item .row-flag { display: none; flex: none; width: 13px; height: 13px; color: var(--amber); }
-.chat-item.flagged .row-flag { display: inline-flex; }
-.row-flag svg, .head-flag svg { width: 100%; height: 100%; display: block; }
-.head-flag { flex: none; width: 14px; height: 14px; color: var(--amber); }
+/* A done chat reads as put away: still legible, plainly not in use. */
+.chat-item.done .label { color: var(--text-faint); }
+/* The status is the mark a person puts on a row by hand. It sits after the
+   name, and a row in progress - the ordinary case - has none at all. */
+.chat-item .row-status { display: none; flex: none; width: 13px; height: 13px; }
+.chat-item .row-status[data-status="review"],
+.chat-item .row-status[data-status="pending"],
+.chat-item .row-status[data-status="background"],
+.chat-item .row-status[data-status="done"] { display: inline-flex; }
+.row-status svg { width: 100%; height: 100%; display: block; }
+.row-status[data-status="review"] { color: var(--blue); }
+.row-status[data-status="pending"] { color: var(--amber); }
+.row-status[data-status="background"] { color: var(--text-faint); }
+.row-status[data-status="done"] { color: var(--green); }
+/* The same status in the header, as a word, in the colour of its mark. */
+.tag.status[data-status="review"] { color: var(--blue); border-color: currentColor; }
+.tag.status[data-status="pending"] { color: var(--amber); border-color: currentColor; }
+.tag.status[data-status="background"] { color: var(--text-soft); border-color: currentColor; }
+.tag.status[data-status="done"] { color: var(--green); border-color: currentColor; }
 .tag {
   flex: none;
   font-size: 10.5px;
@@ -594,7 +576,6 @@ a { color: inherit; }
     justify-content: center;
   }
   body.side-collapsed .btn-label { display: none; }
-  body.side-collapsed .scope { display: none; }
   body.side-collapsed .chat-list { padding: 4px 6px 12px; }
   /* The folder head keeps its hairline - which is what actually separates the
      folders - and its caret, which is the control. The name does not fit in a
@@ -605,7 +586,7 @@ a { color: inherit; }
   body.side-collapsed .list-empty { display: none; }
   body.side-collapsed .chat-item { justify-content: center; gap: 0; padding: 8px 0; }
   body.side-collapsed .chat-item .label,
-  body.side-collapsed .chat-item .row-flag,
+  body.side-collapsed .chat-item .row-status,
   body.side-collapsed .chat-item .act,
   body.side-collapsed .chat-item .tag { display: none; }
   body.side-collapsed .side-foot { flex-direction: column; align-items: center; padding: 8px 6px; gap: 4px; }
@@ -1156,6 +1137,12 @@ a { color: inherit; }
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: .4; transform: scale(.68); }
 }
+/* A name being thought of: the words fade in and out, and stay where they are. */
+@keyframes title-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .3; }
+}
+.titling { animation: title-pulse 1.4s cubic-bezier(.45, 0, .55, 1) infinite; }
 @keyframes pop {
   from { opacity: 0; transform: translateY(8px) scale(.98); }
   to { opacity: 1; transform: none; }
@@ -1166,7 +1153,7 @@ a { color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
   .spinner, .state-dot.starting, .state-dot.installing,
-  .conn-dot {
+  .conn-dot, .titling {
     animation-duration: 2.4s !important;
   }
   .spinner { animation-name: pulse !important; }
@@ -1790,6 +1777,20 @@ body.stale .icon-btn.working::after { animation-play-state: paused; opacity: .4;
 }
 .menu-item:hover { background: var(--bg-hover); }
 .menu-item.danger { color: var(--red); }
+/* The statuses are one group in the menu, under a small heading, and the one
+   the session has is ticked. */
+.menu-label {
+  flex-shrink: 0;
+  padding: 8px 10px 3px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.menu-sep { flex-shrink: 0; height: 1px; margin: 5px 4px; background: var(--line); }
+.menu-item.checked { font-weight: 600; }
+.menu-item.checked::after { content: " \2713"; }
 
 /* ------------------------------------------------------------- combobox */
 
@@ -1826,12 +1827,11 @@ body.stale .icon-btn.working::after { animation-play-state: paused; opacity: .4;
   border-top: 5px solid currentColor;
 }
 
+/* Fixed, and placed against the field by combobox.js, so a dialog that
+   scrolls its own contents cannot cut the list off at its edge. */
 .combo-list {
-  position: absolute;
+  position: fixed;
   z-index: 40;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
   max-height: 300px;
   overflow-y: auto;
   overscroll-behavior: contain;

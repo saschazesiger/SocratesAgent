@@ -76,7 +76,7 @@ func (m *Manager) Adopt(ctx context.Context) error {
 	if err := m.Available(); err != nil {
 		return nil
 	}
-	rows, err := m.st.ListSessions(true)
+	rows, err := m.st.ListSessions()
 	if err != nil {
 		return err
 	}
@@ -238,7 +238,7 @@ func (m *Manager) Poll(ctx context.Context) {
 	if m.Available() != nil {
 		return
 	}
-	rows, err := m.st.ListSessions(true)
+	rows, err := m.st.ListSessions()
 	if err != nil {
 		return
 	}

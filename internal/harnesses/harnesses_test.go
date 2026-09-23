@@ -56,6 +56,9 @@ func newLab(t *testing.T) *lab {
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Whether the host is reachable is a property of the machine the tests
+	// run on, so every plan is built as if it were not unless a test says so.
+	onHost(t, false)
 	return &lab{t: t, home: home, data: t.TempDir(), cwd: cwd, settings: config.Default()}
 }
 

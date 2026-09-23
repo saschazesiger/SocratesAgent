@@ -101,6 +101,11 @@ func (c Claude) plan(req PlanRequest, lead []string, id string) (LaunchPlan, err
 	// settings key below is what stops Claude Code asking about it first.
 	argv = append(argv, "--dangerously-skip-permissions")
 	argv = append(argv, "--settings", settingsPath)
+	// The host is described as text on the command line rather than through
+	// --append-system-prompt-file: the file form reaches the model as
+	// something it may decline to follow, and this is how the agent learns
+	// that on-host exists at all.
+	argv = flag(argv, "--append-system-prompt", onHostInstructions())
 	// --remote-control is never passed. See claudeSettings and
 	// pinClaudeGlobalConfig for the two places it is also turned off, because
 	// not passing the flag is not on its own enough.

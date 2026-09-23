@@ -180,7 +180,7 @@ var (
 // choice. Answering "" here lets the picker disable it and makes an explicit
 // request fail before a pane is started.
 func hostShell() string {
-	hostShellOnce.Do(func() { hostShellBin = findHostShell(hostShellPath, hostReachable) })
+	hostShellOnce.Do(func() { hostShellBin = findHostShell(hostShellPath, hostReachableOnce) })
 	return hostShellBin
 }
 

@@ -257,7 +257,7 @@ func (s *Server) tmuxChecks(ctx context.Context) []checkResult {
 // and leaves their ids behind the "i".
 func (s *Server) recoveredCheck() checkResult {
 	row := checkResult{Name: "Recovered sessions", OK: true, Summary: "none"}
-	sessions, err := s.store.ListSessions(true)
+	sessions, err := s.store.ListSessions()
 	if err != nil {
 		row.OK, row.Summary, row.Detail = false, "unreadable", err.Error()
 		return row

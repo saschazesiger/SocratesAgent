@@ -61,6 +61,11 @@ COPY deploy/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 # before it offers. See "A shell on the host" in the README.
 COPY deploy/host-shell.sh /usr/local/bin/socrates-host-shell
 
+# The agents' way onto the host: one command at a time, `on-host kubectl ...`.
+# Under the same condition as the host shell, each agent is told it exists -
+# internal/harnesses/hostexec.go - and otherwise it is a file nobody mentions.
+COPY deploy/on-host.sh /usr/local/bin/on-host
+
 # HOME is inside the volume on purpose. Every credential the three CLIs hold,
 # and every transcript Socrates resumes a session from, is written under $HOME
 # by the CLI itself - ~/.claude and ~/.claude.json, ~/.codex,

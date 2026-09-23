@@ -65,6 +65,22 @@ agents are handed generated files under `/data`, which is the volume and not a
 path the host has. A binary path in Admin → Harnesses → Shell is used for
 Container sessions; an explicit Host choice uses the image's host wrapper.
 
+## Agents on the host
+
+The agents stay in the container, and reach the host one command at a time
+with `on-host`:
+
+```bash
+on-host kubectl get pods -A                  # a command on the host, as root
+on-host -c 'journalctl -u k3s | tail -50'    # a script for the host's shell
+```
+
+It is the same jump as the host shell, under the same condition — `--pid=host`
+and the right to enter namespaces — and when that holds, every Claude Code,
+Codex and OpenCode session is told about it in its instructions. That is how an
+agent can drive the host's Kubernetes, its services and its files, with no
+approvals in between. Without the flags nothing is said and nothing changes.
+
 ## Keys
 
 Both optional, both in Admin: **OpenRouter** for dictation, **Google Cloud** for
@@ -78,7 +94,7 @@ interface is access to everything you mounted. `-p 127.0.0.1:8080:8080` keeps it
 off the network; publish it through the Cloudflare tunnel in Admin, with
 Cloudflare Access in front of the hostname. With `--pid=host --privileged` there
 is no container boundary left at all: that one is root on the machine, and not
-something to publish.
+something to publish — and every agent is told how to use it.
 
 ## Development
 

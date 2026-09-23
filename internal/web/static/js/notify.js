@@ -33,6 +33,12 @@ const PEAK = 0.18;
 // finish inside a second are one piece of news.
 const CHIME_EVERY = 1500;
 
+// How long a session that was just opened or just came up says nothing. A
+// harness that is starting sets its status once and then changes it again
+// within moments, and that flurry is the program finding its feet, not a
+// turn that finished.
+const SETTLE = 5000;
+
 // What a notification says under the session's name. The words are the
 // sidebar's own, so the phone and the page agree about what happened.
 const BODY = { idle: 'Finished', waiting: 'Needs an answer' };
@@ -89,6 +95,8 @@ export function mountNotify(ctx) {
   // idle -> busy -> idle, and the second edge is the same commit as the
   // first. One commit is one piece of news.
   const rung = new Map();
+  // Until when each session is still settling, by id: see hush.
+  const quiet = new Map();
 
   /* ------------------------------------------------------------ the chime */
 
@@ -212,6 +220,9 @@ export function mountNotify(ctx) {
     if (!next.unread || prev.unread) return;
     if (next.since && rung.get(id) === next.since) return;
     rung.set(id, next.since || Date.now());
+    // A commit inside the settling window is counted as rung, so the poll
+    // that repeats it a moment later does not ring for it either.
+    if (Date.now() < (quiet.get(id) || 0)) return;
     if (sound) {
       const now = Date.now();
       if (now - lastChime >= CHIME_EVERY) {
@@ -223,6 +234,17 @@ export function mountNotify(ctx) {
     // the list yet is heard and not shown.
     const session = ctx.sessionOf(id);
     if (session) show(id, next, session);
+  }
+
+  /**
+   * hush opens the settling window of one session: for the next SETTLE
+   * milliseconds a completion of it is neither heard nor shown. The page calls
+   * it when a session is opened and again when its program comes up, because
+   * a relaunch can take longer than the window and the start-up it hides is
+   * the one that follows.
+   */
+  function hush(id) {
+    if (id) quiet.set(id, Date.now() + SETTLE);
   }
 
   /* -------------------------------------------------------- the two toggles */
@@ -294,6 +316,7 @@ export function mountNotify(ctx) {
 
   return {
     completed,
+    hush,
     soundOn: () => sound,
     notifyOn: () => notify && available,
   };

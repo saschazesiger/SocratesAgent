@@ -1,8 +1,10 @@
 package harnesses
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -85,5 +87,77 @@ func TestShellExecutionSelectsTheRequestedMachine(t *testing.T) {
 					tc.execution, tc.configured, tc.host, got, err, tc.want, tc.fails)
 			}
 		})
+	}
+}
+
+// onHost answers hostExecAvailable for the length of one test.
+func onHost(t *testing.T, available bool) {
+	t.Helper()
+	was := hostExecAvailable
+	hostExecAvailable = func() bool { return available }
+	t.Cleanup(func() { hostExecAvailable = was })
+}
+
+// Each agent is told about on-host when it can be used, in the form its own
+// binary reads, and told nothing when it cannot: an instruction to run a
+// command that fails would send the agent after a host that is not there.
+func TestAgentsAreToldAboutTheHostOnlyWhenItIsThere(t *testing.T) {
+	for _, available := range []bool{true, false} {
+		l := newLab(t)
+		onHost(t, available)
+
+		claude := l.plan(Claude{})
+		if got := valueOf(claude.Argv, "--append-system-prompt"); (got != "") != available || (available && !strings.Contains(got, "on-host")) {
+			t.Errorf("available=%v: Claude's appended prompt = %q", available, got)
+		}
+
+		codex := l.plan(Codex{})
+		told := false
+		for _, a := range codex.Argv {
+			if strings.HasPrefix(a, "developer_instructions=") {
+				told = strings.Contains(a, "on-host")
+			}
+		}
+		if told != available {
+			t.Errorf("available=%v: Codex was told %v in %v", available, told, codex.Argv)
+		}
+
+		opencode := l.plan(OpenCode{})
+		var inline struct {
+			Instructions []string `json:"instructions"`
+		}
+		if err := json.Unmarshal([]byte(opencode.Env["OPENCODE_CONFIG_CONTENT"]), &inline); err != nil {
+			t.Fatal(err)
+		}
+		want := SessionFile(l.data, "abcdef0123456789", onHostFile)
+		var written *GenFile
+		for i := range opencode.Files {
+			if opencode.Files[i].Path == want {
+				written = &opencode.Files[i]
+			}
+		}
+		if !available {
+			if len(inline.Instructions) != 0 || written != nil {
+				t.Errorf("OpenCode was told about a host that is not there: %v", inline.Instructions)
+			}
+			continue
+		}
+		if len(inline.Instructions) != 1 || inline.Instructions[0] != want {
+			t.Errorf("OpenCode's instructions = %v, want [%s]", inline.Instructions, want)
+		}
+		if written == nil || written.Mode != 0o600 || !strings.Contains(string(written.Data), "on-host") {
+			t.Errorf("the instruction file is not written: %#v", written)
+		}
+	}
+}
+
+// The text goes onto a TOML command line for Codex, and a newline or a quote
+// that came out as something TOML rejects is a session that never starts.
+func TestOnHostInstructionsAreAValidTOMLString(t *testing.T) {
+	onHost(t, true)
+	text := onHostInstructions()
+	var back string
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(tomlAssign("k", text), "k=")), &back); err != nil || back != text {
+		t.Fatalf("the instructions do not survive quoting: %v", err)
 	}
 }

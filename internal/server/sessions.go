@@ -41,11 +41,12 @@ const journalDownloadMax = 16 << 20
 //	GET    /api/sessions/{id}       {"session":<session>}
 //	PATCH  /api/sessions/{id}       {"session":<session>}
 //	DELETE /api/sessions/{id}       {"ok":true,"workdir":"…","workdir_kept":true}
-//	POST   …/archive, …/flag,
+//	POST   …/file,
 //	       …/resume, …/restart,
 //	       …/ack-resume, …/read     {"session":<session>}
 //	                                409 {"error":"…"} when a restart was asked
-//	                                    for on a session that is still running
+//	                                    for on a session that is still running,
+//	                                    or a resume on a session that is done
 //	GET    …/journal                the raw bytes, as an attachment
 //	GET    …/usage                  {"windows":[…],"cost_usd":…}
 //	every route                     4xx/5xx {"error":"…"}
@@ -54,11 +55,10 @@ const journalDownloadMax = 16 << 20
 // adds: cli_session_state, activity, and after a resume resume_fresh and
 // resumed_from.
 //
-// handleListSessions answers the session list. scope=all includes the archived
-// ones, which is what the list's own switch asks for.
+// handleListSessions answers the session list: every session, whatever its
+// status, because the list files them itself.
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
-	includeArchived := r.URL.Query().Get("scope") == "all"
-	sessions, err := s.store.ListSessions(includeArchived)
+	sessions, err := s.store.ListSessions()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -84,11 +84,17 @@ type sessionView struct {
 	// first load, a tab that has been asleep - has to see the sidebar the same
 	// way, and the poll is the catch-up path for exactly that.
 	Activity termux.Activity `json:"activity"`
+	// DeleteAt is when a done session is deleted, so the page can say so
+	// without knowing how long done sessions are kept.
+	DeleteAt int64 `json:"delete_at,omitempty"`
 }
 
 func (s *Server) view(row *store.Session) sessionView {
 	v := sessionView{Session: row, CLISessionState: row.CLISessionState}
 	v.Activity = s.manager.ActivityOf(row.ID)
+	if row.Status == store.StatusDone {
+		v.DeleteAt = row.StatusAt + DoneRetention.Milliseconds()
+	}
 	if row.Resumed {
 		if note, ok := s.manager.ResumeNoteOf(row.ID); ok {
 			v.ResumeFresh, v.ResumedFrom = note.Fresh, note.From
@@ -364,43 +370,40 @@ func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 	s.answerWithSession(w, row.ID)
 }
 
-func (s *Server) handleArchiveSession(w http.ResponseWriter, r *http.Request) {
+// handleSetStatus files a session under a status. Done is the one status
+// that does something to the machine: the terminal is closed, so a finished
+// session stops costing anything, and the session itself is kept until
+// DoneRetention has passed. Any other status is the row and nothing more; a
+// session taken out of done is resumed the next time it is opened, like one
+// a reboot took away.
+func (s *Server) handleSetStatus(w http.ResponseWriter, r *http.Request) {
 	row, ok := s.session(w, r)
 	if !ok {
 		return
 	}
 	var body struct {
-		Archived bool `json:"archived"`
+		Status string `json:"status"`
 	}
 	if !readJSON(w, r, &body) {
 		return
 	}
-	// Archiving does not touch tmux. An archived session keeps running, which
-	// is the point of it: it is put away, not stopped.
-	if err := s.store.SetSessionArchived(row.ID, body.Archived); err != nil {
+	if !store.ValidStatus(body.Status) {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("%q is not a session status", body.Status))
+		return
+	}
+	// The status is written before the terminal is closed, so that a viewer
+	// opening the session in between is refused rather than resuming it.
+	if err := s.store.SetSessionStatus(row.ID, body.Status); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.answerWithSession(w, row.ID)
-}
-
-// handleFlagSession raises or lowers the flag on a session. A flag is a mark
-// the person puts on a row to find it again; it moves nothing and stops
-// nothing.
-func (s *Server) handleFlagSession(w http.ResponseWriter, r *http.Request) {
-	row, ok := s.session(w, r)
-	if !ok {
-		return
-	}
-	var body struct {
-		Flagged bool `json:"flagged"`
-	}
-	if !readJSON(w, r, &body) {
-		return
-	}
-	if err := s.store.SetSessionFlagged(row.ID, body.Flagged); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+	if body.Status == store.StatusDone {
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		if err := s.park(ctx, row.ID); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	s.answerWithSession(w, row.ID)
 }
@@ -411,15 +414,12 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// A title run writing into a row that is being removed is nothing good.
-	s.titles.forget(row.ID)
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	if err := s.manager.Delete(ctx, row.ID); err != nil {
+	if err := s.deleteSession(ctx, row.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	harnesses.ForgetOpenCodeAccess(row.ID)
 	// The working directory is kept, in every mode. Work the user did is not
 	// ours to throw away, and the answer says so because the dialog does.
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -461,7 +461,7 @@ func (s *Server) ensure(w http.ResponseWriter, r *http.Request, restart bool) {
 		next, err = s.manager.Ensure(ctx, row.ID)
 	}
 	switch {
-	case errors.Is(err, termux.ErrStillRunning):
+	case errors.Is(err, termux.ErrStillRunning), errors.Is(err, termux.ErrDone):
 		// Not a fault: the terminal the caller asked to replace is working,
 		// and its row was left exactly as it was.
 		writeError(w, http.StatusConflict, err.Error())

@@ -686,61 +686,79 @@ async function sessionlist() {
     const stored = await (await s.context.request.get(s.url + '/api/sessions/' + id)).json();
     ok(stored.session.title === 'Renamed by the suite', 'the rename was stored', stored.session.title);
 
-    // Flag: a mark in front of the name, in the row and in the header, that
-    // the same menu takes away again.
-    const flagShown = (sel) => s.page.evaluate((sel) => {
+    // The same menu from the header, for a row that is in a shut folder.
+    const headMenu = async (label) => {
+      await s.page.click('#sessionMenu');
+      await s.page.waitForSelector('.menu', { timeout: 5000 });
+      await s.page.click('.menu .menu-item:text-is("' + label + '")');
+    };
+    const statusShown = (sel) => s.page.evaluate((sel) => {
       const row = document.querySelector(sel);
       const shown = (node) => !!node && !node.hidden && getComputedStyle(node).display !== 'none';
+      const mark = row && row.querySelector('.row-status');
+      const head = document.getElementById('sessionStatus');
       return {
-        row: !!row && row.classList.contains('flagged') && shown(row.querySelector('.row-flag')),
-        head: shown(document.getElementById('sessionFlag')),
-        before: !!row && row.querySelector('.row-flag').nextElementSibling === row.querySelector('.label'),
+        row: shown(mark) ? mark.dataset.status : '',
+        head: shown(head) ? head.textContent : '',
+        folder: row ? row.closest('.folder').dataset.folder : '',
+        folderOpen: !!row && !row.closest('.folder-rows').hidden,
       };
     }, sel);
-    const unflagged = await flagShown(rowSelector);
-    ok(!unflagged.row && !unflagged.head, 'a session is born without a flag', JSON.stringify(unflagged));
-    await menu('Flag');
-    await s.page.waitForFunction((sel) => document.querySelector(sel)?.classList.contains('flagged'),
-      rowSelector, { timeout: 8000 });
-    const flagged = await flagShown(rowSelector);
-    ok(flagged.row && flagged.head && flagged.before,
-      'Flag puts a flag in front of the name in the row and in the header', JSON.stringify(flagged));
-    await shot(s.page, 'sessionlist-flagged');
-    const flaggedStored = await (await s.context.request.get(s.url + '/api/sessions/' + id)).json();
-    ok(flaggedStored.session.flagged === true, 'the flag was stored', String(flaggedStored.session.flagged));
-    await menu('Remove flag');
-    await s.page.waitForFunction((sel) => !document.querySelector(sel)?.classList.contains('flagged'),
-      rowSelector, { timeout: 8000 });
-    const cleared = await flagShown(rowSelector);
-    ok(!cleared.row && !cleared.head, 'Remove flag takes it away again, in both places', JSON.stringify(cleared));
+    const current = async () => (await (await s.context.request.get(s.url + '/api/sessions/' + id)).json()).session;
 
-    // Archive: it goes out of the active list and keeps running.
-    await menu('Archive');
-    await s.page.waitForFunction((sel) => !document.querySelector(sel), rowSelector, { timeout: 8000 });
-    ok(true, 'an archived session leaves the active list', 'gone from Active');
-    await s.page.click('#sessionScope .seg[data-scope="all"]');
-    await s.page.waitForSelector(rowSelector, { timeout: 8000 });
-    const archived = await (await s.context.request.get(s.url + '/api/sessions/' + id)).json();
-    ok(archived.session.archived === true && archived.session.state === 'running',
-      'it is archived and still running', archived.session.state);
+    // A session is born in progress, which carries no mark at all.
+    const born = await statusShown(rowSelector);
+    ok(!born.row && !born.head, 'a session is born in progress, with no mark', JSON.stringify(born));
 
-    // And back out again.
-    await menu('Unarchive');
-    await s.page.waitForFunction((sel) => {
-      const row = document.querySelector(sel);
-      return row && !row.classList.contains('archived');
-    }, rowSelector, { timeout: 8000 });
-    ok(true, 'unarchiving puts it back', 'not archived');
+    // Review pending: a mark after the name and a word in the header.
+    await menu('Review pending');
+    await s.page.waitForFunction((sel) => document.querySelector(sel + ' .row-status')?.dataset.status === 'review',
+      rowSelector, { timeout: 8000 });
+    const review = await statusShown(rowSelector);
+    ok(review.row === 'review' && review.head === 'Review pending',
+      'Review pending marks the row and the header', JSON.stringify(review));
+    await shot(s.page, 'sessionlist-review');
+    const filed = await current();
+    ok(filed.status === 'review', 'the status was stored', filed.status);
+
+    // Background: out of the way in a folder of its own that starts shut, and
+    // still running.
+    await headMenu('Background');
+    await s.page.waitForFunction((sel) => document.querySelector(sel)?.closest('.folder')?.dataset.folder === '#background',
+      rowSelector, { timeout: 8000 });
+    const background = await statusShown(rowSelector);
+    ok(background.folder === '#background' && !background.folderOpen,
+      'a background session goes into its own folder, shut', JSON.stringify(background));
+    const running = await current();
+    ok(running.status === 'background' && running.state === 'running',
+      'it is filed as background and still running', running.state);
+
+    // Done: the terminal is closed, the session stays, and says when it goes.
+    await headMenu('Done');
+    await s.page.waitForFunction(() => /is done/.test(document.getElementById('termOverlay')?.textContent || ''),
+      null, { timeout: 10000 });
+    const done = await current();
+    ok(done.status === 'done' && done.state === 'needs_resume' && done.delete_at > Date.now(),
+      'Done closes the terminal and keeps the session for a while', done.state + ' until ' + done.delete_at);
+    const overlay = await s.page.$eval('#termOverlay', (n) => n.textContent);
+    ok(/Deleted in/.test(overlay), 'the page says when a done session is deleted', oneLine(overlay));
+    await shot(s.page, 'sessionlist-done');
+
+    // Picked up again, it resumes on the same row.
+    await s.page.click('#termOverlay .btn.primary');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+    const back = await current();
+    ok(back.status === 'in_progress', 'picking a done session up puts it back in progress', back.status);
 
     // Delete: the row goes, the tmux session goes, the directory stays.
-    const workdir = archived.session.workdir;
+    const workdir = back.workdir;
     await menu('Delete');
     await s.page.waitForSelector('.modal[open] .btn.danger', { timeout: 5000 });
     const body = await s.page.$eval('.modal[open] .modal-body', (n) => n.textContent);
     ok(/working directory/i.test(body), 'the dialog says the working directory is kept', oneLine(body));
     await s.page.click('.modal[open] .btn.danger');
     await s.page.waitForFunction((sel) => !document.querySelector(sel), rowSelector, { timeout: 10000 });
-    const left = await (await s.context.request.get(s.url + '/api/sessions?scope=all')).json();
+    const left = await (await s.context.request.get(s.url + '/api/sessions')).json();
     ok((left.sessions || []).length === 0, 'the session is gone', (left.sessions || []).length + ' left');
 
     const { existsSync } = await import('node:fs');
@@ -2749,7 +2767,7 @@ async function deletekeepsdir() {
     await s.page.waitForFunction((sel) => !document.querySelector(sel),
       '#sessionList .chat-item[data-id="' + id + '"]', { timeout: 10000 });
 
-    const left = await (await s.context.request.get(s.url + '/api/sessions?scope=all')).json();
+    const left = await (await s.context.request.get(s.url + '/api/sessions')).json();
     ok((left.sessions || []).length === 0, 'the row is gone', (left.sessions || []).length + ' left');
     let live = sessionsOn(s.data);
     for (let i = 0; i < 20 && live.includes('soc_' + id); i += 1) {
@@ -2801,7 +2819,7 @@ async function recoveredsession() {
     await s.page.waitForFunction((want) => [...document.querySelectorAll('#sessionList .chat-item')]
       .some((n) => n.dataset.id === want), stray, { timeout: 20000 }).catch(() => {});
 
-    const listed = await (await s.context.request.get(s.url + '/api/sessions?scope=all')).json();
+    const listed = await (await s.context.request.get(s.url + '/api/sessions')).json();
     const found = (listed.sessions || []).find((row) => row.id === stray);
     ok(!!found, 'the orphan was taken in rather than killed', found ? found.id : 'not listed');
     ok(!!found && found.title === 'Recovered session', 'and it is called what it is',
@@ -3216,7 +3234,6 @@ async function design() {
       return {
         width: Math.round(bar.getBoundingClientRect().width),
         brand: seen('.brand-name'),
-        scope: seen('#sessionScope'),
         label: seen('#sessionList .chat-item .label'),
         newWords: seen('#newSession .btn-label'),
         foot: seen('#logout .btn-label'),
@@ -3228,7 +3245,7 @@ async function design() {
     });
     ok(wide > 200 && rail.width <= 72 && rail.width < wide,
       'the collapse control takes the sidebar down to a rail', wide + ' -> ' + rail.width + ' px');
-    ok(!rail.brand && !rail.scope && !rail.label && !rail.newWords && !rail.foot
+    ok(!rail.brand && !rail.label && !rail.newWords && !rail.foot
       && rail.mark && rail.named.length > 0,
     'the rail is marks and no words, and a row is named in its tooltip', JSON.stringify(rail));
     ok(white(rail.fill), 'and the rail is the same white as everything else', rail.fill);
@@ -3977,97 +3994,91 @@ const noticeText = (page) => page.evaluate(() => {
   return line ? line.textContent : '';
 });
 
-// TITLE_MIN_AGE is the server's own gate, in milliseconds: a turn that
-// finishes before a session is this old is the harness settling in, not an
-// answer, and it is not named after.
-const TITLE_MIN_AGE = 30000;
-
-// A session names itself. The first answer a harness gives *once the session is
-// old enough for that answer to be about the work* is what the sidebar row and
-// the header are called from then on, and neither is reloaded to find out: the
-// name arrives on the socket every browser already has open.
+// A session names itself. The first prompt it is sent is what the sidebar row
+// and the header are called from then on - once, in English, in a few words -
+// and neither is reloaded to find out: the name arrives on the socket every
+// browser already has open. While the model is being asked the name pulses,
+// and a naming that fails says so in a dialog rather than never arriving.
 async function sessiontitle() {
-  const want = 'Fixing the failing parser test';
+  const want = 'Fix failing parser test';
   // With the quotes and the full stop a model puts round a title, because
-  // taking them off again is part of the feature.
-  const stub = await openRouterStub({ text: '"' + want + '."' });
+  // taking them off again is part of the feature. Held back long enough for
+  // the pulse to be seen.
+  const stub = await openRouterStub({ text: '"' + want + '."', delay: 1500 });
   const asked = () => stub.calls.filter((c) => String(c.path).includes('chat/completions')).length;
   const s = await start({ viewport: { width: 1280, height: 720 } });
   try {
     await setup(s.page, s.url);
     await useDomRenderer(s);
-    const saved = await s.context.request.put(s.url + '/api/settings', {
-      data: { settings: { openrouter: { api_key: 'e2e-key', base_url: stub.url } } },
-    });
-    ok(saved.ok(), 'the gateway is pointed at the stub', saved.status() + ' ' + stub.url);
+    await pointGateway(s, stub);
     await open(s);
     const id = await startSession(s.page, 'claude');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    const born = await createdAt(s, id);
 
     const before = await s.page.$eval(rowSel(id) + ' .label', (n) => n.textContent.trim());
     ok(before.startsWith('Claude Code'), 'it starts life under the placeholder name', before);
 
+    // The harness starting up is busy and then idle before anybody has typed.
+    // That is not a prompt, and a name made from that screen is the name of
+    // the program.
     const settled = await awaitRow(s.page, id, (r) => !r.busy, 20000);
     ok(settled.ok, 'it settles before it is given anything to do', took(settled));
+    await wait(1500);
+    ok(asked() === 0, 'the start-up is not named after', asked() + ' calls');
 
-    // The turn that finishes too early. A harness starting up looks like work,
-    // and a name made from that screen is the name of the program.
+    // The first prompt: the moment it goes to work, the name is asked for and
+    // pulses until it arrives.
     await keepBusy(s.page, 3000);
     const spun = await awaitRow(s.page, id, (r) => r.busy, 10000);
     ok(spun.ok, 'it goes to work on the first thing it is asked', took(spun));
-    const stopped = await awaitRow(s.page, id, (r) => !r.busy, 20000);
-    ok(stopped.ok, 'and that first turn finishes', took(stopped));
-    const age = Date.now() - born;
-    ok(age < TITLE_MIN_AGE, 'it finished inside the first half minute of the session',
-      (age / 1000).toFixed(1) + ' s old');
-    await wait(2000);
-    const early = await s.page.$eval(rowSel(id) + ' .label', (n) => n.textContent.trim());
-    ok(asked() === 0 && early === before, 'so nothing was asked and the placeholder stayed',
-      asked() + ' calls, ' + early);
-
-    // Past the mark, the next turn to finish is the one that names it.
-    await wait(Math.max(0, TITLE_MIN_AGE - (Date.now() - born)) + 500);
-    await keepBusy(s.page, 3000);
-    const again = await awaitRow(s.page, id, (r) => r.busy, 10000);
-    ok(again.ok, 'it is asked a second thing, now that it has been alive a while', took(again));
+    await s.page.waitForSelector(rowSel(id) + ' .label.titling', { timeout: 10000 });
+    ok(true, 'the row pulses while the name is being thought of', 'label.titling');
+    const pulsing = await s.page.$eval('#sessionTitle', (n) => n.classList.contains('titling'));
+    ok(pulsing, 'and so does the header of the session being watched', String(pulsing));
 
     await s.page.waitForFunction((arg) => {
       const node = document.querySelector(arg.sel);
-      return !!node && node.textContent.trim() === arg.want;
-    }, { sel: rowSel(id) + ' .label', want }, { timeout: 45000 });
-    ok(true, 'the row renames itself when that answer arrives, with no reload', want);
+      return !!node && node.textContent.trim() === arg.want && !node.classList.contains('titling');
+    }, { sel: rowSel(id) + ' .label', want }, { timeout: 30000 });
+    ok(true, 'the row renames itself and stops pulsing, with no reload', want);
 
     const header = await s.page.$eval('#sessionTitle', (n) => n.textContent.trim());
     ok(header === want, 'and the header of the session being watched says the same', header);
 
-    // Once. A third turn is not a second name, and it is not asked for again.
+    // Once. A second prompt is not a second name, and it is not asked for again.
+    await awaitRow(s.page, id, (r) => !r.busy, 20000);
     const asks = asked();
     await keepBusy(s.page, 1500);
+    await awaitRow(s.page, id, (r) => r.busy, 10000);
     await awaitRow(s.page, id, (r) => !r.busy, 20000);
-    await wait(2000);
+    await wait(2500);
     ok(asks === 1 && asked() === 1, 'the naming happened exactly once', asks + ' then ' + asked());
     const still = await s.page.$eval(rowSel(id) + ' .label', (n) => n.textContent.trim());
     ok(still === want, 'and the name it was given stayed', still);
-
     await shot(s.page, 'session-title');
+
+    // A gateway that refuses is said out loud, in a dialog, and the pulse
+    // stops.
+    stub.refuse = 401;
+    const failing = await startSession(s.page, 'claude');
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const quiet = await awaitRow(s.page, failing, (r) => !r.busy, 20000);
+    ok(quiet.ok, 'a second session settles', took(quiet));
+    await keepBusy(s.page, 1500);
+    await s.page.waitForSelector('dialog.modal[open]', { timeout: 15000 });
+    const said = await s.page.$eval('dialog.modal[open]', (n) => n.textContent);
+    ok(/Could not name the session/.test(said) && /API key/.test(said),
+      'a failed naming opens a dialog that says why', said.trim().slice(0, 160));
+    const stillPulsing = await s.page.$$eval(rowSel(failing) + ' .label.titling', (n) => n.length);
+    ok(stillPulsing === 0, 'and the row stops pulsing', String(stillPulsing));
+    await s.page.click('dialog.modal[open] .btn.primary');
+
     ok(unexpected(s.errors).length === 0, 'no console errors',
       unexpected(s.errors).join(' | ') || '0');
   } finally {
     await s.stop();
     await stub.close();
   }
-}
-
-// createdAt is when the server thinks a session began, which is the clock the
-// age gate reads. A scenario that timed from its own `Date.now()` would be
-// measuring the browser instead.
-async function createdAt(s, id) {
-  const res = await s.context.request.get(s.url + '/api/sessions/' + encodeURIComponent(id));
-  const body = await res.json();
-  const born = body && body.session && body.session.created_at;
-  ok(typeof born === 'number' && born > 0, 'the session says when it began', String(born));
-  return born;
 }
 
 // pointGateway saves the key and the stub's address the way the dashboard
@@ -4778,7 +4789,7 @@ const listing = (page) => page.evaluate(() => [...document.getElementById('sessi
     rows: [...node.querySelectorAll('.chat-item')].map((row) => ({
       id: row.dataset.id,
       row: row.querySelector('.label').textContent,
-      archived: row.classList.contains('archived'),
+      done: row.classList.contains('done'),
       stamp: row.dataset.stamp || '',
       seen: row.checkVisibility(),
     })),
@@ -4915,24 +4926,24 @@ async function folders() {
       [ids.looseNew]: now - 2 * day,
     });
 
-    // The oldest project's one session is archived: that is how "a folder with
-    // nothing in it is not drawn" gets a folder that is empty in Active and
-    // not in All.
-    const away = await s.context.request.post(s.url + '/api/sessions/' + ids.socrates + '/archive',
-      { data: { archived: true } });
-    ok(away.ok(), 'the oldest project’s one session is put away', away.status());
+    // The oldest project's one session is done: that is how "a folder with
+    // nothing in it is not drawn" gets a project whose only session has moved
+    // to the Done folder.
+    const away = await s.context.request.post(s.url + '/api/sessions/' + ids.socrates + '/file',
+      { data: { status: 'done' } });
+    ok(away.ok(), 'the oldest project’s one session is done', away.status());
     backdate(s, { [ids.socrates]: now - 9 * day });
 
     await open(s);
     await s.page.waitForFunction((n) => document.querySelectorAll('#sessionList .chat-item').length === n,
-      5, { timeout: 20000 });
+      6, { timeout: 20000 });
 
     const active = await listing(s.page);
     // Two of the three projects are called `browser`, so both of them take a
     // parent: a name that is a name for one of them and a lie for the other
     // would be worse than the path either of them came from.
-    ok(active.map((f) => f.name).join(' | ') === 'projects/browser | elsewhere/browser | More Chats',
-      'the list is folders: the project worked in most recently first, and "More Chats" after every project',
+    ok(active.map((f) => f.name).join(' | ') === 'projects/browser | elsewhere/browser | More Chats | Done',
+      'the list is folders: the project worked in most recently first, "More Chats" after every project, and Done last',
       active.map((f) => f.name).join(' | '));
     ok(active.every((f) => !f.other), 'and the list holds nothing but folders',
       active.filter((f) => f.other).map((f) => f.other).join(' | ') || 'folders');
@@ -4951,21 +4962,21 @@ async function folders() {
     ok(active[0].rows.map((r) => r.row).join(',') === 'Browser two,Browser one',
       'and inside a folder the newest is first', active[0].rows.map((r) => r.row).join(','));
 
-    // All: the archived session comes back, in its own project, and everything
-    // that was on screen is still the element it was.
+    // Done starts shut. Opening it shows the done session, and everything that
+    // was on screen is still the element it was.
+    const doneFolder = active[active.length - 1];
+    ok(doneFolder.open === 'false' && !doneFolder.shown && doneFolder.count === '1',
+      'the Done folder starts shut, and says how many are in it', doneFolder.open + ', ' + doneFolder.count);
     const before = new Set(active.flatMap((f) => [f.folder, ...f.rows.map((r) => r.id)]));
     await stampAll(s.page);
-    await s.page.click('#sessionScope .seg[data-scope="all"]');
-    await s.page.waitForFunction((n) => document.querySelectorAll('#sessionList .chat-item').length === n,
-      6, { timeout: 15000 });
+    await s.page.click('#sessionList .folder[data-folder="#done"] .folder-head');
+    await s.page.waitForFunction(() => document.querySelector('#sessionList .folder[data-folder="#done"] .folder-head')
+      .getAttribute('aria-expanded') === 'true', null, { timeout: 5000 });
     const all = await listing(s.page);
-    ok(all.map((f) => f.name).join(' | ') === 'projects/browser | elsewhere/browser | socrates | More Chats',
-      'All brings back the project Active had nothing in, last of the projects because it is the oldest',
-      all.map((f) => f.name).join(' | '));
-    const archivedRow = all.flatMap((f) => f.rows).find((r) => r.id === ids.socrates);
-    ok(!!archivedRow && archivedRow.archived && under(all).get('Socrates one') === 'socrates',
-      'an archived session is in its own project like any other row',
-      archivedRow ? under(all).get('Socrates one') + (archivedRow.archived ? ' (archived)' : '') : 'no row');
+    const doneRow = all.flatMap((f) => f.rows).find((r) => r.id === ids.socrates);
+    ok(!!doneRow && doneRow.done && doneRow.seen && under(all).get('Socrates one') === 'Done',
+      'a done session is in the Done folder rather than its project',
+      doneRow ? under(all).get('Socrates one') + (doneRow.done ? ' (done)' : '') : 'no row');
     const kept = all.filter((f) => before.has(f.folder) && f.stamp).length
       + all.flatMap((f) => f.rows).filter((r) => before.has(r.id) && r.stamp).length;
     ok(kept === before.size,
@@ -5002,7 +5013,7 @@ async function folders() {
     await stampAll(s.page);
     await open(s);
     await s.page.waitForFunction((n) => document.querySelectorAll('#sessionList .chat-item').length === n,
-      5, { timeout: 20000 });
+      6, { timeout: 20000 });
     const reloaded = await listing(s.page);
     ok(reloaded[0].name === 'projects/browser' && reloaded[0].open === 'false' && !reloaded[0].shown
       && reloaded[0].rows.length === 2,
@@ -5827,7 +5838,7 @@ const ALL = [
   ['activity-fallback', 'a harness that hangs, and the row that leaves busy anyway', activityfallback],
   ['unread', 'bold when nobody saw it, gone when the row is opened or typed into', unread],
   ['notify', 'a chime and a notification when a session stops working, and two switches', notify],
-  ['session-title', 'a session that names itself the first time it answers', sessiontitle],
+  ['session-title', 'a session that names itself on its first prompt', sessiontitle],
   ['status-speak', 'Status says what the screen shows, on the page and out loud', statusspeak],
   ['status-ticker', 'the phases of a status, in order, in one line', statusticker],
   ['dictate', 'a recording with two endings, and the words it kept on the prompt', dictate],

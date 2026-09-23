@@ -29,7 +29,8 @@ var ErrNotFound = errors.New("not found")
 // records who named a session and is what keeps the automatic title from
 // running twice or overwriting a name the user chose. Version 5 sweeps out the
 // conversations of the chat that sat beside a terminal, which no longer exists.
-const SchemaVersion = 6
+// Version 7 replaces the archive and the flag with a status per session.
+const SchemaVersion = 7
 
 // Store wraps the database handle.
 type Store struct {
@@ -77,9 +78,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at     INTEGER NOT NULL,
   updated_at     INTEGER NOT NULL,
   last_attached  INTEGER NOT NULL DEFAULT 0,
-  archived_at    INTEGER NOT NULL DEFAULT 0,
   active_at      INTEGER NOT NULL DEFAULT 0,
-  flagged_at     INTEGER NOT NULL DEFAULT 0
+  status         TEXT NOT NULL DEFAULT 'in_progress',
+  status_at      INTEGER NOT NULL DEFAULT 0
 );
 -- The unique index on client_id is what makes creating a session safe to
 -- retry: the same key can only ever produce one session.
@@ -379,7 +380,8 @@ func addSessionColumns(db *sql.DB) error {
 	for _, col := range [][2]string{
 		{"title_source", `TEXT NOT NULL DEFAULT ''`},
 		{"active_at", `INTEGER NOT NULL DEFAULT 0`},
-		{"flagged_at", `INTEGER NOT NULL DEFAULT 0`},
+		{"status", `TEXT NOT NULL DEFAULT 'in_progress'`},
+		{"status_at", `INTEGER NOT NULL DEFAULT 0`},
 	} {
 		has, err := hasColumn(db, "sessions", col[0])
 		if err != nil {
@@ -403,7 +405,49 @@ func addSessionColumns(db *sql.DB) error {
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_active ON sessions(active_at DESC)`); err != nil {
 		return fmt.Errorf("index sessions.active_at: %w", err)
 	}
-	return nil
+	return statusFromArchive(db)
+}
+
+// statusFromArchive files the sessions of a build that had an archive and a
+// flag under the statuses that replaced them, and then drops the two columns.
+//
+// An archived session is done, and its retention starts now rather than when
+// it was archived: an upgrade must not delete a whole archive on its first
+// minute. Everything else - flagged or not - is left unsorted, because
+// whether it is in progress or pending depends on whether it is working at
+// this moment, and that is something only the activity detector can see.
+func statusFromArchive(db *sql.DB) error {
+	has, err := hasColumn(db, "sessions", "archived_at")
+	if err != nil || !has {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	at := now()
+	for _, q := range []string{
+		`UPDATE sessions SET status = 'done', status_at = ? WHERE archived_at <> 0`,
+		`UPDATE sessions SET status = '', status_at = ? WHERE archived_at = 0`,
+	} {
+		if _, err := tx.Exec(q, at); err != nil {
+			return fmt.Errorf("file sessions under a status: %w", err)
+		}
+	}
+	for _, col := range []string{"archived_at", "flagged_at"} {
+		ok, err := txHasColumn(tx, "sessions", col)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			continue
+		}
+		if _, err := tx.Exec(`ALTER TABLE sessions DROP COLUMN ` + col); err != nil {
+			return fmt.Errorf("drop sessions.%s: %w", col, err)
+		}
+	}
+	return tx.Commit()
 }
 
 func hasColumn(db *sql.DB, table, column string) (bool, error) {

@@ -112,16 +112,41 @@ type Session struct {
 	// and a row that jumped to the top for being looked at is a list that
 	// cannot be read.
 	ActiveAt int64 `json:"active_at"`
-	// Archived is a session that has been put away: it is hidden from the list
-	// until the list is switched to showing everything. The timestamp doubles
-	// as the flag, and the client only ever needs the boolean.
-	Archived   bool  `json:"archived"`
-	ArchivedAt int64 `json:"-"`
-	// Flagged is a session somebody has marked to find again. It is the one
-	// mark the person sets by hand, and it means nothing to the machine: it
-	// changes neither the order nor what runs.
-	Flagged   bool  `json:"flagged"`
-	FlaggedAt int64 `json:"-"`
+	// Status is where the work in this session stands, as the person sees it:
+	// one of the Status constants. It is set by hand, with one exception - a
+	// session that starts working again is in progress again - and it is not
+	// State: a session can be running and pending, or not running and in
+	// progress. StatusAt is when it was last set, which for a done session is
+	// the start of the time it is kept for.
+	Status   string `json:"status"`
+	StatusAt int64  `json:"status_at"`
+}
+
+// Where the work in a session stands. A done session has had its terminal
+// closed and is deleted once its retention runs out. A background session is
+// its opposite: a service somebody left running on purpose, which is kept out
+// of the way, never refiled by the machine and never deleted. The other three
+// keep running and differ only in how the person files them.
+//
+// StatusUnsorted is not a status anybody sets. It is what an upgrade from the
+// build that had flags and an archive leaves on a session that was not
+// archived, until the activity detector has seen whether it is working.
+const (
+	StatusInProgress = "in_progress"
+	StatusReview     = "review"
+	StatusPending    = "pending"
+	StatusDone       = "done"
+	StatusBackground = "background"
+	StatusUnsorted   = ""
+)
+
+// ValidStatus reports whether a status is one a person may set.
+func ValidStatus(status string) bool {
+	switch status {
+	case StatusInProgress, StatusReview, StatusPending, StatusDone, StatusBackground:
+		return true
+	}
+	return false
 }
 
 // Where a session's name came from. The empty string is the third value: a
@@ -135,7 +160,7 @@ const (
 const sessionCols = `id, client_id, title, title_source, harness, model, effort, workdir, workdir_mode,
                      options, tmux_name, cli_session_id, cli_session_state, state, exit_status,
                      fail_reason, resumed, resume_count, cols, rows,
-                     created_at, updated_at, last_attached, archived_at, active_at, flagged_at`
+                     created_at, updated_at, last_attached, active_at, status, status_at`
 
 func scanSession(row interface{ Scan(...any) error }) (*Session, error) {
 	s := &Session{}
@@ -144,7 +169,7 @@ func scanSession(row interface{ Scan(...any) error }) (*Session, error) {
 	err := row.Scan(&s.ID, &s.ClientID, &s.Title, &s.TitleSource, &s.Harness, &s.Model, &s.Effort,
 		&s.Workdir, &s.WorkdirMode, &options, &s.TmuxName, &s.CLISessionID, &s.CLISessionState,
 		&s.State, &s.ExitStatus, &s.FailReason, &resumed, &s.ResumeCount, &s.Cols, &s.Rows,
-		&s.CreatedAt, &s.UpdatedAt, &s.LastAttached, &s.ArchivedAt, &s.ActiveAt, &s.FlaggedAt)
+		&s.CreatedAt, &s.UpdatedAt, &s.LastAttached, &s.ActiveAt, &s.Status, &s.StatusAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -155,8 +180,6 @@ func scanSession(row interface{ Scan(...any) error }) (*Session, error) {
 		s.Options = json.RawMessage(options)
 	}
 	s.Resumed = resumed == 1
-	s.Archived = s.ArchivedAt > 0
-	s.Flagged = s.FlaggedAt > 0
 	return s, nil
 }
 
@@ -180,8 +203,7 @@ func (s *Store) CreateSession(sess *Session) error {
 	// Nothing has been attached to yet and nothing has been resumed, whatever
 	// the caller's struct says: these are the row's to set, and the caller has
 	// to be left holding what was actually stored.
-	sess.Archived, sess.ArchivedAt = false, 0
-	sess.Flagged, sess.FlaggedAt = false, 0
+	sess.Status, sess.StatusAt = StatusInProgress, sess.CreatedAt
 	sess.Resumed, sess.LastAttached = false, 0
 	if sess.State == "" {
 		sess.State = StateStarting
@@ -207,7 +229,8 @@ func (s *Store) CreateSession(sess *Session) error {
 		sess.ID, sess.ClientID, sess.Title, sess.TitleSource, sess.Harness, sess.Model, sess.Effort,
 		sess.Workdir, sess.WorkdirMode, options, sess.TmuxName, sess.CLISessionID,
 		sess.CLISessionState, sess.State, sess.ExitStatus, sess.FailReason, 0,
-		sess.ResumeCount, sess.Cols, sess.Rows, sess.CreatedAt, sess.UpdatedAt, 0, 0, sess.ActiveAt, 0)
+		sess.ResumeCount, sess.Cols, sess.Rows, sess.CreatedAt, sess.UpdatedAt, 0, sess.ActiveAt,
+		sess.Status, sess.StatusAt)
 	if err != nil && sess.ClientID != "" && isUniqueViolation(err) {
 		existing, lookupErr := s.sessionByClientID(sess.ClientID)
 		if lookupErr != nil {
@@ -247,19 +270,13 @@ func (s *Store) sessionByClientID(clientID string) (*Session, error) {
 	return scanSession(s.db.QueryRow(`SELECT `+sessionCols+` FROM sessions WHERE client_id = ?`, clientID))
 }
 
-// ListSessions returns sessions, most recent status change first. Archived
-// ones are left out unless they are asked for, which is what the list's own
-// switch decides.
+// ListSessions returns every session, most recent status change first.
 //
 // The order is by ActiveAt, not UpdatedAt: a session moves in the list when
 // it did something, never because somebody looked at it. Two sessions whose
 // status changed in the same millisecond fall back to the row's own clock.
-func (s *Store) ListSessions(includeArchived bool) ([]Session, error) {
-	where := ` WHERE archived_at = 0`
-	if includeArchived {
-		where = ``
-	}
-	rows, err := s.db.Query(`SELECT ` + sessionCols + ` FROM sessions` + where + ` ORDER BY active_at DESC, updated_at DESC`)
+func (s *Store) ListSessions() ([]Session, error) {
+	rows, err := s.db.Query(`SELECT ` + sessionCols + ` FROM sessions ORDER BY active_at DESC, updated_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -361,15 +378,15 @@ func (s *Store) NoteSessionActivity(id string, at int64) error {
 	return s.update(id, `active_at = ?`, at)
 }
 
-// SetSessionFlagged raises or lowers the flag a person puts on a session to
-// find it again. It is a mark and nothing more: the order, the state and the
-// terminal are untouched.
-func (s *Store) SetSessionFlagged(id string, flagged bool) error {
-	ts := int64(0)
-	if flagged {
-		ts = now()
+// SetSessionStatus files a session under a status and starts the status's
+// clock. It is the row and nothing more: closing the terminal of a session
+// that is done is the manager's business, and a status that is not one of
+// the five is refused rather than stored.
+func (s *Store) SetSessionStatus(id, status string) error {
+	if !ValidStatus(status) {
+		return fmt.Errorf("%q is not a session status", status)
 	}
-	return s.update(id, `flagged_at = ?`, ts)
+	return s.update(id, `status = ?, status_at = ?`, status, now())
 }
 
 // SetSessionCLI records the program's own session id and how much is known
@@ -388,16 +405,6 @@ func (s *Store) SetSessionSize(id string, cols, rows int) error {
 		return fmt.Errorf("session size %dx%d is not a terminal", cols, rows)
 	}
 	return s.update(id, `cols = ?, rows = ?`, cols, rows)
-}
-
-// SetSessionArchived puts a session away or brings it back. A restored session
-// is indistinguishable from one that was never archived.
-func (s *Store) SetSessionArchived(id string, archived bool) error {
-	ts := int64(0)
-	if archived {
-		ts = now()
-	}
-	return s.update(id, `archived_at = ?`, ts)
 }
 
 // NoteAttach records that a viewer opened this session.

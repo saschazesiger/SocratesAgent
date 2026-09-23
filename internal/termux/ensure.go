@@ -47,6 +47,9 @@ func (m *Manager) ensureLocked(ctx context.Context, sessionID string) (*store.Se
 	if err != nil {
 		return nil, err
 	}
+	if row.Status == store.StatusDone {
+		return row, ErrDone
+	}
 	switch row.State {
 	case store.StateRunning, store.StateExited, store.StateFailed:
 		// Exited attaches too: the pane is dead but the screen it left is
@@ -74,6 +77,9 @@ func (m *Manager) Restart(ctx context.Context, sessionID string) (*store.Session
 	row, err := m.st.GetSession(sessionID)
 	if err != nil {
 		return nil, err
+	}
+	if row.Status == store.StatusDone {
+		return nil, ErrDone
 	}
 	if m.Available() == nil && row.TmuxName != "" && !m.paneIsDead(row.TmuxName) {
 		return nil, fmt.Errorf("%w: %s", ErrStillRunning, row.TmuxName)
@@ -473,7 +479,7 @@ func (m *Manager) cliHeldElsewhere(id, cli string) bool {
 	if cli == "" {
 		return false
 	}
-	rows, err := m.st.ListSessions(true)
+	rows, err := m.st.ListSessions()
 	if err != nil {
 		// Not knowing is not the same as knowing it is free, but refusing
 		// every id on a database hiccup would leave the session pending for

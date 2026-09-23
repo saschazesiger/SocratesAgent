@@ -32,11 +32,6 @@
         <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
         <span class="btn-label">New session</span>
       </button>
-      <!-- Archived sessions stay out of the way until they are asked for. -->
-      <div class="scope" id="sessionScope" role="group" aria-label="Which sessions to show">
-        <button class="seg on" type="button" data-scope="active" aria-pressed="true">Active</button>
-        <button class="seg" type="button" data-scope="all" aria-pressed="false">All</button>
-      </div>
     </div>
     <nav class="chat-list" id="sessionList"></nav>
     <!-- What a session just did, for a reader that cannot see the sidebar. It
@@ -71,11 +66,10 @@
       <div class="agent-badge" id="sessionHarness" hidden></div>
       <!-- The name is edited where it is read: a click makes it editable and
            Enter or leaving it commits. -->
-      <!-- The flag the person put on this session, drawn before the name as
-           it is in the row. -->
-      <span class="head-flag" id="sessionFlag" hidden aria-label="Flagged"><svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M5 3v18M5 4h11l-2.5 4L16 12H5"/></svg></span>
       <div class="title" id="sessionTitle">Socrates</div>
-      <span class="tag" id="sessionArchived" hidden>Archived</span>
+      <!-- Where the person filed this session. In progress, what every session
+           starts as, says nothing. -->
+      <span class="tag status" id="sessionStatus" hidden></span>
       <!-- Account limits and this conversation's estimated API-equivalent
            cost. Exact reset times live in the native tooltip. -->
       <div class="usage-strip" id="sessionUsage" hidden></div>

@@ -1914,3 +1914,69 @@ workbench arrives instead of replacing something. A ceiling of 30 s uncovers
 the frame whatever is in it — a page that is going to be white is better white
 than behind a mark that turns for ever — and a frame that cannot be read at all
 falls back to its `load` event.
+
+## A status per session replaces the archive and the flag (2026-09-23)
+
+§A.10's archive and the flag were two marks that said nothing about the work:
+an archived session kept running for ever, and a flag meant whatever it meant
+that day. Both are gone, and so is the Active/All switch. Every session has
+one **status** instead, set from the row's menu under "Status":
+
+| status | terminal | list | set by the machine |
+|---|---|---|---|
+| `in_progress` | runs | its project folder, no mark | on creation; when a pending or review session starts a turn somebody asked for |
+| `review` | runs | its project folder, an eye | never |
+| `pending` | runs | its project folder, a clock | never |
+| `background` | runs, never stopped or deleted | a folder of its own, shut by default; no chime, no notification | never |
+| `done` | **closed** | a folder of its own, shut by default | never; deleted `DoneRetention` (24 h) later |
+
+- **Done parks the session** (`Manager.Park`): the tmux session is killed and
+  the row is left `needs_resume`, which is exactly what a reboot leaves — row,
+  journal, working directory and conversation id kept. `Ensure` and `Restart`
+  refuse a done session (`ErrDone`, 409 from `/resume` and the WebSocket), so
+  opening it shows an overlay instead of starting it again. "Pick it up again"
+  files it as in progress, and the next open resumes it like after a reboot.
+- **A sweep** (`server.sweep`, every minute and at start-up) deletes done
+  sessions past their retention through the same path as Delete, and parks any
+  done session that still has a terminal. The retention is read from
+  `status_at`, so a restart loses nothing. Delete itself stays in the menu.
+- **Back in progress by itself.** The detector files a `pending` or `review`
+  session as `in_progress` on a `busy` commit, under the same `tr.asked()`
+  condition as the unread mark, so a start-up, a resume or a restarted detector
+  refile nothing. `background` is excluded on purpose: a service works all the
+  time. Finishing a turn does **not** file anything as `review`; the unread
+  mark already says that, and review is kept for sessions a person means to
+  come back to.
+- **The route is `POST /api/sessions/{id}/file`**, because `/status` was
+  already the spoken status of the assistant.
+- **Upgrade (schema 7).** `status` and `status_at` are added, and `archived_at`
+  and `flagged_at` dropped. Archived sessions become `done` with their retention
+  starting at the upgrade, not at archiving, and the sweep closes their
+  terminals. Every other session is left unsorted (`''`) until the detector
+  sees it: busy is `in_progress`; idle, waiting, not running, or still unknown
+  after `SortWithin` (30 s) is `pending`.
+
+## A session is named from its first prompt, and says so when it cannot be (2026-09-23)
+
+**§B.6 — the moment is the first committed edge *into* `busy` after somebody
+has typed**, not the first edge out of it after half a minute. This replaces
+"The title run waits half a minute" (2026-09-02): `titleMinAge`, the driver's
+clock and `setClock` are gone. The start-up problem that gate solved is solved
+by the same `tr.asked()` test the unread mark and the status filing already
+use — every harness is busy while it starts, before anybody has typed, so that
+edge is published with `Activity.Asked == false` and ignored. The first busy
+that *was* asked for is the harness taking up the first prompt, with the prompt
+on the screen: the name arrives while the first turn runs, not after it.
+
+- **Always English, 2 to 5 words**, never the harness's name. The screen's
+  language rule is dropped: the sidebar is one list.
+- **`max_tokens` 1024, timeout 30 s.** A reasoning title model (the deployed
+  one was `z-ai/glm-5.3-flash`) spends its thinking out of the same budget, and
+  60 tokens was an empty answer.
+- **Once, whatever happens.** A failure, a timeout and an empty answer all mark
+  the session `auto`. No API key is still silent and marks nothing.
+- **Nothing fails silently.** The `title` frame gains `phase`
+  (`start|done|error`) and `text`; the name pulses (`.titling`) between start
+  and the end, and an error opens an alert dialog with the reason — which is
+  how a rejected API key (OpenRouter's 401 "User not found") shows itself
+  instead of a sidebar that simply never changes.

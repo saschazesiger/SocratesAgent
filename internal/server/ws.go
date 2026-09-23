@@ -379,6 +379,12 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	ensureCtx, cancelEnsure := context.WithTimeout(r.Context(), createTimeout)
 	ready, err := s.manager.Ensure(ensureCtx, row.ID)
 	cancelEnsure()
+	if errors.Is(err, termux.ErrDone) {
+		// A done session has no terminal to open, and opening one is not how
+		// it gets one back: its status is changed first.
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1577,18 +1583,26 @@ func (s *Server) onSessionActivity(sessionID string, a termux.Activity) {
 		"sessions": map[string]termux.Activity{sessionID: a},
 	}
 	s.broadcastAll(func(*termViewer) any { return frame })
-	// The first turn that finishes is what gives a session its name.
-	s.titles.observe(sessionID, a.State)
+	// The first prompt being taken up is what gives a session its name.
+	s.titles.observe(sessionID, a)
 }
 
-// onSessionTitle tells every open socket that a session has a new name.
+// emitTitle tells every open socket where the automatic naming of a session
+// is: started (the row pulses), done (with the new name, or none when a rename
+// by hand got there first) or failed (with the reason, which the browser shows
+// in a dialog).
 //
 // It goes to every socket rather than to the session's own viewers because
-// the name is in the sidebar of every browser, and the session that has just
-// named itself is usually not the one being looked at. It is the smallest
-// frame that could carry it: the row and the header both take a string.
-func (s *Server) onSessionTitle(sessionID, title string) {
-	frame := map[string]any{"t": "title", "id": sessionID, "title": title}
+// the name is in the sidebar of every browser, and the session being named is
+// not necessarily the one being looked at.
+func (s *Server) emitTitle(sessionID, phase, title, text string) {
+	frame := map[string]any{"t": "title", "id": sessionID, "phase": phase}
+	if title != "" {
+		frame["title"] = title
+	}
+	if text != "" {
+		frame["text"] = text
+	}
 	s.broadcastAll(func(*termViewer) any { return frame })
 }
 

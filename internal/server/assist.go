@@ -19,6 +19,7 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
 	"github.com/saschazesiger/SocratesAgent/internal/openrouter"
+	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 )
 
@@ -193,51 +194,51 @@ func modelProblem(err error, model, kind string) (int, string) {
 
 // What naming a session costs and how far it may go.
 const (
-	// titleScreenLines is what the namer is shown. It is the operator's
-	// screen: the first answer of a coding harness is long, and the question
-	// that produced it is usually above the fold.
+	// titleScreenLines is what the namer is shown. The prompt that has just
+	// been sent is at the bottom of it, and the harness's banner above it is
+	// context rather than subject.
 	titleScreenLines = 200
-	// titleTimeout bounds the whole run. Nobody is waiting for it - it is a
-	// sidebar row renaming itself - so it fails silently rather than late.
-	titleTimeout = 20 * time.Second
+	// titleTimeout bounds the whole run. It is a sidebar row renaming itself,
+	// so a gateway that does not answer in time is reported, not waited out.
+	titleTimeout = 30 * time.Second
 	// titleMaxRunes is the longest name that still reads as a name in a
 	// sidebar row on a phone.
 	titleMaxRunes = 60
-	// titleMaxTokens is a handful of words. The model is asked for three to
-	// seven, and a ceiling stops a paragraph being paid for.
-	titleMaxTokens = 60
-	// titleMinAge is how old a session has to be before a finished turn is
-	// worth naming it after.
-	//
-	// A harness starting up is work: it paints its box, reads its config and
-	// settles, and the detector sees that as an edge out of busy before
-	// anybody has typed a word. Naming a session from that screen produces
-	// the name of the program - and spends the one go on it. Under this mark
-	// an edge is ignored rather than spent, so the next one still counts.
-	titleMinAge = 30 * time.Second
+	// titleMaxTokens is a ceiling, not a target. The answer is a handful of
+	// words, but a model that thinks before it answers spends its thinking
+	// out of the same budget - and a ceiling of a few dozen tokens is then an
+	// empty answer, every time.
+	titleMaxTokens = 1024
 )
 
-// titleDriver names a session once, the first time it has answered anything.
+// The phases of the "title" frame. Start makes the row pulse, done carries
+// the new name, and error stops the pulse and says why - the browser shows it
+// in a dialog, because a naming that failed without a word is a sidebar that
+// just never changes and nobody knows why.
+const (
+	titlePhaseStart = "start"
+	titlePhaseDone  = "done"
+	titlePhaseError = "error"
+)
+
+// titleDriver names a session once: the moment its first prompt is sent.
 //
-// The moment is the first committed edge out of `busy` that lands after the
-// session has been alive for titleMinAge: the harness has said something, and
-// it is late enough for what it said to be the work rather than the start-up.
-// It happens whether or not anybody is looking, because the point of it is the
-// sidebar of the browser that is looking at a different session.
+// The moment is the first committed edge into `busy` after somebody has typed
+// at the session (termux.Activity.Asked). Every harness is busy while it
+// starts, and that edge comes before anybody has typed a word, so it is
+// ignored; the first edge after typing is the harness taking up the first
+// prompt, and the prompt is on the screen.
 //
-// It is once per session and the once is persisted (store.TitleAuto), so a
-// server restart does not rename a session that has already been named; a name
-// the user typed or a rename they made (store.TitleUser) is never touched.
+// It is once per session and the once is persisted (store.TitleAuto) whatever
+// the outcome, so a later prompt never renames a session and a server restart
+// does not either; a name the user typed or a rename they made
+// (store.TitleUser) is never touched.
 type titleDriver struct {
 	srv *Server
 
 	mu sync.Mutex
-	// now is the clock the age gate reads. It is a field so that the gate can
-	// be proven without a test standing still for half a minute; everything
-	// else reads time.Now directly.
-	now func() time.Time
 	// seen is the last committed state per session, which is where the edge
-	// out of busy is found: the callback carries the new state and not the old.
+	// into busy is found: the callback carries the new state and not the old.
 	seen map[string]termux.State
 	// live is the run in flight per session, so that two edges cannot start
 	// two runs and deleting a session can stop the one it has.
@@ -247,43 +248,23 @@ type titleDriver struct {
 func newTitleDriver(s *Server) *titleDriver {
 	return &titleDriver{
 		srv:  s,
-		now:  time.Now,
 		seen: map[string]termux.State{},
 		live: map[string]context.CancelFunc{},
 	}
 }
 
-// clock is the driver's idea of the time, read under the lock because the run
-// that reads it is a goroutine and the tests that move it are not.
-func (d *titleDriver) clock() time.Time {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.now()
-}
-
-// setClock moves the age gate's clock. It exists for the tests of that gate
-// and for nothing else.
-func (d *titleDriver) setClock(now func() time.Time) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.now = now
-}
-
 // observe takes every committed activity change and starts the title run on
-// the first edge out of busy. It returns at once: the detector's tick is a
-// tick, and it is never made to wait for a gateway.
-func (d *titleDriver) observe(sessionID string, state termux.State) {
+// the first edge into busy that somebody asked for. It returns at once: the
+// detector's tick is a tick, and it is never made to wait for a gateway.
+func (d *titleDriver) observe(sessionID string, a termux.Activity) {
 	if d == nil {
 		return
 	}
 	d.mu.Lock()
-	prev, known := d.seen[sessionID]
-	d.seen[sessionID] = state
+	prev := d.seen[sessionID]
+	d.seen[sessionID] = a.State
 	_, running := d.live[sessionID]
-	// An edge needs a previous state: a session first seen while it is already
-	// idle has never been watched working, and there is no answer on its
-	// screen that this server saw arrive.
-	if !known || running || prev != termux.StateBusy || state == termux.StateBusy {
+	if running || !a.Asked || a.State != termux.StateBusy || prev == termux.StateBusy {
 		d.mu.Unlock()
 		return
 	}
@@ -320,17 +301,11 @@ func (d *titleDriver) forget(sessionID string) {
 }
 
 // run is the whole of it: read the screen, ask for a name, store it, and tell
-// every open browser. Every way out of it is silent - there is no request to
-// answer and no button that was pressed.
+// every open browser. Once it has started, every way out of it is reported:
+// the row pulses from the first frame to the last.
 func (d *titleDriver) run(ctx context.Context, sessionID string) {
 	row, err := d.srv.store.GetSession(sessionID)
 	if err != nil || row.TitleSource != "" {
-		return
-	}
-	// Too young to be about anything yet. This is a silent return and not a
-	// spent turn: the session is named on the first turn that finishes after
-	// it has been alive for titleMinAge.
-	if d.clock().Sub(time.UnixMilli(row.CreatedAt)) < titleMinAge {
 		return
 	}
 	// A shell session is a directory and a prompt. There is nothing on its
@@ -341,57 +316,87 @@ func (d *titleDriver) run(ctx context.Context, sessionID string) {
 	settings := d.srv.Settings()
 	key := strings.TrimSpace(settings.OpenRouter.APIKey)
 	if key == "" {
-		// Not configured is not a fault: the placeholder name stays, and the
-		// session is named the first time it answers after a key is added.
+		// Not configured is not a fault: automatic names are simply off, and
+		// the placeholder name stays.
 		return
 	}
 	model := strings.TrimSpace(settings.OpenRouter.TitleModel)
 	if model == "" {
 		model = config.DefaultTitleModel
 	}
-	screen, err := d.srv.manager.CapturePane(ctx, sessionID, titleScreenLines)
-	if err != nil || strings.TrimSpace(screen) == "" {
-		return
-	}
 
-	temperature := 0.3
-	client := openrouter.New(settings.OpenRouter.BaseURL, key)
-	res, err := client.Chat(ctx, openrouter.ChatRequest{
-		Model:       model,
-		Messages:    []openrouter.Message{{Role: "user", Content: titlePrompt(row.Harness, screen)}},
-		Temperature: &temperature,
-		MaxTokens:   titleMaxTokens,
-	}, nil)
-	// The attempt is what is spent, not the answer: whatever came back, this
-	// session has had its one go. A model id that does not exist would
-	// otherwise be paid for again at the end of every turn, for ever.
-	if err != nil {
-		if ctx.Err() == nil {
-			_ = d.srv.store.MarkSessionTitled(sessionID)
-		}
+	d.srv.emitTitle(sessionID, titlePhaseStart, "", "")
+	title, problem := d.ask(ctx, row.Harness, sessionID, key, settings.OpenRouter.BaseURL, model)
+	if deleted := ctx.Err() == context.Canceled; deleted {
+		// forget: the session is gone, and so is anybody to tell.
 		return
 	}
-	title := cleanTitle(res.Content)
-	if title == "" {
+	// The attempt is what is spent, not the answer: whatever came back, this
+	// session has had its one go.
+	if problem != "" {
 		_ = d.srv.store.MarkSessionTitled(sessionID)
+		d.srv.emitTitle(sessionID, titlePhaseError, "", problem)
 		return
 	}
 	if err := d.srv.store.SetAutoSessionTitle(sessionID, title); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			// Renamed by hand while the model was thinking: that name wins,
+			// and the pulse just stops.
+			d.srv.emitTitle(sessionID, titlePhaseDone, "", "")
+			return
+		}
+		d.srv.emitTitle(sessionID, titlePhaseError, "", "the title could not be saved: "+err.Error())
 		return
 	}
-	d.srv.onSessionTitle(sessionID, title)
+	d.srv.emitTitle(sessionID, titlePhaseDone, title, "")
+}
+
+// ask captures the screen and has the model name it. It answers with a title
+// or with a sentence saying why there is none.
+func (d *titleDriver) ask(ctx context.Context, harness, sessionID, key, baseURL, model string) (string, string) {
+	screen, err := d.srv.manager.CapturePane(ctx, sessionID, titleScreenLines)
+	if err != nil {
+		return "", "the screen could not be read: " + err.Error()
+	}
+	if strings.TrimSpace(screen) == "" {
+		return "", "the screen was empty, so there was nothing to name the session after"
+	}
+	temperature := 0.3
+	client := openrouter.New(baseURL, key)
+	res, err := client.Chat(ctx, openrouter.ChatRequest{
+		Model:       model,
+		Messages:    []openrouter.Message{{Role: "user", Content: titlePrompt(harness, screen)}},
+		Temperature: &temperature,
+		MaxTokens:   titleMaxTokens,
+	}, nil)
+	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return "", fmt.Sprintf("the title model %s did not answer within %s", model, titleTimeout)
+		}
+		_, why := modelProblem(err, model, "title")
+		return "", why
+	}
+	title := cleanTitle(res.Content)
+	if title == "" {
+		why := "the title model " + model + " answered with nothing usable"
+		if res.FinishReason == "length" {
+			why += " (it ran out of tokens, probably while reasoning)"
+		}
+		return "", why
+	}
+	return title, ""
 }
 
 // titlePrompt is the naming instruction, screen included.
 //
-// The language is the screen's and not the voice setting's, which is the one
-// place these prompts differ: a title is read, not spoken, and a German
-// conversation with an English name on it would be a name for nobody.
+// The title is always English, whatever the conversation is in: the sidebar
+// is one list, and it reads as one list.
 func titlePrompt(harness, screen string) string {
 	return "Below is the screen of a terminal running " + harnessLabel(harness) +
-		". Give this session a title: 3 to 7 words saying what it is about, so that somebody " +
-		"scanning a list of sessions knows which one this is. Write it in the language the " +
-		"person on the screen is evidently writing in; if that is unclear, write it in English. " +
+		". The user has just sent their first prompt; it is the last thing they typed. " +
+		"Give this session a title that says what the user wants, as short and plain as " +
+		"possible: 2 to 5 words, in English even if the prompt is in another language. " +
+		"Name the task, not the program - never mention " + harnessLabel(harness) + ". " +
 		"Answer with the title and nothing else: no quotation marks, no full stop at the end, " +
 		"no markdown, no explanation.\nScreen:\n" + screen
 }

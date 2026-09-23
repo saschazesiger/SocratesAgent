@@ -177,7 +177,7 @@ func TestAdoptDetectsReboot(t *testing.T) {
 func TestTransientPollFailureDoesNotResume(t *testing.T) {
 	l := newLab(t)
 	row := l.create(shellSpec(t.TempDir()))
-	rows, err := l.store.ListSessions(true)
+	rows, err := l.store.ListSessions()
 	if err != nil {
 		t.Fatal(err)
 	}

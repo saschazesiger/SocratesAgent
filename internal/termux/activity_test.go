@@ -515,6 +515,32 @@ func TestActivityWaitingIsReleasedByAScreenTheGuardOverwrote(t *testing.T) {
 		func() map[string]paneLine { return b.pane(row, HardQuiet) })
 }
 
+// TestActivityChangesSayWhetherTheyWereAskedFor: the busy of a harness
+// starting up is published as not asked for, and the busy after somebody has
+// typed as asked for - which is how the server finds the first prompt.
+func TestActivityChangesSayWhetherTheyWereAskedFor(t *testing.T) {
+	b := newBench(t)
+	row := b.row("s1", "claude")
+	rows := []store.Session{row}
+	b.source(harnesses.KindClaude, seen(StateBusy, ""), seen(StateIdle, ""), seen(StateIdle, ""), seen(StateBusy, ""))
+
+	b.ticks(3, rows, func() map[string]paneLine { return b.pane(row, 0) })
+	b.want("s1", StateIdle)
+	b.m.NoteTyped("s1")
+	b.tick(rows, b.pane(row, 0))
+	b.want("s1", StateBusy)
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var asked []bool
+	for _, change := range b.changes {
+		asked = append(asked, change.Activity.Asked)
+	}
+	if len(asked) != 3 || asked[0] || asked[1] || !asked[2] {
+		t.Fatalf("asked per change = %v, want false, false, true", asked)
+	}
+}
+
 // TestActivityPaneDeathMarksUnreadAndInputClearsIt.
 func TestActivityPaneDeathMarksUnreadAndInputClearsIt(t *testing.T) {
 	b := newBench(t)
@@ -1971,5 +1997,153 @@ func TestOpenCodePollRejectsAnUndecodableStatus(t *testing.T) {
 	w.poll(context.Background())
 	if got := w.answer(); got.ok {
 		t.Fatalf("a status body that will not decode answered %#v, want nothing at all", got)
+	}
+}
+
+// statusOf is where the store has a session filed.
+func (b *bench) statusOf(id string) string {
+	b.t.Helper()
+	row, err := b.st.GetSession(id)
+	if err != nil {
+		b.t.Fatalf("could not read %s: %v", id, err)
+	}
+	return row.Status
+}
+
+// fresh is the rows as the store has them now, which is what a real tick
+// reads: the status the detector wrote on one tick is what the next one sees.
+func (b *bench) fresh(ids ...string) []store.Session {
+	b.t.Helper()
+	out := make([]store.Session, 0, len(ids))
+	for _, id := range ids {
+		row, err := b.st.GetSession(id)
+		if err != nil {
+			b.t.Fatalf("could not read %s: %v", id, err)
+		}
+		out = append(out, *row)
+	}
+	return out
+}
+
+// TestActivityWorkFilesASessionAsInProgress: a session that was put aside -
+// pending, or waiting for a review - and is given work again is in progress
+// again. The start-up of a harness is not work, and neither is anything a
+// done session could do.
+func TestActivityWorkFilesASessionAsInProgress(t *testing.T) {
+	for _, status := range []string{store.StatusPending, store.StatusReview} {
+		t.Run(status, func(t *testing.T) {
+			b := newBench(t)
+			row := b.row("s1", "claude")
+			if err := b.st.SetSessionStatus("s1", status); err != nil {
+				t.Fatal(err)
+			}
+			panes := func() map[string]paneLine { return b.pane(row, 0) }
+
+			// Starting up: busy, then idle, and nobody has asked anything.
+			b.source(harnesses.KindClaude, seen(StateBusy, ""))
+			b.tick(b.fresh("s1"), panes())
+			b.want("s1", StateBusy)
+			if got := b.statusOf("s1"); got != status {
+				t.Fatalf("a harness starting up refiled the session as %q", got)
+			}
+			b.source(harnesses.KindClaude, seen(StateIdle, ""))
+			for i := 0; i < IdleSettle; i++ {
+				b.tick(b.fresh("s1"), panes())
+			}
+			b.want("s1", StateIdle)
+
+			// A turn somebody asked for is work.
+			b.m.NoteTyped("s1")
+			b.source(harnesses.KindClaude, seen(StateBusy, ""))
+			b.tick(b.fresh("s1"), panes())
+			b.want("s1", StateBusy)
+			if got := b.statusOf("s1"); got != store.StatusInProgress {
+				t.Fatalf("a %s session that started working is %q, want in progress", status, got)
+			}
+		})
+	}
+}
+
+// TestActivityLeavesABackgroundSessionWhereItIs: a service somebody filed as
+// background is working whenever it runs, and being typed at does not make it
+// the work in progress.
+func TestActivityLeavesABackgroundSessionWhereItIs(t *testing.T) {
+	b := newBench(t)
+	row := b.row("s1", "claude")
+	if err := b.st.SetSessionStatus("s1", store.StatusBackground); err != nil {
+		t.Fatal(err)
+	}
+	b.m.NoteTyped("s1")
+	b.source(harnesses.KindClaude, seen(StateBusy, ""))
+	b.tick(b.fresh("s1"), b.pane(row, 0))
+	b.want("s1", StateBusy)
+	if got := b.statusOf("s1"); got != store.StatusBackground {
+		t.Fatalf("a background session that worked was refiled as %q", got)
+	}
+}
+
+// TestActivitySortsTheSessionsAnUpgradeLeftUnsorted: the upgrade from flags
+// and an archive cannot tell which sessions are working, so it leaves them
+// unsorted and the detector files them - in progress if working, pending if
+// not, and pending if it cannot tell within SortWithin.
+func TestActivitySortsTheSessionsAnUpgradeLeftUnsorted(t *testing.T) {
+	b := newBench(t)
+	busy, idle, silent, stopped := b.row("busy", "claude"), b.row("idle", "codex"), b.row("silent", "opencode"),
+		b.row("stopped", "claude")
+	stopped.State = store.StateNeedsResume
+	b.source(harnesses.KindClaude, seen(StateBusy, ""))
+	b.source(harnesses.KindCodex, seen(StateIdle, ""))
+	b.source(harnesses.KindOpenCode)
+	// The rows as the upgrade left them. The store has no way to write an
+	// unsorted status, so every row is filed for review - a status the
+	// detector never writes - and the tick is handed that as unsorted.
+	for _, id := range []string{"busy", "idle", "silent", "stopped"} {
+		if err := b.st.SetSessionStatus(id, store.StatusReview); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unsorted := func() []store.Session {
+		rows := b.fresh("busy", "idle", "silent", "stopped")
+		for i := range rows {
+			if rows[i].Status == store.StatusReview {
+				rows[i].Status = store.StatusUnsorted
+			}
+		}
+		rows[3].State = stopped.State
+		return rows
+	}
+	panes := func() map[string]paneLine {
+		out := map[string]paneLine{}
+		for _, row := range []store.Session{busy, idle, silent} {
+			// Output a few seconds ago: no answer from quiescence either way.
+			for k, v := range b.pane(row, 10*time.Second) {
+				out[k] = v
+			}
+		}
+		return out
+	}
+
+	b.tick(unsorted(), panes())
+	if got := b.statusOf("busy"); got != store.StatusInProgress {
+		t.Fatalf("a working session was filed as %q", got)
+	}
+	if got := b.statusOf("stopped"); got != store.StatusPending {
+		t.Fatalf("a session that is not running was filed as %q", got)
+	}
+	for i := 0; i < IdleSettle; i++ {
+		b.tick(unsorted(), panes())
+	}
+	if got := b.statusOf("idle"); got != store.StatusPending {
+		t.Fatalf("an idle session was filed as %q", got)
+	}
+
+	// The session the detector cannot read stays unsorted until SortWithin
+	// has passed, and is pending after.
+	b.mu.Lock()
+	b.now = b.now.Add(SortWithin)
+	b.mu.Unlock()
+	b.tick(unsorted(), panes())
+	if got := b.statusOf("silent"); got != store.StatusPending {
+		t.Fatalf("a session nobody could read was filed as %q after %v", got, SortWithin)
 	}
 }
