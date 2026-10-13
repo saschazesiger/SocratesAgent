@@ -167,6 +167,7 @@ async function load() {
   loadProfiles();
   loadHarnesses();
   refreshTmux();
+  refreshStorage(true);
   if (data.local_url) localURL = data.local_url;
   refreshTunnel();
   if (new URLSearchParams(location.search).get('welcome')) {
@@ -817,6 +818,9 @@ function bind() {
     if (!log.hidden) refreshTunnel();
   });
   $('checkVoiceKey').addEventListener('click', checkVoiceKey);
+  $('storageTest').addEventListener('click', testStorage);
+  $('storageSync').addEventListener('click', syncStorage);
+  $('storageSave').addEventListener('click', saveStorageCredentials);
   $('testVoice').addEventListener('click', async () => {
     // The server renders with what it has stored, so anything typed into this
     // card and not saved yet would be read by the old settings. Saying so is
@@ -1059,6 +1063,7 @@ onWake(() => {
   if (document.visibilityState === 'hidden' || !settings) return;
   refreshTunnel();
   refreshTmux();
+  refreshStorage();
 });
 
 async function refreshTunnel() {
@@ -1139,6 +1144,179 @@ async function stopTunnel() {
     busyButton(button, false, 'Stopping…');
     // renderTunnelStatus decides whether this button belongs enabled at all.
     refreshTunnel();
+  }
+}
+
+/* --------------------------------------------------------------- storage */
+
+// The bucket the state is kept in. The card reads GET /api/storage; the
+// credentials are a small form of their own, separate from the settings
+// document, because they are proved against the bucket before they are saved
+// and live in s3.json rather than in the bucket they open.
+
+let storageTimer = null;
+
+function storageAgo(ms) {
+  if (!ms) return 'never';
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 60) return s + ' s ago';
+  if (s < 3600) return Math.round(s / 60) + ' min ago';
+  if (s < 86400) return Math.round(s / 3600) + ' h ago';
+  return new Date(ms).toLocaleString();
+}
+
+function storageWhere(storage) {
+  if (!storage || !storage.bucket) return '';
+  return (storage.endpoint || 'AWS S3') + ' · ' + storage.bucket
+    + (storage.prefix ? '/' + storage.prefix.replace(/\/$/, '') : '');
+}
+
+function renderStorage(status, fillForm) {
+  const host = $('storageStatus');
+  let dot = host.querySelector(':scope > .state-dot');
+  if (!dot) {
+    dot = el('span', { class: 'state-dot' });
+    host.prepend(dot);
+  }
+  while (dot.nextSibling) dot.nextSibling.remove();
+
+  let dotClass = 'failed';
+  let label = 'Not configured';
+  if (status.state === 'fenced') {
+    label = 'Another Socrates took over this bucket';
+  } else if (status.state === 'offline') {
+    label = status.error_since
+      ? 'Bucket unreachable since ' + new Date(status.error_since).toLocaleTimeString()
+      : 'Bucket not reached yet';
+  } else if (status.state === 'ok' && status.pending > 0) {
+    dotClass = 'starting';
+    label = status.pending === 1 ? '1 change uploading' : status.pending + ' changes uploading';
+  } else if (status.state === 'ok') {
+    dotClass = 'ok';
+    label = 'Backed up';
+  }
+  dot.className = 'state-dot ' + dotClass;
+
+  const parts = [el('span', { class: 'state-label', text: label })];
+  const sep = () => el('span', { class: 'sep', text: '·' });
+  const where = storageWhere(status.storage);
+  if (where) parts.push(sep(), el('span', { class: 'muted', text: where }));
+  if (status.state !== 'ok' && status.pending > 0) {
+    parts.push(sep(), el('span', { class: 'muted', text: status.pending + ' waiting' }));
+  }
+  if (status.configured) {
+    parts.push(sep(), el('span', { class: 'muted', text: 'last upload ' + storageAgo(status.last_flush_at) }));
+  }
+  host.append(...parts);
+
+  // The details are technical state, and live in the hint line below rather
+  // than in the verdict: the error, who holds the lease, how it is held.
+  const detail = [];
+  if (status.last_error) detail.push(status.last_error);
+  if (status.state === 'fenced' && status.lease) {
+    detail.push('The bucket is held by ' + (status.lease.host || 'another machine') + ' since '
+      + storageAgo(status.lease.acquired_at) + '. Nothing done here is saved to it any more; '
+      + 'restart this Socrates to see the bucket\'s state, or stop the other one.');
+  } else if (status.lease && status.lease.own) {
+    detail.push('This Socrates holds the bucket (lease renewed ' + storageAgo(status.lease.heartbeat_at) + ').');
+  }
+  if (status.configured) {
+    detail.push(status.conditional_writes
+      ? 'The store enforces conditional writes.'
+      : 'The store does not enforce conditional writes; the lease is checked by reading it back.');
+  }
+  $('storageDetail').textContent = detail.join(' ');
+  if (status.state === 'fenced' || status.state === 'offline') {
+    $('storageDetail').style.color = 'var(--red)';
+  } else {
+    $('storageDetail').style.color = '';
+  }
+
+  const env = status.storage && status.storage.source === 'env';
+  for (const id of ['storageEndpoint', 'storageRegion', 'storageKey', 'storageSecret', 'storagePathStyle', 'storageSave']) {
+    $(id).disabled = env || !status.configured;
+  }
+  $('storageSync').disabled = !status.configured || status.state === 'fenced';
+  $('storageTest').disabled = !status.configured;
+  $('storageCredsHint').textContent = env
+    ? 'Configured by the SOCRATES_S3_* environment variables, so it is shown read-only here: change them where the container is defined.'
+    : 'New credentials are tried against the bucket before they are saved. The bucket, the prefix and the encryption passphrase are the installation itself and cannot be changed here.';
+  if (fillForm && status.storage) {
+    $('storageEndpoint').value = status.storage.endpoint || '';
+    $('storageRegion').value = status.storage.region || '';
+    $('storageKey').value = status.storage.access_key_id || '';
+    $('storageSecret').value = '';
+    $('storagePathStyle').checked = !!status.storage.path_style;
+  }
+
+  clearTimeout(storageTimer);
+  storageTimer = setTimeout(refreshStorage, status.state === 'ok' && !status.pending ? 15000 : 4000);
+}
+
+async function refreshStorage(fillForm = false) {
+  try {
+    renderStorage(await api('/api/storage'), fillForm);
+  } catch (err) {
+    if (!isOffline(err)) $('storageDetail').textContent = errorMessage(err);
+    clearTimeout(storageTimer);
+    storageTimer = setTimeout(refreshStorage, 10000);
+  }
+}
+
+async function testStorage() {
+  const button = $('storageTest');
+  busyButton(button, true, 'Testing…');
+  try {
+    const data = await api('/api/storage/test', { method: 'POST', body: {} });
+    const result = data.result || {};
+    if (result.ok) {
+      toast('The bucket answers (' + result.latency_ms + ' ms)');
+    } else {
+      toast(result.error || 'The bucket did not answer.', 'error');
+    }
+    if (data.status) renderStorage(data.status);
+  } catch (err) {
+    toast(errorMessage(err), 'error');
+  } finally {
+    busyButton(button, false, 'Testing…');
+  }
+}
+
+async function syncStorage() {
+  const button = $('storageSync');
+  busyButton(button, true, 'Uploading…');
+  try {
+    const data = await api('/api/storage/sync', { method: 'POST', body: {} });
+    toast('Everything is uploaded');
+    if (data.status) renderStorage(data.status);
+  } catch (err) {
+    toast(errorMessage(err), 'error');
+    refreshStorage();
+  } finally {
+    busyButton(button, false, 'Uploading…');
+  }
+}
+
+async function saveStorageCredentials() {
+  const button = $('storageSave');
+  busyButton(button, true, 'Checking…');
+  try {
+    const data = await api('/api/storage/credentials', {
+      method: 'PUT',
+      body: {
+        endpoint: $('storageEndpoint').value.trim(),
+        region: $('storageRegion').value.trim(),
+        access_key_id: $('storageKey').value.trim(),
+        secret_access_key: $('storageSecret').value.trim(),
+        path_style: $('storagePathStyle').checked,
+      },
+    });
+    toast('Credentials saved');
+    if (data.status) renderStorage(data.status, true);
+  } catch (err) {
+    toast(errorMessage(err), 'error');
+  } finally {
+    busyButton(button, false, 'Checking…');
   }
 }
 

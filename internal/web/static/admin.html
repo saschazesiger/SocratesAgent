@@ -33,6 +33,45 @@
       <div class="hint" id="tmuxReason"></div>
     </section>
 
+    <section class="card" id="storageCard">
+      <h2>Storage</h2>
+      <p class="card-sub">Socrates keeps its own state in an S3 bucket: the settings, the password, sign-ins, profiles, push subscriptions and every session with its prepared prompt. It is encrypted on this machine with your passphrase before it leaves. The data directory keeps the rest — the programs' own logins and transcripts, the workspaces and tmux.</p>
+      <div class="engine-status" id="storageStatus">
+        <span class="state-dot"></span>
+        <span class="state-label">Loading…</span>
+      </div>
+      <div class="hint" id="storageDetail"></div>
+      <div class="row" style="flex-wrap:wrap;margin:12px 0 18px">
+        <button class="btn sm" id="storageTest" type="button">Test connection</button>
+        <button class="btn sm" id="storageSync" type="button">Sync now</button>
+      </div>
+      <div class="grid-2">
+        <div class="field">
+          <label for="storageEndpoint">Endpoint</label>
+          <input class="input mono" type="text" id="storageEndpoint" spellcheck="false" placeholder="AWS S3">
+        </div>
+        <div class="field">
+          <label for="storageRegion">Region</label>
+          <input class="input mono" type="text" id="storageRegion" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="storageKey">Access key ID</label>
+          <input class="input mono" type="text" id="storageKey" spellcheck="false" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="storageSecret">Secret access key</label>
+          <input class="input mono" type="password" id="storageSecret" autocomplete="off" placeholder="unchanged">
+        </div>
+      </div>
+      <div class="field">
+        <div class="row"><label class="switch"><input type="checkbox" id="storagePathStyle"><span class="track"></span><span>Path-style addressing</span></label></div>
+      </div>
+      <div class="row" style="flex-wrap:wrap">
+        <button class="btn sm" id="storageSave" type="button">Save credentials</button>
+      </div>
+      <div class="hint" id="storageCredsHint" style="margin-top:10px">New credentials are tried against the bucket before they are saved. The bucket, the prefix and the encryption passphrase are the installation itself and cannot be changed here.</div>
+    </section>
+
     <section class="card" id="workspaceCard">
       <h2>Workspace</h2>
       <p class="card-sub">Where a session works, which program it starts on, and the directories the new-session sheet offers by name.</p>

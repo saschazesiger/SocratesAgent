@@ -11,10 +11,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/catalog"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
+	"github.com/saschazesiger/SocratesAgent/internal/mirror"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 	"github.com/saschazesiger/SocratesAgent/internal/tunnel"
@@ -79,6 +81,16 @@ type Server struct {
 	// write, so two of them cannot each save a list without the other.
 	profilesMu sync.Mutex
 
+	// starts serialises everything that changes or starts one prepared
+	// session, and sched is the loop that starts them at their time. See
+	// prestart.go and schedule.go.
+	starts keyedLocks
+	sched  *scheduler
+
+	// mirror is the bucket the state is kept in (storage.go). It is set once,
+	// after New, by main; a server without one is a test.
+	mirror atomic.Pointer[mirror.Mirror]
+
 	// usage holds the short-lived account limit reading shared by every tab.
 	// Session costs are read from each CLI's own transcript and are not cached
 	// here: the files are already local and change after every answer.
@@ -133,6 +145,7 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	// calls into it.
 	s.titles = newTitleDriver(s)
 	s.push = newPusher(st)
+	s.sched = newScheduler(s)
 	manager, err := termux.New(st, cfg)
 	if err != nil {
 		return nil, err
@@ -182,6 +195,9 @@ func (s *Server) StartSessions(ctx context.Context) error {
 	// sessions that survived the last run rather than an empty server.
 	s.manager.StartActivity(ctx)
 	s.startSweep(ctx)
+	// Last, once every session that survived is adopted: a scheduled start
+	// that fell due while the server was down is started by its first pass.
+	s.sched.start(ctx)
 	return nil
 }
 
@@ -303,16 +319,21 @@ func (s *Server) routes() {
 	mux.HandleFunc("PATCH /api/sessions/{id}", s.auth(s.handleRenameSession))
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.auth(s.endingViewers(s.handleDeleteSession)))
 	mux.HandleFunc("POST /api/sessions/{id}/file", s.auth(s.handleSetStatus))
-	mux.HandleFunc("POST /api/sessions/{id}/resume", s.auth(s.handleResumeSession))
-	mux.HandleFunc("POST /api/sessions/{id}/restart", s.auth(s.handleRestartSession))
+	mux.HandleFunc("POST /api/sessions/{id}/resume", s.auth(s.started(s.handleResumeSession)))
+	mux.HandleFunc("POST /api/sessions/{id}/restart", s.auth(s.started(s.handleRestartSession)))
+	// Prepared sessions: their settings, their draft, and the start.
+	mux.HandleFunc("PATCH /api/sessions/{id}/prestart", s.auth(s.handlePatchPrestart))
+	mux.HandleFunc("GET /api/sessions/{id}/draft", s.auth(s.handleGetDraft))
+	mux.HandleFunc("PUT /api/sessions/{id}/draft", s.auth(s.handlePutDraft))
+	mux.HandleFunc("POST /api/sessions/{id}/start", s.auth(s.handleStartSession))
 	mux.HandleFunc("POST /api/sessions/{id}/ack-resume", s.auth(s.handleAckResume))
 	mux.HandleFunc("POST /api/sessions/{id}/read", s.auth(s.handleMarkRead))
 	mux.HandleFunc("GET /api/sessions/{id}/usage", s.auth(s.handleSessionUsage))
 	// What a terminal is doing, said out loud.
 	mux.HandleFunc("POST /api/sessions/{id}/status", s.auth(s.handleSessionStatus))
-	mux.HandleFunc("GET /api/sessions/{id}/journal", s.auth(s.handleJournal))
-	mux.HandleFunc("POST /api/sessions/{id}/upload", s.auth(s.handleUpload))
-	mux.HandleFunc("GET /api/sessions/{id}/ws", s.auth(s.handleSessionWS))
+	mux.HandleFunc("GET /api/sessions/{id}/journal", s.auth(s.started(s.handleJournal)))
+	mux.HandleFunc("POST /api/sessions/{id}/upload", s.auth(s.started(s.handleUpload)))
+	mux.HandleFunc("GET /api/sessions/{id}/ws", s.auth(s.started(s.handleSessionWS)))
 
 	// The harness catalogue: what can be started, and where.
 	mux.HandleFunc("GET /api/harnesses", s.auth(s.handleHarnesses))
@@ -349,6 +370,12 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/push/subscribe", s.auth(s.handlePushSubscribe))
 	mux.HandleFunc("POST /api/push/unsubscribe", s.auth(s.handlePushUnsubscribe))
 	mux.HandleFunc("POST /api/push/test", s.auth(s.handlePushTest))
+
+	// Storage: the bucket that is the store of record (storage.go).
+	mux.HandleFunc("GET /api/storage", s.auth(s.handleStorageStatus))
+	mux.HandleFunc("POST /api/storage/test", s.auth(s.handleStorageTest))
+	mux.HandleFunc("POST /api/storage/sync", s.auth(s.handleStorageSync))
+	mux.HandleFunc("PUT /api/storage/credentials", s.auth(s.handleStorageCredentials))
 
 	// Liveness, and the one endpoint nothing in the browser calls: the
 	// container's HEALTHCHECK is what asks for it, because a process that is

@@ -16,9 +16,9 @@ import { chromium } from '/opt/browser-testing/node_modules/playwright-core/inde
 import { createServer } from 'node:http';
 import { createServer as createSocketServer } from 'node:net';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, realpathSync, rmSync, mkdirSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, mkdirSync, symlinkSync, readdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -76,8 +76,23 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.on(signal, () => { sweepAll(); process.exit(130); });
 }
 
-const CHROME = process.env.SOCRATES_E2E_CHROME
-  || '/root/.cache/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-linux64/chrome-headless-shell';
+// The headless shell Playwright installed. Its directory carries the build
+// number, which changes whenever the machine's Playwright is updated, so the
+// newest one present is used rather than one pinned build that is soon gone.
+function defaultChrome() {
+  const root = '/root/.cache/ms-playwright';
+  const tail = 'chrome-headless-shell-linux64/chrome-headless-shell';
+  let builds = [];
+  try {
+    builds = readdirSync(root).filter((d) => d.startsWith('chromium_headless_shell-'))
+      .sort((a, b) => Number(b.split('-')[1]) - Number(a.split('-')[1]));
+  } catch { /* no Playwright cache: the path below says what was expected */ }
+  for (const dir of builds) {
+    if (existsSync(join(root, dir, tail))) return join(root, dir, tail);
+  }
+  return join(root, 'chromium_headless_shell-1234', tail);
+}
+const CHROME = process.env.SOCRATES_E2E_CHROME || defaultChrome();
 
 export const PASSWORD = 'socrates-e2e';
 export const LIVE = process.env.SOCRATES_LIVE_AGENTS === '1';
@@ -111,11 +126,106 @@ export function binaries(live = false) {
 }
 
 export function cleanupBuild() {
+  stopFakeS3();
   for (const key of Object.keys(builds)) {
     sweep(builds[key].dir);
     delete builds[key];
   }
 }
+
+// ------------------------------------------------------------- the bucket
+//
+// S3 is mandatory: a Socrates with no bucket serves the connect page and
+// nothing else, so every scenario needs one. e2e/fakebin/fakes3 is the
+// in-memory store the mirror's unit tests use (internal/s3/s3fake), served on
+// a real port. It is started once per run, and every server gets its own
+// prefix on it - by default one named after its data directory, so that a
+// scenario's restart finds its own state again and no two scenarios ever see
+// each other's. A scenario that wants a second data directory on the same
+// state (`s3restore`) passes the first one's prefix.
+//
+// The credentials and the region are s3fake's defaults and the passphrase is
+// the suite's own. None of it is a secret: the store dies with the run.
+export const S3 = {
+  bucket: 'socrates-e2e',
+  accessKeyID: 'FAKEACCESSKEY',
+  secretAccessKey: 'fake-secret-key',
+  region: 'fake-1',
+  passphrase: 'socrates-e2e-passphrase',
+};
+let fakeS3 = null;
+
+// ensureFakeS3 builds and starts the fake once, and resolves to its URL.
+export function ensureFakeS3() {
+  if (fakeS3) return fakeS3.ready;
+  const dir = scratchDir('socrates-e2e-s3-');
+  const exe = join(dir, 'fakes3');
+  execFileSync('go', ['build', '-o', exe, './e2e/fakebin/fakes3'], { cwd: REPO });
+  const child = spawn(exe, ['-addr', '127.0.0.1:0'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  servers.add(child);
+  child.on('exit', () => servers.delete(child));
+  const state = { dir, child, url: '' };
+  fakeS3 = state;
+  state.ready = new Promise((resolve, reject) => {
+    let out = '';
+    const timer = setTimeout(() => reject(new Error('fakes3 never said where it listens: ' + out)), 15000);
+    child.stdout.on('data', (d) => {
+      out += String(d);
+      const m = out.match(/listening on (http:\/\/\S+)/);
+      if (m && !state.url) {
+        clearTimeout(timer);
+        state.url = m[1];
+        resolve(state.url);
+      }
+    });
+    child.stderr.on('data', (d) => { out += String(d); });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      if (!state.url) reject(new Error('fakes3 exited (' + code + '): ' + out));
+    });
+  });
+  return state.ready;
+}
+
+function stopFakeS3() {
+  if (!fakeS3) return;
+  try { fakeS3.child.kill('SIGKILL'); } catch { /* already gone */ }
+  sweep(fakeS3.dir);
+  fakeS3 = null;
+}
+
+// fakeS3Switch flips the fake's own switches: 'down?status=503' makes every S3
+// request fail until 'up'. Only the storage banner scenario breaks the bucket
+// on purpose, and it puts it back in a finally.
+export async function fakeS3Switch(what) {
+  const url = await ensureFakeS3();
+  const res = await fetch(url + '/_fakes3/' + what, { method: 'POST' });
+  if (res.status !== 204) throw new Error('fakes3 refused ' + what + ': ' + res.status);
+}
+
+// s3Env is the environment that points a server at its prefix on the fake.
+// A null prefix is a server with no bucket at all, which serves the connect
+// page.
+export function s3Env(prefix) {
+  // An empty bucket name, not a missing one: the environment the suite was
+  // started from must not hand a bucket to a server that is meant to have none.
+  if (prefix === null) return { SOCRATES_S3_BUCKET: '' };
+  if (!fakeS3 || !fakeS3.url) throw new Error('the fake bucket is not running: await ensureFakeS3() first');
+  return {
+    SOCRATES_S3_ENDPOINT: fakeS3.url,
+    SOCRATES_S3_REGION: S3.region,
+    SOCRATES_S3_BUCKET: S3.bucket,
+    SOCRATES_S3_PREFIX: prefix,
+    SOCRATES_S3_ACCESS_KEY_ID: S3.accessKeyID,
+    SOCRATES_S3_SECRET_ACCESS_KEY: S3.secretAccessKey,
+    SOCRATES_S3_PATH_STYLE: 'true',
+    SOCRATES_S3_PASSPHRASE: S3.passphrase,
+  };
+}
+
+// prefixFor is the prefix a data directory gets when the scenario does not
+// name one.
+export const prefixFor = (data) => 'e2e/' + basename(data) + '/';
 
 export async function waitForHealth(url, deadlineMs = 25000) {
   const until = Date.now() + deadlineMs;
@@ -158,11 +268,15 @@ export async function freePort() {
     + ' is in use; something from an earlier run is still listening');
 }
 
-export function spawnServer({ data, port, live = false, env = {} }) {
+export function spawnServer({ data, port, live = false, env = {}, s3prefix }) {
   const { exe, bin } = binaries(live);
   const server = spawn(exe, ['-addr', '127.0.0.1:' + port, '-data', data], {
     env: {
       ...process.env,
+      // The bucket comes before anything the scenario passes, so that a
+      // scenario can still override a single variable. undefined is "this
+      // data directory's own prefix", null is "no bucket at all".
+      ...s3Env(s3prefix === undefined ? prefixFor(data) : s3prefix),
       // A live run must find the real CLIs, so the fakes stay off its PATH.
       PATH: (bin ? bin + ':' : '') + process.env.PATH,
       // Sessions get their working directory under the run's own data
@@ -318,7 +432,9 @@ export async function start(options = {}) {
   mkdirSync(join(data, 'workspaces'), { recursive: true });
   const port = options.port || await freePort();
   const url = 'http://127.0.0.1:' + port;
-  const spawned = spawnServer({ data, port, live, env: options.env });
+  await ensureFakeS3();
+  const s3prefix = options.s3prefix === undefined ? prefixFor(data) : options.s3prefix;
+  const spawned = spawnServer({ data, port, live, env: options.env, s3prefix });
   await waitForHealth(url);
 
   const browser = await chromium.launch({
@@ -353,7 +469,7 @@ export async function start(options = {}) {
   page.on('pageerror', (err) => errors.push('pageerror: ' + err.message));
 
   const s = {
-    page, context, browser, url, port, data, errors, live,
+    page, context, browser, url, port, data, errors, live, s3prefix,
     server: spawned.server, log: spawned.log, exited: spawned.exited,
   };
 
@@ -363,7 +479,7 @@ export async function start(options = {}) {
     s.server.kill('SIGTERM');
     const outcome = await Promise.race([s.exited, wait(9000).then(() => 'timeout')]);
     if (outcome === 'timeout') { s.server.kill('SIGKILL'); await s.exited; }
-    const again = spawnServer({ data, port, live, env: { ...(options.env || {}), ...env } });
+    const again = spawnServer({ data, port, live, env: { ...(options.env || {}), ...env }, s3prefix });
     s.server = again.server; s.log = again.log; s.exited = again.exited;
     await waitForHealth(url);
     return outcome;

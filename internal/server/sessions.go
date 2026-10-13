@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -88,10 +89,31 @@ type sessionView struct {
 	// DeleteAt is when a done session is deleted, so the page can say so
 	// without knowing how long done sessions are kept.
 	DeleteAt int64 `json:"delete_at,omitempty"`
+	// DraftRev and DraftPreview are a prepared session's draft as the list
+	// shows it: the revision, so a device whose panel is open notices that
+	// another one saved, and the first line, for the sidebar. The text itself
+	// is fetched on its own; it can be a hundred kilobytes per session.
+	DraftRev     int64  `json:"draft_rev,omitempty"`
+	DraftPreview string `json:"draft_preview,omitempty"`
 }
 
 func (s *Server) view(row *store.Session) sessionView {
+	var metas map[string]store.DraftMeta
+	if row.State == store.StatePrestart {
+		if meta, ok := s.store.DraftMetaOf(row.ID); ok {
+			metas = map[string]store.DraftMeta{row.ID: meta}
+		}
+	}
+	return s.viewWith(row, metas)
+}
+
+// viewWith is view with the drafts already read, which is how the list reads
+// them: once, for every row.
+func (s *Server) viewWith(row *store.Session, drafts map[string]store.DraftMeta) sessionView {
 	v := sessionView{Session: row, CLISessionState: row.CLISessionState}
+	if meta, ok := drafts[row.ID]; ok && row.State == store.StatePrestart {
+		v.DraftRev, v.DraftPreview = meta.Rev, meta.Preview
+	}
 	v.Activity = s.manager.ActivityOf(row.ID)
 	if row.Status == store.StatusDone {
 		v.DeleteAt = row.StatusAt + DoneRetention.Milliseconds()
@@ -105,9 +127,14 @@ func (s *Server) view(row *store.Session) sessionView {
 }
 
 func (s *Server) views(rows []store.Session) []sessionView {
+	drafts, err := s.store.DraftMetas()
+	if err != nil {
+		// The list without previews is still the list.
+		log.Printf("sessions: could not read the drafts: %v", err)
+	}
 	out := make([]sessionView, 0, len(rows))
 	for i := range rows {
-		out = append(out, s.view(&rows[i]))
+		out = append(out, s.viewWith(&rows[i], drafts))
 	}
 	return out
 }
@@ -138,6 +165,56 @@ type createSessionBody struct {
 	// corrects it a moment later.
 	Cols int `json:"cols"`
 	Rows int `json:"rows"`
+
+	// Prestart prepares the session instead of starting it: the row is
+	// stored with these settings, and nothing else happens until Start. See
+	// prestart.go. Prompt is its first draft, ProfileAuto asks for the
+	// profile with the most headroom to be chosen when it starts, and StartAt
+	// is when it starts by itself.
+	Prestart    bool   `json:"prestart"`
+	Prompt      string `json:"prompt"`
+	ProfileAuto bool   `json:"profile_auto"`
+	StartAt     int64  `json:"start_at"`
+}
+
+// launchSpec is one session to be started, wherever its settings came from:
+// the sheet, for a new session, or the stored row, for a prepared one. It is
+// the input of launch, which is the one path from settings to a running
+// program - "Start" on a prepared session is the same launch a new session
+// gets, and it is the same because it is the same code.
+type launchSpec struct {
+	ID             string
+	ClientID       string
+	Harness        string
+	Model          string
+	Effort         string
+	ShellExecution string
+	Profile        string
+	Ultracode      bool
+	WorkdirMode    string
+	Workdir        string
+	// Title is the name the person gave the session, and "" when they gave
+	// none. It is also what Claude Code is told the session is called.
+	Title   string
+	Options json.RawMessage
+	Cols    int
+	Rows    int
+	// Prompt is sent as the program's first prompt; see harnesses/prompt.go.
+	Prompt string
+}
+
+// launchError is a refusal of a launch's settings, with the status it is
+// answered with. It is a type of its own because a start of a prepared
+// session records it on the row rather than only answering it.
+type launchError struct {
+	status int
+	msg    string
+}
+
+func (e *launchError) Error() string { return e.msg }
+
+func refuse(status int, format string, args ...any) *launchError {
+	return &launchError{status: status, msg: fmt.Sprintf(format, args...)}
 }
 
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
@@ -157,137 +234,42 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if body.Prestart {
+		// Preparing a session starts nothing, so it does not need tmux to be
+		// there: a draft can be written on a machine whose terminal engine is
+		// still being installed.
+		s.createPrestart(w, body)
+		return
+	}
 	if err := s.manager.Available(); err != nil {
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
 
-	settings := s.Settings()
-	harnessID := strings.TrimSpace(body.Harness)
-	if harnessID == "" {
-		harnessID = settings.Workspace.DefaultHarness
-	}
-	h, ok := harnesses.Get(harnessID)
-	if !ok {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("%q is not one of the harnesses", harnessID))
-		return
-	}
-	if harnessID == config.HarnessVSCode {
-		// A folder has one editor, and it is opened from the folder: see
-		// handleFolderIDE.
-		writeError(w, http.StatusBadRequest, "VS Code is opened from a folder in the sidebar, not as a new session")
-		return
-	}
-	if entry, known := settings.Harnesses.Entry(harnessID); known && !entry.Enabled {
-		writeError(w, http.StatusBadRequest, h.Label()+" is switched off in the dashboard")
-		return
-	}
-	shellExecution := body.ShellExecution
-	if body.ShellExecution != "" && harnessID != string(harnesses.KindShell) {
-		writeError(w, http.StatusBadRequest, "shell_execution is only valid for Shell sessions")
-		return
-	}
-	if harnessID == string(harnesses.KindShell) {
-		if shellExecution == "" {
-			shellExecution = harnesses.DefaultShellExecution(settings.Harnesses.Shell.Binary)
-		}
-		switch shellExecution {
-		case harnesses.ShellExecutionContainer:
-		case harnesses.ShellExecutionHost:
-			if !harnesses.HostShellAvailable() {
-				writeError(w, http.StatusBadRequest, "host shell is unavailable on this installation")
-				return
-			}
-		default:
-			writeError(w, http.StatusBadRequest, "shell_execution must be host or container")
-			return
-		}
-	}
-	profileID := strings.TrimSpace(body.Profile)
-	if status, msg := s.checkProfile(harnessID, h.Label(), shellExecution, profileID); status != 0 {
-		writeError(w, status, msg)
-		return
-	}
-	if body.Ultracode && harnessID != string(harnesses.KindClaude) {
-		writeError(w, http.StatusBadRequest, "ultracode is only valid for Claude Code sessions")
-		return
-	}
-	// What the session has to be relaunched with is kept in its options, next
-	// to whatever the client put there.
-	options := body.Options
-	choices := map[string]any{"shell_execution": shellExecution, "profile": profileID, "ultracode": body.Ultracode}
-	if shellExecution != "" || profileID != "" || body.Ultracode {
-		fields := map[string]json.RawMessage{}
-		if len(options) > 0 && string(options) != "null" {
-			if err := json.Unmarshal(options, &fields); err != nil || fields == nil {
-				writeError(w, http.StatusBadRequest, "options must be a JSON object")
-				return
-			}
-		}
-		for key, value := range choices {
-			if value != "" && value != false {
-				fields[key], _ = json.Marshal(value)
-			}
-		}
-		options, _ = json.Marshal(fields)
-	}
-
-	if err := checkSize(body.Cols, body.Rows); err != nil {
-		// Before the row, before the directory: a size that cannot be a
-		// terminal is the client's mistake, and it must not cost a failed
-		// session and an empty workspace directory to find that out.
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
 	id := termux.NewID()
-	// The workspace rules are enforced here and not in the sheet: hiding a
-	// control is presentation, and this is the boundary.
-	workdir, err := harnesses.ResolveWorkdir(settings, body.WorkdirMode, body.Workdir, harnessID, id)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	mode := strings.TrimSpace(body.WorkdirMode)
-	if mode == "" {
-		mode = harnesses.WorkdirDynamic
-	}
-
 	ctx, cancel := context.WithTimeout(r.Context(), createTimeout)
 	defer cancel()
-	plan, err := h.Plan(ctx, harnesses.PlanRequest{
-		SessionID:      id,
-		Title:          body.Title,
-		Cwd:            workdir,
-		Model:          strings.TrimSpace(body.Model),
-		Effort:         strings.TrimSpace(body.Effort),
-		ShellExecution: shellExecution,
-		Profile:        profileID,
+	row, err := s.launch(ctx, launchSpec{
+		ID:             id,
+		ClientID:       strings.TrimSpace(body.ClientID),
+		Harness:        body.Harness,
+		Model:          body.Model,
+		Effort:         body.Effort,
+		ShellExecution: body.ShellExecution,
+		Profile:        body.Profile,
 		Ultracode:      body.Ultracode,
-		Settings:       settings,
-		DataDir:        s.dataDir,
-		Logf:           log.Printf,
-	})
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		WorkdirMode:    body.WorkdirMode,
+		Workdir:        body.Workdir,
+		Title:          body.Title,
+		Options:        body.Options,
+		Cols:           body.Cols,
+		Rows:           body.Rows,
+	}, nil)
+	var refused *launchError
+	if errors.As(err, &refused) {
+		writeError(w, refused.status, refused.msg)
 		return
 	}
-
-	row, err := s.manager.Create(ctx, termux.Spec{
-		ID:          id,
-		ClientID:    strings.TrimSpace(body.ClientID),
-		Title:       sessionTitle(body.Title, h.Label(), workdir, mode),
-		TitleSource: titleSource(body.Title),
-		Harness:     harnessID,
-		Model:       strings.TrimSpace(body.Model),
-		Effort:      strings.TrimSpace(body.Effort),
-		Workdir:     workdir,
-		WorkdirMode: mode,
-		Options:     options,
-		Cols:        body.Cols,
-		Rows:        body.Rows,
-		Plan:        plan,
-	})
 	if err != nil {
 		if row == nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
@@ -306,6 +288,150 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"session": s.view(row)})
+}
+
+// checkLaunch is every rule a session's settings have to pass, and it changes
+// nothing on the machine: it is also what a prepared session's settings are
+// held to each time they are saved, long before anything starts. It fills in
+// what the settings leave to defaults - the harness, the shell's machine -
+// and folds the choices that have to survive a relaunch into the options.
+//
+// The rules are enforced here and not in the sheet: hiding a control is
+// presentation, and this is the boundary.
+func (s *Server) checkLaunch(spec *launchSpec, settings config.Settings) (harnesses.Harness, *launchError) {
+	spec.Harness = strings.TrimSpace(spec.Harness)
+	if spec.Harness == "" {
+		spec.Harness = settings.Workspace.DefaultHarness
+	}
+	h, ok := harnesses.Get(spec.Harness)
+	if !ok {
+		return nil, refuse(http.StatusBadRequest, "%q is not one of the harnesses", spec.Harness)
+	}
+	if spec.Harness == config.HarnessVSCode {
+		// A folder has one editor, and it is opened from the folder: see
+		// handleFolderIDE.
+		return nil, refuse(http.StatusBadRequest, "VS Code is opened from a folder in the sidebar, not as a new session")
+	}
+	if entry, known := settings.Harnesses.Entry(spec.Harness); known && !entry.Enabled {
+		return nil, refuse(http.StatusBadRequest, "%s is switched off in the dashboard", h.Label())
+	}
+	if spec.ShellExecution != "" && spec.Harness != string(harnesses.KindShell) {
+		return nil, refuse(http.StatusBadRequest, "shell_execution is only valid for Shell sessions")
+	}
+	if spec.Harness == string(harnesses.KindShell) {
+		if spec.ShellExecution == "" {
+			spec.ShellExecution = harnesses.DefaultShellExecution(settings.Harnesses.Shell.Binary)
+		}
+		switch spec.ShellExecution {
+		case harnesses.ShellExecutionContainer:
+		case harnesses.ShellExecutionHost:
+			if !harnesses.HostShellAvailable() {
+				return nil, refuse(http.StatusBadRequest, "host shell is unavailable on this installation")
+			}
+		default:
+			return nil, refuse(http.StatusBadRequest, "shell_execution must be host or container")
+		}
+	}
+	spec.Profile = strings.TrimSpace(spec.Profile)
+	if status, msg := s.checkProfile(spec.Harness, h.Label(), spec.ShellExecution, spec.Profile); status != 0 {
+		return nil, refuse(status, "%s", msg)
+	}
+	if spec.Ultracode && spec.Harness != string(harnesses.KindClaude) {
+		return nil, refuse(http.StatusBadRequest, "ultracode is only valid for Claude Code sessions")
+	}
+	spec.Model, spec.Effort = strings.TrimSpace(spec.Model), strings.TrimSpace(spec.Effort)
+	// What the session has to be relaunched with is kept in its options, next
+	// to whatever the client put there.
+	choices := map[string]any{"shell_execution": spec.ShellExecution, "profile": spec.Profile, "ultracode": spec.Ultracode}
+	if spec.ShellExecution != "" || spec.Profile != "" || spec.Ultracode {
+		fields := map[string]json.RawMessage{}
+		if len(spec.Options) > 0 && string(spec.Options) != "null" {
+			if err := json.Unmarshal(spec.Options, &fields); err != nil || fields == nil {
+				return nil, refuse(http.StatusBadRequest, "options must be a JSON object")
+			}
+		}
+		for key, value := range choices {
+			if value != "" && value != false {
+				fields[key], _ = json.Marshal(value)
+			}
+		}
+		spec.Options, _ = json.Marshal(fields)
+	}
+	if err := checkSize(spec.Cols, spec.Rows); err != nil {
+		// Before the row, before the directory: a size that cannot be a
+		// terminal is the client's mistake, and it must not cost a failed
+		// session and an empty workspace directory to find that out.
+		return nil, refuse(http.StatusBadRequest, "%s", err.Error())
+	}
+	return h, nil
+}
+
+// launch starts a session's program: the checks, the working directory, the
+// plan and the manager, in that order and in no other place. prepared is nil
+// for a new session, which the manager creates; for a prepared one it is the
+// row, and the manager starts that row instead of making another. Everything
+// between the two is shared, which is the guarantee that a prepared session
+// starts exactly as the same settings would have started from the sheet.
+//
+// A *launchError back is a refusal of the settings and nothing was made. Any
+// other error comes with the row when there is one, carrying the reason.
+func (s *Server) launch(ctx context.Context, spec launchSpec, prepared *store.Session) (*store.Session, error) {
+	settings := s.Settings()
+	h, refused := s.checkLaunch(&spec, settings)
+	if refused != nil {
+		return nil, refused
+	}
+	workdir, err := harnesses.ResolveWorkdir(settings, spec.WorkdirMode, spec.Workdir, spec.Harness, spec.ID)
+	if err != nil {
+		return nil, refuse(http.StatusBadRequest, "%s", err.Error())
+	}
+	mode := strings.TrimSpace(spec.WorkdirMode)
+	if mode == "" {
+		mode = harnesses.WorkdirDynamic
+	}
+
+	plan, err := h.Plan(ctx, harnesses.PlanRequest{
+		SessionID:      spec.ID,
+		Title:          spec.Title,
+		Cwd:            workdir,
+		Model:          spec.Model,
+		Effort:         spec.Effort,
+		ShellExecution: spec.ShellExecution,
+		Profile:        spec.Profile,
+		Ultracode:      spec.Ultracode,
+		InitialPrompt:  spec.Prompt,
+		Settings:       settings,
+		DataDir:        s.dataDir,
+		Logf:           log.Printf,
+	})
+	if err != nil {
+		if mode == harnesses.WorkdirDynamic {
+			// The directory was made for this launch a moment ago and nothing
+			// has run in it; os.Remove only removes it while that is true.
+			_ = os.Remove(workdir)
+		}
+		return nil, refuse(http.StatusBadRequest, "%s", err.Error())
+	}
+
+	launch := termux.Spec{
+		ID:          spec.ID,
+		ClientID:    spec.ClientID,
+		Title:       sessionTitle(spec.Title, h.Label(), workdir, mode),
+		TitleSource: titleSource(spec.Title),
+		Harness:     spec.Harness,
+		Model:       spec.Model,
+		Effort:      spec.Effort,
+		Workdir:     workdir,
+		WorkdirMode: mode,
+		Options:     spec.Options,
+		Cols:        spec.Cols,
+		Rows:        spec.Rows,
+		Plan:        plan,
+	}
+	if prepared == nil {
+		return s.manager.Create(ctx, launch)
+	}
+	return s.manager.StartPrestart(ctx, launch)
 }
 
 // The bounds a client-supplied terminal size has to be inside. Zero means the
@@ -492,7 +618,7 @@ func (s *Server) ensure(w http.ResponseWriter, r *http.Request, restart bool) {
 		next, err = s.manager.Ensure(ctx, row.ID)
 	}
 	switch {
-	case errors.Is(err, termux.ErrStillRunning), errors.Is(err, termux.ErrDone):
+	case errors.Is(err, termux.ErrStillRunning), errors.Is(err, termux.ErrDone), errors.Is(err, termux.ErrNotStarted):
 		// Not a fault: the terminal the caller asked to replace is working,
 		// and its row was left exactly as it was.
 		writeError(w, http.StatusConflict, err.Error())

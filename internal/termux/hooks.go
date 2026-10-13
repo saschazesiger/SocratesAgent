@@ -181,7 +181,9 @@ func (m *Manager) HandleHook(h Hook) {
 		return
 	}
 	row, err := m.st.GetSession(id)
-	if err != nil {
+	if err != nil || row.State == store.StatePrestart {
+		// A prepared session has no tmux session, so a hook naming it is a
+		// stale one from a pane that was gone before the row was prepared.
 		return
 	}
 	switch h.Event {
@@ -194,12 +196,49 @@ func (m *Manager) HandleHook(h Hook) {
 		}
 		m.markExited(row, exitStatus(h.Status, h.Signal))
 	case HookSessionClosed:
-		if row.State == store.StateRunning || row.State == store.StateStarting {
-			// The tmux session is gone but the row is not: the program can be
-			// started again on its own session id, which is the reboot path.
-			_ = m.st.SetSessionState(id, store.StateNeedsResume, row.ExitStatus, "")
-		}
+		m.sessionClosed(id)
 	}
+}
+
+// sessionClosed moves a row whose tmux session has gone to needs_resume - the
+// reboot path, where the program is started again on its own session id.
+//
+// The hook is not proof that the session is gone *now*. A relaunch from the
+// exit overlay kills the dead husk and creates a new session under the very
+// same name, and the husk's session-closed hook runs as a separate process
+// (`run-shell -b`) that can arrive after the new session is up. Taken at its
+// word it put a working terminal into needs_resume, which the poll never
+// corrects, since the poll only moves rows that claim to be running. So the
+// hook waits for whatever launch holds the session's lock to finish, reads
+// the row again, and asks tmux: a session that exists under the name is not
+// the one that closed.
+func (m *Manager) sessionClosed(id string) {
+	affected := func() (*store.Session, bool) {
+		row, err := m.st.GetSession(id)
+		if err != nil || (row.State != store.StateRunning && row.State != store.StateStarting) {
+			return nil, false
+		}
+		return row, true
+	}
+	// Asked once before the lock as well, so that the hook of a deleted
+	// session does not bring back the lock Delete has just forgotten.
+	if _, ok := affected(); !ok {
+		return
+	}
+	unlock := m.lockSession(id)
+	defer unlock()
+	row, ok := affected()
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if state, err := m.paneStateOf(ctx, row.TmuxName); err != nil || state != paneMissing {
+		// Either the name is in use again, or tmux could not be asked; the
+		// poll is the authority for both and settles the row on its own.
+		return
+	}
+	_ = m.st.SetStartedSessionState(id, store.StateNeedsResume, row.ExitStatus, "")
 }
 
 // exitStatus turns what tmux reported into one number. A pane killed by a
@@ -236,7 +275,12 @@ func (m *Manager) markExited(row *store.Session, status int) {
 	if row.State == store.StateExited && row.ExitStatus == status {
 		return
 	}
-	if err := m.st.SetSessionState(row.ID, store.StateExited, status, ""); err != nil {
+	if err := m.st.SetStartedSessionState(row.ID, store.StateExited, status, ""); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			// The row moved on since it was read (deleted, or put back to
+			// prepared by a start that failed): the exit is not its news.
+			return
+		}
 		m.logf("could not record the exit of session %s: %v", row.ID, err)
 		return
 	}

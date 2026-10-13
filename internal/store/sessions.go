@@ -22,6 +22,12 @@ const (
 	StateExited      = "exited"
 	StateNeedsResume = "needs_resume"
 	StateFailed      = "failed"
+	// StatePrestart is a session that has been prepared and not started: its
+	// settings and a prompt draft exist, and nothing else does - no tmux
+	// session, no directory, no program. Every loop that watches terminals
+	// leaves it alone, and the one way out of it is Start, which turns it into
+	// StateStarting exactly like a new session.
+	StatePrestart = "prestart"
 )
 
 // How much Socrates knows about the CLI's own session id - the id that lets
@@ -120,6 +126,11 @@ type Session struct {
 	// the start of the time it is kept for.
 	Status   string `json:"status"`
 	StatusAt int64  `json:"status_at"`
+	// StartAt is when a prepared session starts by itself, in milliseconds
+	// since the epoch, and zero for never. It only means something while the
+	// row is StatePrestart; the transition that starts it clears it, so a
+	// start that fails is never tried again on its own.
+	StartAt int64 `json:"start_at"`
 }
 
 // Where the work in a session stands. A done session has had its terminal
@@ -160,7 +171,7 @@ const (
 const sessionCols = `id, client_id, title, title_source, harness, model, effort, workdir, workdir_mode,
                      options, tmux_name, cli_session_id, cli_session_state, state, exit_status,
                      fail_reason, resumed, resume_count, cols, rows,
-                     created_at, updated_at, last_attached, active_at, status, status_at`
+                     created_at, updated_at, last_attached, active_at, status, status_at, start_at`
 
 func scanSession(row interface{ Scan(...any) error }) (*Session, error) {
 	s := &Session{}
@@ -169,7 +180,7 @@ func scanSession(row interface{ Scan(...any) error }) (*Session, error) {
 	err := row.Scan(&s.ID, &s.ClientID, &s.Title, &s.TitleSource, &s.Harness, &s.Model, &s.Effort,
 		&s.Workdir, &s.WorkdirMode, &options, &s.TmuxName, &s.CLISessionID, &s.CLISessionState,
 		&s.State, &s.ExitStatus, &s.FailReason, &resumed, &s.ResumeCount, &s.Cols, &s.Rows,
-		&s.CreatedAt, &s.UpdatedAt, &s.LastAttached, &s.ActiveAt, &s.Status, &s.StatusAt)
+		&s.CreatedAt, &s.UpdatedAt, &s.LastAttached, &s.ActiveAt, &s.Status, &s.StatusAt, &s.StartAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -193,8 +204,8 @@ func (s *Store) CreateSession(sess *Session) error {
 	if len(sess.Options) > 0 && !json.Valid(sess.Options) {
 		return errors.New("session options are not valid JSON")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 	if sess.CreatedAt == 0 {
 		sess.CreatedAt = now()
 	}
@@ -224,13 +235,18 @@ func (s *Store) CreateSession(sess *Session) error {
 		options = string(sess.Options)
 	}
 	sess.Options = json.RawMessage(options)
+	// A schedule belongs to a prepared session and to nothing else: a row
+	// that is started from the outset has nothing left to start.
+	if sess.State != StatePrestart || sess.StartAt < 0 {
+		sess.StartAt = 0
+	}
 	_, err := s.db.Exec(`INSERT INTO sessions(`+sessionCols+`)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sess.ID, sess.ClientID, sess.Title, sess.TitleSource, sess.Harness, sess.Model, sess.Effort,
 		sess.Workdir, sess.WorkdirMode, options, sess.TmuxName, sess.CLISessionID,
 		sess.CLISessionState, sess.State, sess.ExitStatus, sess.FailReason, 0,
 		sess.ResumeCount, sess.Cols, sess.Rows, sess.CreatedAt, sess.UpdatedAt, 0, sess.ActiveAt,
-		sess.Status, sess.StatusAt)
+		sess.Status, sess.StatusAt, sess.StartAt)
 	if err != nil && sess.ClientID != "" && isUniqueViolation(err) {
 		existing, lookupErr := s.sessionByClientID(sess.ClientID)
 		if lookupErr != nil {
@@ -243,6 +259,7 @@ func (s *Store) CreateSession(sess *Session) error {
 		return err
 	}
 	s.bump()
+	s.touch(SessionObject(sess.ID))
 	return nil
 }
 
@@ -296,8 +313,8 @@ func (s *Store) ListSessions() ([]Session, error) {
 // revision, and reports a session that is not there as such. Every write below
 // goes through it, so no write can forget to do those three things.
 func (s *Store) update(id, query string, args ...any) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 	args = append(args, now(), id)
 	res, err := s.db.Exec(`UPDATE sessions SET `+query+`, updated_at = ? WHERE id = ?`, args...)
 	if err != nil {
@@ -307,6 +324,7 @@ func (s *Store) update(id, query string, args ...any) error {
 		return ErrNotFound
 	}
 	s.bump()
+	s.touch(SessionObject(id))
 	return nil
 }
 
@@ -344,8 +362,8 @@ func (s *Store) MarkSessionTitled(id string) error {
 // updateNameless is `update` for the two writes the automatic naming makes: it
 // touches the row only while nothing has named it yet.
 func (s *Store) updateNameless(id, query string, args ...any) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lock()
+	defer s.unlock()
 	args = append(args, now(), id)
 	res, err := s.db.Exec(`UPDATE sessions SET `+query+`, updated_at = ? WHERE id = ? AND title_source = ''`, args...)
 	if err != nil {
@@ -355,6 +373,7 @@ func (s *Store) updateNameless(id, query string, args ...any) error {
 		return ErrNotFound
 	}
 	s.bump()
+	s.touch(SessionObject(id))
 	return nil
 }
 
@@ -368,6 +387,44 @@ func (s *Store) updateNameless(id, query string, args ...any) error {
 func (s *Store) SetSessionState(id, state string, exitStatus int, failReason string) error {
 	return s.update(id, `active_at = CASE WHEN state <> ? THEN ? ELSE active_at END,
 		state = ?, exit_status = ?, fail_reason = ?`, state, now(), state, exitStatus, failReason)
+}
+
+// SetSessionStateFrom is SetSessionState for a writer that decided on a state
+// it read a moment ago: it writes only while the row is still in `from`, and
+// answers ErrNotFound otherwise. The reconciliation loops decide from a
+// snapshot of the whole list, and in the time between that read and their
+// write a start can fail and put its row back to prepared; an unconditional
+// write would then turn a prepared session - prompt and all - into one to
+// resume.
+func (s *Store) SetSessionStateFrom(id, from, state string, exitStatus int, failReason string) error {
+	return s.setStateWhere(id, `state = ?`, from, state, exitStatus, failReason)
+}
+
+// SetStartedSessionState is SetSessionState for news about a program that
+// was started - a hook saying its pane died, or that its tmux session is
+// gone. Such news is about whatever the row is now, as long as it is a
+// started session at all: a row that a failed start put back to prepared
+// (or that was deleted) is left alone, and answers ErrNotFound.
+func (s *Store) SetStartedSessionState(id, state string, exitStatus int, failReason string) error {
+	return s.setStateWhere(id, `state <> ?`, StatePrestart, state, exitStatus, failReason)
+}
+
+func (s *Store) setStateWhere(id, cond string, condArg any, state string, exitStatus int, failReason string) error {
+	s.lock()
+	defer s.unlock()
+	at := now()
+	res, err := s.db.Exec(`UPDATE sessions SET active_at = CASE WHEN state <> ? THEN ? ELSE active_at END,
+		state = ?, exit_status = ?, fail_reason = ?, updated_at = ? WHERE id = ? AND `+cond,
+		state, at, state, exitStatus, failReason, at, id, condArg)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return ErrNotFound
+	}
+	s.bump()
+	s.touch(SessionObject(id))
+	return nil
 }
 
 // NoteSessionActivity records that the session's status changed at `at` - it
@@ -423,18 +480,34 @@ func (s *Store) ClearResumedFlag(id string) error {
 	return s.update(id, `resumed = 0`)
 }
 
-// DeleteSession removes a session row. Killing the tmux session behind it is
-// the caller's business: the store knows nothing about terminals.
+// DeleteSession removes a session row, and the prompt draft that went with
+// it. Killing the tmux session behind it is the caller's business: the store
+// knows nothing about terminals.
+//
+// The two deletes are one transaction, so a draft can never outlive its row
+// and come back from the bucket as an object that belongs to nothing.
 func (s *Store) DeleteSession(id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	res, err := s.db.Exec(`DELETE FROM sessions WHERE id = ?`, id)
+	s.lock()
+	defer s.unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`DELETE FROM sessions WHERE id = ?`, id)
 	if err != nil {
 		return err
 	}
 	if n, err := res.RowsAffected(); err == nil && n == 0 {
 		return ErrNotFound
 	}
+	if _, err := tx.Exec(`DELETE FROM drafts WHERE session_id = ?`, id); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
 	s.bump()
+	s.touch(SessionObject(id), DraftObject(id))
 	return nil
 }

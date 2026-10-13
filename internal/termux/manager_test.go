@@ -621,6 +621,27 @@ func TestStaleHookIsCorrectedByThePoll(t *testing.T) {
 	}
 }
 
+// TestLateSessionClosedHookLeavesARelaunchAlone: Restart kills the dead husk
+// and creates a new session under the same name, and the husk's
+// session-closed hook can arrive after the new one is running. It must not put
+// that working terminal into needs_resume - nothing would ever take it out
+// again. A session-closed for a session that really is gone still does.
+func TestLateSessionClosedHookLeavesARelaunchAlone(t *testing.T) {
+	l := newLab(t)
+	row := l.create(shellSpec(t.TempDir()))
+
+	l.HandleHook(Hook{Event: HookSessionClosed, Session: row.TmuxName})
+	if got, _ := l.store.GetSession(row.ID); got.State != store.StateRunning {
+		t.Fatalf("a session-closed for a session that exists moved the row to %q", got.State)
+	}
+
+	l.tmuxOut("kill-session", "-t", row.TmuxName)
+	l.HandleHook(Hook{Event: HookSessionClosed, Session: row.TmuxName})
+	if got, _ := l.store.GetSession(row.ID); got.State != store.StateNeedsResume {
+		t.Fatalf("a session that is gone left the row at %q, want needs_resume", got.State)
+	}
+}
+
 // TestRelaunchAfterExit: restarting from the exit overlay is the resume path
 // with the state forced, and after an exit the tmux session is still there
 // with a dead pane in it. Without clearing that husk, new-session is refused

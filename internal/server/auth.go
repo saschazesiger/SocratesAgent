@@ -204,9 +204,15 @@ func (s *Server) noteLogin(ip string, ok bool) {
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	setupRequired := !s.hasPassword()
 	payload := map[string]any{
+		// "normal" here; a server still waiting for its bucket answers
+		// "connect" from connect.go, which is what the setup page polls for.
+		"mode":           "normal",
 		"setup_required": setupRequired,
 		"authenticated":  s.authenticated(r),
 		"version":        Version,
+	}
+	if s.authenticated(r) {
+		payload["storage"] = s.storageSummary()
 	}
 	if setupRequired || s.authenticated(r) {
 		// The setup wizard asks two things about cloudflared: is it here, and

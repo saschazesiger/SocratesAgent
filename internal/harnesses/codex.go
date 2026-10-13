@@ -36,8 +36,15 @@ func (Codex) VersionArgs() []string { return []string{"--version"} }
 // Plan builds a fresh session. Codex has no way of being told what its session
 // id should be - CODEX_SESSION_ID is something it exports, not something it
 // reads - so the id is discovered afterwards by watching for the rollout file.
+//
+// An initial prompt is Codex's positional [PROMPT], and only a fresh plan
+// carries one.
 func (c Codex) Plan(ctx context.Context, req PlanRequest) (LaunchPlan, error) {
-	return c.plan(req, nil)
+	plan, err := c.plan(req, nil)
+	if err != nil {
+		return plan, err
+	}
+	return withInitialPrompt(plan, req, trailingPrompt), nil
 }
 
 // codexTheme is the TUI palette. Codex does not validate a theme name, so this

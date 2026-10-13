@@ -30,7 +30,10 @@ var ErrNotFound = errors.New("not found")
 // running twice or overwriting a name the user chose. Version 5 sweeps out the
 // conversations of the chat that sat beside a terminal, which no longer exists.
 // Version 7 replaces the archive and the flag with a status per session.
-const SchemaVersion = 7
+// Version 8 is one migration for two features that landed together: prepared
+// sessions (the drafts table and sessions.start_at) and the bucket mirror
+// (mirror_pending, the local list of what still has to be uploaded).
+const SchemaVersion = 8
 
 // Store wraps the database handle.
 type Store struct {
@@ -40,6 +43,20 @@ type Store struct {
 	// to. It is guarded by mu, like every other write.
 	revMark int64
 	mu      sync.Mutex // serialises writes; SQLite has a single writer anyway
+
+	// The change tracking the bucket mirror is built on; see mirror.go.
+	// tracking says whether committed writes are recorded in mirror_pending,
+	// and observer is told about them once the write lock is released.
+	// changed collects the object names of the write in progress, and
+	// pendingAt is the last stamp handed to a pending row - both guarded by
+	// mu.
+	tracking atomic.Bool
+	// fenced is set by a mirror that may no longer upload; nothing is
+	// "backed up" from then on.
+	fenced    atomic.Bool
+	observer  atomic.Pointer[func(objects ...string)]
+	changed   []string
+	pendingAt int64
 }
 
 const schema = `
@@ -80,7 +97,28 @@ CREATE TABLE IF NOT EXISTS sessions (
   last_attached  INTEGER NOT NULL DEFAULT 0,
   active_at      INTEGER NOT NULL DEFAULT 0,
   status         TEXT NOT NULL DEFAULT 'in_progress',
-  status_at      INTEGER NOT NULL DEFAULT 0
+  status_at      INTEGER NOT NULL DEFAULT 0,
+  start_at       INTEGER NOT NULL DEFAULT 0
+);
+
+-- The prompt a prepared session will be started with. It is a table of its
+-- own rather than a column because it is written on every pause in typing,
+-- and each of those writes is an upload: a draft of a hundred kilobytes must
+-- not drag the whole session row to the bucket with it, nor the row the draft.
+-- rev is what tells two devices editing one draft apart.
+CREATE TABLE IF NOT EXISTS drafts (
+  session_id TEXT PRIMARY KEY,
+  text       TEXT NOT NULL DEFAULT '',
+  rev        INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL
+);
+
+-- What has been written here and not yet uploaded to the bucket, by object
+-- name. It is in the database, beside the writes it describes, so that a crash
+-- between a write and its upload loses neither.
+CREATE TABLE IF NOT EXISTS mirror_pending (
+  object TEXT PRIMARY KEY,
+  at     INTEGER NOT NULL
 );
 -- The unique index on client_id is what makes creating a session safe to
 -- retry: the same key can only ever produce one session.
@@ -117,6 +155,7 @@ func Open(path string) (*Store, error) {
 	seed := seedRev(db)
 	st.rev.Store(seed)
 	st.revMark = seed
+	st.pendingAt = seedPendingAt(db)
 	return st, nil
 }
 
@@ -203,13 +242,22 @@ func migrate(db *sql.DB, path string) error {
 		return err
 	}
 	if legacy {
-		if err := backup(db, path); err != nil {
+		if err := backup(db, path+".pre-v3.bak"); err != nil {
 			// A backup that cannot be written is worth stopping for: the next
 			// statement drops the only copy of the old transcripts.
 			return fmt.Errorf("back up the database before migrating: %w", err)
 		}
 		if err := cutToTerminalSchema(db); err != nil {
 			return fmt.Errorf("migrate to schema %d: %w", SchemaVersion, err)
+		}
+	} else if version > 0 {
+		// Every other upgrade is backed up too. A build that is rolled back
+		// after this one migrated refuses the newer schema (the check
+		// above, in the old build), so without this copy a rollback has
+		// nothing to start from. version 0 is a file no build has written
+		// to yet - a new database - and has nothing worth a copy.
+		if err := backup(db, path+fmt.Sprintf(".pre-v%d.bak", SchemaVersion)); err != nil {
+			return fmt.Errorf("back up the database before migrating: %w", err)
 		}
 	}
 
@@ -351,11 +399,29 @@ func migrateSettingsDocument(tx *sql.Tx) error {
 	return err
 }
 
-// backup writes a copy of the database next to it before the cut. It costs one
-// file and it makes an irreversible migration reversible by hand, which is the
-// whole point of writing it.
-func backup(db *sql.DB, path string) error {
-	dest := path + ".pre-v3.bak"
+// backup writes a copy of the database next to it before a migration. It
+// costs one file and it makes a migration that cannot be undone by the old
+// build undoable by hand, which is the whole point of writing it.
+func backup(db *sql.DB, dest string) error {
+	if err := vacuumInto(db, dest); err != nil {
+		return err
+	}
+	log.Printf("store: migrating to schema %d; the previous database was copied to %s", SchemaVersion, dest)
+	return nil
+}
+
+// Backup writes a consistent copy of the database to dest, replacing a file
+// that is there. It is for a step about to replace the local state wholesale
+// - connecting this data directory to a bucket whose state wins - so that a
+// mistake there can be undone by hand.
+func (s *Store) Backup(dest string) error {
+	s.lock()
+	defer s.unlock()
+	return vacuumInto(s.db, dest)
+}
+
+// vacuumInto copies the database to dest with VACUUM INTO.
+func vacuumInto(db *sql.DB, dest string) error {
 	// VACUUM INTO refuses to overwrite, and a second attempt after a failed
 	// start would otherwise never get its backup.
 	if err := os.Remove(dest); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -369,7 +435,6 @@ func backup(db *sql.DB, path string) error {
 		}
 		return err
 	}
-	log.Printf("store: migrating to schema %d; the previous database was copied to %s", SchemaVersion, dest)
 	return nil
 }
 
@@ -382,6 +447,7 @@ func addSessionColumns(db *sql.DB) error {
 		{"active_at", `INTEGER NOT NULL DEFAULT 0`},
 		{"status", `TEXT NOT NULL DEFAULT 'in_progress'`},
 		{"status_at", `INTEGER NOT NULL DEFAULT 0`},
+		{"start_at", `INTEGER NOT NULL DEFAULT 0`},
 	} {
 		has, err := hasColumn(db, "sessions", col[0])
 		if err != nil {
@@ -530,21 +596,40 @@ func (s *Store) GetKV(key string) (string, error) {
 }
 
 // SetKV writes a raw value.
+//
+// Writing the value a key already holds changes nothing, and is not a change
+// the bucket hears about: the server writes its normalised settings back on
+// every start, and each of those was otherwise one more upload of the same
+// object.
 func (s *Store) SetKV(key, value string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, err := s.db.Exec(`INSERT INTO kv(key, value) VALUES(?, ?)
-		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
-	return err
+	s.lock()
+	defer s.unlock()
+	res, err := s.db.Exec(`INSERT INTO kv(key, value) VALUES(?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE kv.value IS NOT excluded.value`, key, value)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); (err != nil || n > 0) && MirroredKV(key) {
+		s.touch(KVObject(key))
+	}
+	return nil
 }
 
 // DeleteKV removes a value, and says nothing when there was none: the callers
 // are cleanups after a session that may never have had one.
 func (s *Store) DeleteKV(key string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, err := s.db.Exec(`DELETE FROM kv WHERE key = ?`, key)
-	return err
+	s.lock()
+	defer s.unlock()
+	res, err := s.db.Exec(`DELETE FROM kv WHERE key = ?`, key)
+	if err != nil {
+		return err
+	}
+	// Deleting a key that was never there is the common case for these
+	// cleanups, and it is not a change the bucket has to hear about.
+	if n, err := res.RowsAffected(); (err != nil || n > 0) && MirroredKV(key) {
+		s.touch(KVObject(key))
+	}
+	return nil
 }
 
 // GetJSON decodes a JSON value stored under key.

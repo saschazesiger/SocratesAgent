@@ -187,3 +187,65 @@ Four changes to the frame around the terminal. Binding like the rest.
   control is not there and the rail is never entered.
 
 Detail: `docs/design/DESIGN.md` §E.2, §E.3, §E.7 and §E.8 (revision 5).
+
+## Revision 6 — the bucket, prepared sessions and the scheduled start, 2026-10-13
+
+Binding like the rest. Detail: `docs/design/DESIGN.md` §K and §L.
+
+- **S3 is the store of record, and it is mandatory.** Socrates' own state — settings, the password
+  hash, sign-ins, profiles and their order, push keys and subscriptions, unread state, every
+  session row, every prepared prompt — lives in one bucket under an optional prefix. Without a
+  usable bucket the server serves the connect page and `/api/health`, and nothing else. SQLite
+  stays as the local working copy, so no request waits on the network and the rest of the code
+  barely changed; the data directory keeps what belongs to the machine and the CLIs (`HOME`,
+  transcripts, workspaces, tmux, journals, `plan.json`, VS Code). *Why:* a container is
+  disposable, and the state that makes a Socrates *this* Socrates should come back on a new
+  machine from an empty volume.
+- **Encrypted on this side, with a passphrase the bucket never sees.** AES-256-GCM, PBKDF2-SHA256
+  with 600 000 rounds, the object name as AAD. Losing the passphrase loses the bucket's contents;
+  the README says so in bold. Only `meta.json` and `lease.json` are plain.
+- **Exactly one active Socrates per bucket and prefix**, enforced by a lease object (90 s, renewed
+  every 30 s, released on a clean stop). A second one shows who holds it and can take it over
+  with the Socrates password; the first one is then fenced — it stops uploading and auto-starting
+  and says so in a banner. No merging of two writers: one of them is always wrong.
+- **Bootstrap from the setup page or the environment.** The page writes `<data>/s3.json` (0600) and
+  re-execs; `SOCRATES_S3_BUCKET` in the environment switches the environment on and it wins over
+  the file. A configured server never lets the connect page point it at a different bucket.
+- **The upgrade is the empty-bucket case.** A bucket with no state takes the local database as it is;
+  a bucket with state wins over a data directory that belongs to another installation, unless the
+  connect page was explicitly told to overwrite it. An emptied bucket never empties a machine.
+- **The S3 client is hand written**, standard library only, like `webpush`. The deployed store
+  (Hetzner, Ceph RGW) needs `x-amz-content-sha256` on every request and compares `If-Match` against
+  the unquoted ETag; both are pinned.
+- **preStart: a session can be prepared before anything runs** — Claude Code, Codex and OpenCode
+  only, switched on in the new-session sheet (off every time it opens). Its panel shows the sheet's
+  own settings (one form builder for both) and a large prompt field that saves itself and is backed
+  up through the bucket. **Start is exactly a new session's start** — one server function for both —
+  with the prompt as the program's first message, passed through a file rather than through tmux,
+  which caps a command at ~16 KB. Prepared sessions are their own group at the top of the sidebar.
+- **A prepared session can start by itself at a date and time** (added by the owner while this
+  revision was being built).
+  The server does it, with no browser open, through the same start path; a schedule missed while the
+  server was down runs once when it is back; a failed start is reported by push and not retried;
+  a fenced or unconnected server never starts anything by itself. The time is set in the panel, not
+  in the sheet.
+- **The lease is also the record of who wrote the bucket last.** A clean stop zeroes the heartbeat
+  instead of deleting `lease.json`, and a start only treats its own pending writes as newer than
+  the bucket when the lease it replaced was its own. *Why:* a machine that crashed with a write
+  pending, while another took the bucket and stopped cleanly, used to come back and upload its
+  stale write over the other one's work; the bucket id alone cannot tell the two apart. A fence is
+  remembered across a restart for the same reason.
+- **Every write is bounded by a lease confirmation.** It has to start and end within 10 s of a
+  confirmation taken while the lease stays fresh for that whole window; taking over a lease that
+  was not released waits that window out (plus a margin). *Why:* a fence that only narrows the
+  window still lets a slow upload of the old holder land after the new holder hydrated.
+- **Connecting a data directory that already has a password takes that password.** The connect
+  page is unauthenticated on a fresh volume, like first-run setup; on an existing installation it
+  would upload its sign-ins and keys to, or replace its state from, a bucket of anybody's choosing.
+- **Damage to the bucket fails closed.** A missing `meta.json` over existing objects is never a new
+  installation (a cached copy is put back, or the start is refused); a missing password hash over a
+  bucket with sessions never opens first-run setup; an object that does not open changes nothing
+  locally.
+- **Every schema upgrade is backed up** (`socrates.db.pre-v8.bak`), and the redeploy script copies
+  the database before the swap and refuses a swap that would leave production on the connect page.
+  *Why:* the old build refuses a migrated database, so a rollback needs the file as it was.

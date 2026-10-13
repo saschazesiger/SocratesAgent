@@ -241,6 +241,18 @@ func importSettings(args []string) {
 		}
 		wrotePassword = true
 	}
+	// The bucket is the store of record, and a start makes the local copy
+	// equal to it. What was just written is marked as changed and not yet
+	// uploaded, so a data directory that already belongs to a bucket sends
+	// the imported settings up on its next start instead of having the
+	// bucket's copy restored over them. (A fresh data directory connected to
+	// a bucket that already holds state takes the bucket's: that is the
+	// restore, and the import is the thing that loses there.)
+	imported := []string{store.KVObject(server.SettingsKey)}
+	if wrotePassword {
+		imported = append(imported, store.KVObject(server.PasswordKey))
+	}
+	st.MarkPending(imported...)
 	// The agent catalogue is a fact about the machine it was discovered on -
 	// which binaries are installed, where, and at which version - so a stale
 	// one from the other side would name paths that do not exist here. It is

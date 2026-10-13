@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -195,7 +196,15 @@ func TestListSessionsOrdersAndListsEveryStatus(t *testing.T) {
 	if err := st.SetSessionStatus("a2", StatusDone); err != nil {
 		t.Fatal(err)
 	}
-	if list, _ = st.ListSessions(); len(list) != 2 || list[1].Status != StatusDone {
+	// Where it lands is not asserted: filing it touched the row, and when
+	// both rows changed status in the same millisecond the row's own clock
+	// decides, which is a race this test has no business depending on.
+	list, _ = st.ListSessions()
+	found := false
+	for _, row := range list {
+		found = found || (row.ID == "a2" && row.Status == StatusDone)
+	}
+	if len(list) != 2 || !found {
 		t.Fatalf("done session = %#v", list)
 	}
 }
@@ -616,6 +625,9 @@ func TestFreshDatabaseIsAtTheCurrentVersion(t *testing.T) {
 	if _, err := os.Stat(path + ".pre-v3.bak"); !os.IsNotExist(err) {
 		t.Error("a fresh database was backed up")
 	}
+	if _, err := os.Stat(path + fmt.Sprintf(".pre-v%d.bak", SchemaVersion)); !os.IsNotExist(err) {
+		t.Error("a fresh database was backed up before the current schema")
+	}
 }
 
 // The revision has to be monotonic across a restart. A browser that comes back
@@ -1017,5 +1029,49 @@ func TestAnAutoTitleNeverLandsOnANameSomebodyTyped(t *testing.T) {
 	}
 	if got, _ := st.GetSession("a2"); got.Title != "Fixing the parser" || got.TitleSource != TitleAuto {
 		t.Fatalf("a nameless session was not named: %q by %q", got.Title, got.TitleSource)
+	}
+}
+
+// Every upgrade leaves a copy of the database as it was, at the version it
+// was: the build before refuses a newer schema, so a rollback after the
+// upgrade has nothing to start from without it.
+func TestAnUpgradeIsBackedUp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "socrates.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateSession(&Session{ID: "kept", Harness: "shell", Workdir: "/", WorkdirMode: WorkdirCustom,
+		State: StateExited}); err != nil {
+		t.Fatal(err)
+	}
+	// The previous schema, as far as the version says: the migration from
+	// it is the one this build would run.
+	if _, err := st.db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, SchemaVersion-1)); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	again, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again.Close()
+	dest := path + fmt.Sprintf(".pre-v%d.bak", SchemaVersion)
+	bak, err := sql.Open("sqlite", "file:"+dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bak.Close()
+	var version int
+	if err := bak.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatalf("no backup at %s: %v", dest, err)
+	}
+	if version != SchemaVersion-1 {
+		t.Fatalf("the backup is at schema %d, want %d", version, SchemaVersion-1)
+	}
+	var n int
+	if err := bak.QueryRow(`SELECT COUNT(*) FROM sessions WHERE id = 'kept'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("the backup does not hold the data: %d %v", n, err)
 	}
 }

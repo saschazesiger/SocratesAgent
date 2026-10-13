@@ -18,6 +18,18 @@
 # reach the script only as `--setenv=NAME=value` options to systemd-run.
 #
 # Everything it does goes to $LOG (default /root/socrates-redeploy.log).
+#
+# Upgrading to a build that keeps its state in an S3 bucket: the new container
+# needs the bucket's configuration before it starts, or it comes up serving
+# only the connect page - with the tunnel off, so nobody outside can reach it,
+# and /api/health still 200, so nothing here would notice. Either write
+# /data/s3.json into the volume (see README, "Upgrading an existing
+# installation") or pass the SOCRATES_S3_* variables through
+# SOCRATES_RUN_ARGS, e.g. --env-file /root/socrates-s3.env (a file kept
+# outside the repository). The swap is refused while neither is there.
+#
+# The database is copied before the new image can migrate it, and a rollback
+# puts that copy back: the old image refuses a database a newer one migrated.
 set -eu
 
 NAME=${SOCRATES_NAME:-socrates}
@@ -82,6 +94,25 @@ docker volume rm "$SMOKE_VOL" >/dev/null 2>&1 || true
 [ -n "$smoke_ok" ] || { say "smoke test FAILED - the running container was not touched"; exit 1; }
 say "smoke test passed"
 
+# s3_configured reports whether the new container will find a bucket: the
+# variables in its arguments, or s3.json in the volume it shares with the
+# running container.
+s3_configured() {
+	case " $RUN_ARGS " in
+	*SOCRATES_S3_BUCKET* | *--env-file*) return 0 ;;
+	esac
+	docker exec "$NAME" test -f /data/s3.json 2>/dev/null
+}
+if ! s3_configured; then
+	msg="no S3 bucket is configured for $NAME: write /data/s3.json into the volume or pass SOCRATES_S3_* through SOCRATES_RUN_ARGS (e.g. --env-file /root/socrates-s3.env, kept outside the repo); see README 'Upgrading an existing installation'"
+	if [ -n "$check_only" ]; then
+		say "WARNING: $msg. A swap would be refused."
+	else
+		say "$msg - refusing to replace the running container"
+		exit 1
+	fi
+fi
+
 if [ -n "$check_only" ]; then
 	say "check only: done, nothing replaced"
 	exit 0
@@ -92,10 +123,32 @@ docker tag "$old_image" "$IMAGE:previous"
 docker tag "$IMAGE:candidate" "$IMAGE:latest"
 say "old image $old_image tagged $IMAGE:previous"
 
+# The database files, copied (backup_db) and put back (restore_db) with the
+# old image, in a throwaway container that shares the old container's volumes.
+DB_FILES="socrates.db socrates.db-wal socrates.db-shm"
+backup_db() {
+	docker run --rm --volumes-from "$OLD" --entrypoint sh "$IMAGE:previous" -c \
+		"cd /data && for f in $DB_FILES; do rm -f \"\$f.pre-redeploy\"; if [ -f \"\$f\" ]; then cp -p \"\$f\" \"\$f.pre-redeploy\" || exit 1; fi; done"
+}
+restore_db() {
+	docker run --rm --volumes-from "$OLD" --entrypoint sh "$IMAGE:previous" -c \
+		"cd /data && [ -f socrates.db.pre-redeploy ] && for f in $DB_FILES; do rm -f \"\$f\"; if [ -f \"\$f.pre-redeploy\" ]; then cp -p \"\$f.pre-redeploy\" \"\$f\" || exit 1; fi; done"
+}
+
 rollback() {
 	say "ROLLBACK: $*"
 	docker logs --tail 60 "$NAME" 2>/dev/null || true
 	docker rm -f "$NAME" >/dev/null 2>&1 || true
+	# The new image may have migrated the database already; the old one
+	# refuses a newer schema. What the new container wrote meanwhile is in
+	# its bucket, not lost, but this volume goes back to how it was.
+	if [ -n "${db_saved-}" ]; then
+		if restore_db; then
+			say "the database is back as it was before the redeploy"
+		else
+			say "could not put the database back - the copy is /data/socrates.db.pre-redeploy"
+		fi
+	fi
 	docker rename "$OLD" "$NAME"
 	docker start "$NAME" >/dev/null
 	if healthy "$NAME" 120; then
@@ -111,6 +164,17 @@ rollback() {
 say "stopping $NAME (everything inside it, including the agent that started this, stops now)"
 docker stop -t 30 "$NAME" >/dev/null
 docker rename "$NAME" "$OLD"
+db_saved=
+if backup_db; then
+	db_saved=1
+	say "database copied to /data/socrates.db.pre-redeploy"
+else
+	say "could not copy the database - a rollback could not undo a migration"
+	docker rename "$OLD" "$NAME"
+	docker start "$NAME" >/dev/null
+	say "the old container was started again; nothing replaced"
+	exit 1
+fi
 
 say "starting $NAME from $IMAGE:latest"
 # shellcheck disable=SC2086 # RUN_ARGS is a list of arguments.

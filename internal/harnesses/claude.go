@@ -54,9 +54,17 @@ const claudeTranscriptDays = 90
 // conversation whose transcript could not be found is a new conversation, and
 // this is where that becomes true rather than depending on a caller having
 // remembered to clear a field.
+//
+// It is also the only one of the two that carries an initial prompt: a
+// prompt is the start of a conversation, and a resumed one has started.
 func (c Claude) Plan(ctx context.Context, req PlanRequest) (LaunchPlan, error) {
 	id := uuid.NewString()
-	return c.plan(req, []string{"--session-id", id}, id)
+	plan, err := c.plan(req, []string{"--session-id", id}, id)
+	if err != nil {
+		return plan, err
+	}
+	req.InitialPrompt = guardSingleWord(req.InitialPrompt)
+	return withInitialPrompt(plan, req, trailingPrompt), nil
 }
 
 // ResumePlan is the same launch with --resume in place of --session-id, and

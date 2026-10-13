@@ -90,10 +90,54 @@ func main() {
 	}
 	defer st.Close()
 
+	// One context for the life of the process: SIGTERM ends it, whether the
+	// server got as far as serving sessions or is still waiting on the
+	// connect page.
+	life, stopLife := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopLife()
+
+	// The listener is opened late on an ordinary start - after the bucket
+	// has been read and the sessions reconciled, so the first request is
+	// answered by a server that knows the whole state - and early when the
+	// bucket cannot be used, because then the connect page is the only
+	// thing there is to serve. front is the handler the listener serves in
+	// both cases; it is switched from the connect page to the server once
+	// the storage is there.
+	front := &frontHandler{}
+	httpServer := &http.Server{
+		Handler:           front,
+		ReadHeaderTimeout: 20 * time.Second,
+		// No write timeout: a terminal connection stays open for a long time.
+	}
+	var listener net.Listener
+	serve := func() {
+		ln, err := listen(*addr)
+		if err != nil {
+			log.Fatalf("could not listen on %s: %v", *addr, err)
+		}
+		listener = ln
+		go func() {
+			if err := httpServer.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Fatalf("server error: %v", err)
+			}
+		}()
+	}
+
+	// The bucket comes first: it is the store of record, and the database
+	// the server is about to read has to have been made equal to it.
+	m := openStorage(life, st, *dataDir, front, serve)
+	if m == nil {
+		log.Print("shutting down")
+		shutdownHTTP(httpServer)
+		return
+	}
+
 	srv, err := server.New(st, *dataDir)
 	if err != nil {
 		log.Fatalf("could not start: %v", err)
 	}
+	srv.SetMirror(m)
+	m.Start(context.Background())
 
 	// The terminal substrate comes up before the listener accepts, so that the
 	// very first session list is answered by a Socrates that has already
@@ -105,17 +149,11 @@ func main() {
 		log.Printf("terminal sessions are unavailable: %v", err)
 	}
 
-	listener, err := net.Listen("tcp", *addr)
-	if err != nil {
-		log.Fatalf("could not listen on %s: %v", *addr, err)
+	if listener == nil {
+		serve()
 	}
 	srv.SetLocalURL(localBaseURL(listener.Addr()))
-
-	httpServer := &http.Server{
-		Handler:           srv.Handler(),
-		ReadHeaderTimeout: 20 * time.Second,
-		// No write timeout: a terminal connection stays open for a long time.
-	}
+	front.set(srv.Handler())
 
 	log.Printf("Socrates %s", version)
 	log.Printf("data directory: %s", *dataDir)
@@ -127,22 +165,28 @@ func main() {
 			"pass -addr 127.0.0.1:8080 to keep it local and publish it through the Cloudflare tunnel instead", listener.Addr())
 	}
 
-	go func() {
-		if err := httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("server error: %v", err)
-		}
-	}()
-
 	srv.StartTunnelIfEnabled()
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	<-stop
+	<-life.Done()
 	log.Print("shutting down")
 	srv.StopTunnel()
 	// The tmux server and every session on it are deliberately left running.
 	stopSessions()
 	srv.StopSessions()
+	shutdownHTTP(httpServer)
+	// Last, once nothing can write any more: what is still pending goes up,
+	// and the lease is let go so the next start - here or elsewhere - takes
+	// it at once. Bounded, because a bucket that does not answer must not
+	// hold a container's stop for ever; what does not make it stays pending
+	// in the database for the next start.
+	flushCtx, cancelFlush := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelFlush()
+	if err := m.Close(flushCtx); err != nil {
+		log.Printf("storage: %v", err)
+	}
+}
+
+func shutdownHTTP(httpServer *http.Server) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpServer.Shutdown(ctx)

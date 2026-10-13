@@ -111,6 +111,19 @@ func presetWorkdir(settings config.Settings, path string) (string, error) {
 // - they asked for it explicitly - but the handful of directories that are
 // never an answer are refused, and the sheet has to be allowed to ask at all.
 func customWorkdir(settings config.Settings, path string) (string, error) {
+	clean, err := checkCustom(settings, path)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(clean, 0o755); err != nil {
+		return "", fmt.Errorf("the working directory could not be created: %w", err)
+	}
+	return clean, nil
+}
+
+// checkCustom is every rule a typed-in directory has to pass, without making
+// it.
+func checkCustom(settings config.Settings, path string) (string, error) {
 	if !settings.Workspace.AllowCustom {
 		return "", fmt.Errorf("this Socrates does not allow a typed-in working directory")
 	}
@@ -129,10 +142,30 @@ func customWorkdir(settings config.Settings, path string) (string, error) {
 			return "", fmt.Errorf("%s is not a place to run an agent", clean)
 		}
 	}
-	if err := os.MkdirAll(clean, 0o755); err != nil {
-		return "", fmt.Errorf("the working directory could not be created: %w", err)
-	}
 	return clean, nil
+}
+
+// CheckWorkdir is ResolveWorkdir for a prepared session: the same rules, and
+// nothing made. A prepared session may wait for days, and a directory created
+// for it now would be an empty directory in the workspace for every draft
+// that is never started. It answers the path to store - the cleaned path for
+// a preset or a custom directory, and "" for a dynamic one, whose name is
+// only decided when the session starts. ResolveWorkdir runs again at the
+// start and is the check that counts; this one is so that a mistake is
+// pointed out while the person is still looking at the form.
+func CheckWorkdir(settings config.Settings, mode, path string) (string, error) {
+	switch mode {
+	case "", WorkdirDynamic:
+		if _, err := checkPath(settings.Workspace.Root); err != nil {
+			return "", err
+		}
+		return "", nil
+	case WorkdirPreset:
+		return presetWorkdir(settings, path)
+	case WorkdirCustom:
+		return checkCustom(settings, path)
+	}
+	return "", fmt.Errorf("%q is not a way of choosing a working directory", mode)
 }
 
 // blockedPath reports whether a path is one of the places an agent may never

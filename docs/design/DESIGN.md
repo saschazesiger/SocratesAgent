@@ -91,6 +91,8 @@ Repo: `/root/SocratesAgent`, module `github.com/saschazesiger/SocratesAgent`, Go
 - [H. Testing](#h-testing) — Go tests against real tmux, the PTY fake CLIs, 20 e2e scenarios, CI
 - [I. Work packages](#i-work-packages) — WP1…WP10 (WP9 split into 9a/9b) with scope, acceptance and dependencies
 - [J. Risks and mitigations](#j-risks-and-mitigations)
+- [K. S3 as the store of record](#k-s3-as-the-store-of-record) — the bucket layout, encryption, write-through, start and hydrate, the lease, connect mode, the storage banner
+- [L. Prepared sessions (preStart) and the scheduled start](#l-prepared-sessions-prestart-and-the-scheduled-start) — the row, one launch path, the prompt file, the scheduler, the panel
 - [Appendix A: reviewer notes not adopted](#appendix-a-reviewer-notes-not-adopted)
 - [Appendix B: quick reference](#appendix-b-quick-reference-for-an-implementer)
 
@@ -3288,6 +3290,210 @@ overlay conventions.
 | J18 | **Input is not exactly-once across a Socrates crash.** | Stated as a bound rather than hidden (§D.6): within a viewer's lifetime it is exactly-once; across a crash or a >90 s outage it is at-most-once and the user is told with a toast. Nothing is ever duplicated. |
 | J20 | **A page reload with frames in flight could dead-lock input.** A client that remembered its own counter would come back ahead of the server, and every subsequent keystroke would be a gap it could not resend from. | The client persists no counter and re-anchors to `hello`'s `input_ack` on every connect, renumbering held frames from there (§D.6). WP5's acceptance includes the reload-with-two-frames-in-flight case explicitly. |
 
+# K. S3 as the store of record
+
+Added 2026-10-13. Binding like the rest; the decision is DECISIONS.md "Revision 6".
+
+## K.1 What is where
+
+Socrates' own state lives in one S3 bucket (under an optional prefix) and is mandatory: a server
+that cannot use a bucket serves the connect page and nothing else (`/api/health` still answers
+200, because a fresh volume is smoke-tested with no bucket at all). SQLite stays the local
+**working copy** — every handler reads and writes it exactly as before, so nothing waits on the
+network — and the bucket is the truth it is made equal to at start.
+
+| object (relative to the prefix) | content | sealed |
+|---|---|---|
+| `meta.json` | `{format, bucket_id, created_at, kdf, iterations, salt, check}` | no — it is what derives the key |
+| `lease.json` | `{instance, host, version, acquired_at, heartbeat_at}` | no — a second machine shows it before it has a passphrase |
+| `kv/<url-escaped key>` | one kv row, verbatim. A **deny-list** keeps `agents_catalog`, `rev_high_water`, `resume_note:*` and `mirror.*` local, so a key added later is mirrored by default | yes |
+| `logins.json` | the whole logins table as one array | yes |
+| `sessions/<id>.json` | the full row, including what the browser never sees (`tmux_name`, `cli_session_id/state`) and `start_at` | yes |
+| `drafts/<id>.json` | `{text, rev, updated_at}` of a prepared session | yes |
+
+The data directory keeps everything that is the CLIs' or the machine's: `HOME` (CLI logins,
+config, transcripts), workspaces, tmux, journals, `plan.json`, VS Code — and `s3.json`, the one
+piece of Socrates state that cannot be in the bucket because it is what finds it.
+
+## K.2 Encryption (`internal/vault`)
+
+`key = PBKDF2-HMAC-SHA256(passphrase, salt, 600 000, 32 bytes)` (stdlib `crypto/pbkdf2`); a
+sealed object is `"SOC1" ‖ 12-byte nonce ‖ AES-256-GCM(plaintext)` with **AAD = the object's
+name**, so a sealed session cannot be moved to another name and still open. `meta.json.check` is
+`Seal(key, "meta-check", "socrates")`: a wrong passphrase is told apart at once instead of as a
+pile of failed decrypts. The iteration count is read from `meta.json` and bounded
+(1 000 … 10 000 000) because the bucket is not trusted to choose it.
+
+## K.3 The client (`internal/s3`)
+
+Hand written, standard library only, like `webpush`: SigV4 (checked against the AWS
+documentation vectors), path-style and virtual-hosted, Get/Put/Delete/Head/ListObjectsV2.
+`x-amz-content-sha256` is **always** sent — Ceph RGW (Hetzner) rejects a signature without it.
+Errors are typed (`ErrNotFound`, `ErrPreconditionFailed`, `ErrNoSuchBucket`, `ErrAccessDenied`)
+and carry S3's own code and message. Two observed facts about Hetzner's Ceph, pinned by the
+opt-in integration test (`SOCRATES_S3_IT=1`): `If-None-Match: *` and `If-Match` on PUT are both
+enforced, and `If-Match` is compared against the **unquoted** ETag (the quoted RFC form is a 412),
+so the client always sends it bare. `internal/s3/s3fake` is an in-memory store with the same
+behaviour and real SigV4 verification; the mirror's tests and the e2e `fakes3` binary use it.
+
+## K.4 Write-through (`internal/mirror`, `internal/store/mirror.go`)
+
+Every write method of the store records the objects it changed in `mirror_pending(object, at)`
+**inside the same lock and transaction**, then calls an observer after the lock is released. A
+crash between the commit and the upload therefore loses nothing: the pending row is still there
+at the next start. The flusher debounces 1 s (at most 5 s), serialises the *current* local value
+of each pending object (a row that is gone becomes a DELETE), seals it, PUTs it, and clears the
+pending entry only if it was not dirtied again in the meantime. Failures keep the entry and back
+off from 1 s, doubling to 60 s. `IsBackedUp(object)` (tracking on, not pending, not fenced) is
+what the prompt panel's "Backed up" reads. SIGTERM flushes for at most 10 s, then releases the
+lease — only when everything went up: a machine that still holds unflushed changes keeps the lease
+(it expires after the TTL; its own restart takes it at once), so the bucket never looks free while
+it is behind.
+
+## K.5 Start (`storage.go`)
+
+1. No `s3.json` and no `SOCRATES_S3_BUCKET` → connect mode.
+2. Read `meta.json`. Missing over an empty prefix: create it (`If-None-Match: *`, read back — two
+   machines creating it at once end up with one installation). Missing over existing objects: never
+   a new installation (a new salt would make them unreadable for good) — a data directory that has
+   this place's `meta.json` cached puts it back, any other gets `ErrMetaMissing`; the connect page
+   creates one there only with an explicit overwrite. Present: derive the key and verify the check
+   value.
+3. Take the lease (K.6).
+4. Hydrate, with the lease kept alive by a heartbeat of its own while it runs. Same `bucket_id` as
+   the local `mirror.bucket_id` **and the lease last held by this instance** → upload what is still
+   pending first (it is newer than the bucket), then download everything else. Same `bucket_id` but
+   another instance held the lease since (a crash here and a start elsewhere, a takeover, a rollback
+   to an old volume) → the bucket wins and the pending writes are dropped: they are older than what
+   the other machine wrote. Downloads fetch and open every object before anything local is touched,
+   so an object that does not open changes nothing. A bucket with state but no `kv/password_hash`
+   never resets the password: a copy of this installation keeps its hash and uploads it again, any
+   other start is refused (`ErrNoPassword`) rather than opening first-run setup to anybody. A bucket with **no state** →
+   mark everything local as pending and upload it: this is the upgrade path of an existing
+   installation, and it means an emptied bucket never empties a working machine. Otherwise the
+   bucket wins: local mirrored state is replaced (`DeleteLocalAbsent` first, because of the unique
+   indexes on `tmux_name` and `client_id`), unless the connect page was told to overwrite the
+   bucket.
+5. The bucket is unreachable but the local copy's `mirror.bucket_id` and identity
+   (endpoint|bucket|prefix) match the configuration → start **degraded** from the copy; writes
+   queue and go up when it answers. Anything else → connect mode with the reason, retrying by
+   itself (15 s unreachable, 20 s leased, 60 s otherwise), re-reading `s3.json` each time.
+
+Rows hydrated from another machine name tmux sessions that do not exist here; the existing
+reconcile turns them into `needs_resume`, and a CLI transcript that is not on this disk verifies as
+lost, so the resume starts a fresh conversation instead of a failing `--resume`.
+
+## K.6 The lease
+
+One Socrates per bucket and prefix. `lease.json` is valid while `heartbeat_at` is younger than
+90 s and renewed every 30 s; the instance id is `kv mirror.instance`, so a restart of the same
+data directory re-acquires its own lease. Writes use `If-None-Match`/`If-Match` where the store
+enforces them (probed at connect) and fall back to write, wait, read back where it does not.
+
+Every write to the bucket happens within 10 s (`VerifyEvery`) of a confirmation of the lease taken
+*before* the read that confirmed it: an upload with less than half of that left confirms again
+first, and is cut off at the end of the window. A confirmation only counts for a lease that stays
+fresh for the whole window (one about to expire is renewed, an expired one confirms nothing), so a
+holder whose heartbeats fail stops writing before its lease can be taken. Taking over a lease
+another instance held and had not released — by force on the connect page, or because it had
+expired — waits `TakeoverSettle` (12 s: the window plus a margin) before reading, so the old
+holder's last writes are in the bucket first.
+
+A clean stop does not delete `lease.json`: it sets `heartbeat_at` to 0, which frees it, and keeps
+the instance, which is the record of **who wrote the bucket last** — what step 4 of K.5 decides
+by. A start that fails before writing anything puts that record back as it found it.
+
+A mirror that finds the lease naming someone else — at a heartbeat, or at a confirmation before a
+write — is **fenced**: it uploads nothing more, the scheduler starts nothing by itself, nothing
+reads as backed up, and the page says so. The fence is remembered (`mirror.bucket_id` is
+dropped), so the next start takes the bucket's state and never starts degraded from this copy. A
+degraded server likewise starts no scheduled session until it has taken the lease in this run.
+
+## K.7 Connect mode and the setup page
+
+A minimal handler: static assets, `/setup`, `/api/health`, `/api/state` (`mode:"connect"`, the
+reason, the lease holder, the retry clock), `POST /api/storage/connect` (only while nothing is
+configured: new bucket → passphrase confirm; both sides hold different state → 409 and an explicit
+"use the bucket" / "overwrite the bucket"; leased → password), `POST /api/storage/takeover`
+(password, verified against the hash **decrypted from the bucket**), `POST /api/storage/retry`.
+Every other API answers 503. Success writes `s3.json` (0600) and re-execs the process
+(`syscall.Exec`; tmux is a separate server and survives). A configured server never lets this page
+point it at another bucket — that would be a takeover of the machine by whoever reaches the page
+first. A data directory that already holds an installation with a password (an upgrade with no
+bucket configured yet) connects only with that password (`local_password`; `/api/state` says
+`password_required`), because connecting it uploads its sign-ins and keys, or replaces them; the
+database is copied to `socrates.db.pre-connect.bak` before a connect that lets the bucket win.
+The page's connect and takeover and main's waiting loop share one attempt at a time, and a committed
+connect or takeover is final: nothing else starts until the restart.
+
+## K.8 Admin and the page
+
+`GET /api/storage`, `POST /api/storage/test`, `POST /api/storage/sync`,
+`PUT /api/storage/credentials` (same bucket and prefix only; meta and check are proven with the new
+keys before `s3.json` is written; refused for an environment configuration). A signed-in
+`/api/state` carries a short `storage` summary, which `js/storage.js` turns into one line under the
+top bar — "Storage unreachable since 14:02. 3 changes are waiting to be backed up." or "Another
+Socrates (host) took over this bucket. Changes made here are no longer backed up." — and nothing at
+all while the bucket is fine.
+
+# L. Prepared sessions (preStart) and the scheduled start
+
+## L.1 The row
+
+`state = 'prestart'`: settings, no `tmux_name`, no directories, nothing running. `drafts(session_id,
+text, rev, updated_at)` holds the prompt; a save is optimistic (`base_rev`, 409 with the current
+text on a mismatch) and bumps the store revision, so the list's `draft_rev`/`draft_preview` tell
+other devices. `start_at` (ms, 0 = none) is the scheduled start. Options may carry
+`profile_auto`: the profile with the most headroom is picked **at start**, server side, with the
+same recommendation the sheet uses. Every background loop — reconcile, poll, hooks, activity,
+headroom, titles, push, VS Code — skips prepared rows; Ensure/Restart/Attach refuse them.
+
+## L.2 One launch
+
+`POST /api/sessions` and `POST /api/sessions/{id}/start` go through one function
+(`launchSpec` → `checkLaunch` → `launch`): validation, working directory, plan, manager. The user
+insisted that a prepared session start *exactly* like a new one, and two copies of that path would
+drift. Start is idempotent (a started row answers with itself), takes the row from `prestart` to
+`starting` in one transition, and a failure before anything ran puts it back to `prestart` with
+`fail_reason` and removes what it made. The draft stays, read-only, until the session is deleted.
+
+## L.3 The prompt reaches the program without tmux
+
+A tmux command message is limited to about 16 KB; a prompt may be 100 KB. The plan writes it to
+`<sessiondir>/initial-prompt` (0600) and wraps the argv in a POSIX `sh -c` script that reads the
+file, deletes it, substitutes it for a marker argument and `exec`s the CLI — so the pane's process
+is the CLI itself, which the activity detector depends on. Claude Code and Codex take it after
+`--`; Claude also gets a trailing space on a one-word prompt, because its parser still dispatches
+a subcommand after `--` (`update` would otherwise run `claude update`). OpenCode takes
+`--prompt=<text>`. Only the first plan carries the prompt; `plan.json` never holds it, and resume
+and restart plans are built from the row.
+
+## L.4 The scheduler (`internal/server/schedule.go`)
+
+One loop, started with the sessions: a pass at once (so a schedule that fell due while the server
+was down starts right after start-up, once), then sleep until the next due time, never longer than
+10 s; a PATCH or create pokes it. A due row is claimed by clearing `start_at` in the same
+conditional update (`ClaimScheduledStart`), then started through the Start button's own path with
+the row's stored size. A failure is reported and **not retried**; success and failure both send a
+push ("Started: …" / "Scheduled start failed: …"). A fenced mirror shuts the gate
+(`SetAutoStartGate`): another Socrates owns the schedule now; so does a mirror that has not held
+its lease in this run (degraded) or not confirmed it for a whole TTL. While the gate is shut the
+loop sleeps the whole tick rather than waking for an overdue row it may not start. A session
+somebody started between the scheduler's read and its claim is not the scheduler's start, and it
+sends nothing about it.
+
+## L.5 The panel (`js/prestart.js`)
+
+Drawn in the stage instead of the terminal. The settings are `harnesses.settingsForm` — the very
+builder the new-session sheet uses, so the two cannot differ — saved by PATCH 400 ms after a
+change, with only the fields that changed. The prompt is written to `localStorage` on every
+keystroke and PUT 600 ms after a pause; the local copy is dropped only when the server has
+acknowledged exactly that text, and a copy based on an older revision opens the conflict choice
+("Use the other device's text" / "Keep mine") rather than guessing. "Start automatically" is a
+native `datetime-local` (local time, to the minute) with a clear button and a relative hint. A
+start by anyone — this button, another device, the clock — reaches the page as a row that is no
+longer prepared, and the panel becomes that session's terminal.
+
 ---
 
 ## Appendix A: reviewer notes not adopted
@@ -3309,13 +3515,15 @@ reviewer does not read them as oversights.
 
 ```
 data directory layout
-  <data>/socrates.db                 SQLite
+  <data>/socrates.db                 SQLite - the working copy; the bucket is the store of record (§K)
+  <data>/s3.json                     the bucket configuration from the setup page (0600; holds the passphrase)
   <data>/socrates.db.pre-v3.bak      one-time migration backup
   <data>/tmux.sock                   the Socrates-owned tmux server socket (0600)
   <data>/tmux.conf                   generated on every start; NEVER contains window-size
   <data>/hook.sock                   tmux-hook IPC, mode 0600
   <data>/workspaces/                 default workspace root (dynamic directories)
   <data>/sessions/<id>/plan.json     the resolved LaunchPlan, mode 0600 (carries a secret)
+  <data>/sessions/<id>/initial-prompt  a prepared session's first prompt, deleted by the pane's wrapper (§L.3)
   <data>/sessions/<id>/journal.raw   the rotating output journal (+ journal.1.raw)
   <data>/sessions/<id>/claude-settings.json | tui.json | claude-debug.log
   <data>/voice/, <data>/bin/         unchanged

@@ -37,6 +37,11 @@ type GenFile struct {
 	Path string
 	Mode fs.FileMode
 	Data []byte
+	// Transient is a file the program consumes and deletes as it starts -
+	// the initial prompt. Its contents are left out of plan.json: that file
+	// is kept for the life of the session, and a prompt of a hundred
+	// kilobytes copied into it is a second copy nobody reads.
+	Transient bool `json:",omitempty"`
 }
 
 // LaunchPlan is everything the terminal substrate needs in order to start a
@@ -80,8 +85,14 @@ type PlanRequest struct {
 	// chosen on the sheet when the session is created and kept for its whole
 	// life. Off unless asked for; no other harness has it.
 	Ultracode bool
-	Settings  config.Settings
-	DataDir   string
+	// InitialPrompt is the first prompt of a prepared session, sent by the
+	// program itself as it starts. Only the first plan of a session ever
+	// carries it: a resume or a restart is planned from the stored row,
+	// which has no such field, so a prompt is sent exactly once. Shell and
+	// VS Code have no prompt and ignore it.
+	InitialPrompt string
+	Settings      config.Settings
+	DataDir       string
 	// Logf is the caller's log, for the one thing a plan does that can fail
 	// without stopping the launch: pinning Claude Code's global config, whose
 	// failure costs the session its trust entry and therefore its prompt. It

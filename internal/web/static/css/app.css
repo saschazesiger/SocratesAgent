@@ -2109,6 +2109,44 @@ body.stale .icon-btn.working::after { animation-play-state: paused; opacity: .4;
 }
 .conn-retry:hover { background: rgba(255, 255, 255, .2); }
 
+/* The storage banner: one line under the top bar while the bucket is not
+   taking what is done here (storage.js). It is part of the column rather than
+   laid over it, so the pane is fitted into what is left instead of being
+   covered. Amber is "it is queued and will catch up"; red is "another
+   Socrates owns the bucket now", which will not fix itself. */
+.storage-banner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px calc(14px + env(safe-area-inset-right, 0px)) 8px calc(14px + env(safe-area-inset-left, 0px));
+  background: #fdf3dd;
+  color: #4b3a10;
+  border-bottom: 1px solid #f0dfb4;
+  font-size: 13.5px;
+  line-height: 1.35;
+}
+.storage-banner[data-kind="fenced"] { background: #fde4e4; color: #5a2020; border-bottom-color: #f3c4c4; }
+.storage-banner-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--amber);
+}
+.storage-banner[data-kind="fenced"] .storage-banner-dot { background: var(--red); }
+.storage-banner-text { flex: 1; min-width: 0; }
+.storage-banner-link {
+  flex: none;
+  color: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  /* A target a thumb can hit without the bar growing for it. */
+  padding: 10px 4px;
+  margin: -10px -4px;
+}
+
 /* The bar takes the top of the screen, so the page moves down under it rather
    than being covered by it. Its real height is measured and published as
    --conn-bar-h, because it grows with a notch and with wrapped text. */
@@ -2387,4 +2425,218 @@ body.stale .chat-item .row-mark.busy::after { animation-play-state: paused; opac
   line-height: 1.4;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* ---------------------------------------------------- prepared sessions */
+
+/* A prepared session's row says two more things than a running one: the
+   first line of its prompt under the name, and - when it starts by itself -
+   a small clock and the time. Both are absent from every other row. */
+.chat-item .row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.chat-item .row-text > .label { flex: none; }
+.chat-item .row-preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--text-faint);
+}
+.chat-item .row-preview:empty,
+.chat-item .row-when:empty { display: none; }
+.chat-item .row-when {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--blue);
+}
+.chat-item .row-when svg { width: 12px; height: 12px; display: block; }
+/* The group itself wears the panel's mark beside its name. */
+.folder-head .folder-icon {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  display: inline-flex;
+  color: var(--text-soft);
+}
+.folder-head .folder-icon svg { width: 100%; height: 100%; display: block; }
+@media (min-width: 901px) {
+  body.side-collapsed .chat-item .row-text,
+  body.side-collapsed .chat-item .row-when { display: none; }
+}
+
+/* The panel stands where the pane would: the prompt, Start, and beside them
+   the settings and the time it starts by itself. One column on a phone, two
+   where the column is wide enough for a prompt to be read beside them. */
+.prestart {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  background: var(--bg);
+}
+.prestart-scroll {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.prestart-inner {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 22px 24px calc(32px + env(safe-area-inset-bottom, 0px));
+}
+.prestart-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-bottom: 18px;
+}
+.prestart-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-soft);
+}
+.prestart-badge svg { width: 14px; height: 14px; display: block; }
+.prestart-lede { color: var(--text-soft); font-size: 13.5px; }
+.prestart-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 28px;
+}
+@container (min-width: 900px) {
+  .prestart-grid { grid-template-columns: minmax(0, 1fr) 380px; gap: 32px; align-items: start; }
+}
+.prestart-label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+}
+/* The microphone stays at the top of a field that grows downwards. */
+.prestart-dictate { align-items: flex-start; }
+/* As tall as what is in it (prestart.js sets the height), and never shorter
+   than a good part of the screen: the prompt is the reason the panel exists. */
+.prestart-text {
+  min-height: max(220px, 36vh);
+  resize: none;
+  overflow: hidden;
+  padding: 12px 14px;
+  line-height: 1.6;
+}
+@media (min-width: 621px) {
+  .prestart-text { font-size: 14.5px; }
+}
+.prestart-save {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 20px;
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: var(--text-faint);
+}
+.prestart-save[data-kind="ok"] { color: var(--text-soft); }
+.prestart-save[data-kind="offline"] { color: var(--amber); }
+.prestart-save[data-kind="error"],
+.prestart-save[data-kind="conflict"] { color: var(--red); }
+/* Two texts and a choice between them: the other device's is shown, because
+   "keep mine" is only a decision when it is known what is being thrown away. */
+.prestart-conflict {
+  margin-top: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--amber);
+  border-radius: var(--r);
+  background: var(--bg);
+}
+.prestart-conflict-title { margin: 0 0 10px; font-size: 13.5px; font-weight: 550; }
+.prestart-conflict-label { font-size: 12px; color: var(--text-faint); margin-bottom: 4px; }
+.prestart-conflict-text {
+  margin: 0 0 12px;
+  max-height: 160px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  background: var(--bg-sunken);
+  font: 12.5px/1.5 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.prestart-conflict-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.prestart-failed {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  font-size: 13px;
+  color: var(--red);
+}
+.prestart-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 16px;
+}
+.prestart-start { min-height: 44px; padding: 0 28px; font-size: 15px; }
+.prestart-key { font: 12px var(--mono); color: var(--text-faint); }
+/* A phone has no Ctrl to press, and its thumb wants the whole width. */
+@media (hover: none) {
+  .prestart-key { display: none; }
+}
+@container (max-width: 560px) {
+  .prestart-inner { padding: 16px 16px calc(28px + env(safe-area-inset-bottom, 0px)); }
+  .prestart-start { flex: 1; }
+}
+.prestart-side-title {
+  margin: 0 0 14px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.prestart-schedule {
+  padding-bottom: 18px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+.prestart-when { display: flex; gap: 8px; }
+.prestart-when .input { flex: 1; min-width: 0; }
+.prestart-when .btn { flex: none; min-height: 40px; }
+.prestart .hint.error { color: var(--red); }
+.prestart-settings-status { min-height: 1em; }
+.prestart-settings-status[data-kind="error"] { color: var(--red); }
+.prestart-settings-status[data-kind="offline"] { color: var(--amber); }
+/* The same controls as the sheet, at the sheet's spacing. */
+.prestart .settings-form .field { margin-bottom: 16px; }
+/* Every control in the panel is something a finger aims at. */
+@media (pointer: coarse) {
+  .prestart .input,
+  .prestart .btn,
+  .prestart .seg-row .seg { min-height: 44px; }
+  .prestart .mic-btn { width: 44px; height: 44px; }
 }

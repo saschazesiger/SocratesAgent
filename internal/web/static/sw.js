@@ -62,6 +62,8 @@ const SHELL = [
   '/static/js/dictate.js',
   '/static/js/keyboard.js',
   '/static/js/transfer.js',
+  '/static/js/prestart.js',
+  '/static/js/storage.js',
   '/static/manifest.json',
   '/favicon.png',
   '/static/img/logo.png',

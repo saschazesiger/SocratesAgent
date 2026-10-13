@@ -47,6 +47,9 @@ func (m *Manager) ensureLocked(ctx context.Context, sessionID string) (*store.Se
 	if err != nil {
 		return nil, err
 	}
+	if row.State == store.StatePrestart {
+		return row, ErrNotStarted
+	}
 	if row.Status == store.StatusDone {
 		return row, ErrDone
 	}
@@ -77,6 +80,11 @@ func (m *Manager) Restart(ctx context.Context, sessionID string) (*store.Session
 	row, err := m.st.GetSession(sessionID)
 	if err != nil {
 		return nil, err
+	}
+	if row.State == store.StatePrestart {
+		// Restart would mark it needs_resume and launch it from the row,
+		// without the prompt and without the settings Start resolves.
+		return nil, ErrNotStarted
 	}
 	if row.Status == store.StatusDone {
 		return nil, ErrDone

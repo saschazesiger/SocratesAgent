@@ -22,15 +22,32 @@ exactly what it is there to test.
 * **Go, node and tmux ≥ 3.3.** Nothing is installed from npm; Playwright is used
   straight from the machine's own copy at
   `/opt/browser-testing/node_modules/playwright-core/index.mjs`.
-* **A Chromium.** The default is this machine's headless shell at
-  `/root/.cache/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-linux64/chrome-headless-shell`,
-  launched with `--no-sandbox` because the suite runs as root in a container.
-  Point `SOCRATES_E2E_CHROME` at another binary to use one.
+* **A Chromium.** The default is the newest headless shell Playwright installed
+  under `/root/.cache/ms-playwright/chromium_headless_shell-<build>/`, launched
+  with `--no-sandbox` because the suite runs as root. Point
+  `SOCRATES_E2E_CHROME` at another binary to use one.
 * **Ports 5000 and up**, one per scenario.
 
 Pages are always waited for with `waitUntil: 'domcontentloaded'`. Never
 `networkidle`: a terminal socket never idles, so `networkidle` would hang until
 it timed out on every single navigation.
+
+## The bucket
+
+S3 is mandatory: a Socrates without a bucket serves the connect page and
+nothing else. So `e2e/fakebin/fakes3` — `internal/s3/s3fake`, the in-memory
+store the mirror's unit tests use, with real SigV4 verification and the
+conditional-write behaviour of the Ceph RGW Socrates is deployed against — is
+built and started once per run on a loopback port, and every server is started
+with `SOCRATES_S3_*` pointing at it under a prefix of its own
+(`e2e/<data directory name>/`). A fresh prefix holds no state, so the server
+creates it there and the ordinary password page follows: `setup()` is
+unchanged, and a restart of the same data directory finds its own state again.
+`start({ s3prefix })` puts a second data directory on an existing prefix
+(`s3restore`, `storagebanner`), and `s3prefix: null` starts a server with no
+bucket at all. `/_fakes3/down?status=503` and `/_fakes3/up` on the fake break
+the bucket on purpose (`fakeS3Switch` in the harness); nothing about the fake
+is secret and it dies with the run.
 
 ## The fake CLIs
 
@@ -40,7 +57,13 @@ A suite that needed three logged-in accounts would not be a suite, so
 what the product now runs. It prints a banner naming itself, its working
 directory, its `--model` and the background colour it was told about, echoes
 every line back as `you said: …`, and understands `/exit <n>`, `/spin`, `/alt`
-and `/id`. It also writes the same state files the real binaries write and
+and `/id`. A prompt it was started with (after `--` for `claude` and `codex`,
+as `--prompt=` for `opencode`) is printed as `prompt: <first line> (<n> bytes)`
+and logged whole in `FAKE_LOG`. It paints its banner a quarter of a second after it starts,
+as a real (Node) CLI does: Socrates attaches the journal with a tmux command
+of its own right after `new-session`, so what a pane prints in its first
+milliseconds is on the screen but not in the journal, and a fake that answered
+in microseconds lost its banner from the record the suite reads. It also writes the same state files the real binaries write and
 refuses the same way they refuse, so the discovery and resume paths are
 exercised rather than mocked.
 
@@ -153,6 +176,9 @@ gitignored. Deleting `e2e/out/` is always safe.
 | `design` | white surfaces, a mark wherever a program is named, technical strings only in **Info**, and an animation that does not restart when a row re-renders |
 | `folders` | the session list read by project: one folder per working directory, named after it with the whole path on hover, ordered by the project worked in most recently, `More Chats` last for the sessions Socrates housed itself; a folder shuts, says how many are behind it, is found shut after a reload and is opened again by attaching a session inside it; a folder with nothing in it is not drawn, and a row keeps its element across a re-render |
 | `notify` | a session that stops working while nobody is looking: one chime and one notification named after it, a speaker and a bell in the header that each turn one of them off and are remembered on this device, and nothing fired for a handshake replay or for a session that has only just been started |
+| `prestart` | the sheet's preStart switch (offered for an agent, not a shell) makes a prepared session and nothing runs; its prompt saves itself, reaches the server as typed and becomes **Backed up**; a model picked in the panel is saved; a reload keeps both; **Start** turns the panel into a live terminal whose program got the prompt byte for byte with the chosen model; the prompt stays, read-only; a time picked in the panel is saved and shown as a clock on the row, and a start set five seconds ahead happens by itself and flips the open panel to the terminal |
+| `s3restore` | server A makes a running session and a prepared one and stops; its data directory and tmux are deleted; server B on a new data directory and the same prefix needs no setup, accepts A's sign-in cookie and the same password, lists both sessions under their ids and names (the one whose pane was on A not taken for running), and has the prompt and a setting intact |
+| `storagebanner` | with the bucket down a change is counted as waiting and the page says "Storage unreachable since …"; back up, the queue empties and the banner leaves; a second server on the same prefix waits on the connect page naming the holder, takes the bucket over with the password, and the first server's page then says another Socrates took it over |
 | `livesession` | one real session against the real Claude Code CLI (gated) |
 
 `lighttheme` measures the

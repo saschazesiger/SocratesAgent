@@ -92,7 +92,9 @@ func (s *Server) handleFolderIDE(w http.ResponseWriter, r *http.Request) {
 	var source *store.Session
 	for i := range rows {
 		row := &rows[i]
-		if filepath.Clean(row.Workdir) != folder {
+		// A prepared session has not worked in its folder yet, and a
+		// dynamic one does not even have it.
+		if row.State == store.StatePrestart || filepath.Clean(row.Workdir) != folder {
 			continue
 		}
 		// Newest first, so a folder that somehow has two editors opens the

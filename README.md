@@ -35,10 +35,101 @@ docker run -d --name socrates --restart unless-stopped --pid=host --privileged -
 docker rm -f socrates
 ```
 
-Open <http://localhost:8080> and choose a password. `-v socrates-data:/data` is
-everything Socrates remembers — the database, the workspaces and the `HOME` the
-CLIs keep their credentials in. `-v /root:/root` is what makes the directories
-you work in exist inside the container.
+Open <http://localhost:8080>, connect a bucket (below) and choose a password.
+`-v socrates-data:/data` holds what stays on the machine — the workspaces, the
+`HOME` the CLIs keep their credentials and transcripts in, tmux and a working
+copy of the database. `-v /root:/root` is what makes the directories you work
+in exist inside the container.
+
+## Storage: an S3 bucket is required
+
+Socrates keeps its own state in an S3 bucket, and it will not start without
+one: until a bucket is connected it serves the connect page and nothing else
+(`/api/health` still answers, so a container health check passes). The data
+directory keeps a working copy, so a page never waits on the bucket; every
+change goes up within about five seconds, and a new container on an empty
+volume comes back from the bucket with everything below.
+
+| in the bucket (encrypted) | stays in the data directory |
+| --- | --- |
+| settings, the password hash, sign-ins (login cookies), profiles and their order, push keys and subscriptions, unread state, every session row, every prepared session's prompt | the CLIs' own logins, config and transcripts (`HOME`), workspaces, tmux, journals, `plan.json`, VS Code, and the bootstrap file `s3.json` |
+
+Any S3-compatible store works: Hetzner Object Storage, AWS S3, Cloudflare R2,
+MinIO. Connect it on the setup page (step 1, before the password), or give the
+container the configuration in its environment — then the environment wins
+and the admin page shows it read-only:
+
+```bash
+docker run -d --name socrates --restart unless-stopped -v socrates-data:/data -v /root:/root \
+  -e SOCRATES_S3_ENDPOINT=https://hel1.your-objectstorage.com \
+  -e SOCRATES_S3_REGION=hel1 \
+  -e SOCRATES_S3_BUCKET=my-bucket \
+  -e SOCRATES_S3_PREFIX= \
+  -e SOCRATES_S3_ACCESS_KEY_ID=… \
+  -e SOCRATES_S3_SECRET_ACCESS_KEY=… \
+  -e SOCRATES_S3_PATH_STYLE=true \
+  -e SOCRATES_S3_PASSPHRASE='a long passphrase' \
+  socrates
+```
+
+`SOCRATES_S3_BUCKET` switches the environment on; without it the others are
+ignored. The region defaults to `us-east-1`, path-style addressing to on, and
+the prefix to the bucket's root (a non-empty prefix gets a trailing `/`). The
+endpoint is empty for AWS. A setup-page configuration is written to
+`<data>/s3.json` (mode 0600). Admin → Storage tests the connection, syncs now,
+and changes the endpoint, region, keys or addressing style for the same bucket
+and prefix.
+
+**Everything in the bucket is encrypted on this machine** (AES-256-GCM, with a
+key derived from the passphrase by PBKDF2-SHA256, 600 000 rounds) before it is
+sent; only `meta.json` (the salt and a check value) and `lease.json` (which
+host holds the bucket) are plain. The passphrase never goes to the bucket.
+**If you lose it, the bucket's contents cannot be read by anyone, you
+included** — write it down somewhere other than the server. It is stored in
+`s3.json` or the container's environment so the server can start by itself, so
+treat the volume and the environment like the bucket keys they sit beside.
+
+**One Socrates per bucket and prefix.** The running one holds a lease
+(`lease.json`, renewed every 30 s, free after 90 s without a renewal and at
+once on a clean stop). A second container on the same bucket shows who holds it
+and offers **Take over** with the Socrates password; the first one then stops
+uploading and says so in a banner. If the bucket cannot be reached at start,
+a data directory that was synchronised with exactly that bucket before starts
+from its copy and catches up later; any other one waits on the connect page and
+retries. A configured server never lets the connect page point it at a
+different bucket.
+
+Upgrading an existing installation: start it with a bucket configured. A
+bucket with no Socrates state in it yet takes this installation's database as
+it is, password included. Give the configuration **before** the new image
+starts — `/data/s3.json` written into the volume, or the `SOCRATES_S3_*`
+variables (for `scripts/redeploy-container.sh`, through
+`SOCRATES_RUN_ARGS`, e.g. `--env-file /root/socrates-s3.env`, a file kept
+outside the repository). Without it the container comes up on the connect page
+with the tunnel off; the redeploy script refuses the swap until one of the two
+is there. Connecting an existing installation from the setup page asks for its
+Socrates password, because connecting uploads its sign-ins and keys to the
+bucket you name, or replaces its state with that bucket's.
+
+The upgrade migrates the database, and a database an upgrade migrated is
+refused by the build before it. The previous file is kept beside it as
+`socrates.db.pre-v8.bak`; to go back, stop the container, copy that file over
+`socrates.db` (removing `socrates.db-wal` and `socrates.db-shm`), and start the
+old image:
+
+```bash
+docker stop socrates
+docker run --rm -v socrates-data:/data alpine sh -c \
+  'cd /data && rm -f socrates.db-wal socrates.db-shm && cp socrates.db.pre-v8.bak socrates.db'
+```
+
+`redeploy-container.sh` does this by itself when its rollback runs.
+
+If `meta.json` disappears from a bucket that still holds Socrates objects, no
+new installation is created over them (a new one would have a new salt, and
+the objects could never be opened again): a machine that was synchronised with
+that place puts its copy of `meta.json` back; any other refuses to start until
+it is restored, or the prefix is emptied or deliberately overwritten.
 
 ## Sign the CLIs in
 
@@ -116,6 +207,21 @@ the phone locked. On an iPhone, add Socrates to the Home Screen and turn the
 bell on from there; Safari allows push only for an installed web app. Over
 plain http they appear only while the page is open.
 
+## Prepared sessions (preStart)
+
+Switch **preStart** on in the new-session sheet (Claude Code, Codex and
+OpenCode) and **Prepare** stores the session without starting anything. It
+opens as a panel instead of a terminal: the same settings as the sheet, all
+still changeable, and a large field for the first prompt, which is saved as you
+type (on this device at once, on the server after a pause, then in the bucket —
+the line under the field says which). **Start** (or Ctrl/⌘+Enter) launches it
+exactly as a new session with those settings, and the prompt goes in as the
+program's first message. **Start automatically** takes a date and time instead:
+the server starts it then by itself, even with no browser open, and sends a
+notification either way. A server that was down at that moment starts it as
+soon as it is back; a start that failed is not retried, and the panel says
+why. Prepared sessions are listed in their own group at the top of the sidebar.
+
 ## Files
 
 The paperclip in the top bar uploads files into the session's working
@@ -143,8 +249,8 @@ make e2e     # the browser suite: node, a Chromium and tmux >= 3.3
 ```
 
 The front end has no build step — edit `internal/web/static` and rebuild. Design
-notes are in [docs/design](docs/design). `SOCRATES_ADDR`, `SOCRATES_DATA_DIR` and
-`HOME` are the environment; `INSTALL_AGENTS`, `INSTALL_CLOUDFLARED`,
+notes are in [docs/design](docs/design). `SOCRATES_ADDR`, `SOCRATES_DATA_DIR`,
+`HOME` and the `SOCRATES_S3_*` variables are the environment; `INSTALL_AGENTS`, `INSTALL_CLOUDFLARED`,
 `INSTALL_VSCODE` and `VERSION` are the build arguments;
 `scripts/migrate-to-docker.sh` seeds the volume from a local installation.
 

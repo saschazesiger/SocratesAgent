@@ -415,6 +415,106 @@ func (m *Manager) Create(ctx context.Context, spec Spec) (*store.Session, error)
 	return row, nil
 }
 
+// ErrNotStarted is the refusal to open, resume, restart or journal a session
+// that has only been prepared. There is no terminal behind it yet, and the
+// only way to get one is Start.
+var ErrNotStarted = errors.New("the session has not been started")
+
+// StartPrestart starts a prepared session: the same launch Create does, on a
+// row that already exists. spec carries what the start resolved - the
+// directory, the options, the plan - and the row takes all of it on in one
+// transition before any tmux command runs, for the same reason Create writes
+// its row first.
+//
+// It is serialised with everything else that launches this session, and it
+// answers store.ErrNotPrestart, with the current row, when the session was
+// started by somebody else first: two devices pressing Start and the
+// scheduler firing at the same moment start one program.
+//
+// A launch that fails before the program ever ran - tmux refused the session,
+// a file could not be written - puts the row back to prepared with the reason,
+// so the person can fix what was wrong and press Start again with the draft
+// intact. One that fails after the program was running is a failed session
+// like any other, with its restart button.
+func (m *Manager) StartPrestart(ctx context.Context, spec Spec) (*store.Session, error) {
+	if err := m.Available(); err != nil {
+		return nil, err
+	}
+	if len(spec.Plan.Argv) == 0 {
+		return nil, errors.New("a session needs a program to run")
+	}
+	if !filepath.IsAbs(spec.Plan.Cwd) {
+		return nil, fmt.Errorf("the working directory %q is not absolute", spec.Plan.Cwd)
+	}
+	unlock := m.lockSession(spec.ID)
+	defer unlock()
+	// A start that lost to another one made its dynamic directory for
+	// nothing; os.Remove only takes it while it is still empty.
+	discard := func() {
+		if spec.WorkdirMode == store.WorkdirDynamic {
+			_ = os.Remove(spec.Plan.Cwd)
+		}
+	}
+	prepared, err := m.st.GetSession(spec.ID)
+	if err != nil {
+		discard()
+		return nil, err
+	}
+	if prepared.State != store.StatePrestart {
+		discard()
+		return prepared, store.ErrNotPrestart
+	}
+	row := *prepared
+	if prepared.TitleSource != store.TitleUser && spec.Title != "" {
+		// A nameless row is listed under what it runs, like a session made
+		// from the sheet with these settings: the placeholder it was
+		// prepared under may name another harness or folder by now.
+		row.Title = spec.Title
+	}
+	row.Harness, row.Model, row.Effort = spec.Harness, spec.Model, spec.Effort
+	row.Workdir, row.WorkdirMode, row.Options = spec.Plan.Cwd, spec.WorkdirMode, spec.Options
+	row.TmuxName = TmuxName(spec.ID)
+	row.CLISessionID, row.CLISessionState = spec.Plan.CLISession, cliStateFor(spec.Plan)
+	if spec.Cols > 0 {
+		row.Cols = spec.Cols
+	}
+	if spec.Rows > 0 {
+		row.Rows = spec.Rows
+	}
+	if err := m.st.BeginStart(&row); err != nil {
+		discard()
+		return prepared, err
+	}
+
+	if err := m.launch(ctx, &row, spec.Plan); err != nil {
+		reason := Stderr(err)
+		if state, stateErr := m.paneStateOf(ctx, row.TmuxName); stateErr == nil && state == paneMissing {
+			// Nothing ran. What this attempt left on disk goes with it: the
+			// prompt file it wrote and the directory it made, which is empty
+			// because no program ever worked in it.
+			_ = os.RemoveAll(SessionDir(m.cfg.DataDir, row.ID))
+			discard()
+			m.mu.Lock()
+			delete(m.live, row.ID)
+			m.mu.Unlock()
+			if revertErr := m.st.RevertStart(prepared, reason); revertErr != nil {
+				m.logf("could not put session %s back to prepared: %v", row.ID, revertErr)
+			}
+		} else {
+			_ = m.st.SetSessionState(row.ID, store.StateFailed, -1, reason)
+		}
+		current, getErr := m.st.GetSession(row.ID)
+		if getErr != nil {
+			return nil, err
+		}
+		return current, err
+	}
+	if err := m.st.SetSessionState(row.ID, store.StateRunning, -1, ""); err != nil {
+		return &row, err
+	}
+	return m.st.GetSession(row.ID)
+}
+
 func cliStateFor(plan harnesses.LaunchPlan) string {
 	switch {
 	case plan.CLISession != "":
@@ -580,8 +680,18 @@ func (m *Manager) writeSessionFiles(row *store.Session, plan harnesses.LaunchPla
 		return err
 	}
 	// plan.json is diagnostic - the row is what Socrates acts on - but it can
-	// carry a generated password, so it is not world readable.
-	planJSON, err := json.MarshalIndent(plan, "", "  ")
+	// carry a generated password, so it is not world readable. A transient
+	// file - the initial prompt, which the program deletes as it starts - is
+	// recorded by name only.
+	recorded := plan
+	recorded.Files = make([]harnesses.GenFile, len(plan.Files))
+	for i, f := range plan.Files {
+		if f.Transient {
+			f.Data = nil
+		}
+		recorded.Files[i] = f
+	}
+	planJSON, err := json.MarshalIndent(recorded, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -755,6 +865,9 @@ func (m *Manager) Attach(ctx context.Context, sessionID, viewerID string, cols, 
 	if err != nil {
 		return nil, err
 	}
+	if row.State == store.StatePrestart || row.TmuxName == "" {
+		return nil, ErrNotStarted
+	}
 	if cols <= 0 {
 		cols = row.Cols
 	}
@@ -926,6 +1039,11 @@ func (m *Manager) Park(ctx context.Context, sessionID string) error {
 	row, err := m.st.GetSession(sessionID)
 	if err != nil {
 		return err
+	}
+	if row.State == store.StatePrestart {
+		// There is no terminal to close, and needs_resume would turn a
+		// prepared session into one that "resumes" a program it never ran.
+		return nil
 	}
 	if err := m.stop(ctx, row); err != nil {
 		return err

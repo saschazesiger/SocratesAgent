@@ -535,6 +535,11 @@ func (a *activity) apply(ctx context.Context, rows []store.Session, panes map[st
 	seenRows := map[string]bool{}
 	for i := range rows {
 		row := rows[i]
+		if row.State == store.StatePrestart {
+			// A prepared session has no pane and does no work. It is not
+			// even filed by the detector: it is where the person put it.
+			continue
+		}
 		running := row.State == store.StateRunning || row.State == store.StateStarting
 		_, tracked := a.tracks[row.ID]
 		if !running && !tracked {
@@ -1276,8 +1281,18 @@ func (c *claudeSource) Read(_ context.Context, s snapshot) observation {
 // the config directory the pane was given - a session in a profile has one of
 // its own - or else .claude under the home directory the pane was given, and
 // under ours only as a fallback.
+//
+// A pane inherits Socrates' own environment underneath what the plan sets, so
+// a CLAUDE_CONFIG_DIR given to the whole server is the pane's too, and Claude
+// Code follows it whatever HOME says. Without this step a server started with
+// one (the browser suite does, to keep the fakes away from the machine's real
+// ~/.claude) looked for the status files under HOME, never found them, and
+// left every Claude session to the screen heuristics.
 func claudeSessionsDir(plan harnesses.LaunchPlan) string {
 	if dir := strings.TrimSpace(plan.Env["CLAUDE_CONFIG_DIR"]); dir != "" {
+		return filepath.Join(dir, "sessions")
+	}
+	if dir := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")); dir != "" {
 		return filepath.Join(dir, "sessions")
 	}
 	home := strings.TrimSpace(plan.Env["HOME"])

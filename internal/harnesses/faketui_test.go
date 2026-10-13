@@ -297,3 +297,111 @@ func TestFakeTUIRefusesAReusedClaudeSessionID(t *testing.T) {
 	lab.start("second", plan)
 	lab.waitForPane("second", "Error: Session ID "+id+" is already in use.")
 }
+
+// bigPrompt is about fifty kilobytes of everything a shell would love to get
+// wrong: quotes of both kinds, dollars, backticks, backslashes, a leading
+// dash, a line that is only "--", and text in three scripts.
+func bigPrompt() string {
+	var b strings.Builder
+	b.WriteString("-first line starts with a dash and says 'hi' \"there\"\n")
+	for i := 0; b.Len() < 50<<10; i++ {
+		b.WriteString("line ")
+		b.WriteString(strings.Repeat("x", i%7))
+		b.WriteString(" $HOME $(id) `whoami` \\n \\\\ ' \" ; | & > < * ? [a] {b} ~ # % ü ß 日本語 🙂\n")
+		if i%100 == 0 {
+			b.WriteString("--\n")
+		}
+	}
+	b.WriteString("last line\n")
+	return b.String()
+}
+
+// TestFakeTUIReceivesABigInitialPrompt sends a prompt far over tmux's sixteen
+// kilobyte command limit through a real pane, under each of the three names,
+// and checks the program received it byte for byte - which is the whole claim
+// of the wrapper in prompt.go.
+func TestFakeTUIReceivesABigInitialPrompt(t *testing.T) {
+	bin := fakeBinDir(t)
+	lab := newTmuxLab(t)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg"))
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	data := t.TempDir()
+	cwd := filepath.Join(home, "work")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeLog := filepath.Join(data, "fake.log")
+	prompt := bigPrompt()
+	// Command substitution drops trailing newlines, and only those.
+	want := strings.TrimRight(prompt, "\n")
+
+	for _, h := range []Harness{Claude{}, Codex{}, OpenCode{}} {
+		name := string(h.Kind())
+		t.Run(name, func(t *testing.T) {
+			req := PlanRequest{
+				SessionID: "big" + name, Title: "a session", Cwd: cwd,
+				Settings: config.Default(), DataDir: data, InitialPrompt: prompt,
+			}
+			plan, err := h.Plan(context.Background(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range plan.Files {
+				if err := os.MkdirAll(filepath.Dir(f.Path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(f.Path, f.Data, f.Mode); err != nil {
+					t.Fatal(err)
+				}
+			}
+			plan.Env["FAKE_LOG"] = fakeLog
+
+			lab.start(name, plan)
+			lab.waitForPane(name, "prompt: -first line starts with a dash")
+
+			raw, err := os.ReadFile(fakeLog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got struct {
+				Name   string `json:"name"`
+				Prompt string `json:"prompt"`
+			}
+			for _, line := range strings.Split(string(raw), "\n") {
+				var rec struct {
+					Name   string `json:"name"`
+					Prompt string `json:"prompt"`
+				}
+				if json.Unmarshal([]byte(line), &rec) == nil && rec.Name == name {
+					got = rec
+				}
+			}
+			if got.Prompt != want {
+				t.Fatalf("%s received a prompt of %d bytes, want %d; they first differ at %d",
+					name, len(got.Prompt), len(want), firstDiff(got.Prompt, want))
+			}
+			if _, err := os.Stat(SessionFile(data, req.SessionID, InitialPromptFile)); !os.IsNotExist(err) {
+				t.Fatalf("the prompt file outlived the start: %v", err)
+			}
+			// exec, not a child: the pane's process is the program itself.
+			if cmd := lab.run("display-message", "-p", "-t", name, "#{pane_current_command}"); cmd == "sh" {
+				t.Fatalf("the pane is still the wrapper shell")
+			}
+		})
+	}
+}
+
+func firstDiff(a, b string) int {
+	for i := 0; i < len(a) && i < len(b); i++ {
+		if a[i] != b[i] {
+			return i
+		}
+	}
+	return min(len(a), len(b))
+}

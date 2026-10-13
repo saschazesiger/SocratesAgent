@@ -116,7 +116,7 @@ func (m *Manager) Adopt(ctx context.Context) error {
 		p, ok := panes[row.TmuxName]
 		switch {
 		case !ok:
-			_ = m.st.SetSessionState(row.ID, store.StateNeedsResume, row.ExitStatus, "")
+			_ = m.st.SetSessionStateFrom(row.ID, row.State, store.StateNeedsResume, row.ExitStatus, "")
 		case p.dead:
 			m.markExited(row, p.deadStatus)
 		default:
@@ -156,7 +156,7 @@ func (m *Manager) adopt(ctx context.Context, row *store.Session, p pane) {
 	delete(m.missed, row.ID)
 	m.mu.Unlock()
 	if row.State != store.StateRunning {
-		_ = m.st.SetSessionState(row.ID, store.StateRunning, row.ExitStatus, "")
+		_ = m.st.SetSessionStateFrom(row.ID, row.State, store.StateRunning, row.ExitStatus, "")
 	}
 	// A session that outlived the Socrates which launched it still has no
 	// conversation id of its own, and the watcher that was looking for one
@@ -207,7 +207,7 @@ func (m *Manager) markLost(rows []store.Session) {
 	for i := range rows {
 		row := &rows[i]
 		if row.State == store.StateRunning || row.State == store.StateStarting {
-			_ = m.st.SetSessionState(row.ID, store.StateNeedsResume, row.ExitStatus, "")
+			_ = m.st.SetSessionStateFrom(row.ID, row.State, store.StateNeedsResume, row.ExitStatus, "")
 		}
 	}
 }
@@ -296,7 +296,7 @@ func (m *Manager) applyPanes(rows []store.Session, panes map[string]pane) {
 				continue
 			}
 			if m.noteMissing(row.ID) {
-				_ = m.st.SetSessionState(row.ID, store.StateNeedsResume, row.ExitStatus, "")
+				_ = m.st.SetSessionStateFrom(row.ID, row.State, store.StateNeedsResume, row.ExitStatus, "")
 			}
 		case p.dead:
 			m.clearMissing(row.ID)
@@ -308,14 +308,14 @@ func (m *Manager) applyPanes(rows []store.Session, panes map[string]pane) {
 				// write of a create that failed after tmux had done its part.
 				// Left alone, the next viewer waits ten seconds and then
 				// writes "failed" over a working terminal.
-				_ = m.st.SetSessionState(row.ID, store.StateRunning, -1, "")
+				_ = m.st.SetSessionStateFrom(row.ID, row.State, store.StateRunning, -1, "")
 			}
 			if row.State == store.StateExited {
 				// The pane is alive and the row says it is not. The pane is
 				// the authority: a stale hook, from a session relaunched
 				// under the same name, must not leave a working terminal
 				// behind the exit overlay for ever.
-				_ = m.st.SetSessionState(row.ID, store.StateRunning, -1, "")
+				_ = m.st.SetSessionStateFrom(row.ID, row.State, store.StateRunning, -1, "")
 			}
 		}
 	}

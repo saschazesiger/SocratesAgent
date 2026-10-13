@@ -29,6 +29,8 @@ import { mountNotify } from './notify.js';
 import { mountTransfer } from './transfer.js';
 import { mountKeyBar, keyBarWanted, setKeyBarWanted, followViewport } from './keybar.js';
 import { initKeyboard, guard, watchFrame, dictated } from './keyboard.js';
+import { mountPrestart, forgetDraft, whenShort, PRESTART_SVG, CLOCK_SVG } from './prestart.js';
+import { mountStorageBanner } from './storage.js';
 
 /* ------------------------------------------------------------- transport */
 
@@ -650,6 +652,9 @@ const state = {
   // answer for the previous session harmless after a quick row switch.
   usageTimer: null,
   usageGeneration: 0,
+  // The session that poll is for, so a newer row of the same session keeps it.
+  usageFor: '',
+  usageRefresh: null,
   // Status and the microphone, mounted once in boot().
   assist: null,
   // Copy, paste and upload, mounted once in boot().
@@ -658,6 +663,9 @@ const state = {
   // a page that could not ask uses, and they are the same numbers the settings
   // document ships with.
   terminal: { scrollback: 2000, font_size: 14, webgl: true },
+  // The panel a prepared session is shown in instead of a terminal,
+  // mounted once in boot().
+  prestart: null,
 };
 
 const dom = {};
@@ -669,13 +677,26 @@ const ids = ['sidebar', 'navScrim', 'menuBtn', 'sideCollapse', 'newSession', 'se
   'termTicker', 'tickerWindow', 'termEmpty',
   'micBtn', 'micText',
   'recSheet', 'recMeter', 'recTime', 'recSend', 'recCancel',
-  'keybar', 'logout'];
+  'keybar', 'logout', 'prestart'];
 for (const id of ids) dom[id] = document.getElementById(id);
 
 const STATE_WORDS = {
   running: 'Running', starting: 'Starting', resuming: 'Resuming',
   needs_resume: 'Not running', exited: 'Ended', failed: 'Failed',
+  prestart: 'Prepared',
 };
+
+// isPrepared is a session that has its settings and its first prompt and has
+// not been started: no terminal, no program, nothing to attach to.
+function isPrepared(session) { return !!session && session.state === 'prestart'; }
+
+// The group prepared sessions are listed in, at the very top of the list.
+// Like MORE_KEY it is not a path, so it cannot be any project's folder.
+const PRESTART_KEY = '#prestart';
+
+// listKeyOf is the group a row is drawn in: its project's folder, or the
+// prepared sessions' own group while it has not been started.
+function listKeyOf(session) { return isPrepared(session) ? PRESTART_KEY : folderKeyOf(session); }
 
 // What a session is doing, in the words the "i" uses. `unknown` has no word:
 // a row with no evidence yet says nothing rather than guessing.
@@ -781,7 +802,12 @@ function renderList() {
   // its bottom, shut until it is opened - the services first, then what is
   // finished, most recently filed first, until the server deletes it. A
   // folder's VS Code is not a row at all: it is drawn on the folder's head.
-  const folders = foldersOf(wanted);
+  // Prepared sessions are not any project's yet - nothing has run in their
+  // directory, and a dynamic one does not even exist - so they are one group
+  // of their own above every folder: what is waiting to be started.
+  const folders = foldersOf(wanted.filter((s) => !isPrepared(s)));
+  const prepared = preparedGroup(wanted);
+  if (prepared) folders.unshift(prepared);
   // The list is patched rather than rebuilt: taking a connected node out of
   // the page and putting it back restarts its animations, and a row that
   // fades in again every few seconds is a page that looks broken. The folders
@@ -841,6 +867,26 @@ function renderList() {
   for (const node of [...host.children]) {
     if (!node.classList.contains('folder') || !seenFolders.has(node.dataset.folder)) node.remove();
   }
+}
+
+// preparedGroup is the prepared sessions as a folder the list can draw, or
+// null when there are none. The ones that start by themselves come first,
+// the soonest at the top - that is the order they will happen in - and the
+// rest follow newest first.
+function preparedGroup(sessions) {
+  const rows = sessions.filter(isPrepared);
+  if (!rows.length) return null;
+  rows.sort((a, b) => {
+    const at = Number(a.start_at) || 0;
+    const bt = Number(b.start_at) || 0;
+    if (!at !== !bt) return at ? -1 : 1;
+    if (at && bt && at !== bt) return at - bt;
+    return momentOf(b) - momentOf(a);
+  });
+  return {
+    key: PRESTART_KEY, label: 'preStart', path: '', sessions: rows, ide: null,
+    shelves: Object.fromEntries(SHELVES.map((status) => [status, []])),
+  };
 }
 
 // placeRows draws one run of rows where `place` has got to. A row is looked
@@ -932,10 +978,11 @@ function toggleFolder(key) {
  */
 function openFolder(session) {
   if (!session) return;
-  const key = folderKeyOf(session);
+  const key = listKeyOf(session);
   let changed = closedFolders.delete(key);
   const status = statusOf(session);
-  if (SHELVES.includes(status) && !(session.harness === IDE && ideOf(state.sessions, key) === session)) {
+  if (!isPrepared(session) && SHELVES.includes(status)
+    && !(session.harness === IDE && ideOf(state.sessions, key) === session)) {
     const shelf = shelfKey(key, status);
     if (!closedFolders.has(shelf)) { closedFolders.add(shelf); changed = true; }
   }
@@ -963,17 +1010,22 @@ function buildFolder(folder) {
     onclick: () => toggleFolder(folder.key),
   },
   el('span', { class: 'caret', html: CARET_SVG }),
+  // The prepared sessions' group wears the mark their panel wears, so it
+  // reads as a different kind of thing from a project.
+  folder.key === PRESTART_KEY ? el('span', { class: 'folder-icon', html: PRESTART_SVG }) : null,
   el('span', { class: 'folder-name' }),
   el('span', { class: 'folder-dot', 'aria-hidden': 'true' }),
   el('span', { class: 'folder-count' }));
-  const ide = folder.status || folder.key === MORE_KEY ? null : el('button', {
+  // Nothing has run in a prepared session's directory yet, so its group has
+  // no editor to open.
+  const ide = folder.status || folder.key === MORE_KEY || folder.key === PRESTART_KEY ? null : el('button', {
     class: 'icon-btn folder-ide',
     type: 'button',
     onclick: () => openFolderIDE(folder.key),
   }, agentMark(IDE, 15));
   const attrs = folder.status
     ? { class: 'folder shelf', 'data-shelf': folder.status }
-    : { class: 'folder', 'data-folder': folder.key };
+    : { class: 'folder' + (folder.key === PRESTART_KEY ? ' prestart-group' : ''), 'data-folder': folder.key };
   return el('section', attrs,
     el('div', { class: 'folder-bar' }, head, ide),
     el('div', { class: 'folder-rows', id }));
@@ -990,7 +1042,10 @@ function updateFolder(section, folder) {
   // The whole path is technical detail, so it is where every technical string
   // on this page is: on hover, and nowhere in the words. "More Chats" and the
   // shelves have no path, so their tooltip says what they hold instead.
-  head.title = SHELF_TITLES[folder.status] || folder.path || 'Sessions in a directory of their own';
+  head.title = SHELF_TITLES[folder.status] || folder.path
+    || (folder.key === PRESTART_KEY
+      ? 'Prepared sessions: settings and a first prompt, started by hand or at a time'
+      : 'Sessions in a directory of their own');
   // Shut, a folder has to say what is behind it: the two things this page
   // exists to make noticeable - an agent that needs an answer, and one that
   // finished something nobody has seen - would otherwise be hidden by the
@@ -1076,7 +1131,14 @@ function buildRow(session) {
   },
   el('span', { class: 'row-mark' }, agentMark(session.harness, 18),
     el('span', { class: 'row-tasks', html: TASKS_SVG })),
-  el('span', { class: 'label' }),
+  // The name, and under it - for a prepared session only - the first line
+  // of its prompt, which is what tells two prepared sessions apart before
+  // either has a name of its own.
+  el('span', { class: 'row-text' },
+    el('span', { class: 'label' }),
+    el('span', { class: 'row-preview' })),
+  // When a prepared session starts by itself: a small clock and the time.
+  el('span', { class: 'row-when' }),
   el('span', { class: 'row-status' }),
   el('button', {
     class: 'icon-btn act', type: 'button', 'aria-label': 'Session actions',
@@ -1106,6 +1168,10 @@ function rowFacts(session) {
   }
   if (session.options?.profile) facts.push('Profile: ' + harnesses.profileName(session.options.profile));
   if (session.options?.ultracode) facts.push('Ultracode on');
+  if (isPrepared(session)) {
+    if (session.options?.profile_auto) facts.push('Profile: chosen when it starts');
+    if (Number(session.start_at)) facts.push('Starts by itself ' + new Date(Number(session.start_at)).toLocaleString());
+  }
   const act = activityOf(session);
   if (act && ACTIVITY_WORDS[act.state]) {
     // What it is doing, why the detector thinks so, and since when. All three
@@ -1146,6 +1212,34 @@ function updateRow(row, session) {
   row.title = sidebarCollapsed() ? session.title : '';
   const attached = !!(state.current && state.current.id === session.id);
   setClass(row, 'active', attached);
+  // A row is the same element before and after its session starts, so what
+  // only a prepared session shows is taken away again here.
+  const prepared = isPrepared(session);
+  setClass(row, 'prepared', prepared);
+  const preview = row.querySelector('.row-preview');
+  const previewText = prepared ? String(session.draft_preview || '') : '';
+  if (preview.textContent !== previewText) preview.textContent = previewText;
+  const when = row.querySelector('.row-when');
+  const startAt = prepared ? Number(session.start_at) || 0 : 0;
+  const whenText = startAt ? whenShort(startAt) : '';
+  if (when.dataset.at !== String(startAt)) {
+    when.dataset.at = String(startAt);
+    when.innerHTML = startAt ? CLOCK_SVG : '';
+    if (startAt) when.append(el('span', { class: 'row-when-time', text: whenText }));
+  } else if (startAt) {
+    // The same time can read differently tomorrow ("Tue 09:00" becomes
+    // "09:00"), so the words are drawn again even when the time is not.
+    const time = when.querySelector('.row-when-time');
+    if (time && time.textContent !== whenText) time.textContent = whenText;
+  }
+  if (startAt) {
+    const words = 'Starts by itself ' + new Date(startAt).toLocaleString();
+    when.title = words;
+    when.setAttribute('aria-label', words);
+  } else {
+    when.removeAttribute('title');
+    when.removeAttribute('aria-label');
+  }
   // The status is a mark after the name, and in progress has none: it is
   // what a session is unless somebody said otherwise.
   const status = statusOf(session);
@@ -1292,6 +1386,13 @@ async function refreshList() {
     if (state.current) {
       const fresh = sessionOf(state.current.id);
       if (fresh) applySession(fresh);
+      else if (state.prestart && state.prestart.shownId() === state.current.id) {
+        // A prepared session deleted on another device. A terminal finds
+        // out through its socket; a panel has none, and would otherwise go
+        // on saving into a session that is not there.
+        detach();
+        showEmpty();
+      }
     }
     renderList();
     // The tab was looking at a session before it lost the network, and the
@@ -1434,13 +1535,16 @@ async function deleteSession(session) {
     title: editor ? 'Close VS Code?' : 'Delete “' + session.title + '”?',
     body: editor
       ? 'The editor is stopped. What it remembers - open files, unsaved changes, layout - is kept for this folder and comes back the next time it is opened.'
-      : 'The terminal is closed and the session is removed. The working directory and everything in it are kept.',
+      : isPrepared(session)
+        ? 'The prepared session and its prompt are removed. Nothing was started.'
+        : 'The terminal is closed and the session is removed. The working directory and everything in it are kept.',
     confirmLabel: editor ? 'Close' : 'Delete',
     danger: true,
   });
   if (!yes) return;
   try {
     await api('/api/sessions/' + encodeURIComponent(session.id), { method: 'DELETE' });
+    forgetDraft(session.id);
     state.sessions = state.sessions.filter((s) => s.id !== session.id);
     if (state.current && state.current.id === session.id) {
       detach();
@@ -1448,7 +1552,8 @@ async function deleteSession(session) {
       if (next) selectSession(next.id); else showEmpty();
     }
     renderList();
-    toast(editor ? 'VS Code was closed. Its state was kept.' : 'Deleted. The working directory was kept.');
+    toast(editor ? 'VS Code was closed. Its state was kept.'
+      : isPrepared(session) ? 'Deleted.' : 'Deleted. The working directory was kept.');
   } catch (err) {
     toast(actionFailed(err, 'That session could not be deleted.'), 'error');
   }
@@ -1475,20 +1580,23 @@ function openRowMenu(anchor, id) {
   // A folder's editor is not work that is filed: it is open or it is not, and
   // closing it keeps everything it remembers, which is kept per folder.
   const editor = session.harness === IDE;
+  // A prepared session has no terminal, so no keys, no scrollback and no
+  // status to file it under yet: it can be looked at, named and deleted.
+  const prepared = isPrepared(session);
   const menu = el('div', { class: 'menu', role: 'menu' },
     item('Info', () => infoDialog(session)),
     editor ? null : item('Rename', () => renameSession(session)),
-    session.harness === 'vscode' ? null : item(dom.keybar.hidden ? 'Show key bar' : 'Hide key bar', () => {
+    session.harness === 'vscode' || prepared ? null : item(dom.keybar.hidden ? 'Show key bar' : 'Hide key bar', () => {
       const on = dom.keybar.hidden;
       setKeyBarWanted(on);
       showKeyBar(on);
     }),
-    editor ? null : el('div', { class: 'menu-label', text: 'Status' }),
-    ...(editor ? [] : STATUSES.map((one) => item(one.label, () => setStatus(session, one.id),
+    editor || prepared ? null : el('div', { class: 'menu-label', text: 'Status' }),
+    ...(editor || prepared ? [] : STATUSES.map((one) => item(one.label, () => setStatus(session, one.id),
       statusOf(session) === one.id ? 'checked' : ''))),
     el('div', { class: 'menu-sep' }),
     editor && state.current?.id === session.id ? item('Reload editor', () => attach(session)) : null,
-    item(editor ? 'Download server log' : 'Download scrollback', () => downloadJournal(session)),
+    prepared ? null : item(editor ? 'Download server log' : 'Download scrollback', () => downloadJournal(session)),
     item(editor ? 'Close VS Code' : 'Delete', () => deleteSession(session), 'danger'));
   document.body.append(menu);
   const position = (event) => {
@@ -1608,6 +1716,26 @@ function showEmpty() {
 
 // applySession draws everything about a session that is not the pane itself.
 function applySession(session) {
+  // A prepared session that has been started - by its own schedule, or on
+  // another device - becomes the terminal it now has, exactly as it does
+  // after this page's own Start. attach takes the panel down first, so this
+  // is not reached again from there.
+  if (state.prestart && state.prestart.shownId() === session.id && !isPrepared(session)) {
+    attach(session);
+    return;
+  }
+  // And the other way: a start this page saw as "starting" - and so opened
+  // a terminal for - that failed before anything ran, and was put back to
+  // prepared with the reason. The terminal has nothing to show (the server
+  // refuses a socket for a prepared row); the panel, the reason and Start
+  // come back. attach takes the terminal down first, so this is not reached
+  // again from there either.
+  if (isPrepared(session) && !(state.prestart && state.prestart.shownId() === session.id)
+    && state.current && state.current.id === session.id
+    && (state.socket || state.term || document.body.classList.contains('ide-open'))) {
+    attach(session);
+    return;
+  }
   state.current = session;
   dom.sessionTitle.textContent = session.title;
   setClass(dom.sessionTitle, 'titling', state.titling.has(session.id));
@@ -1619,8 +1747,15 @@ function applySession(session) {
   dom.termEmpty.hidden = true;
 
   // What it runs and on which model is in the list's mark and in "Info" in
-  // the session menu; the bar keeps its width for the name.
-  startUsage(session);
+  // the session menu; the bar keeps its width for the name. A prepared
+  // session has no conversation to cost anything yet, and its panel shows
+  // each profile's limits where the profile is chosen.
+  if (isPrepared(session)) {
+    stopUsage();
+    if (state.prestart) state.prestart.update(session);
+  } else {
+    startUsage(session);
+  }
 
   drawOverlay(session);
   renderList();
@@ -1632,6 +1767,8 @@ function stopUsage() {
   state.usageGeneration += 1;
   if (state.usageTimer) clearInterval(state.usageTimer);
   state.usageTimer = null;
+  state.usageFor = '';
+  state.usageRefresh = null;
   dom.sessionUsage.hidden = true;
   dom.sessionUsage.innerHTML = '';
   dom.sessionUsage.title = '';
@@ -1639,8 +1776,19 @@ function stopUsage() {
 }
 
 function startUsage(session) {
+  // applySession runs on every newer row of the session on screen - a list
+  // refresh, a rename, a found conversation - and each is a good moment to
+  // read the numbers again. But the reading on screen stays until the new one
+  // is in: starting over emptied the strip first, so the limits blinked away
+  // on every refresh and, on a phone, the bar lost its second line and the
+  // pane was resized twice for nothing.
+  if (session && state.usageTimer && state.usageFor === session.id && state.usageRefresh) {
+    state.usageRefresh();
+    return;
+  }
   stopUsage();
   if (!session || session.harness === 'vscode') return;
+  state.usageFor = session.id;
   const generation = state.usageGeneration;
   const refresh = async () => {
     try {
@@ -1652,6 +1800,7 @@ function startUsage(session) {
     } catch { /* quota is useful context, never a reason to disturb the terminal */ }
   };
   refresh();
+  state.usageRefresh = refresh;
   state.usageTimer = setInterval(refresh, USAGE_REFRESH);
 }
 
@@ -1908,6 +2057,10 @@ function detach() {
   state.live = false;
   state.resuming = false;
   if (state.transfer) state.transfer.attached();
+  // A prepared session's panel stands where the pane does; whatever comes
+  // next - a terminal, another panel, nothing - starts from the pane.
+  if (state.prestart) state.prestart.hide();
+  dom.termWrap.hidden = false;
 }
 
 /**
@@ -1924,6 +2077,15 @@ function attach(session) {
   // shut it.
   openFolder(session);
   applySession(session);
+  // A prepared session has no terminal yet: its panel is drawn instead, with
+  // no socket, no key bar and nothing to copy, paste or upload into.
+  if (isPrepared(session)) {
+    dom.termWrap.hidden = true;
+    state.prestart.show(session);
+    if (state.assist) state.assist.attached();
+    if (state.transfer) state.transfer.attached();
+    return;
+  }
   // A done session has no terminal to open, and opening it must not start one:
   // the overlay applySession drew is all there is until it is picked up.
   if (isDone(session)) return;
@@ -2282,7 +2444,11 @@ function updateStale() {
 function selectSession(id) {
   const session = sessionOf(id);
   if (!session) return;
-  if (state.current && state.current.id === id && (state.socket || document.body.classList.contains('ide-open'))) return;
+  // Already open - unless it is a prepared session showing something other
+  // than its panel, which a click is the way back from.
+  const panelShown = state.prestart && state.prestart.shownId() === id;
+  if (state.current && state.current.id === id && (panelShown
+    || (!isPrepared(session) && (state.socket || document.body.classList.contains('ide-open'))))) return;
   markRead(id);
   state.wanted = id;
   location.hash = '#' + id;
@@ -2335,6 +2501,62 @@ function measureNewPane() {
   return size;
 }
 
+// measureForStart is measureNewPane from wherever the page is: a prepared
+// session's panel stands where the pane would be, so the pane is put back
+// for the length of the measurement - one synchronous step, never painted.
+function measureForStart() {
+  if (state.term) return state.term.size();
+  const panelWas = dom.prestart.hidden;
+  const wrapWas = dom.termWrap.hidden;
+  dom.prestart.hidden = true;
+  dom.termWrap.hidden = false;
+  try {
+    return measureNewPane();
+  } finally {
+    dom.prestart.hidden = panelWas;
+    dom.termWrap.hidden = wrapWas;
+  }
+}
+
+// prepareSession stores a session with its settings and nothing else, and
+// opens its panel, where the first prompt is written and Start is pressed.
+// The size is sent along because a scheduled start has no page to measure
+// one: it starts at the size the session was prepared at.
+async function prepareSession(pick) {
+  const size = measureForStart();
+  try {
+    const data = await api('/api/sessions', {
+      method: 'POST',
+      attempts: 2,
+      timeout: 30000,
+      body: {
+        client_id: clientKey(),
+        prestart: true,
+        harness: pick.harness,
+        model: pick.model,
+        effort: pick.effort,
+        profile: pick.profile || undefined,
+        profile_auto: pick.profile_auto || undefined,
+        ultracode: pick.ultracode || undefined,
+        workdir_mode: pick.workdir_mode,
+        workdir: pick.workdir,
+        cols: size.cols || undefined,
+        rows: size.rows || undefined,
+      },
+    });
+    replaceSession(data.session);
+    state.wanted = data.session.id;
+    location.hash = '#' + data.session.id;
+    attach(data.session);
+    // The prompt is the next thing to do, so the cursor is put there. On a
+    // touch screen the field stays muted until the keyboard is asked for.
+    const field = state.prestart && state.prestart.field();
+    if (field) field.focus({ preventScroll: true });
+  } catch (err) {
+    toast(errorMessage(err), 'error');
+  }
+}
+
 async function newSession() {
   const pick = await harnesses.openNewSessionSheet();
   if (!pick) return;
@@ -2342,7 +2564,11 @@ async function newSession() {
   // being started is behind it. Leaving it open puts a list over the terminal
   // that was just asked for.
   closeNav();
-  const size = state.term ? state.term.size() : measureNewPane();
+  if (pick.prestart) {
+    await prepareSession(pick);
+    return;
+  }
+  const size = measureForStart();
   try {
     const data = await api('/api/sessions', {
       method: 'POST',
@@ -2449,7 +2675,11 @@ function wire() {
   // The on-screen keyboard, which on a touch screen this button raises and
   // puts away and nothing else does. With no field focused, it is raised for
   // the pane.
-  initKeyboard(dom.kbBtn, () => (state.term ? state.term.term.textarea : null));
+  // A prepared session has no pane; its prompt is the field there is.
+  initKeyboard(dom.kbBtn, () => {
+    if (state.term) return state.term.term.textarea;
+    return state.prestart ? state.prestart.field() : null;
+  });
   dom.logout.addEventListener('click', async () => {
     if (notifier) await notifier.signOut();
     try { await api('/api/logout', { method: 'POST' }); } catch { /* going anyway */ }
@@ -2507,7 +2737,9 @@ async function boot() {
   state.assist = mountAssist({
     dom,
     notice,
-    current: () => state.current,
+    // A prepared session has nothing to summarize and no terminal to speak
+    // into; its prompt field carries a microphone of its own.
+    current: () => (isPrepared(state.current) ? null : state.current),
     live: () => state.live,
     insert: (text) => insertIntoTerm(text),
   });
@@ -2528,7 +2760,22 @@ async function boot() {
     sessionOf,
     select: (id) => selectSession(id),
   });
+  // The panel of a prepared session. Its Start ends where a new session's
+  // does: the row it answers with replaces the prepared one, and
+  // applySession turns the panel into that session's terminal.
+  state.prestart = mountPrestart({
+    host: dom.prestart,
+    replace: (row) => replaceSession(row),
+    started: (row, error) => {
+      replaceSession(row);
+      if (error) toast('The session could not start.', 'error');
+    },
+    refresh: () => refreshList(),
+    measure: () => measureForStart(),
+  });
   followViewport();
+  // Whether the bucket is taking what is done here. Silent while it is.
+  mountStorageBanner(document.getElementById('storageBanner'));
   // Read before anything is fetched: on an offline reload this is the only
   // thing the page knows about what it was doing.
   state.wanted = location.hash.replace(/^#/, '');

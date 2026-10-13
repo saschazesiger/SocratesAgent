@@ -132,6 +132,11 @@
       </button>
     </header>
 
+    <!-- The bucket, when it is not taking what is done here: unreachable, with
+         how long and how much is waiting, or taken over by another Socrates.
+         Hidden while all is well. storage.js fills it. -->
+    <div class="storage-banner" id="storageBanner" role="status" aria-live="polite" hidden></div>
+
     <!-- The terminal takes the whole area under the bar. -->
     <div class="stage" id="stage">
       <div class="term-wrap" id="termWrap">
@@ -151,6 +156,10 @@
         <!-- Before the first session exists there is nothing to attach to. -->
         <div class="term-empty" id="termEmpty" hidden></div>
       </div>
+      <!-- A prepared session (preStart) has no terminal yet. Its panel takes
+           the pane's place: its settings, its first prompt and its Start
+           button. prestart.js draws it. -->
+      <section class="prestart" id="prestart" aria-label="Prepared session" hidden></section>
     </div>
 
     <!-- The keys a phone keyboard does not have. keybar.js fills them in; the
@@ -164,51 +173,19 @@
      rather than guessed at and corrected afterwards. -->
 <dialog class="sheet" id="newSessionSheet" aria-label="Start a new session">
   <h2 class="sheet-title">What should this session run?</h2>
-  <div class="seg-row agents" id="nsHarness" role="group" aria-label="Agent"></div>
-  <!-- The shell is not an agent: nothing is asked of it and nothing is
-       reported back. It sits on a row of its own under the agents, so the
-       choice reads as two kinds of thing. VS Code is not on the sheet at all:
-       a folder has one editor, opened from its mark in the sidebar. -->
-  <div class="seg-row agents tools" id="nsTools" role="group" aria-label="Tool"></div>
-  <div class="field" id="nsShellExecutionField" hidden>
-    <label>Shell execution</label>
-    <div class="seg-row" id="nsShellExecution" role="group" aria-label="Shell execution">
-      <button class="seg" type="button" data-value="host" aria-pressed="false">
-        <span class="seg-text"><span class="seg-label">Host</span><span class="seg-sub">redirect to host</span></span>
-      </button>
-      <button class="seg" type="button" data-value="container" aria-pressed="false">
-        <span class="seg-text"><span class="seg-label">Container</span><span class="seg-sub">run inside container</span></span>
-      </button>
-    </div>
-    <div class="hint" id="nsShellExecutionHint"></div>
-  </div>
-  <!-- Which sign-ins the session runs on. Only there when the dashboard has
-       more profiles than the default one. -->
-  <div class="field" id="nsProfileField" hidden>
-    <label>Profile</label>
-    <div id="nsProfile"></div>
-    <div class="hint" id="nsProfileHint"></div>
-  </div>
-  <div class="field" id="nsDirField">
-    <label>Working directory</label>
-    <div id="nsDir"></div>
-    <input class="input mono" type="text" id="nsDirPath" spellcheck="false" hidden
-           autocorrect="off" autocapitalize="none" placeholder="/srv/projects/socrates">
-    <div class="hint mono" id="nsDirHint"></div>
-  </div>
-  <div class="field" id="nsModelField">
-    <label>Model</label>
-    <div id="nsModel"></div>
-  </div>
-  <div class="field" id="nsEffortField" hidden>
-    <label>Effort</label>
-    <div class="seg-row" id="nsEffort" role="group" aria-label="Reasoning effort"></div>
-  </div>
-  <!-- Claude Code only. Off every time the sheet opens, and fixed for the
-       session's life once it is started. -->
-  <div class="field" id="nsUltracodeField" hidden>
-    <label>Ultracode</label>
-    <div class="seg-row" id="nsUltracode" role="group" aria-label="Ultracode">
+  <!-- The program, how a shell runs, the profile, the directory, the model,
+       the effort and Ultracode. harnesses.js draws them (settingsForm) every
+       time the sheet opens, with the ids they have always had - nsHarness,
+       nsDir, nsModelField and the rest - and the panel of a prepared session
+       draws the same controls with the same code, so the two never differ. -->
+  <div id="nsForm"></div>
+  <!-- preStart: the session is stored with these settings and a field for its
+       first prompt, and nothing runs until it is started - by hand, or at a
+       time set in its panel. Only for the programs a prompt can be handed to,
+       and off every time the sheet opens. -->
+  <div class="field" id="nsPrestartField" hidden>
+    <label>preStart</label>
+    <div class="seg-row" id="nsPrestart" role="group" aria-label="preStart">
       <button class="seg" type="button" data-value="off" aria-pressed="true">
         <span class="seg-text"><span class="seg-label">Off</span></span>
       </button>
@@ -216,7 +193,7 @@
         <span class="seg-text"><span class="seg-label">On</span></span>
       </button>
     </div>
-    <div class="hint">Dynamic workflows on every task: Claude Code orchestrates several agents for each request, which uses much more of the account's limits.</div>
+    <div class="hint">Prepare the session now and write its first prompt; it starts when you press Start, or by itself at a time you set.</div>
   </div>
   <div class="hint" id="nsHint"></div>
   <div class="sheet-actions">

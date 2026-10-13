@@ -10,9 +10,9 @@
 
 import {
   start, setup, shot, ok, scenario, skipScenario, finish, ensureNav, wait,
-  readFakeLog, killTmux, openRouterStub, sessionsOn, windowSize, scratchDir, PASSWORD, LIVE, SHOTS,
+  readFakeLog, killTmux, openRouterStub, fakeS3Switch, sessionsOn, windowSize, scratchDir, PASSWORD, LIVE, SHOTS,
 } from './harness.mjs';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 // The one thing the harness cannot hand over: when a session was last used is
 // the store's own record of what happened to it, so `folders` writes it in
@@ -2115,6 +2115,9 @@ async function createclaude() {
 
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
     const row = await sessionRow(s, id);
+    // A terminal on the page says nothing about whether the program has
+    // printed yet; the journal is waited for, then read.
+    await journalHas(s, id, 'FAKE claude');
     const banner = await journalOf(s, id);
     ok(/FAKE claude/.test(banner), 'the session is up', oneLine(banner));
     ok(/theme=light/.test(banner), 'and it was told the terminal is light',
@@ -2365,6 +2368,7 @@ async function createcodex() {
     await open(s);
     const id = await startWithModel(s.page, 'codex', null);
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    await journalHas(s, id, 'FAKE codex');
     const banner = await journalOf(s, id);
     ok(/FAKE codex/.test(banner), 'the session is up', oneLine(banner));
     ok(/theme=light/.test(banner), 'and it was told the terminal is light',
@@ -2421,6 +2425,7 @@ async function createopencode() {
     await open(s);
     const id = await startWithModel(s.page, 'opencode', null);
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    await journalHas(s, id, 'FAKE opencode');
     const banner = await journalOf(s, id);
     ok(/FAKE opencode/.test(banner), 'the session is up', oneLine(banner));
     ok(/theme=light/.test(banner), 'and it was told the terminal is light',
@@ -2528,7 +2533,7 @@ async function rebootresume() {
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
     const claudeId = await startWithModel(s.page, 'claude', 'Sonnet');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    ok(/FAKE claude/.test(await journalOf(s, claudeId)), 'the session is up',
+    ok(await journalSays(s, claudeId, 'FAKE claude', 1), 'the session is up',
       oneLine(await journalOf(s, claudeId)));
     const conversation = await conversationOf(s.page);
     ok(/^[0-9a-f-]{36}$/.test(conversation), 'which is holding a conversation',
@@ -2554,7 +2559,9 @@ async function rebootresume() {
     await s.page.goto(s.url + '/#' + claudeId, { waitUntil: 'domcontentloaded' });
     await waitForState(s, claudeId, ['running'], 40000);
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    ok(/FAKE claude/.test((await journalOf(s, claudeId)).slice(-4000)),
+    // The journal is one file for the life of the session, so it is the
+    // second banner that proves a program was started into it again.
+    ok(await journalSays(s, claudeId, 'FAKE claude', 2),
       'opening it brought Claude Code back', oneLine((await journalOf(s, claudeId)).slice(-200)));
 
     const relaunch = launchesOf(s, 'claude').slice(beforeClaude);
@@ -3026,6 +3033,7 @@ async function lighttheme() {
     const theme = (launch.argv || []).find((arg) => arg.startsWith('tui.theme')) || '';
     ok(/tui\.theme\s*=\s*"?\w/.test(theme), 'Codex was told which theme to wear', theme || 'no tui.theme');
 
+    await journalHas(s, id, 'FAKE codex');
     const banner = await journalOf(s, id);
     ok(/theme=light/.test(banner), 'and the program asked the terminal and was told "light"',
       oneLine((/FAKE codex[^\r\n]*/.exec(banner) || [''])[0]));
@@ -3143,7 +3151,10 @@ async function design() {
         harness: n.dataset.value,
         mark: (n.querySelector('.agent-mark') || { dataset: {} }).dataset.agent || 'none',
       })));
-    ok(sheetMarks.length === 5 && sheetMarks.every((one) => one.mark === one.harness),
+    // VS Code is opened from a folder's head in the list, not from the sheet
+    // (`pages` pins the same four), so the sheet names four programs.
+    ok(sheetMarks.map((one) => one.harness).join(',') === 'claude,codex,opencode,shell'
+      && sheetMarks.every((one) => one.mark === one.harness),
       'the sheet gives every harness its own mark', JSON.stringify(sheetMarks));
 
     // Where a session works is a dropdown, and it opens on a list of places
@@ -3464,7 +3475,10 @@ async function design() {
     });
     ok(admin.body === WHITE && admin.fills.every(white),
       'the dashboard is white too, cards included', JSON.stringify(admin.fills));
-    ok(admin.marks.length === 4 && admin.marks.every((m) => m !== 'none'),
+    // Every harness the catalogue has gets a card - VS Code's included - and
+    // every card its own mark.
+    ok(['shell', 'claude', 'codex', 'opencode'].every((h) => admin.marks.includes(h))
+      && admin.marks.every((m) => m !== 'none'),
       'and every harness card carries its mark', JSON.stringify(admin.marks));
 
     const paths = await s.page.evaluate(() => {
@@ -6185,6 +6199,414 @@ async function transfer() {
   } finally { await s.stop(); }
 }
 
+/* ------------------------------------------------- preStart and the bucket */
+
+// localInput is a moment the way a datetime-local field spells it: this
+// browser's local time, to the minute. The page and the suite run on the
+// same machine, so "local" is the same zone on both sides.
+function localInput(at) {
+  const d = new Date(at);
+  const two = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + two(d.getMonth() + 1) + '-' + two(d.getDate())
+    + 'T' + two(d.getHours()) + ':' + two(d.getMinutes());
+}
+
+// draftOf is the server's copy of a prepared session's prompt.
+async function draftOf(s, id) {
+  const res = await s.context.request.get(s.url + '/api/sessions/' + encodeURIComponent(id) + '/draft');
+  return res.ok() ? res.json() : { status: res.status() };
+}
+
+// panelUp waits for the panel of a prepared session to be the thing on screen.
+const panelUp = (page, timeout = 15000) =>
+  page.waitForSelector('#prestart:not([hidden]) #psPrompt', { timeout });
+
+// panelBecameTerminal waits for the panel to give way to a live terminal,
+// which is what a start - pressed here, elsewhere, or by the clock - looks
+// like from the page.
+const panelBecameTerminal = (page, timeout) => page.waitForFunction(() => {
+  const panel = document.getElementById('prestart');
+  return (!panel || panel.hidden) && !document.getElementById('termWrap').hidden
+    && !!document.querySelector('#term .xterm');
+}, null, { timeout });
+
+// The prompt a prepared session is written with: several lines, and every
+// character a shell would otherwise take for its own - which is the point,
+// because it reaches the program through a wrapper script, not a terminal.
+const PREPARED_PROMPT = 'Fix the "flaky" test in $HOME/it\'s\n'
+  + 'second line with `ticks`, a backslash \\ and ü\n'
+  + '-- and a line that looks like a flag';
+
+async function prestart() {
+  const s = await start({ viewport: { width: 1280, height: 860 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    const { page } = s;
+
+    // The sheet: preStart is offered for an agent, not for a shell, and turns
+    // the button into Prepare.
+    await ensureNav(page);
+    await page.click('#newSession');
+    await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    await page.waitForSelector('#newSessionSheet .seg[data-value="shell"]', { timeout: 10000 });
+    await page.click('#newSessionSheet .seg[data-value="shell"]');
+    const forShell = await page.$eval('#nsPrestartField', (n) => n.hidden);
+    await page.click('#newSessionSheet .seg[data-value="claude"]');
+    const forClaude = await page.$eval('#nsPrestartField', (n) => !n.hidden);
+    ok(forShell && forClaude, 'the sheet offers preStart for Claude Code and not for a shell',
+      JSON.stringify({ shellHidden: forShell, claudeShown: forClaude }));
+    const offByDefault = await page.$eval('#nsPrestart .seg[data-value="off"]', (n) => n.getAttribute('aria-pressed'));
+    await page.click('#nsPrestart .seg[data-value="on"]');
+    const label = await page.$eval('#nsStart', (n) => n.textContent.trim());
+    ok(offByDefault === 'true' && label === 'Prepare', 'it is off when the sheet opens, and on it makes the button Prepare',
+      offByDefault + ' / ' + label);
+    await page.click('#nsStart');
+    await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
+    await panelUp(page);
+    const id = await page.evaluate(() => location.hash.slice(1));
+
+    // Nothing ran: no terminal on the page, no tmux session, no launch.
+    let row = await sessionRow(s, id);
+    ok(row && row.state === 'prestart', 'the session is stored as prepared', row && row.state);
+    const quiet = await page.evaluate(() => ({
+      term: document.getElementById('termWrap').hidden,
+      keybar: document.getElementById('keybar').hidden,
+      transfer: document.getElementById('transfer').hidden,
+    }));
+    ok(quiet.term && quiet.keybar && quiet.transfer, 'the panel stands where the terminal would, with no key bar and no transfer buttons',
+      JSON.stringify(quiet));
+    ok(sessionsOn(s.data).length === 0 && launchesOf(s, 'claude').length === 0,
+      'and nothing was started for it: no tmux session, no launch',
+      sessionsOn(s.data).length + ' tmux sessions, ' + launchesOf(s, 'claude').length + ' launches');
+    const group = await page.evaluate((sid) => {
+      const first = document.querySelector('#sessionList .folder');
+      return {
+        first: first && first.dataset.folder,
+        inside: !!(first && first.querySelector('.chat-item[data-id="' + sid + '"]')),
+      };
+    }, id);
+    ok(group.first === '#prestart' && group.inside, 'its row is in the preStart group, at the very top of the list',
+      JSON.stringify(group));
+
+    // The prompt saves itself, and the bucket takes it.
+    await page.waitForFunction(() => !document.getElementById('psPrompt').disabled, null, { timeout: 10000 });
+    await page.fill('#psPrompt', PREPARED_PROMPT);
+    await page.waitForFunction(() => /Saved|Backed up/.test(document.getElementById('psSave').textContent),
+      null, { timeout: 10000 });
+    let draft = await draftOf(s, id);
+    ok(draft.text === PREPARED_PROMPT, 'the prompt reached the server as typed', JSON.stringify(draft.text));
+    const backed = await page.waitForFunction(() => /Backed up/.test(document.getElementById('psSave').textContent),
+      null, { timeout: 40000 }).then(() => true, () => false);
+    ok(backed, 'and the panel says it is backed up once the bucket has it',
+      await page.$eval('#psSave', (n) => n.textContent.trim()));
+
+    // A setting changed in the panel is saved on its own.
+    await page.waitForSelector('#psModel .combo-input', { timeout: 10000 });
+    await page.click('#psModel .combo-input');
+    await page.waitForSelector('#psModel .combo-option', { timeout: 5000 });
+    await page.click('#psModel .combo-option:has(.combo-label:text-is("Haiku"))');
+    const until = Date.now() + 8000;
+    while (Date.now() < until && (row = await sessionRow(s, id)) && row.model !== 'haiku') await wait(300);
+    ok(row && row.model === 'haiku', 'a model picked in the panel is saved with the session', row && row.model);
+
+    // A reload brings back the same text and the same choice.
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await panelUp(page);
+    const kept = await page.waitForFunction((want) => document.getElementById('psPrompt').value === want,
+      PREPARED_PROMPT, { timeout: 10000 }).then(() => true, () => false);
+    ok(kept, 'after a reload the panel shows the same prompt',
+      JSON.stringify(await page.$eval('#psPrompt', (n) => n.value)));
+    const shownModel = await page.$eval('#psModel .combo-input', (n) => n.value.trim()).catch(() => '');
+    ok(/haiku/i.test(shownModel), 'and the model that was picked', shownModel);
+
+    // Start: the same launch a new session takes, with the prompt as the
+    // program's first one.
+    await page.click('#psStart');
+    const live = await panelBecameTerminal(page, 30000).then(() => true, () => false);
+    ok(live, 'Start turns the panel into a live terminal');
+    row = await waitForState(s, id, ['running'], 20000);
+    ok(row && row.state === 'running', 'and the session is running', row && row.state);
+    const firstLine = PREPARED_PROMPT.split('\n')[0];
+    const onScreen = await awaitScreen(page, 'prompt: ' + firstLine.slice(0, 20), 20000).then(() => true, () => false);
+    ok(onScreen, 'the program shows the prompt it was started with', oneLine(await screen(page)));
+    const launch = lastLaunch(s, 'claude');
+    ok(!!launch && launch.prompt === PREPARED_PROMPT, 'it received the prompt byte for byte',
+      launch ? JSON.stringify(launch.prompt) + ' (' + launch.prompt_bytes + ' bytes)' : 'no launch');
+    ok(!!launch && /(^| )--model haiku( |$)/.test(argvOf(launch)), 'with the model chosen in the panel', argvOf(launch));
+    await typeLine(page, 'after the prompt');
+    const echoed = await awaitScreen(page, 'you said: after the prompt', 15000).then(() => true, () => false);
+    ok(echoed, 'and the terminal takes keystrokes like any other');
+    const moved = await page.evaluate((sid) => {
+      const prepared = document.querySelector('#sessionList .folder[data-folder="#prestart"]');
+      return !prepared && !!document.querySelector('#sessionList .chat-item[data-id="' + sid + '"]');
+    }, id);
+    ok(moved, 'its row left the preStart group for the ordinary ones', String(moved));
+    draft = await draftOf(s, id);
+    const refused = await s.context.request.put(s.url + '/api/sessions/' + id + '/draft',
+      { data: { text: 'too late', base_rev: draft.rev } });
+    ok(refused.status() === 409 && draft.text === PREPARED_PROMPT, 'the prompt is kept, read-only, after the start',
+      refused.status() + ' ' + JSON.stringify(draft.text));
+
+    // A start by the clock. A second prepared session, opened in the panel.
+    const made = await (await s.context.request.post(s.url + '/api/sessions', {
+      data: { prestart: true, harness: 'codex', prompt: 'started by the clock\nsecond line' },
+    })).json();
+    const sid = made.session && made.session.id;
+    // The page learns of a session made elsewhere from its list, which it
+    // reads again when the window is looked at.
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await page.waitForSelector(rowSel(sid), { timeout: 20000 });
+    await page.click(rowSel(sid) + ' .label');
+    await panelUp(page);
+    await page.waitForFunction((want) => document.getElementById('psPrompt').value === want,
+      'started by the clock\nsecond line', { timeout: 10000 }).catch(() => {});
+
+    // The panel's own control: a time two hours ahead, saved with the
+    // settings and shown on the row as a clock.
+    const later = Date.now() + 2 * 3600 * 1000 + 5 * 60 * 1000;
+    await page.fill('#psStartAt', localInput(later));
+    await page.dispatchEvent('#psStartAt', 'change');
+    let srow = null;
+    const saveBy = Date.now() + 8000;
+    while (Date.now() < saveBy && !((srow = await sessionRow(s, sid)) && srow.start_at > 0)) await wait(300);
+    ok(srow && Math.abs(srow.start_at - Math.floor(later / 60000) * 60000) < 1000,
+      'a time picked in the panel is saved as that minute', srow && new Date(srow.start_at).toISOString());
+    const hint = await page.$eval('#psStartAtHint', (n) => n.textContent.trim());
+    ok(/in 2 h/.test(hint), 'the panel says how far away it is', hint);
+    const clock = await page.waitForSelector('#sessionList .chat-item[data-id="' + sid + '"] .row-when svg',
+      { timeout: 20000 }).then(() => true, () => false);
+    ok(clock, 'and its row wears a clock and the time',
+      await page.$eval('#sessionList .chat-item[data-id="' + sid + '"] .row-when', (n) => n.textContent).catch(() => 'no row'));
+
+    // A field to the minute cannot say "five seconds from now", so the near
+    // time goes through the same PATCH the panel uses.
+    const due = Date.now() + 5000;
+    const patched = await s.context.request.patch(s.url + '/api/sessions/' + sid + '/prestart', { data: { start_at: due } });
+    ok(patched.ok(), 'a start five seconds ahead is accepted', String(patched.status()));
+    await wait(Math.max(0, due - Date.now() - 1500));
+    srow = await sessionRow(s, sid);
+    ok(srow && srow.state === 'prestart', 'it has not started early', srow && srow.state);
+    const flipped = await panelBecameTerminal(page, 45000).then(() => true, () => false);
+    const late = ((Date.now() - due) / 1000).toFixed(1);
+    ok(flipped, 'when it falls due, the open panel becomes its terminal by itself', late + ' s after the time');
+    srow = await sessionRow(s, sid);
+    ok(srow && srow.state === 'running' && !srow.start_at, 'the session is running and no longer scheduled',
+      srow && (srow.state + ', start_at ' + srow.start_at));
+    const clocked = lastLaunch(s, 'codex');
+    ok(!!clocked && clocked.prompt === 'started by the clock\nsecond line', 'and the program got its prompt',
+      clocked ? JSON.stringify(clocked.prompt) : 'no launch');
+
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+// s3restore is the reason the bucket exists: a machine that is gone, and a
+// new one with an empty data directory that comes back with everything.
+async function s3restore() {
+  const a = await start({ viewport: { width: 1280, height: 720 } });
+  let aStopped = false;
+  let ids = {};
+  let cookie = '';
+  try {
+    await setup(a.page, a.url);
+    await useDomRenderer(a);
+    const shell = await (await a.context.request.post(a.url + '/api/sessions', {
+      data: { harness: 'shell', title: 'restore shell' },
+    })).json();
+    const prepared = await (await a.context.request.post(a.url + '/api/sessions', {
+      data: { prestart: true, harness: 'claude', title: 'restore draft', prompt: PREPARED_PROMPT },
+    })).json();
+    ids = { shell: shell.session && shell.session.id, prepared: prepared.session && prepared.session.id };
+    ok(!!ids.shell && !!ids.prepared, 'server A has a running session and a prepared one', JSON.stringify(ids));
+
+    // Wait for the mirror to have nothing left to upload, so what is being
+    // tested is the restore and not a race with the flusher.
+    let status = {};
+    const until = Date.now() + 20000;
+    while (Date.now() < until) {
+      status = await (await a.context.request.get(a.url + '/api/storage')).json();
+      if (status.state === 'ok' && status.pending === 0) break;
+      await wait(400);
+    }
+    ok(status.state === 'ok' && status.pending === 0, 'and the bucket holds all of it',
+      JSON.stringify({ state: status.state, pending: status.pending, prefix: status.storage && status.storage.prefix }));
+    const cookies = await a.context.cookies(a.url);
+    cookie = cookies.map((c) => c.name + '=' + c.value).join('; ');
+
+    // Machine A goes away: the server is stopped the way a container is, and
+    // then everything it had on its disk is gone - data directory, tmux
+    // server, the panes in it.
+    await a.context.close().catch(() => {});
+    await a.browser.close().catch(() => {});
+    a.server.kill('SIGTERM');
+    const outcome = await Promise.race([a.exited, wait(15000).then(() => 'timeout')]);
+    if (outcome === 'timeout') a.server.kill('SIGKILL');
+    ok(outcome !== 'timeout', 'server A stopped cleanly, letting go of the bucket', JSON.stringify(outcome));
+    const released = a.log.join('');
+    killTmux(a.data);
+    rmSync(a.data, { recursive: true, force: true });
+    aStopped = true;
+    ok(!/storage: .*(failed|error)/i.test(released), 'and said nothing about failing to flush',
+      oneLine((released.match(/storage: [^\n]*/g) || []).join(' | ') || 'no storage lines'));
+  } catch (err) {
+    ok(false, 'server A set the scene', String(err && err.stack || err));
+  } finally {
+    if (!aStopped) {
+      // Something went wrong before A was taken down on purpose: tidy it the
+      // usual way so nothing leaks, and leave B out of it.
+      await a.stop();
+      return;
+    }
+  }
+
+  // Machine B: a new data directory, the same bucket and prefix.
+  const b = await start({ viewport: { width: 1280, height: 720 }, s3prefix: a.s3prefix });
+  try {
+    ok(b.data !== a.data, 'server B runs on a data directory of its own', b.data);
+    const state = await (await fetch(b.url + '/api/state')).json();
+    ok(state.mode === 'normal' && state.setup_required === false,
+      'it starts from the bucket, with no setup to do', JSON.stringify({ mode: state.mode, setup_required: state.setup_required }));
+    const carried = await (await fetch(b.url + '/api/state', { headers: { cookie } })).json();
+    ok(carried.authenticated === true, 'the sign-in made on server A is still valid on server B', String(carried.authenticated));
+
+    await b.page.goto(b.url + '/login', { waitUntil: 'domcontentloaded' });
+    await b.page.fill('#password', PASSWORD);
+    await b.page.click('#submit');
+    await b.page.waitForFunction(() => location.pathname === '/', null, { timeout: 15000 }).catch(() => {});
+    await b.page.waitForSelector('#newSession', { timeout: 15000 });
+    ok(true, 'the same password signs in');
+
+    const listed = ((await (await b.context.request.get(b.url + '/api/sessions')).json()).sessions || []);
+    const byId = Object.fromEntries(listed.map((x) => [x.id, x]));
+    ok(byId[ids.shell] && byId[ids.shell].title === 'restore shell'
+      && byId[ids.prepared] && byId[ids.prepared].title === 'restore draft',
+      'both sessions are listed, under the same ids and names',
+      listed.map((x) => x.title + ':' + x.state).join(', '));
+    ok(byId[ids.prepared] && byId[ids.prepared].state === 'prestart', 'the prepared one is still prepared',
+      byId[ids.prepared] && byId[ids.prepared].state);
+    ok(byId[ids.shell] && byId[ids.shell].state !== 'running', 'and the one whose pane was on machine A is not taken for running',
+      byId[ids.shell] && byId[ids.shell].state);
+    const draft = await draftOf(b, ids.prepared);
+    ok(draft.text === PREPARED_PROMPT, 'the prepared prompt is intact', JSON.stringify(draft.text));
+    const settings = await (await b.context.request.get(b.url + '/api/settings')).json();
+    const webgl = settings && settings.settings && settings.settings.terminal && settings.settings.terminal.webgl;
+    ok(webgl === false, 'and so is a setting made on server A', JSON.stringify(webgl));
+
+    await b.page.evaluate((target) => { location.hash = '#' + target; }, ids.prepared);
+    await panelUp(b.page);
+    const shown = await b.page.waitForFunction((want) => document.getElementById('psPrompt').value === want,
+      PREPARED_PROMPT, { timeout: 10000 }).then(() => true, () => false);
+    ok(shown, 'the panel on server B shows it');
+    ok(unexpected(b.errors).length === 0, 'no console errors', unexpected(b.errors).join(' | ') || '0');
+  } finally { await b.stop(); }
+}
+
+// storageOf is the short storage summary a signed-in page is given.
+async function storageOf(s) {
+  const state = await (await s.context.request.get(s.url + '/api/state')).json();
+  return state.storage || {};
+}
+
+// awaitStorage polls the summary until `test` holds, and answers with the
+// last one either way.
+async function awaitStorage(s, test, timeout) {
+  const until = Date.now() + timeout;
+  let st = await storageOf(s);
+  while (Date.now() < until && !test(st)) {
+    await wait(500);
+    st = await storageOf(s);
+  }
+  return st;
+}
+
+// bannerOf is what the storage banner shows, read off the page after it has
+// been told to look again - the page reads the state on a wake, which is
+// what a person coming back to the tab does.
+async function bannerOf(page, test, timeout = 15000) {
+  const read = () => page.evaluate(() => {
+    const node = document.getElementById('storageBanner');
+    return { shown: !!node && !node.hidden, kind: node ? node.dataset.kind || '' : '', text: node ? node.textContent.trim() : '' };
+  });
+  const until = Date.now() + timeout;
+  let seen = await read();
+  while (Date.now() < until && !test(seen)) {
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await wait(700);
+    seen = await read();
+  }
+  return seen;
+}
+
+async function storagebanner() {
+  const a = await start({ viewport: { width: 1280, height: 720 } });
+  let b = null;
+  try {
+    await setup(a.page, a.url);
+    await open(a);
+    let banner = await bannerOf(a.page, (x) => !x.shown, 3000);
+    ok(!banner.shown, 'with the bucket answering there is no storage banner', JSON.stringify(banner));
+
+    // The bucket goes away. A change made now is kept here and queued.
+    await fakeS3Switch('down?status=503');
+    try {
+      await a.context.request.post(a.url + '/api/sessions', {
+        data: { prestart: true, harness: 'claude', title: 'written while offline', prompt: 'kept here' },
+      });
+      const st = await awaitStorage(a, (x) => x.state === 'offline', 20000);
+      ok(st.state === 'offline' && st.pending > 0, 'the server notices and counts what is waiting',
+        JSON.stringify({ state: st.state, pending: st.pending, error: st.last_error }));
+      banner = await bannerOf(a.page, (x) => x.shown && x.kind === 'offline');
+      ok(banner.shown && /^Storage unreachable since \d\d:\d\d\. \d+ changes? (is|are) waiting to be backed up\./.test(banner.text),
+        'the page says the storage is unreachable, since when, and how much is waiting', banner.text);
+    } finally {
+      await fakeS3Switch('up');
+    }
+    const back = await awaitStorage(a, (x) => x.state === 'ok' && x.pending === 0, 90000);
+    ok(back.state === 'ok' && back.pending === 0, 'once the bucket answers again the queue goes up by itself',
+      JSON.stringify({ state: back.state, pending: back.pending }));
+    banner = await bannerOf(a.page, (x) => !x.shown);
+    ok(!banner.shown, 'and the banner leaves', JSON.stringify(banner));
+
+    // A second Socrates on the same bucket: it may not start while this one
+    // holds it, it says who does, and it can take it over with the password.
+    b = await start({ viewport: { width: 1280, height: 720 }, s3prefix: a.s3prefix });
+    const waiting = await (await fetch(b.url + '/api/state')).json();
+    const connect = waiting.connect || {};
+    ok(waiting.mode === 'connect' && connect.reason === 'leased' && !!(connect.lease && connect.lease.host),
+      'a second server on the same bucket waits on the connect page, naming the holder',
+      JSON.stringify({ mode: waiting.mode, reason: connect.reason, host: connect.lease && connect.lease.host }));
+    await b.page.goto(b.url + '/setup', { waitUntil: 'domcontentloaded' });
+    await b.page.waitForSelector('#takeoverBox:not([hidden])', { timeout: 10000 });
+    const says = await b.page.$eval('#storageReason', (n) => n.textContent.trim()).catch(() => '');
+    ok(/in use by/.test(says), 'its page says the bucket is in use, and by whom', says);
+    await b.page.fill('#takeoverPassword', PASSWORD);
+    await b.page.click('#takeoverBtn');
+    const until = Date.now() + 60000;
+    let mode = 'connect';
+    while (Date.now() < until && mode !== 'normal') {
+      await wait(500);
+      try { mode = (await (await fetch(b.url + '/api/state')).json()).mode; } catch { /* restarting */ }
+    }
+    ok(mode === 'normal', 'the password takes the bucket over, and the second server starts', mode);
+
+    // The first one finds out the next time it writes, and stops writing.
+    await a.context.request.put(a.url + '/api/settings', { data: { settings: { terminal: { webgl: false } } } });
+    const fenced = await awaitStorage(a, (x) => x.fenced, 45000);
+    ok(fenced.fenced && fenced.state === 'fenced', 'the first server sees the lease is no longer its own',
+      JSON.stringify({ state: fenced.state, holder: fenced.lease && fenced.lease.host }));
+    banner = await bannerOf(a.page, (x) => x.shown && x.kind === 'fenced');
+    ok(banner.shown && /^Another Socrates( \([^)]+\))? took over this bucket\. Changes made here are no longer backed up\./.test(banner.text),
+      'and its page says another Socrates took the bucket over', banner.text);
+    const bad = unexpected(a.errors, RESTART_NOISE);
+    ok(bad.length === 0, 'no console errors', bad.join(' | ') || '0');
+  } finally {
+    if (b) await b.stop();
+    await a.stop();
+  }
+}
+
 // -------------------------------------------------------------------- run
 
 const ALL = [
@@ -6239,6 +6661,9 @@ const ALL = [
   ['clipboard', 'copy and paste: the keys, a plain drag, a click, a middle click, and OSC 52', clipboard],
   ['touchcopy', 'a finger held on the pane selects, grows and copies', touchcopy],
   ['transfer', 'copy, paste and upload buttons, a pasted image, and the phone layout', transfer],
+  ['prestart', 'a prepared session: its prompt kept and backed up, Start, and a start by the clock', prestart],
+  ['s3restore', 'a machine that is gone, and a new data directory that comes back from the bucket', s3restore],
+  ['storagebanner', 'the bucket unreachable, then taken over: what the page says, and that it leaves', storagebanner],
   ['livesession', 'one real session against the real Claude Code CLI', livesession, { live: true }],
 ];
 

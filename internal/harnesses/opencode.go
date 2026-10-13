@@ -92,8 +92,14 @@ func OpenCodeAccess(sessionID string) (ServerAccess, bool) {
 func ForgetOpenCodeAccess(sessionID string) { openCodeSecrets.Delete(sessionID) }
 
 // Plan builds a fresh session on a port of its own.
+//
+// An initial prompt is --prompt, and only a fresh plan carries one.
 func (o OpenCode) Plan(ctx context.Context, req PlanRequest) (LaunchPlan, error) {
-	return o.plan(req, nil)
+	plan, err := o.plan(req, nil)
+	if err != nil {
+		return plan, err
+	}
+	return withInitialPrompt(plan, req, openCodePrompt), nil
 }
 
 // ResumePlan continues a stored session, on a new port: the old one belonged

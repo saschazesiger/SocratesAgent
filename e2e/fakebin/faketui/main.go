@@ -50,6 +50,19 @@ import (
 // that a loaded machine does not report a false "unknown".
 const probeWindow = 300 * time.Millisecond
 
+// bootDelay is how long the fake takes to paint its banner, the way every
+// real CLI takes a moment: they are Node programs and spend a few hundred
+// milliseconds loading. Socrates attaches a pane's journal with its own tmux
+// command just after new-session, so what a pane prints in its first
+// milliseconds is on the screen but not in the journal. No real CLI is that
+// fast, and a fake that was - tmux answers the colour queries itself, in
+// microseconds - lost its banner from the journal, which is where half the
+// suite reads it. The wait is after the colour probe, which must not hold
+// keystrokes (it reads stdin for the answer), and after the launch is logged,
+// so FAKE_LOG is as early as it always was; what is typed meanwhile waits in
+// the input channel for the prompt.
+const bootDelay = 250 * time.Millisecond
+
 func main() {
 	name := filepath.Base(os.Args[0])
 	args := os.Args[1:]
@@ -68,6 +81,14 @@ func main() {
 	input := readStdin()
 	theme := probeTheme(input)
 
+	// The first prompt, when the session was prepared with one, comes after
+	// every option: everything from "--" on is operands, and the flag
+	// lookups below must not mistake a prompt that mentions -m for a model.
+	prompt, hasPrompt := initialPrompt(name, args)
+	if i := indexOf(args, "--"); i >= 0 {
+		args = args[:i]
+	}
+
 	cwd, _ := os.Getwd()
 	// Codex takes its working root as -C, OpenCode as the positional project
 	// path that comes after every flag. Both are read here, so that the fake's
@@ -85,7 +106,7 @@ func main() {
 		model = valueOf(args, "-m")
 	}
 
-	logLaunch(name, args, cwd)
+	logLaunch(name, os.Args[1:], cwd, prompt, hasPrompt)
 
 	session, err := startSession(name, args, cwd)
 	if err != nil {
@@ -94,7 +115,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	out("FAKE %s theme=%s cwd=%s model=%s argv=%d\r\n", name, theme, cwd, model, len(args))
+	time.Sleep(bootDelay)
+	out("FAKE %s theme=%s cwd=%s model=%s argv=%d\r\n", name, theme, cwd, model, len(os.Args)-1)
+	if hasPrompt {
+		// One line, whatever the prompt holds: a suite asserts on it with a
+		// screen capture, and a fifty kilobyte prompt painted in full would
+		// scroll the banner away.
+		first, _, _ := strings.Cut(prompt, "\n")
+		out("prompt: %s (%d bytes)\r\n", first, len(prompt))
+	}
 	out("> ")
 
 	line := make([]byte, 0, 256)
@@ -646,7 +675,7 @@ func themeOf(seen string) string {
 
 // logLaunch appends this launch to $FAKE_LOG as one JSON object, so a scenario
 // can assert the exact flags the launcher built without reading a screen.
-func logLaunch(name string, args []string, cwd string) {
+func logLaunch(name string, args []string, cwd, prompt string, hasPrompt bool) {
 	path := os.Getenv("FAKE_LOG")
 	if path == "" {
 		return
@@ -656,10 +685,17 @@ func logLaunch(name string, args []string, cwd string) {
 		key, value, _ := strings.Cut(kv, "=")
 		env[key] = value
 	}
-	record, err := json.Marshal(map[string]any{
+	fields := map[string]any{
 		"name": name, "argv": args, "cwd": cwd, "pid": os.Getpid(),
 		"at": time.Now().UnixMilli(), "env": env,
-	})
+	}
+	if hasPrompt {
+		// The whole prompt, so a test can compare it byte for byte with what
+		// was typed into the draft.
+		fields["prompt"] = prompt
+		fields["prompt_bytes"] = len(prompt)
+	}
+	record, err := json.Marshal(fields)
 	if err != nil {
 		return
 	}
@@ -669,6 +705,36 @@ func logLaunch(name string, args []string, cwd string) {
 	}
 	defer func() { _ = f.Close() }()
 	_, _ = f.Write(append(record, '\n'))
+}
+
+// initialPrompt is the first prompt the launcher handed over, in the form each
+// real CLI takes it: Claude Code and Codex as the positional argument after
+// "--", OpenCode as --prompt=<text>.
+func initialPrompt(name string, args []string) (string, bool) {
+	if name == "opencode" {
+		for _, a := range args {
+			if value, ok := strings.CutPrefix(a, "--prompt="); ok {
+				return value, true
+			}
+		}
+		if value := valueOf(args, "--prompt"); value != "" {
+			return value, true
+		}
+		return "", false
+	}
+	if i := indexOf(args, "--"); i >= 0 && i+1 < len(args) {
+		return args[i+1], true
+	}
+	return "", false
+}
+
+func indexOf(args []string, want string) int {
+	for i, a := range args {
+		if a == want {
+			return i
+		}
+	}
+	return -1
 }
 
 // valueOf returns the argument after a flag, and "" when the flag is absent.
