@@ -4,16 +4,16 @@
 // CLIs this app exists to drive need all of them. So the keys they lack are a
 // row of buttons that write the same bytes a real key would.
 //
-// It is off until it is asked for, on every device. A bar that decided for
-// itself whether this machine has a keyboard was wrong on the two devices that
-// matter most - a tablet in a case, a laptop with a touch screen - and being
-// wrong about it means either a row of buttons nobody wanted or the missing
-// keys nowhere to be found. The session menu is one tap, and the answer is
-// remembered for this device.
+// It is on by default on a touch screen and off everywhere else, and the
+// session menu turns it on or off for this device, which is remembered and
+// wins from then on. A guess about the hardware is wrong on a tablet in a case
+// or a laptop with a touch screen, and that is what the menu is for; but a
+// phone with no Escape and no arrows in sight is the case the bar exists for,
+// and having to go looking for it there was the worse of the two mistakes.
 
 import { el, toast, setClass } from './api.js';
-import { lastCopied } from './term.js';
-import { onHandsFree } from './handsfree.js';
+import { pasteClipboard } from './term.js';
+import { touchScreen } from './keyboard.js';
 
 /* ---------------------------------------------------------- the key bar */
 
@@ -33,7 +33,6 @@ const KEYS = [
   { label: '^D', send: '\x04', name: 'Ctrl-D' },
   { label: '^Z', send: '\x1a', name: 'Ctrl-Z' },
   { label: 'Paste', paste: true, name: 'Paste' },
-  { label: '⌨', keyboard: true, name: 'Keyboard' },
 ];
 
 const KEYBAR_PREF = 'socrates.term.keybar';
@@ -46,13 +45,17 @@ function isTypedKey(data) {
 }
 
 /**
- * keyBarWanted is whether this device has asked for the bar. Nothing else
- * decides: no media query, no platform string, no keystroke seen. Off is the
- * default, because the bar is the answer to a question - "where is Escape?" -
- * that most sessions never ask.
+ * keyBarWanted is whether the bar is shown on this device: what the session
+ * menu last answered here, or - before it has been asked - whether this is a
+ * touch screen.
  */
 export function keyBarWanted() {
-  try { return localStorage.getItem(KEYBAR_PREF) === 'on'; } catch { return false; }
+  let saved = null;
+  try { saved = localStorage.getItem(KEYBAR_PREF); } catch { /* a private window */ }
+  if (saved === 'on') return true;
+  if (saved === 'off') return false;
+  // The same generous question the keyboard switch asks.
+  return touchScreen();
 }
 
 /** setKeyBarWanted records the answer the session menu gave. */
@@ -73,8 +76,6 @@ export function mountKeyBar(host, term, socket) {
   // 'ctrl' | 'alt' -> 'on' (next key only) | 'lock' (until tapped again)
   const armed = new Map();
   const buttons = new Map();
-  // The key that raises the phone's own keyboard, which hands-free takes away.
-  let keyboardKey = null;
 
   const paint = () => {
     for (const [mod, button] of buttons) {
@@ -147,13 +148,7 @@ export function mountKeyBar(host, term, socket) {
       buttons.set(key.mod, button);
       button.addEventListener('click', () => toggle(key.mod));
     } else if (key.paste) {
-      button.addEventListener('click', () => { consume(); paste(term, send); });
-    } else if (key.keyboard) {
-      keyboardKey = button;
-      // Synchronously, inside the handler: iOS raises the keyboard for a
-      // focus() that a tap caused and for nothing else, and an `await`
-      // anywhere before this line is what loses that permission.
-      button.addEventListener('click', () => { if (term && term.textarea) term.textarea.focus(); });
+      button.addEventListener('click', () => { consume(); pasteClipboard(term, send); });
     } else {
       button.addEventListener('click', () => send(apply(key.send)));
     }
@@ -164,44 +159,16 @@ export function mountKeyBar(host, term, socket) {
   }
 
   paint();
-  // The one key on this bar whose whole purpose is to raise the on-screen
-  // keyboard. Hands-free is the promise that nothing does, so while it is
-  // armed the key is not there - and the bar itself is, whatever this device
-  // asked for, because it is now the only keyboard left (session.js).
-  const unwatch = onHandsFree((hands) => { if (keyboardKey) keyboardKey.hidden = hands; });
   return {
     apply,
     /** clear disarms everything, for a bar that is being put away. */
     clear() { if (armed.size) { armed.clear(); paint(); } },
     /** armedNow is what the scenarios and the bar itself read back. */
     armedNow: () => [...armed.entries()].map(([mod, state]) => mod + ':' + state).join(','),
-    dispose() { unwatch(); host.innerHTML = ''; armed.clear(); buttons.clear(); },
+    dispose() { host.innerHTML = ''; armed.clear(); buttons.clear(); },
   };
 }
 
-// paste puts the clipboard into the pane, bracketed when the program asked to
-// be told that a paste is a paste - which is what stops an editor from
-// auto-indenting every line of it.
-//
-// A phone reaching this app over plain http has no `navigator.clipboard` at
-// all, and one that has it can still refuse to be read - so what was last
-// copied out of the pane itself is the fallback. That is the round trip a
-// phone actually makes: hold a line to copy it, tap Paste to put it back.
-async function paste(term, send) {
-  let text = '';
-  try {
-    text = await navigator.clipboard.readText();
-  } catch {
-    text = lastCopied();
-    if (!text) {
-      toast('The browser would not let the clipboard be read.', 'error');
-      return;
-    }
-  }
-  if (!text) return;
-  const bracketed = !!(term && term.modes && term.modes.bracketedPasteMode);
-  send(bracketed ? '\x1b[200~' + text + '\x1b[201~' : text);
-}
 
 /* --------------------------------------------------------- the viewport */
 

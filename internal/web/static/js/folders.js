@@ -54,11 +54,14 @@ export function momentOf(session) {
  * is applied here too so a row moves the moment the frame arrives rather
  * than at the next fetch of the list. A change into idle from anything but
  * busy is not on the list on purpose: it is what every running session
- * reports when the detector comes up after a restart.
+ * reports when the detector comes up after a restart - and neither is a
+ * change into `tasks` (the turn is over, something it started still runs)
+ * from anything but busy. A change out of `tasks` is work ending, as one out
+ * of busy is.
  */
 export function movesRow(prev, next) {
   if (!next || prev === next) return false;
-  return next === 'busy' || prev === 'busy' || next === 'waiting';
+  return next === 'busy' || prev === 'busy' || prev === 'tasks' || next === 'waiting';
 }
 
 /**
@@ -136,15 +139,49 @@ function nameFolders(folders) {
 }
 
 /**
+ * SHELVES are the statuses that take a session out of its folder's list and
+ * onto a shelf at the bottom of the same folder: a service left running on
+ * purpose, and work that is finished. They are still that project's, so they
+ * stay in its folder - out of the way, not somewhere else. The order here is
+ * the order they are drawn in.
+ */
+export const SHELVES = ['background', 'done'];
+
+/**
+ * IDE is the harness a folder has one of. VS Code is not started from the
+ * new-session sheet but from the folder's own mark, and it is not a row: it
+ * is the folder's editor, so it is drawn on the folder.
+ */
+export const IDE = 'vscode';
+
+/**
+ * ideOf is the editor of a folder: the VS Code session working in it that was
+ * used last. A folder of sessions with directories of their own has none -
+ * "More Chats" is not a place anybody would open an editor on.
+ */
+export function ideOf(sessions, key) {
+  if (key === MORE_KEY) return null;
+  let found = null;
+  for (const session of sessions || []) {
+    if (!session || session.harness !== IDE || session.status === 'done') continue;
+    if (folderKeyOf(session) !== key) continue;
+    if (!found || momentOf(session) > momentOf(found)) found = session;
+  }
+  return found;
+}
+
+/**
  * foldersOf is the sidebar, worked out: one folder per project directory and
  * one for everything Socrates housed itself, each holding its sessions newest
- * first.
+ * first, its shelved sessions most recently filed first, and its editor.
  *
  * The folders are ordered by the session that moved most recently in each, so
  * the project being worked on is at the top and stays there while it is being
  * worked on - the same rule the rows themselves have always had, one level
- * up. "More Chats" is last whatever is in it: it is where a session goes for
- * having no project, so it cannot be allowed to sit above the projects.
+ * up. A shelved session or the editor only orders a folder that has nothing
+ * else in it: neither is the work. "More Chats" is last whatever is in it: it
+ * is where a session goes for having no project, so it cannot be allowed to
+ * sit above the projects.
  *
  * Ties keep the order the server gave, because Array.sort is stable and the
  * server lists the sessions newest first.
@@ -155,17 +192,33 @@ export function foldersOf(sessions) {
     if (!session) continue;
     const key = folderKeyOf(session);
     const folder = byKey.get(key);
-    if (folder) folder.sessions.push(session);
-    else byKey.set(key, { key, path: key === MORE_KEY ? '' : key, label: '', at: 0, sessions: [session] });
+    if (folder) folder.all.push(session);
+    else byKey.set(key, { key, path: key === MORE_KEY ? '' : key, label: '', at: 0, all: [session] });
   }
   const folders = [...byKey.values()];
   for (const folder of folders) {
+    folder.ide = ideOf(folder.all, folder.key);
+    folder.sessions = [];
+    folder.shelves = Object.fromEntries(SHELVES.map((status) => [status, []]));
+    for (const session of folder.all) {
+      if (session === folder.ide) continue;
+      if (SHELVES.includes(session.status)) folder.shelves[session.status].push(session);
+      else folder.sessions.push(session);
+    }
+    delete folder.all;
     folder.sessions.sort((a, b) => momentOf(b) - momentOf(a));
-    folder.at = folder.sessions.length ? momentOf(folder.sessions[0]) : 0;
+    for (const status of SHELVES) {
+      folder.shelves[status].sort((a, b) => (Number(b.status_at) || 0) - (Number(a.status_at) || 0));
+    }
+    const rest = [folder.ide, ...SHELVES.flatMap((status) => folder.shelves[status])];
+    folder.at = folder.sessions.length
+      ? momentOf(folder.sessions[0])
+      : Math.max(0, ...rest.map(momentOf));
   }
   nameFolders(folders);
   folders.sort((a, b) => {
     if ((a.key === MORE_KEY) !== (b.key === MORE_KEY)) return a.key === MORE_KEY ? 1 : -1;
+    if (!a.sessions.length !== !b.sessions.length) return a.sessions.length ? -1 : 1;
     return b.at - a.at;
   });
   return folders;

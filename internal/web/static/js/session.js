@@ -21,13 +21,14 @@ import {
 } from './api.js';
 import { connectionSource } from './net.js';
 import { agentMark } from './logos.js';
-import { MORE_KEY, foldersOf, folderKeyOf, momentOf, movesRow } from './folders.js';
+import { MORE_KEY, SHELVES, IDE, foldersOf, folderKeyOf, ideOf, momentOf, movesRow } from './folders.js';
 import * as harnesses from './harnesses.js';
 import { createTerm, measurePane, loadTerminalFonts } from './term.js';
 import { mountAssist } from './assist.js';
 import { mountNotify } from './notify.js';
+import { mountTransfer } from './transfer.js';
 import { mountKeyBar, keyBarWanted, setKeyBarWanted, followViewport } from './keybar.js';
-import { handsFree, setHandsFree, onHandsFree, dictated } from './handsfree.js';
+import { initKeyboard, guard, watchFrame, dictated } from './keyboard.js';
 
 /* ------------------------------------------------------------- transport */
 
@@ -651,6 +652,8 @@ const state = {
   usageGeneration: 0,
   // Status and the microphone, mounted once in boot().
   assist: null,
+  // Copy, paste and upload, mounted once in boot().
+  transfer: null,
   // How the terminal is drawn, from the dashboard. The defaults here are what
   // a page that could not ask uses, and they are the same numbers the settings
   // document ships with.
@@ -659,8 +662,9 @@ const state = {
 
 const dom = {};
 const ids = ['sidebar', 'navScrim', 'menuBtn', 'sideCollapse', 'newSession', 'sessionList',
-  'activityLive', 'sessionHarness', 'sessionTitle', 'sessionStatus', 'sessionUsage', 'termSize',
-  'statusBtn', 'handsBtn', 'soundBtn', 'notifyBtn', 'sessionMenu',
+  'activityLive', 'sessionTitle', 'sessionStatus', 'sessionUsage',
+  'transfer', 'copyBtn', 'pasteBtn', 'uploadBtn',
+  'statusBtn', 'kbBtn', 'soundBtn', 'notifyBtn', 'sessionMenu',
   'stage', 'termWrap', 'term', 'termOverlay', 'termLines', 'termNotice',
   'termTicker', 'tickerWindow', 'termEmpty',
   'micBtn', 'micText',
@@ -675,7 +679,20 @@ const STATE_WORDS = {
 
 // What a session is doing, in the words the "i" uses. `unknown` has no word:
 // a row with no evidence yet says nothing rather than guessing.
-const ACTIVITY_WORDS = { busy: 'Working', idle: 'Waiting for an instruction', waiting: 'Needs an answer' };
+const ACTIVITY_WORDS = {
+  busy: 'Working',
+  idle: 'Waiting for an instruction',
+  waiting: 'Needs an answer',
+  tasks: 'Turn finished · a background task is still running',
+};
+
+// The hourglass a row's mark carries while the agent's turn is over and
+// something it started - a background shell, a monitor, a sub-agent - is
+// still running: not working, and not done either.
+const TASKS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+  + '<path d="M5 2.5h14M5 21.5h14"/><path d="M7 2.5v2.2c0 2.6 5 4.6 5 7.3 0 2.7-5 4.7-5 7.3v2.2"/>'
+  + '<path d="M17 2.5v2.2c0 2.6-5 4.6-5 7.3 0 2.7 5 4.7 5 7.3v2.2"/>'
+  + '<path d="M8.5 20.5c0-1.6 3.5-3 3.5-4.5 0 1.5 3.5 2.9 3.5 4.5z" fill="currentColor" stroke-width="1"/></svg>';
 
 /**
  * activityOf is what a session is doing, for the page to draw.
@@ -759,16 +776,12 @@ function renderList() {
   // between two fetches bumps the moment locally, so the order inside a
   // folder - and the order of the folders themselves - is worked out here,
   // from the same moment the server sorted by.
-  // Background and done sessions are not part of the project work: each sits
-  // in one folder of its own at the bottom, shut until it is opened - the
-  // services first, then what is finished, most recently filed first, until
-  // the server deletes it.
-  const folders = foldersOf(wanted.filter((s) => !OWN_FOLDER[statusOf(s)]));
-  for (const [status, key] of Object.entries(OWN_FOLDER)) {
-    const filed = wanted.filter((s) => statusOf(s) === status)
-      .sort((a, b) => (Number(b.status_at) || 0) - (Number(a.status_at) || 0));
-    if (filed.length) folders.push({ key, label: STATUS_WORDS[status], path: '', sessions: filed });
-  }
+  // Background and done sessions are not the work in progress, but they are
+  // still their project's: each folder keeps them on a shelf of its own at
+  // its bottom, shut until it is opened - the services first, then what is
+  // finished, most recently filed first, until the server deletes it. A
+  // folder's VS Code is not a row at all: it is drawn on the folder's head.
+  const folders = foldersOf(wanted);
   // The list is patched rather than rebuilt: taking a connected node out of
   // the page and putting it back restarts its animations, and a row that
   // fades in again every few seconds is a page that looks broken. The folders
@@ -776,6 +789,7 @@ function renderList() {
   // whose session finishes a turn, and so moves to the top of its folder, has
   // to keep the element it already had while it moves.
   const seenFolders = new Set();
+  const seenShelves = new Set();
   const seenRows = new Set();
   // placer walks one parent: it puts a node where the walk has got to, and
   // only if it is not there already. The list is two walks - the folders, and
@@ -795,30 +809,50 @@ function renderList() {
     const section = host.querySelector('.folder[data-folder="' + cssId(folder.key) + '"]')
       || buildFolder(folder);
     placeFolder(section);
-    const rows = section.querySelector('.folder-rows');
-    const placeRow = placer(rows);
-    for (const session of folder.sessions) {
-      seenRows.add(session.id);
-      // A row is looked for in the whole list rather than under this folder:
-      // whichever folder it was drawn in last time, it is the same session,
-      // and it keeps the element - and the animation - it already had.
-      const found = host.querySelector('.chat-item[data-id="' + cssId(session.id) + '"]');
-      if (found) updateRow(found, session);
-      placeRow(found || buildRow(session));
+    const placeRow = placer(section.querySelector(':scope > .folder-rows'));
+    placeRows(host, placeRow, folder.sessions, seenRows);
+    // The shelves come after the rows, inside the same folder, so shutting
+    // the folder puts them away with everything else in it.
+    for (const status of SHELVES) {
+      const filed = folder.shelves[status];
+      if (!filed.length) continue;
+      const shelf = { key: shelfKey(folder.key, status), status, label: STATUS_WORDS[status], path: '', sessions: filed };
+      const node = section.querySelector(':scope > .folder-rows > .shelf[data-shelf="' + status + '"]')
+        || buildFolder(shelf);
+      seenShelves.add(node);
+      placeRow(node);
+      placeRows(host, placer(node.querySelector(':scope > .folder-rows')), filed, seenRows);
+      updateFolder(node, shelf);
     }
     updateFolder(section, folder);
   }
-  // What is left over: a session that was deleted, and
-  // a folder whose last session went with it. The rows are swept after every
-  // folder has been walked rather than folder by folder, because a row that
-  // moved to a folder further down the list has not been drawn yet while the
-  // one it left is being tidied, and sweeping it there would throw away the
+  // What is left over: a session that was deleted, and a folder or a shelf
+  // whose last session went with it. The rows are swept after every folder
+  // has been walked rather than folder by folder, because a row that moved
+  // to a folder further down the list has not been drawn yet while the one
+  // it left is being tidied, and sweeping it there would throw away the
   // element it is about to be put back into.
   for (const row of [...host.querySelectorAll('.chat-item')]) {
     if (!seenRows.has(row.dataset.id)) row.remove();
   }
+  for (const shelf of [...host.querySelectorAll('.shelf')]) {
+    if (!seenShelves.has(shelf)) shelf.remove();
+  }
   for (const node of [...host.children]) {
     if (!node.classList.contains('folder') || !seenFolders.has(node.dataset.folder)) node.remove();
+  }
+}
+
+// placeRows draws one run of rows where `place` has got to. A row is looked
+// for in the whole list rather than under this folder: whichever folder it
+// was drawn in last time, it is the same session, and it keeps the element -
+// and the animation - it already had.
+function placeRows(host, place, sessions, seen) {
+  for (const session of sessions) {
+    seen.add(session.id);
+    const found = host.querySelector('.chat-item[data-id="' + cssId(session.id) + '"]');
+    if (found) updateRow(found, session);
+    place(found || buildRow(session));
   }
 }
 
@@ -843,19 +877,22 @@ function cssId(id) { return String(id).replace(/\\/g, '\\\\').replace(/"/g, '\\"
 const FOLDERS_KEY = 'socrates.folders';
 const closedFolders = new Set();
 
-// The folders of background and done sessions. They are the two that start
-// shut - a service is meant to run unseen, and what is done is finished - so
-// for them the set records the opposite: being in it means the person opened
-// it. The order here is the order they are drawn in.
-const BACKGROUND_KEY = '#background';
-const DONE_KEY = '#done';
-const OWN_FOLDER = { background: BACKGROUND_KEY, done: DONE_KEY };
-const FOLDER_TITLES = {
-  [BACKGROUND_KEY]: 'Background sessions: services left running on purpose, never deleted',
-  [DONE_KEY]: 'Done sessions: their terminals are closed, and each is deleted a day after it was marked done',
+// The shelves of background and done sessions inside each folder. They are
+// the two that start shut - a service is meant to run unseen, and what is
+// done is finished - so for them the set records the opposite: being in it
+// means the person opened it. A shelf's key is its folder's and its status,
+// joined by a character no path and no status can hold.
+function shelfKey(folderKey, status) { return folderKey + '\u0000' + status; }
+function shelfOf(key) {
+  const at = key.lastIndexOf('\u0000');
+  return at < 0 ? '' : key.slice(at + 1);
+}
+const SHELF_TITLES = {
+  background: 'Background sessions: services left running on purpose, never deleted',
+  done: 'Done sessions: their terminals are closed, and each is deleted a day after it was marked done',
 };
 
-function shutByDefault(key) { return key === BACKGROUND_KEY || key === DONE_KEY; }
+function shutByDefault(key) { return SHELVES.includes(shelfOf(key)); }
 
 function folderOpen(key) {
   return shutByDefault(key) ? closedFolders.has(key) : !closedFolders.has(key);
@@ -889,17 +926,20 @@ function toggleFolder(key) {
  * It is called when one is attached rather than when one is clicked: a row
  * inside a shut folder cannot be clicked at all, and the session this tab is
  * meant to be on - the one in the address, or the one just started - has to
- * be on screen whatever the folder it landed in was left as.
+ * be on screen whatever the folder it landed in was left as. A shelved
+ * session needs its shelf opened as well as its folder; an editor is on the
+ * folder's head, which is on screen whenever the folder is.
  */
 function openFolder(session) {
   if (!session) return;
-  const own = OWN_FOLDER[statusOf(session)];
-  if (own) {
-    if (closedFolders.has(own)) return;
-    closedFolders.add(own);
-  } else if (!closedFolders.delete(folderKeyOf(session))) {
-    return;
+  const key = folderKeyOf(session);
+  let changed = closedFolders.delete(key);
+  const status = statusOf(session);
+  if (SHELVES.includes(status) && !(session.harness === IDE && ideOf(state.sessions, key) === session)) {
+    const shelf = shelfKey(key, status);
+    if (!closedFolders.has(shelf)) { closedFolders.add(shelf); changed = true; }
   }
+  if (!changed) return;
   saveFolders();
   renderList();
 }
@@ -907,36 +947,50 @@ function openFolder(session) {
 const CARET_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"'
   + ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
 
+// A folder is its head and its rows; a shelf is the same shape one level
+// down, inside its folder's rows. A project folder's head carries one more
+// control beside the name: the mark of VS Code, which opens the folder's
+// editor. It is a button beside the head rather than inside it, because a
+// button cannot hold another.
 function buildFolder(folder) {
   folderSeq += 1;
   const id = 'folder-rows-' + folderSeq;
-  return el('section', { class: 'folder', 'data-folder': folder.key },
-    el('button', {
-      class: 'folder-head',
-      type: 'button',
-      'aria-expanded': 'true',
-      'aria-controls': id,
-      onclick: () => toggleFolder(folder.key),
-    },
-    el('span', { class: 'caret', html: CARET_SVG }),
-    el('span', { class: 'folder-name' }),
-    el('span', { class: 'folder-dot', 'aria-hidden': 'true' }),
-    el('span', { class: 'folder-count' })),
+  const head = el('button', {
+    class: 'folder-head',
+    type: 'button',
+    'aria-expanded': 'true',
+    'aria-controls': id,
+    onclick: () => toggleFolder(folder.key),
+  },
+  el('span', { class: 'caret', html: CARET_SVG }),
+  el('span', { class: 'folder-name' }),
+  el('span', { class: 'folder-dot', 'aria-hidden': 'true' }),
+  el('span', { class: 'folder-count' }));
+  const ide = folder.status || folder.key === MORE_KEY ? null : el('button', {
+    class: 'icon-btn folder-ide',
+    type: 'button',
+    onclick: () => openFolderIDE(folder.key),
+  }, agentMark(IDE, 15));
+  const attrs = folder.status
+    ? { class: 'folder shelf', 'data-shelf': folder.status }
+    : { class: 'folder', 'data-folder': folder.key };
+  return el('section', attrs,
+    el('div', { class: 'folder-bar' }, head, ide),
     el('div', { class: 'folder-rows', id }));
 }
 
 function updateFolder(section, folder) {
   const open = folderOpen(folder.key);
-  const head = section.querySelector('.folder-head');
-  const rows = section.querySelector('.folder-rows');
+  const head = section.querySelector(':scope > .folder-bar > .folder-head');
+  const rows = section.querySelector(':scope > .folder-rows');
   setClass(section, 'closed', !open);
   head.setAttribute('aria-expanded', open ? 'true' : 'false');
   rows.hidden = !open;
   head.querySelector('.folder-name').textContent = folder.label;
   // The whole path is technical detail, so it is where every technical string
-  // on this page is: on hover, and nowhere in the words. "More Chats" has no
-  // path, so its tooltip says what it holds instead.
-  head.title = FOLDER_TITLES[folder.key] || folder.path || 'Sessions in a directory of their own';
+  // on this page is: on hover, and nowhere in the words. "More Chats" and the
+  // shelves have no path, so their tooltip says what they hold instead.
+  head.title = SHELF_TITLES[folder.status] || folder.path || 'Sessions in a directory of their own';
   // Shut, a folder has to say what is behind it: the two things this page
   // exists to make noticeable - an agent that needs an answer, and one that
   // finished something nobody has seen - would otherwise be hidden by the
@@ -954,12 +1008,63 @@ function updateFolder(section, folder) {
     const live = session.state === 'running' || session.state === 'starting' || session.state === 'resuming';
     if (!live) continue;
     if (act.state === 'waiting') waiting = true;
-    if (act.state === 'busy') busy = true;
+    // Work left running behind a finished turn is still something going on
+    // in there, and the closed folder says so the same quiet way.
+    if (act.state === 'busy' || act.state === 'tasks') busy = true;
   }
   setClass(head, 'waiting', waiting);
   setClass(head, 'busy', busy && !waiting);
   setClass(head, 'unread', unread);
-  head.querySelector('.folder-count').textContent = String(folder.sessions.length);
+  let count = folder.sessions.length;
+  if (folder.shelves) for (const status of SHELVES) count += folder.shelves[status].length;
+  head.querySelector('.folder-count').textContent = String(count);
+  const ide = section.querySelector(':scope > .folder-bar > .folder-ide');
+  if (ide) updateIDEButton(ide, folder);
+}
+
+// updateIDEButton draws the VS Code mark of a folder: coloured while the
+// folder's editor is running, grey while there is none or it is stopped, and
+// pressed while it is the one on screen. Where VS Code is switched off and
+// the folder has no editor to return to, the mark is not there.
+function updateIDEButton(button, folder) {
+  const ide = folder.ide;
+  const usable = harnesses.ideAvailable();
+  button.hidden = !ide && !usable;
+  const running = !!ide && (ide.state === 'running' || ide.state === 'starting');
+  const shown = !!ide && !!state.current && state.current.id === ide.id;
+  setClass(button, 'running', running);
+  setClass(button, 'active', shown);
+  button.setAttribute('aria-pressed', shown ? 'true' : 'false');
+  const words = (running ? 'VS Code is open in ' : 'Open VS Code in ') + folder.label;
+  button.title = words;
+  button.setAttribute('aria-label', words);
+}
+
+// The folders a VS Code is being asked for right now, so that a second tap
+// on the same mark waits for the first rather than asking again.
+const openingIDE = new Set();
+
+/**
+ * openFolderIDE is the VS Code mark of a folder: the folder's editor, opened
+ * in the pane. A folder that has one opens it, and one that does not asks the
+ * server for it - which answers with the one it has if another tab made it in
+ * the meantime, so there is still only ever one per folder.
+ */
+async function openFolderIDE(key) {
+  const found = ideOf(state.sessions, key);
+  if (found) { selectSession(found.id); return; }
+  if (openingIDE.has(key)) return;
+  openingIDE.add(key);
+  try {
+    const data = await api('/api/ide', { method: 'POST', attempts: 2, timeout: 60000, body: { workdir: key } });
+    replaceSession(data.session);
+    if (data.error) toast('VS Code could not start.', 'error');
+    selectSession(data.session.id);
+  } catch (err) {
+    toast(errorMessage(err), 'error');
+  } finally {
+    openingIDE.delete(key);
+  }
 }
 
 function buildRow(session) {
@@ -969,7 +1074,8 @@ function buildRow(session) {
     role: 'button',
     tabindex: '0',
   },
-  el('span', { class: 'row-mark' }, agentMark(session.harness, 18)),
+  el('span', { class: 'row-mark' }, agentMark(session.harness, 18),
+    el('span', { class: 'row-tasks', html: TASKS_SVG })),
   el('span', { class: 'label' }),
   el('span', { class: 'row-status' }),
   el('button', {
@@ -998,6 +1104,8 @@ function rowFacts(session) {
   if (session.harness === 'shell' && session.options?.shell_execution) {
     facts.push('Execution: ' + (session.options.shell_execution === 'host' ? 'Host' : 'Container'));
   }
+  if (session.options?.profile) facts.push('Profile: ' + harnesses.profileName(session.options.profile));
+  if (session.options?.ultracode) facts.push('Ultracode on');
   const act = activityOf(session);
   if (act && ACTIVITY_WORDS[act.state]) {
     // What it is doing, why the detector thinks so, and since when. All three
@@ -1057,17 +1165,22 @@ function updateRow(row, session) {
   // turns into a ring that spins while the harness is working and stands
   // still, in amber, while it is waiting for an answer, and a name that has
   // finished something nobody has seen is bold. The session being looked at
-  // is never bold - it is not unread, it is open.
+  // is never bold - it is not unread, it is open. A turn that is over while
+  // something it started still runs has no ring - nothing is being worked on
+  // - and a small hourglass on the mark's corner instead.
   const act = activityOf(session);
   const mark = row.querySelector('.row-mark');
   const live = session.state === 'running' || session.state === 'starting' || session.state === 'resuming';
   const busy = live && !!act && act.state === 'busy';
   const waiting = live && !!act && act.state === 'waiting';
   setClass(mark, 'busy', busy);
+  const tasks = live && !!act && act.state === 'tasks';
   setClass(mark, 'waiting', waiting);
+  setClass(mark, 'tasks', tasks);
   let word = STATE_WORDS[session.state] || session.state;
   if (busy) word = ACTIVITY_WORDS.busy;
   if (waiting) word = ACTIVITY_WORDS.waiting;
+  if (tasks) word = ACTIVITY_WORDS.tasks;
   mark.title = word;
   setClass(row, 'unread', !!act && !!act.unread && !attached);
 }
@@ -1140,7 +1253,10 @@ function announce(id, next, prev) {
   if (!next.unread || (prev && prev.unread)) return;
   const who = harnesses.label(session.harness) || session.title;
   let line = '';
-  if (prev && prev.state === 'busy' && next.state !== 'busy' && next.state !== 'waiting') line = who + ' finished';
+  // A turn that ends with something left running is not finished; leaving
+  // that state is (the server sets no unread mark on the way into it).
+  const before = prev && (prev.state === 'busy' || prev.state === 'tasks');
+  if (before && next.state !== 'busy' && next.state !== 'tasks' && next.state !== 'waiting') line = who + ' finished';
   if (next.state === 'waiting' && (!prev || prev.state !== 'waiting')) line = who + ' needs an answer';
   if (!line) return;
   announcePending = line;
@@ -1235,8 +1351,8 @@ function promptTitle(current) {
     dialog.append(
       el('h2', { class: 'modal-title', text: 'Rename this session' }),
       // A name is a sentence somebody says about a session, so it is one of
-      // the fields that can be spoken instead of typed - and in hands-free it
-      // is the only way this dialog can be answered at all.
+      // the fields that can be spoken instead of typed - and with the
+      // keyboard put away it is the only way this dialog can be answered.
       el('div', { class: 'field' }, dictated(input, input)),
       el('div', { class: 'modal-actions' }, cancel, accept),
     );
@@ -1313,10 +1429,13 @@ async function setStatus(session, status) {
 }
 
 async function deleteSession(session) {
+  const editor = session.harness === IDE;
   const yes = await confirmDialog({
-    title: 'Delete “' + session.title + '”?',
-    body: 'The terminal is closed and the session is removed. The working directory and everything in it are kept.',
-    confirmLabel: 'Delete',
+    title: editor ? 'Close VS Code?' : 'Delete “' + session.title + '”?',
+    body: editor
+      ? 'The editor is stopped. What it remembers - open files, unsaved changes, layout - is kept for this folder and comes back the next time it is opened.'
+      : 'The terminal is closed and the session is removed. The working directory and everything in it are kept.',
+    confirmLabel: editor ? 'Close' : 'Delete',
     danger: true,
   });
   if (!yes) return;
@@ -1329,7 +1448,7 @@ async function deleteSession(session) {
       if (next) selectSession(next.id); else showEmpty();
     }
     renderList();
-    toast('Deleted. The working directory was kept.');
+    toast(editor ? 'VS Code was closed. Its state was kept.' : 'Deleted. The working directory was kept.');
   } catch (err) {
     toast(actionFailed(err, 'That session could not be deleted.'), 'error');
   }
@@ -1353,24 +1472,24 @@ function openRowMenu(anchor, id) {
   const session = sessionOf(id);
   if (!session) return;
   closeMenu();
+  // A folder's editor is not work that is filed: it is open or it is not, and
+  // closing it keeps everything it remembers, which is kept per folder.
+  const editor = session.harness === IDE;
   const menu = el('div', { class: 'menu', role: 'menu' },
     item('Info', () => infoDialog(session)),
-    item('Rename', () => renameSession(session)),
-    // Hands-free is holding the bar on, and it is the only keyboard there is
-    // while it does, so there is nothing here to offer: an item that answered
-    // "hide" with a bar still on screen would be the menu lying.
-    (handsFree() || session.harness === 'vscode') ? null : item(dom.keybar.hidden ? 'Show key bar' : 'Hide key bar', () => {
+    editor ? null : item('Rename', () => renameSession(session)),
+    session.harness === 'vscode' ? null : item(dom.keybar.hidden ? 'Show key bar' : 'Hide key bar', () => {
       const on = dom.keybar.hidden;
       setKeyBarWanted(on);
       showKeyBar(on);
     }),
-    el('div', { class: 'menu-label', text: 'Status' }),
-    ...STATUSES.map((one) => item(one.label, () => setStatus(session, one.id),
-      statusOf(session) === one.id ? 'checked' : '')),
+    editor ? null : el('div', { class: 'menu-label', text: 'Status' }),
+    ...(editor ? [] : STATUSES.map((one) => item(one.label, () => setStatus(session, one.id),
+      statusOf(session) === one.id ? 'checked' : ''))),
     el('div', { class: 'menu-sep' }),
-    session.harness === 'vscode' && state.current?.id === session.id ? item('Reload editor', () => attach(session)) : null,
-    item(session.harness === 'vscode' ? 'Download server log' : 'Download scrollback', () => downloadJournal(session)),
-    item('Delete', () => deleteSession(session), 'danger'));
+    editor && state.current?.id === session.id ? item('Reload editor', () => attach(session)) : null,
+    item(editor ? 'Download server log' : 'Download scrollback', () => downloadJournal(session)),
+    item(editor ? 'Close VS Code' : 'Delete', () => deleteSession(session), 'danger'));
   document.body.append(menu);
   const position = (event) => {
     if (event?.target === menu) return;
@@ -1477,11 +1596,10 @@ function showEmpty() {
     unreachable ? null : el('button', { class: 'btn primary', type: 'button', text: 'New session', onclick: newSession }),
   );
   dom.sessionTitle.textContent = 'Socrates';
-  dom.sessionHarness.hidden = true;
   stopUsage();
   dom.sessionMenu.hidden = true;
   if (state.assist) state.assist.attached();
-  dom.termSize.hidden = true;
+  if (state.transfer) state.transfer.attached();
   dom.sessionStatus.hidden = true;
   dom.termOverlay.hidden = true;
   clearNotice();
@@ -1500,14 +1618,8 @@ function applySession(session) {
   dom.sessionMenu.hidden = false;
   dom.termEmpty.hidden = true;
 
-  // The mark and the name of what it runs. Everything else the machine knows
-  // about this session is one place only: "Info" in the session menu.
-  dom.sessionHarness.hidden = false;
-  dom.sessionHarness.innerHTML = '';
-  dom.sessionHarness.append(
-    agentMark(session.harness, 16),
-    el('span', { class: 'b-model', text: session.model || harnesses.label(session.harness) }),
-  );
+  // What it runs and on which model is in the list's mark and in "Info" in
+  // the session menu; the bar keeps its width for the name.
   startUsage(session);
 
   drawOverlay(session);
@@ -1549,15 +1661,15 @@ function drawUsage(usage) {
   const details = [];
   for (const window of windows) {
     const used = Math.max(0, Math.min(100, Math.round(Number(window.used_percent) || 0)));
+    // How long until the window renews is shown, not only hovered: whether
+    // 80% is a problem depends on whether it is gone in ten minutes.
+    const left = harnesses.untilReset(window);
     parts.push(el('span', { class: 'usage-part' },
       el('span', { class: 'usage-label', text: window.label }),
-      el('span', { text: used + '%' })));
-    let detail = window.label + ': ' + used + '% used';
-    if (window.resets_at) {
-      const reset = new Date(window.resets_at);
-      if (!Number.isNaN(reset.getTime())) detail += ' · resets ' + reset.toLocaleString();
-    }
-    details.push(detail);
+      el('span', { text: used + '%' }),
+      left ? el('span', { class: 'usage-reset' }, '(' + left,
+        el('span', { class: 'usage-left', text: ' left' }), ')') : null));
+    details.push(window.label + ': ' + used + '% used' + (left ? ' · ' + harnesses.resetDetail(window) : ''));
   }
   if (Number.isFinite(usage && usage.cost_usd)) {
     const value = Number(usage.cost_usd);
@@ -1795,6 +1907,7 @@ function detach() {
   setClass(dom.termWrap, 'stale', false);
   state.live = false;
   state.resuming = false;
+  if (state.transfer) state.transfer.attached();
 }
 
 /**
@@ -1818,7 +1931,6 @@ function attach(session) {
   if (notifier) notifier.hush(session.id);
   if (session.harness === 'vscode') {
     document.body.classList.add('ide-open');
-    dom.termSize.hidden = true;
     openIDE(session, ideGeneration);
     return;
   }
@@ -1851,7 +1963,6 @@ function attach(session) {
       socketRef.socket.sendInput(bytes);
     },
     onResize: (cols, rows) => {
-      showSize(cols, rows);
       if (socketRef.socket) socketRef.socket.resize(cols, rows);
     },
     fitTo: dom.termWrap,
@@ -1871,10 +1982,12 @@ function attach(session) {
   socketRef.socket = socket;
   state.socket = socket;
   state.keybar = mountKeyBar(dom.keybar, state.term.term, socket);
-  showKeyBar(keyBarShown());
+  showKeyBar(keyBarWanted());
+  if (state.transfer) state.transfer.attached();
   // A pane that has just been built has an ordinary text field behind it, and
-  // hands-free is a promise about every one of them.
-  state.term.screenKeyboard(!handsFree());
+  // it is focused below in this same tick - before the keyboard switch would
+  // otherwise have seen it.
+  guard(state.term.term.textarea);
   // The two controls in the header. A recording that belonged to the session
   // before this one is cancelled here, so its words can never be typed into
   // the terminal that has just taken the screen.
@@ -1921,6 +2034,8 @@ async function openIDE(session, generation) {
           // that - which is the one thing on this page that reads as broken.
           words.textContent = 'Loading the editor…';
           dom.term.replaceChildren(frame, loading);
+          // The editor's fields are under the keyboard switch like the page's.
+          watchFrame(frame);
           onStatus('live');
           revealIDE(frame, loading, current);
           return;
@@ -1985,12 +2100,6 @@ function revealIDE(frame, loading, current) {
 // whether it has a keyboard, because the two that matter - a tablet in a
 // case, a laptop with a touch screen - are the two it would get wrong. The
 // session menu is the one way in, and the answer is kept per device.
-//
-// Hands-free is the one thing that overrules the answer, and it overrules it
-// on: with the on-screen keyboard shut for good, this bar is where Escape,
-// Tab, the arrows and the Enter that runs a dictated line are, and there is
-// nowhere else they could be.
-function keyBarShown() { return keyBarWanted() || handsFree(); }
 
 function showKeyBar(on) {
   dom.keybar.hidden = !on;
@@ -2042,11 +2151,6 @@ function titleFrame(frame) {
   }
 }
 
-function showSize(cols, rows) {
-  dom.termSize.hidden = false;
-  dom.termSize.textContent = cols + '×' + rows;
-}
-
 /**
  * insertIntoTerm puts one line into the pane as if it had been typed.
  *
@@ -2083,7 +2187,6 @@ function onControl(sessionId, frame) {
       // start, and a turn that finished while it was away is still news.
       if (notifier && state.resuming) notifier.hush(sessionId);
       if (frame.session) applySession({ ...state.current, ...frame.session });
-      if (frame.size) showSize(frame.size.cols, frame.size.rows);
       // A handshake carries every running session's activity, so a reconnect
       // and a reload both re-draw the sidebar without asking for anything.
       mergeActivity(frame.activity);
@@ -2113,7 +2216,6 @@ function onControl(sessionId, frame) {
       break;
     case 'size':
       if (frame.by === 'other') {
-        showSize(frame.cols, frame.rows);
         notice('resized', 'Another viewer resized this session to ' + frame.cols + '×' + frame.rows + '.');
         if (state.term) state.term.refit();
       }
@@ -2252,6 +2354,8 @@ async function newSession() {
         model: pick.model,
         effort: pick.effort,
         shell_execution: pick.shell_execution,
+        profile: pick.profile || undefined,
+        ultracode: pick.ultracode || undefined,
         workdir_mode: pick.workdir_mode,
         workdir: pick.workdir,
         cols: size.cols || undefined,
@@ -2342,24 +2446,12 @@ function wire() {
   dom.sessionTitle.addEventListener('click', () => {
     if (state.current) renameSession(state.current);
   });
-  // Hands-free, and everything that has to change with it. The mode belongs
-  // to this device rather than to a session, so the button is in the bar
-  // whether or not one is attached, and the answer outlives every one of them.
-  dom.handsBtn.addEventListener('click', () => setHandsFree(!handsFree()));
-  onHandsFree((on) => {
-    setClass(dom.handsBtn, 'on', on);
-    dom.handsBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
-    const words = on
-      ? 'Hands-free is on: nothing opens the keyboard'
-      : 'Hands-free is off: fields open the keyboard';
-    dom.handsBtn.title = words;
-    dom.handsBtn.setAttribute('aria-label', words);
-    if (state.term) state.term.screenKeyboard(!on);
-    // With nothing attached there is no keyboard to replace, and `detach` and
-    // `showEmpty` put the bar away for exactly that reason.
-    showKeyBar(!!state.term && keyBarShown());
-  });
+  // The on-screen keyboard, which on a touch screen this button raises and
+  // puts away and nothing else does. With no field focused, it is raised for
+  // the pane.
+  initKeyboard(dom.kbBtn, () => (state.term ? state.term.term.textarea : null));
   dom.logout.addEventListener('click', async () => {
+    if (notifier) await notifier.signOut();
     try { await api('/api/logout', { method: 'POST' }); } catch { /* going anyway */ }
     location.href = '/login';
   });
@@ -2419,6 +2511,14 @@ async function boot() {
     live: () => state.live,
     insert: (text) => insertIntoTerm(text),
   });
+  // Copy, paste and upload, for whichever terminal is on screen.
+  state.transfer = mountTransfer({
+    dom,
+    current: () => state.current,
+    term: () => (state.term ? state.term.term : null),
+    send: (data) => { if (state.socket) state.socket.sendInput(data); },
+    focus: () => { if (state.term) state.term.focus(); },
+  });
   // The chime and the notification. Mounted here rather than in mountAssist
   // because they are not about the session on screen: they fire for whichever
   // session finished, and their two switches are in the bar whether or not
@@ -2434,7 +2534,9 @@ async function boot() {
   state.wanted = location.hash.replace(/^#/, '');
   state.loading = true;
   renderList();
-  harnesses.load().catch(() => { /* the sheet says so when it is opened */ });
+  // The catalogue decides whether a folder offers VS Code, so the list is
+  // drawn again once it is in.
+  harnesses.load().then(() => renderList()).catch(() => { /* the sheet says so when it is opened */ });
   try {
     const prefs = await api('/api/preferences', { attempts: 1, timeout: 8000 });
     if (prefs && prefs.terminal) state.terminal = { ...state.terminal, ...prefs.terminal };

@@ -2,6 +2,29 @@
 
 **Revision 4** (2026-09-02). Supersedes revisions 1, 2 and 3 in full.
 
+- **rev 10** (2026-10-07) — **Web Push, uploads, and copy and paste as buttons.** The bell now
+  subscribes this browser to Web Push where it can (a worker, a push manager, a secure context):
+  the server keeps a VAPID key and the subscriptions in the kv table (`push.vapid`,
+  `push.subscriptions`), applies the page's own chime rule to every committed activity change and
+  sends the news itself (`internal/webpush`, standard library only; `internal/server/push.go`),
+  and the worker shows it; the page's own notification stands down on a subscribed device. The
+  page links a manifest, because iOS allows push only to an installed web app. `POST
+  /api/sessions/{id}/upload` writes files into `<workdir>/.socrates/uploads/` (with a `.gitignore`
+  of `*`) and the page pastes their paths onto the prompt — from a top-bar button, a file dropped
+  on the pane, or an image pasted into it. Copy and Paste are top-bar buttons too; Copy with
+  nothing selected opens the pane's text in a sheet. On a phone the three float under the bar
+  over the pane's top corner (`transfer.js`). The pane's size (`#termSize`, the `120×40` beside the
+  name) is gone from the header; a resize by another viewer is still said in a notice.
+  The key bar is on by default on a touch screen (`(hover: none) and (pointer: coarse)`) and off
+  elsewhere; the session menu's answer, once given, is remembered per device and wins.
+- **rev 9** (2026-09-28) — hands-free is replaced by **the keyboard switch**: on a touch screen
+  (`(hover: none) and (pointer: coarse)`) the on-screen keyboard is raised and put away by
+  `#kbBtn` in the top bar and by nothing else. Every field — the pane's hidden textarea, every
+  input, the VS Code frame's editor — is muted (`inputmode="none"` and read-only) until the button
+  is pressed; a copy of the button is laid over the same spot in whichever modal dialog is on top,
+  so it can be pressed everywhere. The key bar's `⌨` key is gone and the key bar is this device's
+  choice again. Nothing is remembered. Passages changed by it carry `<!-- rev 9 -->`; §D.7 of
+  `docs/design/ACTIVITY.md` is the detail.
 - **rev 8** (2026-09-04) — **hands-free**, a mode armed from the top bar and remembered for this
   device, in which nothing on the page may raise the on-screen keyboard: every field is muted and
   read-only, the pane's hidden textarea is muted with them, the key bar's keyboard key stands down
@@ -1941,7 +1964,7 @@ internal/web/static/
     term.js                  NEW: xterm.js wiring, theme, addons, fit
     keybar.js                NEW: the key bar, off until the session menu asks for it
     dictate.js               NEW: the one microphone, the one recording sheet, and the top bar's pill
-    handsfree.js             NEW: <!-- rev 8 --> the mode in which nothing opens the keyboard
+    keyboard.js              NEW: <!-- rev 9 --> the switch that alone raises the on-screen keyboard, and the fields' microphones
     voice.js                 kept verbatim
     admin.js                 rewritten for the new sections
     markdown.js              DELETED (no transcript any more)
@@ -2334,12 +2357,9 @@ and being wrong about it means either a row of buttons nobody wanted or the miss
 to be found. One tap in the ⋯ menu is cheaper than either, and the answer is remembered for this
 device.
 
-<!-- rev 8 --> **Hands-free overrules that answer, and overrules it on.** With the on-screen
-keyboard shut for good (`ACTIVITY.md` §D.7) this bar is where `Esc`, `Tab`, the arrows and the
-`⏎` that runs a dictated line are, and there is nowhere else they could be — so `session.js`
-shows it on `keyBarWanted() || handsFree()`, the ⋯ menu stops offering to hide it while the mode
-is armed, and the `⌨` key, whose only purpose is to raise the keyboard, is `hidden` for the whole
-of it. Disarming puts all three back where this device left them.
+<!-- rev 9 --> Nothing overrules that answer any more. Hands-free (rev 8) held the bar on; the
+keyboard switch (`ACTIVITY.md` §D.7) can always raise the keyboard, so the bar is shown on
+`keyBarWanted()` alone and the ⋯ menu always offers it, except for VS Code.
 
 Keys, one row, horizontally scrollable, each `button.key[data-send]`:
 
@@ -2355,16 +2375,14 @@ Keys, one row, horizontally scrollable, each `button.key[data-send]`:
 | `^D` | `\x04` |
 | `^Z` | `\x1a` |
 | `Paste` | <!-- rev 7 --> `navigator.clipboard.readText()` then send, bracketed if the term asked for it; a clipboard that cannot be read falls back to `lastCopied()` from `term.js` — the last text copied out of the pane on this page — because a phone over plain http has no readable clipboard at all, and "hold a line to copy it, tap **Paste** to put it back" is the round trip a phone makes |
-| `⌨` | `term.textarea.focus()` **synchronously inside the touchend/click handler** |
 
 Sticky `Ctrl`/`Alt`: tapping arms the modifier (`.on`), the next key press is transformed
 (`Ctrl+x` → `String.fromCharCode(code & 0x1f)`; `Alt+x` → `\x1b` + x) and disarms it. A second tap
 locks it (`.lock`) until tapped again.
 
-**The `⌨` button must call `term.textarea.focus()` synchronously in a `touchend`/`click`
-listener, never after an `await`** — iOS will not raise the keyboard otherwise. It is the whole of
-how a phone raises a keyboard now, so the synchronous call is load-bearing rather than a
-convenience.
+<!-- rev 9 --> **There is no `⌨` key.** The top bar's `#kbBtn` (`ACTIVITY.md` §D.7) is the one
+way a phone raises a keyboard, and it gives the focus **synchronously inside its `click`
+handler, never after an `await`** — iOS will not raise the keyboard otherwise.
 
 <!-- rev 4 --> **There is no line composer.** `#lineInput`, `#micBtn`, its Send button, the
 pending-line list, the `socrates.term.<sessionId>.draft` drafts and the `viewer_fresh`
@@ -3258,7 +3276,7 @@ overlay conventions.
 | J19 | **A too-old tmux passes as healthy.** The conf needs 3.3 (`allow-passthrough`, `remain-on-exit-format`) and 3.2 (`-e`, `extended-keys`); on 3.2a the conf errors, the start-up guard falls back to a minimal conf, and sessions launch without their environment while the admin page says "ok". | The floor is **3.3** in `requireTmux`, the `/api/tmux` response and the admin state (§F.1), with the reason recorded there. 3.3a is verified to do everything load-bearing [V]. |
 | J7 | **A systemd or Docker restart kills the tmux server** with it, turning every restart into a reboot. | `deploy/socrates.service` with `KillMode=process`, `systemd-run --scope` where available, a SIGCHLD reaper at PID 1, `tini` in the image, and the README stating that a container restart is the reboot path. `TestSessionSurvivesManagerKill` proves the survival property (§A.12). |
 | J8 | **xterm.js behaviour was never tested in a browser during research**; everything in `tmux-xterm.md` §5 beyond versions and file layout is [A]. | WP6's acceptance is browser-level, and `lighttheme` measures the computed background rather than trusting an option name. `allowProposedApi: true` is required for unicode11 and its absence throws loudly. |
-| J9 | **iOS will not raise the keyboard** unless focus happens inside a real user-gesture handler [A]. | <!-- rev 4 --> The `⌨` button of the key bar is the path, and its `focus()` call is synchronous inside `touchend`/`click`. A code comment says why, so a future refactor cannot make it async. The line input that used to be the primary path on phones is gone (§E.6); what a phone would have typed into it, it asks the chat instead. |
+| J9 | **iOS will not raise the keyboard** unless focus happens inside a real user-gesture handler [A]. | <!-- rev 9 --> The top bar's `#kbBtn` is the path (`ACTIVITY.md` §D.7), and its `focus()` call is synchronous inside `click`. A code comment says why, so a future refactor cannot make it async. The line input that used to be the primary path on phones is gone (§E.6); what a phone would have typed into it, it asks the chat instead. |
 | J10 | **iOS drops WebGL contexts** when a tab backgrounds [A]. | `onContextLoss` disposes the addon and falls back to the DOM renderer; the addon is loaded in a `try/catch`. |
 | J11 | **`extended-keys` / `modifyOtherKeys` interop between tmux 3.6 and xterm.js 6 is untested.** | Default `extended_keys` to **off**; it is an admin switch with a warning, not a default. `CODEX_TUI_DISABLE_KEYBOARD_ENHANCEMENT=1` is the escape hatch for Codex. |
 | J12 | **The clean cut destroys existing chats.** | A `socrates.db.pre-v3.bak` copy is written first and its path logged. DECISIONS.md chose the clean cut explicitly; this makes it reversible by hand. |

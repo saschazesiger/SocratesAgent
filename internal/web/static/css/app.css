@@ -157,6 +157,36 @@ a { color: inherit; }
 /* A mode that is on is filled, like an armed key on the key bar. */
 .icon-btn.on { background: var(--accent); color: var(--accent-text); }
 .icon-btn.on:hover { background: var(--accent); color: var(--accent-text); }
+/* The keyboard switch (keyboard.js), and its copy in whichever dialog is on
+   top: laid over the bar's own button by script, and in the corner when the
+   bar has none on screen. A device with a mouse and no sign of a finger has
+   keys, and neither is shown there; keyboard.js decides which device is
+   which, generously, and says so with html.touch. */
+.kb-copy {
+  position: fixed;
+  top: calc(10px + env(safe-area-inset-top, 0px));
+  right: calc(12px + env(safe-area-inset-right, 0px));
+  margin: 0;
+  z-index: 1;
+  background: var(--bg);
+  box-shadow: var(--shadow);
+}
+html:not(.touch) #kbBtn, html:not(.touch) .kb-copy { display: none !important; }
+/* The field the switch raises the keyboard through on its way to the real one
+   (keyboard.js). Focusable, so neither hidden nor display:none; out of sight,
+   and 16px so a phone does not zoom the page for it. */
+.kb-proxy {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  font-size: 16px;
+  pointer-events: none;
+}
 /* While the voice is reading, the same button is the way to stop it. */
 .icon-btn.speaking { color: var(--text); background: var(--bg-hover); }
 .icon-btn svg { width: 17px; height: 17px; }
@@ -215,7 +245,7 @@ a { color: inherit; }
 
 /* A field and the microphone that fills it. Every field this app has is
    dictatable, because the device it is used from is one nobody can type on -
-   and hands-free (handsfree.js) is the mode in which the microphone is not a
+   and with the keyboard put away (keyboard.js) the microphone is not a
    convenience but the only way in. The microphone is the height of the field
    rather than the height of an icon button, because a control beside a field
    that is shorter than it reads as an afterthought. */
@@ -404,16 +434,24 @@ a { color: inherit; }
 /* The project the rows below it work in. It is a label rather than a band: a
    hairline above it separates the folder, and the surface stays the one white
    the whole page is. The first folder needs no line - the list's own top is
-   the separation. */
+   the separation. The bar is the head and, beside it, the folder's VS Code. */
+.folder-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 10px 0 0;
+  border-top: 1px solid var(--line);
+}
+.folder:first-child > .folder-bar { margin-top: 0; border-top: 0; }
 .folder-head {
   display: flex;
   align-items: center;
   gap: 6px;
-  width: 100%;
-  margin: 10px 0 0;
+  flex: 1;
+  min-width: 0;
+  margin: 0;
   padding: 10px 10px 5px;
   border: 0;
-  border-top: 1px solid var(--line);
   border-radius: 0;
   background: none;
   font: inherit;
@@ -425,7 +463,28 @@ a { color: inherit; }
   cursor: pointer;
   text-align: left;
 }
-.folder:first-child .folder-head { margin-top: 0; padding-top: 2px; border-top: 0; }
+.folder:first-child > .folder-bar .folder-head { padding-top: 2px; }
+/* The folder's editor: the mark of VS Code at the end of the head. Grey while
+   the folder has none running, in colour while it has, and pressed while it
+   is the one on screen. */
+.folder-ide {
+  flex: none;
+  width: 26px;
+  height: 24px;
+  margin-top: 5px;
+  border-radius: 6px;
+}
+.folder:first-child > .folder-bar .folder-ide { margin-top: 0; }
+.folder-ide .agent-mark { opacity: .45; filter: grayscale(1); transition: opacity .16s var(--ease), filter .16s var(--ease); }
+.folder-ide:hover .agent-mark,
+.folder-ide.running .agent-mark { opacity: 1; filter: none; }
+.folder-ide.active { background: var(--bg-sunken); }
+/* A shelf is a folder inside a folder: the background and done sessions of
+   one project, under its rows. No hairline - it is part of the folder above -
+   and set in a little, so it reads as belonging to it. */
+.shelf > .folder-bar { margin: 2px 0 0; border-top: 0; }
+.shelf > .folder-bar .folder-head { padding: 6px 10px 4px 18px; font-size: 10px; }
+.shelf > .folder-rows { padding-left: 8px; }
 .folder-head:hover { color: var(--text-soft); }
 .folder-head .folder-name {
   flex: 1;
@@ -580,9 +639,13 @@ a { color: inherit; }
   /* The folder head keeps its hairline - which is what actually separates the
      folders - and its caret, which is the control. The name does not fit in a
      rail, and is in the tooltip the head already carries. */
-  body.side-collapsed .folder-head { justify-content: center; padding: 8px 4px 4px; }
+  body.side-collapsed .folder-head,
+  body.side-collapsed .shelf > .folder-bar .folder-head { justify-content: center; padding: 8px 4px 4px; }
   body.side-collapsed .folder .folder-head .folder-name,
   body.side-collapsed .folder .folder-head .folder-count { display: none; }
+  /* The editor is opened from the wide column, where there is room for it. */
+  body.side-collapsed .folder-ide { display: none; }
+  body.side-collapsed .shelf > .folder-rows { padding-left: 0; }
   body.side-collapsed .list-empty { display: none; }
   body.side-collapsed .chat-item { justify-content: center; gap: 0; padding: 8px 0; }
   body.side-collapsed .chat-item .label,
@@ -655,8 +718,8 @@ a { color: inherit; }
 }
 .usage-strip::before,
 .topbar > .icon-btn::before,
-.topbar > .pill::before,
-.term-size::before {
+.transfer > .icon-btn::before,
+.topbar > .pill::before {
   content: "";
   position: absolute;
   left: 0;
@@ -677,36 +740,9 @@ a { color: inherit; }
 .usage-part { display: inline-flex; gap: 3px; }
 .usage-part + .usage-part::before { content: "·"; color: var(--text-faint); margin-right: 4px; }
 .usage-label { color: var(--text-faint); }
+.usage-reset { color: var(--text-faint); }
 .usage-cost { color: var(--text); }
 
-/* What this session runs: the harness's mark, the model, and everything else
-   behind the "i". It is not a control - a session is bound to its program for
-   its whole life - so it is the quietest thing in the bar that is still
-   legible. */
-.agent-badge {
-  /* It shrinks before the session's own name does, and the name keeps a floor
-     of its own below - the binding is a caption, the title is what you are
-     looking for in a list of open tabs. */
-  position: relative;
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 46%;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  align-self: stretch;
-  font-size: 12px;
-  color: var(--text-soft);
-  background: transparent;
-  border: 0;
-  border-radius: 0;
-  padding: 0 12px 0 8px;
-  white-space: nowrap;
-  cursor: default;
-}
-.agent-badge > span:not(.tip) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.agent-badge > .agent-mark { flex: none; }
-.agent-badge > .tip { flex: none; }
 .menu-btn { display: none; }
 
 /* Each action owns one full-height cell. The line is attached to the visible
@@ -723,6 +759,17 @@ a { color: inherit; }
   border: 0;
   border-radius: 0;
   padding: 0 14px;
+}
+
+/* Copy, paste and upload: three more cells of the bar, kept together so that
+   on a phone they can leave it as one piece (see the container rule below). */
+.transfer { display: flex; flex: none; align-self: stretch; }
+.transfer[hidden] { display: none; }
+.transfer > .icon-btn {
+  position: relative;
+  width: 46px;
+  height: 55px;
+  border-radius: 0;
 }
 
 
@@ -1193,6 +1240,7 @@ a { color: inherit; }
      and open is one tap, so the head is a target worth aiming at rather than
      the 24px a label needs. */
   .folder-head { min-height: 36px; }
+  .folder-ide { width: 36px; height: 32px; margin-top: 3px; }
   .side-foot { padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)); }
   body.nav-open .sidebar { transform: none; }
   /* A drawer is already the narrow state, and one that was also a rail could
@@ -1275,18 +1323,28 @@ a { color: inherit; }
              0
              calc(10px + env(safe-area-inset-left, 0px));
   }
-  /* Mobile first: the session's name comes before the caption beside it. The
-     harness is its mark and the mark stays; the model is what goes, and it is
-     still in the bubble under a tap. With Status and the microphone in the bar
-     the caption goes at this width rather than at 380, because a model id
-     squeezed to one letter is not a caption. */
-  .agent-badge { max-width: 40%; gap: 5px; padding: 0 8px; }
-  .agent-badge > .b-model { display: none; }
-  .term-size { display: none; }
   /* The microphone gives up its word before its touch area. */
   .topbar .pill { padding: 0; width: 40px; }
   .topbar .pill .pill-text { display: none; }
   .topbar > .icon-btn { width: 36px; }
+  /* A phone's bar is full, so the three float over the top corner of the
+     pane: one tap away, and over the oldest lines rather than the prompt. */
+  .transfer {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: calc(10px + env(safe-area-inset-right, 0px));
+    align-self: auto;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: var(--r);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .transfer > .icon-btn { width: 40px; height: 38px; }
+  .transfer > .icon-btn:first-child::before { display: none; }
+  /* The notice and the ticker start under them, so a notice's close button
+     is never beneath them. */
+  .main:has(#transfer:not([hidden])) .term-lines { top: 54px; }
 }
 
 /* On a phone the same compact reading gets a quiet second line. The existing
@@ -1306,6 +1364,8 @@ a { color: inherit; }
     overflow: hidden;
   }
   .topbar.has-usage .usage-strip::before { display: none; }
+  /* "(2h 36m)" says enough on a phone; the word is for the desk. */
+  .topbar.has-usage .usage-left { display: none; }
 }
 /* Narrower than this the title has room for one letter and an ellipsis that
    does not fit, which reads as a glitch rather than as a name. It keeps its
@@ -1374,21 +1434,8 @@ a { color: inherit; }
    should mistake an old screen for a live one. */
 .term-wrap.stale { opacity: .55; }
 .term-wrap.stale .xterm { cursor: not-allowed; }
-
-/* The size the pane is wearing. It is a number, so it is quiet, and it is
-   beside the name rather than inside it. */
-.term-size {
-  position: relative;
-  align-self: stretch;
-  display: inline-flex;
-  align-items: center;
-  padding: 0 11px;
-  flex: none;
-  font-size: 11.5px;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-faint);
-  font-family: var(--mono);
-}
+/* A file held over the pane, about to be uploaded into the session. */
+.term-wrap.dropping { outline: 2px dashed var(--accent); outline-offset: -6px; }
 
 /* A thin line across the top of the pane: resumed after a restart, resized by
    another viewer, redrawn after an outage. It never blocks the terminal and it
@@ -1745,6 +1792,28 @@ body.stale .icon-btn.working::after { animation-play-state: paused; opacity: .4;
   border-top-color: var(--accent);
   animation: spin 900ms linear infinite;
 }
+/* The turn is over but something it started - a background shell, a monitor,
+   a sub-agent - is still running. No ring, because nothing is being worked
+   on: a small hourglass on the mark's lower right corner, on a disc of the
+   row's own background so it reads over the logo at 18px. */
+.chat-item .row-tasks { display: none; }
+.chat-item .row-mark.tasks .row-tasks {
+  display: block;
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  width: 13px;
+  height: 13px;
+  padding: 1.5px;
+  border-radius: 50%;
+  background: var(--bg);
+  color: var(--text-soft);
+  pointer-events: none;
+  transition: background .16s var(--ease);
+}
+.chat-item:hover .row-mark.tasks .row-tasks { background: var(--bg-hover); }
+.chat-item.active .row-mark.tasks .row-tasks { background: var(--bg-sunken); }
+.row-tasks svg { width: 100%; height: 100%; display: block; }
 /* A name whose session finished something nobody has seen. The session being
    looked at is never bold - the page never gives it the class. */
 .chat-item.unread .label { font-weight: 600; color: var(--text); }
@@ -1898,6 +1967,86 @@ body.stale .icon-btn.working::after { animation-play-state: paused; opacity: .4;
   font-size: 13px;
   color: var(--text-faint);
 }
+
+/* A dropdown is a field that is not typed into: what is chosen, drawn the way
+   the list draws it, and the caret. */
+.drop-button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: auto;
+  text-align: left;
+  font: inherit;
+  color: var(--text);
+  cursor: pointer;
+}
+.drop-face { flex: 1; min-width: 0; }
+.drop-button .combo-caret { flex: none; color: var(--text-faint); }
+.drop-button[aria-expanded="true"] { border-color: var(--accent); }
+.drop-option.chosen { grid-template-areas: 'label check'; }
+.drop-option.chosen > :first-child { grid-area: label; min-width: 0; }
+
+/* A profile: its name, the account the program is signed in as there, and a
+   bar for each limit window of that account. */
+.profile-entry { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.profile-entry-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.profile-entry-name {
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.drop-option.chosen .profile-entry-name,
+.drop-face .profile-entry-name { font-weight: 600; }
+.profile-entry-tag {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  color: var(--green);
+  font-size: 10.5px;
+  font-weight: 550;
+}
+.profile-entry-account {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.profile-entry-account:empty { display: none; }
+.profile-usage { display: flex; gap: 14px; margin-top: 3px; }
+.profile-meter {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-soft);
+  --meter: var(--green);
+}
+.profile-meter.high { --meter: var(--amber); }
+.profile-meter.full { --meter: var(--red); }
+.profile-meter-label { color: var(--text-faint); }
+.profile-meter-bar {
+  flex: 1;
+  min-width: 24px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  overflow: hidden;
+}
+.profile-meter-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--meter);
+}
+.profile-meter-value { min-width: 3ch; text-align: right; }
+.profile-meter-reset { flex: none; color: var(--text-faint); white-space: nowrap; }
 
 /* ------------------------------------------------------- the connection */
 
@@ -2108,6 +2257,58 @@ body.stale .chat-item .row-mark.busy::after { animation-play-state: paused; opac
 }
 .preset-row .input { margin: 0; }
 
+/* A profile is its name, what each agent is signed in as there, and the two
+   things that can be done to it. The default one has only the first two. */
+.profile-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.profile-row.dragging {
+  background: var(--bg-sunken);
+  box-shadow: var(--shadow);
+  border-radius: var(--r);
+  position: relative;
+  z-index: 1;
+}
+.profile-row .input { margin: 0; }
+.profile-row .profile-default { font-weight: 600; }
+/* The grip a row is dragged by. touch-action keeps a finger on it from
+   scrolling the page instead. */
+.profile-grip {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: grab;
+  touch-action: none;
+}
+.profile-grip:hover, .profile-grip:focus-visible { color: var(--text); background: var(--bg-sunken); }
+.profile-row.dragging .profile-grip { cursor: grabbing; }
+.profile-grip svg { width: 16px; height: 16px; }
+.profile-row .profile-logins {
+  grid-column: 2 / -1;
+  font-size: 12.5px;
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+.profile-add {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  margin: 12px 0 8px;
+}
+.profile-add .input { margin: 0; }
+
 /* One card per program. It is a card like every other one - hairlines, no
    box - and its head is the mark, the name and the switch that offers it. */
 .harness-card.missing { opacity: .65; }
@@ -2168,6 +2369,22 @@ body.stale .chat-item .row-mark.busy::after { animation-play-state: paused; opac
 /* Faded out rather than removed at once, so the workbench arrives instead of
    replacing something. */
 .ide-loading.done { opacity: 0; pointer-events: none; }
-.ide-open #keybar, .ide-open #termLines, .ide-open #termSize { display: none !important; }
-.ide-open #statusBtn, .ide-open #micBtn, .ide-open #handsBtn { display: none !important; }
+.ide-open #keybar, .ide-open #termLines { display: none !important; }
+.ide-open #statusBtn, .ide-open #micBtn { display: none !important; }
 .ide-open .term-wrap, .ide-open .main:has(#keybar[hidden]) .term-wrap { padding: 0; }
+
+/* ------------------------------------------------------------ copy sheet */
+
+/* The pane's text, where a phone's own selection handles work. It is wider
+   than an ordinary dialog because terminal lines are. */
+.copy-sheet { width: min(760px, calc(100vw - 32px)); }
+.copy-sheet .hint { margin: 0 0 10px; }
+.copy-text {
+  width: 100%;
+  height: min(60vh, 520px);
+  resize: none;
+  font-size: 12.5px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

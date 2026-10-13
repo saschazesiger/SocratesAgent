@@ -378,7 +378,7 @@ func harnessStateCheck(id string) (checkResult, bool) {
 // row of green for a machine on which every session opens on "Choose the text
 // style" or on the sign-in screen.
 func claudeSignInCheck() checkResult {
-	onboarded, account := harnesses.ClaudeSignIn()
+	onboarded, account := harnesses.ClaudeSignIn("", "")
 	row := checkResult{Name: "Claude Code sign-in"}
 	switch {
 	case onboarded && account != "":

@@ -59,6 +59,9 @@ type Server struct {
 	settings config.Settings
 	// titles names a session once, the first time it has answered anything.
 	titles *titleDriver
+	// push is Web Push: the notification that reaches a phone whose page is
+	// not running.
+	push *pusher
 
 	mux *http.ServeMux
 
@@ -68,14 +71,21 @@ type Server struct {
 	// loginMu because it is the same kind of defence.
 	wsRate map[string]*attempt
 
+	// ideMu makes finding or creating the editor of a folder one step, so
+	// two taps on the same folder cannot start two editors on it.
+	ideMu sync.Mutex
+
+	// profilesMu makes each change to the profile list one read and one
+	// write, so two of them cannot each save a list without the other.
+	profilesMu sync.Mutex
+
 	// usage holds the short-lived account limit reading shared by every tab.
 	// Session costs are read from each CLI's own transcript and are not cached
 	// here: the files are already local and change after every answer.
-	usageMu       sync.Mutex
-	claudeUsage   usageLimits
-	claudeUsageAt time.Time
-	usageHTTP     *http.Client
-	usageURL      string
+	usageMu     sync.Mutex
+	claudeUsage map[string]cachedLimits
+	usageHTTP   *http.Client
+	usageURL    string
 }
 
 type attempt struct {
@@ -122,6 +132,7 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	// The namer is built before the manager, because the manager is what
 	// calls into it.
 	s.titles = newTitleDriver(s)
+	s.push = newPusher(st)
 	manager, err := termux.New(st, cfg)
 	if err != nil {
 		return nil, err
@@ -283,6 +294,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
 
 	mux.HandleFunc("/ide/{id}/", s.auth(s.handleVSCode))
+	mux.HandleFunc("POST /api/ide", s.auth(s.handleFolderIDE))
 
 	// Terminal sessions
 	mux.HandleFunc("GET /api/sessions", s.auth(s.handleListSessions))
@@ -299,11 +311,17 @@ func (s *Server) routes() {
 	// What a terminal is doing, said out loud.
 	mux.HandleFunc("POST /api/sessions/{id}/status", s.auth(s.handleSessionStatus))
 	mux.HandleFunc("GET /api/sessions/{id}/journal", s.auth(s.handleJournal))
+	mux.HandleFunc("POST /api/sessions/{id}/upload", s.auth(s.handleUpload))
 	mux.HandleFunc("GET /api/sessions/{id}/ws", s.auth(s.handleSessionWS))
 
 	// The harness catalogue: what can be started, and where.
 	mux.HandleFunc("GET /api/harnesses", s.auth(s.handleHarnesses))
 	mux.HandleFunc("POST /api/harnesses/refresh", s.auth(s.handleRefreshHarnesses))
+	mux.HandleFunc("GET /api/profiles", s.auth(s.handleListProfiles))
+	mux.HandleFunc("POST /api/profiles", s.auth(s.handleCreateProfile))
+	mux.HandleFunc("PUT /api/profiles/order", s.auth(s.handleReorderProfiles))
+	mux.HandleFunc("PATCH /api/profiles/{id}", s.auth(s.handleRenameProfile))
+	mux.HandleFunc("DELETE /api/profiles/{id}", s.auth(s.handleDeleteProfile))
 
 	// Admin
 	mux.HandleFunc("GET /api/settings", s.auth(s.handleGetSettings))
@@ -325,6 +343,12 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/voice/transcribe", s.auth(s.handleTranscribe))
 	mux.HandleFunc("POST /api/voice/speak", s.auth(s.handleSpeak))
 	mux.HandleFunc("POST /api/voice/check", s.auth(s.handleVoiceCheck))
+
+	// Web Push
+	mux.HandleFunc("GET /api/push", s.auth(s.handlePushKey))
+	mux.HandleFunc("POST /api/push/subscribe", s.auth(s.handlePushSubscribe))
+	mux.HandleFunc("POST /api/push/unsubscribe", s.auth(s.handlePushUnsubscribe))
+	mux.HandleFunc("POST /api/push/test", s.auth(s.handlePushTest))
 
 	// Liveness, and the one endpoint nothing in the browser calls: the
 	// container's HEALTHCHECK is what asks for it, because a process that is

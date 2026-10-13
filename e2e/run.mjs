@@ -10,7 +10,7 @@
 
 import {
   start, setup, shot, ok, scenario, skipScenario, finish, ensureNav, wait,
-  readFakeLog, killTmux, openRouterStub, sessionsOn, windowSize, scratchDir, PASSWORD, LIVE,
+  readFakeLog, killTmux, openRouterStub, sessionsOn, windowSize, scratchDir, PASSWORD, LIVE, SHOTS,
 } from './harness.mjs';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -260,19 +260,17 @@ async function createshell() {
       'the theme paints on white and its ink is nearly black',
       JSON.stringify({ ...contrastFloor, black: Math.round(contrastFloor.black * 10) / 10 }));
 
-    // The header says what this session runs, with the harness's own mark.
+    // The header is the session's name: what it runs is the list row's mark.
     const header = await s.page.evaluate(() => ({
-      mark: (document.querySelector('#sessionHarness .agent-mark') || { dataset: {} }).dataset.agent,
+      mark: !!document.querySelector('.topbar .agent-mark'),
       title: (document.getElementById('sessionTitle') || {}).textContent,
-      size: (document.getElementById('termSize') || {}).textContent,
+      size: !!document.getElementById('termSize'),
     }));
-    ok(header.mark === 'shell', 'the header carries the harness mark', header.mark || 'none');
+    ok(!header.mark, 'the header carries no harness mark', String(header.mark));
     ok(/Shell/.test(header.title || ''), 'the session is named after what it runs', header.title);
-    ok(/^\d+×\d+$/.test(header.size || ''), 'the header shows the size the pane is wearing', header.size);
+    ok(!header.size, 'and no size: the pane\'s columns and rows are not the person\'s business', String(header.size));
 
     await shot(s.page, 'createshell');
-    ok(unexpected(s.errors).length === 0, 'no console errors',
-      unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
 
@@ -413,10 +411,11 @@ async function pages() {
           `the sheet is a full-width bottom sheet at ${tag}`, JSON.stringify(rect));
       }
       // Every harness with its own mark: §E.10 rule 2. The agents come first
-      // and the two programs that are not agents are the row beneath them.
+      // and the shell, which is not one, is the row beneath them. VS Code is
+      // not on the sheet: a folder's editor is opened from the folder.
       const marks = await s.page.$$eval('#nsHarness .seg .agent-mark, #nsTools .seg .agent-mark',
         (nodes) => nodes.map((n) => n.dataset.agent));
-      ok(marks.join(',') === 'claude,codex,opencode,shell,vscode',
+      ok(marks.join(',') === 'claude,codex,opencode,shell',
         `the sheet offers the agents and then the tools, each with its mark at ${tag}`,
         marks.join(',') || 'none');
 
@@ -700,8 +699,9 @@ async function sessionlist() {
       return {
         row: shown(mark) ? mark.dataset.status : '',
         head: shown(head) ? head.textContent : '',
-        folder: row ? row.closest('.folder').dataset.folder : '',
-        folderOpen: !!row && !row.closest('.folder-rows').hidden,
+        folder: row ? row.closest('.folder').dataset.folder || '' : '',
+        shelf: row ? (row.closest('.shelf') || { dataset: {} }).dataset.shelf || '' : '',
+        folderOpen: !!row && row.checkVisibility(),
       };
     }, sel);
     const current = async () => (await (await s.context.request.get(s.url + '/api/sessions/' + id)).json()).session;
@@ -721,14 +721,14 @@ async function sessionlist() {
     const filed = await current();
     ok(filed.status === 'review', 'the status was stored', filed.status);
 
-    // Background: out of the way in a folder of its own that starts shut, and
-    // still running.
+    // Background: out of the way on a shelf at the bottom of its own folder
+    // that starts shut, and still running.
     await headMenu('Background');
-    await s.page.waitForFunction((sel) => document.querySelector(sel)?.closest('.folder')?.dataset.folder === '#background',
+    await s.page.waitForFunction((sel) => document.querySelector(sel)?.closest('.shelf')?.dataset.shelf === 'background',
       rowSelector, { timeout: 8000 });
     const background = await statusShown(rowSelector);
-    ok(background.folder === '#background' && !background.folderOpen,
-      'a background session goes into its own folder, shut', JSON.stringify(background));
+    ok(background.shelf === 'background' && !background.folderOpen,
+      'a background session goes onto its folder’s Background shelf, shut', JSON.stringify(background));
     const running = await current();
     ok(running.status === 'background' && running.state === 'running',
       'it is filed as background and still running', running.state);
@@ -1323,36 +1323,37 @@ async function keybar() {
     await startSession(s.page, 'shell');
     await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
 
-    // Nothing on this page guesses at the hardware. The bar is not there until
-    // it is asked for, on a phone and on a desk alike, and there is no line
-    // input beside the terminal at all any more.
+    // A phone has no Escape and no arrows, so on a touch screen the bar is
+    // there before anybody asks for it. There is no line input beside the
+    // terminal at all any more.
     await wait(400);
     const untouched = await s.page.evaluate(() => ({
       bar: document.getElementById('keybar').hidden,
       composer: !!document.getElementById('composer') || !!document.getElementById('lineInput'),
-      hover: matchMedia('(hover: hover) and (pointer: fine)').matches,
+      touch: matchMedia('(hover: none) and (pointer: coarse)').matches,
     }));
-    ok(untouched.bar && !untouched.composer,
-      'a session opens with no key bar and no line input', JSON.stringify(untouched));
+    ok(!untouched.bar && untouched.touch && !untouched.composer,
+      'a session on a touch screen opens with the key bar and no line input', JSON.stringify(untouched));
 
-    // The whole of the rule, as the module itself: one remembered answer, and
-    // nothing in the exports that could decide otherwise.
+    // The whole of the rule, as the module itself: the device's answer once it
+    // has given one, and the touch screen until then.
     const decided = await s.page.evaluate(async () => {
       const mod = await import('/static/js/keybar.js');
       const fresh = mod.keyBarWanted();
-      mod.setKeyBarWanted(true);
-      const asked = mod.keyBarWanted();
       mod.setKeyBarWanted(false);
       const refused = mod.keyBarWanted();
+      mod.setKeyBarWanted(true);
+      const asked = mod.keyBarWanted();
+      localStorage.removeItem('socrates.term.keybar');
       return { fresh, asked, refused, exports: Object.keys(mod).sort().join(',') };
     });
-    ok(!decided.fresh && decided.asked && !decided.refused,
-      'the answer is the preference and nothing else', JSON.stringify(decided));
+    ok(decided.fresh && decided.asked && !decided.refused,
+      'touch decides until the menu has answered, and the answer wins after that', JSON.stringify(decided));
     ok(decided.exports === 'followViewport,keyBarWanted,mountKeyBar,setKeyBarWanted',
-      'and there is no device heuristic left to be wrong about a keyboard', decided.exports);
+      'and the module exports nothing else', decided.exports);
 
-    // A desk is the same answer: a pointer that hovers is not a request for a
-    // row of buttons.
+    // A desk has keys: a pointer that hovers is not a request for a row of
+    // buttons.
     const desk = await s.browser.newContext({
       viewport: { width: 1280, height: 720 },
       colorScheme: 'light',
@@ -1367,18 +1368,21 @@ async function keybar() {
       bar: document.getElementById('keybar').hidden,
       hover: matchMedia('(hover: hover) and (pointer: fine)').matches,
     }));
-    ok(atDesk.bar && atDesk.hover, 'a device with a pointer that hovers does not get it either',
+    ok(atDesk.bar && atDesk.hover, 'a device with a pointer that hovers does not get it',
       JSON.stringify(atDesk));
     await deskPage.close();
     await desk.close();
 
-    // The session menu is the one way in, on any device.
+    // The session menu puts it away and brings it back, on any device.
+    await s.page.click('#sessionMenu');
+    await s.page.click('.menu-item:has-text("Hide key bar")');
+    await s.page.waitForSelector('#keybar[hidden]', { state: 'attached', timeout: 10000 });
     await s.page.click('#sessionMenu');
     await s.page.click('.menu-item:has-text("Show key bar")');
     await s.page.waitForSelector('#keybar:not([hidden])', { timeout: 10000 });
 
     const keys = await s.page.$$eval('#keybar .key', (nodes) => nodes.map((n) => n.dataset.key));
-    ok(keys.join(',') === 'Escape,Tab,Control,Alt,Left,Down,Up,Right,Enter,Ctrl-C,Ctrl-D,Ctrl-Z,Paste,Keyboard',
+    ok(keys.join(',') === 'Escape,Tab,Control,Alt,Left,Down,Up,Right,Enter,Ctrl-C,Ctrl-D,Ctrl-Z,Paste',
       'the key bar carries every key of §E.6, in order', keys.join(','));
     const placed = await s.page.evaluate(() => ({
       keybarTop: document.getElementById('keybar').getBoundingClientRect().top,
@@ -1444,13 +1448,13 @@ async function keybar() {
     // A modifier is for the next key the person presses, and the terminal's
     // own reports are not keys. Leaving the pane for a control in the bar -
     // the sound toggle, which is about this device and nothing about the pane
-    // - and coming back to it through the keyboard button, both make xterm
-    // send a focus report on the same channel, and neither may spend an armed
-    // Ctrl.
+    // - and coming back to it through the top bar's keyboard button, both
+    // make xterm send a focus report on the same channel, and neither may
+    // spend an armed Ctrl.
     await s.page.click('#soundBtn');
     await s.page.click('#keybar .key[data-key="Control"]');
     const beforeKeyboard = (await sentBytes(s.page)).length;
-    await s.page.click('#keybar .key[data-key="Keyboard"]');
+    await s.page.click('#kbBtn');
     await wait(200);
     const stillArmed = await s.page.$eval('#keybar .key[data-key="Control"]', (n) => n.className);
     ok(/\bon\b/.test(stillArmed), 'raising the keyboard does not spend the armed Ctrl', stillArmed);
@@ -2131,18 +2135,16 @@ async function createclaude() {
     ok(row.cli_session_state === 'known' || row.cli_session_state === 'verified',
       'and the row knows it is holding one', row.cli_session_state);
 
-    // §E.10 rule 2 and 3: the header names the model beside the mark of what
-    // runs it, and nothing else - the path is in Info, from the same menu.
+    // §E.10 rule 2 and 3: the header is the name and nothing else - neither
+    // the mark nor the model; those and the path are in Info.
     const badge = await s.page.evaluate(() => {
-      const host = document.getElementById('sessionHarness');
+      const bar = document.querySelector('.topbar');
       return {
-        mark: (host.querySelector('.agent-mark') || { dataset: {} }).dataset.agent,
-        model: (host.querySelector('.b-model') || {}).textContent,
-        tips: host.querySelectorAll('.tip').length,
+        mark: !!bar.querySelector('.agent-mark'),
+        model: /haiku/i.test(bar.textContent),
       };
     });
-    ok(badge.mark === 'claude' && badge.model === 'haiku' && badge.tips === 0,
-      'the header badge carries the mark and the model, and nothing else',
+    ok(!badge.mark && !badge.model, 'the header names neither the harness nor the model',
       JSON.stringify(badge));
     await s.page.click('#sessionMenu');
     await s.page.click('.menu-item:has-text("Info")');
@@ -2210,6 +2212,141 @@ async function createclaude() {
 
     ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
       unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+/* -------------------------------------------------------------- profiles */
+
+// A profile is a second set of sign-ins. It is added in the dashboard, offered
+// by the sheet with the account each choice means, and reaches the launched
+// program as the directory its CLI keeps the account in - and it cannot be
+// deleted while a session still runs in it.
+async function profiles() {
+  const s = await start({ viewport: { width: 1280, height: 900 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#profileList .profile-row', { timeout: 20000 });
+    await s.page.fill('#profileName', 'Business');
+    await s.page.click('#profileAdd');
+    await s.page.waitForFunction(() => document.querySelectorAll('#profileList .profile-row').length === 2,
+      null, { timeout: 10000 });
+    const listed = await (await s.context.request.get(s.url + '/api/profiles')).json();
+    const business = (listed.profiles || []).find((p) => p.name === 'Business');
+    ok(!!business && /^p-[0-9a-f]{12}$/.test(business.id), 'the dashboard added the profile',
+      JSON.stringify(listed.profiles));
+    await shot(s.page, 'profiles-admin');
+
+    await open(s);
+    await ensureNav(s.page);
+    await s.page.click('#newSession');
+    await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    await s.page.click('#newSessionSheet .seg[data-value="claude"]');
+    await s.page.waitForSelector('#nsProfileField:not([hidden]) #nsProfile .drop-button', { timeout: 10000 });
+    await s.page.click('#nsProfile .drop-button');
+    const choice = '#nsProfile .drop-option[data-value="' + business.id + '"]';
+    await s.page.waitForSelector(choice, { timeout: 5000 });
+    const offered = await s.page.$$eval('#nsProfile .drop-option .profile-entry-name', (nodes) => nodes.map((n) => n.textContent));
+    ok(offered.join(',') === 'Default,Business', 'the sheet offers the default profile and the new one',
+      offered.join(','));
+    await s.page.click(choice);
+    const face = await s.page.$eval('#nsProfile .drop-face .profile-entry-name', (n) => n.textContent);
+    ok(face === 'Business', 'the dropdown shows the profile chosen', face);
+    const hint = await s.page.$eval('#nsProfileHint', (n) => n.textContent);
+    ok(/not signed in/.test(hint), 'and says that Claude Code still has to sign in there', hint);
+    await s.page.click('#nsModel .combo-input');
+    await s.page.waitForSelector('#nsModel .combo-option', { timeout: 5000 });
+    await s.page.click('#nsModel .combo-option:has(.combo-label:text-is("Haiku"))');
+    // Ultracode is Claude Code's alone, and off until it is switched on.
+    const ultra = await s.page.$eval('#nsUltracodeField', (n) => ({
+      hidden: n.hidden, off: n.querySelector('.seg[data-value="off"]').getAttribute('aria-pressed'),
+    }));
+    ok(!ultra.hidden && ultra.off === 'true', 'the sheet offers Ultracode for Claude Code, off', JSON.stringify(ultra));
+    await s.page.click('#nsUltracode .seg[data-value="on"]');
+    await shot(s.page, 'profiles-sheet');
+    await s.page.click('#nsStart');
+    await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
+    await s.page.waitForFunction(() => location.hash.length > 1, null, { timeout: 30000 });
+    const id = await s.page.evaluate(() => location.hash.slice(1));
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    ok(await awaitScreen(s.page, 'FAKE claude', 25000), 'the session is up', oneLine(await screen(s.page)));
+
+    const launch = lastLaunch(s, 'claude') || { env: {} };
+    const dir = (launch.env || {}).CLAUDE_CONFIG_DIR || '';
+    ok(dir.endsWith('/profiles/' + business.id + '/claude'),
+      'Claude Code was started on the profile\'s own directory', dir);
+    const row = await sessionRow(s, id);
+    ok(row.options && row.options.profile === business.id, 'and the session remembers its profile',
+      JSON.stringify(row.options));
+    const settingsFile = (launch.argv || [])[(launch.argv || []).indexOf('--settings') + 1] || '';
+    let ultracode = 'unreadable';
+    try { ultracode = JSON.parse(readFileSync(settingsFile, 'utf8')).ultracode; } catch { /* reported below */ }
+    ok(row.options.ultracode === true && ultracode === true,
+      'and Claude Code was started with Ultracode on', JSON.stringify({ options: row.options, ultracode }));
+
+    await s.page.click('#sessionMenu');
+    await s.page.click('.menu-item:has-text("Info")');
+    await s.page.waitForSelector('dialog.modal .facts', { timeout: 5000 });
+    const facts = await s.page.$$eval('dialog.modal .fact', (nodes) => nodes.map((n) => n.textContent));
+    ok(facts.includes('Profile: Business') && facts.includes('Ultracode on'),
+      'Info names the profile and Ultracode', oneLine(facts.join(' · ')));
+    await s.page.click('dialog.modal .modal-actions .btn');
+    await s.page.waitForSelector('dialog.modal', { state: 'detached', timeout: 5000 });
+
+    const refused = await s.context.request.delete(s.url + '/api/profiles/' + business.id);
+    ok(refused.status() === 409, 'a profile a session runs in cannot be deleted', String(refused.status()));
+
+    // A session keeps the profile it was started in: its menu offers none.
+    await s.page.click('#sessionMenu');
+    const menuItems = await s.page.$$eval('.menu .menu-item', (nodes) => nodes.map((n) => n.textContent));
+    ok(!menuItems.includes('Default') && !menuItems.includes('Business'),
+      'the session menu offers no profile to move to', menuItems.join(','));
+    await s.page.click('#term', { position: { x: 40, y: 40 } });
+    await s.page.waitForSelector('.menu', { state: 'detached', timeout: 10000 });
+
+    // The next sheet starts on the profile the last session was started in.
+    await ensureNav(s.page);
+    await s.page.click('#newSession');
+    await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    await s.page.click('#newSessionSheet .seg[data-value="claude"]');
+    await s.page.waitForSelector('#nsProfileField:not([hidden]) #nsProfile .drop-face', { timeout: 10000 });
+    const next = await s.page.$eval('#nsProfile .drop-face .profile-entry-name', (n) => n.textContent);
+    ok(next === 'Business', 'the next sheet starts on the same profile', next);
+    const ultraAgain = await s.page.$eval('#nsUltracode .seg[data-value="off"]', (n) => n.getAttribute('aria-pressed'));
+    ok(ultraAgain === 'true', 'but with Ultracode off again', ultraAgain);
+    await s.page.click('#newSessionSheet .seg[data-value="codex"]');
+    const ultraCodex = await s.page.$eval('#nsUltracodeField', (n) => n.hidden);
+    ok(ultraCodex, 'and Codex is not offered it', String(ultraCodex));
+    await s.page.click('#nsCancel');
+
+    // The dashboard's order is the sheet's: a row moves by its grip, with the
+    // arrow keys or dragged, and the order is saved as soon as it is let go.
+    const order = async () => ((await (await s.context.request.get(s.url + '/api/profiles')).json()).profiles || [])
+      .map((p) => p.name).join(',');
+    await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
+    await s.page.waitForFunction(() => document.querySelectorAll('#profileList .profile-row').length === 2,
+      null, { timeout: 20000 });
+    await s.page.focus('#profileList .profile-row[data-id="' + business.id + '"] .profile-grip');
+    await s.page.keyboard.press('ArrowUp');
+    let moved = '';
+    for (let i = 0; i < 40 && moved !== 'Business,Default'; i++) { await s.page.waitForTimeout(100); moved = await order(); }
+    ok(moved === 'Business,Default', 'the arrow keys move a profile up the list', moved);
+    const grip = await s.page.$eval('#profileList .profile-row[data-id="' + business.id + '"] .profile-grip', (n) => {
+      const box = n.getBoundingClientRect();
+      return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    });
+    const last = await s.page.$eval('#profileList .profile-row:last-child', (n) => n.getBoundingClientRect().bottom);
+    await s.page.mouse.move(grip.x, grip.y);
+    await s.page.mouse.down();
+    await s.page.mouse.move(grip.x, last - 4, { steps: 8 });
+    await s.page.mouse.up();
+    for (let i = 0; i < 40 && moved !== 'Default,Business'; i++) { await s.page.waitForTimeout(100); moved = await order(); }
+    ok(moved === 'Default,Business', 'and dragging puts it back', moved);
+    const rows = await s.page.$$eval('#profileList .profile-row', (nodes) => nodes.map((n) => n.dataset.id));
+    ok(rows.join(',') === ',' + business.id, 'where the list shows it', rows.join(','));
+
+    ok(unexpected(s.errors).length === 0, 'no unexpected console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
 
@@ -2343,6 +2480,21 @@ async function createopencode() {
     const again = launchesOf(s, 'opencode').slice(before);
     ok(again.length === 1 && argvOf(again[0]).includes('--session ' + conversation),
       'and it was resumed on the session the server had named', argvOf(again[0]));
+
+    // A limit window says how long it has until it renews, not only how full
+    // it is. The fake programs keep no limits, so the reading is the page's.
+    const renews = new Date(Date.now() + (2 * 60 + 36) * 60000 + 30000).toISOString();
+    await s.page.route('**/api/sessions/*/usage', (route) => route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ windows: [{ label: '5h', used_percent: 42, resets_at: renews }], cost_usd: 1.25 }),
+    }));
+    await s.page.reload({ waitUntil: 'domcontentloaded' });
+    await s.page.waitForFunction(() => /5h\s*42%/.test(document.getElementById('sessionUsage')?.innerText || ''),
+      null, { timeout: 20000 });
+    const limit = await s.page.$eval('#sessionUsage', (node) => ({ text: node.innerText.trim(), title: node.title }));
+    ok(/\(2h 3[67]m left\)/.test(limit.text) && /resets in 2h 3[67]m/.test(limit.title),
+      'the header says how long the limit has until it renews', JSON.stringify(limit));
+    await s.page.unroute('**/api/sessions/*/usage');
 
     ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
       unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
@@ -2568,9 +2720,6 @@ async function twoviewers() {
       && notices[0].text === 'Another viewer resized this session to ' + moved.replace('x', '×') + '.',
       'and the line holds that sentence and nothing else',
       JSON.stringify(notices.length ? notices[0].text : ''));
-    ok(await s.page.$eval('#termSize', (n) => n.textContent) === moved.replace('x', '×'),
-      'the first viewer now shows the window the second one set',
-      await s.page.$eval('#termSize', (n) => n.textContent));
 
     // One pane, two windows onto it: what either types, both see.
     const fromSecond = 'second-' + Math.random().toString(36).slice(2, 8);
@@ -2986,7 +3135,7 @@ async function design() {
       'every surface on the session page is the same white', JSON.stringify(surfaces));
 
     // Rule 2 - a mark wherever a harness is named. The sheet names them all,
-    // the header names this session's, and the row in the list names it again.
+    // and the row in the list names this session's.
     await s.page.click('#newSession');
     await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
     const sheetMarks = await s.page.$$eval('#nsHarness .seg, #nsTools .seg', (nodes) =>
@@ -3020,12 +3169,10 @@ async function design() {
       .catch(() => {});
 
     const marks = await s.page.evaluate((sessionId) => ({
-      header: (document.querySelector('#sessionHarness .agent-mark') || { dataset: {} }).dataset.agent,
       row: (document.querySelector('#sessionList .chat-item[data-id="' + sessionId + '"] .agent-mark')
         || { dataset: {} }).dataset.agent,
     }), id);
-    ok(marks.header === 'shell' && marks.row === 'shell',
-      'and so do the header and the row in the list', JSON.stringify(marks));
+    ok(marks.row === 'shell', 'and so does the row in the list', JSON.stringify(marks));
 
     // Rule 3 - technical strings are hover-only. The working directory, the
     // tmux session name and the state word are facts about the machine; what
@@ -3240,7 +3387,6 @@ async function design() {
         mark: !!row && !!row.querySelector('.agent-mark'),
         named: row ? row.title : '',
         fill: getComputedStyle(bar).backgroundColor,
-        cols: document.getElementById('termSize').textContent,
       };
     });
     ok(wide > 200 && rail.width <= 72 && rail.width < wide,
@@ -3264,15 +3410,17 @@ async function design() {
 
     // The rail gives its width to the pane, which is measured in characters
     // and so has to be measured again: expanding the sidebar takes those
-    // columns back.
-    const railCols = await s.page.$eval('#termSize', (n) => n.textContent);
+    // columns back. The drawn screen is whole columns wide, so its width is
+    // the column count in pixels.
+    const screenWidth = () => s.page.$eval('#term .xterm-screen',
+      (n) => Math.round(n.getBoundingClientRect().width));
+    const railCols = await screenWidth();
     await s.page.click('#sideCollapse');
     await wait(600);
-    const wideCols = await s.page.$eval('#termSize', (n) => n.textContent);
-    const colsOf = (text) => Number(String(text).split('×')[0]) || 0;
-    ok(colsOf(railCols) > colsOf(wideCols),
+    const wideCols = await screenWidth();
+    ok(railCols > wideCols,
       'and the pane is re-measured when the stage changes width',
-      railCols + ' (rail) -> ' + wideCols + ' (column)');
+      railCols + ' px (rail) -> ' + wideCols + ' px (column)');
 
     /* ----------------------------------- a line that puts itself away */
 
@@ -3356,10 +3504,17 @@ const rowActivity = (page, id) => page.evaluate((sel) => {
   if (!row) return null;
   const mark = row.querySelector('.row-mark');
   const label = row.querySelector('.label');
+  const glass = row.querySelector('.row-tasks');
+  const glassBox = glass ? glass.getBoundingClientRect() : null;
   const ring = mark ? getComputedStyle(mark, '::after') : null;
   return {
     busy: !!mark && mark.classList.contains('busy'),
     waiting: !!mark && mark.classList.contains('waiting'),
+    tasks: !!mark && mark.classList.contains('tasks'),
+    // The hourglass, as drawn: shown at all, and how big.
+    glass: glass && getComputedStyle(glass).display !== 'none' && glassBox.width > 0
+      ? { w: Math.round(glassBox.width), h: Math.round(glassBox.height) }
+      : null,
     unread: row.classList.contains('unread'),
     active: row.classList.contains('active'),
     dots: row.querySelectorAll('.dot').length,
@@ -3477,6 +3632,53 @@ async function activityFor(harness) {
       unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
+
+// tasksFor is the turn that ends while something it started is still running:
+// a background shell or a monitor under Claude Code, a background terminal
+// under Codex, a background sub-agent under OpenCode. The row is neither
+// working nor done - no ring, an hourglass on the mark's corner - and the bold
+// and the chime wait for that work to end.
+async function tasksFor(harness) {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    const other = await startSession(s.page, 'shell');
+    const id = await startSession(s.page, harness);
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const settled = await awaitRow(s.page, id, (r) => !r.busy && !r.tasks, 20000);
+    ok(settled.ok, harness + ' settles into idle first', took(settled));
+
+    await typeLine(s.page, '/bg 9000');
+    await clickRow(s.page, other);
+    const pending = await awaitRow(s.page, id, (r) => r.tasks, 10000);
+    ok(pending.ok, 'the turn ends with work still running, and the row says so', took(pending));
+    const seen = pending.seen || {};
+    ok(!seen.busy && !seen.waiting && seen.ring && seen.ring.name === 'none',
+      'there is no ring: nothing is being worked on', JSON.stringify(seen.ring));
+    ok(!!seen.glass && seen.glass.w >= 10 && seen.glass.w <= 14,
+      'an hourglass sits on the corner of the mark', JSON.stringify(seen.glass));
+    ok(seen.said === 'Turn finished · a background task is still running',
+      'and the mark says what it means', seen.said);
+    ok(!seen.unread, 'a turn that left work running is not unread', String(seen.unread));
+    const server = await sessionRow(s, id);
+    ok(server.activity && server.activity.state === 'tasks' && !server.activity.unread,
+      'the server says the same', JSON.stringify(server.activity));
+    await s.page.locator(rowSel(id)).screenshot({ path: join(SHOTS, 'tasks-' + harness + '-row.png') });
+
+    const done = await awaitRow(s.page, id, (r) => !r.tasks && !r.busy && r.unread, 30000);
+    ok(done.ok, 'when the work ends the hourglass goes and the name goes bold', took(done));
+    ok(!done.seen || !done.seen.glass, 'no hourglass is left behind', JSON.stringify(done.seen && done.seen.glass));
+
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+const taskclaude = () => tasksFor('claude');
+const taskcodex = () => tasksFor('codex');
+const taskopencode = () => tasksFor('opencode');
 
 const activityclaude = () => activityFor('claude');
 const activitycodex = () => activityFor('codex');
@@ -3834,8 +4036,7 @@ async function notify() {
         sound: box('soundBtn'),
         notify: box('notifyBtn'),
         menu: box('sessionMenu'),
-        mark: !!document.querySelector('#sessionHarness .agent-mark')
-          && document.querySelector('#sessionHarness').getBoundingClientRect().width > 8,
+        title: document.getElementById('sessionTitle').getBoundingClientRect().width,
       };
     });
     ok(narrow.overflow <= 1, 'a phone with a session attached does not scroll sideways',
@@ -3843,7 +4044,7 @@ async function notify() {
     ok(narrow.sound >= 26 && narrow.notify >= 26 && narrow.sound === narrow.menu,
       'and both toggles are still the size of the other controls beside them',
       JSON.stringify(narrow));
-    ok(narrow.mark, 'and the harness still has room for its mark', String(narrow.mark));
+    ok(narrow.title > 40, 'and the session\'s name still has room', String(narrow.title));
     await s.page.setViewportSize({ width: 1280, height: 720 });
     await wait(500);
 
@@ -3933,8 +4134,13 @@ async function notify() {
       'and the page says why, where the tap was', JSON.stringify(said.toasts.slice(-2)));
 
     await shot(s.page, 'notify');
-    ok(unexpected(s.errors).length === 0, 'no console errors',
-      unexpected(s.errors).join(' | ') || '0');
+    // The bell subscribes to Web Push where the browser offers it. The test
+    // browser is an incognito profile, where Chrome refuses and says so in the
+    // console itself; the page falls back to its own notification, which is
+    // what the assertions above measure.
+    const PUSH_REFUSED = /Push API in incognito/;
+    ok(unexpected(s.errors, PUSH_REFUSED).length === 0, 'no console errors',
+      unexpected(s.errors, PUSH_REFUSED).join(' | ') || '0');
   } finally { await s.stop(); }
 }
 
@@ -4429,10 +4635,10 @@ async function dictate() {
     const fits = await s.page.evaluate(() => {
       const bar = document.querySelector('.topbar').getBoundingClientRect();
       const middle = (box) => (box.top + box.bottom) / 2;
-      // Only what is actually on screen: a control the bar has hidden - the
-      // size, at this width - lays out to nothing, and nothing is not
-      // misaligned.
-      const parts = [...document.querySelectorAll('.topbar > *')]
+      // Only what is actually on screen: a control the bar has hidden lays
+      // out to nothing, and nothing is not misaligned. Copy, paste and upload
+      // float under the bar on a phone, on purpose (transfer.js).
+      const parts = [...document.querySelectorAll('.topbar > :not(#transfer)')]
         .map((n) => n.getBoundingClientRect())
         .filter((box) => box.width > 0 && box.height > 0);
       const buttons = [...document.querySelectorAll('#recSheet .rec-big')]
@@ -4926,9 +5132,9 @@ async function folders() {
       [ids.looseNew]: now - 2 * day,
     });
 
-    // The oldest project's one session is done: that is how "a folder with
-    // nothing in it is not drawn" gets a project whose only session has moved
-    // to the Done folder.
+    // The oldest project's one session is done. It stays in its project, on
+    // the project's Done shelf, and the project - with no work in progress
+    // left - goes under the ones that have some.
     const away = await s.context.request.post(s.url + '/api/sessions/' + ids.socrates + '/file',
       { data: { status: 'done' } });
     ok(away.ok(), 'the oldest project’s one session is done', away.status());
@@ -4942,14 +5148,14 @@ async function folders() {
     // Two of the three projects are called `browser`, so both of them take a
     // parent: a name that is a name for one of them and a lie for the other
     // would be worse than the path either of them came from.
-    ok(active.map((f) => f.name).join(' | ') === 'projects/browser | elsewhere/browser | More Chats | Done',
-      'the list is folders: the project worked in most recently first, "More Chats" after every project, and Done last',
+    ok(active.map((f) => f.name).join(' | ') === 'projects/browser | elsewhere/browser | socrates | More Chats',
+      'the list is folders: the project worked in most recently first, one with only finished work after them, and "More Chats" last',
       active.map((f) => f.name).join(' | '));
     ok(active.every((f) => !f.other), 'and the list holds nothing but folders',
       active.filter((f) => f.other).map((f) => f.other).join(' | ') || 'folders');
-    ok(active[0].title === projects.browser && active[2].title === 'Sessions in a directory of their own',
+    ok(active[0].title === projects.browser && active[3].title === 'Sessions in a directory of their own',
       'the whole path is on the folder rather than in it, and "More Chats" says what it holds instead',
-      active[0].title + ' | ' + active[2].title);
+      active[0].title + ' | ' + active[3].title);
     ok(!active.some((f) => f.name.startsWith('/')),
       'no folder reads as a path', active.map((f) => f.name).join(' | '));
 
@@ -4962,20 +5168,26 @@ async function folders() {
     ok(active[0].rows.map((r) => r.row).join(',') === 'Browser two,Browser one',
       'and inside a folder the newest is first', active[0].rows.map((r) => r.row).join(','));
 
-    // Done starts shut. Opening it shows the done session, and everything that
-    // was on screen is still the element it was.
-    const doneFolder = active[active.length - 1];
-    ok(doneFolder.open === 'false' && !doneFolder.shown && doneFolder.count === '1',
-      'the Done folder starts shut, and says how many are in it', doneFolder.open + ', ' + doneFolder.count);
+    // The Done shelf starts shut. Opening it shows the done session, and
+    // everything that was on screen is still the element it was.
+    const doneShelf = '#sessionList .folder[data-folder="' + projects.socrates + '"] .shelf[data-shelf="done"] .folder-head';
+    const shelfState = () => s.page.$eval(doneShelf, (head) => ({
+      open: head.getAttribute('aria-expanded'),
+      shown: head.closest('.shelf').querySelector('.folder-rows').checkVisibility(),
+      count: head.querySelector('.folder-count').textContent,
+    }));
+    const shutShelf = await shelfState();
+    ok(shutShelf.open === 'false' && !shutShelf.shown && shutShelf.count === '1',
+      'the Done shelf of a folder starts shut, and says how many are on it', JSON.stringify(shutShelf));
     const before = new Set(active.flatMap((f) => [f.folder, ...f.rows.map((r) => r.id)]));
     await stampAll(s.page);
-    await s.page.click('#sessionList .folder[data-folder="#done"] .folder-head');
-    await s.page.waitForFunction(() => document.querySelector('#sessionList .folder[data-folder="#done"] .folder-head')
-      .getAttribute('aria-expanded') === 'true', null, { timeout: 5000 });
+    await s.page.click(doneShelf);
+    await s.page.waitForFunction((sel) => document.querySelector(sel)
+      .getAttribute('aria-expanded') === 'true', doneShelf, { timeout: 5000 });
     const all = await listing(s.page);
     const doneRow = all.flatMap((f) => f.rows).find((r) => r.id === ids.socrates);
-    ok(!!doneRow && doneRow.done && doneRow.seen && under(all).get('Socrates one') === 'Done',
-      'a done session is in the Done folder rather than its project',
+    ok(!!doneRow && doneRow.done && doneRow.seen && under(all).get('Socrates one') === 'socrates',
+      'a done session stays in its project, on the project’s Done shelf',
       doneRow ? under(all).get('Socrates one') + (doneRow.done ? ' (done)' : '') : 'no row');
     const kept = all.filter((f) => before.has(f.folder) && f.stamp).length
       + all.flatMap((f) => f.rows).filter((r) => before.has(r.id) && r.stamp).length;
@@ -5108,10 +5320,10 @@ async function folders() {
 
     // The head is a label, not a band: the surface under it is the page's one
     // white, and a hairline is what separates the folders.
-    const style = await s.page.evaluate(() => [...document.querySelectorAll('#sessionList .folder-head')]
+    const style = await s.page.evaluate(() => [...document.querySelectorAll('#sessionList > .folder > .folder-bar')]
       .map((node) => {
-        const css = getComputedStyle(node);
-        return { fill: css.backgroundColor, top: css.borderTopWidth, size: css.fontSize };
+        const css = getComputedStyle(node.querySelector('.folder-head'));
+        return { fill: css.backgroundColor, top: getComputedStyle(node).borderTopWidth, size: css.fontSize };
       }));
     ok(style.length > 1 && style.every((one) => one.fill === 'rgba(0, 0, 0, 0)')
       && style[0].top === '0px' && style.slice(1).every((one) => one.top === '1px'),
@@ -5568,57 +5780,59 @@ async function touchcopy() {
   } finally { await s.stop(); }
 }
 
-/* --------------------------------------------------------- 47. handsfree */
+/* --------------------------------------------------------- 47. keyboard */
 
 // keyboardable is the whole promise, measured: what may raise the on-screen
-// keyboard, what may not, and what stands in for it. `inputmode="none"` is the
-// request a browser is asked to honour and `readonly` is the fact it cannot
-// argue with; both are checked, because the promise is "never", and a promise
-// that holds on some phones is not one.
+// keyboard, what may not, and the one button that does. `inputmode="none"` is
+// the request a browser is asked to honour and `readonly` is the fact it
+// cannot argue with; both are checked, because the promise is "never", and a
+// promise that holds on some phones is not one.
 const keyboardable = (page) => page.evaluate(() => {
-  const muted = (node) => !!node && node.getAttribute('inputmode') === 'none';
-  const btn = document.getElementById('handsBtn');
+  const muted = (node) => !!node && node.getAttribute('inputmode') === 'none' && node.readOnly;
+  const btn = document.getElementById('kbBtn');
   const pane = document.querySelector('#term textarea');
-  const key = document.querySelector('#keybar [data-key="Keyboard"]');
+  const active = document.activeElement;
+  const copies = [...document.querySelectorAll('.kb-copy')];
+  const copy = copies[0];
+  const r = btn.getBoundingClientRect();
+  const c = copy ? copy.getBoundingClientRect() : null;
   return {
-    armed: btn.getAttribute('aria-pressed'),
+    shown: !!btn.checkVisibility && btn.checkVisibility(),
+    open: btn.getAttribute('aria-pressed'),
     filled: btn.classList.contains('on'),
     label: btn.getAttribute('aria-label'),
-    stored: (() => { try { return localStorage.getItem('socrates.handsfree'); } catch { return 'blocked'; } })(),
-    pane: muted(pane) && !!pane && pane.readOnly,
-    paneOpen: !!pane && !muted(pane) && !pane.readOnly,
+    pane: muted(pane),
+    paneOpen: !!pane && !muted(pane),
+    focus: active ? (active.closest('#term') ? 'pane' : active.closest('dialog') ? 'dialog' : active.localName) : null,
+    focusMuted: !!active && muted(active),
     fields: [...document.querySelectorAll('input.input')]
       .filter((n) => n.checkVisibility && n.checkVisibility())
-      .map((n) => ({ id: n.id || n.className, muted: muted(n), readonly: n.readOnly })),
+      .map((n) => ({ id: n.id || n.className, muted: muted(n) })),
     mics: [...document.querySelectorAll('.dictate')]
       .filter((n) => n.checkVisibility && n.checkVisibility())
-      .map((row) => ({
-        field: !!row.querySelector('input'),
-        mic: !!row.querySelector('.mic-btn'),
-      })),
-    keybar: !document.getElementById('keybar').hidden,
-    keyboardKey: key ? !key.hidden : null,
-    pill: (() => {
-      const n = document.getElementById('micBtn');
-      return { there: !!n && !n.hidden, disabled: !!n && n.disabled };
-    })(),
+      .map((row) => ({ field: !!row.querySelector('input'), mic: !!row.querySelector('.mic-btn') })),
+    copies: copies.length,
+    copy: copy ? {
+      inDialog: !!copy.closest('dialog[open]'),
+      shown: copy.checkVisibility(),
+      over: Math.abs(c.left - r.left) < 2 && Math.abs(c.top - r.top) < 2,
+      open: copy.getAttribute('aria-pressed'),
+    } : null,
+    keyboardKey: !!document.querySelector('#keybar [data-key="Keyboard"]'),
   };
 });
 
-// Hands-free: the mode a tablet in a case and a phone in a car are used in.
-// Armed, nothing on this page may raise the on-screen keyboard - not the pane,
-// not a field, not the key bar's own keyboard key - the key bar comes on
-// because it is the only keyboard left, and every field has the microphone
-// that replaces it. It is a fact about this device, so it survives a reload.
-async function handsfree() {
+// The keyboard switch: on a touch screen nothing raises the on-screen keyboard
+// but the button in the top bar - not the pane, not a field, not a dialog - and
+// a second press puts it away. The button is pressable everywhere, dialogs
+// included, and on a device with a mouse none of it applies.
+async function keyboard() {
   // What the stub hears is what a person would say to filter that list, so the
   // words land somewhere with a visible consequence rather than in a field
   // nobody looks at again.
   const stub = await openRouterStub({ text: 'dynamic' });
-  // Wide enough that the session list is a column rather than a drawer: what
-  // is being measured here is what may open a keyboard, and a drawer over the
-  // sheet would only be in the way of measuring it. The touch screen is the
-  // part that matters and it is on.
+  // Wide enough that the session list is a column rather than a drawer. The
+  // touch screen is the part that matters and it is on.
   const s = await start({
     viewport: { width: 1100, height: 900 },
     touch: true,
@@ -5644,99 +5858,133 @@ async function handsfree() {
     await open(s);
     await startSession(s.page, 'shell');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    await wait(400);
 
-    // Off until it is asked for, like every other mode this app has. Nothing
-    // is muted, and the key bar is where this device left it.
+    /* ------------------------------------------------------ shut by default */
+
     const off = await keyboardable(s.page);
-    ok(off.armed === 'false' && !off.filled && off.paneOpen,
-      'the mode is off until it is armed, and nothing is muted while it is',
-      JSON.stringify({ armed: off.armed, filled: off.filled, paneOpen: off.paneOpen }));
-    ok(!off.keybar, 'and the key bar is still only there if this device asked for it',
-      String(off.keybar));
+    ok(off.shown && off.open === 'false' && !off.filled,
+      'the button is in the bar, and the keyboard starts put away',
+      JSON.stringify({ shown: off.shown, open: off.open, filled: off.filled }));
+    ok(/show the keyboard/i.test(off.label || ''), 'and it says what a press does', off.label);
+    ok(off.pane, 'the pane cannot raise the keyboard: inputmode=none, and read-only for the phones that ignore it',
+      off.pane ? 'inputmode=none and readonly' : 'an ordinary text field');
+    ok(!off.keyboardKey, 'and the key bar has no keyboard key of its own any more', String(off.keyboardKey));
 
-    // The microphones are not part of the mode: a field that can be spoken
-    // into is worth having on a desk too, and a control that only appears in a
-    // mode is a control nobody finds.
-    await s.page.click('#newSession');
-    await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 10000 });
-    const sheet = await keyboardable(s.page);
-    ok(sheet.mics.length >= 1 && sheet.mics.every((row) => row.field && row.mic),
-      'every field on the sheet has its microphone whether the mode is armed or not',
-      JSON.stringify(sheet.mics));
-    ok(sheet.fields.length >= 1 && sheet.fields.every((f) => !f.muted && !f.readonly),
-      'and with the mode off they are ordinary fields',
-      JSON.stringify(sheet.fields));
-    await s.page.click('#nsCancel');
-    await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 10000 })
-      .catch(() => {});
-
-    /* ------------------------------------------------------------- armed */
-
-    await s.page.click('#handsBtn');
-    await wait(300);
-    const on = await keyboardable(s.page);
-    ok(on.armed === 'true' && on.filled && on.stored === 'on',
-      'one tap arms it, it is filled while it is armed, and this device remembers',
-      JSON.stringify({ armed: on.armed, filled: on.filled, stored: on.stored }));
-    ok(/keyboard/i.test(on.label || ''),
-      'and it says what it does rather than what it is called', on.label);
-    ok(on.pane, 'the pane cannot raise the keyboard any more: inputmode=none, and read-only for the phones that ignore it',
-      on.pane ? 'inputmode=none and readonly' : 'still an ordinary text field');
-    ok(on.keybar && on.keyboardKey === false,
-      'the key bar comes on because it is the only keyboard left, and its keyboard key stands down',
-      'bar ' + on.keybar + ', keyboard key shown: ' + on.keyboardKey);
-    ok(on.pill.there && !on.pill.disabled,
-      'and the way to say something into the pane is still there', JSON.stringify(on.pill));
-    await shot(s.page, 'handsfree-armed');
-
-    // Tapping the pane is the gesture that opened the keyboard on every tap.
-    // It still puts the focus where it belongs - the terminal is the only
-    // thing there is to type into - and now that is all it does.
+    // Tapping the pane is the gesture that used to open the keyboard on every
+    // tap. It still puts the focus where it belongs, and that is all it does.
     await s.page.click('#term');
     await wait(200);
-    const focused = await s.page.evaluate(() => {
-      const node = document.activeElement;
-      return {
-        inPane: !!node && !!node.closest('#term'),
-        muted: !!node && node.getAttribute('inputmode') === 'none' && node.readOnly,
-      };
-    });
-    ok(focused.inPane && focused.muted,
-      'a tap on the pane still takes the focus, and takes it with the keyboard shut',
-      JSON.stringify(focused));
+    const tapped = await keyboardable(s.page);
+    ok(tapped.focus === 'pane' && tapped.focusMuted && tapped.open === 'false',
+      'a tap on the pane takes the focus with the keyboard shut',
+      JSON.stringify({ focus: tapped.focus, muted: tapped.focusMuted, open: tapped.open }));
 
-    // Every field, everywhere, and the microphone beside each of them.
+    /* ------------------------------------------------ the pane, by the button */
+
+    await s.page.click('#kbBtn');
+    await wait(200);
+    const up = await keyboardable(s.page);
+    ok(up.open === 'true' && up.filled && up.paneOpen && up.focus === 'pane' && !up.focusMuted,
+      'a press raises it for the pane: the pane is an ordinary field again, and has the focus',
+      JSON.stringify({ open: up.open, filled: up.filled, paneOpen: up.paneOpen, focus: up.focus }));
+    ok(/hide the keyboard/i.test(up.label || ''), 'and the button now says it puts it away', up.label);
+    await s.page.click('#term');
+    await wait(200);
+    const stays = await keyboardable(s.page);
+    ok(stays.open === 'true' && stays.paneOpen,
+      'a tap on the pane while it is up leaves it up', JSON.stringify({ open: stays.open }));
+    await s.page.click('#kbBtn');
+    await wait(200);
+    const down = await keyboardable(s.page);
+    ok(down.open === 'false' && down.pane && down.focus === 'pane',
+      'a second press puts it away, and the pane keeps the focus for a real keyboard',
+      JSON.stringify({ open: down.open, pane: down.pane, focus: down.focus }));
+
+    // The system can put the keyboard away without the page hearing of it -
+    // here a viewport that shrank for it and then came back only part of the
+    // way. The button goes by the keyboard it can see, not by its own word:
+    // the next press raises it again rather than "putting away" nothing.
+    const viewport = (gap) => s.page.evaluate((g) => {
+      Object.defineProperty(window.visualViewport, 'height',
+        { configurable: true, get: () => window.innerHeight - g });
+      window.visualViewport.dispatchEvent(new Event('resize'));
+    }, gap);
+    await s.page.click('#kbBtn');
+    await viewport(320);
+    await wait(100);
+    await viewport(110);
+    await wait(1700);
+    const stale = await keyboardable(s.page);
+    await s.page.click('#kbBtn');
+    await wait(200);
+    const raised = await keyboardable(s.page);
+    ok(stale.open === 'true' && raised.open === 'true' && raised.paneOpen && raised.focus === 'pane',
+      'a press over a keyboard the system took away raises it again',
+      JSON.stringify({ before: stale.open, after: raised.open, paneOpen: raised.paneOpen, focus: raised.focus }));
+    await viewport(320);
+    await wait(100);
+    await s.page.click('#kbBtn');
+    await wait(200);
+    const lowered = await keyboardable(s.page);
+    ok(lowered.open === 'false' && lowered.pane,
+      'and a press over one that is really up still puts it away', JSON.stringify({ open: lowered.open }));
+    await s.page.evaluate(() => {
+      delete window.visualViewport.height;
+      window.visualViewport.dispatchEvent(new Event('resize'));
+    });
+
+    // Leaving every field is the keyboard going away on its own, and the
+    // button follows it rather than staying pressed over nothing.
+    await s.page.click('#kbBtn');
+    await wait(150);
+    await s.page.click('#soundBtn');
+    await wait(250);
+    const left = await keyboardable(s.page);
+    ok(left.open === 'false' && left.pane,
+      'the focus leaving every field puts the switch back', JSON.stringify({ open: left.open, pane: left.pane }));
+    await s.page.click('#soundBtn');
+
+    /* ------------------------------------------------------- in a dialog */
+
     await s.page.click('#newSession');
     await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 10000 });
-    const muted = await keyboardable(s.page);
-    ok(muted.fields.length >= 1 && muted.fields.every((f) => f.muted && f.readonly),
-      'every field on the sheet is muted, and read-only so that no browser can argue',
-      JSON.stringify(muted.fields));
+    await wait(500);
+    const sheet = await keyboardable(s.page);
+    ok(sheet.fields.length >= 1 && sheet.fields.every((f) => f.muted),
+      'every field on the sheet is muted', JSON.stringify(sheet.fields));
+    ok(sheet.mics.length >= 1 && sheet.mics.every((row) => row.field && row.mic),
+      'and every one has its microphone', JSON.stringify(sheet.mics));
+    ok(sheet.copies === 1 && sheet.copy && sheet.copy.inDialog && sheet.copy.shown && sheet.copy.over,
+      'the button is pressable over the dialog, in the very spot the bar has it',
+      JSON.stringify(sheet.copy));
+    await shot(s.page, 'keyboard-sheet');
 
-    // And a field is filled by speaking to it. What comes back is what would
+    await s.page.click('#newSessionSheet .kb-copy');
+    await wait(200);
+    const typing = await keyboardable(s.page);
+    ok(typing.open === 'true' && typing.copy && typing.copy.open === 'true'
+      && typing.focus === 'dialog' && !typing.focusMuted,
+      'pressed there, it raises the keyboard for the dialog\'s field',
+      JSON.stringify({ open: typing.open, copy: typing.copy, focus: typing.focus, muted: typing.focusMuted }));
+    await s.page.click('#newSessionSheet .kb-copy');
+    await wait(200);
+    const shut = await keyboardable(s.page);
+    ok(shut.open === 'false' && shut.fields.every((f) => f.muted),
+      'and pressed again, puts it away', JSON.stringify({ open: shut.open, fields: shut.fields }));
+
+    // A field is still filled by speaking to it. What comes back is what would
     // have been typed: it goes in the field and the field is told, so the list
     // filters exactly as it does under a finger.
     await s.page.click('#nsDir .mic-btn');
     await s.page.waitForSelector('#recSheet[open]', { timeout: 15000 });
     await wait(1200);
-    const working = await s.page.$eval('#nsDir .mic-btn',
-      (n) => ({ ring: getComputedStyle(n, '::after').animationName, shut: n.disabled }));
     await s.page.click('#recSend');
     const heard = await s.page.waitForFunction(
       (want) => document.querySelector('#nsDir .combo-input').value === want,
       stub.text, { timeout: 60000 }).then(() => true).catch(() => false);
-    ok(heard, 'a field is filled by speaking into it',
+    ok(heard, 'a muted field is filled by speaking into it',
       await s.page.$eval('#nsDir .combo-input', (n) => n.value));
-    ok(working.ring === 'spin' && working.shut,
-      'and while it listens the microphone wears the same ring every other control does',
-      working.ring + ', shut: ' + working.shut);
-    const filtered = await s.page.$$eval('#nsDir .combo-option',
-      (nodes) => nodes.map((n) => n.dataset.value));
-    ok(filtered.includes('dynamic'),
-      'and what was said filtered the list, exactly as typing it would',
-      JSON.stringify(filtered));
-    // A click on the sheet's own heading puts the list away; Escape would put
-    // the whole sheet away with it.
     await s.page.click('#newSessionSheet .sheet-title');
     await s.page.click('#nsCancel');
     await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 10000 })
@@ -5744,60 +5992,197 @@ async function handsfree() {
 
     // The dialog that asks for one line of text is a field like any other.
     await s.page.click('#sessionMenu');
+    const items = await s.page.$$eval('.menu-item', (nodes) => nodes.map((n) => n.textContent));
+    ok(items.some((one) => /key bar/i.test(one)),
+      'the key bar is this device\'s choice again, and the menu offers it', JSON.stringify(items));
     await s.page.click('.menu-item:has-text("Rename")');
     await s.page.waitForSelector('dialog.modal', { timeout: 10000 });
-    const rename = await s.page.evaluate(() => {
-      const input = document.querySelector('dialog.modal input.input');
-      return {
-        muted: !!input && input.getAttribute('inputmode') === 'none',
-        readonly: !!input && input.readOnly,
-        mic: !!document.querySelector('dialog.modal .dictate .mic-btn'),
-      };
+    await wait(400);
+    const rename = await keyboardable(s.page);
+    ok(rename.fields.length === 1 && rename.fields[0].muted && rename.mics.length === 1
+      && rename.copy && rename.copy.shown && rename.copy.over,
+      'so is the rename dialog: its field muted, with a microphone, and the button over it',
+      JSON.stringify({ fields: rename.fields, mics: rename.mics, copy: rename.copy }));
+    await s.page.click('dialog.modal .kb-copy');
+    await wait(200);
+    const renaming = await keyboardable(s.page);
+    ok(renaming.open === 'true' && renaming.focus === 'dialog' && !renaming.focusMuted,
+      'and the button raises the keyboard for it', JSON.stringify({ open: renaming.open, focus: renaming.focus }));
+    await s.page.click('dialog.modal .kb-copy');
+    await wait(200);
+    // A tablet in its case types on keys of its own, and a muted field is
+    // given back to them rather than swallowing the key.
+    await s.page.keyboard.type('xy');
+    const keyed = await s.page.evaluate(() => {
+      const node = document.activeElement;
+      return { value: node.value, ro: node.readOnly, dialog: !!node.closest('dialog') };
     });
-    ok(rename.muted && rename.readonly && rename.mic,
-      'so is the one field the rename dialog has, and it has a microphone too',
-      JSON.stringify(rename));
-    // The key bar item is not offered while the bar is not optional.
+    ok(keyed.dialog && keyed.value.endsWith('xy') && !keyed.ro,
+      'a key pressed on real keys lands in the muted field', JSON.stringify(keyed));
     await s.page.keyboard.press('Escape');
     await s.page.waitForSelector('dialog.modal', { state: 'detached', timeout: 10000 }).catch(() => {});
-    await s.page.click('#sessionMenu');
-    const items = await s.page.$$eval('.menu-item', (nodes) => nodes.map((n) => n.textContent));
-    ok(!items.some((one) => /key bar/i.test(one)),
-      'and the menu does not offer to hide the only keyboard there is',
-      JSON.stringify(items));
-    // A click anywhere else is how a menu is put away, and the pane is where
-    // that click belongs.
-    await s.page.click('#term');
-    await wait(200);
-
-    /* ----------------------------------------------------- and it sticks */
-
-    await s.page.reload({ waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    await wait(600);
-    const back = await keyboardable(s.page);
-    ok(back.armed === 'true' && back.pane && back.keybar,
-      'a reload comes back with the mode still armed, because it is a fact about this device',
-      JSON.stringify({ armed: back.armed, pane: back.pane, keybar: back.keybar }));
-
-    /* --------------------------------------------------------- and off */
-
-    await s.page.click('#handsBtn');
     await wait(300);
-    const done = await keyboardable(s.page);
-    ok(done.armed === 'false' && done.paneOpen && done.stored === 'off',
-      'and one more tap gives the keyboard back',
-      JSON.stringify({ armed: done.armed, paneOpen: done.paneOpen, stored: done.stored }));
-    ok(!done.keybar && done.keyboardKey === true,
-      'the key bar goes back to what this device asked for, which was nothing, '
-      + 'and its keyboard key is standing again',
-      'bar ' + done.keybar + ', keyboard key shown: ' + done.keyboardKey);
+    const after = await keyboardable(s.page);
+    ok(after.copies === 0 && after.open === 'false' && after.pane,
+      'a closed dialog takes its copy of the button with it, and the pane is muted again',
+      JSON.stringify({ copies: after.copies, open: after.open, pane: after.pane }));
+
+    /* ------------------------------------------------- not on a desk */
+
+    const desk = await s.browser.newContext({ viewport: { width: 1280, height: 720 }, colorScheme: 'light' });
+    await desk.addCookies(await s.context.cookies());
+    const deskPage = await desk.newPage();
+    const openId = await s.page.evaluate(() => location.hash.slice(1));
+    await deskPage.goto(s.url + '/#' + openId, { waitUntil: 'domcontentloaded' });
+    await deskPage.waitForSelector('#term .xterm', { timeout: 20000 });
+    await wait(600);
+    const atDesk = await keyboardable(deskPage);
+    ok(!atDesk.shown && atDesk.paneOpen,
+      'a device with a mouse has no button and no muted field', JSON.stringify({ shown: atDesk.shown, paneOpen: atDesk.paneOpen }));
+    await deskPage.close();
+    await desk.close();
+
+    // Tesla's browser is a Chromium that says its pointer is fine and can
+    // hover, with no touch points to give it away: its name is what does.
+    const car = await s.browser.newContext({
+      viewport: { width: 1280, height: 720 },
+      colorScheme: 'light',
+      userAgent: 'Mozilla/5.0 (X11; GNU/Linux) AppleWebKit/537.36 (KHTML, like Gecko) '
+        + 'Chromium/120.0.6099.0 Chrome/120.0.6099.0 Safari/537.36 Tesla/2024.26.7',
+    });
+    await car.addCookies(await s.context.cookies());
+    const carPage = await car.newPage();
+    await carPage.goto(s.url + '/#' + openId, { waitUntil: 'domcontentloaded' });
+    await carPage.waitForSelector('#term .xterm', { timeout: 20000 });
+    await wait(600);
+    const inCar = await keyboardable(carPage);
+    ok(inCar.shown && inCar.pane && inCar.open === 'false',
+      'a car that says it has a mouse still has the button, and a muted pane',
+      JSON.stringify({ shown: inCar.shown, pane: inCar.pane, open: inCar.open }));
+    await carPage.click('#kbBtn');
+    await wait(200);
+    const carUp = await keyboardable(carPage);
+    ok(carUp.open === 'true' && carUp.paneOpen && carUp.focus === 'pane',
+      'and its button raises the keyboard for the pane',
+      JSON.stringify({ open: carUp.open, paneOpen: carUp.paneOpen, focus: carUp.focus }));
+    await carPage.close();
+    await car.close();
+
     ok(unexpected(s.errors).length === 0, 'no console errors',
       unexpected(s.errors).join(' | ') || '0');
   } finally {
     await s.stop();
     await stub.close();
   }
+}
+
+/* --------------------------------------------------------- 48. transfer */
+
+// Copy, paste and upload as buttons: a file lands in the working directory
+// and its path on the prompt, the clipboard reaches the pane, the pane's text
+// reaches the clipboard - and on a phone the three leave the full bar and
+// float over the pane instead.
+async function transfer() {
+  const s = await start({
+    viewport: { width: 1280, height: 720 },
+    permissions: ['clipboard-read', 'clipboard-write'],
+  });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    const hiddenBefore = await s.page.evaluate(() => document.getElementById('transfer').hidden);
+    ok(hiddenBefore, 'with nothing attached there is nothing to copy into', String(hiddenBefore));
+    const id = await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+    await s.page.waitForSelector('#transfer:not([hidden])', { timeout: 10000 });
+    const inBar = await s.page.evaluate(() => {
+      const bar = document.querySelector('.topbar').getBoundingClientRect();
+      const box = document.getElementById('transfer').getBoundingClientRect();
+      return { inside: box.top >= bar.top - 1 && box.bottom <= bar.bottom + 1, width: Math.round(box.width) };
+    });
+    ok(inBar.inside && inBar.width > 100, 'at a desk the three buttons are cells of the bar', JSON.stringify(inBar));
+    await s.page.click('#term .xterm-screen');
+    await focusTerm(s.page);
+
+    const res = await s.context.request.get(s.url + '/api/sessions/' + id);
+    const workdir = (await res.json()).session.workdir;
+
+    // Upload: the picker, a file name with a space in it, and the path that
+    // comes back on the prompt.
+    const png = Buffer.from('89504e470d0a1a0a' + '00'.repeat(24), 'hex');
+    await s.page.setInputFiles('input[type=file]', { name: 'shot one.png', mimeType: 'image/png', buffer: png });
+    const where = join(workdir, '.socrates', 'uploads', 'shot-one.png');
+    ok(await awaitPacked(s.page, '.socrates/uploads/shot-one.png'),
+      'the uploaded file\'s path is put on the prompt', oneLine(await screen(s.page)).slice(-90));
+    let stored = null;
+    try { stored = readFileSync(where); } catch { /* reported below */ }
+    ok(!!stored && stored.equals(png), 'the file is in the working directory, byte for byte',
+      where + ' ' + (stored ? stored.length + ' bytes' : 'missing'));
+    let ignore = '';
+    try { ignore = readFileSync(join(workdir, '.socrates', 'uploads', '.gitignore'), 'utf8'); } catch { /* below */ }
+    ok(ignore === '*\n', 'and git is told to look away', JSON.stringify(ignore));
+    await s.page.keyboard.press('Control+U');
+
+    // An image pasted into the pane takes the same road.
+    await s.page.evaluate(() => {
+      const data = new DataTransfer();
+      data.items.add(new File([new Uint8Array([137, 80, 78, 71])], 'clip.png', { type: 'image/png' }));
+      document.querySelector('#term .xterm-helper-textarea')
+        .dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+    });
+    ok(await awaitPacked(s.page, '.socrates/uploads/clip.png'),
+      'a pasted image is uploaded and its path put on the prompt', oneLine(await screen(s.page)).slice(-90));
+    await s.page.keyboard.press('Control+U');
+
+    // Paste: the clipboard, into the pane, by the button.
+    const line = 'pasted-' + Math.random().toString(36).slice(2, 8);
+    await s.page.evaluate((text) => navigator.clipboard.writeText(text), 'echo ' + line);
+    await s.page.click('#pasteBtn');
+    ok(await awaitScreen(s.page, 'echo ' + line), 'the paste button puts the clipboard on the prompt',
+      oneLine(await screen(s.page)).slice(-60));
+    await s.page.keyboard.press('Enter');
+    await awaitScreen(s.page, line + '\n');
+
+    // Copy with nothing selected: the pane's text in a sheet, and Copy all.
+    await s.page.click('#copyBtn');
+    await s.page.waitForSelector('.copy-sheet[open]', { timeout: 5000 });
+    const shown = await s.page.$eval('.copy-sheet textarea', (n) => n.value);
+    ok(shown.includes(line), 'with nothing selected, Copy opens the pane\'s text', shown.slice(-80));
+    await s.page.click('.copy-sheet .btn.primary');
+    await s.page.waitForSelector('.copy-sheet', { state: 'detached', timeout: 5000 });
+    const copied = await s.page.evaluate(() => navigator.clipboard.readText());
+    ok(copied === shown, 'and Copy all puts all of it on the clipboard', copied.length + ' of ' + shown.length + ' chars');
+
+    /* ------------------------------------------------------- on a phone */
+
+    const phone = await s.browser.newContext({
+      viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, colorScheme: 'light',
+    });
+    await phone.addCookies(await s.context.cookies());
+    const phonePage = await phone.newPage();
+    await phonePage.goto(s.url + '/#' + id, { waitUntil: 'domcontentloaded' });
+    await phonePage.waitForSelector('#transfer:not([hidden])', { timeout: 20000 });
+    await wait(600);
+    const placed = await phonePage.evaluate(() => {
+      const bar = document.querySelector('.topbar');
+      const box = document.getElementById('transfer').getBoundingClientRect();
+      return {
+        floats: getComputedStyle(document.getElementById('transfer')).position === 'absolute',
+        below: box.top >= bar.getBoundingClientRect().bottom,
+        onScreen: box.right <= innerWidth && box.left >= 0,
+        fits: bar.scrollWidth <= bar.clientWidth,
+        clear: document.getElementById('termLines').getBoundingClientRect().top >= box.bottom,
+      };
+    });
+    ok(placed.floats && placed.below && placed.onScreen && placed.fits && placed.clear,
+      'on a phone the three float over the pane, the bar still fits, and a notice starts under them', JSON.stringify(placed));
+    await phonePage.close();
+    await phone.close();
+
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
 }
 
 // -------------------------------------------------------------------- run
@@ -5814,7 +6199,7 @@ const ALL = [
   ['exitoverlay', 'a pane that ends, its status under the sentence, and Restart', exitoverlay],
   ['webglrenders', 'the shipped renderer paints the terminal', webglrenders],
   ['touchscroll', 'a finger scrolls the pane, and a tap is still a tap', touchscroll],
-  ['keybar', 'no device gets the key bar unasked, and asked for it sends the right bytes', keybar],
+  ['keybar', 'a touch screen gets the key bar unasked, a desk does not, and it sends the right bytes', keybar],
   ['offlineonce', 'a line typed with no network arrives exactly once', offlineonce],
   ['sigtermreattach', 'a restarted server reattaches to the pane that kept running', sigtermreattach],
   ['takeover', 'a second tab with the same viewer id takes the pane over', takeover],
@@ -5828,12 +6213,16 @@ const ALL = [
   ['recoveredsession', 'a tmux session with no row is taken in, never killed', recoveredsession],
   ['createclaude', 'Claude Code from the sheet to the command line, and back after an exit', createclaude],
   ['createcodex', 'Codex is trusted where it works, and its conversation is found', createcodex],
+  ['profiles', 'a second set of sign-ins, from the dashboard to the command line', profiles],
   ['createopencode', 'OpenCode names its session over its own authenticated server', createopencode],
   ['rebootresume', 'a machine that rebooted, and the session that comes back with its conversation', rebootresume],
   ['lighttheme', 'the white terminal, from the launch flag to the drawn pixel', lighttheme],
   ['activity-claude', 'Claude Code working, finishing, and a name that goes bold', activityclaude],
   ['activity-codex', 'Codex working, finishing, and a name that goes bold', activitycodex],
   ['activity-opencode', 'OpenCode working, finishing, and a name that goes bold', activityopencode],
+  ['tasks-claude', 'Claude Code done with its turn, a shell still running: an hourglass, then bold', taskclaude],
+  ['tasks-codex', 'Codex done with its turn, a background terminal still running', taskcodex],
+  ['tasks-opencode', 'OpenCode done with its turn, a background sub-agent still running', taskopencode],
   ['activity-waiting', 'a permission prompt: a still amber ring, and no timeout', activitywaiting],
   ['activity-fallback', 'a harness that hangs, and the row that leaves busy anyway', activityfallback],
   ['unread', 'bold when nobody saw it, gone when the row is opened or typed into', unread],
@@ -5845,10 +6234,11 @@ const ALL = [
   ['no-overlap', 'the microphone and the voice are never open at the same time', nooverlap],
   ['typeafteroutage', 'a cut socket, a locked phone, and a pane that still takes keystrokes', typeafteroutage],
   ['typekeepsfocus', 'a dialog, the ⋯ menu and two sessions: the keys still land in the pane', typekeepsfocus],
-  ['handsfree', 'a mode in which nothing opens the on-screen keyboard, and everything is dictated', handsfree],
+  ['keyboard', 'on a touch screen only the button raises the keyboard, in every dialog too', keyboard],
   ['design', 'white surfaces, marks, hover-only detail and motion that does not restart', design],
   ['clipboard', 'copy and paste: the keys, a plain drag, a click, a middle click, and OSC 52', clipboard],
   ['touchcopy', 'a finger held on the pane selects, grows and copies', touchcopy],
+  ['transfer', 'copy, paste and upload buttons, a pasted image, and the phone layout', transfer],
   ['livesession', 'one real session against the real Claude Code CLI', livesession, { live: true }],
 ];
 

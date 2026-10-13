@@ -120,13 +120,20 @@ Generated settings file (`<session dir>/claude-settings.json`, mode 0600):
   "skipDangerousModePermissionPrompt": true,
   "disableRemoteControl": true,
   "cleanupPeriodDays": 90,
+  "ultracode": false,
   "env": { … the pane's environment … }
 }
 ```
 
 `skipDangerousModePermissionPrompt` is what stops the bypass launch sitting on
 a confirmation dialog before the user can type. `cleanupPeriodDays` is 90 so a
-transcript outlives the offline stretch it may have to be resumed after. `env`
+transcript outlives the offline stretch it may have to be resumed after.
+`ultracode` is the one key the sheet decides: off unless the person switched
+Ultracode on when creating the session, then `true` for that session's whole
+life (kept in its options as `"ultracode": true`, so a resume keeps it).
+Verified against 2.1.296: the binary documents the key as "set per session via
+the `ultracode` settings key (--settings …)", and `/effort` in a pane started
+with it reads "Ultracode on". `env`
 reaches every subprocess Claude Code starts, which is what makes a tool's
 shell look like the pane it came from.
 

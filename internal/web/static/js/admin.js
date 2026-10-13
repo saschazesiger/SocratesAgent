@@ -164,6 +164,7 @@ async function load() {
   renderDefaultHarness();
   renderPresets();
   bind();
+  loadProfiles();
   loadHarnesses();
   refreshTmux();
   if (data.local_url) localURL = data.local_url;
@@ -292,6 +293,201 @@ function readPresets() {
     const [label, path] = row.querySelectorAll('input');
     return { label: label.value.trim(), path: path.value.trim() };
   }).filter((preset) => preset.path !== '');
+}
+
+/* -------------------------------------------------------------- profiles */
+
+// Profiles are not part of the settings document: each change is its own
+// request and is live at once, because a profile is a directory on the
+// machine and the document's Save would otherwise be what decides when a
+// directory full of sign-ins is deleted.
+
+const LOGIN_NAMES = [['claude', 'Claude'], ['codex', 'Codex'], ['opencode', 'OpenCode']];
+
+async function loadProfiles() {
+  const host = $('profileList');
+  if (!host) return;
+  try {
+    const data = await api('/api/profiles');
+    renderProfiles(data.profiles || []);
+  } catch (err) {
+    host.textContent = errorMessage(err);
+  }
+}
+
+function loginSummary(profile) {
+  const accounts = profile.accounts || {};
+  return LOGIN_NAMES.map(([id, name]) => {
+    const login = accounts[id] || {};
+    const who = login.account || (login.signed_in ? 'signed in' : 'not signed in');
+    const limits = ((profile.limits || {})[id] || [])
+      .filter((w) => w.label === '5h' || w.label === '7d')
+      .map((w) => {
+        const left = harnesses.untilReset(w);
+        return w.label + ' ' + Math.round(w.used_percent) + '%' + (left ? ' · ' + left + ' left' : '');
+      }).join(', ');
+    return name + ': ' + who + (limits ? ' (' + limits + ')' : '');
+  }).join(' · ') + (profile.sessions ? ' · ' + profile.sessions + ' session' + (profile.sessions === 1 ? '' : 's') : '');
+}
+
+function renderProfiles(list) {
+  const host = $('profileList');
+  host.innerHTML = '';
+  for (const profile of list) {
+    const row = profileRow(profile);
+    row.dataset.id = profile.id;
+    row.prepend(profileGrip(profile));
+    host.append(row);
+  }
+}
+
+// The order of the list is the order the new-session sheet offers the
+// profiles in. A row is moved by its grip - dragged with a mouse or a finger,
+// or with the arrow keys once the grip has the focus - and the order is saved
+// the moment it is let go.
+
+function profileOrder(host) {
+  return [...host.querySelectorAll('.profile-row')].map((row) => row.dataset.id);
+}
+
+async function saveProfileOrder(host, before) {
+  const order = profileOrder(host);
+  if (order.join('\n') === before.join('\n')) return;
+  try {
+    await api('/api/profiles/order', { method: 'PUT', body: { order } });
+  } catch (err) {
+    toast(errorMessage(err), 'error');
+    await loadProfiles();
+  }
+}
+
+function profileGrip(profile) {
+  const grip = el('button', {
+    class: 'profile-grip', type: 'button', title: 'Drag to reorder',
+    'aria-label': 'Move ' + profile.name + ' (arrow keys)',
+    html: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>',
+  });
+  grip.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+    event.preventDefault();
+    const row = grip.closest('.profile-row');
+    const host = row.parentElement;
+    const before = profileOrder(host);
+    if (event.key === 'ArrowUp' && row.previousElementSibling) row.previousElementSibling.before(row);
+    else if (event.key === 'ArrowDown' && row.nextElementSibling) row.nextElementSibling.after(row);
+    grip.focus();
+    saveProfileOrder(host, before);
+  });
+  grip.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const row = grip.closest('.profile-row');
+    const host = row.parentElement;
+    const before = profileOrder(host);
+    row.classList.add('dragging');
+    // The row follows the pointer through the list: it goes before the first
+    // other row whose middle is below the pointer, or to the end. Moving the
+    // row takes it out of the document for a moment, which ends any pointer
+    // capture, so the pointer is followed on the window instead.
+    const move = (e) => {
+      if (e.pointerId !== event.pointerId) return;
+      const target = [...host.querySelectorAll('.profile-row')].find((other) => {
+        if (other === row) return false;
+        const box = other.getBoundingClientRect();
+        return e.clientY < box.top + box.height / 2;
+      });
+      if (target) { if (row.nextElementSibling !== target) target.before(row); }
+      else if (host.lastElementChild !== row) host.append(row);
+    };
+    const end = (e) => {
+      if (e.pointerId !== event.pointerId) return;
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', end);
+      window.removeEventListener('pointercancel', end);
+      row.classList.remove('dragging');
+      saveProfileOrder(host, before);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', end);
+    window.addEventListener('pointercancel', end);
+  });
+  return grip;
+}
+
+function profileRow(profile) {
+  const logins = el('div', { class: 'profile-logins', text: loginSummary(profile) });
+  if (profile.default) {
+    return el('div', { class: 'profile-row' },
+      el('span', { class: 'profile-default', text: profile.name }),
+      el('span', { class: 'hint', text: 'the CLIs\' own sign-ins' }),
+      el('span'),
+      logins);
+  }
+  const name = el('input', {
+    class: 'input', type: 'text', maxlength: '40', value: profile.name,
+    'aria-label': 'Name of ' + profile.name,
+  });
+  const rename = el('button', { class: 'btn sm', type: 'button', text: 'Rename' });
+  const remove = el('button', { class: 'btn sm', type: 'button', text: 'Delete' });
+  rename.addEventListener('click', async () => {
+    const next = name.value.trim();
+    if (!next || next === profile.name) return;
+    busyButton(rename, true, 'Saving…');
+    try {
+      await api('/api/profiles/' + encodeURIComponent(profile.id), { method: 'PATCH', body: { name: next } });
+      toast('Renamed to ' + next + '.');
+      await loadProfiles();
+    } catch (err) {
+      toast(errorMessage(err), 'error');
+    } finally {
+      busyButton(rename, false);
+    }
+  });
+  // Deleting takes the profile's sign-ins and conversations with it, so the
+  // first tap only asks and the second one, within a few seconds, deletes.
+  let armed = null;
+  remove.addEventListener('click', async () => {
+    if (!armed) {
+      remove.textContent = 'Really delete?';
+      armed = setTimeout(() => { armed = null; remove.textContent = 'Delete'; }, 4000);
+      return;
+    }
+    clearTimeout(armed);
+    armed = null;
+    busyButton(remove, true, 'Deleting…');
+    try {
+      await api('/api/profiles/' + encodeURIComponent(profile.id), { method: 'DELETE' });
+      toast(profile.name + ' and its sign-ins were deleted.');
+      await loadProfiles();
+    } catch (err) {
+      toast(errorMessage(err), 'error');
+      busyButton(remove, false);
+      remove.textContent = 'Delete';
+    }
+  });
+  return el('div', { class: 'profile-row' }, name, rename, remove, logins);
+}
+
+async function addProfile() {
+  const input = $('profileName');
+  const name = input.value.trim();
+  if (!name) {
+    toast('Give the profile a name first.');
+    input.focus();
+    return;
+  }
+  const button = $('profileAdd');
+  busyButton(button, true, 'Adding…');
+  try {
+    await api('/api/profiles', { method: 'POST', body: { name } });
+    input.value = '';
+    toast(name + ' was added. Start a session in it to sign in.');
+    await loadProfiles();
+  } catch (err) {
+    toast(errorMessage(err), 'error');
+  } finally {
+    busyButton(button, false);
+  }
 }
 
 /* ------------------------------------------------------- the tmux engine */
@@ -605,6 +801,10 @@ function bind() {
   $('runChecks').addEventListener('click', runChecks);
   $('changePw').addEventListener('click', changePassword);
   $('presetAdd').addEventListener('click', () => $('presetDirs').append(presetRow()));
+  $('profileAdd').addEventListener('click', addProfile);
+  $('profileName').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); addProfile(); }
+  });
   $('windowSize').addEventListener('change', renderWindowSizeHint);
   $('tunnelStart').addEventListener('click', startTunnel);
   $('tunnelStop').addEventListener('click', stopTunnel);

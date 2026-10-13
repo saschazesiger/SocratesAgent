@@ -1980,3 +1980,32 @@ on the screen: the name arrives while the first turn runs, not after it.
   and the end, and an error opens an alert dialog with the reason — which is
   how a rejected API key (OpenRouter's 401 "User not found") shows itself
   instead of a sidebar that simply never changes.
+
+## One VS Code per folder, and every folder keeps its own shelves (2026-09-24)
+
+**VS Code is no longer a session the sheet starts.** It is off `#nsTools`, and
+`POST /api/sessions` answers 400 for it. A project folder's head carries the
+VS Code mark instead (`.folder-bar > .folder-ide`, beside the head rather than
+in it, since a button cannot hold one); a tap opens the folder's editor, or
+asks `POST /api/ide {"workdir"}` for one. The server answers with the editor
+the folder already has (200) or makes it (201), under `ideMu`, and only for a
+folder some session already works in. The editor is not a row: `foldersOf`
+puts it on `folder.ide`, and its mark is grey, coloured while it runs, and
+pressed while it is on screen. "More Chats" has none.
+
+- **What the editor remembers is kept per folder.** The user-data-dir is
+  `<data>/vscode/<sha256(folder)[:8]>` rather than the session's directory,
+  which a delete removes; a session-era `vscode-data` is moved there once. A
+  folder's first editor gets a `settings.json` with hot exit and revived
+  terminals on `onExitAndWindowClose`.
+- **The editor's id is the folder's** (`VSCodeSessionID`). code-server keeps
+  open editors, layout and recent files in the *browser's* IndexedDB, under a
+  name hashed from `location.pathname` - which is `/ide/<id>/`. A fresh id per
+  editor was a browser that had never seen the folder.
+- **The menu of an editor** has no status and no rename, and Delete reads
+  "Close VS Code": closing loses nothing.
+- **Background and Done are shelves inside each folder**, not two folders at
+  the bottom of the list. A shelf is `.folder.shelf[data-shelf]` in its
+  folder's rows, starts shut like the old folders did, and its open state is
+  keyed `<folder>\0<status>`. A folder with nothing but shelved sessions sorts
+  after the folders with work in progress, and before "More Chats".

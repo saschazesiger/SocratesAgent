@@ -95,6 +95,12 @@ func newBench(t *testing.T) *bench {
 		defer b.mu.Unlock()
 		return b.screen, b.screenE
 	}
+	// The bench's screen has no history, so what is on it is what is visible.
+	m.act.visible = func(context.Context, string) (string, error) {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.screen, b.screenE
+	}
 	// NoteInput and MarkRead read the clock themselves, and the ladder's
 	// answers are decided by comparing that reading with the tick's.
 	m.act.now = func() time.Time {
@@ -265,6 +271,17 @@ func TestMovesRow(t *testing.T) {
 		{StateIdle, StateUnknown, false},
 		{StateBusy, StateBusy, false},
 		{StateWaiting, StateWaiting, false},
+		// A turn that ends with something still running behind it ends, and
+		// that work ending is an end too. Coming up to find it already so is
+		// the machine catching up, like coming up to find a session idle.
+		{StateBusy, StateTasks, true},
+		{StateTasks, StateIdle, true},
+		{StateTasks, StateBusy, true},
+		{StateTasks, StateUnknown, true},
+		{StateTasks, StateWaiting, true},
+		{StateUnknown, StateTasks, false},
+		{StateIdle, StateTasks, false},
+		{StateTasks, StateTasks, false},
 	} {
 		if got := MovesRow(c.prev, c.next); got != c.want {
 			t.Errorf("MovesRow(%s, %s) = %v, want %v", c.prev, c.next, got, c.want)
@@ -747,6 +764,16 @@ func TestActivityCodexHostnameTitleIsUnavailable(t *testing.T) {
 		{"SocratesAgent", seen(StateIdle, "")},
 		{"⠧ SocratesAgent", seen(StateBusy, "")},
 		{"[ . ] Action Required | SocratesAgent", seen(StateWaiting, "approval required")},
+		// Codex 0.158.0 puts the thread's name before the directory's.
+		{"Start background sleep command | SocratesAgent", seen(StateIdle, "")},
+		{"⠦ Start background sleep command | SocratesAgent", seen(StateBusy, "")},
+		{"⠦ ⠦ | SocratesAgent", seen(StateBusy, "")},
+		{"Start background sleep command | OtherProject", missing},
+		// A long directory name is cut short.
+		{"Start background sleep command | SocratesAg...", seen(StateIdle, "")},
+		{"SocratesAg…", seen(StateIdle, "")},
+		{"Start background sleep command | OtherProj...", missing},
+		{"Start | So...", missing},
 	}
 	for _, c := range cases {
 		got := (codexSource{}).Read(context.Background(), snapshot{

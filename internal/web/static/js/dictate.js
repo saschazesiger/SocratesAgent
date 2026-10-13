@@ -15,7 +15,7 @@
 // There is exactly one sheet and one microphone on the page, and the top half
 // of this file is them. `record()` is the whole round trip - open, listen,
 // transcribe - and it is what the pill in the top bar calls, what every
-// field's own microphone calls (handsfree.js), and what anything that ever
+// field's own microphone calls (keyboard.js), and what anything that ever
 // needs words from a person calls. Two microphones open at once is a
 // recording of a recording, so a second caller is answered with nothing
 // rather than with a second microphone.

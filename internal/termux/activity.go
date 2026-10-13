@@ -38,7 +38,20 @@ const (
 	// StateWaiting is a harness that needs the user: a permission prompt, a
 	// question, a menu.
 	StateWaiting State = "waiting"
+	// StateTasks is a harness whose turn has ended while something it
+	// started is still running: a background shell, a monitor, a background
+	// sub-agent. It is not finished - Claude and OpenCode take the turn up
+	// again the moment that work reports back - and it is not working either,
+	// so it is neither the spinner nor the quiet of a session that is done.
+	StateTasks State = "tasks"
 )
+
+// working is whether a state is one in which the work somebody asked for is
+// still going on, in the foreground or behind it. Leaving it is what a turn
+// that finished is: the unread mark, the chime and the row moving up all wait
+// for it, so a turn that ends with a shell still running announces itself once,
+// when the shell is done and the agent has said its last word, and not twice.
+func working(s State) bool { return s == StateBusy || s == StateTasks }
 
 // Activity is one session's answer, as the browser receives it.
 //
@@ -229,6 +242,14 @@ type track struct {
 	scrapeAt   time.Time
 	lastScrape observation
 
+	// The last look at an idle screen for work left running behind the turn
+	// (backgroundOnScreen), and what it found. It is looked at again only
+	// once the pane has printed something since, so a screen that sits still
+	// for an hour costs one capture, not eighteen hundred.
+	tasksAt   time.Time
+	tasksOK   bool
+	tasksSeen bool
+
 	// waitingAt is when waiting was committed and inputAt when a keystroke was
 	// last accepted. Quiescence may only release a waiting that has been
 	// answered, and those two timestamps are how that is known.
@@ -267,11 +288,13 @@ type activity struct {
 	// unsorted session gets to show that it is working starts.
 	firstTick time.Time
 
-	// capture is how the screen layer reads a pane, and now is the clock the
+	// capture is how the screen layer reads a pane, visible how the look for
+	// work left running behind a turn reads its screen, and now is the clock the
 	// two out-of-band writers read. Both are fields so that the ladder's table
 	// tests can drive a sequence of ticks without a tmux server and without
 	// waiting for real seconds to pass.
 	capture func(ctx context.Context, sessionID string, lines int) (string, error)
+	visible func(ctx context.Context, sessionID string) (string, error)
 	now     func() time.Time
 }
 
@@ -282,6 +305,7 @@ func newActivity(m *Manager) *activity {
 		unread:  map[string]int64{},
 		subs:    map[int]chan ActivityChange{},
 		capture: m.CapturePane,
+		visible: m.visiblePane,
 		now:     time.Now,
 	}
 	a.sources = map[harnesses.Kind]source{
@@ -614,6 +638,21 @@ func (a *activity) evaluate(ctx context.Context, row store.Session, pane paneLin
 		tr.dropped = true
 	}
 
+	// An idle answer may be a turn that ended with work left running behind
+	// it, which some harnesses only say on the screen: Codex's title and
+	// Claude's file read idle while a background terminal or a monitor goes
+	// on. It comes after the runaway guard on purpose - the guard is about a
+	// spinner that never stops, and a screen saying that a shell is still
+	// running is evidence about a pane that is quiet by design.
+	// Only an idle somebody recognised is looked behind, though: one that is
+	// nothing but thirty seconds of silence is no evidence that the screen is
+	// the harness's own and not a dialog painted over it.
+	recognised := from == sourceExact || from == sourceScreen ||
+		(ladderObs.state == StateIdle && (ladderFrom == sourceExact || ladderFrom == sourceScreen))
+	if obs.state == StateIdle && recognised && a.backgroundOnScreen(ctx, kind, tr, snap) {
+		obs, from = seen(StateTasks, ""), sourceScreen
+	}
+
 	// 7. Waiting is sticky against quiescence. A permission prompt is silent by
 	//    nature and may sit for an hour while the user drives.
 	if tr.committed.State == StateWaiting && obs.state != StateWaiting {
@@ -675,6 +714,36 @@ func (a *activity) scrape(ctx context.Context, kind harnesses.Kind, tr *track, s
 	return tr.lastScrape
 }
 
+// backgroundOnScreen reports whether an idle harness's screen says that
+// something it started is still running. Only harnesses that paint such a
+// line are asked (backgroundLines).
+//
+// The screen is captured again only once the pane has printed something
+// since the last look: a line saying a shell is running goes away by being
+// repainted, so a pane that has been silent since cannot have changed its
+// answer. #{window_activity} is in whole seconds, so output in the second of
+// the last look counts as after it.
+func (a *activity) backgroundOnScreen(ctx context.Context, kind harnesses.Kind, tr *track, snap snapshot) bool {
+	if _, ok := backgroundLines[kind]; !ok {
+		return false
+	}
+	if !tr.tasksAt.IsZero() {
+		quietSince := snap.pane.activity > 0 && snap.pane.activity < tr.tasksAt.Unix()
+		if (tr.tasksOK && quietSince) || snap.now.Sub(tr.tasksAt) < ScrapeEvery {
+			return tr.tasksSeen
+		}
+	}
+	tr.tasksAt = snap.now
+	// The visible screen alone: see visiblePane.
+	screen, err := a.visible(ctx, snap.row.ID)
+	if err != nil {
+		tr.tasksOK, tr.tasksSeen = false, false
+		return false
+	}
+	tr.tasksOK, tr.tasksSeen = true, scrapeBackground(kind, screen)
+	return tr.tasksSeen
+}
+
 // quiescence is the one layer every harness has: all four TUIs repaint a
 // spinner several times a second while they work, so thirty seconds without a
 // byte is a fact about the program and not about the terminal.
@@ -716,8 +785,9 @@ func (a *activity) commit(id string, tr *track, obs observation, from string, no
 	}
 	need := 1
 	switch next {
-	case StateIdle:
-		// The anti-flicker between two tool calls.
+	case StateIdle, StateTasks:
+		// The anti-flicker between two tool calls. A turn that ends with a
+		// shell left running ends the same way one without it does.
 		need = IdleSettle
 	case StateUnknown:
 		// A transient read failure must never blank a row.
@@ -747,7 +817,10 @@ func (a *activity) commit(id string, tr *track, obs observation, from string, no
 	// session that has just been created ends its first second by marking
 	// itself unread - and the browser, which chimes and notifies on this same
 	// edge, announces that a window opened as work that finished.
-	finished := prev.State == StateBusy && next != StateBusy
+	//
+	// A turn that ends with something still running in the background has not
+	// finished: the mark is set when that work is over too (see working).
+	finished := working(prev.State) && !working(next)
 	needsYou := prev.State != StateWaiting && next == StateWaiting
 	if tr.asked() && (finished || needsYou) {
 		tr.committed.Unread = true
@@ -787,12 +860,14 @@ func (a *activity) commit(id string, tr *track, obs observation, from string, no
 // change into idle from anything but busy is not on the list on purpose: it
 // is what every running session reports when the detector comes up after a
 // restart, and forty rows moving to "now" at once would be an order nobody
-// chose.
+// chose - and for the same reason neither is a change into tasks from
+// anything but busy. A change out of tasks is the end of work, as one out of
+// busy is.
 func MovesRow(prev, next State) bool {
 	if prev == next {
 		return false
 	}
-	return next == StateBusy || prev == StateBusy || next == StateWaiting
+	return next == StateBusy || prev == StateBusy || prev == StateTasks || next == StateWaiting
 }
 
 // sort files a session the upgrade left unsorted, as soon as the detector
@@ -805,7 +880,7 @@ func (a *activity) sort(id string, now time.Time) {
 		return
 	}
 	switch {
-	case tr.committed.State == StateBusy:
+	case working(tr.committed.State):
 		a.file(id, store.StatusInProgress)
 	case tr.committed.State != StateUnknown, now.Sub(a.firstTick) >= SortWithin:
 		a.file(id, store.StatusPending)
@@ -1131,11 +1206,10 @@ func (c *claudeSource) forget(id string) {
 }
 
 func (c *claudeSource) Read(_ context.Context, s snapshot) observation {
-	home := claudeHome(s.plan)
-	if home == "" || s.pane.pid <= 0 {
+	dir := claudeSessionsDir(s.plan)
+	if dir == "" || s.pane.pid <= 0 {
 		return missing
 	}
-	dir := filepath.Join(home, ".claude", "sessions")
 
 	c.mu.Lock()
 	cached := c.cache[s.row.ID]
@@ -1183,6 +1257,11 @@ func (c *claudeSource) Read(_ context.Context, s snapshot) observation {
 		return seen(StateBusy, "")
 	case "idle":
 		return seen(StateIdle, "")
+	case "shell":
+		// Claude Code's own word for idle with a background shell or a Monitor
+		// still running (both are shell tasks to it). Its agents view counts
+		// it as working; it takes the turn up again when they report back.
+		return seen(StateTasks, "")
 	case "waiting":
 		note := strings.TrimSpace(status.WaitingFor)
 		if note == "" {
@@ -1193,14 +1272,22 @@ func (c *claudeSource) Read(_ context.Context, s snapshot) observation {
 	return missing
 }
 
-// claudeHome is the home directory the pane was given, and ours only as a
-// fallback: a session launched with a HOME of its own writes its status file
-// there.
-func claudeHome(plan harnesses.LaunchPlan) string {
-	if h := strings.TrimSpace(plan.Env["HOME"]); h != "" {
-		return h
+// claudeSessionsDir is where the pane's Claude Code writes its status files:
+// the config directory the pane was given - a session in a profile has one of
+// its own - or else .claude under the home directory the pane was given, and
+// under ours only as a fallback.
+func claudeSessionsDir(plan harnesses.LaunchPlan) string {
+	if dir := strings.TrimSpace(plan.Env["CLAUDE_CONFIG_DIR"]); dir != "" {
+		return filepath.Join(dir, "sessions")
 	}
-	return strings.TrimSpace(os.Getenv("HOME"))
+	home := strings.TrimSpace(plan.Env["HOME"])
+	if home == "" {
+		home = strings.TrimSpace(os.Getenv("HOME"))
+	}
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".claude", "sessions")
 }
 
 // readClaudeStatus reads one status file and refuses it unless it is really
@@ -1426,10 +1513,32 @@ func (codexSource) Read(_ context.Context, s snapshot) observation {
 		}
 		break
 	}
-	if s.plan.Cwd != "" && title == filepath.Base(s.plan.Cwd) {
+	if s.plan.Cwd != "" && codexIdleTitle(title, filepath.Base(s.plan.Cwd)) {
 		return seen(StateIdle, "")
 	}
 	return missing
+}
+
+// codexIdleTitle is whether a title is Codex's idle one: the project
+// directory's name, and once the thread has a name of its own (0.158.0) that
+// name, a pipe, and the directory's - `Fix the login | SocratesAgent`. A long
+// directory name is cut short with three dots (`… | codex-20261001-132040...`
+// for codex-20261001-132040-0e8fd6b1). The spinner and the approval title are
+// both asked first, so what is left with that ending is the idle one.
+func codexIdleTitle(title, base string) bool {
+	last := title
+	if at := strings.LastIndex(title, " | "); at >= 0 {
+		last = title[at+len(" | "):]
+	}
+	if last == base {
+		return true
+	}
+	for _, dots := range []string{"...", "…"} {
+		if cut, ok := strings.CutSuffix(last, dots); ok && len(cut) >= 8 && strings.HasPrefix(base, cut) {
+			return true
+		}
+	}
+	return false
 }
 
 // ------------------------------------------------------------------- the screen
@@ -1470,6 +1579,61 @@ var (
 	// capture reads.
 	openCodeWaiting = regexp.MustCompile(`△\s*Permission required|Allow once\s+Allow always\s+Reject\s+ctrl\+f`)
 )
+
+// The lines a harness paints while something it started goes on behind an
+// ended turn, both verified against the real programs (Claude Code 2.1.281,
+// Codex 0.158.0).
+//
+// Claude puts a pill on the bottom bar - `⏵⏵ bypass permissions on · 1 shell
+// · ← for agents · ↓ to manage`, `· 2 shells, 1 monitor ·`, the same in every
+// permission mode - and is matched on the bar alone: first on it, or straight
+// after the mode, and never followed by a word. The transcript keeps a `done
+// 12:55 PM · 1 shell still running` line above it, a diff of a file that
+// quotes the bar starts with a line number, and while a sub-agent runs in the
+// background Claude lists its agents (`● main`, `◯ general-purpose …`) below
+// the bar, which is why the bar is looked for in the last dozen lines and not
+// only the last one. Codex paints `1 background terminal running · /ps to
+// view · /stop to close` above its composer, and takes the line away when the
+// process ends without starting a turn of its own.
+var (
+	claudeBackground = regexp.MustCompile(`^\s*(?:(?:⏵⏵|⏸)[^·]*·\s*)?\d+ (?:shells?|monitors?)(?:\s*[·,…]|\s*$)`)
+	codexBackground  = regexp.MustCompile(`^\s*\d+ background terminals? running\b`)
+)
+
+// backgroundLine is how a harness says on its screen that something it
+// started is still running: the pattern, and how many of the screen's last
+// non-blank lines it may be on.
+type backgroundLine struct {
+	pattern *regexp.Regexp
+	within  int
+}
+
+// backgroundLines are the harnesses that say so. Below Claude's bar is its
+// list of agents, and between Codex's line and the bottom is a composer that
+// grows with what is typed into it.
+var backgroundLines = map[harnesses.Kind]backgroundLine{
+	harnesses.KindClaude: {claudeBackground, 12},
+	harnesses.KindCodex:  {codexBackground, 10},
+}
+
+// scrapeBackground reads a screen for its harness's backgroundLine.
+func scrapeBackground(kind harnesses.Kind, screen string) bool {
+	line, ok := backgroundLines[kind]
+	if !ok {
+		return false
+	}
+	lines := strings.Split(screen, "\n")
+	for i, n := len(lines)-1, 0; i >= 0 && n < line.within; i-- {
+		if strings.TrimSpace(lines[i]) == "" {
+			continue
+		}
+		n++
+		if line.pattern.MatchString(lines[i]) {
+			return true
+		}
+	}
+	return false
+}
 
 // scrapeScreen is the third layer: what the harness has painted, read the way
 // a person reads it. Waiting is looked for first, because an approval dialog
@@ -1617,6 +1781,15 @@ type openCodeWatcher struct {
 	ok      bool
 	busy    map[string]bool
 	waiting map[string]openCodePrompt
+	// parents is what is known of each session's parent: "" for a session of
+	// its own, the parent's id for a sub-agent. A busy sub-agent under an idle
+	// parent is a background task (StateTasks), and a session whose parentage
+	// is not known yet counts as one of its own - which is what every busy
+	// session counted as before this was asked. asking is the lookups in
+	// flight, so a session is asked about once.
+	parents map[string]string
+	asking  map[string]bool
+	ctx     context.Context
 	// permFails counts consecutive /permission failures. Absent answers are
 	// not failures and never touch it.
 	permFails int
@@ -1658,12 +1831,13 @@ func newOpenCodeWatcher(access harnesses.ServerAccess, workdir string, every tim
 	return &openCodeWatcher{
 		access: access, workdir: workdir, reconcileEvery: every, logf: logf,
 		busy: map[string]bool{}, waiting: map[string]openCodePrompt{},
+		parents: map[string]string{}, asking: map[string]bool{},
 	}
 }
 
 func (w *openCodeWatcher) start() {
 	ctx, cancel := context.WithCancel(context.Background())
-	w.cancel = cancel
+	w.ctx, w.cancel = ctx, cancel
 	go w.run(ctx)
 }
 
@@ -1686,8 +1860,9 @@ func (w *openCodeWatcher) permissionsSupported() bool {
 
 func (w *openCodeWatcher) stop() { w.cancel() }
 
-// answer is the layer's view of the stream: waiting beats busy beats idle, and
-// nothing at all until the server has answered once.
+// answer is the layer's view of the stream: waiting beats busy beats a
+// background sub-agent beats idle, and nothing at all until the server has
+// answered once.
 func (w *openCodeWatcher) answer() observation {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -1698,7 +1873,16 @@ func (w *openCodeWatcher) answer() observation {
 		return seen(StateWaiting, "permission prompt")
 	}
 	if len(w.busy) > 0 {
-		return seen(StateBusy, "")
+		for id := range w.busy {
+			if parent, known := w.parents[id]; !known || parent == "" {
+				return seen(StateBusy, "")
+			}
+		}
+		// Only sub-agents are working, and nothing that started them is: they
+		// were sent off in the background (task with background: true, behind
+		// OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS in 1.18). A sub-agent run in
+		// the foreground keeps its parent busy for as long as it runs.
+		return seen(StateTasks, "")
 	}
 	return seen(StateIdle, "")
 }
@@ -1789,6 +1973,15 @@ func (w *openCodeWatcher) poll(ctx context.Context) {
 	for id, entry := range status {
 		if entry.Type == "busy" || entry.Type == "retry" {
 			busy[id] = true
+		}
+	}
+	// A session that is working and that the stream never introduced - one
+	// created while it was down, or before it was first opened - is asked
+	// about before the answer is believed, so a background sub-agent found by
+	// a seed reads as one rather than as its parent working.
+	for _, id := range w.unknownParents(busy) {
+		if parent, ok := w.lookupParent(ctx, id); ok {
+			w.learnParent(id, parent)
 		}
 	}
 	// The pending prompts are the second half of the seed. A session with one
@@ -1987,10 +2180,99 @@ type openCodeStatus struct {
 	} `json:"status"`
 }
 
+// openCodeSessionInfo is the part of a session OpenCode describes that says
+// whether it is a sub-agent: GET /session/:id answers with it, and the
+// session.* events carry it as `info`.
+type openCodeSessionInfo struct {
+	ID       string `json:"id"`
+	ParentID string `json:"parentID"`
+}
+
 type openCodePermission struct {
 	ID        string `json:"id"`
 	RequestID string `json:"requestID"`
 	SessionID string `json:"sessionID"`
+}
+
+// openCodeLookupTimeout is one GET /session/:id's budget.
+const openCodeLookupTimeout = 2 * time.Second
+
+// learnParent records a session's parent ("" for none).
+func (w *openCodeWatcher) learnParent(id, parent string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.parents == nil {
+		w.parents = map[string]string{}
+	}
+	w.parents[id] = parent
+}
+
+// unknownParents is the busy sessions whose parentage has not been learnt.
+func (w *openCodeWatcher) unknownParents(busy map[string]bool) []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var out []string
+	for id := range busy {
+		if _, known := w.parents[id]; !known {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// askParentLocked looks a session up in the background when the stream says
+// it is working and nothing has said whose it is: the stream introduces
+// every session it sees created, so this is one that existed before it was
+// opened. Until the answer is in, the session counts as one of its own. The
+// watcher's lock is held.
+func (w *openCodeWatcher) askParentLocked(id string) {
+	if w.ctx == nil {
+		return
+	}
+	if _, known := w.parents[id]; known || w.asking[id] {
+		return
+	}
+	if w.asking == nil {
+		w.asking = map[string]bool{}
+	}
+	w.asking[id] = true
+	go func() {
+		parent, ok := w.lookupParent(w.ctx, id)
+		if ok {
+			w.learnParent(id, parent)
+		}
+		w.mu.Lock()
+		delete(w.asking, id)
+		w.mu.Unlock()
+	}()
+}
+
+// lookupParent asks the server whose session id is. The boolean is whether it
+// answered: a failed lookup leaves the session counting as one of its own,
+// which is what it was before anybody asked.
+func (w *openCodeWatcher) lookupParent(ctx context.Context, id string) (string, bool) {
+	ctx, cancel := context.WithTimeout(ctx, openCodeLookupTimeout)
+	defer cancel()
+	url := fmt.Sprintf("http://127.0.0.1:%d/session/%s?directory=%s",
+		w.access.Port, neturl.PathEscape(id), neturl.QueryEscape(w.workdir))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", false
+	}
+	req.SetBasicAuth(w.access.Username, w.access.Password)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", false
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		return "", false
+	}
+	var info openCodeSessionInfo
+	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&info); err != nil || info.ID != id {
+		return "", false
+	}
+	return info.ParentID, true
 }
 
 // stream reads GET /event until it ends. It returns nil for a stream that ran
@@ -2044,6 +2326,7 @@ func (w *openCodeWatcher) event(payload string) {
 		switch status.Status.Type {
 		case "busy", "retry":
 			w.busy[status.SessionID] = true
+			w.askParentLocked(status.SessionID)
 		case "idle":
 			delete(w.busy, status.SessionID)
 			// A session holding a prompt reports busy for as long as it holds
@@ -2062,6 +2345,24 @@ func (w *openCodeWatcher) event(payload string) {
 			delete(w.busy, status.SessionID)
 		}
 		w.ok = true
+		w.mu.Unlock()
+	// Every session says who its parent is when it is made and on every change
+	// after, which is how a sub-agent is told from a session of its own.
+	case "session.created", "session.updated", "session.deleted":
+		var session struct {
+			Info openCodeSessionInfo `json:"info"`
+		}
+		if err := json.Unmarshal(body, &session); err != nil || session.Info.ID == "" {
+			return
+		}
+		if event.Type != "session.deleted" {
+			w.learnParent(session.Info.ID, session.Info.ParentID)
+			return
+		}
+		w.mu.Lock()
+		// A deleted session will never say it is idle.
+		delete(w.parents, session.Info.ID)
+		delete(w.busy, session.Info.ID)
 		w.mu.Unlock()
 	// OpenCode 1.17.13 emits `permission.asked`/`permission.replied`; the
 	// `permission.v2.*` names an earlier pass recorded were never real, and are

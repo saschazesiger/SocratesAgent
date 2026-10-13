@@ -52,12 +52,16 @@ func (s *Server) handleSessionUsage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	view := sessionUsageView{}
+	// Limits and costs belong to the account the session runs in, so they are
+	// read from that profile's directories.
+	profile := sessionProfile(row)
 	switch row.Harness {
 	case "claude":
-		view.Windows = s.claudeLimits(r.Context()).Windows
-		view.CostUSD = claudeSessionCost(row.CLISessionID)
+		dir := harnesses.ClaudeConfigDirFor(s.dataDir, profile)
+		view.Windows = s.claudeLimits(r.Context(), dir).Windows
+		view.CostUSD = claudeSessionCost(dir, row.CLISessionID)
 	case "codex":
-		path := codexRollout(row.CLISessionID)
+		path := codexRollout(harnesses.CodexHomeFor(s.dataDir, profile), row.CLISessionID)
 		view.Windows, view.CostUSD = codexUsage(path, row.Model)
 	case "opencode":
 		if access, ok := s.manager.OpenCodeAccessOf(row.ID); ok {
@@ -70,14 +74,27 @@ func (s *Server) handleSessionUsage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, view)
 }
 
-// claudeLimits caches one account-wide reading for a minute. A missing or
-// expired login simply yields no windows; Claude Code refreshes its own login
-// the next time it works, so Socrates never races it by writing credentials.
-func (s *Server) claudeLimits(ctx context.Context) usageLimits {
+// claudeLimits caches one account-wide reading per Claude Code directory - so
+// per profile - for a minute. A missing or expired login simply yields no
+// windows; Claude Code refreshes its own login the next time it works, so
+// Socrates never races it by writing credentials.
+//
+// The lock is held only around the cache, not across the request: the
+// new-session sheet asks for every profile at once.
+func (s *Server) claudeLimits(ctx context.Context, dir string) usageLimits {
 	s.usageMu.Lock()
-	defer s.usageMu.Unlock()
-	if time.Since(s.claudeUsageAt) < time.Minute {
-		return s.claudeUsage
+	if s.claudeUsage == nil {
+		s.claudeUsage = map[string]cachedLimits{}
+	}
+	cached := s.claudeUsage[dir]
+	s.usageMu.Unlock()
+	if time.Since(cached.at) < time.Minute {
+		return cached.limits
+	}
+	remember := func(limits usageLimits) {
+		s.usageMu.Lock()
+		s.claudeUsage[dir] = cachedLimits{limits: limits, at: time.Now()}
+		s.usageMu.Unlock()
 	}
 
 	var creds struct {
@@ -86,16 +103,16 @@ func (s *Server) claudeLimits(ctx context.Context) usageLimits {
 			ExpiresAt   int64  `json:"expiresAt"`
 		} `json:"claudeAiOauth"`
 	}
-	raw, err := readClaudeCredentials()
+	raw, err := os.ReadFile(filepath.Join(dir, ".credentials.json"))
 	if err != nil || json.Unmarshal(raw, &creds) != nil || creds.OAuth.AccessToken == "" ||
 		(creds.OAuth.ExpiresAt > 0 && creds.OAuth.ExpiresAt <= time.Now().UnixMilli()) {
-		s.claudeUsageAt = time.Now()
-		return s.claudeUsage
+		remember(cached.limits)
+		return cached.limits
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.usageURL, nil)
 	if err != nil {
-		return s.claudeUsage
+		return cached.limits
 	}
 	req.Header.Set("Authorization", "Bearer "+creds.OAuth.AccessToken)
 	req.Header.Set("Accept", "application/json")
@@ -103,11 +120,11 @@ func (s *Server) claudeLimits(ctx context.Context) usageLimits {
 	req.Header.Set("anthropic-version", "2023-06-01")
 	resp, err := s.usageHTTP.Do(req)
 	if err != nil {
-		return s.claudeUsage
+		return cached.limits
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return s.claudeUsage
+		return cached.limits
 	}
 	var payload struct {
 		FiveHour struct {
@@ -130,7 +147,7 @@ func (s *Server) claudeLimits(ctx context.Context) usageLimits {
 		} `json:"limits"`
 	}
 	if json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&payload) != nil {
-		return s.claudeUsage
+		return cached.limits
 	}
 	limits := usageLimits{}
 	if payload.FiveHour.Utilization != nil {
@@ -147,19 +164,21 @@ func (s *Server) claudeLimits(ctx context.Context) usageLimits {
 			break
 		}
 	}
-	s.claudeUsage, s.claudeUsageAt = limits, time.Now()
+	remember(limits)
 	return limits
 }
 
-func readClaudeCredentials() ([]byte, error) {
-	return os.ReadFile(filepath.Join(harnesses.ClaudeConfigDir(), ".credentials.json"))
+// cachedLimits is one reading of an account's limits, and when it was taken.
+type cachedLimits struct {
+	limits usageLimits
+	at     time.Time
 }
 
-func claudeSessionCost(id string) *float64 {
-	if id == "" {
+func claudeSessionCost(dir, id string) *float64 {
+	if id == "" || dir == "" {
 		return nil
 	}
-	matches, _ := filepath.Glob(filepath.Join(harnesses.ClaudeConfigDir(), "projects", "*", id+".jsonl"))
+	matches, _ := filepath.Glob(filepath.Join(dir, "projects", "*", id+".jsonl"))
 	for _, path := range matches {
 		var row struct {
 			Type         string  `json:"type"`
@@ -178,11 +197,11 @@ func claudeSessionCost(id string) *float64 {
 	return nil
 }
 
-func codexRollout(id string) string {
-	if id == "" {
+func codexRollout(home, id string) string {
+	if id == "" || home == "" {
 		return ""
 	}
-	root := filepath.Join(harnesses.CodexHome(), "sessions")
+	root := filepath.Join(home, "sessions")
 	var found string
 	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 		if err != nil || found != "" {

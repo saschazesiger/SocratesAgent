@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
@@ -117,15 +118,21 @@ type createSessionBody struct {
 	// that dropped finds the session it already made instead of making a
 	// second one, which is the whole of "start a session in a tunnel and come
 	// back to one session".
-	ClientID       string          `json:"client_id"`
-	Harness        string          `json:"harness"`
-	Model          string          `json:"model"`
-	Effort         string          `json:"effort"`
-	ShellExecution string          `json:"shell_execution"`
-	WorkdirMode    string          `json:"workdir_mode"`
-	Workdir        string          `json:"workdir"`
-	Title          string          `json:"title"`
-	Options        json.RawMessage `json:"options"`
+	ClientID       string `json:"client_id"`
+	Harness        string `json:"harness"`
+	Model          string `json:"model"`
+	Effort         string `json:"effort"`
+	ShellExecution string `json:"shell_execution"`
+	// Profile is the sign-in profile the session runs in; empty is the
+	// default one.
+	Profile string `json:"profile"`
+	// Ultracode starts a Claude Code session with dynamic workflows on every
+	// task. Off unless asked for, and kept for the session's whole life.
+	Ultracode   bool            `json:"ultracode"`
+	WorkdirMode string          `json:"workdir_mode"`
+	Workdir     string          `json:"workdir"`
+	Title       string          `json:"title"`
+	Options     json.RawMessage `json:"options"`
 	// Cols and Rows are the size the sheet is about to open the terminal at.
 	// Absent, the session is created at the default size and the first attach
 	// corrects it a moment later.
@@ -165,6 +172,12 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("%q is not one of the harnesses", harnessID))
 		return
 	}
+	if harnessID == config.HarnessVSCode {
+		// A folder has one editor, and it is opened from the folder: see
+		// handleFolderIDE.
+		writeError(w, http.StatusBadRequest, "VS Code is opened from a folder in the sidebar, not as a new session")
+		return
+	}
 	if entry, known := settings.Harnesses.Entry(harnessID); known && !entry.Enabled {
 		writeError(w, http.StatusBadRequest, h.Label()+" is switched off in the dashboard")
 		return
@@ -190,8 +203,20 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	profileID := strings.TrimSpace(body.Profile)
+	if status, msg := s.checkProfile(harnessID, h.Label(), shellExecution, profileID); status != 0 {
+		writeError(w, status, msg)
+		return
+	}
+	if body.Ultracode && harnessID != string(harnesses.KindClaude) {
+		writeError(w, http.StatusBadRequest, "ultracode is only valid for Claude Code sessions")
+		return
+	}
+	// What the session has to be relaunched with is kept in its options, next
+	// to whatever the client put there.
 	options := body.Options
-	if shellExecution != "" {
+	choices := map[string]any{"shell_execution": shellExecution, "profile": profileID, "ultracode": body.Ultracode}
+	if shellExecution != "" || profileID != "" || body.Ultracode {
 		fields := map[string]json.RawMessage{}
 		if len(options) > 0 && string(options) != "null" {
 			if err := json.Unmarshal(options, &fields); err != nil || fields == nil {
@@ -199,7 +224,11 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		fields["shell_execution"], _ = json.Marshal(shellExecution)
+		for key, value := range choices {
+			if value != "" && value != false {
+				fields[key], _ = json.Marshal(value)
+			}
+		}
 		options, _ = json.Marshal(fields)
 	}
 
@@ -233,6 +262,8 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		Model:          strings.TrimSpace(body.Model),
 		Effort:         strings.TrimSpace(body.Effort),
 		ShellExecution: shellExecution,
+		Profile:        profileID,
+		Ultracode:      body.Ultracode,
 		Settings:       settings,
 		DataDir:        s.dataDir,
 		Logf:           log.Printf,

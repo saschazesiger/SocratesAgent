@@ -118,7 +118,8 @@ gitignored. Deleting `e2e/out/` is always safe.
 | `touchscroll` | a finger dragged down the pane reaches what scrolled off it, a drag back up returns to the live bottom, a tap is still the tap that puts the keyboard on the pane, and with tmux's mouse off the drag types nothing |
 | `clipboard` | Ctrl-V pastes the clipboard instead of sending 0x16 — the byte Claude Code answers with "No image found in clipboard" — bracketed when the program asked for it; a Shift-drag selects and Ctrl-C copies it without interrupting; with nothing selected Ctrl-C is still 0x03; the key bar's **Paste** sends the same text; a plain drag sends tmux no mouse report, selects in the browser and is on the clipboard the moment the button is released; a plain click is still reported to the program; a double click copies the word; a right click is not reported; a middle click pastes the last selection exactly once, not once from us and once from the browser; Ctrl-V and Ctrl-C with the focus on a header button still reach the pane; an OSC 52 printed by the program, through tmux, sets the clipboard; and a drag down two rows copies both of them |
 | `touchcopy` | a finger held on the pane selects the word under it and lifting it copies, with a **Copied** toast and no click sent; held then moved it grows the selection; a short tap is still a tap |
-| `keybar` | no device gets the key bar until the ⋯ menu asks for it, on a phone or at a desk; asked for, it sends the right bytes, a sticky `Ctrl` turns the next letter into a control code, and a physical keystroke does not take it away again |
+| `transfer` | the **Upload** button writes a file into the session's working directory under `.socrates/uploads/`, with a `.gitignore`, and puts its path on the prompt; an image pasted into the pane does the same; **Paste** puts the clipboard on the prompt; **Copy** with nothing selected opens the pane's text in a sheet and **Copy all** puts it on the clipboard; on a phone the three float over the pane and the top bar still fits |
+| `keybar` | a touch screen gets the key bar before anything asks for it and a desk does not, the ⋯ menu hides and shows it and is remembered per device; it sends the right bytes, a sticky `Ctrl` turns the next letter into a control code, and a physical keystroke does not take it away again |
 | `offlineonce` | a whole command typed with the network off arrives **exactly once** when it comes back, the lost connection is visible while it is gone, and the app shell still opens offline |
 | `sigtermreattach` | the server is killed mid-session and restarted; the pane still holds what was typed and the session is running |
 | `takeover` | a second tab with the same viewer id closes the first socket with 1012 and drives the session |
@@ -148,7 +149,7 @@ gitignored. Deleting `e2e/out/` is always safe.
 | `no-overlap` | speech-to-text and text-to-speech are never open at once: **Status** while the microphone runs says nothing out loud, the same press with it closed does, and a recording that starts silences what is playing |
 | `typeafteroutage` | a cut socket, a locked phone, and a pane that still takes keystrokes |
 | `typekeepsfocus` | a dialog, the ⋯ menu and two sessions: the keys still land in the pane |
-| `handsfree` | the mode in which nothing opens the on-screen keyboard: armed from the top bar and remembered across a reload, the pane and every field muted with `inputmode="none"` **and** `readonly`, the key bar on with its `⌨` key stood down, the ⋯ menu no longer offering to hide it, a field filled by speaking into it, and everything given back when it is disarmed |
+| `keyboard` | on a touch screen only the top bar's button raises the on-screen keyboard: the pane and every field muted with `inputmode="none"` **and** `readonly` until it is pressed, a second press puts it away, the focus leaving every field puts the switch back, a copy of the button laid over the same spot in every dialog raises it for that dialog's field, a muted field still filled by speaking into it, and no button and nothing muted on a device with a mouse |
 | `design` | white surfaces, a mark wherever a program is named, technical strings only in **Info**, and an animation that does not restart when a row re-renders |
 | `folders` | the session list read by project: one folder per working directory, named after it with the whole path on hover, ordered by the project worked in most recently, `More Chats` last for the sessions Socrates housed itself; a folder shuts, says how many are behind it, is found shut after a reload and is opened again by attaching a session inside it; a folder with nothing in it is not drawn, and a row keeps its element across a re-render |
 | `notify` | a session that stops working while nobody is looking: one chime and one notification named after it, a speaker and a bell in the header that each turn one of them off and are remembered on this device, and nothing fired for a handshake replay or for a session that has only just been started |
@@ -162,7 +163,7 @@ re-derives them at draw time.
 
 ## Dictation needs a microphone and a gateway
 
-`dictate` and `handsfree` ask Chromium for their own fake microphone
+`dictate` and `keyboard` ask Chromium for their own fake microphone
 (`--use-fake-device-for-media-stream`) and points `openrouter.base_url` at a
 small HTTP stub the scenario starts. It has to be a real server rather than a
 Playwright route: the browser posts the recording to `/api/voice/transcribe`

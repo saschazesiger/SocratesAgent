@@ -35,7 +35,7 @@ func TestClaudeLimitsAndSessionCost(t *testing.T) {
 	}))
 	defer api.Close()
 	s := &Server{usageHTTP: api.Client(), usageURL: api.URL}
-	got := s.claudeLimits(context.Background())
+	got := s.claudeLimits(context.Background(), home)
 	if len(got.Windows) != 3 || got.Windows[0].Label != "5h" || got.Windows[1].Label != "7d" || got.Windows[2].Label != "Fable" {
 		t.Fatalf("windows = %#v", got.Windows)
 	}
@@ -48,7 +48,7 @@ func TestClaudeLimitsAndSessionCost(t *testing.T) {
 	if err := os.WriteFile(transcript, []byte("{\"type\":\"cost-state\",\"totalCostUSD\":1.2345}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cost := claudeSessionCost("conversation")
+	cost := claudeSessionCost(home, "conversation")
 	if cost == nil || *cost != 1.2345 {
 		t.Fatalf("cost = %v", cost)
 	}

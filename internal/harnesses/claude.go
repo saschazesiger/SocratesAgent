@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/google/uuid"
@@ -147,13 +148,18 @@ func (c Claude) plan(req PlanRequest, lead []string, id string) (LaunchPlan, err
 	// for; an ambient key is not part of it. tmux has no "unset" in
 	// new-session, so it is set to nothing, which the binary reads as absent.
 	env["ANTHROPIC_API_KEY"] = ""
+	extra, err := profileEnv(req, KindClaude)
+	if err != nil {
+		return LaunchPlan{}, err
+	}
+	mergeEnv(env, extra)
 
-	settings, err := claudeSettings(env)
+	settings, err := claudeSettings(env, req.Ultracode)
 	if err != nil {
 		return LaunchPlan{}, err
 	}
 
-	if err := pinClaudeGlobalConfig(claudeGlobalConfigPath(), req.Cwd); err != nil {
+	if err := pinClaudeGlobalConfig(claudeGlobalConfigPathFor(req.DataDir, req.Profile), req.Cwd, sharedClaudeMCP(req)); err != nil {
 		// Not a launch failure: the pane opens and shows Claude Code's own
 		// words, which is more use than a create that refuses with these. The
 		// log is where the reason for a session that stopped on the workspace
@@ -178,7 +184,7 @@ func (c Claude) plan(req PlanRequest, lead []string, id string) (LaunchPlan, err
 // They are documented but do not appear in the 2.1.258 binary, and a timeout of
 // zero might well mean "dismiss every question at once", which would break
 // AskUserQuestion in every session Socrates ever starts.
-func claudeSettings(env map[string]string) ([]byte, error) {
+func claudeSettings(env map[string]string, ultracode bool) ([]byte, error) {
 	doc := map[string]any{
 		// Without this, a launch with --dangerously-skip-permissions stops on
 		// a confirmation dialog before the user can type a single character.
@@ -191,6 +197,12 @@ func claudeSettings(env map[string]string) ([]byte, error) {
 		// A transcript has to outlive the offline stretch it may have to be
 		// resumed after, and Claude Code's own retention is shorter than that.
 		"cleanupPeriodDays": claudeTranscriptDays,
+		// Ultracode - dynamic workflows on every task - is per session, and
+		// this key is how a session is started with it ("Set per session via
+		// the `ultracode` settings key", 2.1.296; /effort then says
+		// "Ultracode on"). It is written either way, so that what the sheet
+		// said is what the session gets: off unless it was switched on there.
+		"ultracode": ultracode,
 	}
 	if len(env) > 0 {
 		// The env key reaches every subprocess Claude Code starts, which is
@@ -216,7 +228,7 @@ func (Claude) VerifyCLISession(ctx context.Context, req PlanRequest) (bool, erro
 	if id == "" {
 		return false, nil
 	}
-	matches, err := filepath.Glob(filepath.Join(claudeConfigDir(), "projects", "*", id+".jsonl"))
+	matches, err := filepath.Glob(filepath.Join(ClaudeConfigDirFor(req.DataDir, req.Profile), "projects", "*", id+".jsonl"))
 	if err != nil {
 		// "Could not tell" is not "gone": the caller tries the resume anyway,
 		// and a refusal shows in the terminal, which is honest.
@@ -235,8 +247,10 @@ func (Claude) VerifyCLISession(ctx context.Context, req PlanRequest) (bool, erro
 // session that cannot be used - the same failure shape as the workspace
 // question, and the same thing the dashboard should say out loud rather than
 // showing a green row beside it.
-func ClaudeSignIn() (onboarded bool, account string) {
-	raw, err := os.ReadFile(claudeGlobalConfigPath())
+//
+// It answers for one profile; the default one is the empty id.
+func ClaudeSignIn(dataDir, profile string) (onboarded bool, account string) {
+	raw, err := os.ReadFile(claudeGlobalConfigPathFor(dataDir, profile))
 	if err != nil {
 		return false, ""
 	}
@@ -285,9 +299,40 @@ func claudeGlobalConfigPath() string {
 	return filepath.Join(home, ".claude.json")
 }
 
+// claudeGlobalConfigPathFor is the same file for a profile, whose directory is
+// always passed as CLAUDE_CONFIG_DIR and so always holds it.
+func claudeGlobalConfigPathFor(dataDir, profile string) string {
+	if profile == "" {
+		return claudeGlobalConfigPath()
+	}
+	return filepath.Join(ClaudeConfigDirFor(dataDir, profile), ".claude.json")
+}
+
+// sharedClaudeMCP is the user-scope MCP servers of the default profile, which
+// a session in any other profile is given as well. They live in .claude.json
+// beside the account, so they cannot be shared by a link the way the settings
+// are. The default profile answers nil: its servers are already its own.
+func sharedClaudeMCP(req PlanRequest) map[string]any {
+	if req.Profile == "" {
+		return nil
+	}
+	raw, err := os.ReadFile(claudeGlobalConfigPath())
+	if err != nil {
+		return nil
+	}
+	var doc struct {
+		MCPServers map[string]any `json:"mcpServers"`
+	}
+	if json.Unmarshal(raw, &doc) != nil {
+		return nil
+	}
+	return doc.MCPServers
+}
+
 // pinClaudeGlobalConfig writes the three preferences that are not
 // settings-file keys into Claude Code's global configuration: the light theme,
-// Remote Control off at startup, and the working directory trusted.
+// Remote Control off at startup, and the working directory trusted - and, in a
+// profile other than the default one, the MCP servers it shares with it.
 //
 // Where those preferences live was verified against the 2.1.258 binary rather
 // than guessed. The defaults object the binary builds for its global config -
@@ -346,7 +391,7 @@ func claudeGlobalConfigPath() string {
 // rather than turned into a lock protocol against a file format nobody has
 // documented; what the session then shows is Claude Code's own question, not a
 // silent failure.
-func pinClaudeGlobalConfig(path, cwd string) error {
+func pinClaudeGlobalConfig(path, cwd string, mcp map[string]any) error {
 	if path == "" {
 		return errors.New("there is no home directory to write Claude Code's global configuration in")
 	}
@@ -381,6 +426,25 @@ func pinClaudeGlobalConfig(path, cwd string) error {
 	if doc["remoteControlAtStartup"] != false {
 		doc["remoteControlAtStartup"] = false
 		changed = true
+	}
+	// The servers a profile shares with the default one are written over its
+	// own entries of the same name and beside the rest, so a server somebody
+	// added in this profile alone survives.
+	if len(mcp) > 0 {
+		servers, ok := doc["mcpServers"].(map[string]any)
+		if !ok {
+			if _, present := doc["mcpServers"]; present {
+				return fmt.Errorf(`%s has an "mcpServers" that is not an object`, path)
+			}
+			servers = map[string]any{}
+			doc["mcpServers"] = servers
+		}
+		for name, server := range mcp {
+			if !reflect.DeepEqual(servers[name], server) {
+				servers[name] = server
+				changed = true
+			}
+		}
 	}
 	if cwd != "" {
 		projects, ok := doc["projects"].(map[string]any)

@@ -93,6 +93,11 @@ func (c Codex) plan(req PlanRequest, lead []string) (LaunchPlan, error) {
 	// from one the user started by hand, and it is how the session id is found
 	// again.
 	env["CODEX_INTERNAL_ORIGINATOR_OVERRIDE"] = codexOriginator
+	extra, err := profileEnv(req, KindCodex)
+	if err != nil {
+		return LaunchPlan{}, err
+	}
+	mergeEnv(env, extra)
 
 	return LaunchPlan{
 		Argv:       argv,

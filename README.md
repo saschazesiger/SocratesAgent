@@ -50,6 +50,27 @@ Answer the first-run questions too, Claude Code's text-style prompt included: a
 session started before it is answered opens on that instead of on a prompt. They
 stay signed in across `docker rm`, because `HOME` is in the volume.
 
+### More than one account
+
+A profile is a second set of sign-ins - a business Claude account beside a
+private one. Add it under **Profiles** in the dashboard, then pick it in the
+new-session sheet. Each profile gets its own `CLAUDE_CONFIG_DIR`, `CODEX_HOME`
+and OpenCode data directory under `<data>/profiles/<id>`; settings,
+instructions, skills, plugins and MCP servers are linked from the default ones,
+while credentials and conversations stay apart. To sign in, start a Claude Code
+session in the profile (it asks by itself), or a container Shell in it and run
+`codex login --device-auth` or `opencode auth login`.
+
+The sheet lists the profiles in the order of the dashboard's list (drag a row
+by its handle to change it), shows each account's five-hour and weekly usage
+with how long until each renews and, unless you pick another, chooses the one
+with the most usage left for the time until it renews. A session keeps the
+profile it was started in for its whole life.
+
+A Claude Code session can also be started with **Ultracode** (dynamic
+workflows on every task) from the new-session sheet. It is off unless switched
+on there, and a session keeps the choice for its whole life.
+
 ## A shell on the host
 
 Panes run inside the container, because the tmux server does. When creating a
@@ -85,6 +106,24 @@ approvals in between. Without the flags nothing is said and nothing changes.
 
 Both optional, both in Admin: **OpenRouter** for dictation, **Google Cloud** for
 reading answers out loud.
+
+## Notifications
+
+The bell in the top bar turns them on for this device. Over HTTPS (the
+Cloudflare tunnel, or `localhost`) they are Web Push: Socrates sends one when a
+session finishes or needs an answer, and it arrives with the page closed and
+the phone locked. On an iPhone, add Socrates to the Home Screen and turn the
+bell on from there; Safari allows push only for an installed web app. Over
+plain http they appear only while the page is open.
+
+## Files
+
+The paperclip in the top bar uploads files into the session's working
+directory, under `.socrates/uploads/` (ignored by git), and puts their paths on
+the prompt. Claude Code attaches a pasted image path as an image. Pasting or
+dropping an image onto the terminal does the same. The two buttons beside it
+copy (the selection, or the terminal's text in a sheet you can select in) and
+paste.
 
 ## Security
 

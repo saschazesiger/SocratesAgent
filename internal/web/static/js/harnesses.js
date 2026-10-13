@@ -10,8 +10,8 @@
 // refuses that directory", never to a session in the wrong place.
 
 import { api, el, toast } from './api.js';
-import { combobox } from './combobox.js';
-import { dictated } from './handsfree.js';
+import { combobox, dropdown } from './combobox.js';
+import { dictated } from './keyboard.js';
 import { agentMark } from './logos.js';
 
 const CACHE_KEY = 'socrates.harnesses';
@@ -96,6 +96,7 @@ export async function load(force = false) {
         harnesses: data.harnesses || [],
         workspace: data.workspace || EMPTY_WORKSPACE,
         shell_execution: data.shell_execution || { host_available: false, default: 'container' },
+        profiles: data.profiles || [],
         sessions_available: data.sessions_available !== false,
         sessions_error: data.sessions_error || '',
         refreshed_at: data.refreshed_at || Date.now(),
@@ -129,8 +130,80 @@ export function snapshot() {
 }
 
 export function list() { return snapshot().harnesses; }
+// profiles is every sign-in profile, the default one first. A catalogue from
+// before profiles existed has none, and the sheet then offers no choice.
+export function profiles() { return snapshot().profiles || []; }
+
+// refreshProfiles asks again which profiles there are and who is signed in to
+// them. The catalogue is loaded once per page, but a profile added in the
+// dashboard or signed in to a minute ago is exactly what the next sheet has
+// to show. A failure keeps what was there.
+export async function refreshProfiles() {
+  try {
+    const data = await api('/api/profiles', { attempts: 1, timeout: 8000 });
+    if (!cached) return;
+    cached.profiles = data.profiles || [];
+    cached.recommended = data.recommended || {};
+    if (!fromStorage) writeCache(cached);
+  } catch { /* the copy we have is the answer */ }
+}
+
+// recommendedProfile is the profile a new session of a program starts in when
+// nobody chooses: the account with the most usage left for the time until it
+// renews. undefined when there is nothing to choose by - no limits are known
+// for the program, or there is one profile.
+export function recommendedProfile(harnessId) {
+  const recommended = snapshot().recommended || {};
+  return Object.prototype.hasOwnProperty.call(recommended, harnessId) ? recommended[harnessId] : undefined;
+}
+
+// limitWindows is the two windows a profile's limits are judged by.
+function limitWindows(profile, harnessId) {
+  const windows = ((profile && profile.limits) || {})[harnessId] || [];
+  return windows.filter((w) => w.label === '5h' || w.label === '7d');
+}
+
+// untilReset is how long a limit window has until it renews, the way a
+// person says it: "2h 36m", "3d 4h", "12m". Empty when the window says
+// nothing about it, or its reset is already behind it.
+export function untilReset(window, now = Date.now()) {
+  const at = window && window.resets_at ? new Date(window.resets_at).getTime() : NaN;
+  if (!Number.isFinite(at) || at <= now) return '';
+  const minutes = Math.ceil((at - now) / 60000);
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const rest = minutes % 60;
+  if (days > 0) return days + 'd' + (hours ? ' ' + hours + 'h' : '');
+  if (hours > 0) return hours + 'h' + (rest ? ' ' + rest + 'm' : '');
+  return rest + 'm';
+}
+
+// resetDetail is a window's renewal for a tooltip: how long, and when.
+export function resetDetail(window) {
+  const left = untilReset(window);
+  if (!left) return '';
+  return 'resets in ' + left + ' (' + new Date(window.resets_at).toLocaleString() + ')';
+}
+
+// profileName is what a session's profile is called, for the session's facts.
+export function profileName(id) {
+  const found = profiles().find((p) => p.id === (id || ''));
+  return found ? found.name : (id ? id : 'Default');
+}
+
 export function workspace() { return snapshot().workspace || EMPTY_WORKSPACE; }
 export function harness(id) { return list().find((h) => h.id === id) || null; }
+
+/**
+ * ideAvailable says whether a folder offers a VS Code: whether the dashboard
+ * has it switched on. Whether it is installed is not asked - the probe that
+ * says so can time out on a slow start, and a mark that comes and goes with
+ * it is worse than an editor that says why it could not start.
+ */
+export function ideAvailable() {
+  const found = harness('vscode');
+  return !found || found.enabled !== false;
+}
 
 /** label is a harness's own name, for anywhere one is written out. */
 export function label(id) {
@@ -198,6 +271,67 @@ function segButton(text, value, sub, mark) {
   }, mark || null, el('span', { class: 'seg-text' },
     el('span', { class: 'seg-label', text }),
     sub ? el('span', { class: 'seg-sub', text: sub }) : null));
+}
+
+// The programs a profile means something to. VS Code is not on the sheet, and
+// it has no sign-in of its own.
+const PROFILE_HARNESSES = ['claude', 'codex', 'opencode', 'shell'];
+
+const PROFILE_KEY = 'socrates.profile';
+
+// The profile the last session was started in is where the next one starts:
+// somebody working for a client all afternoon should not have to say so on
+// every sheet. It is a per-browser convenience and nothing more.
+function lastProfile() {
+  try { return localStorage.getItem(PROFILE_KEY) || ''; } catch { return ''; }
+}
+
+function rememberProfile(id) {
+  try { localStorage.setItem(PROFILE_KEY, id); } catch { /* private window */ }
+}
+
+// accountLabel is the line under a profile's name: who this program is
+// signed in as there.
+function accountLabel(profile, harnessId) {
+  const login = (profile.accounts || {})[harnessId];
+  if (!login) return '';
+  if (login.account) return login.account;
+  return login.signed_in ? 'signed in' : 'not signed in';
+}
+
+// signInHint says how to sign a program in to a profile it is not signed in
+// to yet. Claude Code asks by itself; the other two are signed in from a shell.
+function signInHint(profile, harnessId) {
+  const login = (profile.accounts || {})[harnessId];
+  if (!login || login.signed_in) return '';
+  if (harnessId === 'claude') return 'Claude Code is not signed in to ' + profile.name + ' yet; the session opens on its sign-in.';
+  if (harnessId === 'codex') return 'Codex is not signed in to ' + profile.name + ' yet. Start a container Shell in this profile and run codex login --device-auth.';
+  if (harnessId === 'opencode') return 'OpenCode has no provider in ' + profile.name + ' yet. Start a container Shell in this profile and run opencode auth login.';
+  return '';
+}
+
+// profileEntry is a profile as the dropdown shows it: its name, the account
+// this program is signed in as there, and a bar for each limit window - how
+// full each account is and how long until it renews, which is what choosing
+// between them comes down to.
+function profileEntry(profile, harnessId, recommended) {
+  const meters = limitWindows(profile, harnessId).map((w) => {
+    const used = Math.max(0, Math.min(100, Math.round(Number(w.used_percent) || 0)));
+    const left = untilReset(w);
+    const title = w.label + ': ' + used + '% used' + (left ? ' · ' + resetDetail(w) : '');
+    const level = used >= 90 ? ' full' : used >= 70 ? ' high' : '';
+    return el('span', { class: 'profile-meter' + level, title },
+      el('span', { class: 'profile-meter-label', text: w.label }),
+      el('span', { class: 'profile-meter-bar' }, el('span', { style: 'width:' + used + '%' })),
+      el('span', { class: 'profile-meter-value', text: used + '%' }),
+      left ? el('span', { class: 'profile-meter-reset', text: left + ' left' }) : null);
+  });
+  return el('span', { class: 'profile-entry' },
+    el('span', { class: 'profile-entry-head' },
+      el('span', { class: 'profile-entry-name', text: profile.name }),
+      recommended ? el('span', { class: 'profile-entry-tag', text: 'most left' }) : null),
+    el('span', { class: 'profile-entry-account', text: accountLabel(profile, harnessId) }),
+    meters.length ? el('span', { class: 'profile-usage' }, meters) : null);
 }
 
 function pressed(row, value) {
@@ -276,21 +410,29 @@ export async function openNewSessionSheet() {
   const shellExecutionField = document.getElementById('nsShellExecutionField');
   const shellExecutionRow = document.getElementById('nsShellExecution');
   const shellExecutionHint = document.getElementById('nsShellExecutionHint');
+  const profileField = document.getElementById('nsProfileField');
+  const profileRow = document.getElementById('nsProfile');
+  const profileHint = document.getElementById('nsProfileHint');
   const dirPath = document.getElementById('nsDirPath');
   const dirHint = document.getElementById('nsDirHint');
   const modelField = document.getElementById('nsModelField');
   const modelHost = document.getElementById('nsModel');
   const effortField = document.getElementById('nsEffortField');
   const effortRow = document.getElementById('nsEffort');
+  const ultracodeField = document.getElementById('nsUltracodeField');
+  const ultracodeRow = document.getElementById('nsUltracode');
   const hint = document.getElementById('nsHint');
   const start = document.getElementById('nsStart');
   const cancel = document.getElementById('nsCancel');
 
-  const entries = list();
+  // VS Code is not something a session is started as: a folder has one
+  // editor, opened from the folder's own mark in the sidebar.
+  const entries = list().filter((entry) => entry.id !== 'vscode');
   const space = workspace();
   const shellCapability = snapshot().shell_execution || { host_available: false, default: 'container' };
   const pick = { harness: '', model: '', effort: '', mode: DYNAMIC, workdir: '',
-    shellExecution: shellCapability.default === 'host' && shellCapability.host_available ? 'host' : 'container' };
+    shellExecution: shellCapability.default === 'host' && shellCapability.host_available ? 'host' : 'container',
+    profile: lastProfile(), profileChosen: false, profileAuto: false, ultracode: false };
 
   const hostButton = shellExecutionRow.querySelector('[data-value="host"]');
   hostButton.disabled = !shellCapability.host_available;
@@ -301,9 +443,20 @@ export async function openNewSessionSheet() {
     button.onclick = () => {
       pick.shellExecution = button.dataset.value;
       pressed(shellExecutionRow, pick.shellExecution);
+      renderProfile();
     };
   }
   pressed(shellExecutionRow, pick.shellExecution);
+
+  // Ultracode starts off on every opening: it costs a great deal more of the
+  // account, so it is something asked for each time rather than remembered.
+  for (const button of ultracodeRow.querySelectorAll('.seg')) {
+    button.onclick = () => {
+      pick.ultracode = button.dataset.value === 'on';
+      pressed(ultracodeRow, pick.ultracode ? 'on' : 'off');
+    };
+  }
+  pressed(ultracodeRow, 'off');
 
   harnessRow.innerHTML = '';
   toolsRow.innerHTML = '';
@@ -348,8 +501,8 @@ export async function openNewSessionSheet() {
     },
   });
   dirRow.append(dirPicker.node);
-  // The free-form path is a field like any other: it can be spoken, and in
-  // hands-free that is the only way it can be filled. The row is what is
+  // The free-form path is a field like any other: it can be spoken, which with
+  // the keyboard put away is the only way it can be filled. The row is what is
   // hidden and shown from here on, because hiding the field alone would leave
   // its microphone standing on the sheet with nothing beside it.
   const dirPathRow = dictated(dirPath, dirPath);
@@ -380,6 +533,27 @@ export async function openNewSessionSheet() {
     },
   });
   modelHost.append(picker.node);
+
+  // The profile is a dropdown rather than a row of cells: with more than
+  // three profiles the cells were too narrow for a name, let alone the account
+  // and its usage. Every entry in the list still shows how full its account
+  // is, so the choice is made with the numbers in view.
+  profileRow.innerHTML = '';
+  const profilePicker = dropdown({
+    value: pick.profile,
+    label: 'Sign-in profile',
+    items: () => profiles().map((p) => ({ value: p.id, profile: p })),
+    renderItem: (item) => profileEntry(item.profile, pick.harness,
+      recommendedProfile(pick.harness) === item.value && profiles().length > 1),
+    onChange: (value) => {
+      pick.profile = value;
+      pick.profileChosen = true;
+      pick.profileAuto = false;
+      rememberProfile(value);
+      renderProfileHint();
+    },
+  });
+  profileRow.append(profilePicker.node);
 
   function selectDir(mode, path) {
     pick.mode = mode;
@@ -423,6 +597,38 @@ export async function openNewSessionSheet() {
     pressed(effortRow, pick.effort);
   }
 
+  // renderProfile offers the sign-in profiles to the programs that sign in -
+  // and to a container shell, which is where Codex and OpenCode are signed in
+  // to one. Each choice says which account it means for this program, which
+  // is the whole point of choosing.
+  function renderProfile() {
+    const all = profiles();
+    const onHost = pick.harness === 'shell' && pick.shellExecution === 'host';
+    const wanted = all.length > 1 && PROFILE_HARNESSES.includes(pick.harness) && !onHost;
+    profileField.hidden = !wanted;
+    if (!wanted) return;
+    // Until somebody taps a profile on this sheet, the program decides: the
+    // account with the most usage left before it renews, where that is known,
+    // and the last one chosen otherwise.
+    if (!pick.profileChosen) {
+      const recommended = recommendedProfile(pick.harness);
+      pick.profileAuto = recommended !== undefined && all.some((p) => p.id === recommended);
+      pick.profile = pick.profileAuto ? recommended : lastProfile();
+    }
+    if (!all.some((p) => p.id === pick.profile)) pick.profile = '';
+    // `false`: the field is being told what was chosen, and the entries are
+    // drawn again for the program now on the sheet.
+    profilePicker.setValue(pick.profile, false);
+    renderProfileHint();
+  }
+
+  function renderProfileHint() {
+    const chosen = profiles().find((p) => p.id === pick.profile);
+    const signIn = chosen ? signInHint(chosen, pick.harness) : '';
+    profileHint.textContent = signIn
+      || (pick.profileAuto ? 'Chosen automatically: the most usage left before it renews.' : '');
+  }
+
   // renderHint is what stands between the person and a session: why a program
   // cannot be used, what is still missing, and whether this catalogue is even
   // current. What a program is for is the dashboard's sentence, not the
@@ -451,6 +657,8 @@ export async function openNewSessionSheet() {
   function selectHarness(id) {
     pick.harness = id;
     shellExecutionField.hidden = id !== 'shell';
+    ultracodeField.hidden = id !== 'claude';
+    renderProfile();
     // Both rows are one choice, so both are told what was picked: the row that
     // does not hold it is the row that has to let go of it.
     pressed(harnessRow, id);
@@ -473,6 +681,7 @@ export async function openNewSessionSheet() {
   selectDir(DYNAMIC, '');
   if (first) selectHarness(first.id);
   else renderHint();
+  refreshProfiles().then(() => { if (sheet.open && pick.harness) renderProfile(); });
 
   // The sheet is one element that is opened again and again, so every handler
   // this call adds is taken off with it. Without that, the second opening
@@ -502,6 +711,8 @@ export async function openNewSessionSheet() {
         model: pick.model,
         effort: pick.effort,
         shell_execution: pick.harness === 'shell' ? pick.shellExecution : undefined,
+        profile: profileField.hidden ? '' : pick.profile,
+        ultracode: !ultracodeField.hidden && pick.ultracode,
         workdir_mode: pick.mode,
         workdir: pick.workdir,
       });
@@ -520,16 +731,26 @@ export async function openNewSessionSheet() {
     // and throw away the model the person had just picked. Where the pointer
     // was is the honest answer, so the click is measured against the sheet's
     // own rectangle instead.
+    //
+    // An open list can hang past the sheet's edge, and an option taken there
+    // leaves a click outside the rectangle too. So the press has to have
+    // started on the backdrop as well: a press on an option never did.
+    const outside = (event) => {
+      if (event.target !== sheet) return false;
+      const box = sheet.getBoundingClientRect();
+      return event.clientX < box.left || event.clientX > box.right
+        || event.clientY < box.top || event.clientY > box.bottom;
+    };
+    let pressedOutside = false;
+    sheet.addEventListener('pointerdown', (event) => { pressedOutside = outside(event); }, on);
     sheet.addEventListener('click', (event) => {
-      if (event.target !== sheet) return;
       // A click with no pointer behind it - a keyboard activation, or one
       // dispatched by a script - has no coordinates to judge, and is never a
       // tap on the backdrop.
       if (!event.detail) return;
-      const box = sheet.getBoundingClientRect();
-      const outside = event.clientX < box.left || event.clientX > box.right
-        || event.clientY < box.top || event.clientY > box.bottom;
-      if (outside) finish(null);
+      const wasOutside = pressedOutside;
+      pressedOutside = false;
+      if (wasOutside && outside(event)) finish(null);
     }, on);
     sheet.addEventListener('close', () => finish(null), on);
     sheet.showModal();

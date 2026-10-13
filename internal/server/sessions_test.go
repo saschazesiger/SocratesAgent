@@ -1272,3 +1272,66 @@ func TestSweepParksAndDeletesDoneSessions(t *testing.T) {
 		t.Fatalf("the sweep removed the working directory: %v", err)
 	}
 }
+
+// ultracodeSetting reads the ultracode key of the settings file a Claude Code
+// session was last started with.
+func (e *sessionEnv) ultracodeSetting(id string) any {
+	e.t.Helper()
+	raw, err := os.ReadFile(harnesses.SessionFile(e.srv.dataDir, id, "claude-settings.json"))
+	if err != nil {
+		e.t.Fatalf("claude-settings.json: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		e.t.Fatalf("claude-settings.json: %v", err)
+	}
+	return doc["ultracode"]
+}
+
+func TestClaudeSessionKeepsItsUltracode(t *testing.T) {
+	e := newSessionEnv(t)
+	if res, _ := e.create(`{"harness":"codex","ultracode":true}`); res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("ultracode for Codex answered %d", res.StatusCode)
+	}
+
+	res, session := e.create(`{"harness":"claude"}`)
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d %#v", res.StatusCode, session)
+	}
+	off := sessionID(t, session)
+	if options, _ := session["options"].(map[string]any); options["ultracode"] != nil {
+		t.Fatalf("a session nobody asked ultracode for stores %#v", options)
+	}
+	if got := e.ultracodeSetting(off); got != false {
+		t.Fatalf("ultracode = %v by default", got)
+	}
+
+	res, session = e.create(`{"harness":"claude","ultracode":true}`)
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d %#v", res.StatusCode, session)
+	}
+	sid := sessionID(t, session)
+	if options, _ := session["options"].(map[string]any); options["ultracode"] != true {
+		t.Fatalf("stored options = %#v", options)
+	}
+	if got := e.ultracodeSetting(sid); got != true {
+		t.Fatalf("ultracode = %v when asked for", got)
+	}
+	e.waitForPane(sid, "FAKE claude")
+
+	// A resume is planned from the row, so it comes back with ultracode on.
+	if _, err := e.tmux("kill-session", "-t", termux.TmuxName(sid)); err != nil {
+		t.Fatal(err)
+	}
+	e.waitForState(sid, 15*time.Second, store.StateNeedsResume)
+	if err := os.Remove(harnesses.SessionFile(e.srv.dataDir, sid, "claude-settings.json")); err != nil {
+		t.Fatal(err)
+	}
+	res, payload := e.do(t, e.client, "POST", "/api/sessions/"+sid+"/resume", "")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("resume: %d %#v", res.StatusCode, payload)
+	}
+	if got := e.ultracodeSetting(sid); got != true {
+		t.Fatalf("after the resume ultracode = %v", got)
+	}
+}

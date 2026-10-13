@@ -1585,6 +1585,8 @@ func (s *Server) onSessionActivity(sessionID string, a termux.Activity) {
 	s.broadcastAll(func(*termViewer) any { return frame })
 	// The first prompt being taken up is what gives a session its name.
 	s.titles.observe(sessionID, a)
+	// And a turn that ended is what reaches a phone nobody is looking at.
+	s.push.observe(sessionID, a)
 }
 
 // emitTitle tells every open socket where the automatic naming of a session

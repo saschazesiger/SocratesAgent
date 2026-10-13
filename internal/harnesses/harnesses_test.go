@@ -273,6 +273,19 @@ func TestClaudeSettingsOnlyVerifiedKeys(t *testing.T) {
 	if doc["skipDangerousModePermissionPrompt"] != true {
 		t.Errorf("the bypass dialog was not suppressed: %v", doc)
 	}
+	// Ultracode is off unless the session asked for it, and on when it did.
+	if doc["ultracode"] != false {
+		t.Errorf("ultracode = %v without being asked for", doc["ultracode"])
+	}
+	req := l.req()
+	req.Ultracode = true
+	on, err := Claude{}.Plan(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := claudeSettingsDoc(t, on)["ultracode"]; got != true {
+		t.Errorf("ultracode = %v when asked for", got)
+	}
 	// The flag not being passed is only half of turning Remote Control off.
 	if doc["disableRemoteControl"] != true {
 		t.Errorf("Remote Control was not disabled: %v", doc)
@@ -517,7 +530,7 @@ func TestClaudeGlobalConfigTreatsAnEmptyFileAsMissing(t *testing.T) {
 	if err := os.WriteFile(path, []byte("  \n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := pinClaudeGlobalConfig(path, l.cwd); err != nil {
+	if err := pinClaudeGlobalConfig(path, l.cwd, nil); err != nil {
 		t.Fatalf("an empty file was treated as broken: %v", err)
 	}
 	if entry := claudeProjectEntry(t, path, l.cwd); entry["hasTrustDialogAccepted"] != true {
@@ -536,13 +549,13 @@ func TestClaudeGlobalConfigReportsAFileItCannotChange(t *testing.T) {
 	if err := os.WriteFile(path, []byte("not json at all"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := pinClaudeGlobalConfig(path, l.cwd); err == nil {
+	if err := pinClaudeGlobalConfig(path, l.cwd, nil); err == nil {
 		t.Error("a file that could not be parsed was reported as pinned")
 	}
 	if err := os.WriteFile(path, []byte(`{"projects":"not an object"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := pinClaudeGlobalConfig(path, l.cwd); err == nil {
+	if err := pinClaudeGlobalConfig(path, l.cwd, nil); err == nil {
 		t.Error(`a "projects" that is not an object was reported as pinned`)
 	}
 	raw, _ := os.ReadFile(path)

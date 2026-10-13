@@ -142,6 +142,9 @@ func stateWords(state termux.State) string {
 		return "idle"
 	case termux.StateWaiting:
 		return "waiting for the user"
+	case termux.StateTasks:
+		return "done with its turn, but something it started - a background shell, a monitor or a " +
+			"background sub-agent - is still running and it will pick up again when that reports back"
 	default:
 		return "in an unknown state"
 	}

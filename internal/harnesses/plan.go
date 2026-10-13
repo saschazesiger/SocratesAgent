@@ -73,8 +73,15 @@ type PlanRequest struct {
 	// launch behavior of sessions created before this choice existed.
 	ShellExecution string
 	CLISession     string
-	Settings       config.Settings
-	DataDir        string
+	// Profile is the id of the sign-in profile the session runs in, and
+	// empty for the default one. See profiles.go.
+	Profile string
+	// Ultracode is Claude Code's standing dynamic-workflow orchestration,
+	// chosen on the sheet when the session is created and kept for its whole
+	// life. Off unless asked for; no other harness has it.
+	Ultracode bool
+	Settings  config.Settings
+	DataDir   string
 	// Logf is the caller's log, for the one thing a plan does that can fail
 	// without stopping the launch: pinning Claude Code's global config, whose
 	// failure costs the session its trust entry and therefore its prompt. It

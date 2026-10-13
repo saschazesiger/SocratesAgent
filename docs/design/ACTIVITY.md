@@ -25,6 +25,7 @@ const (
     StateBusy    State = "busy"    // the harness is working
     StateIdle    State = "idle"    // waiting for a new instruction
     StateWaiting State = "waiting" // needs the user: permission, question, menu
+    StateTasks   State = "tasks"   // turn over, but something it started still runs
 )
 type Activity struct {
     State  State  `json:"state"`
@@ -34,6 +35,17 @@ type Activity struct {
     Note   string `json:"note,omitempty"` // e.g. "permission prompt" — hover-only
 }
 ```
+
+<!-- rev: tasks --> **`tasks`** is the turn that has ended while something it started — a background shell, a Monitor, a background terminal, a background sub-agent — is still running. It is neither busy (nothing is being worked on, so no spinner) nor done (Claude Code and OpenCode take the turn up again the moment that work reports back), and it is drawn as such (§D.1). `working(s)` = busy or tasks is the test every "the work finished" rule below uses. Where each harness says so, all verified on the real programs (Claude Code 2.1.281, Codex 0.158.0, OpenCode 1.18.32):
+
+| Harness | Exact | Screen (visible pane only, `capture-pane -p -J` with no `-S`) |
+|---|---|---|
+| **Claude** | the session file's `"status":"shell"` — Claude Code's own word for idle with a non-terminal `local_bash` task, which a background Bash and a shell Monitor both are. A background sub-agent is *not* this: Claude keeps its turn open until the agent is done (`✻ Waiting for 1 background agent to finish`, status `busy`), so it is busy, by Claude's own account | the bottom bar's pill, within the last 12 non-blank lines (a background sub-agent's list sits below the bar), first on the bar or straight after its mode: `⏵⏵ bypass permissions on · 1 shell ·`, `⏸ manual mode on · 2 shells, 1 monitor ·`, the same in every permission mode. The transcript's `done 12:55 PM · 1 shell still running` is history, a pill is never followed by a word, and a diff quoting the bar starts with a line number |
+| **Codex** | none: the title says idle | `N background terminal(s) running · /ps to view · /stop to close` on the last 10 non-blank lines. Codex does **not** take a turn when the terminal ends; it takes the line away, so `tasks → idle` is how its work ends |
+| **OpenCode** | the event stream: a busy sub-agent (a session whose `parentID` is set, learnt from `session.created`/`session.updated`, or `GET /session/:id` for a session the stream never introduced) while no session of its own is busy. Background sub-agents are behind `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` in 1.18; a foreground sub-agent keeps its parent busy, so without the flag this never fires. A session of unknown parentage counts as one of its own (busy) | none |
+| **Shell** | — (a tool: no status at all, §D.1) | — |
+
+The screen look runs only on an idle answer that came from the exact layer or a recognised screen — never on thirty seconds of silence alone — and after the runaway guard, which is about a spinner that never stops, not about a pane that is quiet by design. It captures the **visible** pane, because tmux's `scroll-on-clear` keeps a cleared screen in the history and a line a program took away would otherwise still be found. And it captures again only once the pane has printed something since the last look (`#{window_activity} ≥` the second of that look), so an idle screen that sits still for an hour costs one fork, not one every two seconds.
 
 `State` lives **only in memory** on the `Manager`, like `sizeOwner`: it is re-derived from a live pane every second, so a persisted copy could only ever be stale. No store migration.
 
@@ -106,7 +118,7 @@ Per session, per tick, in order:
    blanked, and a static ring cannot "spin for ever".
 ```
 
-`commit(next)` debounces: `busy` immediately (the spinner must appear at once); `waiting` immediately; `idle` after **2 consecutive ticks** (`IdleSettle`) — this is the anti-flicker between two tool calls; `unknown` after 3 consecutive ticks (`UnknownSettle`) so a transient read failure never blanks a row.
+`commit(next)` debounces: `busy` immediately (the spinner must appear at once); `waiting` immediately; `idle` and <!-- rev: tasks --> `tasks` after **2 consecutive ticks** (`IdleSettle`) — this is the anti-flicker between two tool calls; `unknown` after 3 consecutive ticks (`UnknownSettle`) so a transient read failure never blanks a row.
 
 Constants, all in `activity.go`: `ActivityInterval 1s · ScrapeEvery 2s · IdleSettle 2 ticks · UnknownSettle 3 ticks · ExactMissTicks 3 · BusyCeiling 120s · HardQuiet 30s · QuietBusy 2s`. <!-- rev: fable --> (`WaitCeiling` removed, see step 7.)
 
@@ -114,7 +126,9 @@ On a committed change (state, note or unread) the manager fires `Config.OnActivi
 
 ## A.4 Unread
 
-One server-side rule: `markUnread = (prev == busy && next != busy) || (prev != waiting && next == waiting)` — work finished, or the agent started needing you. `unknown` counts as "not busy", so a pane that dies mid-turn also marks unread: something ended and nobody saw it.
+One server-side rule: `markUnread = (working(prev) && !working(next)) || (prev != waiting && next == waiting)` — work finished, or the agent started needing you. `unknown` counts as "not busy", so a pane that dies mid-turn also marks unread: something ended and nobody saw it. <!-- rev: tasks --> `busy → tasks` marks nothing: a turn that leaves a shell running has not finished, and Claude and OpenCode will take it up again when the shell reports back — marking it would chime twice for one piece of work, once too early. The mark comes on the way out of `tasks`: `tasks → busy → idle` when the agent reports on the work, `tasks → idle` when it ends on its own (Codex), `tasks → unknown` when the pane dies. A turn that leaves something running for good (a dev server) stays `tasks` and is never announced, which is what that row honestly is.
+
+`MovesRow` is `next == busy || prev == busy || prev == tasks || next == waiting`: leaving `tasks` is work ending, as leaving busy is, and a detector that comes up to find a session already in `tasks` moves nothing, as one that finds it idle does not.
 
 <!-- rev: fable --> **And only for a session that has been asked something.** Every harness is busy while it starts up and idle the moment it is ready, so the rule above fired once on the first second of every session that was ever created — a bold row, a chime and a notification saying that a window had finished opening. `track.asked()` is the test: has anything been typed into this pane since it was launched (`NoteInput` from the socket, `NoteTyped` from `SendKeys`). A relaunch clears it with the rest of the track. The browser chimes and notifies on `unread` for the same reason, so this one test covers all three. See DEVIATIONS.md, "Starting a session is not work that finished".
 
@@ -183,6 +197,7 @@ with a registry `map[config.Harness]source` and a test-only `m.setSource(kind, s
 - `/ask` — the verbatim permission screen for that harness, plus the one signal that harness really carries: `"status":"waiting","waitingFor":"permission prompt"` in the session file for claude, the `[ . ] Action Required | <dir>` OSC title for **codex only**, `permission.asked` on the SSE stream for opencode (which is also listed by `GET /permission` until it is answered — the `directory` query is ignored, one fake is one session in one directory). Cleared by Enter, `1` or `y`, which also emits `permission.replied` and empties `/permission`.
 - `/hang <ms>` — busy furniture on screen, then **no output and no signal updates at all**: the `BusyCeiling`/`HardQuiet` test.
 - `/nofile` — stop maintaining the Claude session file: the "signal source unavailable → scrape" test.
+- <!-- rev: tasks --> `/bg <ms>` — a turn that ends with work left running, in each harness's own words (§A.0): `"status":"shell"` and the `· 1 shell ·` pill for claude, the idle title and `1 background terminal running` for codex, a `session.created` with a `parentID` and that child busy under an idle parent for opencode (and `GET /session/:id` naming the parent). After `ms`, claude and opencode take a short turn of their own, as the real ones do; codex only clears the line. The `tasks-*` scenarios drive it.
 - `/title <text>` — raw `ESC]2;<text>BEL`.
 - opencode mode gains, on the HTTP server it already runs: `GET /event` (SSE, heartbeat every 10 s, emitting the events above) and `GET /session/status` (the map form) — the fake OpenCode server.
 
@@ -425,6 +440,7 @@ New module `internal/web/static/js/assist.js` — status, the ticker and the cha
 
 - **busy** — <!-- rev 6 --> `.row-mark.busy::after`: a 1 px `--line-strong` ring around the existing agent mark with one `--accent` arc, `animation: spin 900ms linear infinite`. The spinner *is* the agent mark, so "agent marks everywhere a harness is named" holds and no new glyph is invented. **The arc is the page's ink and not a grey**: the whole of the motion is that one arc, and drawn in `--text-faint` on a `--line` ring — 1.4:1, at 26 px, at arm's length on a phone — it turned where nobody could see it turning, which is reported as "the ring does not spin". The `design` scenario asserts the ratio, not the token. Paused by the existing `body.stale` rule; under `prefers-reduced-motion` it has **no behaviour of its own** — it turns at the same `900ms` there as everywhere else, which still costs one `animation-duration: .9s !important` line inside that block, because the `*` rule at the top of it would otherwise squash the ring to `.01ms`. That is not a slower ring, it is a still one: a mark whose whole meaning is "this is happening right now" cannot be drawn still, and drawn still it was read as a session that had stopped.
 - **waiting** — the same ring, static, and the state dot turns `--amber`. Distinct from busy at a glance without introducing a second colour.
+- <!-- rev: tasks --> **tasks** — no ring, because nothing is being worked on, and a 13 px `.row-tasks` hourglass (sand in the lower bulb) on the mark's lower right corner, on a disc of the row's own background (`--bg`, `--bg-hover`, `--bg-sunken`) so it reads over an 18 px logo. `--text-soft`, not amber: it asks nothing of anybody. The mark's title is "Turn finished · a background task is still running"; a closed folder counts it with busy for its dot.
 - **unread** — `.chat-item.unread .label { font-weight: 600 }`, applied only when `session.id !== state.current?.id`: the session being looked at is never bold.
 - `Activity.source`, `.note` and `.since` join `rowFacts()` behind the existing `infoTip` — technical strings stay hover-only.
 - One visually-hidden `<div id="activityLive" aria-live="polite">` in the sidebar, written on a committed change ("Claude Code finished", "Codex needs an answer"), throttled to one message per 2 s. <!-- rev: fable --> On the same edge the chime fires on, so it says nothing a phone would not have said (§D.6).
@@ -464,9 +480,9 @@ because the button *is* shut while it works and the `:disabled` rule would
 otherwise take the ring down to 35 % — which is the one thing on the page
 nobody could then see.
 
-<!-- rev 8 --> **`#handsBtn`** sits with the sound and notification switches
-rather than with Status, because like them it is a fact about this device and
-is in the bar whether or not a session is attached. §D.7 is what it does.
+<!-- rev 9 --> **`#kbBtn`** sits with the sound and notification switches
+rather than with Status, because like them it is about this device and is in
+the bar whether or not a session is attached. §D.7 is what it does.
 
 ## D.3 Status, the ticker and the chat
 
@@ -562,7 +578,9 @@ interrupting a person for — the same committed edge §A.4 marks unread on — 
 **The moment.** `mergeActivity` is the one door every change comes through, so
 `notifier.completed(id, next, prev)` is called from it, beside
 `state.assist.activity`. A **completion** is `prev` existing, `prev.state ===
-'busy'`, and `next.state` being `idle` or `waiting`. It fires for **every**
+'busy'` <!-- rev: tasks --> or `'tasks'`, and `next.state` being `idle` or
+`waiting` — so a turn that ends with a shell still running rings once, when
+that work is over, and not at the end of the turn (§A.4). It fires for **every**
 session, attached or not — the session nobody is watching is the point of it.
 It fires for none of: a first sighting (`prev` is null, which is also what a
 `hello` replay and a reload look like), `unknown → anything` (nothing
@@ -624,63 +642,80 @@ refused permission leaving the switch off with the reason in a toast.
 
 ---
 
-## D.7 Hands-free
+## D.7 The keyboard switch
 
-<!-- rev 8 --> `internal/web/static/js/handsfree.js`, imported by `session.js`,
-`keybar.js`, `combobox.js` and `harnesses.js`; in `sw.js`'s `SHELL` and reached
-by the import-graph assertion in `internal/web/embed_test.go`.
+<!-- rev 9 --> `internal/web/static/js/keyboard.js`, imported by `session.js`,
+`combobox.js` and `harnesses.js`; in `sw.js`'s `SHELL`. It replaces rev 8's
+hands-free mode, which muted the keyboard for good when armed and let every
+field raise it when not.
 
-**The problem.** A tablet in a case and a phone in a car have the same one, and
-it is not the screen: it is the keyboard. Touch anything on a device with no
-keys of its own and half the display becomes a keyboard — over the pane, over
-the sheet somebody was reading, over the control they were about to press — and
-it opens again on the next tap. In a CLI, where the pane takes the focus back by
-design so that what is typed lands in the session, that is not an inconvenience,
-it is the interaction ending.
+**The problem.** Touch anything on a device with no keys of its own and half
+the display becomes a keyboard — over the pane, over the sheet somebody was
+reading — and it opens again on the next tap. In a CLI, where the pane takes
+the focus back by design so that what is typed lands in the session, it opens
+on every tap.
 
-**The mode.** `#handsBtn` in the `.topbar` before `#soundBtn`, `aria-pressed`,
-remembered in `localStorage['socrates.handsfree']` per device and per browser —
-the same rule as the sound switch, the notification switch and the key bar, and
-for the same reason. It is **one drawing, filled while it is armed**
-(`.icon-btn.on`), like a modifier armed on the key bar: this is a mode somebody
-turned on, not a facility that is on by default, so it is not an `.icon-btn.toggle`
-with two drawings. The drawing is a keyboard **going away** — the platform's own
-glyph for it, a keyboard with a chevron under it — rather than a keyboard with a
-stroke through it: struck through at 17 px all that survives is a crossed box,
-and that is what it was read as.
+**The rule.** On a touch screen the on-screen keyboard is raised and put away
+by `#kbBtn` in the `.topbar` before `#soundBtn`, and by nothing else.
+`aria-pressed`, filled while the keyboard is up (`.icon-btn.on`), and not
+remembered: it starts put away on every load. On a device with a mouse and no
+sign of a finger none of this applies: the fields are ordinary fields and the
+button is not shown.
 
-**What it guarantees**, while it is armed:
+- **A touch screen is asked generously**, because a button too many is cheap
+  and a keyboard over half the display on every tap is not. Any one of
+  `(hover: none)`, `(pointer: coarse)`, `(any-pointer: coarse)`,
+  `(any-hover: none)`, `navigator.maxTouchPoints > 0`, `ontouchstart`, a
+  `Tesla/` or `QtCarBrowser` user agent (the car's Chromium reports a fine
+  pointer that hovers), or a `touch`/`pen` pointerdown or a `touchstart` seen
+  on the page makes it one, and once one it stays one for the page.
+  `keyboard.js` decides, sets `html.touch` for the stylesheet, and exports
+  `touchScreen()` for the key bar's default.
+- **Real keys still type.** A trusted keydown of a printable key, Backspace,
+  Delete or Enter on a muted field other than the pane unmutes that field
+  before the key lands — a tablet in its case, a laptop with a touch screen.
+  No on-screen keyboard is up while the switch is off, so such a key came from
+  keys of the device's own.
+- **`:modal` is not assumed**: a browser that does not know the selector (an
+  older Chromium) is answered by the dialog's `position: fixed` in the top
+  layer.
 
-- **Every field is muted.** `inputmode="none"` *and* `readOnly`. One of the two
-  is a request a browser is asked to honour and the other is a fact it cannot
-  argue with; a promise that says "never" and holds on only some phones is not
-  one. Fields register themselves with `guard(input)` — the app's fields are
-  built by scripts and half of them live in dialogs that come and go, so there
-  is no moment at which they could all be found by a selector.
-- **The pane is muted with them**, through `term.screenKeyboard(false)`
-  (`term.js`), which sets `inputmode="none"` on xterm's hidden textarea. The
-  textarea keeps taking keydowns from a real keyboard and keeps receiving
-  pastes, so nothing about the input path changes and only the on-screen
-  keyboard goes. `inputmode` is read when a field takes the focus, not while it
-  holds it, so a field or a pane that already has the keyboard up is blurred and
-  given the focus straight back.
-- **The key bar comes on and stays on**, and its `⌨` key stands down
-  (`DESIGN.md` §E.6). Dictation puts a line on the prompt and never the `⏎` that
-  runs it, so with no keyboard at all there would be no way to run anything.
-- **Every field has a microphone beside it** — `dictated(control, input)`, which
-  wraps the field in `.dictate` and adds a `.mic-btn` that opens the one
-  recording sheet `dictate.js` owns (`record()`). It wears the same working ring
-  every other control wears. The microphones are **not** part of the mode: a
-  control that only appears in a mode is a control nobody finds, and dictating
-  into a field is worth having on a desk too. What the mode adds is the
-  guarantee that nothing else can happen.
+- **Every field is muted while the switch is off.** `inputmode="none"` *and*
+  `readOnly` — one is a request a browser is asked to honour, the other a fact
+  it cannot argue with. What a field had before is kept and given back. Fields
+  are found by a `MutationObserver` on the document, so fields built by scripts
+  and fields in dialogs that come and go are covered without registering; a
+  field focused in the same tick it was built is muted by `guard(input)` (the
+  pane's textarea) or, failing that, on `focusin`. The pane's hidden textarea
+  keeps taking keydowns from a real keyboard and pastes, because xterm reads
+  both from events a read-only textarea still receives.
+- **The VS Code frame is covered too**: it is served from the same origin, so
+  `watchFrame(frame)` puts its document under the same observer on every load.
+- **A press raises it** for the field that should have it — the focused field,
+  else the one last typed into, inside the topmost modal dialog when one is
+  open, else the pane — by unmuting everything and giving that field the focus
+  **synchronously inside the `click` handler** (iOS raises a keyboard for
+  nothing else). A second press mutes everything again and hands the focus
+  back, so the keyboard goes and the focus stays where a real keyboard needs it.
+- **The switch follows the keyboard.** The focus leaving every field (asked on
+  the next tick, because a tap on the pane blurs and refocuses its textarea),
+  or the visual viewport growing back after it had shrunk (Android's back key),
+  puts it back to off.
+- **It is pressable everywhere.** A modal dialog makes the rest of the page
+  inert, so a copy of the button (`.kb-copy`) is put into whichever dialog is
+  on top, laid over the exact rect of `#kbBtn` once the dialog's opening
+  animation has ended, and taken out again when the dialog closes. It is also
+  shown while VS Code is open.
+- **The key bar has no `⌨` key any more** (`DESIGN.md` §E.6), and is shown on
+  this device's own answer alone.
+- **Every field has a microphone beside it** — `dictated(control, input)`,
+  which wraps the field in `.dictate` and adds a `.mic-btn` that opens the one
+  recording sheet `dictate.js` owns (`record()`). With the keyboard put away it
+  is how a field is filled without raising it.
 
-**Which fields.** Everything on the session page: both comboboxes on the
-new-session sheet, its free-form working directory, and the rename dialog's one
-field. The pane's own microphone is the top bar's pill (§D.3), which is why it
-does not get a second one. `login.html` and `setup.html` are not covered — they
-are separate documents that load none of this, and a password is not something
-to dictate. The dashboard is not covered either.
+**Which fields.** Everything on the session page and inside its VS Code frame.
+`login.html`, `setup.html` and the admin page are separate documents that load
+none of this.
 
 # E. Work packages
 

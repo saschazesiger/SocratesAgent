@@ -47,6 +47,13 @@ func (s *Server) answerCatalog(w http.ResponseWriter, snap catalog.Snapshot) {
 			"modes":           harnesses.WorkdirModes,
 		},
 	}
+	// The profiles a session can run in, with the account each agent is signed
+	// in with there, so that the sheet can say which account a choice means.
+	// A list that cannot be read leaves the sheet with the default profile,
+	// which is what it was before profiles existed.
+	if profiles, err := s.profileViews(); err == nil {
+		payload["profiles"] = profiles
+	}
 	// Whether a session can be started at all is a property of the machine,
 	// not of the catalogue, and the sheet has to be able to say so before
 	// somebody fills it in.

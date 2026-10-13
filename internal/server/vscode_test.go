@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"github.com/coder/websocket"
 	"io"
 	"net"
@@ -113,4 +114,64 @@ func TestVSCodeProxy(t *testing.T) {
 		}
 	}
 
+}
+
+// TestFolderIDE holds a folder to one editor: the sheet cannot make one, the
+// folder's mark makes it once and finds it after that, and a folder no
+// session works in is not a folder the route will open.
+func TestFolderIDE(t *testing.T) {
+	e := newSessionEnv(t)
+	res, payload := e.do(t, e.client, "PUT", "/api/settings", `{"settings":{"harnesses":{"vscode":{"binary":"/bin/sh"}}}}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("settings: %d %#v", res.StatusCode, payload)
+	}
+	project := filepath.Join(e.work, "project")
+	res, session := e.create(fmt.Sprintf(`{"harness":"vscode","workdir_mode":"custom","workdir":%q}`, project))
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("VS Code must not be a new session, got %d %#v", res.StatusCode, session)
+	}
+
+	open := func(folder string) (*http.Response, map[string]any) {
+		t.Helper()
+		res, payload := e.do(t, e.client, "POST", "/api/ide", fmt.Sprintf(`{"workdir":%q}`, folder))
+		session, _ := payload["session"].(map[string]any)
+		return res, session
+	}
+	if res, _ := open(project); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("a folder no session works in should be refused, got %d", res.StatusCode)
+	}
+	res, shell := e.create(fmt.Sprintf(`{"harness":"shell","workdir_mode":"custom","workdir":%q}`, project))
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("shell: %d %#v", res.StatusCode, shell)
+	}
+	res, first := open(project + "/")
+	if res.StatusCode != http.StatusCreated || first["harness"] != "vscode" || first["workdir"] != project || first["workdir_mode"] != "custom" {
+		t.Fatalf("first open: %d %#v", res.StatusCode, first)
+	}
+	res, again := open(project)
+	if res.StatusCode != http.StatusOK || sessionID(t, again) != sessionID(t, first) {
+		t.Fatalf("a folder has one editor: %d %v and %v", res.StatusCode, again["id"], first["id"])
+	}
+	// Closing the editor and opening it again gives the same id, which is
+	// the address the browser keeps the workbench's memory under.
+	if sessionID(t, first) != harnesses.VSCodeSessionID(project) {
+		t.Fatalf("the editor's id is not the folder's: %v", first["id"])
+	}
+	if res, _ := e.do(t, e.client, "DELETE", "/api/sessions/"+sessionID(t, first), ""); res.StatusCode != http.StatusOK {
+		t.Fatalf("close: %d", res.StatusCode)
+	}
+	res, reopened := open(project)
+	if res.StatusCode != http.StatusCreated || sessionID(t, reopened) != sessionID(t, first) {
+		t.Fatalf("a reopened editor must keep its address: %d %v", res.StatusCode, reopened["id"])
+	}
+}
+
+func TestVSCodeDataIsPerFolder(t *testing.T) {
+	data := t.TempDir()
+	if harnesses.VSCodeDataDir(data, "/srv/a/") != harnesses.VSCodeDataDir(data, "/srv/a") {
+		t.Fatal("two spellings of one folder must share an editor state")
+	}
+	if harnesses.VSCodeDataDir(data, "/srv/a") == harnesses.VSCodeDataDir(data, "/srv/b") {
+		t.Fatal("two folders must not share an editor state")
+	}
 }

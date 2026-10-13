@@ -226,14 +226,34 @@ function writeClipboard(text, opts = {}) {
 }
 
 /**
- * lastCopied is the last text copied out of a pane on this page.
- *
- * It is what the key bar falls back on: a phone reaching the app over plain
- * http has no `navigator.clipboard` at all, and one that has it can still be
- * refused - so "copy a line with a long press, paste it back with the button"
- * has to work without the browser's clipboard being readable.
+ * copyText is a copy a button asked for: the same path the copy key takes,
+ * inside the gesture that pressed the button.
  */
-export function lastCopied() { return primary; }
+export function copyText(text) { return writeClipboard(text); }
+
+// pasteClipboard puts the clipboard into the pane, bracketed when the program
+// asked to be told that a paste is a paste - which is what stops an editor
+// from auto-indenting every line of it.
+//
+// A phone reaching this app over plain http has no `navigator.clipboard` at
+// all, and one that has it can still refuse to be read - so what was last
+// copied out of the pane itself is the fallback. That is the round trip a
+// phone actually makes: hold a line to copy it, tap Paste to put it back.
+export async function pasteClipboard(term, send) {
+  let text = '';
+  try {
+    text = await navigator.clipboard.readText();
+  } catch {
+    text = primary;
+    if (!text) {
+      toast('The browser would not let the clipboard be read.', 'error');
+      return;
+    }
+  }
+  if (!text) return;
+  const bracketed = !!(term && term.modes && term.modes.bracketedPasteMode);
+  send(bracketed ? '\x1b[200~' + text + '\x1b[201~' : text);
+}
 
 /** isEditable is whether a paste or copy aimed at `node` belongs to a field. */
 function isEditable(node) {
@@ -864,44 +884,6 @@ export function createTerm(host, opts = {}) {
     /** reset is the full repaint a `replay_from: 0` hello asks for. */
     reset: () => { term.reset(); last = { cols: 0, rows: 0 }; },
     focus: () => term.focus(),
-    /**
-     * screenKeyboard says whether a tap on the pane may raise the phone's own
-     * keyboard.
-     *
-     * The pane takes the focus back by design, so on a device with no keys of
-     * its own the keyboard opens again on every tap - which is what hands-free
-     * exists to stop. `inputmode="none"` is the one way to say "focus this,
-     * but do not open a keyboard for it": the textarea keeps taking keydowns
-     * from a real keyboard and keeps receiving pastes, so nothing about the
-     * input path changes, and only the on-screen keyboard goes.
-     *
-     * `inputmode` is only a request, though, and a phone is free to ignore
-     * it - the ones this app is used on did, and raised the keyboard on every
-     * tap regardless. `readonly` is the fact no browser argues with: a
-     * read-only field takes the focus and never opens a keyboard. It costs
-     * nothing here, because xterm reads keys from `keydown` and pastes from
-     * the `paste` event, and both still arrive at a read-only textarea; only
-     * the `input` events of an on-screen keyboard stop, which is the point.
-     * The same two are put on every other field of the app (handsfree.js).
-     *
-     * Both are read when a field takes the focus, not while it holds it, so
-     * a textarea that already has the keyboard up is blurred and given the
-     * focus straight back.
-     */
-    screenKeyboard(allowed) {
-      if (!term.textarea) return;
-      if (allowed) {
-        term.textarea.removeAttribute('inputmode');
-        term.textarea.readOnly = !!term.options.disableStdin;
-      } else {
-        term.textarea.setAttribute('inputmode', 'none');
-        term.textarea.readOnly = true;
-      }
-      if (document.activeElement === term.textarea) {
-        term.textarea.blur();
-        term.focus();
-      }
-    },
     dispose() {
       unwireTouch();
       unwireMouse();

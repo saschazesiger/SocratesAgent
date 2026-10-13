@@ -7,7 +7,7 @@
 // the ARIA combobox pattern so it works with a keyboard and a screen reader.
 
 import { el } from './api.js';
-import { guard, micButton } from './handsfree.js';
+import { guard, micButton } from './keyboard.js';
 
 let openInstance = null;
 
@@ -21,6 +21,59 @@ document.addEventListener('click', (event) => {
 });
 
 let comboCount = 0;
+
+// pinList pins an open list to its field on the screen itself rather than
+// inside the field's box. A dialog scrolls its own contents, and a list
+// positioned inside it was cut off at the dialog's bottom edge; a fixed one
+// is drawn over the dialog's edge and past it.
+//
+// It opens downwards when it fits there, and upwards when the room above
+// the field is what it needs. Either way it is as tall as the screen allows
+// and scrolls inside itself beyond that: on a phone with the keyboard up
+// the room is what the visual viewport has left, not the window.
+function pinList(list, anchor, most = 300) {
+  const box = anchor.getBoundingClientRect();
+  const view = window.visualViewport;
+  const top = view ? view.offsetTop : 0;
+  const height = view ? view.height : window.innerHeight;
+  const gap = 4;
+  const edge = 8;
+  const below = top + height - box.bottom - gap - edge;
+  const above = box.top - top - gap - edge;
+  list.style.maxHeight = '';
+  const wanted = Math.min(most, list.scrollHeight + 2);
+  const down = below >= wanted || below >= above;
+  const room = Math.max(0, down ? below : above);
+  const tall = Math.min(wanted, room);
+  list.style.width = box.width + 'px';
+  list.style.maxHeight = tall + 'px';
+  const wantLeft = box.left;
+  const wantTop = down ? box.bottom + gap : box.top - gap - tall;
+  list.style.left = wantLeft + 'px';
+  list.style.top = wantTop + 'px';
+  // A dialog that is still animating in has a transform, and a transform
+  // makes it the box a fixed element is placed in. Whatever that shifts is
+  // measured and taken back out, and the dialog's animationend places the
+  // list again once there is nothing left to correct for.
+  const drawn = list.getBoundingClientRect();
+  if (Math.abs(drawn.left - wantLeft) > 0.5 || Math.abs(drawn.top - wantTop) > 0.5) {
+    list.style.left = (2 * wantLeft - drawn.left) + 'px';
+    list.style.top = (2 * wantTop - drawn.top) + 'px';
+  }
+}
+
+// followMoves keeps an open list on its field while anything under it moves:
+// the dialog scrolling, the window resizing, the keyboard coming up.
+function followMoves(on, handler) {
+  const how = on ? 'addEventListener' : 'removeEventListener';
+  document[how]('scroll', handler, true);
+  document[how]('animationend', handler, true);
+  window[how]('resize', handler);
+  if (window.visualViewport) {
+    window.visualViewport[how]('resize', handler);
+    window.visualViewport[how]('scroll', handler);
+  }
+}
 
 /**
  * combobox builds the control.
@@ -83,10 +136,10 @@ export function combobox(options = {}) {
 
   // The field can be spoken into as well as typed into, and what is said is
   // what would have been typed: it filters the list, and the entry is still
-  // chosen by hand. In hands-free it is the only way this control can be used
-  // at all, which is why the microphone is beside the field rather than
-  // inside it - the caret button is already in there, and two glyphs in the
-  // corner of one field is a puzzle rather than a control.
+  // chosen by hand. With the keyboard put away it is the only way this
+  // control can be used at all, which is why the microphone is beside the
+  // field rather than inside it - the caret button is already in there, and
+  // two glyphs in the corner of one field is a puzzle rather than a control.
   const mic = micButton((text) => {
     input.value = text;
     input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -189,59 +242,12 @@ export function combobox(options = {}) {
     follow(true);
   }
 
-  // place pins the open list to the field on the screen itself rather than
-  // inside the field's box. A dialog scrolls its own contents, and a list
-  // positioned inside it was cut off at the dialog's bottom edge; a fixed one
-  // is drawn over the dialog's edge and past it.
-  //
-  // It opens downwards when it fits there, and upwards when the room above
-  // the field is what it needs. Either way it is as tall as the screen allows
-  // and scrolls inside itself beyond that: on a phone with the keyboard up
-  // the room is what the visual viewport has left, not the window.
+  // place and follow keep the open list against its field; see pinList.
   function place() {
-    if (!isOpen) return;
-    const box = input.getBoundingClientRect();
-    const view = window.visualViewport;
-    const top = view ? view.offsetTop : 0;
-    const height = view ? view.height : window.innerHeight;
-    const gap = 4;
-    const edge = 8;
-    const below = top + height - box.bottom - gap - edge;
-    const above = box.top - top - gap - edge;
-    list.style.maxHeight = '';
-    const wanted = Math.min(300, list.scrollHeight + 2);
-    const down = below >= wanted || below >= above;
-    const room = Math.max(0, down ? below : above);
-    const tall = Math.min(wanted, room);
-    list.style.width = box.width + 'px';
-    list.style.maxHeight = tall + 'px';
-    const wantLeft = box.left;
-    const wantTop = down ? box.bottom + gap : box.top - gap - tall;
-    list.style.left = wantLeft + 'px';
-    list.style.top = wantTop + 'px';
-    // A dialog that is still animating in has a transform, and a transform
-    // makes it the box a fixed element is placed in. Whatever that shifts is
-    // measured and taken back out, and the dialog's animationend places the
-    // list again once there is nothing left to correct for.
-    const drawn = list.getBoundingClientRect();
-    if (Math.abs(drawn.left - wantLeft) > 0.5 || Math.abs(drawn.top - wantTop) > 0.5) {
-      list.style.left = (2 * wantLeft - drawn.left) + 'px';
-      list.style.top = (2 * wantTop - drawn.top) + 'px';
-    }
+    if (isOpen) pinList(list, input);
   }
 
-  // follow keeps an open list on its field while anything under it moves: the
-  // dialog scrolling, the window resizing, the keyboard coming up.
-  function follow(on) {
-    const how = on ? 'addEventListener' : 'removeEventListener';
-    document[how]('scroll', onMove, true);
-    document[how]('animationend', onMove, true);
-    window[how]('resize', onMove);
-    if (window.visualViewport) {
-      window.visualViewport[how]('resize', onMove);
-      window.visualViewport[how]('scroll', onMove);
-    }
-  }
+  function follow(on) { followMoves(on, onMove); }
 
   function onMove(event) {
     // The list scrolling through its own options is not the field moving.
@@ -341,4 +347,180 @@ export function combobox(options = {}) {
   });
 
   return { node: root, setValue };
+}
+
+/**
+ * dropdown builds a closed choice that is not typed into: a field that shows
+ * what is chosen, and a list under it whose entries can be as rich as they
+ * need to be. It is for a short list whose entries say more than a name - a
+ * profile and how much of its account is left - where a row of buttons runs
+ * out of width after three and a search box has nothing to search.
+ *
+ * options.value        current value
+ * options.onChange     called with the new value when one is picked
+ * options.items        () => [{value, ...}]
+ * options.renderItem   (item, chosen) => Node, an entry in the open list
+ * options.renderValue  (item) => Node, what the closed field shows; the
+ *                      entry itself when left out
+ * options.label        the field's accessible name
+ */
+export function dropdown(options = {}) {
+  const {
+    value = '',
+    onChange = () => {},
+    items = () => [],
+    renderItem = (item) => el('span', { class: 'combo-label', text: item.label || item.value }),
+    renderValue = null,
+    label = '',
+  } = options;
+
+  const id = 'combo' + (++comboCount);
+  let current = value ?? '';
+  let all = [];
+  let active = -1;
+  let isOpen = false;
+
+  const face = el('span', { class: 'drop-face' });
+  const button = el('button', {
+    class: 'input drop-button', type: 'button',
+    'aria-haspopup': 'listbox', 'aria-expanded': 'false', 'aria-controls': id + '-list',
+    'aria-label': label || null,
+  }, face, el('span', { class: 'combo-caret' }));
+  const list = el('div', { class: 'combo-list drop-list', id: id + '-list', role: 'listbox', hidden: true });
+  const root = el('div', { class: 'combo drop' }, button, list);
+  const instance = { root, close };
+
+  function chosenItem() { return (items() || []).find((item) => item.value === current) || null; }
+
+  function drawFace() {
+    face.innerHTML = '';
+    const item = chosenItem();
+    if (item) face.append(renderValue ? renderValue(item) : renderItem(item, true));
+  }
+
+  function setValue(next, notify = true) {
+    current = next ?? '';
+    drawFace();
+    if (notify) onChange(current);
+  }
+
+  function render() {
+    list.innerHTML = '';
+    all.forEach((item, index) => {
+      const chosen = item.value === current;
+      list.append(el('div', {
+        class: 'combo-option drop-option' + (index === active ? ' active' : '') + (chosen ? ' chosen' : ''),
+        role: 'option',
+        'data-value': item.value,
+        id: id + '-opt-' + index,
+        'aria-selected': chosen ? 'true' : 'false',
+        // mousedown, not click: the button must not lose focus first.
+        onmousedown: (event) => {
+          event.preventDefault();
+          choose(index);
+        },
+        onmouseenter: () => { setActive(index, false); },
+      }, renderItem(item, chosen)));
+    });
+  }
+
+  function setActive(index, scroll = true) {
+    active = index;
+    const nodes = list.querySelectorAll('.combo-option');
+    nodes.forEach((node, i) => node.classList.toggle('active', i === index));
+    if (index >= 0 && index < nodes.length) {
+      button.setAttribute('aria-activedescendant', id + '-opt-' + index);
+      if (scroll) nodes[index].scrollIntoView({ block: 'nearest' });
+    } else {
+      button.removeAttribute('aria-activedescendant');
+    }
+  }
+
+  function open() {
+    closeOpen(instance);
+    openInstance = instance;
+    all = items() || [];
+    active = all.findIndex((item) => item.value === current);
+    isOpen = true;
+    list.hidden = false;
+    button.setAttribute('aria-expanded', 'true');
+    render();
+    place();
+    if (active >= 0) setActive(active);
+    followMoves(true, onMove);
+  }
+
+  function place() {
+    if (isOpen) pinList(list, button, 360);
+  }
+
+  function onMove(event) {
+    if (event && event.target === list) return;
+    place();
+  }
+
+  function close() {
+    if (!isOpen) return;
+    isOpen = false;
+    list.hidden = true;
+    followMoves(false, onMove);
+    button.setAttribute('aria-expanded', 'false');
+    button.removeAttribute('aria-activedescendant');
+    if (openInstance === instance) openInstance = null;
+  }
+
+  function choose(index) {
+    const item = all[index];
+    if (!item) return;
+    close();
+    setValue(item.value);
+  }
+
+  button.addEventListener('click', () => {
+    if (isOpen) close();
+    else open();
+  });
+
+  button.addEventListener('keydown', (event) => {
+    switch (event.key) {
+      case 'ArrowDown':
+      case 'ArrowUp': {
+        event.preventDefault();
+        if (!isOpen) return open();
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        setActive(Math.max(0, Math.min(all.length - 1, active + step)));
+        break;
+      }
+      case 'Home':
+      case 'End':
+        if (!isOpen) return;
+        event.preventDefault();
+        setActive(event.key === 'Home' ? 0 : all.length - 1);
+        break;
+      case 'Enter':
+      case ' ':
+        if (!isOpen) return;
+        event.preventDefault();
+        if (active >= 0) choose(active);
+        else close();
+        break;
+      case 'Escape':
+        if (!isOpen) return;
+        // The sheet around it must not take the escape as a no.
+        event.preventDefault();
+        event.stopPropagation();
+        close();
+        break;
+      case 'Tab':
+        close();
+        break;
+    }
+  });
+
+  button.addEventListener('blur', () => {
+    setTimeout(() => { if (openInstance === instance) close(); }, 0);
+  });
+
+  drawFace();
+  return { node: root, setValue, refresh: drawFace };
 }

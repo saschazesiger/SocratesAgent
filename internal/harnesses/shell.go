@@ -84,6 +84,20 @@ func (Shell) Plan(ctx context.Context, req PlanRequest) (LaunchPlan, error) {
 	argv := []string{bin, "-l"}
 
 	env := baseEnv(req)
+	// A shell in a profile carries the variables of all three agents, which
+	// is where a profile is signed in to Codex and OpenCode, and where a
+	// `claude` typed by hand runs on the profile's account. The profile's
+	// directories are this container's, so a shell on the host has none.
+	if req.Profile != "" {
+		if isHostShellBinary(requested) {
+			return LaunchPlan{}, fmt.Errorf("a host shell cannot run in a profile; choose container")
+		}
+		extra, err := profileEnv(req, KindClaude, KindCodex, KindOpenCode)
+		if err != nil {
+			return LaunchPlan{}, err
+		}
+		mergeEnv(env, extra)
+	}
 
 	return LaunchPlan{
 		Argv:     argv,

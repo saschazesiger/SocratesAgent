@@ -163,6 +163,12 @@ func handle(line string, session *sessionState) (bool, int) {
 		// then nothing at all - no output, no signal update.
 		session.busy(millis(line, "/hang", 20000), false)
 		return false, 0
+	case strings.HasPrefix(line, "/bg"):
+		// A turn that ends with something it started still running behind
+		// it, for that long - and then what each real program does when it
+		// stops.
+		session.background(millis(line, "/bg", 6000))
+		return false, 0
 	case line == "/ask":
 		session.ask()
 		return false, 0
@@ -205,6 +211,9 @@ type sessionState struct {
 	askID  string
 	paint  chan struct{}
 	events *sseHub
+	// children is the background sub-agents /bg started under OpenCode, by
+	// id, with the session that started them.
+	children map[string]string
 }
 
 func startSession(name string, args []string, cwd string) (*sessionState, error) {
@@ -390,6 +399,12 @@ func (s *sessionState) startOpenCode(args []string) error {
 	// browser scenario prove both the authenticated endpoint and its rendering.
 	mux.HandleFunc("/session/", authed(func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/session/")
+		// A background sub-agent says whose it is, which is how the watcher
+		// tells one it was never introduced to from a session of its own.
+		if parent, ok := s.childOf(id); ok {
+			writeJSON(w, map[string]any{"id": id, "parentID": parent, "directory": s.cwd})
+			return
+		}
 		exists, err := openCodeHasSession(id)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -894,6 +909,77 @@ func (s *sessionState) paintIdle() {
 	out("> ")
 }
 
+// background is /bg: the turn is over and something it started goes on for d,
+// said the way each real program says it (Claude Code 2.1.281, Codex 0.158.0,
+// OpenCode 1.18.32 with background sub-agents). When it ends, Claude and
+// OpenCode take the turn up again to report on it; Codex only takes its line
+// away.
+func (s *sessionState) background(d time.Duration) {
+	s.stopPaint()
+	child := s.statusID() + "_bg"
+	switch s.name {
+	case "claude":
+		s.writeStatusFile("shell", "")
+		out("\r\n✻ Worked for 3s · done · 1 shell still running\r\n❯ \r\n" +
+			"  ⏵⏵ auto mode on · 1 shell · ← for agents · ↓ to manage\r\n")
+	case "codex":
+		s.setTitle(filepath.Base(s.cwd))
+		out("\r\n• OK\r\n  1 background terminal running · /ps to view · /stop to close\r\n" +
+			"› Ask Codex to do anything\r\n")
+	case "opencode":
+		s.mu.Lock()
+		if s.children == nil {
+			s.children = map[string]string{}
+		}
+		s.children[child] = s.statusID()
+		s.mu.Unlock()
+		s.events.publish(map[string]any{
+			"type": "session.created",
+			"properties": map[string]any{
+				"sessionID": child,
+				"info":      map[string]any{"id": child, "parentID": s.statusID()},
+			},
+		})
+		s.setStatus("idle", "")
+		s.events.setStatus(child, "busy")
+		s.events.publish(map[string]any{
+			"type":       "session.status",
+			"properties": map[string]any{"sessionID": child, "status": map[string]any{"type": "busy"}},
+		})
+		out("\r\n  ⠹ General Task (background) — Sleep\r\n▣  Build · fake · 3.0s\r\n" +
+			"  ⬝⬝⬝⬝⬝⬝  10.5K (1%%) · $0.02   ctrl+p commands\r\n")
+	default:
+		return
+	}
+	go func() {
+		time.Sleep(d)
+		switch s.name {
+		case "codex":
+			// The line goes, by a repaint, and Codex stays idle.
+			out("\x1b[2J\x1b[H• OK\r\n› Ask Codex to do anything\r\n")
+		case "opencode":
+			s.events.setStatus(child, "idle")
+			s.events.publish(map[string]any{
+				"type":       "session.status",
+				"properties": map[string]any{"sessionID": child, "status": map[string]any{"type": "idle"}},
+			})
+			s.busy(800*time.Millisecond, true)
+		default:
+			out("\x1b[2J\x1b[H● Background command completed (exit code 0)\r\n")
+			s.busy(800*time.Millisecond, true)
+		}
+	}()
+}
+
+// childOf is the parent of a background sub-agent this fake started, for GET
+// /session/:id.
+func (s *sessionState) childOf(id string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	parent, ok := s.children[id]
+	return parent, ok
+}
+
 // ask puts the verbatim permission prompt of this harness on the screen and
 // says so through its own signal.
 func (s *sessionState) ask() {
@@ -1016,8 +1102,12 @@ func (s *sessionState) setStatus(status, waitingFor string) {
 func (s *sessionState) setTitle(text string) { out("\x1b]2;%s\x07", text) }
 
 // statusFilePath is where Claude Code keeps the file the detector reads:
-// ~/.claude/sessions/<pid>.json, keyed by the process's own pid.
+// $CLAUDE_CONFIG_DIR/sessions/<pid>.json, or ~/.claude/sessions/<pid>.json
+// without one, keyed by the process's own pid.
 func (s *sessionState) statusFilePath() string {
+	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
+		return filepath.Join(dir, "sessions", strconv.Itoa(os.Getpid())+".json")
+	}
 	home := os.Getenv("HOME")
 	if home == "" {
 		return ""

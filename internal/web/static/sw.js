@@ -60,7 +60,9 @@ const SHELL = [
   '/static/js/assist.js',
   '/static/js/notify.js',
   '/static/js/dictate.js',
-  '/static/js/handsfree.js',
+  '/static/js/keyboard.js',
+  '/static/js/transfer.js',
+  '/static/manifest.json',
   '/favicon.png',
   '/static/img/logo.png',
 ].map((path) => (path === '/' ? path : path + '?v=' + VERSION));
@@ -154,5 +156,40 @@ self.addEventListener('fetch', (event) => {
       }
       throw err;
     }
+  })());
+});
+
+// Web Push: the news that a session finished, for a phone whose page is not
+// running (internal/server/push.go). Every push is shown - a browser that
+// receives one and shows nothing is entitled to stop delivering them - and
+// one per session, so a session that finishes twice while the phone is in a
+// pocket leaves one line in the tray.
+self.addEventListener('push', (event) => {
+  let note = {};
+  try { note = event.data ? event.data.json() : {}; } catch { /* shown with the defaults */ }
+  event.waitUntil(self.registration.showNotification(note.title || 'Socrates', {
+    body: note.body || '',
+    tag: note.id ? 'socrates:' + note.id : 'socrates',
+    renotify: true,
+    icon: '/static/img/logo.png',
+    badge: '/favicon.png',
+    data: { id: note.id || '' },
+  }));
+});
+
+// A tap opens the session: in a tab that is already open when there is one,
+// which is told by message which session to show, and in a new one otherwise.
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const id = (event.notification.data && event.notification.data.id) || '';
+  event.waitUntil((async () => {
+    const tabs = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const tab = tabs.find((c) => new URL(c.url).pathname === '/') || null;
+    if (tab) {
+      await tab.focus();
+      if (id) tab.postMessage({ t: 'open', id });
+      return;
+    }
+    await self.clients.openWindow(id ? '/#' + id : '/');
   })());
 });

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -183,6 +182,11 @@ func (o OpenCode) plan(req PlanRequest, session []string) (LaunchPlan, error) {
 	env["OPENCODE_CONFIG_CONTENT"] = string(inline)
 	env["OPENCODE_SERVER_USERNAME"] = openCodeUser
 	env["OPENCODE_SERVER_PASSWORD"] = password
+	extra, err := profileEnv(req, KindOpenCode)
+	if err != nil {
+		return LaunchPlan{}, err
+	}
+	mergeEnv(env, extra)
 
 	openCodeSecrets.Store(req.SessionID, ServerAccess{Port: port, Username: openCodeUser, Password: password})
 
@@ -271,15 +275,18 @@ func serverPassword() (string, error) {
 }
 
 // openCodeDataDir is where OpenCode keeps its session database.
-func openCodeDataDir() string {
-	if dir := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); dir != "" {
-		return filepath.Join(dir, "opencode")
+func openCodeDataDir() string { return openCodeDataDirIn("") }
+
+// openCodeDataDirIn is the same for a program started with xdgData as its
+// XDG data home; empty means the one this process has.
+func openCodeDataDirIn(xdgData string) string {
+	if xdgData == "" {
+		xdgData = defaultXDGDataHome()
 	}
-	home := homeDir()
-	if home == "" {
+	if xdgData == "" {
 		return ""
 	}
-	return filepath.Join(home, ".local", "share", "opencode")
+	return filepath.Join(xdgData, "opencode")
 }
 
 // DiscoverModels asks the binary what it can run; see opencode_models.go.

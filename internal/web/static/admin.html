@@ -58,6 +58,17 @@
       </div>
     </section>
 
+    <section class="card" id="profilesCard">
+      <h2>Profiles</h2>
+      <p class="card-sub">A profile is a separate set of sign-ins for Claude Code, Codex and OpenCode - a business account beside a private one. The new-session sheet asks which profile a session runs in, in the order of this list - drag a row by its handle to change it - and a session keeps that profile for its whole life. Settings, instructions, skills, plugins and MCP servers are shared with the default profile; accounts and conversations are not.</p>
+      <div id="profileList"></div>
+      <div class="profile-add">
+        <input class="input" type="text" id="profileName" placeholder="Business" maxlength="40" autocomplete="off">
+        <button class="btn sm" id="profileAdd" type="button">Add profile</button>
+      </div>
+      <div class="hint">Changes here take effect at once. To sign in, start a session in the profile: Claude Code asks by itself, and a container Shell in the profile is where <code>codex login --device-auth</code> and <code>opencode auth login</code> sign the other two in.</div>
+    </section>
+
     <section class="card" id="terminalCard">
       <h2>Terminal behaviour</h2>
       <p class="card-sub">How the pane behaves on the tmux side and how it is drawn on the browser side. The first three reach the sessions that are already open; the rest apply to new ones.</p>
