@@ -25,6 +25,7 @@ const (
     StateBusy    State = "busy"    // the harness is working
     StateIdle    State = "idle"    // waiting for a new instruction
     StateWaiting State = "waiting" // needs the user: permission, question, menu
+    StateTasks   State = "tasks"   // turn over, but something it started still runs
 )
 type Activity struct {
     State  State  `json:"state"`
@@ -34,6 +35,17 @@ type Activity struct {
     Note   string `json:"note,omitempty"` // e.g. "permission prompt" — hover-only
 }
 ```
+
+<!-- rev: tasks --> **`tasks`** is the turn that has ended while something it started — a background shell, a Monitor, a background terminal, a background sub-agent — is still running. It is neither busy (nothing is being worked on, so no spinner) nor done (Claude Code and OpenCode take the turn up again the moment that work reports back), and it is drawn as such (§D.1). `working(s)` = busy or tasks is the test every "the work finished" rule below uses. Where each harness says so, all verified on the real programs (Claude Code 2.1.281, Codex 0.158.0, OpenCode 1.18.32):
+
+| Harness | Exact | Screen (visible pane only, `capture-pane -p -J` with no `-S`) |
+|---|---|---|
+| **Claude** | the session file's `"status":"shell"` — Claude Code's own word for idle with a non-terminal `local_bash` task, which a background Bash and a shell Monitor both are. A background sub-agent is *not* this: Claude keeps its turn open until the agent is done (`✻ Waiting for 1 background agent to finish`, status `busy`), so it is busy, by Claude's own account | the bottom bar's pill, within the last 12 non-blank lines (a background sub-agent's list sits below the bar), first on the bar or straight after its mode: `⏵⏵ bypass permissions on · 1 shell ·`, `⏸ manual mode on · 2 shells, 1 monitor ·`, the same in every permission mode. The transcript's `done 12:55 PM · 1 shell still running` is history, a pill is never followed by a word, and a diff quoting the bar starts with a line number |
+| **Codex** | none: the title says idle | `N background terminal(s) running · /ps to view · /stop to close` on the last 10 non-blank lines. Codex does **not** take a turn when the terminal ends; it takes the line away, so `tasks → idle` is how its work ends |
+| **OpenCode** | the event stream: a busy sub-agent (a session whose `parentID` is set, learnt from `session.created`/`session.updated`, or `GET /session/:id` for a session the stream never introduced) while no session of its own is busy. Background sub-agents are behind `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` in 1.18; a foreground sub-agent keeps its parent busy, so without the flag this never fires. A session of unknown parentage counts as one of its own (busy) | none |
+| **Shell** | — (a tool: no status at all, §D.1) | — |
+
+The screen look runs only on an idle answer that came from the exact layer or a recognised screen — never on thirty seconds of silence alone — and after the runaway guard, which is about a spinner that never stops, not about a pane that is quiet by design. It captures the **visible** pane, because tmux's `scroll-on-clear` keeps a cleared screen in the history and a line a program took away would otherwise still be found. And it captures again only once the pane has printed something since the last look (`#{window_activity} ≥` the second of that look), so an idle screen that sits still for an hour costs one fork, not one every two seconds.
 
 `State` lives **only in memory** on the `Manager`, like `sizeOwner`: it is re-derived from a live pane every second, so a persisted copy could only ever be stale. No store migration.
 
@@ -60,7 +72,7 @@ Everything else a layer needs is free (a small `os.ReadFile`, a goroutine alread
 | **Shell** | idle ⇔ `#{pane_current_command}` == the launched shell's basename **and the shell has no child process** (`/proc/<pane_pid>/task/*/children` all empty; `ps -eo pid=,ppid=` elsewhere); anything else → busy. Never `waiting`. **[V]** (`bash` at the prompt, `sleep` while `sleep 4` runs). <!-- rev: fable --> The children check is not optional: `bash script.sh`, `sh -c …`, a `#!/bin/bash` script or a nested interactive shell all report `bash` as the foreground command and would otherwise read as idle for their whole run. A nested idle shell reads as busy under this rule; that is the cheaper mistake. | none needed; L2 only |
 | **Claude** | `<home>/.claude/sessions/<pid>.json` → `.status` ∈ `idle`\|`busy`\|`waiting`, `.waitingFor` → `Note` | busy `esc to interrupt`; waiting `Do you want to proceed\?`; idle: neither, and a line `^\s*❯\s*$` or `⏵⏵ ` present |
 | **Codex** | `#{pane_title}`: contains `Action Required` → waiting; first rune in U+2800–U+28FF (Braille spinner) → busy; **equal to `filepath.Base(plan.Cwd)`** → idle; anything else (empty, the hostname tmux shows before the first OSC title, an unexpected format) → unavailable <!-- rev: fable --> — an unrecognised title must never *assert* idle, it falls through to L3 | busy `esc to interrupt`; waiting `Press enter to confirm or esc to cancel`, `Would you like to make the following edits\?`, `Press enter to continue`; idle `Ask Codex to do anything` |
-| **OpenCode** | SSE `GET http://127.0.0.1:<port>/event` (Basic auth): `session.status` → `.status.type` `busy`\|`retry` → busy, `idle` → idle; `permission.v2.asked` → waiting; `permission.v2.replied` → busy. If SSE will not connect: `GET /session/status?directory=<workdir>` per tick — any `"busy"` entry → busy, empty map → idle **[V]**. <!-- rev: fable --> The port is per Socrates session (`OpenCodeAccessOf(id)`), so several OpenCode instances never share a stream. Within one stream keep a **set of busy `sessionID`s** (parent and sub-agent sessions both emit `session.status`): busy while the set is non-empty, idle when it empties — an `idle` for one id must not clear another's `busy`. On every (re)connect seed the set from one `GET /session/status` first, because the stream carries deltas only and a status change during the gap would otherwise be missed. `permission.v2.asked` → waiting until the matching `requestID` is `replied` | busy `esc interrupt` (no "to" — a different literal from the other two); idle `ctrl+p commands` present and `esc interrupt` absent. **Never infer `waiting` from an OpenCode screen** — no verified pattern exists |
+| **OpenCode** | SSE `GET http://127.0.0.1:<port>/event` (Basic auth): `session.status` → `.status.type` `busy`\|`retry` → busy, `idle` → idle; `permission.asked` → waiting; `permission.replied` → busy. If SSE will not connect: `GET /session/status?directory=<workdir>` per tick — any `"busy"` entry → busy, empty map → idle **[V]**. <!-- rev: fable --> The port is per Socrates session (`OpenCodeAccessOf(id)`), so several OpenCode instances never share a stream. Within one stream keep a **set of busy `sessionID`s** (parent and sub-agent sessions both emit `session.status`): busy while the set is non-empty, idle when it empties — an `idle` for one id must not clear another's `busy`. On every (re)connect seed the set from one `GET /session/status` first, because the stream carries deltas only and a status change during the gap would otherwise be missed, and seed the waiting set from `GET /permission?directory=<workdir>` (a JSON array of the open prompts, `[]` when there is none) in the same poll — a session holding a prompt reports `busy` in the status map, so without the second seed a prompt raised while the stream was down would read as work in progress for ever. **A successful `/permission` answer is authoritative and replaces the waiting set**; it is also re-read every 12 s *while the stream is up* (same mutex as the events, so the two never interleave), because a prompt can vanish with no reply anybody can match — session aborted or deleted, a lost frame, a `requestID` that is not the id it was asked under — and the reply event is otherwise the only thing that retires one. The answer is worth one of **three** things, not two. *Failed* (transport error, timeout, 5xx, undecodable body) is ignored rather than believed: it costs neither the busy seed nor the prompts, and each read gets its own 5 s budget so it cannot spend the status poll's; three consecutive failures drop the waiting set, because an unconfirmable prompt must not pin a row to `waiting` for the life of the session. *Absent* (404/405 — the server does not serve the endpoint) takes **nothing**: it never touches the waiting set, never counts towards the failure budget, and switches the watcher to events-only, logged once, with no further reconciles. A request cancelled by the watcher stopping is neither — the outcome is dropped before the lock. *OK* replaces the set, with two carve-outs for what the answer cannot have known: a prompt whose `permission.asked` arrived **after the request was sent** is carried over (the answer describes the moment it was computed), and an **empty** `[]` is believed against a prompt only if that prompt was listed by a non-empty `/permission` answer at least once (`confirmed`) or is older than one reconcile interval — `?directory=` filters by directory, so a workdir that does not match the server's answers `[]` to a prompt that is genuinely open, and a just-asked event-only prompt outranks that; an older one does not, or a real directory mismatch would pin the row for the life of the session, and the session-idle rule still covers it. Prompts are **keyed by session**: an **idle** session drops that session's prompts, because a session holding one always reports busy, so idle is proof it is gone. Idle is spelled two ways and only two — a `session.status` of exactly `idle` on the stream, and a session absent from a `/session/status` map that was fetched *and* decoded. Any other `session.status` type leaves the busy set (it is not busy) but retires no prompt: only the idle OpenCode spells out is proof. The seed's half of the rule runs on every poll whose `/permission` answer was not *OK* — *failed*, and *absent* as well, because on an events-only server that poll is the only thing that can retire a prompt answered while the stream was down; an *OK* answer needs no witness, it replaces the set outright. A prompt whose `permission.asked` carried no `sessionID` cannot be retired this way at all — there is nothing to look up in the map — and is left to the reply event, to ageing out against an empty `[]`, or to the failure budget. `permission.asked` → waiting until the matching `requestID` is `replied` (the older `permission.v2.*` names are still accepted, but OpenCode 1.17.13 does not emit them) | waiting: the card's own furniture — `△ Permission required`, or the button row `Allow once   Allow always   Reject … ctrl+f` — asked **before** busy and idle. The **heading alternative is the one that carries narrow widths**: captures at 45, 60, 80, 100 and 120 columns show the button row wrapping onto its own `┃`-prefixed line below ~80 columns, so `Reject … ctrl+f` stops matching at 60 and 45 while `△ Permission required` matches at every width (the verbatim 45×20 and 60×20 cards are rows in `TestScrapeScreens`). The words `Permission required` on their own are *not* the pattern: `capture-pane -S -40` reads 40 rows of history as well as the pane, and the composer paints the same `┃` gutter the card does, so a typed line or a transcript quoting the phrase would otherwise scrape as waiting. At 120×40 the card covers the bottom bar; at taller sizes the bar survives next to it, which is why waiting is still read before the `ctrl+p commands` idle literal; busy `esc interrupt` (no "to" — a different literal from the other two); idle `ctrl+p commands` present and `esc interrupt` absent |
 
 **Claude pid resolution.** `#{pane_pid}` first: tmux `exec`s our argv directly (`new-session … -- argv…`, manager.go:596), so it is the harness's own pid. If `<home>/.claude/sessions/<pane_pid>.json` is absent, walk the pane's descendants once (Linux `/proc/<pid>/task/*/children`, depth ≤ 3, ≤ 64 pids; otherwise `ps -eo pid=,ppid=`) and take the descendant that has such a file, newest mtime. Cache per session; drop it when the file has been absent for 3 ticks, when `pane_pid` changes, or on `ResetActivity`. `<home>` is `plan.Env["HOME"]`, else `os.Getenv("HOME")`. <!-- rev: fable --> A file only counts when its `.pid` equals the candidate pid **and** its mtime is not older than that process's start time (`/proc/<pid>/stat` field 22 against btime; elsewhere `ps -o lstart=`): `~/.claude/sessions/` is never garbage-collected, so after a reboot a recycled pid can point at a dead session's file that still says `busy`. `claude --resume` after re-adoption is the ordinary case — a new pid, a new file, the old one ignored because it is keyed by a pid that is not in the pane's tree. Codex's title needs tmux's `allow-set-title` at its default `on`; the generated conf sets `set-titles off`, which is a different option (the outer terminal's title) and does not interfere.
 
@@ -106,7 +118,7 @@ Per session, per tick, in order:
    blanked, and a static ring cannot "spin for ever".
 ```
 
-`commit(next)` debounces: `busy` immediately (the spinner must appear at once); `waiting` immediately; `idle` after **2 consecutive ticks** (`IdleSettle`) — this is the anti-flicker between two tool calls; `unknown` after 3 consecutive ticks (`UnknownSettle`) so a transient read failure never blanks a row.
+`commit(next)` debounces: `busy` immediately (the spinner must appear at once); `waiting` immediately; `idle` and <!-- rev: tasks --> `tasks` after **2 consecutive ticks** (`IdleSettle`) — this is the anti-flicker between two tool calls; `unknown` after 3 consecutive ticks (`UnknownSettle`) so a transient read failure never blanks a row.
 
 Constants, all in `activity.go`: `ActivityInterval 1s · ScrapeEvery 2s · IdleSettle 2 ticks · UnknownSettle 3 ticks · ExactMissTicks 3 · BusyCeiling 120s · HardQuiet 30s · QuietBusy 2s`. <!-- rev: fable --> (`WaitCeiling` removed, see step 7.)
 
@@ -114,7 +126,11 @@ On a committed change (state, note or unread) the manager fires `Config.OnActivi
 
 ## A.4 Unread
 
-One server-side rule: `markUnread = (prev == busy && next != busy) || (prev != waiting && next == waiting)` — work finished, or the agent started needing you. `unknown` counts as "not busy", so a pane that dies mid-turn also marks unread: something ended and nobody saw it.
+One server-side rule: `markUnread = (working(prev) && !working(next)) || (prev != waiting && next == waiting)` — work finished, or the agent started needing you. `unknown` counts as "not busy", so a pane that dies mid-turn also marks unread: something ended and nobody saw it. <!-- rev: tasks --> `busy → tasks` marks nothing: a turn that leaves a shell running has not finished, and Claude and OpenCode will take it up again when the shell reports back — marking it would chime twice for one piece of work, once too early. The mark comes on the way out of `tasks`: `tasks → busy → idle` when the agent reports on the work, `tasks → idle` when it ends on its own (Codex), `tasks → unknown` when the pane dies. A turn that leaves something running for good (a dev server) stays `tasks` and is never announced, which is what that row honestly is.
+
+`MovesRow` is `next == busy || prev == busy || prev == tasks || next == waiting`: leaving `tasks` is work ending, as leaving busy is, and a detector that comes up to find a session already in `tasks` moves nothing, as one that finds it idle does not.
+
+<!-- rev: fable --> **And only for a session that has been asked something.** Every harness is busy while it starts up and idle the moment it is ready, so the rule above fired once on the first second of every session that was ever created — a bold row, a chime and a notification saying that a window had finished opening. `track.asked()` is the test: has anything been typed into this pane since it was launched (`NoteInput` from the socket, `NoteTyped` from `SendKeys`). A relaunch clears it with the rest of the track. The browser chimes and notifies on `unread` for the same reason, so this one test covers all three. See DEVIATIONS.md, "Starting a session is not work that finished".
 
 Cleared by, and only by: any input frame accepted for that session (`termConn.onInput`, after the write succeeds → `manager.NoteInput(id)`), the `read` control frame, or `POST /api/sessions/{id}/read`. Focus alone does not clear it; the frontend never bolds the attached session (§D.1), so "focus it and type" is covered by the input rule without the server knowing about focus.
 
@@ -178,9 +194,10 @@ with a registry `map[config.Harness]source` and a test-only `m.setSource(kind, s
 **e2e fake — `e2e/fakebin/faketui/main.go`.** New commands, behaviour chosen from `os.Args[0]` so one binary tests all four harnesses:
 
 - `/busy <ms>` — paint that harness's real busy furniture (`✻ …esc to interrupt` for claude, `Working (Ns • esc to interrupt)` for codex, `⠏ Thinking` + `esc interrupt` for opencode), repaint every 100 ms, **and** drive the exact signal: write `~/.claude/sessions/<pid>.json` with `{"pid":…,"status":"busy","statusUpdatedAt":…}`, emit a Braille-prefixed OSC 2 title for codex, emit `session.status`/busy on the opencode SSE stream. After `ms`, revert everything to idle.
-- `/ask` — the verbatim permission screen plus `"status":"waiting","waitingFor":"permission prompt"`, the `[ . ] Action Required | <dir>` title and `permission.v2.asked`. Cleared by Enter, `1` or `y` (which also emits `permission.v2.replied`).
+- `/ask` — the verbatim permission screen for that harness, plus the one signal that harness really carries: `"status":"waiting","waitingFor":"permission prompt"` in the session file for claude, the `[ . ] Action Required | <dir>` OSC title for **codex only**, `permission.asked` on the SSE stream for opencode (which is also listed by `GET /permission` until it is answered — the `directory` query is ignored, one fake is one session in one directory). Cleared by Enter, `1` or `y`, which also emits `permission.replied` and empties `/permission`.
 - `/hang <ms>` — busy furniture on screen, then **no output and no signal updates at all**: the `BusyCeiling`/`HardQuiet` test.
 - `/nofile` — stop maintaining the Claude session file: the "signal source unavailable → scrape" test.
+- <!-- rev: tasks --> `/bg <ms>` — a turn that ends with work left running, in each harness's own words (§A.0): `"status":"shell"` and the `· 1 shell ·` pill for claude, the idle title and `1 background terminal running` for codex, a `session.created` with a `parentID` and that child busy under an idle parent for opencode (and `GET /session/:id` naming the parent). After `ms`, claude and opencode take a short turn of their own, as the real ones do; codex only clears the line. The `tasks-*` scenarios drive it.
 - `/title <text>` — raw `ESC]2;<text>BEL`.
 - opencode mode gains, on the HTTP server it already runs: `GET /event` (SSE, heartbeat every 10 s, emitting the events above) and `GET /session/status` (the map form) — the fake OpenCode server.
 
@@ -316,19 +333,19 @@ ticker (§D.3); the response body is unchanged.
 
 ## B.6 The title run
 
-A session names itself the first time it has answered anything, so that the sidebar stops being a list of `Claude Code · 2 Sep 17:42`.
+A session names itself when its first prompt is sent, so that the sidebar stops being a list of `Claude Code · 2 Sep 17:42`.
 
-**The moment.** The first committed edge **out of `busy`** for that session — the same edge §A.4 marks unread on. `onSessionActivity` hands every committed state to `titleDriver.observe`, which keeps the previous state per session (the callback carries only the new one) and fires on `busy → idle|waiting|unknown`. It fires whether or not anybody is watching: the point of it is the sidebar of the browser that is looking at a different session. A session first seen while already idle has no edge and is not named — this server never saw an answer arrive.
+**The moment.** The first committed edge **into `busy`** that was asked for: `termux.Activity.Asked` (`json:"-"`, never sent to a browser) is `track.asked()` at the moment the change was published, i.e. somebody had typed at the session. Every harness is busy while it starts up, before anybody has typed, and that edge carries `Asked == false` and is ignored without spending anything; the first busy after typing is the harness taking up the first prompt, and the prompt is on the screen. `onSessionActivity` hands every committed activity to `titleDriver.observe`, which keeps the previous state per session (the callback carries only the new one). It fires whether or not anybody is watching.
 
-**The run.** A goroutine owned by the `Server`, `context.WithTimeout` of 20 s, one entry per session in `titleDriver.live` so that two edges cannot start two runs, cancelled by `titleDriver.forget(id)` when the session is deleted. The tick is never made to wait for a gateway. It captures the pane (`CapturePane`, 200 lines) and asks the **agent model** (`openrouter.agent_model`, `config.DefaultAgentModel` when unset) with `temperature 0.3`, `max_tokens 60`. The prompt is assembled in English in `assist.go` beside the others (`titlePrompt`): 3 to 7 words, no quotes, no full stop, no markdown, **in the language the person on the screen is evidently writing in**, English when that is unclear. This is the one prompt whose language is the screen's and not `settings.voice.language`: a title is read, not spoken.
+**The run.** A goroutine owned by the `Server`, `context.WithTimeout` of 30 s, one entry per session in `titleDriver.live` so that two edges cannot start two runs, cancelled by `titleDriver.forget(id)` when the session is deleted. The tick is never made to wait for a gateway. It captures the pane (`CapturePane`, 200 lines) and asks the **title model** (`openrouter.title_model`, `config.DefaultTitleModel` when unset) with `temperature 0.3`, `max_tokens 1024` — a ceiling, not a target: a reasoning model spends its thinking out of the same budget, and a ceiling of 60 was an empty answer every time. The prompt (`titlePrompt`): what the user wants, 2 to 5 words, **always English** whatever the prompt is written in, never the harness's name, no quotes, no full stop, no markdown.
 
 **Who may be renamed.** Only the coding harnesses — a Shell's screen is a prompt and a directory, and `cd` is not a subject. Only a session still carrying the placeholder: `store.Session.TitleSource` is `""` (nameless), `user` (typed at creation or renamed since — `UpdateSessionTitle` sets it, so the rename endpoint does) or `auto` (Socrates has had its go). The column is `sessions.title_source`, **schema 4**, added by `addSessionColumns` because `CREATE TABLE IF NOT EXISTS` does nothing to a table that exists. Persisted, so a restart does not retitle.
 
-**Exactly once.** The turn is spent on the attempt, not on the answer: a model that refuses, answers with whitespace or is not a model at all still marks the session `auto`, or a wrong model id would be paid for at the end of every turn for ever. A missing API key is the exception — nothing was asked, nothing is marked, and the session is named the first time it answers after a key is added. No key, no model, a pane that cannot be read: all silent, nobody pressed anything.
+**Exactly once.** The turn is spent on the attempt, not on the answer: a model that refuses, times out, answers with whitespace or is not a model at all still marks the session `auto`, and a later prompt never renames it. A missing API key is the exception — automatic names are off, nothing was asked, nothing is marked, nothing is said. Every other failure is **reported**, not swallowed (see the frame).
 
 **Sanitising.** `cleanTitle` strips a fence, keeps the first line, drops `**`/`` ` ``/`#`, collapses whitespace, takes quotes and trailing punctuation off in as many passes as it takes (a quoted title that ends in a full stop hides its closing quote behind it), and caps at 60 runes on a word boundary. Empty is a refusal and the old name stays.
 
-**The frame.** `{"t":"title","id":"<sessionID>","title":"…"}` on `broadcastAll` — the name is in the sidebar of *every* browser and the session naming itself is usually not the one being watched. `session.js` handles it before the "is this my session" guard in `onControl`: the row and, when it is the attached session, the header. No animation; a row quietly getting a better name is not an event.
+**The frame.** `{"t":"title","id":"<sessionID>","phase":"start|done|error","title":"…","text":"…"}` on `broadcastAll` — the name is in the sidebar of *every* browser. `start` is sent when the model is asked, and the name pulses (`.titling`, in the row and, for the attached session, the header) until `done` (with `title`, or without one when a hand rename got there first) or `error` (with `text`: the reason, e.g. `modelProblem`'s "OpenRouter rejected the API key…"). `session.js` handles it before the "is this my session" guard in `onControl`, and an `error` opens an alert dialog (`alertDialog`): a name that silently never arrives is a sidebar nobody can explain.
 
 ## B.7 The chat
 
@@ -421,11 +438,13 @@ New module `internal/web/static/js/assist.js` — status, the ticker and the cha
 
 `buildRow` is unchanged; `updateRow` gains the activity classes.
 
-- **busy** — `.row-mark.busy::after`: a 1 px `--line` ring around the existing agent mark with one `--text-faint` arc, `animation: spin 900ms linear infinite`. The spinner *is* the agent mark, so "agent marks everywhere a harness is named" holds and no new glyph is invented. Paused by the existing `body.stale` rule; under `prefers-reduced-motion` the ring is drawn complete and static.
+- **busy** — <!-- rev 6 --> `.row-mark.busy::after`: a 1 px `--line-strong` ring around the existing agent mark with one `--accent` arc, `animation: spin 900ms linear infinite`. The spinner *is* the agent mark, so "agent marks everywhere a harness is named" holds and no new glyph is invented. **The arc is the page's ink and not a grey**: the whole of the motion is that one arc, and drawn in `--text-faint` on a `--line` ring — 1.4:1, at 26 px, at arm's length on a phone — it turned where nobody could see it turning, which is reported as "the ring does not spin". The `design` scenario asserts the ratio, not the token. Paused by the existing `body.stale` rule; under `prefers-reduced-motion` it has **no behaviour of its own** — it turns at the same `900ms` there as everywhere else, which still costs one `animation-duration: .9s !important` line inside that block, because the `*` rule at the top of it would otherwise squash the ring to `.01ms`. That is not a slower ring, it is a still one: a mark whose whole meaning is "this is happening right now" cannot be drawn still, and drawn still it was read as a session that had stopped.
 - **waiting** — the same ring, static, and the state dot turns `--amber`. Distinct from busy at a glance without introducing a second colour.
+- <!-- rev: tasks --> **tasks** — no ring, because nothing is being worked on, and a 13 px `.row-tasks` hourglass (sand in the lower bulb) on the mark's lower right corner, on a disc of the row's own background (`--bg`, `--bg-hover`, `--bg-sunken`) so it reads over an 18 px logo. `--text-soft`, not amber: it asks nothing of anybody. The mark's title is "Turn finished · a background task is still running"; a closed folder counts it with busy for its dot.
 - **unread** — `.chat-item.unread .label { font-weight: 600 }`, applied only when `session.id !== state.current?.id`: the session being looked at is never bold.
 - `Activity.source`, `.note` and `.since` join `rowFacts()` behind the existing `infoTip` — technical strings stay hover-only.
-- One visually-hidden `<div id="activityLive" aria-live="polite">` in the sidebar, written on a committed change ("Claude Code finished", "Codex needs an answer"), throttled to one message per 2 s.
+- One visually-hidden `<div id="activityLive" aria-live="polite">` in the sidebar, written on a committed change ("Claude Code finished", "Codex needs an answer"), throttled to one message per 2 s. <!-- rev: fable --> On the same edge the chime fires on, so it says nothing a phone would not have said (§D.6).
+- <!-- rev: fable --> **A Shell and a VS Code row carry none of it.** `activityOf(session)` — the one accessor the rows, the folder heads, `rowFacts`, the announcement and the chime all read through — answers `null` for the two harnesses in `harnesses.TOOLS`. "Working" and "finished" are words about a turn, and neither of those programs takes one: a shell is busy for as long as `ls` runs and an editor is busy while it boots. The detector still watches them, because the server needs to know whether a pane is doing anything; what changes is that the page does not draw it.
 
 `onControl` gains `case 'activity':` — merge `frame.sessions` into a new `state.activity` Map, `renderList()` and update the header. <!-- rev: fable --> Nothing else hangs off a committed change any more: the auto-status trigger went with Auto mode (§D.4). `hello` seeds the same map; `refreshList()` seeds it from each view's `activity` field. `selectSession(id)` sends `{"t":"read","id":id}` on the open socket, or `POST /api/sessions/{id}/read` when there is none.
 
@@ -442,6 +461,28 @@ that used to sit beside them is gone with Auto mode (§D.4).
 New modules: `internal/web/static/js/chat.js` (the panel) beside `assist.js`
 (status, the ticker, auto mode), both in `sw.js`'s `SHELL` and both reached by
 the import-graph assertion in `internal/web/embed_test.go`.
+
+<!-- rev 8 --> **What `#statusBtn` is drawn as, and what it does while it
+works.** The mark is a screen with two lines of text on it and the loudspeaker's
+own two arcs coming off the side — not a speech bubble: a bubble is somebody
+talking, and what this button does is read out what is already on the pane.
+While the answer is being made it takes `.icon-btn.working`, which is **a ring
+around the mark and never the mark itself**: `.icon-btn.working::after`, 25 px
+across on a 17 px glyph, a 1 px `--line-strong` ring with one `--accent` arc,
+`animation: spin 900ms linear infinite`. The button turning as a whole was the
+bug — a drawing of a screen, spinning, is a drawing of nothing, and the one
+moment the mark has to be readable is the moment somebody is waiting on it. It
+is the same ring, ink, hairline and beat as the one a working session wears in
+the sidebar (§D.1), for the same reason and with the same
+`prefers-reduced-motion` carve-out: still, it says the opposite of what it is
+for. `.icon-btn.working:disabled` keeps `opacity: 1` and dims only the glyph,
+because the button *is* shut while it works and the `:disabled` rule would
+otherwise take the ring down to 35 % — which is the one thing on the page
+nobody could then see.
+
+<!-- rev 9 --> **`#kbBtn`** sits with the sound and notification switches
+rather than with Status, because like them it is about this device and is in
+the bar whether or not a session is attached. §D.7 is what it does.
 
 ## D.3 Status, the ticker and the chat
 
@@ -537,12 +578,18 @@ interrupting a person for — the same committed edge §A.4 marks unread on — 
 **The moment.** `mergeActivity` is the one door every change comes through, so
 `notifier.completed(id, next, prev)` is called from it, beside
 `state.assist.activity`. A **completion** is `prev` existing, `prev.state ===
-'busy'`, and `next.state` being `idle` or `waiting`. It fires for **every**
+'busy'` <!-- rev: tasks --> or `'tasks'`, and `next.state` being `idle` or
+`waiting` — so a turn that ends with a shell still running rings once, when
+that work is over, and not at the end of the turn (§A.4). It fires for **every**
 session, attached or not — the session nobody is watching is the point of it.
 It fires for none of: a first sighting (`prev` is null, which is also what a
 `hello` replay and a reload look like), `unknown → anything` (nothing
 finished; the detector merely found its footing), or a state that did not
-change.
+change. <!-- rev: fable --> It fires for none of: a session whose `next.unread`
+is false — that is the server's own answer to whether anything happened that
+nobody has seen, and it is only set for a session somebody has typed at (§A.4),
+so a harness finishing its own start-up is silent — and a session running Shell
+or VS Code, which have no status at all (§D.1).
 
 **The chime.** Two sine notes on one oscillator — 880 Hz then 1175 Hz, ~120 ms
 each, a gentle envelope with a dip between them, the whole of it under 400 ms —
@@ -594,6 +641,81 @@ nothing, a reload during a running turn firing nothing on the replay, and a
 refused permission leaving the switch off with the reason in a toast.
 
 ---
+
+## D.7 The keyboard switch
+
+<!-- rev 9 --> `internal/web/static/js/keyboard.js`, imported by `session.js`,
+`combobox.js` and `harnesses.js`; in `sw.js`'s `SHELL`. It replaces rev 8's
+hands-free mode, which muted the keyboard for good when armed and let every
+field raise it when not.
+
+**The problem.** Touch anything on a device with no keys of its own and half
+the display becomes a keyboard — over the pane, over the sheet somebody was
+reading — and it opens again on the next tap. In a CLI, where the pane takes
+the focus back by design so that what is typed lands in the session, it opens
+on every tap.
+
+**The rule.** On a touch screen the on-screen keyboard is raised and put away
+by `#kbBtn` in the `.topbar` before `#soundBtn`, and by nothing else.
+`aria-pressed`, filled while the keyboard is up (`.icon-btn.on`), and not
+remembered: it starts put away on every load. On a device with a mouse and no
+sign of a finger none of this applies: the fields are ordinary fields and the
+button is not shown.
+
+- **A touch screen is asked generously**, because a button too many is cheap
+  and a keyboard over half the display on every tap is not. Any one of
+  `(hover: none)`, `(pointer: coarse)`, `(any-pointer: coarse)`,
+  `(any-hover: none)`, `navigator.maxTouchPoints > 0`, `ontouchstart`, a
+  `Tesla/` or `QtCarBrowser` user agent (the car's Chromium reports a fine
+  pointer that hovers), or a `touch`/`pen` pointerdown or a `touchstart` seen
+  on the page makes it one, and once one it stays one for the page.
+  `keyboard.js` decides, sets `html.touch` for the stylesheet, and exports
+  `touchScreen()` for the key bar's default.
+- **Real keys still type.** A trusted keydown of a printable key, Backspace,
+  Delete or Enter on a muted field other than the pane unmutes that field
+  before the key lands — a tablet in its case, a laptop with a touch screen.
+  No on-screen keyboard is up while the switch is off, so such a key came from
+  keys of the device's own.
+- **`:modal` is not assumed**: a browser that does not know the selector (an
+  older Chromium) is answered by the dialog's `position: fixed` in the top
+  layer.
+
+- **Every field is muted while the switch is off.** `inputmode="none"` *and*
+  `readOnly` — one is a request a browser is asked to honour, the other a fact
+  it cannot argue with. What a field had before is kept and given back. Fields
+  are found by a `MutationObserver` on the document, so fields built by scripts
+  and fields in dialogs that come and go are covered without registering; a
+  field focused in the same tick it was built is muted by `guard(input)` (the
+  pane's textarea) or, failing that, on `focusin`. The pane's hidden textarea
+  keeps taking keydowns from a real keyboard and pastes, because xterm reads
+  both from events a read-only textarea still receives.
+- **The VS Code frame is covered too**: it is served from the same origin, so
+  `watchFrame(frame)` puts its document under the same observer on every load.
+- **A press raises it** for the field that should have it — the focused field,
+  else the one last typed into, inside the topmost modal dialog when one is
+  open, else the pane — by unmuting everything and giving that field the focus
+  **synchronously inside the `click` handler** (iOS raises a keyboard for
+  nothing else). A second press mutes everything again and hands the focus
+  back, so the keyboard goes and the focus stays where a real keyboard needs it.
+- **The switch follows the keyboard.** The focus leaving every field (asked on
+  the next tick, because a tap on the pane blurs and refocuses its textarea),
+  or the visual viewport growing back after it had shrunk (Android's back key),
+  puts it back to off.
+- **It is pressable everywhere.** A modal dialog makes the rest of the page
+  inert, so a copy of the button (`.kb-copy`) is put into whichever dialog is
+  on top, laid over the exact rect of `#kbBtn` once the dialog's opening
+  animation has ended, and taken out again when the dialog closes. It is also
+  shown while VS Code is open.
+- **The key bar has no `⌨` key any more** (`DESIGN.md` §E.6), and is shown on
+  this device's own answer alone.
+- **Every field has a microphone beside it** — `dictated(control, input)`,
+  which wraps the field in `.dictate` and adds a `.mic-btn` that opens the one
+  recording sheet `dictate.js` owns (`record()`). With the keyboard put away it
+  is how a field is filled without raising it.
+
+**Which fields.** Everything on the session page and inside its VS Code frame.
+`login.html`, `setup.html` and the admin page are separate documents that load
+none of this.
 
 # E. Work packages
 

@@ -24,7 +24,7 @@ import (
 func fakePATH(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	for _, name := range []string{"claude", "codex", "opencode"} {
+	for _, name := range []string{"claude", "codex", "opencode", "code-server", "env"} {
 		path := filepath.Join(dir, name)
 		if err := os.WriteFile(path, []byte("#!/bin/sh\necho "+name+" 0.0.0-test\n"), 0o755); err != nil {
 			t.Fatal(err)
@@ -56,6 +56,9 @@ func newLab(t *testing.T) *lab {
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Whether the host is reachable is a property of the machine the tests
+	// run on, so every plan is built as if it were not unless a test says so.
+	onHost(t, false)
 	return &lab{t: t, home: home, data: t.TempDir(), cwd: cwd, settings: config.Default()}
 }
 
@@ -269,6 +272,19 @@ func TestClaudeSettingsOnlyVerifiedKeys(t *testing.T) {
 	// confirmation dialog before the user can type a single character.
 	if doc["skipDangerousModePermissionPrompt"] != true {
 		t.Errorf("the bypass dialog was not suppressed: %v", doc)
+	}
+	// Ultracode is off unless the session asked for it, and on when it did.
+	if doc["ultracode"] != false {
+		t.Errorf("ultracode = %v without being asked for", doc["ultracode"])
+	}
+	req := l.req()
+	req.Ultracode = true
+	on, err := Claude{}.Plan(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := claudeSettingsDoc(t, on)["ultracode"]; got != true {
+		t.Errorf("ultracode = %v when asked for", got)
 	}
 	// The flag not being passed is only half of turning Remote Control off.
 	if doc["disableRemoteControl"] != true {
@@ -514,7 +530,7 @@ func TestClaudeGlobalConfigTreatsAnEmptyFileAsMissing(t *testing.T) {
 	if err := os.WriteFile(path, []byte("  \n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := pinClaudeGlobalConfig(path, l.cwd); err != nil {
+	if err := pinClaudeGlobalConfig(path, l.cwd, nil); err != nil {
 		t.Fatalf("an empty file was treated as broken: %v", err)
 	}
 	if entry := claudeProjectEntry(t, path, l.cwd); entry["hasTrustDialogAccepted"] != true {
@@ -533,13 +549,13 @@ func TestClaudeGlobalConfigReportsAFileItCannotChange(t *testing.T) {
 	if err := os.WriteFile(path, []byte("not json at all"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := pinClaudeGlobalConfig(path, l.cwd); err == nil {
+	if err := pinClaudeGlobalConfig(path, l.cwd, nil); err == nil {
 		t.Error("a file that could not be parsed was reported as pinned")
 	}
 	if err := os.WriteFile(path, []byte(`{"projects":"not an object"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := pinClaudeGlobalConfig(path, l.cwd); err == nil {
+	if err := pinClaudeGlobalConfig(path, l.cwd, nil); err == nil {
 		t.Error(`a "projects" that is not an object was reported as pinned`)
 	}
 	raw, _ := os.ReadFile(path)
@@ -664,11 +680,12 @@ func TestCodexResumeKeepsTheOptionBlock(t *testing.T) {
 func TestCodexVerifyPrefersRolloutGlob(t *testing.T) {
 	l := newLab(t)
 	id := uuid.NewString()
-	dir := filepath.Join(codexHome(), "sessions", "2026", "09", "02")
+	now := time.Now()
+	dir := filepath.Join(codexHome(), "sessions", now.Format("2006"), now.Format("01"), now.Format("02"))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, "rollout-2026-09-02T08-00-00-"+id+".jsonl")
+	path := filepath.Join(dir, "rollout-"+now.Format("2006-01-02")+"T08-00-00-"+id+".jsonl")
 	if err := os.WriteFile(path, []byte("{}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -694,7 +711,8 @@ func TestCodexVerifyPrefersRolloutGlob(t *testing.T) {
 func TestCodexWatchRolloutMatchesCwdAndOriginator(t *testing.T) {
 	l := newLab(t)
 	home := codexHome()
-	dir := filepath.Join(home, "sessions", "2026", "09", "02")
+	now := time.Now()
+	dir := filepath.Join(home, "sessions", now.Format("2006"), now.Format("01"), now.Format("02"))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -706,7 +724,7 @@ func TestCodexWatchRolloutMatchesCwdAndOriginator(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		name := filepath.Join(dir, "rollout-2026-09-02T08-00-00-"+id+".jsonl")
+		name := filepath.Join(dir, "rollout-"+now.Format("2006-01-02")+"T08-00-00-"+id+".jsonl")
 		if err := os.WriteFile(name, append(meta, '\n'), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -899,7 +917,8 @@ func TestDiscoverySkipsIdsAnotherSessionHolds(t *testing.T) {
 	// The same for Codex, over real rollout files in one directory.
 	l := newLab(t)
 	home := codexHome()
-	dir := filepath.Join(home, "sessions", "2026", "09", "02")
+	now := time.Now()
+	dir := filepath.Join(home, "sessions", now.Format("2006"), now.Format("01"), now.Format("02"))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -912,7 +931,7 @@ func TestDiscoverySkipsIdsAnotherSessionHolds(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, "rollout-2026-09-02T08-00-00-"+id+".jsonl"), append(meta, '\n'), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "rollout-"+now.Format("2006-01-02")+"T08-00-00-"+id+".jsonl"), append(meta, '\n'), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1015,8 +1034,8 @@ func TestEnvAlwaysCarriesWhite(t *testing.T) {
 }
 
 // The registry is a fixed order, and every id in it is one config knows.
-func TestRegistryIsTheFourInOrder(t *testing.T) {
-	want := []string{config.HarnessShell, config.HarnessClaude, config.HarnessCodex, config.HarnessOpenCode}
+func TestRegistryOrder(t *testing.T) {
+	want := []string{config.HarnessShell, config.HarnessClaude, config.HarnessCodex, config.HarnessOpenCode, config.HarnessVSCode}
 	got := Registry()
 	if len(got) != len(want) {
 		t.Fatalf("the registry has %d harnesses", len(got))

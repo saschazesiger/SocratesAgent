@@ -5,6 +5,22 @@
    second shade of background. The only greys are the ones a control needs to
    be a control - a pressed row, a hovered button, a bubble of your own. */
 
+/* Bundled fonts keep terminal cell metrics independent of device fonts. */
+@font-face {
+  font-family: 'Source Code Pro';
+  src: url('/static/fonts/SourceCodePro-Regular.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Source Code Pro';
+  src: url('/static/fonts/SourceCodePro-Bold.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
 :root {
   --bg: #ffffff;
   --bg-soft: #ffffff;
@@ -28,7 +44,7 @@
   --shadow: 0 1px 2px rgba(16, 17, 20, .04), 0 8px 24px rgba(16, 17, 20, .06);
   --shadow-sm: 0 1px 2px rgba(16, 17, 20, .05);
   --font: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --mono: 'Source Code Pro', ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 }
 
 * { box-sizing: border-box; }
@@ -54,11 +70,9 @@
 html, body {
   height: 100%;
   margin: 0;
-  /* Nothing here scrolls the page: the shell is exactly the height of the
-     viewport and every list scrolls inside itself. Without this a drag that
-     starts on a pane and outruns it rubber-bands the whole app, and on a
-     phone a downward one is a pull-to-refresh that throws the session away. */
-  overscroll-behavior: none;
+  /* Font inflation changes DOM measurements without changing canvas glyphs. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 body {
@@ -122,6 +136,9 @@ a { color: inherit; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  /* The ring a working button wears is drawn around the mark, so the button
+     is what it is positioned against. */
+  position: relative;
   width: 34px;
   height: 34px;
   border: none;
@@ -140,6 +157,36 @@ a { color: inherit; }
 /* A mode that is on is filled, like an armed key on the key bar. */
 .icon-btn.on { background: var(--accent); color: var(--accent-text); }
 .icon-btn.on:hover { background: var(--accent); color: var(--accent-text); }
+/* The keyboard switch (keyboard.js), and its copy in whichever dialog is on
+   top: laid over the bar's own button by script, and in the corner when the
+   bar has none on screen. A device with a mouse and no sign of a finger has
+   keys, and neither is shown there; keyboard.js decides which device is
+   which, generously, and says so with html.touch. */
+.kb-copy {
+  position: fixed;
+  top: calc(10px + env(safe-area-inset-top, 0px));
+  right: calc(12px + env(safe-area-inset-right, 0px));
+  margin: 0;
+  z-index: 1;
+  background: var(--bg);
+  box-shadow: var(--shadow);
+}
+html:not(.touch) #kbBtn, html:not(.touch) .kb-copy { display: none !important; }
+/* The field the switch raises the keyboard through on its way to the real one
+   (keyboard.js). Focusable, so neither hidden nor display:none; out of sight,
+   and 16px so a phone does not zoom the page for it. */
+.kb-proxy {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  font-size: 16px;
+  pointer-events: none;
+}
 /* While the voice is reading, the same button is the way to stop it. */
 .icon-btn.speaking { color: var(--text); background: var(--bg-hover); }
 .icon-btn svg { width: 17px; height: 17px; }
@@ -196,6 +243,23 @@ a { color: inherit; }
 .textarea { min-height: 96px; resize: vertical; line-height: 1.6; }
 .mono { font-family: var(--mono); font-size: 13px; }
 
+/* A field and the microphone that fills it. Every field this app has is
+   dictatable, because the device it is used from is one nobody can type on -
+   and with the keyboard put away (keyboard.js) the microphone is not a
+   convenience but the only way in. The microphone is the height of the field
+   rather than the height of an icon button, because a control beside a field
+   that is shorter than it reads as an afterthought. */
+.dictate { display: flex; align-items: center; gap: 6px; }
+.dictate > :first-child { flex: 1; min-width: 0; }
+.mic-btn {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+}
+.mic-btn svg { width: 18px; height: 18px; }
+
 .switch {
   position: relative;
   display: inline-flex;
@@ -224,10 +288,6 @@ a { color: inherit; }
   box-shadow: var(--shadow-sm);
   transition: transform .18s cubic-bezier(.3, .8, .4, 1);
 }
-/* A switch inside a field is still a switch. `.field label` is more specific
-   than `.switch`, so the label went back to `display: block` and its track
-   drew as an inline box 338 pixels wide and 18 tall, with the knob adrift. */
-.field label.switch { display: inline-flex; }
 .switch input:checked + .track { background: var(--accent); }
 .switch input:checked + .track::after { transform: translateX(16px); }
 
@@ -364,34 +424,6 @@ a { color: inherit; }
 .btn.is-busy { opacity: .75; cursor: default; }
 .btn.is-busy .ico { display: none; }
 
-/* Active or all: two words, one tap, and it stays where it was put. */
-.scope {
-  display: flex;
-  gap: 2px;
-  padding: 2px;
-  border-radius: 9px;
-  background: var(--bg-hover);
-}
-.scope .seg {
-  flex: 1;
-  border: 0;
-  background: transparent;
-  border-radius: 7px;
-  padding: 5px 8px;
-  font: inherit;
-  font-size: 12.5px;
-  color: var(--text-soft);
-  cursor: pointer;
-  transition: background .12s ease, color .12s ease;
-}
-.scope .seg:hover { color: var(--text); }
-.scope .seg.on {
-  background: var(--bg);
-  color: var(--text);
-  font-weight: 550;
-  box-shadow: var(--shadow-sm);
-}
-
 .chat-list {
   flex: 1;
   min-height: 0;
@@ -399,21 +431,106 @@ a { color: inherit; }
   padding: 4px 8px 12px;
   scrollbar-width: thin;
 }
-/* Which day the rows below it were last used on. It is a label rather than a
-   band: a hairline above it separates the group, and the surface stays the one
-   white the whole page is. The first group needs no line - the list's own top
-   is the separation. */
-.chat-group {
-  margin-top: 10px;
-  padding: 10px 10px 5px;
+/* The project the rows below it work in. It is a label rather than a band: a
+   hairline above it separates the folder, and the surface stays the one white
+   the whole page is. The first folder needs no line - the list's own top is
+   the separation. The bar is the head and, beside it, the folder's VS Code. */
+.folder-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 10px 0 0;
   border-top: 1px solid var(--line);
+}
+.folder:first-child > .folder-bar { margin-top: 0; border-top: 0; }
+.folder-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 10px 10px 5px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  font: inherit;
   font-size: 10.5px;
   font-weight: 600;
   letter-spacing: .04em;
   text-transform: uppercase;
   color: var(--text-faint);
+  cursor: pointer;
+  text-align: left;
 }
-.chat-group:first-child { margin-top: 0; padding-top: 2px; border-top: 0; }
+.folder:first-child > .folder-bar .folder-head { padding-top: 2px; }
+/* The folder's editor: the mark of VS Code at the end of the head. Grey while
+   the folder has none running, in colour while it has, and pressed while it
+   is the one on screen. */
+.folder-ide {
+  flex: none;
+  width: 26px;
+  height: 24px;
+  margin-top: 5px;
+  border-radius: 6px;
+}
+.folder:first-child > .folder-bar .folder-ide { margin-top: 0; }
+.folder-ide .agent-mark { opacity: .45; filter: grayscale(1); transition: opacity .16s var(--ease), filter .16s var(--ease); }
+.folder-ide:hover .agent-mark,
+.folder-ide.running .agent-mark { opacity: 1; filter: none; }
+.folder-ide.active { background: var(--bg-sunken); }
+/* A shelf is a folder inside a folder: the background and done sessions of
+   one project, under its rows. No hairline - it is part of the folder above -
+   and set in a little, so it reads as belonging to it. */
+.shelf > .folder-bar { margin: 2px 0 0; border-top: 0; }
+.shelf > .folder-bar .folder-head { padding: 6px 10px 4px 18px; font-size: 10px; }
+.shelf > .folder-rows { padding-left: 8px; }
+.folder-head:hover { color: var(--text-soft); }
+.folder-head .folder-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The caret is the whole of the control: pointing down at an open folder,
+   right at a shut one. It turns, because the turn is what says the two are
+   the same folder in two states. */
+.folder-head .caret {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  display: inline-flex;
+  opacity: .75;
+  transform: rotate(90deg);
+  transition: transform .16s var(--ease);
+}
+.folder-head .caret svg { width: 100%; height: 100%; display: block; }
+.folder.closed .folder-head .caret { transform: none; }
+/* Shut, the folder says how much is behind it, and whether any of it wants
+   somebody: the same amber a row waiting wears, and the same weight an unread
+   row's name has. Open, the rows say all of it themselves. */
+.folder-head .folder-count,
+.folder-head .folder-dot { display: none; }
+.folder.closed .folder-head .folder-count {
+  display: inline;
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.folder.closed .folder-head.unread .folder-count { color: var(--text); }
+.folder.closed .folder-head.waiting .folder-dot,
+.folder.closed .folder-head.busy .folder-dot {
+  display: inline-block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+.folder.closed .folder-head.busy .folder-dot { background: var(--text-faint); }
+.folder.closed .folder-head.waiting .folder-dot { background: var(--amber); }
 .chat-item {
   display: flex;
   align-items: center;
@@ -432,7 +549,7 @@ a { color: inherit; }
    until the row is the one you are on. */
 .chat-item .agent-mark { opacity: .7; transition: opacity .16s var(--ease); }
 .chat-item:hover .agent-mark, .chat-item.active .agent-mark { opacity: 1; }
-.chat-item.archived .agent-mark { opacity: .4; filter: grayscale(1); }
+.chat-item.done .agent-mark { opacity: .4; filter: grayscale(1); }
 .chat-item .label {
   flex: 1;
   min-width: 0;
@@ -454,8 +571,25 @@ a { color: inherit; }
 @media (hover: none) {
   .chat-item .act { opacity: .45; }
 }
-/* An archived chat reads as put away: still legible, plainly not in use. */
-.chat-item.archived .label { color: var(--text-faint); }
+/* A done chat reads as put away: still legible, plainly not in use. */
+.chat-item.done .label { color: var(--text-faint); }
+/* The status is the mark a person puts on a row by hand. It sits after the
+   name, and a row in progress - the ordinary case - has none at all. */
+.chat-item .row-status { display: none; flex: none; width: 13px; height: 13px; }
+.chat-item .row-status[data-status="review"],
+.chat-item .row-status[data-status="pending"],
+.chat-item .row-status[data-status="background"],
+.chat-item .row-status[data-status="done"] { display: inline-flex; }
+.row-status svg { width: 100%; height: 100%; display: block; }
+.row-status[data-status="review"] { color: var(--blue); }
+.row-status[data-status="pending"] { color: var(--amber); }
+.row-status[data-status="background"] { color: var(--text-faint); }
+.row-status[data-status="done"] { color: var(--green); }
+/* The same status in the header, as a word, in the colour of its mark. */
+.tag.status[data-status="review"] { color: var(--blue); border-color: currentColor; }
+.tag.status[data-status="pending"] { color: var(--amber); border-color: currentColor; }
+.tag.status[data-status="background"] { color: var(--text-soft); border-color: currentColor; }
+.tag.status[data-status="done"] { color: var(--green); border-color: currentColor; }
 .tag {
   flex: none;
   font-size: 10.5px;
@@ -501,14 +635,21 @@ a { color: inherit; }
     justify-content: center;
   }
   body.side-collapsed .btn-label { display: none; }
-  body.side-collapsed .scope { display: none; }
   body.side-collapsed .chat-list { padding: 4px 6px 12px; }
-  /* The day header keeps its hairline - which is what actually separates the
-     groups - and loses the word, which does not fit in a rail. */
-  body.side-collapsed .chat-group { font-size: 0; padding: 8px 4px 0; }
+  /* The folder head keeps its hairline - which is what actually separates the
+     folders - and its caret, which is the control. The name does not fit in a
+     rail, and is in the tooltip the head already carries. */
+  body.side-collapsed .folder-head,
+  body.side-collapsed .shelf > .folder-bar .folder-head { justify-content: center; padding: 8px 4px 4px; }
+  body.side-collapsed .folder .folder-head .folder-name,
+  body.side-collapsed .folder .folder-head .folder-count { display: none; }
+  /* The editor is opened from the wide column, where there is room for it. */
+  body.side-collapsed .folder-ide { display: none; }
+  body.side-collapsed .shelf > .folder-rows { padding-left: 0; }
   body.side-collapsed .list-empty { display: none; }
   body.side-collapsed .chat-item { justify-content: center; gap: 0; padding: 8px 0; }
   body.side-collapsed .chat-item .label,
+  body.side-collapsed .chat-item .row-status,
   body.side-collapsed .chat-item .act,
   body.side-collapsed .chat-item .tag { display: none; }
   body.side-collapsed .side-foot { flex-direction: column; align-items: center; padding: 8px 6px; gap: 4px; }
@@ -541,8 +682,8 @@ a { color: inherit; }
   flex: none;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 0 18px;
+  gap: 0;
+  padding: 0 10px;
   position: relative;
   border-bottom: 1px solid var(--line);
   background: var(--bg);
@@ -560,39 +701,76 @@ a { color: inherit; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  padding: 0 14px;
 }
 
-/* What this session runs: the harness's mark, the model, and everything else
-   behind the "i". It is not a control - a session is bound to its program for
-   its whole life - so it is the quietest thing in the bar that is still
-   legible. */
-.agent-badge {
-  /* It shrinks before the session's own name does, and the name keeps a floor
-     of its own below - the binding is a caption, the title is what you are
-     looking for in a list of open tabs. */
+.usage-strip {
   position: relative;
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 46%;
+  flex: none;
   display: flex;
   align-items: center;
-  gap: 6px;
-  height: 28px;
-  font-size: 12px;
+  gap: 7px;
+  align-self: stretch;
+  padding: 0 13px;
   color: var(--text-soft);
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 0 10px 0 7px;
+  font: 11.5px/1 var(--mono);
   white-space: nowrap;
-  cursor: default;
-  transition: border-color .16s var(--ease), box-shadow .16s var(--ease);
 }
-.agent-badge:hover { border-color: var(--line-strong); }
-.agent-badge > span:not(.tip) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.agent-badge > .agent-mark { flex: none; }
-.agent-badge > .tip { flex: none; }
+.usage-strip::before,
+.topbar > .icon-btn::before,
+.transfer > .icon-btn::before,
+.topbar > .pill::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 1px;
+  background: var(--line);
+}
+.menu-btn::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 1px;
+  background: var(--line);
+}
+.usage-part { display: inline-flex; gap: 3px; }
+.usage-part + .usage-part::before { content: "·"; color: var(--text-faint); margin-right: 4px; }
+.usage-label { color: var(--text-faint); }
+.usage-reset { color: var(--text-faint); }
+.usage-cost { color: var(--text); }
+
 .menu-btn { display: none; }
+
+/* Each action owns one full-height cell. The line is attached to the visible
+   control itself, so hidden session actions leave no orphaned separator. */
+.topbar > .icon-btn {
+  width: 46px;
+  height: 55px;
+  border-radius: 0;
+}
+.topbar > .pill {
+  position: relative;
+  min-height: 0;
+  height: 55px;
+  border: 0;
+  border-radius: 0;
+  padding: 0 14px;
+}
+
+/* Copy, paste and upload: three more cells of the bar, kept together so that
+   on a phone they can leave it as one piece (see the container rule below). */
+.transfer { display: flex; flex: none; align-self: stretch; }
+.transfer[hidden] { display: none; }
+.transfer > .icon-btn {
+  position: relative;
+  width: 46px;
+  height: 55px;
+  border-radius: 0;
+}
 
 
 /* --------------------------------------------------------------- modal */
@@ -604,12 +782,7 @@ a { color: inherit; }
   background: var(--bg);
   color: var(--text);
   padding: 22px 24px 18px;
-  width: min(420px, calc(100dvw - 32px));
-  /* The visual viewport, not the layout one: on iOS 100vh does not shrink
-     when the keyboard comes up, so a dialog sized by it puts its buttons
-     under the keyboard. --app-h is what followViewport() publishes. */
-  max-height: calc(var(--app-h, 100dvh) - 64px);
-  overflow: auto;
+  width: min(420px, calc(100vw - 32px));
   margin: auto;
   animation: pop .16s cubic-bezier(.3, .8, .4, 1) backwards;
 }
@@ -653,20 +826,14 @@ a { color: inherit; }
    a small dialog in the middle. Either way it is short enough to answer with
    two taps and get on with typing. */
 .sheet {
-  --sheet-pad: 22px;
   border: 0;
-  padding: var(--sheet-pad);
+  padding: 22px;
   border-radius: 18px;
   background: var(--bg);
   box-shadow: var(--shadow);
   color: var(--text);
-  width: min(440px, calc(100dvw - 32px));
-  /* The visual viewport rather than the layout one. On iOS the keyboard does
-     not shrink 100vh at all, so a sheet sized by it kept "Start session"
-     below the fold on every phone that had one up - which is every phone,
-     because the sheet's own directory field raises it. --app-h is the height
-     the person can actually see, published by followViewport(). */
-  max-height: calc(var(--app-h, 100dvh) - 64px);
+  width: min(440px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
   overflow: auto;
   animation: pop .22s var(--ease) backwards;
 }
@@ -677,21 +844,11 @@ a { color: inherit; }
   font-weight: 600;
   letter-spacing: -.015em;
 }
-/* The sheet scrolls; its two buttons do not. A sheet that is taller than a
-   phone with its keyboard up is the normal case rather than the exceptional
-   one, and "Start session" below the fold is a sheet that cannot be
-   completed. Sticky to the sheet's own padding edge, so it sits on the white
-   rather than over the field under it. */
 .sheet-actions {
-  position: sticky;
-  bottom: calc(-1 * var(--sheet-pad, 22px));
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin: 20px calc(-1 * var(--sheet-pad, 22px)) calc(-1 * var(--sheet-pad, 22px));
-  padding: 12px var(--sheet-pad, 22px);
-  background: var(--bg);
-  border-top: 1px solid var(--line);
+  margin-top: 20px;
 }
 .sheet .field { margin-bottom: 16px; }
 .sheet .hint { min-height: 1em; }
@@ -755,6 +912,13 @@ a { color: inherit; }
 .seg-row .seg:disabled { opacity: .45; cursor: default; }
 .seg-row .seg-sub { font-size: 10.5px; color: var(--text-faint); }
 .seg-row.agents .seg { min-height: 46px; }
+/* A row with nothing in it is still a hairline box, and an empty box on a
+   sheet is a control that failed to draw. */
+.seg-row:empty { display: none; }
+/* The sheet's first question is two rows: the agents, and under them the two
+   programs that are not agents. The gap between the pair is smaller than the
+   gap to the field below, so they read as one question rather than two. */
+.seg-row.agents:has(+ .seg-row.tools:not(:empty)) { margin-bottom: 7px; }
 /* On a phone the four agents share the same row, so a name that would not fit
    beside its mark goes under it instead. */
 @media (max-width: 620px) {
@@ -770,11 +934,7 @@ a { color: inherit; }
     max-width: none;
     margin: auto auto 0;
     border-radius: 18px 18px 0 0;
-  }
-  /* The home indicator's room goes under the buttons rather than under the
-     scrolling body, which would otherwise leave a white band below them. */
-  .sheet .sheet-actions {
-    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: calc(22px + env(safe-area-inset-bottom, 0px));
   }
 }
 
@@ -801,7 +961,7 @@ a { color: inherit; }
   animation: rise .2s ease both;
   /* Centred on the viewport, so anything wider than the screen would hang off
      both edges at once. */
-  max-width: min(420px, calc(100dvw - 24px));
+  max-width: min(420px, calc(100vw - 24px));
 }
 .toast.error { background: #b53a3a; }
 
@@ -1024,6 +1184,12 @@ a { color: inherit; }
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: .4; transform: scale(.68); }
 }
+/* A name being thought of: the words fade in and out, and stay where they are. */
+@keyframes title-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .3; }
+}
+.titling { animation: title-pulse 1.4s cubic-bezier(.45, 0, .55, 1) infinite; }
 @keyframes pop {
   from { opacity: 0; transform: translateY(8px) scale(.98); }
   to { opacity: 1; transform: none; }
@@ -1034,16 +1200,21 @@ a { color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
   .spinner, .state-dot.starting, .state-dot.installing,
-  .conn-dot {
+  .conn-dot, .titling {
     animation-duration: 2.4s !important;
   }
   .spinner { animation-name: pulse !important; }
-  /* The ring is still the difference between working and finished, so it is
-     drawn - complete and still - rather than turned off. */
-  .chat-item .row-mark.busy::after {
-    animation: none !important;
-    border-top-color: var(--line);
-  }
+  /* The ring has no reduced-motion behaviour of its own: it turns at the app's
+     own pace here as everywhere else. The line is still needed, because the
+     rule at the top of this block would otherwise squash it to .01ms - which
+     is not a slower ring, it is a still one, and a mark whose whole meaning is
+     "this is happening right now" cannot be drawn still. That is what it was
+     drawn as, and it was read as a session that had stopped. */
+  .chat-item .row-mark.busy::after { animation-duration: .9s !important; }
+  /* And the ring a working button wears is the same ring for the same reason:
+     it is the only thing on the page that says the tap landed and the answer
+     is being made. Drawn still it says the opposite. */
+  .icon-btn.working::after { animation-duration: .9s !important; }
   .tip-bubble { transition: none !important; }
 }
 
@@ -1065,6 +1236,11 @@ a { color: inherit; }
     transition: transform .22s cubic-bezier(.3,.8,.4,1);
     box-shadow: var(--shadow);
   }
+  /* A drawer is the shape a finger uses, and a folder head is a control: shut
+     and open is one tap, so the head is a target worth aiming at rather than
+     the 24px a label needs. */
+  .folder-head { min-height: 36px; }
+  .folder-ide { width: 36px; height: 32px; margin-top: 3px; }
   .side-foot { padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)); }
   body.nav-open .sidebar { transform: none; }
   /* A drawer is already the narrow state, and one that was also a rail could
@@ -1088,7 +1264,6 @@ a { color: inherit; }
   body.nav-open .nav-scrim { opacity: 1; pointer-events: auto; }
   .menu-btn { display: inline-flex; }
   .topbar {
-    gap: 8px;
     padding: 0
              calc(12px + env(safe-area-inset-right, 0px))
              0
@@ -1113,11 +1288,9 @@ a { color: inherit; }
 }
 
 /* Under 16px a phone browser zooms the page the moment a field takes focus,
-   and a zoomed page scrolls sideways. Keyed on the pointer rather than on the
-   width: a phone held in landscape is 844px wide and would have kept the
-   small type, which is exactly the orientation somebody fills a form in. A
-   desktop window keeps the smaller, quieter type. */
-@media (max-width: 620px), (pointer: coarse) {
+   and a zoomed page scrolls sideways. Only the widths a phone actually has,
+   so a desktop window keeps the smaller, quieter type. */
+@media (max-width: 620px) {
   .input, .select, .textarea, .combo-input { font-size: 16px; }
   .input.mono, .textarea.mono { font-size: 16px; }
 }
@@ -1145,38 +1318,74 @@ a { color: inherit; }
    in two steps rather than spilling off the edge. */
 @container (max-width: 440px) {
   .topbar {
-    gap: 6px;
     padding: 0
              calc(10px + env(safe-area-inset-right, 0px))
              0
              calc(10px + env(safe-area-inset-left, 0px));
   }
-  /* Mobile first: the session's name comes before the caption beside it. The
-     harness is its mark and the mark stays; the model is what goes, and it is
-     still in the bubble under a tap. With Status and Agent in the bar the
-     caption goes at this width rather than at 380, because a model id
-     squeezed to one letter is not a caption. */
-  .agent-badge { max-width: 40%; gap: 5px; padding: 0 5px; }
-  .agent-badge > .b-model { display: none; }
-  .term-size { display: none; }
+  /* The microphone gives up its word before its touch area. */
+  .topbar .pill { padding: 0; width: 40px; }
+  .topbar .pill .pill-text { display: none; }
+  .topbar > .icon-btn { width: 36px; }
+  /* A phone's bar is full, so the three float over the top corner of the
+     pane: one tap away, and over the oldest lines rather than the prompt. */
+  .transfer {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: calc(10px + env(safe-area-inset-right, 0px));
+    align-self: auto;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: var(--r);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .transfer > .icon-btn { width: 40px; height: 38px; }
+  .transfer > .icon-btn:first-child::before { display: none; }
+  /* The notice and the ticker start under them, so a notice's close button
+     is never beneath them. */
+  .main:has(#transfer:not([hidden])) .term-lines { top: 54px; }
+}
+
+/* On a phone the same compact reading gets a quiet second line. The existing
+   controls keep their full tap targets and the terminal is fitted to the
+   slightly shorter stage, so neither can overflow the other. */
+@container (max-width: 700px) {
+  .topbar.has-usage { height: 82px; padding-bottom: 26px; }
+  .topbar.has-usage .usage-strip {
+    position: absolute;
+    left: calc(10px + env(safe-area-inset-left, 0px));
+    right: calc(10px + env(safe-area-inset-right, 0px));
+    bottom: 3px;
+    justify-content: center;
+    height: 24px;
+    border: 0;
+    padding: 0;
+    overflow: hidden;
+  }
+  .topbar.has-usage .usage-strip::before { display: none; }
+  /* "(2h 36m)" says enough on a phone; the word is for the desk. */
+  .topbar.has-usage .usage-left { display: none; }
 }
 /* Narrower than this the title has room for one letter and an ellipsis that
    does not fit, which reads as a glitch rather than as a name. It keeps its
    place in the row as the spacer that pushes the controls apart, and stops
-   showing the one letter. */
+   showing the one letter - and it gives up the width it was holding for a
+   word, because a name nobody can read is not worth 5.5em of a 320px bar.
+   Still `flex: 1 1 auto`, so it goes on being the space between the name and
+   the controls wherever there is any to give. */
 @container (max-width: 345px) {
-  .topbar .title { visibility: hidden; }
+  .topbar .title { visibility: hidden; min-width: 0; }
 }
 @container (max-width: 380px) {
   /* Narrower still: the controls give up the last of their spacing. */
   .topbar {
-    gap: 5px;
     padding: 0
              calc(8px + env(safe-area-inset-right, 0px))
              0
              calc(8px + env(safe-area-inset-left, 0px));
   }
-  .topbar .icon-btn { width: 32px; height: 32px; }
+  .topbar > .icon-btn { width: 34px; }
 }
 
 /* ------------------------------------------------------------- terminal */
@@ -1203,13 +1412,16 @@ a { color: inherit; }
    told not to take the vertical axis for a pan of the page - term.js turns the
    drag into the wheel xterm understands. Pinch is deliberately left out of the
    list: zooming stays where somebody needs it. */
-/* pan-x, and deliberately not pinch-zoom. A double tap in xterm.js selects
-   the word under the finger, and a `pinch-zoom` touch-action leaves the
-   browser's own double-tap-to-zoom armed on the same gesture: the word is
-   selected and then the page jumps. Pinch itself is unaffected - the viewport
-   meta still permits it, and a two-finger gesture is never ours (term.js
-   drops any touch that is not the only one). See DEVIATIONS.md. */
-.term-host { width: 100%; height: 100%; touch-action: pan-x; }
+.term-host {
+  width: 100%;
+  height: 100%;
+  touch-action: pan-x pinch-zoom;
+  /* A long press selects in the pane, through term.js; the browser's own
+     callout and text selection would sit on top of it. */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
 .term-host .xterm { height: 100%; }
 .term-host .xterm-viewport {
   background: var(--bg) !important;
@@ -1217,49 +1429,13 @@ a { color: inherit; }
 }
 .term-host .xterm-screen { background: var(--bg); }
 
-/* The pane is held above its live bottom. It is the only thing on screen that
-   says so, so it is a word rather than a glyph - and it is the way back, so it
-   is a tap target rather than a label. White like everything else, one
-   hairline, and out of the way of the last line of the pane. */
-.term-jump {
-  position: absolute;
-  left: 50%;
-  bottom: calc(14px + env(safe-area-inset-bottom, 0px));
-  transform: translateX(-50%);
-  z-index: 6;
-  display: inline-flex;
-  align-items: center;
-  height: 36px;
-  padding: 0 16px;
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
-  background: var(--bg);
-  color: var(--text-soft);
-  font: inherit;
-  font-size: 13px;
-  box-shadow: var(--shadow);
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-  animation: rise .16s var(--ease) both;
-}
-.term-jump:hover { background: var(--bg-hover); color: var(--text); }
-.term-jump:active { transform: translateX(-50%) scale(.97); }
-
 /* The connection is down and what is on screen is old. The pane is not made
    read only - what is typed is queued and delivered on reconnect - but nobody
    should mistake an old screen for a live one. */
 .term-wrap.stale { opacity: .55; }
 .term-wrap.stale .xterm { cursor: not-allowed; }
-
-/* The size the pane is wearing. It is a number, so it is quiet, and it is
-   beside the name rather than inside it. */
-.term-size {
-  flex: none;
-  font-size: 11.5px;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-faint);
-  font-family: var(--mono);
-}
+/* A file held over the pane, about to be uploaded into the session. */
+.term-wrap.dropping { outline: 2px dashed var(--accent); outline-offset: -6px; }
 
 /* A thin line across the top of the pane: resumed after a restart, resized by
    another viewer, redrawn after an outage. It never blocks the terminal and it
@@ -1374,16 +1550,11 @@ a { color: inherit; }
   animation: spin .9s linear infinite;
 }
 
-/* The keys a phone keyboard does not have, on white like everything else.
-   They wrap: a single scrolling row put seven of the fourteen off the right
-   edge of a 390px phone with nothing to say they were there, and the seven it
-   hid were the arrows, Enter, ^C, ^D, ^Z, Paste and the keyboard - which is
-   to say the half a phone came for. Wrapping is unconditional because a row
-   that fits does not wrap, so a desk never sees a second row. */
+/* The keys a phone keyboard does not have. One row, scrolled sideways with a
+   thumb, on white like everything else. */
 .keybar {
   flex: none;
   display: flex;
-  flex-wrap: wrap;
   gap: 6px;
   /* The bar is the bottom of the page, so it is what keeps its buttons clear
      of the home bar and of a rounded corner. */
@@ -1391,6 +1562,7 @@ a { color: inherit; }
            calc(12px + env(safe-area-inset-right, 0px))
            calc(6px + env(safe-area-inset-bottom, 0px))
            calc(12px + env(safe-area-inset-left, 0px));
+  overflow-x: auto;
   border-top: 1px solid var(--line);
   scrollbar-width: none;
   -webkit-overflow-scrolling: touch;
@@ -1464,16 +1636,34 @@ a { color: inherit; }
   .ticker-line.enter, .ticker-line.leave { transform: none; }
   .ticker-line.leave { display: none; }
 }
-/* The spinner the Status button wears while its answer is being made. */
-.icon-btn.working svg { animation: spin 900ms linear infinite; }
-body.stale .icon-btn.working svg { animation-play-state: paused; }
-@media (prefers-reduced-motion: reduce) {
-  .icon-btn.working svg { animation: none; opacity: .5; }
+/* The ring an icon button wears while what it was tapped for is being made.
+   It goes around the mark, never on it: the mark is what says which button
+   this is, and a mark that is turning is one nobody can read any more - a
+   screen being read out, spinning, is a drawing of nothing. It is the same
+   ring, the same hairline, the same arc in the page's own ink and the same
+   900 ms as the one a working session wears in the sidebar, because it means
+   the same thing there and here. */
+.icon-btn.working::after {
+  content: "";
+  position: absolute;
+  width: 25px;
+  height: 25px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  border-top-color: var(--accent);
+  animation: spin 900ms linear infinite;
+  pointer-events: none;
 }
+/* A button that is working is shut so it cannot be pressed twice, but it is
+   not an unavailable button: dimmed to .35 the ring is the one thing on the
+   page nobody could see, and the ring is the whole message. */
+.icon-btn.working:disabled { opacity: 1; }
+.icon-btn.working:disabled svg { opacity: .45; }
+body.stale .icon-btn.working::after { animation-play-state: paused; opacity: .4; }
 
-/* ----------------------------------------------------------- the chat panel */
+/* -------------------------------------------------------------- the stage */
 
-/* The terminal and the conversation about it, side by side. */
+/* The terminal takes the whole area under the bar. */
 .stage {
   display: flex;
   flex: 1;
@@ -1483,29 +1673,8 @@ body.stale .icon-btn.working svg { animation-play-state: paused; }
 }
 .stage .term-wrap { min-width: 0; }
 
-.chat-panel {
-  flex: none;
-  width: 360px;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg);
-  border-left: 1px solid var(--line);
-}
-.chat-panel[hidden] { display: none; }
-.chat-head {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 56px;
-  padding: 6px 8px 6px 16px;
-  border-bottom: 1px solid var(--line);
-}
-.chat-head-title { flex: 1; min-width: 0; font-size: 13.5px; font-weight: 560; letter-spacing: -.01em; }
-/* The microphone. Outlined rather than filled, because Send is the filled
-   thing on this screen and two black buttons would be a question about which
-   one is the action. Big enough to be hit by a thumb that is driving. */
+/* The microphone carries a word at a desk and uses the same borderless action
+   cell as every icon beside it. */
 .pill {
   flex: none;
   display: inline-flex;
@@ -1514,8 +1683,8 @@ body.stale .icon-btn.working svg { animation-play-state: paused; }
   gap: 7px;
   min-height: 44px;
   padding: 0 16px;
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
+  border: 0;
+  border-radius: 9px;
   background: var(--bg);
   color: var(--text);
   font: inherit;
@@ -1523,74 +1692,12 @@ body.stale .icon-btn.working svg { animation-play-state: paused; }
   font-weight: 540;
   letter-spacing: -.01em;
   cursor: pointer;
-  transition: background .16s var(--ease), border-color .16s var(--ease), transform .16s var(--ease);
+  transition: background .16s var(--ease), transform .16s var(--ease);
 }
 .pill .ico { width: 17px; height: 17px; flex: none; }
-.pill:hover:not(:disabled) { background: var(--bg-hover); border-color: #cfd0d5; }
+.pill:hover:not(:disabled) { background: var(--bg-hover); }
 .pill:active:not(:disabled) { transform: scale(.985); }
 .pill:disabled { opacity: .45; cursor: not-allowed; }
-.chat-log {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 14px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  scrollbar-width: thin;
-}
-.chat-empty { color: var(--text-faint); font-size: 12.5px; line-height: 1.6; }
-/* Both sides are white with a hairline. Which of the two said it is said by
-   which edge it is on and by the weight, not by a colour. */
-.chat-msg {
-  max-width: 92%;
-  padding: 9px 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--r);
-  background: var(--bg);
-  font-size: 13.5px;
-  line-height: 1.55;
-  overflow-wrap: anywhere;
-}
-.chat-msg.user { align-self: flex-end; border-color: var(--line-strong); }
-.chat-msg.assistant { align-self: flex-start; }
-/* A double-tap reads an answer out loud. Where there is a pointer it says so
-   by not being plain text; on a touch screen a cursor is nothing at all. */
-@media (hover: hover) and (pointer: fine) {
-  .chat-msg.assistant { cursor: pointer; }
-}
-.chat-msg.failed { border-color: var(--red); color: var(--red); }
-.chat-msg.thinking { color: var(--text-faint); }
-.chat-msg p { margin: 0 0 8px; }
-.chat-msg p:last-child { margin-bottom: 0; }
-.chat-msg code {
-  font-family: var(--mono);
-  font-size: 12.5px;
-  padding: 1px 4px;
-  border-radius: 4px;
-  background: var(--bg-sunken);
-}
-/* The run a message started: the steps it is on, and the way to stop it. */
-.chat-run {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--line);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--text-soft);
-}
-.chat-run .chat-run-line { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.chat-foot {
-  flex: none;
-  border-top: 1px solid var(--line);
-  padding: 10px 12px 14px;
-}
-.chat-compose { display: flex; align-items: center; gap: 8px; }
-.chat-compose .input { flex: 1; min-width: 0; }
-
 /* The recording sheet: what the microphone is hearing, how long it has been
    hearing it, and the two endings a recording has. Both endings are large
    enough to be hit without looking, because that is when they are hit. */
@@ -1649,24 +1756,6 @@ body.stale .icon-btn.working svg { animation-play-state: paused; }
   font-weight: 550;
 }
 
-/* On a phone the chat is a sheet over the terminal rather than a column
-   beside it: 360px of chat and 30px of terminal would be neither. */
-@media (max-width: 860px) {
-  .chat-panel {
-    position: absolute;
-    inset: 0;
-    width: auto;
-    border-left: none;
-    z-index: 9;
-  }
-  /* As a sheet it is the bottom of the screen, so its row is what has to
-     stay clear of the home bar - unless the key bar is under it and already
-     doing that. */
-  .main:has(#keybar[hidden]) .chat-foot {
-    padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
-  }
-}
-
 /* ------------------------------------------------------- the session list */
 
 .list-empty {
@@ -1692,11 +1781,39 @@ body.stale .icon-btn.working svg { animation-play-state: paused; }
    on the ring rather than beside it: a complete amber circle, standing still.
    Working is the same ring in the page's own hairline, turning. */
 .chat-item .row-mark.waiting::after { border-color: var(--amber); }
-/* One faint arc on an otherwise even ring is the whole of the motion. */
+/* One arc on an otherwise even ring is the whole of the motion - and it is
+   the page's own ink, on the ring in the page's own hairline. Drawn any
+   quieter it is not a slower animation, it is no animation: a #ececee ring
+   with a grey arc on white is 26px of nothing at arm's length on a phone,
+   which is the device this is read on. The amber ring beside it is the
+   measure - working has to be as findable across a list as waiting is. */
 .chat-item .row-mark.busy::after {
-  border-top-color: var(--text-faint);
+  border-color: var(--line-strong);
+  border-top-color: var(--accent);
   animation: spin 900ms linear infinite;
 }
+/* The turn is over but something it started - a background shell, a monitor,
+   a sub-agent - is still running. No ring, because nothing is being worked
+   on: a small hourglass on the mark's lower right corner, on a disc of the
+   row's own background so it reads over the logo at 18px. */
+.chat-item .row-tasks { display: none; }
+.chat-item .row-mark.tasks .row-tasks {
+  display: block;
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  width: 13px;
+  height: 13px;
+  padding: 1.5px;
+  border-radius: 50%;
+  background: var(--bg);
+  color: var(--text-soft);
+  pointer-events: none;
+  transition: background .16s var(--ease);
+}
+.chat-item:hover .row-mark.tasks .row-tasks { background: var(--bg-hover); }
+.chat-item.active .row-mark.tasks .row-tasks { background: var(--bg-sunken); }
+.row-tasks svg { width: 100%; height: 100%; display: block; }
 /* A name whose session finished something nobody has seen. The session being
    looked at is never bold - the page never gives it the class. */
 .chat-item.unread .label { font-weight: 600; color: var(--text); }
@@ -1712,9 +1829,11 @@ body.stale .icon-btn.working svg { animation-play-state: paused; }
   box-shadow: var(--shadow);
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
   animation: rise .14s var(--ease) both;
 }
 .menu-item {
+  flex-shrink: 0;
   border: 0;
   background: none;
   border-radius: var(--r-sm);
@@ -1727,6 +1846,20 @@ body.stale .icon-btn.working svg { animation-play-state: paused; }
 }
 .menu-item:hover { background: var(--bg-hover); }
 .menu-item.danger { color: var(--red); }
+/* The statuses are one group in the menu, under a small heading, and the one
+   the session has is ticked. */
+.menu-label {
+  flex-shrink: 0;
+  padding: 8px 10px 3px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.menu-sep { flex-shrink: 0; height: 1px; margin: 5px 4px; background: var(--line); }
+.menu-item.checked { font-weight: 600; }
+.menu-item.checked::after { content: " \2713"; }
 
 /* ------------------------------------------------------------- combobox */
 
@@ -1763,12 +1896,11 @@ body.stale .icon-btn.working svg { animation-play-state: paused; }
   border-top: 5px solid currentColor;
 }
 
+/* Fixed, and placed against the field by combobox.js, so a dialog that
+   scrolls its own contents cannot cut the list off at its edge. */
 .combo-list {
-  position: absolute;
+  position: fixed;
   z-index: 40;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
   max-height: 300px;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -1835,6 +1967,86 @@ body.stale .icon-btn.working svg { animation-play-state: paused; }
   font-size: 13px;
   color: var(--text-faint);
 }
+
+/* A dropdown is a field that is not typed into: what is chosen, drawn the way
+   the list draws it, and the caret. */
+.drop-button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: auto;
+  text-align: left;
+  font: inherit;
+  color: var(--text);
+  cursor: pointer;
+}
+.drop-face { flex: 1; min-width: 0; }
+.drop-button .combo-caret { flex: none; color: var(--text-faint); }
+.drop-button[aria-expanded="true"] { border-color: var(--accent); }
+.drop-option.chosen { grid-template-areas: 'label check'; }
+.drop-option.chosen > :first-child { grid-area: label; min-width: 0; }
+
+/* A profile: its name, the account the program is signed in as there, and a
+   bar for each limit window of that account. */
+.profile-entry { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.profile-entry-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.profile-entry-name {
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.drop-option.chosen .profile-entry-name,
+.drop-face .profile-entry-name { font-weight: 600; }
+.profile-entry-tag {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  color: var(--green);
+  font-size: 10.5px;
+  font-weight: 550;
+}
+.profile-entry-account {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.profile-entry-account:empty { display: none; }
+.profile-usage { display: flex; gap: 14px; margin-top: 3px; }
+.profile-meter {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-soft);
+  --meter: var(--green);
+}
+.profile-meter.high { --meter: var(--amber); }
+.profile-meter.full { --meter: var(--red); }
+.profile-meter-label { color: var(--text-faint); }
+.profile-meter-bar {
+  flex: 1;
+  min-width: 24px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  overflow: hidden;
+}
+.profile-meter-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--meter);
+}
+.profile-meter-value { min-width: 3ch; text-align: right; }
+.profile-meter-reset { flex: none; color: var(--text-faint); white-space: nowrap; }
 
 /* ------------------------------------------------------- the connection */
 
@@ -2045,6 +2257,58 @@ body.stale .chat-item .row-mark.busy::after { animation-play-state: paused; opac
 }
 .preset-row .input { margin: 0; }
 
+/* A profile is its name, what each agent is signed in as there, and the two
+   things that can be done to it. The default one has only the first two. */
+.profile-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.profile-row.dragging {
+  background: var(--bg-sunken);
+  box-shadow: var(--shadow);
+  border-radius: var(--r);
+  position: relative;
+  z-index: 1;
+}
+.profile-row .input { margin: 0; }
+.profile-row .profile-default { font-weight: 600; }
+/* The grip a row is dragged by. touch-action keeps a finger on it from
+   scrolling the page instead. */
+.profile-grip {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: grab;
+  touch-action: none;
+}
+.profile-grip:hover, .profile-grip:focus-visible { color: var(--text); background: var(--bg-sunken); }
+.profile-row.dragging .profile-grip { cursor: grabbing; }
+.profile-grip svg { width: 16px; height: 16px; }
+.profile-row .profile-logins {
+  grid-column: 2 / -1;
+  font-size: 12.5px;
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+.profile-add {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  margin: 12px 0 8px;
+}
+.profile-add .input { margin: 0; }
+
 /* One card per program. It is a card like every other one - hairlines, no
    box - and its head is the mark, the name and the switch that offers it. */
 .harness-card.missing { opacity: .65; }
@@ -2077,80 +2341,50 @@ body.stale .chat-item .row-mark.busy::after { animation-play-state: paused; opac
 
 /* The verdict of the last install, above its output: the one line that says
    whether it worked, for a page that was reloaded after it finished. */
-.install-result { margin-top: 12px; }
-.install-result.bad { color: var(--red); }
 
-
-/* ------------------------------------------------- touch targets
-
-   A finger is about 9mm across and lands where it lands; a mouse lands where
-   it was aimed. Every control below was sized for the second one - 24 to 38
-   pixels, hit on a desk by hovering first - and this block is what a phone
-   needs from all of them: 44 CSS pixels, which is Apple's own floor and the
-   number the audit measures against.
-
-   It is at the end of the file on purpose. Several of these controls are
-   shrunk again by a later container query written for a narrow pane, and a
-   media query carries no extra specificity to beat one with - only order
-   does. Nothing here applies to a mouse. */
-
-@media (pointer: coarse) {
-  .btn, .btn.sm, .auth .btn, .side-foot .btn { height: 44px; }
-  /* The top bar is a flex row, so a button with a width and no `flex` is a
-     button the row is free to squeeze - which is how six 44px icons measured
-     35 across. */
-  .topbar .icon-btn { flex: none; }
-  .icon-btn, .topbar .icon-btn { width: 44px; height: 44px; }
-  .chat-item .act { width: 44px; height: 44px; }
-  .key { min-width: 44px; height: 44px; }
-  .menu-item { min-height: 44px; display: flex; align-items: center; }
-  .combo-option { min-height: 44px; justify-content: center; }
-  .combo-toggle { width: 44px; }
-  .combo-input { padding-right: 46px; }
-  .term-notice .notice-close { width: 44px; height: 44px; }
-  /* The glyph stays 15px; what grows is the invisible area around it. */
-  .tip-mark { width: 44px; height: 44px; }
-  /* Two numbers and a cross, read at arm's length in a moving car. */
-  .term-size { font-size: 12px; }
-  .conn-retry { min-height: 44px; padding: 0 16px; }
-  .seg-row .seg { min-height: 44px; }
-  /* The switch is the whole label - the track, the words beside it and the
-     space between them - because that is what a thumb aims at. */
-  .switch { min-height: 44px; }
-  /* The track is the part a thumb aims at, and 38x22 is a mouse's target. */
-  .switch .track { width: 52px; height: 32px; }
-  .switch .track::after { width: 26px; height: 26px; margin: 3px; }
-  .switch input:checked + .track::after { transform: translateX(20px); }
-  .select, .input, .combo-input { min-height: 44px; }
-  /* The real checkbox behind a switch is invisible and untappable - the label
-     is the target - but a phone reads a field under 16px and zooms, so it is
-     given the same size as every other field rather than an exception to
-     remember. */
-  .switch input { font-size: 16px; }
-  /* The one control drawn over the pane, and the only way back to the bottom
-     for anybody who does not think to type. */
-  .term-jump { height: 44px; }
-  .scope .seg { min-height: 44px; padding: 7px 12px; }
-
-  /* A day header on a phone is read at arm's length in a moving car. 10.5px
-     is not read at all. */
-  .chat-group { font-size: 12px; }
-
-  /* A phone paints a grey box over whatever a finger touches, a fifth of a
-     second after it has already responded, which reads as lag. The key bar
-     had this and nothing else did. */
-  button, a, [role="button"], .key, .menu-item, .combo-option, .switch, summary {
-    -webkit-tap-highlight-color: transparent;
-  }
+/* An IDE session occupies the same stage as a terminal. */
+.ide-open .term-host { padding: 0; position: relative; }
+.ide-frame { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
+/* code-server answers /healthz several seconds before the workbench has
+   painted anything, so the frame is white for as long again as the launch
+   took. The loading card stays on top of it until the workbench is really
+   there: a blank white rectangle is the one thing that reads as broken. */
+.ide-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px;
+  text-align: center;
+  background: var(--bg);
+  color: var(--text-soft);
+  font-size: 13.5px;
+  transition: opacity .28s var(--ease);
 }
+.ide-loading p { margin: 0; }
+/* Faded out rather than removed at once, so the workbench arrives instead of
+   replacing something. */
+.ide-loading.done { opacity: 0; pointer-events: none; }
+.ide-open #keybar, .ide-open #termLines { display: none !important; }
+.ide-open #statusBtn, .ide-open #micBtn { display: none !important; }
+.ide-open .term-wrap, .ide-open .main:has(#keybar[hidden]) .term-wrap { padding: 0; }
 
-/* Six 44px buttons, a mark and a name do not fit across 390 pixels with the
-   spacing a desk uses and a name that refuses to go under 5.5em: measured, the
-   bar was 408 wide in a 390 column, and what went off the left edge was the
-   button that opens the session list. The name gives up the room, because a
-   name that is shortened is still a name and a button that is off screen is
-   not a button. Under 345px the rule further up hides it outright. */
-@media (pointer: coarse) and (max-width: 440px) {
-  .topbar { gap: 4px; }
-  .topbar .title { min-width: 3em; }
+/* ------------------------------------------------------------ copy sheet */
+
+/* The pane's text, where a phone's own selection handles work. It is wider
+   than an ordinary dialog because terminal lines are. */
+.copy-sheet { width: min(760px, calc(100vw - 32px)); }
+.copy-sheet .hint { margin: 0 0 10px; }
+.copy-text {
+  width: 100%;
+  height: min(60vh, 520px);
+  resize: none;
+  font-size: 12.5px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }

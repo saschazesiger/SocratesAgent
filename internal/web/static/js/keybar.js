@@ -4,41 +4,35 @@
 // CLIs this app exists to drive need all of them. So the keys they lack are a
 // row of buttons that write the same bytes a real key would.
 //
-// It is off until it is asked for, on every device. A bar that decided for
-// itself whether this machine has a keyboard was wrong on the two devices that
-// matter most - a tablet in a case, a laptop with a touch screen - and being
-// wrong about it means either a row of buttons nobody wanted or the missing
-// keys nowhere to be found. The session menu is one tap, and the answer is
-// remembered for this device.
+// It is on by default on a touch screen and off everywhere else, and the
+// session menu turns it on or off for this device, which is remembered and
+// wins from then on. A guess about the hardware is wrong on a tablet in a case
+// or a laptop with a touch screen, and that is what the menu is for; but a
+// phone with no Escape and no arrows in sight is the case the bar exists for,
+// and having to go looking for it there was the worse of the two mistakes.
 
 import { el, toast, setClass } from './api.js';
+import { pasteClipboard } from './term.js';
+import { touchScreen } from './keyboard.js';
 
 /* ---------------------------------------------------------- the key bar */
 
 // The keys a phone keyboard does not have, in the order a thumb wants them.
 // `send` is the bytes; a key with `mod` is a sticky modifier instead.
-//
-// The order is also the wrap. On a phone the bar is two rows of seven, and the
-// four arrows are one control rather than four: split across the fold - three
-// at the end of one row and the fourth at the start of the next - a thumb has
-// to hunt for the one that moves right. So the arrows are kept together at the
-// head of the second row, and the seven keys that are each their own thing
-// take the first.
 const KEYS = [
   { label: 'Esc', send: '\x1b', name: 'Escape' },
   { label: 'Tab', send: '\t', name: 'Tab' },
   { label: 'Ctrl', mod: 'ctrl', name: 'Control' },
   { label: 'Alt', mod: 'alt', name: 'Alt' },
-  { label: '⏎', send: '\r', name: 'Enter' },
-  { label: '^C', send: '\x03', name: 'Ctrl-C' },
-  { label: '^D', send: '\x04', name: 'Ctrl-D' },
   { label: '←', send: '\x1b[D', name: 'Left' },
   { label: '↓', send: '\x1b[B', name: 'Down' },
   { label: '↑', send: '\x1b[A', name: 'Up' },
   { label: '→', send: '\x1b[C', name: 'Right' },
+  { label: '⏎', send: '\r', name: 'Enter' },
+  { label: '^C', send: '\x03', name: 'Ctrl-C' },
+  { label: '^D', send: '\x04', name: 'Ctrl-D' },
   { label: '^Z', send: '\x1a', name: 'Ctrl-Z' },
   { label: 'Paste', paste: true, name: 'Paste' },
-  { label: '⌨', keyboard: true, name: 'Keyboard' },
 ];
 
 const KEYBAR_PREF = 'socrates.term.keybar';
@@ -51,13 +45,17 @@ function isTypedKey(data) {
 }
 
 /**
- * keyBarWanted is whether this device has asked for the bar. Nothing else
- * decides: no media query, no platform string, no keystroke seen. Off is the
- * default, because the bar is the answer to a question - "where is Escape?" -
- * that most sessions never ask.
+ * keyBarWanted is whether the bar is shown on this device: what the session
+ * menu last answered here, or - before it has been asked - whether this is a
+ * touch screen.
  */
 export function keyBarWanted() {
-  try { return localStorage.getItem(KEYBAR_PREF) === 'on'; } catch { return false; }
+  let saved = null;
+  try { saved = localStorage.getItem(KEYBAR_PREF); } catch { /* a private window */ }
+  if (saved === 'on') return true;
+  if (saved === 'off') return false;
+  // The same generous question the keyboard switch asks.
+  return touchScreen();
 }
 
 /** setKeyBarWanted records the answer the session menu gave. */
@@ -150,12 +148,7 @@ export function mountKeyBar(host, term, socket) {
       buttons.set(key.mod, button);
       button.addEventListener('click', () => toggle(key.mod));
     } else if (key.paste) {
-      button.addEventListener('click', () => { consume(); paste(term, send); });
-    } else if (key.keyboard) {
-      // Synchronously, inside the handler: iOS raises the keyboard for a
-      // focus() that a tap caused and for nothing else, and an `await`
-      // anywhere before this line is what loses that permission.
-      button.addEventListener('click', () => { if (term && term.textarea) term.textarea.focus(); });
+      button.addEventListener('click', () => { consume(); pasteClipboard(term, send); });
     } else {
       button.addEventListener('click', () => send(apply(key.send)));
     }
@@ -176,21 +169,6 @@ export function mountKeyBar(host, term, socket) {
   };
 }
 
-// paste puts the clipboard into the pane, bracketed when the program asked to
-// be told that a paste is a paste - which is what stops an editor from
-// auto-indenting every line of it.
-async function paste(term, send) {
-  let text = '';
-  try {
-    text = await navigator.clipboard.readText();
-  } catch {
-    toast('The clipboard could not be read — paste with the keyboard instead.', 'error');
-    return;
-  }
-  if (!text) return;
-  const bracketed = !!(term && term.modes && term.modes.bracketedPasteMode);
-  send(bracketed ? '\x1b[200~' + text + '\x1b[201~' : text);
-}
 
 /* --------------------------------------------------------- the viewport */
 
@@ -199,11 +177,10 @@ async function paste(term, send) {
  *
  * When a phone raises its keyboard the layout viewport does not change - only
  * the visual one does - so a page sized to 100% puts the bottom of itself
- * under the keyboard, and the bottom of the chat panel is the field somebody
- * is typing the question into. The height goes into a custom property the
- * shell is sized by, and the window is scrolled back to the top, because iOS
- * scrolls the page instead of resizing it and a scrolled shell hides the top
- * bar.
+ * under the keyboard, and the bottom of this one is the key bar. The height
+ * goes into a custom property the shell is sized by, and the window is
+ * scrolled back to the top, because iOS scrolls the page instead of resizing
+ * it and a scrolled shell hides the top bar.
  */
 export function followViewport() {
   const vv = window.visualViewport;

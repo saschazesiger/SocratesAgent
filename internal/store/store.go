@@ -27,8 +27,10 @@ var ErrNotFound = errors.New("not found")
 // is the terminal harness: sessions are tmux sessions, and the chat transcript
 // tables of versions 1 and 2 are gone. Version 4 adds title_source, which
 // records who named a session and is what keeps the automatic title from
-// running twice or overwriting a name the user chose.
-const SchemaVersion = 4
+// running twice or overwriting a name the user chose. Version 5 sweeps out the
+// conversations of the chat that sat beside a terminal, which no longer exists.
+// Version 7 replaces the archive and the flag with a status per session.
+const SchemaVersion = 7
 
 // Store wraps the database handle.
 type Store struct {
@@ -76,7 +78,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at     INTEGER NOT NULL,
   updated_at     INTEGER NOT NULL,
   last_attached  INTEGER NOT NULL DEFAULT 0,
-  archived_at    INTEGER NOT NULL DEFAULT 0
+  active_at      INTEGER NOT NULL DEFAULT 0,
+  status         TEXT NOT NULL DEFAULT 'in_progress',
+  status_at      INTEGER NOT NULL DEFAULT 0
 );
 -- The unique index on client_id is what makes creating a session safe to
 -- retry: the same key can only ever produce one session.
@@ -211,6 +215,12 @@ func migrate(db *sql.DB, path string) error {
 
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("create schema: %w", err)
+	}
+	// The chat beside the terminal is gone, and so is the only thing that ever
+	// deleted its rows. What is left is a document per session that nothing
+	// can reach, including for sessions that were deleted afterwards.
+	if _, err := db.Exec(`DELETE FROM kv WHERE key LIKE 'chat.%'`); err != nil {
+		return fmt.Errorf("drop the old conversations: %w", err)
 	}
 	// CREATE TABLE IF NOT EXISTS does nothing to a table that is already
 	// there, so a column added to an existing table has to be added by hand.
@@ -369,6 +379,9 @@ func backup(db *sql.DB, path string) error {
 func addSessionColumns(db *sql.DB) error {
 	for _, col := range [][2]string{
 		{"title_source", `TEXT NOT NULL DEFAULT ''`},
+		{"active_at", `INTEGER NOT NULL DEFAULT 0`},
+		{"status", `TEXT NOT NULL DEFAULT 'in_progress'`},
+		{"status_at", `INTEGER NOT NULL DEFAULT 0`},
 	} {
 		has, err := hasColumn(db, "sessions", col[0])
 		if err != nil {
@@ -381,7 +394,60 @@ func addSessionColumns(db *sql.DB) error {
 			return fmt.Errorf("add sessions.%s: %w", col[0], err)
 		}
 	}
-	return nil
+	// A row from before the list was ordered by status changes has no record
+	// of one, so the last thing that happened to it stands in: the order the
+	// upgrade shows is the order the build before it showed.
+	if _, err := db.Exec(`UPDATE sessions SET active_at = updated_at WHERE active_at = 0`); err != nil {
+		return fmt.Errorf("seed sessions.active_at: %w", err)
+	}
+	// The index is made here rather than in the schema because the schema runs
+	// first, against a table that may not have the column yet.
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_active ON sessions(active_at DESC)`); err != nil {
+		return fmt.Errorf("index sessions.active_at: %w", err)
+	}
+	return statusFromArchive(db)
+}
+
+// statusFromArchive files the sessions of a build that had an archive and a
+// flag under the statuses that replaced them, and then drops the two columns.
+//
+// An archived session is done, and its retention starts now rather than when
+// it was archived: an upgrade must not delete a whole archive on its first
+// minute. Everything else - flagged or not - is left unsorted, because
+// whether it is in progress or pending depends on whether it is working at
+// this moment, and that is something only the activity detector can see.
+func statusFromArchive(db *sql.DB) error {
+	has, err := hasColumn(db, "sessions", "archived_at")
+	if err != nil || !has {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	at := now()
+	for _, q := range []string{
+		`UPDATE sessions SET status = 'done', status_at = ? WHERE archived_at <> 0`,
+		`UPDATE sessions SET status = '', status_at = ? WHERE archived_at = 0`,
+	} {
+		if _, err := tx.Exec(q, at); err != nil {
+			return fmt.Errorf("file sessions under a status: %w", err)
+		}
+	}
+	for _, col := range []string{"archived_at", "flagged_at"} {
+		ok, err := txHasColumn(tx, "sessions", col)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			continue
+		}
+		if _, err := tx.Exec(`ALTER TABLE sessions DROP COLUMN ` + col); err != nil {
+			return fmt.Errorf("drop sessions.%s: %w", col, err)
+		}
+	}
+	return tx.Commit()
 }
 
 func hasColumn(db *sql.DB, table, column string) (bool, error) {

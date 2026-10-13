@@ -20,3 +20,6 @@ node_modules
 
 # the browser end to end suite: node, not Go, and it never runs in the image
 e2e
+
+# agent worktrees and settings
+.claude

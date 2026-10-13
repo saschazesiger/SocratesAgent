@@ -16,17 +16,19 @@
 // of it per session.
 
 import {
-  api, el, toast, infoTip, confirmDialog, errorMessage, isOffline, isBusyConflict,
+  api, el, toast, infoTip, confirmDialog, alertDialog, errorMessage, isOffline, isBusyConflict,
   setClass, onWake, clientKey, CONNECTION_GRACE, restoreFocus, setFocusFallback,
 } from './api.js';
 import { connectionSource } from './net.js';
 import { agentMark } from './logos.js';
-import { DAY_GROUPS, bucketOf, momentOf } from './daygroups.js';
+import { MORE_KEY, SHELVES, IDE, foldersOf, folderKeyOf, ideOf, momentOf, movesRow } from './folders.js';
 import * as harnesses from './harnesses.js';
-import { createTerm, measurePane } from './term.js';
+import { createTerm, measurePane, loadTerminalFonts } from './term.js';
 import { mountAssist } from './assist.js';
 import { mountNotify } from './notify.js';
+import { mountTransfer } from './transfer.js';
 import { mountKeyBar, keyBarWanted, setKeyBarWanted, followViewport } from './keybar.js';
+import { initKeyboard, guard, watchFrame, dictated } from './keyboard.js';
 
 /* ------------------------------------------------------------- transport */
 
@@ -506,16 +508,6 @@ class TermSocket {
    * server has acknowledged the bytes, `onLost` when they were discarded.
    */
   sendInput(data, opts = {}) {
-    // Every path that types goes through here - the terminal's own keys, the
-    // key bar, a paste, a dictated line, an operator run - which makes it the
-    // one place a scroll still in flight can be called off for all of them.
-    // A glide outlives the finger by half a second, and a glide that is still
-    // running when a key lands puts the pane back into the copy mode the
-    // keystroke has just taken it out of: the screen jumps away from what was
-    // typed and the pill comes back. The terminal ignores the call while it is
-    // itself producing mouse reports, so a wheel-route drag does not stop
-    // itself.
-    if (this.beforeInput) this.beforeInput();
     const bytes = typeof data === 'string' ? encoder.encode(data) : data;
     if (!bytes.length) return;
     this.inputSeq += 1;
@@ -571,24 +563,6 @@ class TermSocket {
     this.write(JSON.stringify({ t: 'resize', cols, rows }));
   }
 
-  /**
-   * scroll moves the pane through tmux's own history.
-   *
-   * It is a control frame rather than anything xterm does, because tmux's
-   * scrollback is the only history that exists under all four harnesses: a
-   * program tracking the mouse - which is all three CLIs - is handed a wheel
-   * as a mouse report and scrolls nothing the user asked for. See term.js.
-   */
-  scroll(lines) {
-    if (!lines) return;
-    this.write(JSON.stringify({ t: 'scroll', lines }));
-  }
-
-  /** jump puts the pane back at its live bottom, out of copy mode. */
-  jump() {
-    this.write(JSON.stringify({ t: 'jump' }));
-  }
-
   /** lag reports the last output byte rendered, for the Diagnostics panel. */
   lag(seq) {
     this.write(JSON.stringify({ t: 'lag', seq }));
@@ -633,7 +607,6 @@ const ATTACH_DEBOUNCE = 120;
 
 const state = {
   sessions: [],
-  scope: 'active',
   current: null,      // the session row being shown
   socket: null,
   term: null,
@@ -643,10 +616,6 @@ const state = {
   pendingAttach: null,
   live: false,
   lostAt: 0,
-  // Whether a finger on this pane moves the program's own view rather than
-  // tmux's history. The server answers it, because a tmux client draws every
-  // pane on the alternate screen and the browser cannot tell the two apart.
-  paneWheel: false,
   loading: false,
   // Whether the last attempt to read the list reached Socrates at all. A page
   // that cannot ask must not answer "no sessions": that is a fact it does not
@@ -674,8 +643,17 @@ const state = {
   // It is in memory only - the server re-derives it from a live pane every
   // second, so a copy that outlived a reload could only ever be wrong.
   activity: new Map(),
-  // Status, Agent and the chat, mounted once in boot().
+  // The sessions whose automatic name is being asked for right now. Their
+  // name pulses, in the list and in the header, until the answer is in.
+  titling: new Set(),
+  // The current session's quota/cost poll. A generation number makes a slow
+  // answer for the previous session harmless after a quick row switch.
+  usageTimer: null,
+  usageGeneration: 0,
+  // Status and the microphone, mounted once in boot().
   assist: null,
+  // Copy, paste and upload, mounted once in boot().
+  transfer: null,
   // How the terminal is drawn, from the dashboard. The defaults here are what
   // a page that could not ask uses, and they are the same numbers the settings
   // document ships with.
@@ -683,15 +661,14 @@ const state = {
 };
 
 const dom = {};
-const ids = ['sidebar', 'navScrim', 'menuBtn', 'sideCollapse', 'newSession', 'sessionScope', 'sessionList',
-  'termJump',
-  'activityLive', 'sessionHarness', 'sessionTitle', 'sessionArchived', 'termSize',
-  'statusBtn', 'agentBtn', 'soundBtn', 'notifyBtn', 'sessionMenu',
+const ids = ['sidebar', 'navScrim', 'menuBtn', 'sideCollapse', 'newSession', 'sessionList',
+  'activityLive', 'sessionTitle', 'sessionStatus', 'sessionUsage',
+  'transfer', 'copyBtn', 'pasteBtn', 'uploadBtn',
+  'statusBtn', 'kbBtn', 'soundBtn', 'notifyBtn', 'sessionMenu',
   'stage', 'termWrap', 'term', 'termOverlay', 'termLines', 'termNotice',
   'termTicker', 'tickerWindow', 'termEmpty',
-  'chatPanel', 'chatLog', 'chatFoot', 'chatClose',
-  'chatMic', 'chatMicText', 'chatSpeak',
-  'chatRecSheet', 'chatRecMeter', 'chatRecTime', 'chatRecSend', 'chatRecCancel',
+  'micBtn', 'micText',
+  'recSheet', 'recMeter', 'recTime', 'recSend', 'recCancel',
   'keybar', 'logout'];
 for (const id of ids) dom[id] = document.getElementById(id);
 
@@ -702,7 +679,82 @@ const STATE_WORDS = {
 
 // What a session is doing, in the words the "i" uses. `unknown` has no word:
 // a row with no evidence yet says nothing rather than guessing.
-const ACTIVITY_WORDS = { busy: 'Working', idle: 'Waiting for an instruction', waiting: 'Needs an answer' };
+const ACTIVITY_WORDS = {
+  busy: 'Working',
+  idle: 'Waiting for an instruction',
+  waiting: 'Needs an answer',
+  tasks: 'Turn finished · a background task is still running',
+};
+
+// The hourglass a row's mark carries while the agent's turn is over and
+// something it started - a background shell, a monitor, a sub-agent - is
+// still running: not working, and not done either.
+const TASKS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+  + '<path d="M5 2.5h14M5 21.5h14"/><path d="M7 2.5v2.2c0 2.6 5 4.6 5 7.3 0 2.7-5 4.7-5 7.3v2.2"/>'
+  + '<path d="M17 2.5v2.2c0 2.6-5 4.6-5 7.3 0 2.7 5 4.7 5 7.3v2.2"/>'
+  + '<path d="M8.5 20.5c0-1.6 3.5-3 3.5-4.5 0 1.5 3.5 2.9 3.5 4.5z" fill="currentColor" stroke-width="1"/></svg>';
+
+/**
+ * activityOf is what a session is doing, for the page to draw.
+ *
+ * A shell and an editor have none. The detector still watches them - the
+ * server needs to know whether a pane is doing anything - but "working" and
+ * "finished" are words about a turn, and neither of those two programs takes
+ * one: a shell is busy for as long as `ls` runs and an editor is busy while it
+ * boots, and a spinner, a bold name or a chime for either of those is the page
+ * announcing that a window opened. So the row of a tool carries no status at
+ * all, which is also the whole of why it can never chime.
+ */
+function activityOf(session) {
+  if (!session || harnesses.isTool(session.harness)) return null;
+  return state.activity.get(session.id) || null;
+}
+
+// Where the work in a session stands, as the person files it. In progress is
+// what every session starts as and says nothing; the others carry a mark in
+// the row and a word in the header. Done is the one that does something: the
+// server closes the terminal and deletes the session a day later. Background
+// is a service left running on purpose: out of the way, never refiled, never
+// deleted.
+const STATUSES = [
+  { id: 'in_progress', label: 'In progress' },
+  { id: 'review', label: 'Review pending' },
+  { id: 'pending', label: 'Pending' },
+  { id: 'background', label: 'Background' },
+  { id: 'done', label: 'Done' },
+];
+const STATUS_WORDS = Object.fromEntries(STATUSES.map((s) => [s.id, s.label]));
+
+// One small drawing per status that has a mark: an eye for a review, a clock
+// for pending, stacked layers for background, a tick for done.
+const STATUS_SVG = {
+  review: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    + '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
+  pending: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    + '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  background: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    + '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg>',
+  done: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    + '<path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
+};
+
+// A session a row upgraded from flags and an archive may still be unsorted for
+// its first seconds; until the server files it, it reads as in progress.
+function statusOf(session) {
+  return (session && STATUS_WORDS[session.status]) ? session.status : 'in_progress';
+}
+
+function isDone(session) { return statusOf(session) === 'done'; }
+
+// deleteWords is when a done session goes, as a person would say it.
+function deleteWords(session) {
+  const at = Number(session && session.delete_at);
+  if (!at) return '';
+  const hours = Math.max(0, Math.round((at - Date.now()) / 3600000));
+  const when = new Date(at);
+  const clock = String(when.getHours()).padStart(2, '0') + ':' + String(when.getMinutes()).padStart(2, '0');
+  return hours >= 1 ? 'Deleted in ' + hours + ' h, at ' + clock : 'Deleted within the hour';
+}
 
 function sessionOf(id) { return state.sessions.find((s) => s.id === id) || null; }
 
@@ -710,64 +762,310 @@ function sessionOf(id) { return state.sessions.find((s) => s.id === id) || null;
 
 function renderList() {
   const host = dom.sessionList;
-  const wanted = state.sessions.filter((s) => state.scope === 'all' || !s.archived);
+  const wanted = state.sessions;
   if (!wanted.length) {
     host.innerHTML = '';
     let empty = 'No sessions yet.';
     if (state.loading) empty = 'Loading…';
-    else if (!state.reachable) empty = 'Can\u2019t reach Socrates.';
+    else if (!state.reachable) empty = 'Can’t reach Socrates.';
     host.append(el('div', { class: 'list-empty', text: empty }));
     return;
   }
-  // Which day each session was last used on. The server hands the list over
-  // newest first, and grouping keeps that order inside every group, so the
-  // rows never move relative to each other - only a header appears between
-  // them.
-  const now = Date.now();
-  const byGroup = new Map();
-  for (const session of wanted) {
-    const key = bucketOf(momentOf(session), now);
-    const rows = byGroup.get(key);
-    if (rows) rows.push(session); else byGroup.set(key, [session]);
-  }
+  // Which project each session belongs to, and in what order. The server
+  // hands the list over newest first, and a frame that changes a status
+  // between two fetches bumps the moment locally, so the order inside a
+  // folder - and the order of the folders themselves - is worked out here,
+  // from the same moment the server sorted by.
+  // Background and done sessions are not the work in progress, but they are
+  // still their project's: each folder keeps them on a shelf of its own at
+  // its bottom, shut until it is opened - the services first, then what is
+  // finished, most recently filed first, until the server deletes it. A
+  // folder's VS Code is not a row at all: it is drawn on the folder's head.
+  const folders = foldersOf(wanted);
   // The list is patched rather than rebuilt: taking a connected node out of
   // the page and putting it back restarts its animations, and a row that
-  // fades in again every few seconds is a page that looks broken. The headers
-  // are patched the same way and for the same reason - and because a row that
-  // crosses midnight, or is renamed and so becomes today's, has to keep the
-  // element it already had while it moves under a different header.
-  const seen = new Set();
-  const headers = new Set();
-  let previous = null;
-  // place puts a node where the walk has got to, and only if it is not there
-  // already.
-  const place = (node) => {
-    if (previous ? previous.nextElementSibling !== node : host.firstElementChild !== node) {
-      if (previous) previous.after(node); else host.prepend(node);
-    }
-    previous = node;
+  // fades in again every few seconds is a page that looks broken. The folders
+  // are patched the same way and for the same reason - and because a row
+  // whose session finishes a turn, and so moves to the top of its folder, has
+  // to keep the element it already had while it moves.
+  const seenFolders = new Set();
+  const seenShelves = new Set();
+  const seenRows = new Set();
+  // placer walks one parent: it puts a node where the walk has got to, and
+  // only if it is not there already. The list is two walks - the folders, and
+  // the rows inside each - so it is a maker of walkers rather than one walk.
+  const placer = (into) => {
+    let previous = null;
+    return (node) => {
+      if (previous ? previous.nextElementSibling !== node : into.firstElementChild !== node) {
+        if (previous) previous.after(node); else into.prepend(node);
+      }
+      previous = node;
+    };
   };
-  for (const { key, label } of DAY_GROUPS) {
-    const rows = byGroup.get(key);
-    if (!rows || !rows.length) continue;
-    headers.add(key);
-    place(host.querySelector('.chat-group[data-group="' + key + '"]')
-      || el('div', { class: 'chat-group', 'data-group': key, text: label }));
-    for (const session of rows) {
-      seen.add(session.id);
-      const row = host.querySelector('.chat-item[data-id="' + cssId(session.id) + '"]');
-      if (row) updateRow(row, session);
-      place(row || buildRow(session));
+  const placeFolder = placer(host);
+  for (const folder of folders) {
+    seenFolders.add(folder.key);
+    const section = host.querySelector('.folder[data-folder="' + cssId(folder.key) + '"]')
+      || buildFolder(folder);
+    placeFolder(section);
+    const placeRow = placer(section.querySelector(':scope > .folder-rows'));
+    placeRows(host, placeRow, folder.sessions, seenRows);
+    // The shelves come after the rows, inside the same folder, so shutting
+    // the folder puts them away with everything else in it.
+    for (const status of SHELVES) {
+      const filed = folder.shelves[status];
+      if (!filed.length) continue;
+      const shelf = { key: shelfKey(folder.key, status), status, label: STATUS_WORDS[status], path: '', sessions: filed };
+      const node = section.querySelector(':scope > .folder-rows > .shelf[data-shelf="' + status + '"]')
+        || buildFolder(shelf);
+      seenShelves.add(node);
+      placeRow(node);
+      placeRows(host, placer(node.querySelector(':scope > .folder-rows')), filed, seenRows);
+      updateFolder(node, shelf);
     }
+    updateFolder(section, folder);
+  }
+  // What is left over: a session that was deleted, and a folder or a shelf
+  // whose last session went with it. The rows are swept after every folder
+  // has been walked rather than folder by folder, because a row that moved
+  // to a folder further down the list has not been drawn yet while the one
+  // it left is being tidied, and sweeping it there would throw away the
+  // element it is about to be put back into.
+  for (const row of [...host.querySelectorAll('.chat-item')]) {
+    if (!seenRows.has(row.dataset.id)) row.remove();
+  }
+  for (const shelf of [...host.querySelectorAll('.shelf')]) {
+    if (!seenShelves.has(shelf)) shelf.remove();
   }
   for (const node of [...host.children]) {
-    if (node.dataset.id) { if (!seen.has(node.dataset.id)) node.remove(); }
-    else if (node.dataset.group) { if (!headers.has(node.dataset.group)) node.remove(); }
-    else node.remove();
+    if (!node.classList.contains('folder') || !seenFolders.has(node.dataset.folder)) node.remove();
   }
 }
 
-function cssId(id) { return String(id).replace(/"/g, '\\"'); }
+// placeRows draws one run of rows where `place` has got to. A row is looked
+// for in the whole list rather than under this folder: whichever folder it
+// was drawn in last time, it is the same session, and it keeps the element -
+// and the animation - it already had.
+function placeRows(host, place, sessions, seen) {
+  for (const session of sessions) {
+    seen.add(session.id);
+    const found = host.querySelector('.chat-item[data-id="' + cssId(session.id) + '"]');
+    if (found) updateRow(found, session);
+    place(found || buildRow(session));
+  }
+}
+
+// An id or a directory, as an attribute selector can carry it. Both come from
+// the machine rather than from a person, but a directory is a name somebody
+// chose, and a quote or a backslash in one must not be able to become part of
+// the selector around it.
+function cssId(id) { return String(id).replace(/\\/g, '\\\\').replace(/"/g, '\\"'); }
+
+/* ------------------------------------------------------------- the folders
+
+   Which project a session belongs to is folders.js's answer; what is left
+   here is the drawing of it, and the one thing a person does to a folder,
+   which is to shut it. */
+
+// Which folders this device keeps shut. Only the shut ones are written down,
+// so a project that appears while the browser was closed - the first session
+// in a new directory - is open when it arrives, which is what a folder that
+// has just been made should be. It is a fact about this screen rather than
+// about the account, for the same reason the rail is: a column tidied on a
+// desk is not a column tidied on a phone.
+const FOLDERS_KEY = 'socrates.folders';
+const closedFolders = new Set();
+
+// The shelves of background and done sessions inside each folder. They are
+// the two that start shut - a service is meant to run unseen, and what is
+// done is finished - so for them the set records the opposite: being in it
+// means the person opened it. A shelf's key is its folder's and its status,
+// joined by a character no path and no status can hold.
+function shelfKey(folderKey, status) { return folderKey + '\u0000' + status; }
+function shelfOf(key) {
+  const at = key.lastIndexOf('\u0000');
+  return at < 0 ? '' : key.slice(at + 1);
+}
+const SHELF_TITLES = {
+  background: 'Background sessions: services left running on purpose, never deleted',
+  done: 'Done sessions: their terminals are closed, and each is deleted a day after it was marked done',
+};
+
+function shutByDefault(key) { return SHELVES.includes(shelfOf(key)); }
+
+function folderOpen(key) {
+  return shutByDefault(key) ? closedFolders.has(key) : !closedFolders.has(key);
+}
+// aria-controls needs something to point at, and a path is not an id.
+let folderSeq = 0;
+
+function restoreFolders() {
+  let raw = '';
+  try { raw = localStorage.getItem(FOLDERS_KEY) || ''; } catch { /* private window */ }
+  if (!raw) return;
+  try {
+    const shut = JSON.parse(raw);
+    if (Array.isArray(shut)) for (const key of shut) if (typeof key === 'string') closedFolders.add(key);
+  } catch { /* a value from a version that wrote something else */ }
+}
+
+function saveFolders() {
+  try { localStorage.setItem(FOLDERS_KEY, JSON.stringify([...closedFolders])); } catch { /* private window */ }
+}
+
+function toggleFolder(key) {
+  if (closedFolders.has(key)) closedFolders.delete(key); else closedFolders.add(key);
+  saveFolders();
+  renderList();
+}
+
+/**
+ * openFolder makes sure a session can be seen.
+ *
+ * It is called when one is attached rather than when one is clicked: a row
+ * inside a shut folder cannot be clicked at all, and the session this tab is
+ * meant to be on - the one in the address, or the one just started - has to
+ * be on screen whatever the folder it landed in was left as. A shelved
+ * session needs its shelf opened as well as its folder; an editor is on the
+ * folder's head, which is on screen whenever the folder is.
+ */
+function openFolder(session) {
+  if (!session) return;
+  const key = folderKeyOf(session);
+  let changed = closedFolders.delete(key);
+  const status = statusOf(session);
+  if (SHELVES.includes(status) && !(session.harness === IDE && ideOf(state.sessions, key) === session)) {
+    const shelf = shelfKey(key, status);
+    if (!closedFolders.has(shelf)) { closedFolders.add(shelf); changed = true; }
+  }
+  if (!changed) return;
+  saveFolders();
+  renderList();
+}
+
+const CARET_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"'
+  + ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
+
+// A folder is its head and its rows; a shelf is the same shape one level
+// down, inside its folder's rows. A project folder's head carries one more
+// control beside the name: the mark of VS Code, which opens the folder's
+// editor. It is a button beside the head rather than inside it, because a
+// button cannot hold another.
+function buildFolder(folder) {
+  folderSeq += 1;
+  const id = 'folder-rows-' + folderSeq;
+  const head = el('button', {
+    class: 'folder-head',
+    type: 'button',
+    'aria-expanded': 'true',
+    'aria-controls': id,
+    onclick: () => toggleFolder(folder.key),
+  },
+  el('span', { class: 'caret', html: CARET_SVG }),
+  el('span', { class: 'folder-name' }),
+  el('span', { class: 'folder-dot', 'aria-hidden': 'true' }),
+  el('span', { class: 'folder-count' }));
+  const ide = folder.status || folder.key === MORE_KEY ? null : el('button', {
+    class: 'icon-btn folder-ide',
+    type: 'button',
+    onclick: () => openFolderIDE(folder.key),
+  }, agentMark(IDE, 15));
+  const attrs = folder.status
+    ? { class: 'folder shelf', 'data-shelf': folder.status }
+    : { class: 'folder', 'data-folder': folder.key };
+  return el('section', attrs,
+    el('div', { class: 'folder-bar' }, head, ide),
+    el('div', { class: 'folder-rows', id }));
+}
+
+function updateFolder(section, folder) {
+  const open = folderOpen(folder.key);
+  const head = section.querySelector(':scope > .folder-bar > .folder-head');
+  const rows = section.querySelector(':scope > .folder-rows');
+  setClass(section, 'closed', !open);
+  head.setAttribute('aria-expanded', open ? 'true' : 'false');
+  rows.hidden = !open;
+  head.querySelector('.folder-name').textContent = folder.label;
+  // The whole path is technical detail, so it is where every technical string
+  // on this page is: on hover, and nowhere in the words. "More Chats" and the
+  // shelves have no path, so their tooltip says what they hold instead.
+  head.title = SHELF_TITLES[folder.status] || folder.path || 'Sessions in a directory of their own';
+  // Shut, a folder has to say what is behind it: the two things this page
+  // exists to make noticeable - an agent that needs an answer, and one that
+  // finished something nobody has seen - would otherwise be hidden by the
+  // person's own tidying. So it carries a count, the amber of a session
+  // waiting, and the weight of one nobody has read. Open, the rows say all
+  // three themselves and the head says none of them.
+  let waiting = false;
+  let busy = false;
+  let unread = false;
+  for (const session of folder.sessions) {
+    const act = activityOf(session);
+    if (!act) continue;
+    const attached = !!(state.current && state.current.id === session.id);
+    if (act.unread && !attached) unread = true;
+    const live = session.state === 'running' || session.state === 'starting' || session.state === 'resuming';
+    if (!live) continue;
+    if (act.state === 'waiting') waiting = true;
+    // Work left running behind a finished turn is still something going on
+    // in there, and the closed folder says so the same quiet way.
+    if (act.state === 'busy' || act.state === 'tasks') busy = true;
+  }
+  setClass(head, 'waiting', waiting);
+  setClass(head, 'busy', busy && !waiting);
+  setClass(head, 'unread', unread);
+  let count = folder.sessions.length;
+  if (folder.shelves) for (const status of SHELVES) count += folder.shelves[status].length;
+  head.querySelector('.folder-count').textContent = String(count);
+  const ide = section.querySelector(':scope > .folder-bar > .folder-ide');
+  if (ide) updateIDEButton(ide, folder);
+}
+
+// updateIDEButton draws the VS Code mark of a folder: coloured while the
+// folder's editor is running, grey while there is none or it is stopped, and
+// pressed while it is the one on screen. Where VS Code is switched off and
+// the folder has no editor to return to, the mark is not there.
+function updateIDEButton(button, folder) {
+  const ide = folder.ide;
+  const usable = harnesses.ideAvailable();
+  button.hidden = !ide && !usable;
+  const running = !!ide && (ide.state === 'running' || ide.state === 'starting');
+  const shown = !!ide && !!state.current && state.current.id === ide.id;
+  setClass(button, 'running', running);
+  setClass(button, 'active', shown);
+  button.setAttribute('aria-pressed', shown ? 'true' : 'false');
+  const words = (running ? 'VS Code is open in ' : 'Open VS Code in ') + folder.label;
+  button.title = words;
+  button.setAttribute('aria-label', words);
+}
+
+// The folders a VS Code is being asked for right now, so that a second tap
+// on the same mark waits for the first rather than asking again.
+const openingIDE = new Set();
+
+/**
+ * openFolderIDE is the VS Code mark of a folder: the folder's editor, opened
+ * in the pane. A folder that has one opens it, and one that does not asks the
+ * server for it - which answers with the one it has if another tab made it in
+ * the meantime, so there is still only ever one per folder.
+ */
+async function openFolderIDE(key) {
+  const found = ideOf(state.sessions, key);
+  if (found) { selectSession(found.id); return; }
+  if (openingIDE.has(key)) return;
+  openingIDE.add(key);
+  try {
+    const data = await api('/api/ide', { method: 'POST', attempts: 2, timeout: 60000, body: { workdir: key } });
+    replaceSession(data.session);
+    if (data.error) toast('VS Code could not start.', 'error');
+    selectSession(data.session.id);
+  } catch (err) {
+    toast(errorMessage(err), 'error');
+  } finally {
+    openingIDE.delete(key);
+  }
+}
 
 function buildRow(session) {
   const row = el('div', {
@@ -776,8 +1074,10 @@ function buildRow(session) {
     role: 'button',
     tabindex: '0',
   },
-  el('span', { class: 'row-mark' }, agentMark(session.harness, 18)),
+  el('span', { class: 'row-mark' }, agentMark(session.harness, 18),
+    el('span', { class: 'row-tasks', html: TASKS_SVG })),
   el('span', { class: 'label' }),
+  el('span', { class: 'row-status' }),
   el('button', {
     class: 'icon-btn act', type: 'button', 'aria-label': 'Session actions',
     html: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>',
@@ -801,7 +1101,12 @@ function rowFacts(session) {
     STATE_WORDS[session.state] || session.state,
     session.workdir,
   ];
-  const act = state.activity.get(session.id);
+  if (session.harness === 'shell' && session.options?.shell_execution) {
+    facts.push('Execution: ' + (session.options.shell_execution === 'host' ? 'Host' : 'Container'));
+  }
+  if (session.options?.profile) facts.push('Profile: ' + harnesses.profileName(session.options.profile));
+  if (session.options?.ultracode) facts.push('Ultracode on');
+  const act = activityOf(session);
   if (act && ACTIVITY_WORDS[act.state]) {
     // What it is doing, why the detector thinks so, and since when. All three
     // are facts about the machine, so all three live behind the "i".
@@ -832,30 +1137,50 @@ function clockOf(at) {
 }
 
 function updateRow(row, session) {
-  row.querySelector('.label').textContent = session.title;
+  const label = row.querySelector('.label');
+  label.textContent = session.title;
+  setClass(label, 'titling', state.titling.has(session.id));
   // Collapsed, a row is one mark and no words, so the name moves into the
   // tooltip - the only place left where it can be read. Expanded it is written
   // on the row, and a tooltip repeating it would be noise.
   row.title = sidebarCollapsed() ? session.title : '';
   const attached = !!(state.current && state.current.id === session.id);
   setClass(row, 'active', attached);
-  setClass(row, 'archived', !!session.archived);
+  // The status is a mark after the name, and in progress has none: it is
+  // what a session is unless somebody said otherwise.
+  const status = statusOf(session);
+  setClass(row, 'done', status === 'done');
+  const statusMark = row.querySelector('.row-status');
+  if (statusMark.dataset.status !== status) {
+    statusMark.dataset.status = status;
+    statusMark.innerHTML = STATUS_SVG[status] || '';
+  }
+  const said = status === 'done'
+    ? [STATUS_WORDS.done, deleteWords(session)].filter(Boolean).join(' · ')
+    : STATUS_WORDS[status];
+  statusMark.title = status === 'in_progress' ? '' : said;
+  if (status === 'in_progress') statusMark.removeAttribute('aria-label'); else statusMark.setAttribute('aria-label', said);
 
   // The activity of a row is two marks and no words: the agent's own mark
   // turns into a ring that spins while the harness is working and stands
   // still, in amber, while it is waiting for an answer, and a name that has
   // finished something nobody has seen is bold. The session being looked at
-  // is never bold - it is not unread, it is open.
-  const act = state.activity.get(session.id) || null;
+  // is never bold - it is not unread, it is open. A turn that is over while
+  // something it started still runs has no ring - nothing is being worked on
+  // - and a small hourglass on the mark's corner instead.
+  const act = activityOf(session);
   const mark = row.querySelector('.row-mark');
   const live = session.state === 'running' || session.state === 'starting' || session.state === 'resuming';
   const busy = live && !!act && act.state === 'busy';
   const waiting = live && !!act && act.state === 'waiting';
   setClass(mark, 'busy', busy);
+  const tasks = live && !!act && act.state === 'tasks';
   setClass(mark, 'waiting', waiting);
+  setClass(mark, 'tasks', tasks);
   let word = STATE_WORDS[session.state] || session.state;
   if (busy) word = ACTIVITY_WORDS.busy;
   if (waiting) word = ACTIVITY_WORDS.waiting;
+  if (tasks) word = ACTIVITY_WORDS.tasks;
   mark.title = word;
   setClass(row, 'unread', !!act && !!act.unread && !attached);
 }
@@ -881,6 +1206,23 @@ function mergeActivity(sessions) {
     state.activity.set(id, next);
     if (prev && prev.state === next.state && prev.unread === next.unread && prev.note === next.note) continue;
     changed = true;
+    const session = sessionOf(id);
+    // A status change moves the row, and it moves it now rather than at the
+    // next fetch: the server wrote the same moment into the same row under
+    // the same rule, so the list a fetch would bring is the list drawn here.
+    if (session && movesRow(prev ? prev.state : '', next.state)) {
+      session.active_at = Math.max(momentOf(session), Number(next.since) || Date.now());
+    }
+    // A pending session, or one waiting for a review, that starts working may
+    // just have been filed as in progress again by the server. The frame does
+    // not carry the status, so the list is asked for it.
+    const status = statusOf(session);
+    if (session && next.state === 'busy' && (!prev || prev.state !== 'busy')
+      && (status === 'pending' || status === 'review')) refreshSoon();
+    // Only a session the page can name is worth saying anything about, and a
+    // tool has nothing to say: see activityOf. Neither does a service somebody
+    // put in the background, which is there so as not to interrupt anyone.
+    if (!session || harnesses.isTool(session.harness) || statusOf(session) === 'background') continue;
     announce(id, next, prev);
     if (notifier) notifier.completed(id, next, prev);
   }
@@ -899,9 +1241,22 @@ let announcePending = '';
 function announce(id, next, prev) {
   const session = sessionOf(id);
   if (!session || !dom.activityLive) return;
+  // The unread mark is the server's own answer to "did something happen that
+  // nobody has seen", and it is only set for a session that has been given
+  // something to do. Without that test this line, the chime and the
+  // notification all fire the moment a harness finishes starting up - which
+  // is the page announcing that a window opened.
+  //
+  // And it has to be a mark this change set. A relaunch keeps the one it
+  // found, so a session started with unseen work on it would otherwise have
+  // its start-up read out as a turn that finished: see notify.completed.
+  if (!next.unread || (prev && prev.unread)) return;
   const who = harnesses.label(session.harness) || session.title;
   let line = '';
-  if (prev && prev.state === 'busy' && next.state !== 'busy' && next.state !== 'waiting') line = who + ' finished';
+  // A turn that ends with something left running is not finished; leaving
+  // that state is (the server sets no unread mark on the way into it).
+  const before = prev && (prev.state === 'busy' || prev.state === 'tasks');
+  if (before && next.state !== 'busy' && next.state !== 'tasks' && next.state !== 'waiting') line = who + ' finished';
   if (next.state === 'waiting' && (!prev || prev.state !== 'waiting')) line = who + ' needs an answer';
   if (!line) return;
   announcePending = line;
@@ -915,10 +1270,17 @@ function announce(id, next, prev) {
   }, wait);
 }
 
+// refreshSoon asks for the list once, a moment from now, however many
+// changes ask for it in between.
+let refreshTimer = null;
+function refreshSoon() {
+  if (refreshTimer) return;
+  refreshTimer = setTimeout(() => { refreshTimer = null; refreshList(); }, 1500);
+}
+
 async function refreshList() {
   try {
-    const data = await api('/api/sessions?scope=' + (state.scope === 'all' ? 'all' : 'active'),
-      { attempts: 2, timeout: 12000 });
+    const data = await api('/api/sessions', { attempts: 2, timeout: 12000 });
     state.sessions = data.sessions || [];
     // The list is the catch-up path for a sidebar nobody has a socket open
     // for: every view carries the activity of its own session.
@@ -988,7 +1350,10 @@ function promptTitle(current) {
     const accept = el('button', { class: 'btn sm primary', type: 'button', text: 'Rename' });
     dialog.append(
       el('h2', { class: 'modal-title', text: 'Rename this session' }),
-      el('div', { class: 'field' }, input),
+      // A name is a sentence somebody says about a session, so it is one of
+      // the fields that can be spoken instead of typed - and with the
+      // keyboard put away it is the only way this dialog can be answered.
+      el('div', { class: 'field' }, dictated(input, input)),
       el('div', { class: 'modal-actions' }, cancel, accept),
     );
     let settled = false;
@@ -1046,21 +1411,31 @@ function infoDialog(session) {
   close.focus();
 }
 
-async function archiveSession(session, archived) {
+// setStatus files a session. Done closes its terminal on the server, so a
+// session that is being looked at loses its socket and shows what happened
+// instead; every other status changes nothing but the mark.
+async function setStatus(session, status) {
+  if (statusOf(session) === status) return;
   try {
-    const data = await api('/api/sessions/' + encodeURIComponent(session.id) + '/archive', {
-      method: 'POST', body: { archived },
+    const data = await api('/api/sessions/' + encodeURIComponent(session.id) + '/file', {
+      method: 'POST', body: { status },
     });
+    const open = state.current && state.current.id === session.id;
+    if (status === 'done' && open) detach();
     replaceSession(data.session);
-    toast(archived ? 'Archived. It keeps running.' : 'Back in the active list.');
-  } catch (err) { toast(errorMessage(err), 'error'); }
+    if (status === 'done') toast('Done. Its terminal was closed; the session is deleted in 24 hours.');
+    else if (isDone(session) && open) attach(data.session);
+  } catch (err) { toast(actionFailed(err, 'That session could not be refiled.'), 'error'); }
 }
 
 async function deleteSession(session) {
+  const editor = session.harness === IDE;
   const yes = await confirmDialog({
-    title: 'Delete “' + session.title + '”?',
-    body: 'The terminal is closed and the session is removed. The working directory and everything in it are kept.',
-    confirmLabel: 'Delete',
+    title: editor ? 'Close VS Code?' : 'Delete “' + session.title + '”?',
+    body: editor
+      ? 'The editor is stopped. What it remembers - open files, unsaved changes, layout - is kept for this folder and comes back the next time it is opened.'
+      : 'The terminal is closed and the session is removed. The working directory and everything in it are kept.',
+    confirmLabel: editor ? 'Close' : 'Delete',
     danger: true,
   });
   if (!yes) return;
@@ -1069,11 +1444,11 @@ async function deleteSession(session) {
     state.sessions = state.sessions.filter((s) => s.id !== session.id);
     if (state.current && state.current.id === session.id) {
       detach();
-      const next = state.sessions.find((s) => !s.archived) || state.sessions[0];
+      const next = state.sessions.find((s) => !isDone(s)) || state.sessions[0];
       if (next) selectSession(next.id); else showEmpty();
     }
     renderList();
-    toast('Deleted. The working directory was kept.');
+    toast(editor ? 'VS Code was closed. Its state was kept.' : 'Deleted. The working directory was kept.');
   } catch (err) {
     toast(actionFailed(err, 'That session could not be deleted.'), 'error');
   }
@@ -1097,21 +1472,55 @@ function openRowMenu(anchor, id) {
   const session = sessionOf(id);
   if (!session) return;
   closeMenu();
+  // A folder's editor is not work that is filed: it is open or it is not, and
+  // closing it keeps everything it remembers, which is kept per folder.
+  const editor = session.harness === IDE;
   const menu = el('div', { class: 'menu', role: 'menu' },
     item('Info', () => infoDialog(session)),
-    item('Rename', () => renameSession(session)),
-    item(dom.keybar.hidden ? 'Show key bar' : 'Hide key bar', () => {
+    editor ? null : item('Rename', () => renameSession(session)),
+    session.harness === 'vscode' ? null : item(dom.keybar.hidden ? 'Show key bar' : 'Hide key bar', () => {
       const on = dom.keybar.hidden;
       setKeyBarWanted(on);
       showKeyBar(on);
     }),
-    item(session.archived ? 'Unarchive' : 'Archive', () => archiveSession(session, !session.archived)),
-    item('Download scrollback', () => downloadJournal(session)),
-    item('Delete', () => deleteSession(session), 'danger'));
+    editor ? null : el('div', { class: 'menu-label', text: 'Status' }),
+    ...(editor ? [] : STATUSES.map((one) => item(one.label, () => setStatus(session, one.id),
+      statusOf(session) === one.id ? 'checked' : ''))),
+    el('div', { class: 'menu-sep' }),
+    editor && state.current?.id === session.id ? item('Reload editor', () => attach(session)) : null,
+    item(editor ? 'Download server log' : 'Download scrollback', () => downloadJournal(session)),
+    item(editor ? 'Close VS Code' : 'Delete', () => deleteSession(session), 'danger'));
   document.body.append(menu);
-  const box = anchor.getBoundingClientRect();
-  menu.style.top = Math.round(box.bottom + 6) + 'px';
-  menu.style.left = Math.round(Math.min(box.left, window.innerWidth - menu.offsetWidth - 10)) + 'px';
+  const position = (event) => {
+    if (event?.target === menu) return;
+    const box = anchor.getBoundingClientRect();
+    const viewport = window.visualViewport;
+    const left = (viewport?.offsetLeft || 0) + 10;
+    const top = (viewport?.offsetTop || 0) + 10;
+    const right = left + (viewport?.width || window.innerWidth) - 20;
+    const bottom = top + (viewport?.height || window.innerHeight) - 20;
+    menu.style.minWidth = Math.min(190, right - left) + 'px';
+    menu.style.maxWidth = Math.max(0, right - left) + 'px';
+    menu.style.maxHeight = 'none';
+    const below = Math.max(0, bottom - box.bottom - 6);
+    const above = Math.max(0, box.top - 6 - top);
+    const upwards = menu.offsetHeight > below && above > below;
+    menu.style.maxHeight = Math.max(0, Math.min(bottom - top, upwards ? above : below)) + 'px';
+    const y = upwards ? box.top - 6 - menu.offsetHeight : box.bottom + 6;
+    menu.style.top = Math.max(top, Math.min(y, bottom - menu.offsetHeight)) + 'px';
+    menu.style.left = Math.max(left, Math.min(box.left, right - menu.offsetWidth)) + 'px';
+  };
+  position();
+  window.addEventListener('resize', position);
+  document.addEventListener('scroll', position, true);
+  window.visualViewport?.addEventListener('resize', position);
+  window.visualViewport?.addEventListener('scroll', position);
+  state.menuCleanup = () => {
+    window.removeEventListener('resize', position);
+    document.removeEventListener('scroll', position, true);
+    window.visualViewport?.removeEventListener('resize', position);
+    window.visualViewport?.removeEventListener('scroll', position);
+  };
   state.menu = menu;
   // The button that opened the menu keeps the focus while it is open, and a
   // button with the focus answers Enter and space - so it is handed back when
@@ -1130,6 +1539,8 @@ function openRowMenu(anchor, id) {
 
 function closeMenu() {
   if (!state.menu) return;
+  state.menuCleanup?.();
+  state.menuCleanup = null;
   state.menu.remove();
   state.menu = null;
   const anchor = state.menuAnchor;
@@ -1185,11 +1596,11 @@ function showEmpty() {
     unreachable ? null : el('button', { class: 'btn primary', type: 'button', text: 'New session', onclick: newSession }),
   );
   dom.sessionTitle.textContent = 'Socrates';
-  dom.sessionHarness.hidden = true;
+  stopUsage();
   dom.sessionMenu.hidden = true;
   if (state.assist) state.assist.attached();
-  dom.termSize.hidden = true;
-  dom.sessionArchived.hidden = true;
+  if (state.transfer) state.transfer.attached();
+  dom.sessionStatus.hidden = true;
   dom.termOverlay.hidden = true;
   clearNotice();
   if (state.reachable) { state.wanted = ''; location.hash = ''; }
@@ -1199,21 +1610,78 @@ function showEmpty() {
 function applySession(session) {
   state.current = session;
   dom.sessionTitle.textContent = session.title;
-  dom.sessionArchived.hidden = !session.archived;
+  setClass(dom.sessionTitle, 'titling', state.titling.has(session.id));
+  const status = statusOf(session);
+  dom.sessionStatus.hidden = status === 'in_progress';
+  dom.sessionStatus.textContent = STATUS_WORDS[status];
+  dom.sessionStatus.dataset.status = status;
   dom.sessionMenu.hidden = false;
   dom.termEmpty.hidden = true;
 
-  // The mark and the name of what it runs. Everything else the machine knows
-  // about this session is one place only: "Info" in the session menu.
-  dom.sessionHarness.hidden = false;
-  dom.sessionHarness.innerHTML = '';
-  dom.sessionHarness.append(
-    agentMark(session.harness, 16),
-    el('span', { class: 'b-model', text: session.model || harnesses.label(session.harness) }),
-  );
+  // What it runs and on which model is in the list's mark and in "Info" in
+  // the session menu; the bar keeps its width for the name.
+  startUsage(session);
 
   drawOverlay(session);
   renderList();
+}
+
+const USAGE_REFRESH = 30000;
+
+function stopUsage() {
+  state.usageGeneration += 1;
+  if (state.usageTimer) clearInterval(state.usageTimer);
+  state.usageTimer = null;
+  dom.sessionUsage.hidden = true;
+  dom.sessionUsage.innerHTML = '';
+  dom.sessionUsage.title = '';
+  dom.sessionUsage.closest('.topbar').classList.remove('has-usage');
+}
+
+function startUsage(session) {
+  stopUsage();
+  if (!session || session.harness === 'vscode') return;
+  const generation = state.usageGeneration;
+  const refresh = async () => {
+    try {
+      const usage = await api('/api/sessions/' + encodeURIComponent(session.id) + '/usage', {
+        attempts: 1, timeout: 10000,
+      });
+      if (generation !== state.usageGeneration || !state.current || state.current.id !== session.id) return;
+      drawUsage(usage);
+    } catch { /* quota is useful context, never a reason to disturb the terminal */ }
+  };
+  refresh();
+  state.usageTimer = setInterval(refresh, USAGE_REFRESH);
+}
+
+function drawUsage(usage) {
+  const windows = Array.isArray(usage && usage.windows) ? usage.windows : [];
+  const parts = [];
+  const details = [];
+  for (const window of windows) {
+    const used = Math.max(0, Math.min(100, Math.round(Number(window.used_percent) || 0)));
+    // How long until the window renews is shown, not only hovered: whether
+    // 80% is a problem depends on whether it is gone in ten minutes.
+    const left = harnesses.untilReset(window);
+    parts.push(el('span', { class: 'usage-part' },
+      el('span', { class: 'usage-label', text: window.label }),
+      el('span', { text: used + '%' }),
+      left ? el('span', { class: 'usage-reset' }, '(' + left,
+        el('span', { class: 'usage-left', text: ' left' }), ')') : null));
+    details.push(window.label + ': ' + used + '% used' + (left ? ' · ' + harnesses.resetDetail(window) : ''));
+  }
+  if (Number.isFinite(usage && usage.cost_usd)) {
+    const value = Number(usage.cost_usd);
+    const shown = value > 0 && value < .01 ? '<$0.01' : '$' + value.toFixed(2);
+    parts.push(el('span', { class: 'usage-part usage-cost', text: '~' + shown }));
+    details.push('Estimated session API-equivalent cost: $' + value.toFixed(4));
+  }
+  dom.sessionUsage.innerHTML = '';
+  dom.sessionUsage.append(...parts);
+  dom.sessionUsage.title = details.join('\n');
+  dom.sessionUsage.hidden = parts.length === 0;
+  dom.sessionUsage.closest('.topbar').classList.toggle('has-usage', parts.length > 0);
 }
 
 // drawOverlay is §E.7's table. Everything it can say is a state the session is
@@ -1230,6 +1698,21 @@ function drawOverlay(session) {
   // answering with what it became. The row still says needs_resume for all of
   // it, and a list refresh in the middle must not redraw the button that has
   // already been pressed.
+  // A done session's terminal was closed on purpose, and that is the whole of
+  // what there is to say about it, whatever state the row is in.
+  if (isDone(session)) {
+    show(
+      el('p', { class: 'overlay-title', text: 'This session is done.' }),
+      el('p', { class: 'overlay-detail', text: 'Its terminal was closed. ' + (deleteWords(session) || 'It is deleted soon') + '.' }),
+      el('div', { class: 'overlay-actions' },
+        el('button', {
+          class: 'btn primary', type: 'button', text: 'Pick it up again',
+          onclick: () => setStatus(session, 'in_progress'),
+        }),
+        el('button', { class: 'btn', type: 'button', text: 'Delete now', onclick: () => deleteSession(session) })),
+    );
+    return;
+  }
   let drawn = session.state;
   if (state.resuming) {
     if (drawn === 'needs_resume' || drawn === 'starting') drawn = 'resuming';
@@ -1410,18 +1893,21 @@ function actionFailed(err, sentence) {
   return sentence;
 }
 
+let ideGeneration = 0;
+
 function detach() {
+  ideGeneration += 1;
+  document.body.classList.remove('ide-open');
   if (state.assist) state.assist.attached();
   if (state.keybar) { state.keybar.dispose(); state.keybar = null; }
   dom.keybar.hidden = true;
   if (state.socket) { state.socket.stop(); state.socket = null; }
   if (state.term) { state.term.dispose(); state.term = null; }
   dom.term.innerHTML = '';
-  showJump(false);
-  state.paneWheel = false;
   setClass(dom.termWrap, 'stale', false);
   state.live = false;
   state.resuming = false;
+  if (state.transfer) state.transfer.attached();
 }
 
 /**
@@ -1433,7 +1919,21 @@ function detach() {
  */
 function attach(session) {
   detach();
+  // A session nobody can see is a session nobody can leave: the row is the
+  // only way back to it, so the folder it is in is opened if the person had
+  // shut it.
+  openFolder(session);
   applySession(session);
+  // A done session has no terminal to open, and opening it must not start one:
+  // the overlay applySession drew is all there is until it is picked up.
+  if (isDone(session)) return;
+  // A session that was just opened is still settling: see notify.hush.
+  if (notifier) notifier.hush(session.id);
+  if (session.harness === 'vscode') {
+    document.body.classList.add('ide-open');
+    openIDE(session, ideGeneration);
+    return;
+  }
 
   // Opening a session that is not running is what relaunches it (§C.8), and
   // the relaunch happens inside the handshake: the program has to be started,
@@ -1463,17 +1963,8 @@ function attach(session) {
       socketRef.socket.sendInput(bytes);
     },
     onResize: (cols, rows) => {
-      showSize(cols, rows);
       if (socketRef.socket) socketRef.socket.resize(cols, rows);
     },
-    // A finger on the pane scrolls tmux's history rather than xterm's, over
-    // the control channel: it is the only history that is there under a
-    // full-screen TUI, and the only one that is the same for every viewer.
-    onScroll: (lines) => { if (socketRef.socket) socketRef.socket.scroll(lines); },
-    // Whether this pane has any tmux history to move. Only the server can
-    // tell: a tmux client draws every pane on the alternate screen and tracks
-    // the mouse for all of them, so the browser cannot read it off xterm.
-    wheelPane: () => state.paneWheel,
     fitTo: dom.termWrap,
     scrollback: state.terminal.scrollback,
     fontSize: state.terminal.font_size,
@@ -1489,15 +1980,17 @@ function attach(session) {
     onStatus: (status) => onStatus(status),
   });
   socketRef.socket = socket;
-  // Anything typed calls off a scroll that is still gliding (see sendInput).
-  socket.beforeInput = () => { if (state.term) state.term.cancelScroll(); };
   state.socket = socket;
   state.keybar = mountKeyBar(dom.keybar, state.term.term, socket);
   showKeyBar(keyBarWanted());
-  // The two buttons in the header, and the conversation behind one of them.
-  // It is done before the size is read, because a chat panel that reopens
-  // takes width off the pane, and the size the session is told at attach is
-  // the size it gets.
+  if (state.transfer) state.transfer.attached();
+  // A pane that has just been built has an ordinary text field behind it, and
+  // it is focused below in this same tick - before the keyboard switch would
+  // otherwise have seen it.
+  guard(state.term.term.textarea);
+  // The two controls in the header. A recording that belonged to the session
+  // before this one is cancelled here, so its words can never be typed into
+  // the terminal that has just taken the screen.
   if (state.assist) state.assist.attached();
 
   const size = state.term.size();
@@ -1505,10 +1998,109 @@ function attach(session) {
   state.term.focus();
 }
 
+// Start through the existing resume API, then wait for the IDE's HTTP server.
+// A generation keeps a slow launch from replacing a subsequently selected pane.
+async function openIDE(session, generation) {
+  if (['failed', 'exited'].includes(session.state)) return;
+  const current = () => generation === ideGeneration;
+  const base = '/ide/' + encodeURIComponent(session.id) + '/';
+  // What stands on the stage until there is an editor on it: a turning mark
+  // and a line of words, the same shape the pane's own overlay uses for a
+  // session that is coming back.
+  const words = el('p', { text: 'Opening VS Code…' });
+  const spinner = el('div', { class: 'spinner' });
+  const loading = el('div', { class: 'ide-loading' }, spinner, words);
+  dom.term.replaceChildren(loading);
+  try {
+    const data = await api('/api/sessions/' + encodeURIComponent(session.id) + '/resume', {
+      method: 'POST', timeout: 60000,
+    });
+    if (!current()) return;
+    replaceSession(data.session);
+    if (data.error) throw new Error(data.error);
+    for (let attempt = 0; attempt < 60 && current(); attempt += 1) {
+      try {
+        const response = await fetch(base + 'healthz', { cache: 'no-store', signal: AbortSignal.timeout(3000) });
+        if (response.ok) {
+          if (!current()) return;
+          const frame = el('iframe', {
+            class: 'ide-frame', title: 'VS Code',
+            src: base + '?folder=' + encodeURIComponent(session.workdir),
+            allow: 'clipboard-read; clipboard-write',
+          });
+          // The card stays on top of the frame rather than being replaced by
+          // it. `healthz` answers as soon as code-server's HTTP server is
+          // listening, and the workbench is ten more seconds of white after
+          // that - which is the one thing on this page that reads as broken.
+          words.textContent = 'Loading the editor…';
+          dom.term.replaceChildren(frame, loading);
+          // The editor's fields are under the keyboard switch like the page's.
+          watchFrame(frame);
+          onStatus('live');
+          revealIDE(frame, loading, current);
+          return;
+        }
+      } catch { /* code-server may still be starting */ }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    if (current()) throw new Error('VS Code did not become ready. Check the session log or retry.');
+  } catch (err) {
+    if (!current()) return;
+    // A mark that turns is a promise that something is still happening, and
+    // nothing is.
+    spinner.remove();
+    words.textContent = errorMessage(err);
+    loading.append(el('button', { class: 'btn', text: 'Retry', onclick: () => attach(sessionOf(session.id) || session) }));
+  }
+}
+
+// How long the card waits for a workbench that never arrives. Past this the
+// frame is uncovered whatever is in it: a page that is going to be white is
+// better white than behind a mark that turns for ever.
+const IDE_REVEAL_CEILING = 30000;
+// The fade in app.css, plus a frame to start it in.
+const IDE_FADE = 400;
+
+/**
+ * revealIDE takes the loading card away once there is an editor behind it.
+ *
+ * The frame is served from this origin, so the honest test is the workbench's
+ * own root element: `load` fires when code-server's shell has been fetched,
+ * which is several seconds before it has drawn anything. A frame that cannot
+ * be read at all - which should not happen, and would mean the IDE route has
+ * moved - falls back to `load` rather than waiting for a document it will
+ * never see.
+ */
+function revealIDE(frame, loading, current) {
+  const started = Date.now();
+  const uncover = () => {
+    if (!loading.isConnected) return;
+    loading.classList.add('done');
+    setTimeout(() => loading.remove(), IDE_FADE);
+  };
+  const look = () => {
+    // A session that was stepped off takes its card with it.
+    if (!current() || !loading.isConnected) return;
+    if (Date.now() - started >= IDE_REVEAL_CEILING) { uncover(); return; }
+    let ready = false;
+    try {
+      const doc = frame.contentDocument;
+      ready = !!(doc && doc.querySelector('.monaco-workbench'));
+    } catch {
+      ready = frame.dataset.loaded === 'true';
+    }
+    if (ready) { uncover(); return; }
+    setTimeout(look, 150);
+  };
+  frame.addEventListener('load', () => { frame.dataset.loaded = 'true'; }, { once: true });
+  look();
+}
+
 // The key bar is asked for or it is not there: no device decides for itself
 // whether it has a keyboard, because the two that matter - a tablet in a
 // case, a laptop with a touch screen - are the two it would get wrong. The
 // session menu is the one way in, and the answer is kept per device.
+
 function showKeyBar(on) {
   dom.keybar.hidden = !on;
   // A modifier armed on a bar nobody can see would transform the next key
@@ -1536,49 +2128,68 @@ function renameRow(id, title) {
   renderList();
 }
 
-/**
- * showJump raises the one cue that a pane is not at its live bottom.
- *
- * Scrolling back puts the pane into tmux's copy mode, and copy mode is a place
- * a person can be without knowing it: the screen is still, new output does not
- * appear, and every key goes to copy mode rather than to the program. Two
- * things answer that. This pill, which is the cue and the way out; and the
- * server, which leaves copy mode by itself on the first real keystroke, so
- * that nothing typed is ever lost even if the pill is never noticed.
- */
-function showJump(on) {
-  if (!dom.termJump) return;
-  dom.termJump.hidden = !on;
+// titleFrame follows the automatic naming of a session: the name pulses from
+// the moment the model is asked until it has answered, and an answer that is
+// a failure is said in a dialog - a name that silently never arrives is a
+// sidebar nobody can explain.
+function titleFrame(frame) {
+  const id = frame.id;
+  if (!id) return;
+  if (frame.phase === 'start') state.titling.add(id);
+  else state.titling.delete(id);
+  if (state.current && state.current.id === id) {
+    setClass(dom.sessionTitle, 'titling', state.titling.has(id));
+  }
+  if (frame.title) renameRow(id, frame.title);
+  else renderList();
+  if (frame.phase === 'error') {
+    const session = sessionOf(id);
+    alertDialog({
+      title: 'Could not name the session',
+      body: (session ? '“' + session.title + '”: ' : '') + (frame.text || 'the title model failed.'),
+    });
+  }
 }
 
-function showSize(cols, rows) {
-  dom.termSize.hidden = false;
-  dom.termSize.textContent = cols + '×' + rows;
+/**
+ * insertIntoTerm puts one line into the pane as if it had been typed.
+ *
+ * The frame carries the line as `text` rather than as loose bytes, which is
+ * what decides its fate if the server turns out to have forgotten this
+ * viewer: keystrokes are counted, a composed line is handed back in the words
+ * it was written in. No Enter goes with it. A transcript is a guess about
+ * what was said, and running a guess is the person's decision, not this
+ * page's - so the words land on the prompt and wait there.
+ */
+function insertIntoTerm(text) {
+  const line = String(text || '');
+  if (!line) return;
+  if (!state.socket) {
+    toast('There is no session to type into.', 'error');
+    return;
+  }
+  state.socket.sendInput(line, { text: line });
+  // The cursor goes back where the words did, so the Enter that runs them is
+  // the next key pressed rather than a tap on the pane first.
+  if (state.term) state.term.focus();
 }
 
 function onControl(sessionId, frame) {
   // A session that names itself does it while another one is being watched,
   // so this frame is about whichever session it names and not about the one
   // this socket is attached to.
-  if (frame.t === 'title') { renameRow(frame.id, frame.title); return; }
+  if (frame.t === 'title') { titleFrame(frame); return; }
   if (!state.current || state.current.id !== sessionId) return;
   switch (frame.t) {
     case 'hello':
+      // The handshake is where a relaunched program has just come up, so the
+      // settling window starts again from here. A plain reconnect is not a
+      // start, and a turn that finished while it was away is still news.
+      if (notifier && state.resuming) notifier.hush(sessionId);
       if (frame.session) applySession({ ...state.current, ...frame.session });
-      if (frame.size) showSize(frame.size.cols, frame.size.rows);
-      // The pane is shared, so a reload or a second device has to find out it
-      // is looking at a pane somebody scrolled back - and which of the two
-      // histories a finger on it moves.
-      state.paneWheel = !!frame.wheel;
-      showJump(!!frame.in_mode);
-      // A handshake carries every running session's activity and this
-      // session's run, so a reconnect and a reload both re-draw the sidebar
-      // and the progress line without asking for anything.
+      // A handshake carries every running session's activity, so a reconnect
+      // and a reload both re-draw the sidebar without asking for anything.
       mergeActivity(frame.activity);
-      if (state.assist) {
-        state.assist.helloAgent(frame.agent);
-        state.assist.helloChat(frame.chat);
-      }
       if (!Number(frame.replay_from) && state.term) {
         state.term.reset();
         // Only worth saying when there was something to lose: a first attach
@@ -1589,28 +2200,22 @@ function onControl(sessionId, frame) {
     case 'activity':
       mergeActivity(frame.sessions);
       break;
-    case 'agent':
-      if (state.assist) state.assist.agentFrame(frame);
-      break;
     case 'status':
       if (state.assist) state.assist.statusFrame(frame);
       break;
-    case 'chat':
-      if (state.assist) state.assist.chatFrame(frame);
-      break;
-    case 'mode':
-      state.paneWheel = !!frame.wheel;
-      showJump(!!frame.in_mode);
-      break;
     case 'state':
-      replaceSession({ ...state.current, state: frame.state });
+      if (notifier && frame.state !== state.current.state) notifier.hush(sessionId);
+      // The program coming up or going down is a status change, so the row
+      // moves - the same moment the server wrote into it.
+      replaceSession({ ...state.current, state: frame.state,
+        active_at: frame.state === state.current.state ? state.current.active_at : Date.now() });
       break;
     case 'exit':
-      replaceSession({ ...state.current, state: 'exited', exit_status: frame.status });
+      replaceSession({ ...state.current, state: 'exited', exit_status: frame.status,
+        active_at: Number(frame.at) || Date.now() });
       break;
     case 'size':
       if (frame.by === 'other') {
-        showSize(frame.cols, frame.rows);
         notice('resized', 'Another viewer resized this session to ' + frame.cols + '×' + frame.rows + '.');
         if (state.term) state.term.refit();
       }
@@ -1630,6 +2235,12 @@ function onControl(sessionId, frame) {
       if (frame.keystrokes) {
         toast(frame.keystrokes + ' keystroke' + (frame.keystrokes === 1 ? '' : 's')
           + ' may not have been delivered.', 'error');
+      }
+      // A composed line is given back in full rather than counted: it was
+      // spoken once, and a person who is not looking at the screen has no
+      // other way to find out that it never arrived.
+      for (const line of frame.lines || []) {
+        toast('That was not typed into the terminal: “' + line + '”', 'error');
       }
       break;
     case 'error':
@@ -1671,16 +2282,11 @@ function updateStale() {
 function selectSession(id) {
   const session = sessionOf(id);
   if (!session) return;
-  // The drawer closes first, and the address bar is corrected first, because
-  // both are true of the tap whatever it turns out to have selected. Tapping
-  // the session that is already open used to return before either, so the one
-  // row a thumb is most likely to hit was the one row that left the list
-  // covering the terminal it had just asked for.
+  if (state.current && state.current.id === id && (state.socket || document.body.classList.contains('ide-open'))) return;
   markRead(id);
   state.wanted = id;
   location.hash = '#' + id;
   closeNav();
-  if (state.current && state.current.id === id && state.socket) return;
   if (state.pendingAttach) clearTimeout(state.pendingAttach);
   state.pendingAttach = setTimeout(() => {
     state.pendingAttach = null;
@@ -1723,7 +2329,7 @@ function measureNewPane() {
   // it exists for the length of one measurement.
   const bar = mountKeyBar(dom.keybar, null, null);
   dom.keybar.hidden = !keyBarWanted();
-  const size = measurePane(dom.term, { fontSize: state.terminal.font_size });
+  const size = measurePane(dom.term, { fontSize: state.terminal.font_size, webgl: state.terminal.webgl });
   bar.dispose();
   dom.keybar.hidden = keybarWas;
   return size;
@@ -1747,6 +2353,9 @@ async function newSession() {
         harness: pick.harness,
         model: pick.model,
         effort: pick.effort,
+        shell_execution: pick.shell_execution,
+        profile: pick.profile || undefined,
+        ultracode: pick.ultracode || undefined,
         workdir_mode: pick.workdir_mode,
         workdir: pick.workdir,
         cols: size.cols || undefined,
@@ -1827,32 +2436,9 @@ function wire() {
     if (document.body.classList.contains('nav-open')) closeNav(); else openNav();
   });
   dom.navScrim.addEventListener('click', closeNav);
-  if (dom.termJump) {
-    dom.termJump.addEventListener('click', () => {
-      // A glide still in flight would scroll the pane straight back off the
-      // bottom the pill has just asked for.
-      if (state.term) state.term.cancelScroll();
-      if (state.socket) state.socket.jump();
-      showJump(false);
-      if (state.term) state.term.focus();
-    });
-    // A thumb on the pill must not take the focus out of the pane.
-    dom.termJump.addEventListener('mousedown', (event) => event.preventDefault());
-  }
   if (dom.sideCollapse) {
     dom.sideCollapse.addEventListener('click', () => showSidebar(!sidebarCollapsed()));
   }
-  dom.sessionScope.addEventListener('click', (event) => {
-    const button = event.target.closest('.seg');
-    if (!button) return;
-    state.scope = button.dataset.scope;
-    for (const seg of dom.sessionScope.querySelectorAll('.seg')) {
-      const on = seg === button;
-      seg.classList.toggle('on', on);
-      seg.setAttribute('aria-pressed', on ? 'true' : 'false');
-    }
-    refreshList();
-  });
   dom.sessionMenu.addEventListener('click', (event) => {
     if (state.current) openRowMenu(event.currentTarget, state.current.id);
   });
@@ -1860,7 +2446,12 @@ function wire() {
   dom.sessionTitle.addEventListener('click', () => {
     if (state.current) renameSession(state.current);
   });
+  // The on-screen keyboard, which on a touch screen this button raises and
+  // puts away and nothing else does. With no field focused, it is raised for
+  // the pane.
+  initKeyboard(dom.kbBtn, () => (state.term ? state.term.term.textarea : null));
   dom.logout.addEventListener('click', async () => {
+    if (notifier) await notifier.signOut();
     try { await api('/api/logout', { method: 'POST' }); } catch { /* going anyway */ }
     location.href = '/login';
   });
@@ -1903,20 +2494,30 @@ function wire() {
 }
 
 async function boot() {
+  await loadTerminalFonts();
   wire();
+  // Which folders this device keeps shut, before the first list is drawn.
+  restoreFolders();
   // Before anything is measured: the rail is a different stage width, and a
   // terminal fitted to the wide one and then narrowed is a terminal that
   // reflows in front of the person.
   restoreSidebar();
-  // Status, Agent and the chat, mounted before anything is measured: the
-  // panel takes width off the pane, and a layout applied afterwards resizes a
-  // terminal somebody is already looking at.
+  // Status and the microphone, mounted before anything is measured so that
+  // the bar is its final height before the pane is fitted into what is left.
   state.assist = mountAssist({
     dom,
     notice,
-    refit: () => { if (state.term) state.term.refit(); },
     current: () => state.current,
     live: () => state.live,
+    insert: (text) => insertIntoTerm(text),
+  });
+  // Copy, paste and upload, for whichever terminal is on screen.
+  state.transfer = mountTransfer({
+    dom,
+    current: () => state.current,
+    term: () => (state.term ? state.term.term : null),
+    send: (data) => { if (state.socket) state.socket.sendInput(data); },
+    focus: () => { if (state.term) state.term.focus(); },
   });
   // The chime and the notification. Mounted here rather than in mountAssist
   // because they are not about the session on screen: they fire for whichever
@@ -1933,7 +2534,9 @@ async function boot() {
   state.wanted = location.hash.replace(/^#/, '');
   state.loading = true;
   renderList();
-  harnesses.load().catch(() => { /* the sheet says so when it is opened */ });
+  // The catalogue decides whether a folder offers VS Code, so the list is
+  // drawn again once it is in.
+  harnesses.load().then(() => renderList()).catch(() => { /* the sheet says so when it is opened */ });
   try {
     const prefs = await api('/api/preferences', { attempts: 1, timeout: 8000 });
     if (prefs && prefs.terminal) state.terminal = { ...state.terminal, ...prefs.terminal };
@@ -1943,7 +2546,7 @@ async function boot() {
   // `openWanted` is the only thing that attaches on its own, so there is one
   // rule about when that is allowed and one place it lives.
   if (!state.wanted || !sessionOf(state.wanted)) {
-    const first = state.sessions.find((s) => !s.archived) || state.sessions[0];
+    const first = state.sessions.find((s) => !isDone(s)) || state.sessions[0];
     state.wanted = first ? first.id : state.wanted;
   }
   openWanted();

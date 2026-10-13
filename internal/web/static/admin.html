@@ -31,17 +31,6 @@
         <span class="state-label">Loading…</span>
       </div>
       <div class="hint" id="tmuxReason"></div>
-      <div class="row" style="flex-wrap:wrap;margin-top:14px">
-        <button class="btn sm primary" id="tmuxInstall" type="button" hidden>Install tmux</button>
-        <button class="btn sm ghost" id="tmuxLogToggle" type="button" hidden>Show output</button>
-      </div>
-      <div class="hint install-result" id="tmuxInstallResult" hidden></div>
-      <pre class="log" id="tmuxLog" hidden></pre>
-      <div class="field" id="tmuxManualField" hidden style="margin-top:16px">
-        <label for="tmuxManual">Install it yourself</label>
-        <input class="input mono" type="text" id="tmuxManual" readonly spellcheck="false">
-        <div class="hint">Run this in a terminal on this machine, then reload this page.</div>
-      </div>
     </section>
 
     <section class="card" id="workspaceCard">
@@ -67,6 +56,17 @@
         <button class="btn sm" id="presetAdd" type="button">Add a directory</button>
         <div class="hint">Each one becomes a button in the new-session sheet. A path that is not there yet is saved with a warning, because a mount may simply be down.</div>
       </div>
+    </section>
+
+    <section class="card" id="profilesCard">
+      <h2>Profiles</h2>
+      <p class="card-sub">A profile is a separate set of sign-ins for Claude Code, Codex and OpenCode - a business account beside a private one. The new-session sheet asks which profile a session runs in, in the order of this list - drag a row by its handle to change it - and a session keeps that profile for its whole life. Settings, instructions, skills, plugins and MCP servers are shared with the default profile; accounts and conversations are not.</p>
+      <div id="profileList"></div>
+      <div class="profile-add">
+        <input class="input" type="text" id="profileName" placeholder="Business" maxlength="40" autocomplete="off">
+        <button class="btn sm" id="profileAdd" type="button">Add profile</button>
+      </div>
+      <div class="hint">Changes here take effect at once. To sign in, start a session in the profile: Claude Code asks by itself, and a container Shell in the profile is where <code>codex login --device-auth</code> and <code>opencode auth login</code> sign the other two in.</div>
     </section>
 
     <section class="card" id="terminalCard">
@@ -187,11 +187,11 @@
       </div>
     </section>
 
-    <!-- Two models and two limits: what a session's screen is described with,
-         what drives it, and how far it is allowed to go on its own. -->
+    <!-- The two models that read a screen without typing into it: one says
+         what the session is doing, the other calls it something. -->
     <section class="card" id="assistCard">
-      <h2>Status &amp; Agent</h2>
-      <p class="card-sub">Status has a model read the screen of a session and say what it is doing, in one or two sentences, which the voice above reads out loud. Agent lets a model type into the session for you: it looks at the screen, takes one small step, and looks again.</p>
+      <h2>Status &amp; naming</h2>
+      <p class="card-sub">Status has a model read the screen of a session and say what it is doing, in one or two sentences, which the voice above reads out loud. The namer reads the first screen a session answers on and calls the session after it, once.</p>
 
       <div class="field">
         <label>Status model</label>
@@ -199,18 +199,9 @@
         <div class="hint">Asked for a sentence about a screen, so a fast, cheap model is the right one — google/gemini-2.5-flash is the default.</div>
       </div>
       <div class="field">
-        <label>Agent model</label>
-        <div id="orAgent"></div>
-        <div class="hint">This one has to read a terminal and decide which keys to press, which is a harder job than the one above.</div>
-      </div>
-      <div class="field">
-        <label class="switch"><input type="checkbox" id="agentAllowShell"><span class="track"></span><span>Let it drive a Shell session</span></label>
-        <div class="hint">With it off, Agent works only on the three coding programs. A shell takes whatever it is given, which is the point of a shell and the reason this switch exists.</div>
-      </div>
-      <div class="field">
-        <label for="agentMaxSteps">Steps per run</label>
-        <input class="input" type="number" id="agentMaxSteps" min="1" max="40">
-        <div class="hint">How many times one run may look at the screen and act on it before it stops by itself. Twelve is the default; a run can be stopped at any point from the session page.</div>
+        <label>Title model</label>
+        <div id="orTitle"></div>
+        <div class="hint">Asked for a handful of words once per session, so the cheapest thing that can read a screen will do — google/gemini-2.5-flash-lite is the default.</div>
       </div>
     </section>
 

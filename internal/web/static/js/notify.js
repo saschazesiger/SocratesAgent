@@ -17,7 +17,7 @@
 // - which session, what it went to, what it came from - and the two ways to
 // say so.
 
-import { toast } from './api.js';
+import { api, toast, errorMessage } from './api.js';
 
 const SOUND_KEY = 'socrates.sound';
 const NOTIFY_KEY = 'socrates.notify';
@@ -32,6 +32,12 @@ const PEAK = 0.18;
 // One chime at a time, whatever the machine is doing. Six sessions that all
 // finish inside a second are one piece of news.
 const CHIME_EVERY = 1500;
+
+// How long a session that was just opened or just came up says nothing. A
+// harness that is starting sets its status once and then changes it again
+// within moments, and that flurry is the program finding its feet, not a
+// turn that finished.
+const SETTLE = 5000;
 
 // What a notification says under the session's name. The words are the
 // sidebar's own, so the phone and the page agree about what happened.
@@ -89,6 +95,8 @@ export function mountNotify(ctx) {
   // idle -> busy -> idle, and the second edge is the same commit as the
   // first. One commit is one piece of news.
   const rung = new Map();
+  // Until when each session is still settling, by id: see hush.
+  const quiet = new Map();
 
   /* ------------------------------------------------------------ the chime */
 
@@ -159,6 +167,8 @@ export function mountNotify(ctx) {
 
   function show(id, next, session) {
     if (!notify || !available) return;
+    // A device the server pushes to is told by its worker, page or no page.
+    if (pushing) return;
     if (window.Notification.permission !== 'granted') return;
     const body = BODY[next.state];
     if (!body) return;
@@ -180,6 +190,82 @@ export function mountNotify(ctx) {
     } catch { /* a browser that has the constructor and refuses the call */ }
   }
 
+  /* ------------------------------------------------------------ web push */
+
+  // The notification above needs the page to be running, and a phone in a
+  // pocket has suspended it. Where this browser can be reached by Web Push -
+  // a worker, a push manager and a secure context, which plain http on a LAN
+  // address is not - the server sends the same news through the browser's
+  // push service and the worker shows it (internal/server/push.go), so the
+  // page stays quiet to say it once.
+  const pushable = available && window.isSecureContext
+    && 'serviceWorker' in navigator && 'PushManager' in window;
+  // Whether this device has a subscription the server has accepted.
+  let pushing = false;
+
+  function keyBytes(text) {
+    const b64 = text.replace(/-/g, '+').replace(/_/g, '/');
+    const raw = atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4));
+    return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+  }
+
+  function sameKey(buffer, want) {
+    if (!buffer) return false;
+    const have = new Uint8Array(buffer);
+    return have.length === want.length && have.every((b, i) => b === want[i]);
+  }
+
+  // The worker's registration. `ready` never settles where none was
+  // registered, so the wait is bounded.
+  function registration() {
+    return Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise((_, reject) => setTimeout(
+        () => reject(new Error('The offline worker is not running, and push needs it.')), 10000)),
+    ]);
+  }
+
+  /**
+   * subscribe makes sure this browser is subscribed with the server's key and
+   * that the server knows it. With `test`, the server is asked to push once,
+   * which is the only proof that the whole road works.
+   */
+  async function subscribe(test) {
+    const reg = await registration();
+    const { key } = await api('/api/push');
+    const want = keyBytes(key);
+    let sub = await reg.pushManager.getSubscription();
+    // A subscription made for another key - a reinstalled server - is one the
+    // push service will refuse every message for.
+    if (sub && !sameKey(sub.options && sub.options.applicationServerKey, want)) {
+      await sub.unsubscribe();
+      sub = null;
+    }
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: want });
+    await api('/api/push/subscribe', { method: 'POST', body: { subscription: sub.toJSON() } });
+    pushing = true;
+    if (test) await api('/api/push/test', { method: 'POST', body: { endpoint: sub.endpoint } });
+  }
+
+  async function unsubscribe() {
+    pushing = false;
+    const reg = await registration();
+    const sub = await reg.pushManager.getSubscription();
+    if (!sub) return;
+    const endpoint = sub.endpoint;
+    try { await sub.unsubscribe(); } catch { /* the server is told either way */ }
+    await api('/api/push/unsubscribe', { method: 'POST', body: { endpoint } });
+  }
+
+  // A tap on a pushed notification lands in a tab that was already open, and
+  // the worker says which session it was about.
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', (event) => {
+      const msg = event.data;
+      if (msg && msg.t === 'open' && msg.id) ctx.select(msg.id);
+    });
+  }
+
   /* ------------------------------------------------------- the completion */
 
   /**
@@ -189,13 +275,37 @@ export function mountNotify(ctx) {
    * handshake replay - both of which arrive with no previous state - say
    * nothing. A session coming back from `unknown` says nothing either: nothing
    * finished, the detector merely found its footing again.
+   *
+   * `next.unread` is the server's own answer to whether this is news at all,
+   * and it is the same edge the sidebar goes bold on. A harness is busy while
+   * it starts up and idle the moment it is ready, and that is not a turn
+   * ending: the server marks a completion unread only for a session somebody
+   * has actually typed at, and this is where a phone is told the difference.
+   *
+   * It has to be a mark that was just set, though, and not one that was
+   * already there. A start, a restart and a resume all keep the unread mark
+   * they found - work that finished before the relaunch is still work nobody
+   * has seen - and the new process then runs its own start-up, which is a
+   * busy that ends in idle carrying that old mark. Chiming there would
+   * announce the press of the Start button as a turn that finished. Every
+   * real completion begins with a keystroke, and typing clears the mark, so
+   * on a genuine one `prev.unread` is false.
+   *
+   * A turn that ended with a shell or a monitor still running (`tasks`) has
+   * not finished: the server sets no mark for it, and the chime waits for the
+   * change out of it - the agent's real last word, or the work behind it
+   * ending on its own.
    */
   function completed(id, next, prev) {
     if (!prev || !next) return;
-    if (prev.state !== 'busy') return;
+    if (prev.state !== 'busy' && prev.state !== 'tasks') return;
     if (next.state !== 'idle' && next.state !== 'waiting') return;
+    if (!next.unread || prev.unread) return;
     if (next.since && rung.get(id) === next.since) return;
     rung.set(id, next.since || Date.now());
+    // A commit inside the settling window is counted as rung, so the poll
+    // that repeats it a moment later does not ring for it either.
+    if (Date.now() < (quiet.get(id) || 0)) return;
     if (sound) {
       const now = Date.now();
       if (now - lastChime >= CHIME_EVERY) {
@@ -207,6 +317,17 @@ export function mountNotify(ctx) {
     // the list yet is heard and not shown.
     const session = ctx.sessionOf(id);
     if (session) show(id, next, session);
+  }
+
+  /**
+   * hush opens the settling window of one session: for the next SETTLE
+   * milliseconds a completion of it is neither heard nor shown. The page calls
+   * it when a session is opened and again when its program comes up, because
+   * a relaunch can take longer than the window and the start-up it hides is
+   * the one that follows.
+   */
+  function hush(id) {
+    if (id) quiet.set(id, Date.now() + SETTLE);
   }
 
   /* -------------------------------------------------------- the two toggles */
@@ -251,6 +372,7 @@ export function mountNotify(ctx) {
       notify = false;
       remember(NOTIFY_KEY, false);
       paintNotify();
+      if (pushable) unsubscribe().catch(() => { /* the server forgets it when the push service says gone */ });
       return;
     }
     // Asked from inside the click, because a permission prompt raised out of a
@@ -264,7 +386,18 @@ export function mountNotify(ctx) {
     notify = verdict === 'granted';
     remember(NOTIFY_KEY, notify);
     paintNotify();
-    if (!notify) toast('Notifications are blocked for this site in the browser.', 'error');
+    if (!notify) {
+      toast('Notifications are blocked for this site in the browser.', 'error');
+      return;
+    }
+    if (!pushable) return;
+    try {
+      await subscribe(true);
+    } catch (err) {
+      // The page's own notification still works while it is open, so this is
+      // a warning about the locked phone, not a switch that failed.
+      toast('Notifications only work while this page is open: ' + errorMessage(err), 'error');
+    }
   }
 
   if (dom.soundBtn) dom.soundBtn.addEventListener('click', () => setSound(!sound));
@@ -275,10 +408,23 @@ export function mountNotify(ctx) {
   }
   paintSound();
   paintNotify();
+  // A device that turned notifications on before is subscribed again on every
+  // load, which is how a server that lost its list - or got a new key - finds
+  // it again.
+  if (notify && pushable) subscribe(false).catch(() => { /* the page's own notification stands in */ });
 
   return {
     completed,
+    hush,
     soundOn: () => sound,
     notifyOn: () => notify && available,
+    /**
+     * signOut stops pushes to this device: a browser that has signed out must
+     * not go on showing the names of the sessions. Signing in again
+     * subscribes it again, because the switch itself stays on.
+     */
+    async signOut() {
+      if (pushable) await unsubscribe().catch(() => { /* signing out anyway */ });
+    },
   };
 }

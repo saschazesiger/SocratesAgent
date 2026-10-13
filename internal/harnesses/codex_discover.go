@@ -197,7 +197,7 @@ func (Codex) VerifyCLISession(ctx context.Context, req PlanRequest) (bool, error
 	if id == "" {
 		return false, nil
 	}
-	home := codexHome()
+	home := CodexHomeFor(req.DataDir, req.Profile)
 	if home == "" {
 		return false, errors.New("codex: there is no CODEX_HOME to look in")
 	}

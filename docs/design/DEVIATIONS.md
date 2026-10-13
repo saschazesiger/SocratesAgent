@@ -1505,195 +1505,507 @@ twice returns to the live bottom, and a tap in between moves nothing while
 still landing the focus in the pane. It then turns `terminal.mouse` off through
 the dashboard's own API and drags again, to hold the swallowed case where it is.
 
-## The phone audit: fifteen defects (2026-09-02)
+## Bug fix — OpenCode permission events
 
-An audit of the app on an iPhone-shaped browser found fifteen defects, four of
-them things a phone simply could not do. What follows is what changed and, where
-the change contradicts something written earlier in this file, which entry it
-supersedes.
+**§F.2 / ACTIVITY.md — `permission.v2.asked` / `permission.v2.replied` were never real.**
+The OpenCode source listened for those two event types, so `StateWaiting` was never once
+reported from layer 1: OpenCode 1.17.13 emits `permission.asked` and `permission.replied`
+(the payload shapes were right — only the names were wrong). Both names are now accepted,
+the real ones first and the `v2` spelling kept in case an older server ever answers with it.
+Two things follow from the same fix. The poll now also reads `GET /permission?directory=…`
+and seeds the waiting set from it, because a session holding a prompt reports `busy` in
+`/session/status` and a prompt raised while the stream was down would otherwise read as work
+in progress for ever; a `/permission` that fails is ignored so it cannot cost the busy seed.
+Because the endpoint can now clear prompts as well as seed them, three rules come with it.
+A successful `/permission` answer is authoritative and *replaces* the waiting set, and it is
+re-read every 12 s while the stream is up (under the same mutex as the event handling), because
+a prompt can vanish with no reply anybody can match — session aborted or deleted, a lost frame,
+a `requestID` that is not the id it was asked under — and on a live stream the reply event was
+otherwise the only thing that could retire one. Prompts are keyed by session, and an idle
+session drops that session's prompts: a session holding a prompt always reports busy, so idle is
+proof it is gone. And a failing endpoint is not
+believed either way — it gets its own 5 s budget, one failure changes nothing, and three
+consecutive failures drop the set, so an unconfirmable prompt cannot pin a row to `waiting` for
+the life of the session.
 
-**The finger no longer scrolls xterm at all — it scrolls tmux, over the control
-channel.** This supersedes *"The terminal takes a finger"* above in its
-mechanism, and keeps every one of its measurements about the gesture itself
-(the 8px slop, the `preventDefault`, the second finger, `dispose`).
+**Third review — what "idle" means, on both sides.** Four smaller corrections, all in the
+OpenCode watcher. (1) The poll's second witness — a prompt whose session is not in the status
+map is gone — ran only on a `failed` `/permission` answer, so a server *without* the endpoint
+never got it: an events-only watcher that missed the `permission.replied` while its stream was
+down had nothing left that could retire the prompt, and the row said `waiting` for the life of
+the session. The guard is now "not `ok`", which covers `absent` as well; an `ok` answer needs no
+witness because it replaces the set outright. The limitation that remains is stated rather than
+papered over: a prompt whose `permission.asked` carried no `sessionID` has nothing to look up in
+the map, and is left to the reply event, to ageing out against an empty `[]`, or to the failure
+budget. (2) The empty-answer carve-out read `len(waiting) == 0` inside the loop that puts
+prompts back into `waiting`, so with two young event-only prompts against one `[]` the first
+one carried over made the set non-empty and the second was dropped — and which one that was
+depended on Go's map iteration order. Whether the *answer* was empty is now taken once, before
+the loop. (3) A prompt asked in the same nanosecond the request was sent was dropped by
+`seen.After(start)`; the comparison is now `!seen.Before(start)`. (4) On the stream, anything
+that was not `busy`/`retry` retired that session's prompts — an unrecognised or future status
+type included. OpenCode emits `busy`, `retry` and `idle`, and only `idle` is proof; an unknown
+type still leaves the busy set, because it is not busy, but takes no prompt with it. The fake
+TUI carried the mirror image of the same mistake: `/ask` published `session.status` `idle`
+before `permission.asked` and dropped the session from its own `/session/status`, which is the
+opposite of what a real OpenCode holding a prompt reports. It now reports busy for as long as
+the prompt is open, and goes idle when the reply is published.
 
-The old design turned a drag into the wheel a trackpad would have sent and let
-xterm decide what a wheel meant. That reads as one path and is three, and two of
-them do not reach any history:
+And `scrapeScreen` gained an OpenCode waiting pattern, which the earlier "**Never infer
+`waiting` from an OpenCode screen** — no verified pattern exists" note forbade: the card is
+now verified. The pattern is the card's own furniture — `△ Permission required`, or the
+`Allow once   Allow always   Reject … ctrl+f` button row — not the words `Permission required`
+alone. That looser first attempt was wrong twice over: `capture-pane -S -40` reads 40 rows of
+scrollback as well as the pane, and the composer paints the same `┃` gutter the card does, so
+a captured OpenCode screen with those two words typed into the prompt box scraped as waiting
+(the capture is kept as the negative case in `TestScrapeScreens`). Waiting is still asked
+before busy and idle: at 120×40 the card covers the bottom bar, but at taller sizes the bar
+survives beside it with `ctrl+p commands` — the idle literal — on it.
 
-* with a program tracking the mouse — which is **every one of Claude Code,
-  Codex and OpenCode**, all three of them on the alternate screen as this
-  product launches them — the wheel becomes an SGR mouse report and is
-  forwarded to the program, which scrolls its own conversation or nothing;
-* with tmux's mouse off it becomes arrow keys, which walks a shell's history
-  onto the prompt (this is the case the old code swallowed);
-* and on an alternate screen there is no xterm scrollback to move in any case.
+**Second review of the same fix — `/permission` is three answers, not two.** Five things
+followed from reading the reconcile again. (1) A `permission.asked` that arrives *while* a
+`GET /permission` is in flight was replaced away by the answer, which describes the moment the
+server computed it: the request is now timed from before it is sent, and any prompt seen after
+that is carried over the replace, in the reconcile and in the poll both. (2) Stopping a watcher
+cancels its open request, and that cancellation was counted as an endpoint failure — a third of
+the budget that drops the whole waiting set, spent on the watcher's own shutdown; the outcome is
+now dropped before the lock whenever the context is done. (3) A server *without* the endpoint
+answered 404 and the 404 was read as a failure, so three of them destroyed waiting the event
+stream had reported correctly. `pendingPermissions` now returns a three-way outcome — `ok`,
+`absent` (404/405), `failed` — and `absent` takes nothing: the set is untouched, no failure is
+counted, the reconcile goroutine returns and the endpoint is never asked again, logged once as
+events-only. The same reasoning covers a subtler case of the same shape: `?directory=` filters
+by directory, so a workdir that does not match the server's answers `[]` to a prompt that is
+genuinely open. `openCodePrompt` gained `confirmed`, and an empty answer is authoritative only
+against a prompt the endpoint has listed at least once, or one older than a reconcile interval —
+a just-asked event-only prompt survives `[]`, an old one does not (otherwise a real mismatch
+would pin the row for the life of the session, and the session-idle rule covers it anyway).
+(4) The 60 s age-out under a failing endpoint was dead — three failures at 12 s apart clear the
+set in 36 s, so nothing ever reached 60 s — and is removed; the three-failure rule stays.
+(5) In the poll, the status map is used as the second witness over the waiting set only on a
+`failed` answer, and only past the point where the map itself was fetched *and decoded*, which
+is also where the decode error path now marks the watcher unusable instead of silently keeping
+the last state. The live test now asserts the assumption underneath that witness — at the
+waiting point, every pending prompt's session is `busy` in `/session/status` — rather than
+taking it on trust. On the screen side, captures at 45/60/80/100/120 columns show the button
+row wrapping onto its own `┃` line below about 80 columns: the `Allow once … Reject … ctrl+f`
+alternative fails at 60 and 45 while `△ Permission required` matches at every width, so the
+regexp is unchanged and the two narrow cards are now verbatim rows in `TestScrapeScreens`.
 
-Measured on a Claude Code session put on the alternate screen with `/alt`: two
-full-height drags left the pane **byte-identical**. On the three session types
-this product exists for, a finger reached nothing at all.
+## Copy and paste that a person can rely on (2026-09-04)
 
-So the drag is not the browser's to interpret. Which of two histories it moves
-is decided by the **server**, because the browser cannot tell: a tmux client
-draws every pane on the alternate screen and turns mouse tracking on for all of
-them, whatever the program inside is doing, so `buffer.active.type` and
-`modes.mouseTrackingMode` say the same thing for a shell and for Codex.
+rev 6 fixed the two things xterm.js gets wrong about the copy and paste **keys**, and left the
+rest of the path resting on tmux. That path is where copy and paste actually broke, every day,
+and none of the four ways it broke were the keys.
 
-* **A pane on the normal buffer** — **the Shell harness, and that is the whole
-  of the list.** `term.js` sends whole lines to `session.js`, which sends a
-  `{t:"scroll", lines}` control frame, and `internal/termux/scroll.go` runs
-  `copy-mode -e -H` and `send-keys -X -N n scroll-up` on the pane. That is
-  tmux's own history — the same one a person at a desk reaches with a prefix
-  and PageUp — and it works whatever the program thinks about the mouse and
-  whatever `terminal.mouse` is set to, because none of them is consulted. Copy
-  mode is entered with `-e` so that scrolling back down to the bottom leaves it
-  by itself, and with `-H` so that tmux does not paint its own position
-  indicator (below).
-* **A pane on the alternate screen** — **all three CLIs, Claude Code
-  included.** Codex and OpenCode obviously draw a full screen; Claude Code does
-  too *as this product launches it*, because the fixed policy sets
-  `CLAUDE_CODE_NO_FLICKER=1` (`internal/harnesses/claude.go`), and with it a
-  real `claude` is `alternate_on=1` and tracking the mouse from its idle prompt
-  onward. A bare `claude` without that variable stays on the normal buffer,
-  which is exactly why the first version of this entry got it wrong and said
-  Claude Code was a copy-mode session. It is not; only Shell is.
-  **tmux has no history for an alternate screen at all**, and this is a fact
-  about tmux rather than a choice: verified on 3.6, `copy-mode` followed by
-  twenty `scroll-up` leaves `capture-pane` returning the same three lines,
-  while `capture-pane -a` still holds the normal buffer underneath — tmux's
-  scrollback belongs to the normal buffer and the alternate screen is a window
-  over it with nothing above. The only thing that can scroll such a pane is the
-  program's own view, and a program that draws a full screen tracks the mouse
-  in order to be asked. So the drag becomes the wheel it asked for, which tmux
-  forwards to it as an SGR mouse report. With nobody tracking the mouse at all
-  there is nothing to send and nothing to move, and the drag is swallowed.
+**A plain drag belonged to tmux.** tmux tracks the mouse by default, so as far as xterm was
+concerned the pointer was the program's: a drag was a stream of mouse reports, tmux answered them
+by opening its own copy mode, and on release it copied into a tmux buffer. Whether that ever
+reached the browser's clipboard depended on tmux emitting OSC 52, on the terminal admitting to
+the `clipboard` capability, and on an async `navigator.clipboard.writeText` with **no user
+gesture behind it** — which Safari refuses outright, which plain http has not got at all, and
+which Chrome refuses unless the page happens to hold the permission. The documented way round it
+was `Shift`+drag, and on a Mac there was no way round it: xterm 6 hands `Shift` to the program
+there and forces a selection on `Alt` only behind `macOptionClickForcesSelection`, which was off.
+So the pointer is now the person's. `wireMouse` holds every unmodified left press back from xterm
+with a capturing `mousedown` on the host; past `SLOP` it is a selection made through the public
+`term.select()` from the `.xterm-screen` rectangle, which is exactly `cols × rows` cells;
+released where it was pressed it is a click, and the press and release are **replayed** to xterm
+then (untrusted synthetic events, which the capture listener ignores) so a program waiting for a
+click still gets one. A double click takes the word, a triple the logical line, and dragging on
+from either grows by that unit. **The release copies**, inside the gesture — the one place every
+browser allows a clipboard write without asking, and what every native terminal does. `Shift`,
+`Ctrl`, `Alt` and `Cmd` with the button still go to xterm and the program, and
+`macOptionClickForcesSelection: true` makes `Alt`+drag on a Mac what `Shift`+drag is elsewhere.
 
-  **One wheel event per line, not one per batch.** A mouse report has no
-  magnitude: `ESC [ < 64 ; 40 ; 12 M` says "the wheel turned up", once, whether
-  the event that produced it carried seventeen pixels or six hundred. The first
-  version of this dispatched one `WheelEvent` per fifty-millisecond batch with
-  the summed delta, and measured against a real Claude Code that moved the
-  transcript **two or three lines for a drag the length of the screen**. The
-  batch is unrolled instead — `Math.abs(lines)` events, one per line — so the
-  distance the finger travelled is the distance the program is asked for.
+**A phone could not copy at all.** xterm 6 selects with a mouse and nothing else, and rev 4's
+finger gesture was scrolling. A finger held still for `HOLD_MS` now selects the word under it,
+grows the selection when it moves on, and copies when it lifts — with a **Copied** toast, because
+a phone shows nothing else, and with the browser's own long-press callout and Android's context
+menu cancelled so they do not sit on top of it. The release is cancelled too, so no click is
+made up from a hold; a short tap is still the tap it was.
 
-The server answers "which of the two" from `#{alternate_on}`, in the handshake
-and again in the reply to every scroll, and the browser re-reads it for each
-batch of lines rather than once per drag — so a program that goes to the
-alternate screen half way through a gesture is followed within one batch
-(50ms) rather than at the next one.
+**The keys only worked while the pane held the focus.** After a click on the sidebar or a header
+button, `Ctrl`+`V` produced nothing at all: the browser fires `paste` on whatever has the focus,
+and that was not xterm's textarea. `document`-level `paste` and `copy` listeners now route both
+to the pane unless the target is xterm's own textarea, a field of its own, or the page itself
+holds a text selection. They are in the **capture** phase, which is the only place that runs
+before xterm's listeners on its own textarea.
 
-**tmux's own position indicator is hidden.** Copy mode paints `23:13 [40/464]`
-in yellow at the top right of the pane, which is the one thing on screen this
-product does not paint white and a direct contradiction of §E.10. `copy-mode
--H` suppresses it; `-H` arrived in tmux 3.4, so on 3.3 — the supported floor —
-the indicator is shown. That is a visible deviation on one old version and it
-is the right trade against having no reachable scrollback at all. It is not
-worked around with `mode-style`, because `mode-style` is also the selection
-colour and a white-on-white selection would be worse than a yellow number.
+**What tmux copied never arrived.** `@xterm/addon-clipboard` 0.2.0 reads the selection parameter
+of `OSC 52 ; <selection> ; <base64>` and drops anything that is not `c` — and tmux names no
+selection at all, `52;;`, which the xterm spec defines as the default one. So every copy made in
+tmux's own copy mode was decoded and thrown away. The addon is **no longer vendored** (6,384 B
+less in the service worker's precache); `wireOSC52` registers `term.parser.registerOscHandler(52,
+…)`, takes an empty selection as the clipboard, decodes UTF-8 and writes **quietly** — a write
+nobody asked for must not put an error on screen when the browser refuses it, and what was copied
+is kept as the middle-click buffer either way. A query (`?`) is answered with nothing: a program
+does not get to read the clipboard through the pane. Two things on the tmux side had to change for
+this path to carry anything: the attach client is started with `TERM=xterm-256color`, because the
+terminal it is attached from *is* xterm.js and under a service manager the server's own
+environment says nothing, and tmux reads the `clipboard` feature (`Ms`) from `TERM`; and
+`set-clipboard on`, because the default `external` forwards tmux's own copies and silently drops
+a program's. `terminal-features` gained `clipboard` for `xterm*` with it, `apply.go` sets
+`set-clipboard` live when the terminal settings are saved, and `Manager.Start` sets it on a server
+that is already running — the configuration file is read when the tmux *server* starts, and the
+sessions outlive Socrates, so a line added to that file would otherwise reach an install that has
+been up for a week only when the machine was next rebooted, and every copy made in tmux until
+then would go on being thrown away.
 
-Consequences, stated plainly:
+**Two smaller ones, both found in the browser.** A right press is now held back from xterm as
+well: tmux answers a right click with a menu of its own, and swallowing the report leaves the
+browser's context menu — which carries Paste — to come. And a middle press pastes the last thing
+selected on the page, as it has on X11 for thirty years, which turned out to arrive **twice**:
+Chrome on Linux pastes the primary selection itself whenever an editable element is under the
+pointer, which xterm's hidden textarea is once a right click has moved it there, and
+`preventDefault` on the press does not stop it. The browser's paste lands in the same millisecond
+as the click, so a 150 ms window swallows it — spent the moment it is used, and spent by any
+keydown, so that a paste key pressed after a middle click is never mistaken for it.
 
-* **The swallowed drag is no longer swallowed on the normal buffer.** With
-  `terminal.mouse` off a drag now scrolls tmux's history, because the tmux
-  setting has nothing to do with a command sent over the control channel. What
-  that entry was protecting — that a drag must never *type* anything — still
-  holds absolutely, and the `touchscroll` scenario still asserts it: it drags
-  back to the bottom and asserts the pane is what it was, character for
-  character. The swallow itself survives where it is still the only right
-  answer: an alternate screen with nobody tracking the mouse.
-* **Copy mode is a place a person can be without knowing it**: the screen is
-  still, new output does not appear, and every keystroke is read as a copy-mode
-  command instead of reaching the program. Two things answer that. A **Jump to
-  live** pill over the pane, raised by a `{t:"mode"}` frame the server
-  broadcasts to every viewer (the pane is shared, so the state is too); and the
-  server itself, which leaves copy mode on the first **real** keystroke — a
-  focus report is not one — before writing it, so that nothing typed is ever
-  lost even if the pill is never noticed. The flag is held in memory on the
-  Manager rather than asked of tmux, so a keystroke costs a map read.
-* **Momentum.** A drag that ends with the finger moving keeps moving and slows
-  down: a velocity from the last 120ms of samples, decayed 0.9 a frame for
-  about half a second, cancelled by the next touch. It travels by the same
-  route the drag did, so it works on both histories. Batched to at most one
-  batch every 50ms, because a drag at 60fps on a car's cell link may not be 60
-  control frames a second.
+The key bar's **Paste** button gained the same fallback, for the same reason the OSC 52 write is
+kept as a buffer: `navigator.clipboard.readText()` needs a secure context and a permission a phone
+over plain http has not got, and what it now falls back on is the last text copied out of the pane
+itself — which is the round trip a phone actually makes, hold a line to copy it and tap **Paste**
+to put it back.
 
-  A glide **outlives the finger**, and that is a hazard of its own: type a key
-  while one is still running and the pane leaves copy mode for the keystroke —
-  correctly — and the next glide batch puts it straight back in, so the screen
-  jumps away from what was just typed and the pill comes back. A fifteen-step
-  drag glides, so this was every drag-then-type. `touchScroll` therefore
-  returns a `cancel()` alongside its disposer, and `TermSocket.sendInput` calls
-  it before every frame it sends — which covers the terminal's own keys, the
-  key bar, a paste, a dictated line and an operator run in one place, because
-  all of them go through that one method. The "Jump to live" pill calls it too.
-  The terminal ignores the call while it is itself dispatching mouse reports,
-  so a wheel-route drag does not stop itself.
+The `clipboard` scenario grew from 13 assertions to 36 and `touchcopy` is new: a plain drag sends
+tmux no report, selects, and is on the clipboard at release; a plain click is still reported; a
+double click copies the word; a right click is not reported; a middle click pastes once; both keys
+work with the focus on a header button; an OSC 52 printed by the program, through tmux, sets the
+clipboard; a drag down two rows copies both; and on a phone viewport a hold selects, a moved hold grows, a
+lift copies and toasts, and a tap is still a tap.
 
-* **The fake TUI gained an alternate screen worth scrolling.** `e2e/fakebin`'s
-  `/alt` used to paint a three-line box and ignore everything; it now turns
-  mouse tracking on, keeps a two-hundred-line document and moves its window on
-  an SGR wheel report — which is what the three real CLIs do, and what the
-  `touchscroll-tui` scenario has to be able to measure.
+## The operator and the chat are gone; the microphone types (2026-09-04)
 
-**`touch-action: pan-x pinch-zoom` became `touch-action: pan-x`** on
-`.term-host`, superseding that bullet of the entry above. `pinch-zoom` in the
-list leaves the browser's own double-tap-to-zoom armed, and xterm.js reads a
-double tap as "select the word under the finger": the word was selected and
-then the page jumped. Pinch itself is untouched — the viewport meta still
-permits it, and a two-finger gesture was never ours (any touch that is not the
-only one is handed straight back to the browser).
+ACTIVITY.md §B.4 (the operator run), §D.3 (the chat panel) and the second half of §D.1 (the Agent
+button) are **withdrawn**. Nothing on the session page asks a model to press keys any more, and
+there is no conversation beside the terminal. What is left of those work packages is the Status
+button (§D.1's first half), the ticker (§D.4, now a status line and nothing else) and the namer
+(§B.5).
 
-The rest of the audit, briefly:
+**Why.** The operator was the one feature here that acted on somebody's code without being told
+which keys to press, and everything it needed — a step budget, a wall clock, a shell lever, a
+cancel that reaches a run waiting on a busy pane, an interrupt counter — was machinery for
+guessing well rather than for doing what was asked. The thing it was reached for in a car is
+narrower and has none of that: say the instruction, and put the words on the prompt.
 
-* **The sheet could not be completed with the keyboard up.** `.sheet` and
-  `.modal` were `max-height: calc(100vh - 64px)`, and on iOS `100vh` does not
-  shrink for a keyboard — so `Start session` sat below the fold on the one
-  device the sheet is used from. Both are now sized from `var(--app-h, 100dvh)`,
-  which is the visual viewport `followViewport()` publishes, and
-  `.sheet-actions` is sticky to the sheet's padding edge so the two buttons stay
-  on screen while the body scrolls under them.
-* **Half the key bar started off screen.** Seven of fourteen keys — the arrows,
-  Enter, `^C`, `^D`, `^Z`, Paste and the keyboard button — were off the right
-  edge of a 390px phone in a bar with its scrollbar hidden, with nothing to say
-  they were there. The bar now wraps. Unconditionally: a row that fits does not
-  wrap, so a desk never sees a second row, and no width has to be guessed at.
-* **The key bar's order changed with its wrap.** Two rows of seven put the
-  arrows across the fold — `← ↓ ↑` at the end of one row and `→` at the start
-  of the next — and four arrows are one control, not four. `⏎ ^C ^D` moved up
-  to finish the first row and the arrows sit together at the head of the
-  second. DESIGN.md §E.6 carries a `rev 5` note; it still described one
-  scrollable row.
-* **Tap targets.** Twenty-odd controls were sized for a mouse — 24 to 38 pixels,
-  hit on a desk by hovering first. A block at the end of `app.css` raises all of
-  them to 44 CSS pixels under `(pointer: coarse)`. It is at the end of the file
-  on purpose: several are shrunk again by a later container query written for a
-  narrow pane, and a media query carries no specificity to beat one with — only
-  order does.
-* **iOS zoomed the page on every tap into the pane.** xterm's hidden helper
-  textarea inherits the terminal's font size, and a field under 16px zooms
-  Safari the moment it takes focus. It is pinned to 16px; nothing is drawn from
-  it.
-* **A phone in landscape is 844px wide**, so the 16px input rule keyed on
-  `max-width: 620px` missed it entirely — 36 fields on `/admin` and the chat
-  field were under 16px in the one orientation somebody fills a form in. The
-  rule is now keyed on the pointer as well.
-* **Tapping the session already open left the drawer over the terminal it had
-  just asked for.** `selectSession` returned before `closeNav()`. The drawer
-  closes and the address bar is corrected before the early return, because both
-  are true of the tap whatever it selected.
-* Day headers 10.5px → 12px on a coarse pointer; `100vw`/`100vh` → `dvw`/`dvh`;
-  `-webkit-tap-highlight-color: transparent` on every control rather than only
-  on `.key`; `overscroll-behavior: none` on `html, body`, so a drag that outruns
-  a pane cannot rubber-band the app or become a pull-to-refresh.
+**What went.** `internal/server/chat.go` and `chat_test.go`; the operator half of `assist.go`
+(≈840 lines: `agentRun`, `agentDriver`, `planActions`, the decision parser, the key vocabulary);
+the four routes `POST/GET …/agent`, `POST …/agent/cancel`, `GET/POST …/chat`; the `agent` and
+`chat` WebSocket frames and the two hello keys that carried them; `config.AgentSettings`,
+`OpenRouterSettings.AgentModel` and the step bounds; the admin card's two agent controls;
+`js/chat.js`, the chat panel and `#agentBtn`. The e2e scenarios `agent-run` and `chat-text` went
+with them, and `typekeepsfocus` now leaves the pane for the sidebar row of the session it is
+already on — which selects nothing and only takes the focus — instead of for the chat's field.
 
-Eight of the audit's scripts became e2e scenarios: `touchscroll-tui`,
-`scrollstate`, `momentum`, `sheetkeyboard`, `keybarreach`, `taptargets`,
-`landscapetype` and `drawerselect`.
+**The namer changed model.** It asked `openrouter.agent_model`, which no longer exists. It now
+asks `openrouter.title_model`, which is the setting named for it and was until now written to the
+document and never read — so the admin card offers **Title model** where it offered **Agent
+model**, and the namer costs what a flash-lite call costs rather than what a Sonnet call costs.
 
-Two measurements the audit made are deliberately left alone. A link inside a
-sentence — `openrouter.ai/keys` and the three beside it on the dashboard — is a
-word rather than a button, and 44 pixels of it would be a hole in the
-paragraph. And xterm's helper textarea is an invisible one-character input that
-follows the cursor: nothing aims at it, the pane around it is the target, and
-its **font** is what mattered, which is now 16px.
+**The microphone moved and changed what it does.** It was a pill in the chat panel's header whose
+transcript was posted as a question. It is now a pill in the **top bar**, where `#agentBtn` was,
+and the transcript is put into the pane through the ordinary input path — `sendInput(line, {text:
+line})`, so a socket that forgot this viewer hands the words back in the words they were spoken in
+rather than counting them as keystrokes, which is what `opts.text` was built for and nothing had
+used yet. Line breaks in a transcript become spaces: a newline in a pane is the Enter that was
+deliberately not sent. **No Enter goes with it.** A transcript is a guess about what was said, and
+running a guess is the person's decision — so the words land on the prompt and wait there. The
+recording sheet is unchanged, down to **Send** and **Cancel**.
+
+`js/dictate.js` is `chat.js` with the conversation taken out: the meter, the sheet and the one
+recording are what was worth keeping — plus one thing the chat did not need. A transcript takes a
+moment to come back, and a session switched inside that moment would have been typed into by a
+sentence that was never about it, so the recording remembers which session it was spoken to and
+says so instead. On a top bar narrower than 440px the pill gives up its word and keeps its 44px,
+because what makes it findable by a thumb is the ring and not the label; and at 345px the title,
+which is already invisible there, gives up the 5.5em it was holding for a word nobody can read —
+without which the bar overflowed by 4px at 320px, measured.
+
+The store gained schema 5, which is a single `DELETE FROM kv WHERE key LIKE 'chat.%'`: the
+conversations lived one document per session in the key/value table, and the only thing that ever
+removed one was the chat.
+
+**Verification.** `go vet ./...` and `go test -race ./...` green (the two `internal/harnesses`
+Codex-rollout failures pre-date this change and are unrelated). e2e: the new `dictate` scenario,
+plus `no-overlap`, `status-speak`, `status-ticker`, `design`, `typekeepsfocus`, `pages` and
+`session-title`. The whole suite was run: 46 scenarios, 613 assertions, all passing.
+
+---
+
+## Docker is the only deployment (2026-09-14)
+
+Socrates is run as the Docker image and nothing else. The image is the product; a binary on a
+host is no longer a shape this repository supports. Everything below is history, and the code
+that implemented it is gone.
+
+**§A.12 — the systemd shape.** `deploy/socrates.service`, `internal/termux/supervise.go`, the
+`Supervisor` interface and `SystemdScope`, `DetectSupervisor`, and the `Supervisor` field on
+`termux.Config` and `termux.Tmux` are removed. `Tmux.RunStart` now runs tmux directly. The trap
+§A.12 was built around — `KillMode=control-group` turning `systemctl restart socrates` into the
+reboot path — cannot be reached from a container, and the reparent that remains is handled where
+it always was: `tini` as the entrypoint reaps the tmux server at PID 1, and Socrates still
+installs no SIGCHLD reaper of its own, for the ECHILD reason §A.12 already gives.
+`TestSessionSurvivesManagerKill` keeps its meaning — it proves a process kill is survived — and
+its comment no longer points at a unit file that does not exist. J7 in the risk table is now
+answered by `tini` and the restart policy on `docker run` alone.
+
+**§F.1 — the tmux installer.** `internal/termux/install.go` (the package-manager matrix for
+apt-get, apk, dnf, yum, pacman, zypper and brew, the sudo probe, `Install`, `ErrInstalling`,
+`InstallTimeout`, `InstallLogLines`) is gone, and with it `POST /api/tmux/install`, `GET
+/api/tmux/events`, the `tmux_install_log` document, the SSE fan-out in `internal/server/tmux.go`
+and the install button, log, result line and manual-command field on the dashboard card. What is
+left is `internal/termux/detect.go`: `Detector.Detect` and a `Report` of `installed`, `path`,
+`version`, `ok`, `min` and `reason`. The card reports and nothing more — the image ships tmux, so
+a container without it is a broken image rather than a machine waiting for a package manager, and
+the honest answer is a sentence rather than a button. The e2e `tmuxinstaller` scenario became
+`tmuxcard`, which asserts the same detection half against a stub tmux 3.2a.
+
+**Platform paths.** `pty_windows.go`, `proc_windows.go` and `disk_other.go` are removed and their
+`!windows` / `linux || darwin` counterparts lost their build tags (`pty.go`, `proc.go`,
+`disk.go`); `termux.ErrUnsupported`, which existed only for the Windows pty stubs, is gone with
+them. `readClaudeCredentials` no longer falls back to the macOS login keychain. The cloudflared
+installer publishes for one operating system: `assetFor` takes an architecture, every Linux asset
+is a bare binary, and `binaryFromArchive` — which unpacked the macOS tarballs — is removed.
+`config.DataDir()` defaults to `/data` (`config.DefaultDataDir`) instead of `~/.socrates`, and
+`harnesses.homeDir()` reads `HOME` and nothing else, because the image puts `HOME` inside the data
+volume and both the e2e suite and the tests point it at a scratch directory.
+
+**The image.** `HOME=/data/home`, created by `deploy/docker-entrypoint.sh` on a volume that
+predates the image, so the CLI credentials and the transcripts a resume reads survive `docker rm`.
+`deploy/docker-compose.yml` is the supported run written down. `socrates export` / `socrates
+import` (`migrate.go`) and `scripts/migrate-to-docker.sh` carry a settings document, the password
+hash and the CLI credentials of an older non-Docker installation into the volume — they are the
+on-ramp off that shape, not support for it.
+
+**The Makefile** lost `run` and `install`: the binary is built for the tests and for a compile
+check, and it is started as the image.
+
+**Verification.** `gofmt`, `go vet ./...`, `go mod tidy -diff` and `go test ./...` green.
+
+## The sidebar is folders, not days (2026-09-14)
+
+§E.10's rev 4 grouped the list by day — Today, Yesterday, This week, This
+month, Older, in the browser's own local calendar — because a phone's call
+list is read that way. It is the right shape for six sessions and the wrong
+one for sixty: after a week of work the thing being looked for is not "the one
+from Tuesday", it is "the one in the browser project", and a list sorted by
+day scatters a project's sessions across five headers where none of them can
+be seen together. So the day buckets are gone and the sidebar is grouped by
+the directory a session works in.
+
+1. **`daygroups.js` became `folders.js`.** `momentOf` and `movesRow` are
+   unchanged and still the rule the ordering is built on; `DAY_GROUPS` and
+   `bucketOf` are deleted, and `dirOf`, `folderKeyOf` and `foldersOf` take
+   their place. The service-worker `SHELL` names the new file.
+2. **One folder per working directory, `More Chats` for the rest.** A session
+   whose directory Socrates made up for it — `workdir_mode` `dynamic`, a
+   generated name under the workspace root — names no project anybody would
+   recognise, so all of them share one folder instead of getting a folder each.
+   A row from a server too old to have said how its directory was chosen is
+   judged by whether it has one at all.
+3. **A folder is named after its directory, not spelled as one.** The label is
+   the directory's own name — `browser`, not `/root/browser` — because §E.10
+   rule 3 keeps every technical string on this page behind a hover, and the
+   whole path is on the head's `title`. Two projects with the same name in
+   different places each take a parent (`one/web`, `two/web`) until they
+   differ, and a folder with no more parents to take falls back to its whole
+   path, which is unique by construction.
+4. **The folders are ordered by the session that moved most recently in each,
+   and `More Chats` is last whatever is in it.** Inside a folder the sessions
+   are newest first, by the same `active_at` the rows were always ordered by,
+   so nothing about "a row that jumped to the top for being looked at" changed.
+5. **A folder shuts.** `.folder-head` is a button with `aria-expanded` and a
+   caret that turns; the rows under it are a `.folder-rows` region that is
+   `hidden` rather than removed. Shut, the head carries the count, the amber of
+   a session waiting and the weight of one nobody has read — the two things
+   ACTIVITY.md exists to make noticeable must not be hidden by the person's own
+   tidying. Which folders are shut is kept per device in `localStorage`
+   (`socrates.folders`), and only the shut ones are written down, so a project
+   that appears while the browser was closed arrives open. Attaching a session
+   inside a shut folder opens it: a row nobody can see is a session nobody can
+   get back to.
+6. **The rail keeps the hairline and the caret** and loses the name and the
+   count, the way it lost the day word; the dot of a folder holding a session
+   that needs an answer stays.
+7. **In the drawer the head is 36px**, because it is a control now and a
+   drawer is the shape a finger uses; at desk width it is the 24px the day
+   header was.
+8. **The e2e `daygroups` scenario became `folders`**, and asserts the grouping
+   as a pure function (including the two-projects-one-name case, which a
+   running server cannot be made to have cheaply) and then the drawn list:
+   the order of the folders, the order inside one, an archived session in its
+   own project, shutting a folder and finding it shut after a reload, opening
+   it by attaching a session inside it, the folder a brand-new directory makes,
+   a shut folder that says a session inside it is working and then that nobody
+   has seen the end of it, and a head a thumb can hit at 390px.
+
+**Verification.** `gofmt`, `go vet ./...` and `go test ./...` green; the e2e
+suite green apart from the twelve `pages`/`design`/`twoviewers`/`dictate`
+assertions this branch already failed before the change.
+
+## Shell and VS Code are tools, not agents (2026-09-15)
+
+§E.3 put all the harnesses in one `.seg-row` and §A.4/§D.1/§D.6 gave every one
+of them the same status. Both read the five programs as five of a kind, and
+they are not: three of them are agents that take a turn, and two of them are a
+window onto the machine. Three changes, all of them about that one line.
+
+1. **The sheet asks the question in two rows.** `#nsHarness` holds the agents
+   and a new `#nsTools` under it holds Shell and VS Code. It is the same
+   control and the same handler — one choice across both rows, so picking in
+   one releases the other — and the gap between the two rows (7px) is smaller
+   than the gap to the field below (16px), so they read as one question. A row
+   with nothing in it is `display: none`, because an empty hairline box is a
+   control that failed to draw. `harnesses.TOOLS` is the list, and
+   `needsModel` already had it inline.
+2. **A tool has no status.** `activityOf(session)` in `session.js` answers
+   `null` for those two, and every drawing of activity goes through it: the
+   ring on the row, the bold of an unread name, the roll-up on a shut folder
+   head, the `Working`/`Finished` line in Info, the `aria-live` announcement
+   and the chime. The detector is untouched — the server still needs to know
+   whether a pane is doing anything, and `WaitIdle` still answers for a shell
+   — so this is presentation and only presentation. The e2e `activity-shell`
+   scenario is gone with it; `design`, `folders` and `notify` each grew an
+   agent session where they used to watch a shell's row.
+3. **Starting a session is not work that finished.** See the section below.
+
+**Verification.** `go vet` and `go test ./...` could not be run in this
+environment: there is no Go toolchain on the machine the change was written
+on. The JavaScript was syntax-checked with `node --check`; the Go change is
+three call sites and one predicate, and its table test is written.
+
+## Starting a session is not work that finished (2026-09-15)
+
+§A.4's rule fired on the first second of every session ever created. Every
+harness is busy while it starts up and idle the moment it is ready, and that
+edge is `busy → idle`: the row went bold, the chime played and the browser
+raised a notification saying **Finished** about a window that had just been
+opened, before anybody had asked the program for anything.
+
+- **`track.asked()`** — has anything been typed into this pane since it was
+  launched — is now a condition of the unread rule. `NoteInput` (a keystroke
+  from a socket) sets it as it always did; `SendKeys` sets it through a new
+  `NoteTyped`, which is `NoteInput` without the clearing of the mark, because
+  an operator typing is not a person reading. `ResetActivity` clears it with
+  the rest of the track: a relaunch is a new program with a new start-up.
+- **The browser keys off the same mark.** `notify.completed` and the
+  `aria-live` announcement both require `next.unread`, which is what the
+  module's own comment always claimed they did. One rule, one place, and a
+  phone in a pocket and a sidebar on a desk cannot disagree about it.
+- The cost is that a turn still running across a Socrates restart finishes
+  quietly, because `inputAt` lives only in memory. The alternative is
+  announcing every session that starts, which is the defect.
+
+## A white iframe is not a loading editor (2026-09-15)
+
+`openIDE` waited for code-server's `/healthz` and then swapped the iframe in,
+which is correct and is not what a person sees: `healthz` answers as soon as
+the HTTP server is listening, and the workbench is about ten more seconds of
+plain white after that. A white rectangle where an editor should be is the one
+thing on this page that reads as broken.
+
+The loading card — now a `.spinner` and a line of words rather than a bare
+paragraph — stays **on top of** the frame instead of being replaced by it, and
+`revealIDE` takes it away when there is something behind it: the frame is
+served from this origin, so the test is `contentDocument.querySelector('.monaco-workbench')`,
+polled every 150 ms. It fades out over 280 ms rather than vanishing, so the
+workbench arrives instead of replacing something. A ceiling of 30 s uncovers
+the frame whatever is in it — a page that is going to be white is better white
+than behind a mark that turns for ever — and a frame that cannot be read at all
+falls back to its `load` event.
+
+## A status per session replaces the archive and the flag (2026-09-23)
+
+§A.10's archive and the flag were two marks that said nothing about the work:
+an archived session kept running for ever, and a flag meant whatever it meant
+that day. Both are gone, and so is the Active/All switch. Every session has
+one **status** instead, set from the row's menu under "Status":
+
+| status | terminal | list | set by the machine |
+|---|---|---|---|
+| `in_progress` | runs | its project folder, no mark | on creation; when a pending or review session starts a turn somebody asked for |
+| `review` | runs | its project folder, an eye | never |
+| `pending` | runs | its project folder, a clock | never |
+| `background` | runs, never stopped or deleted | a folder of its own, shut by default; no chime, no notification | never |
+| `done` | **closed** | a folder of its own, shut by default | never; deleted `DoneRetention` (24 h) later |
+
+- **Done parks the session** (`Manager.Park`): the tmux session is killed and
+  the row is left `needs_resume`, which is exactly what a reboot leaves — row,
+  journal, working directory and conversation id kept. `Ensure` and `Restart`
+  refuse a done session (`ErrDone`, 409 from `/resume` and the WebSocket), so
+  opening it shows an overlay instead of starting it again. "Pick it up again"
+  files it as in progress, and the next open resumes it like after a reboot.
+- **A sweep** (`server.sweep`, every minute and at start-up) deletes done
+  sessions past their retention through the same path as Delete, and parks any
+  done session that still has a terminal. The retention is read from
+  `status_at`, so a restart loses nothing. Delete itself stays in the menu.
+- **Back in progress by itself.** The detector files a `pending` or `review`
+  session as `in_progress` on a `busy` commit, under the same `tr.asked()`
+  condition as the unread mark, so a start-up, a resume or a restarted detector
+  refile nothing. `background` is excluded on purpose: a service works all the
+  time. Finishing a turn does **not** file anything as `review`; the unread
+  mark already says that, and review is kept for sessions a person means to
+  come back to.
+- **The route is `POST /api/sessions/{id}/file`**, because `/status` was
+  already the spoken status of the assistant.
+- **Upgrade (schema 7).** `status` and `status_at` are added, and `archived_at`
+  and `flagged_at` dropped. Archived sessions become `done` with their retention
+  starting at the upgrade, not at archiving, and the sweep closes their
+  terminals. Every other session is left unsorted (`''`) until the detector
+  sees it: busy is `in_progress`; idle, waiting, not running, or still unknown
+  after `SortWithin` (30 s) is `pending`.
+
+## A session is named from its first prompt, and says so when it cannot be (2026-09-23)
+
+**§B.6 — the moment is the first committed edge *into* `busy` after somebody
+has typed**, not the first edge out of it after half a minute. This replaces
+"The title run waits half a minute" (2026-09-02): `titleMinAge`, the driver's
+clock and `setClock` are gone. The start-up problem that gate solved is solved
+by the same `tr.asked()` test the unread mark and the status filing already
+use — every harness is busy while it starts, before anybody has typed, so that
+edge is published with `Activity.Asked == false` and ignored. The first busy
+that *was* asked for is the harness taking up the first prompt, with the prompt
+on the screen: the name arrives while the first turn runs, not after it.
+
+- **Always English, 2 to 5 words**, never the harness's name. The screen's
+  language rule is dropped: the sidebar is one list.
+- **`max_tokens` 1024, timeout 30 s.** A reasoning title model (the deployed
+  one was `z-ai/glm-5.3-flash`) spends its thinking out of the same budget, and
+  60 tokens was an empty answer.
+- **Once, whatever happens.** A failure, a timeout and an empty answer all mark
+  the session `auto`. No API key is still silent and marks nothing.
+- **Nothing fails silently.** The `title` frame gains `phase`
+  (`start|done|error`) and `text`; the name pulses (`.titling`) between start
+  and the end, and an error opens an alert dialog with the reason — which is
+  how a rejected API key (OpenRouter's 401 "User not found") shows itself
+  instead of a sidebar that simply never changes.
+
+## One VS Code per folder, and every folder keeps its own shelves (2026-09-24)
+
+**VS Code is no longer a session the sheet starts.** It is off `#nsTools`, and
+`POST /api/sessions` answers 400 for it. A project folder's head carries the
+VS Code mark instead (`.folder-bar > .folder-ide`, beside the head rather than
+in it, since a button cannot hold one); a tap opens the folder's editor, or
+asks `POST /api/ide {"workdir"}` for one. The server answers with the editor
+the folder already has (200) or makes it (201), under `ideMu`, and only for a
+folder some session already works in. The editor is not a row: `foldersOf`
+puts it on `folder.ide`, and its mark is grey, coloured while it runs, and
+pressed while it is on screen. "More Chats" has none.
+
+- **What the editor remembers is kept per folder.** The user-data-dir is
+  `<data>/vscode/<sha256(folder)[:8]>` rather than the session's directory,
+  which a delete removes; a session-era `vscode-data` is moved there once. A
+  folder's first editor gets a `settings.json` with hot exit and revived
+  terminals on `onExitAndWindowClose`.
+- **The editor's id is the folder's** (`VSCodeSessionID`). code-server keeps
+  open editors, layout and recent files in the *browser's* IndexedDB, under a
+  name hashed from `location.pathname` - which is `/ide/<id>/`. A fresh id per
+  editor was a browser that had never seen the folder.
+- **The menu of an editor** has no status and no rename, and Delete reads
+  "Close VS Code": closing loses nothing.
+- **Background and Done are shelves inside each folder**, not two folders at
+  the bottom of the list. A shelf is `.folder.shelf[data-shelf]` in its
+  folder's rows, starts shut like the old folders did, and its open state is
+  keyed `<folder>\0<status>`. A folder with nothing but shelved sessions sorts
+  after the folders with work in progress, and before "More Chats".

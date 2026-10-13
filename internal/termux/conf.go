@@ -64,10 +64,11 @@ set -g  remain-on-exit on
 set -g  destroy-unattached off
 set -g  exit-empty off
 set -g  allow-passthrough on
+set -s  set-clipboard on
 set -g  set-titles off
 set -g  focus-events on
 set -s  extended-keys {{.ExtendedKeys}}
-set -as terminal-features 'xterm*:extkeys'
+set -as terminal-features 'xterm*:extkeys:clipboard'
 set -g  remain-on-exit-format ''
 set -g  window-style        'fg=#17181b,bg=#ffffff'
 set -g  window-active-style 'fg=#17181b,bg=#ffffff'

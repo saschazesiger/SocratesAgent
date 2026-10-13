@@ -9,7 +9,7 @@ import (
 )
 
 // handleHarnesses is the whole of what the new-session sheet needs: which of
-// the four programs are on this machine, what each can be run on, where a
+// the five programs are on this machine, what each can be run on, where a
 // session is allowed to work, and whether sessions can be created at all.
 //
 // It replaces both of the endpoints the chat app had - the agent list and the
@@ -35,6 +35,10 @@ func (s *Server) answerCatalog(w http.ResponseWriter, snap catalog.Snapshot) {
 	payload := map[string]any{
 		"harnesses":    snap.Agents,
 		"refreshed_at": snap.RefreshedAt,
+		"shell_execution": map[string]any{
+			"host_available": harnesses.HostShellAvailable(),
+			"default":        harnesses.DefaultShellExecution(settings.Harnesses.Shell.Binary),
+		},
 		"workspace": map[string]any{
 			"root":            settings.Workspace.Root,
 			"default_harness": settings.Workspace.DefaultHarness,
@@ -42,6 +46,13 @@ func (s *Server) answerCatalog(w http.ResponseWriter, snap catalog.Snapshot) {
 			"presets":         presets,
 			"modes":           harnesses.WorkdirModes,
 		},
+	}
+	// The profiles a session can run in, with the account each agent is signed
+	// in with there, so that the sheet can say which account a choice means.
+	// A list that cannot be read leaves the sheet with the default profile,
+	// which is what it was before profiles existed.
+	if profiles, err := s.profileViews(); err == nil {
+		payload["profiles"] = profiles
 	}
 	// Whether a session can be started at all is a property of the machine,
 	// not of the catalogue, and the sheet has to be able to say so before

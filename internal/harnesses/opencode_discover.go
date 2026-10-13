@@ -160,7 +160,7 @@ func newestIn(sessions []openCodeSession, d Discovery) string {
 // it. A missing database is not an error - it means there is nothing to find
 // yet - and only a database that exists and cannot be read is.
 func newestInDB(ctx context.Context, d Discovery) (string, error) {
-	dir := openCodeDataDir()
+	dir := openCodeDataDirIn(d.DataHome)
 	if dir == "" {
 		return "", nil
 	}
@@ -205,7 +205,7 @@ func (OpenCode) VerifyCLISession(ctx context.Context, req PlanRequest) (bool, er
 	if id == "" {
 		return false, nil
 	}
-	dir := openCodeDataDir()
+	dir := OpenCodeDataDirFor(req.DataDir, req.Profile)
 	if dir == "" {
 		return false, nil
 	}

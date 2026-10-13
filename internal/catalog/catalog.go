@@ -21,8 +21,11 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
 )
 
-// cacheKey is where the last discovery is kept between restarts.
-const cacheKey = "agents_catalog"
+// CacheKey is where the last discovery is kept between restarts. It is
+// exported so that `socrates import` can drop a catalogue that was discovered
+// on another machine - it names binaries at paths that are not here - rather
+// than spell the key out a second time.
+const CacheKey = "agents_catalog"
 
 // cacheSchema is stamped onto every cached snapshot, and a snapshot carrying
 // another number is thrown away on load. Bump it whenever what a discovery
@@ -32,7 +35,7 @@ const cacheKey = "agents_catalog"
 //
 //	1  the first shape
 //	2  efforts are every level the agent names, not the low/medium/high cut
-const cacheSchema = 2
+const cacheSchema = 3
 
 // TTL is how long a discovered catalogue is treated as current. Models are
 // added to a CLI a few times a year; half an hour is generous either way.
@@ -113,6 +116,7 @@ func (s Snapshot) Agent(id string) (Agent, bool) {
 // here rather than in the launcher because it is presentation: what the
 // program is for, in the words of the person choosing between four of them.
 var notes = map[string]string{
+	config.HarnessVSCode:   "VS Code in your browser, powered by code-server. Install code-server to enable it.",
 	config.HarnessShell:    "A plain login shell in the session's working directory.",
 	config.HarnessClaude:   "Anthropic's Claude Code, resumed by the session id Socrates chooses for it.",
 	config.HarnessCodex:    "OpenAI's Codex TUI, launched with its workspace already trusted.",
@@ -195,7 +199,7 @@ func (c *Catalog) Cached() (Snapshot, bool) {
 	defer c.mu.Unlock()
 	if !c.loaded {
 		var stored Snapshot
-		switch err := c.store.GetJSON(cacheKey, &stored); {
+		switch err := c.store.GetJSON(CacheKey, &stored); {
 		case err != nil || len(stored.Agents) == 0:
 		case stored.Schema != cacheSchema:
 			log.Printf("catalog: the cached agent list is from another version of Socrates; discovering again")
@@ -226,7 +230,7 @@ func (c *Catalog) Refresh(ctx context.Context) Snapshot {
 	c.snapshot = Snapshot{}
 	c.loaded = true
 	c.mu.Unlock()
-	if err := c.store.SetJSON(cacheKey, Snapshot{}); err != nil {
+	if err := c.store.SetJSON(CacheKey, Snapshot{}); err != nil {
 		log.Printf("catalog: could not clear the cached agent list: %v", err)
 	}
 
@@ -265,7 +269,7 @@ func (c *Catalog) discover() *discovery {
 			c.snapshot = snap
 			c.loaded = true
 			c.mu.Unlock()
-			if err := c.store.SetJSON(cacheKey, snap); err != nil {
+			if err := c.store.SetJSON(CacheKey, snap); err != nil {
 				// A catalogue that cannot be cached is still a catalogue; it
 				// just costs three subprocess spawns again after a restart.
 				log.Printf("catalog: could not cache the agent list: %v", err)

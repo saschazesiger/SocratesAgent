@@ -8,22 +8,18 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/saschazesiger/SocratesAgent/internal/config"
-	"github.com/saschazesiger/SocratesAgent/internal/openrouter"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 )
 
-// The Status button and the operator loop are tested against the real
-// substrate - a real tmux, a real shell in a real pane - and a stand in for
-// OpenRouter, because what has to be proven is that the model's answer reaches
-// the keyboard and that the guards hold, not that a gateway can be spoken to.
+// The Status button is tested against the real substrate - a real tmux, a real
+// shell in a real pane - and a stand in for OpenRouter, because what has to be
+// proven is that the screen somebody is looking at is the screen the model was
+// shown, not that a gateway can be spoken to.
 
 /* --------------------------------------------------------- a fake gateway */
 
@@ -175,84 +171,9 @@ func newAssistEnv(t *testing.T) *assistEnv {
 	gw := newGateway(t)
 	e.configureOpenRouter(t, map[string]any{
 		"base_url": gw.srv.URL, "api_key": "k",
-		"status_model": "test/status-model", "agent_model": "test/agent-model",
+		"status_model": "test/status-model", "title_model": "test/title-model",
 	})
 	return &assistEnv{sessionEnv: e, gw: gw, id: e.shellSession(100, 30)}
-}
-
-// configureAgent saves the agent section the way the dashboard does.
-func (e *sessionEnv) configureAgent(fields map[string]any) {
-	e.t.Helper()
-	_, data := e.do(e.t, e.client, "GET", "/api/settings", "")
-	settings, _ := data["settings"].(map[string]any)
-	if settings == nil {
-		e.t.Fatalf("settings: %#v", data)
-	}
-	agent, _ := settings["agent"].(map[string]any)
-	if agent == nil {
-		agent = map[string]any{}
-		settings["agent"] = agent
-	}
-	for key, value := range fields {
-		agent[key] = value
-	}
-	body, _ := json.Marshal(map[string]any{"settings": settings})
-	if res, payload := e.do(e.t, e.client, "PUT", "/api/settings", string(body)); res.StatusCode != http.StatusOK {
-		e.t.Fatalf("saving the agent settings failed: %d %#v", res.StatusCode, payload)
-	}
-}
-
-// runOf reads the run the API reports, which is null when there is none.
-func (e *assistEnv) runOf() map[string]any {
-	e.t.Helper()
-	res, payload := e.do(e.t, e.client, "GET", "/api/sessions/"+e.id+"/agent", "")
-	if res.StatusCode != http.StatusOK {
-		e.t.Fatalf("GET agent: %d %#v", res.StatusCode, payload)
-	}
-	run, _ := payload["run"].(map[string]any)
-	return run
-}
-
-// awaitRun waits for the run to satisfy a condition, which is how a test
-// follows a loop that outlives the request that started it.
-func (e *assistEnv) awaitRun(what string, within time.Duration, cond func(map[string]any) bool) map[string]any {
-	e.t.Helper()
-	deadline := time.Now().Add(within)
-	var last map[string]any
-	for time.Now().Before(deadline) {
-		last = e.runOf()
-		if last != nil && cond(last) {
-			return last
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	e.t.Fatalf("the run never became %s; it is %#v", what, last)
-	return nil
-}
-
-func (e *assistEnv) startRun(prompt string) (*http.Response, map[string]any) {
-	e.t.Helper()
-	body, _ := json.Marshal(map[string]any{"prompt": prompt})
-	return e.do(e.t, e.client, "POST", "/api/sessions/"+e.id+"/agent", string(body))
-}
-
-// agentFrame waits for an agent frame on the socket that satisfies a condition.
-func (c *wsClient) agentFrame(what string, cond func(map[string]any) bool) map[string]any {
-	c.t.Helper()
-	var found map[string]any
-	c.await("an agent frame that is "+what, 60*time.Second, func() bool {
-		for _, frame := range c.ctrl {
-			if frame["t"] != "agent" {
-				continue
-			}
-			if cond(frame) {
-				found = frame
-				return true
-			}
-		}
-		return false
-	})
-	return found
 }
 
 /* ---------------------------------------------------------------- status */
@@ -347,540 +268,6 @@ func TestStatusReportsAMissingKeyAndAnUnknownModel(t *testing.T) {
 	}
 }
 
-/* ---------------------------------------------------------- the operator */
-
-// The operator run end to end: a model that answers with actions, keys that
-// land in a real pane, and a run that ends because the model says it is done.
-func TestAgentRunDrivesThePane(t *testing.T) {
-	e := newAssistEnv(t)
-	// The second answer arrives inside a fence, which is what a chat model
-	// does however plainly it was asked not to.
-	e.gw.script(
-		`{"actions":[{"text":"touch operator-ran"},{"key":"Enter"}],"done":false,`+
-			`"summary":"typing the command","note":"then I will look again"}`,
-		"```json\n"+`{"actions":[],"done":true,"summary":"the file is there"}`+"\n```",
-	)
-
-	socket := e.dialWS(e.id, "viewer=tab-a&cols=100&rows=30")
-	socket.hello()
-
-	res, payload := e.startRun("create a file called operator-ran")
-	if res.StatusCode != http.StatusAccepted {
-		t.Fatalf("start: %d %#v", res.StatusCode, payload)
-	}
-	runID, _ := payload["run_id"].(string)
-	if runID == "" {
-		t.Fatalf("no run id: %#v", payload)
-	}
-
-	// The keys reached the shell, and the shell ran them.
-	marker := filepath.Join(e.work, "operator-ran")
-	deadline := time.Now().Add(60 * time.Second)
-	for {
-		if _, err := os.Stat(marker); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			screen, _ := e.tmux("capture-pane", "-p", "-t", termux.TmuxName(e.id))
-			t.Fatalf("the operator never created %s; the pane shows:\n%s", marker, screen)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	// Every step was on the socket, in the shape the page renders.
-	acted := socket.agentFrame("an action", func(f map[string]any) bool {
-		return f["phase"] == phaseActing && f["action"] == "pressed Enter"
-	})
-	for _, key := range []string{"run_id", "step", "phase", "action", "note", "done", "error", "prompt", "summary", "started"} {
-		if _, ok := acted[key]; !ok {
-			t.Fatalf("the agent frame has no %q: %#v", key, acted)
-		}
-	}
-	if acted["run_id"] != runID {
-		t.Fatalf("the frame is for run %#v, not %q", acted["run_id"], runID)
-	}
-	if acted["prompt"] != "create a file called operator-ran" {
-		t.Fatalf("the frame carries no prompt: %#v", acted)
-	}
-	done := socket.agentFrame("done", func(f map[string]any) bool { return f["done"] == true })
-	if done["phase"] != phaseDone || done["summary"] != "the file is there" || done["error"] != "" {
-		t.Fatalf("the last frame is %#v", done)
-	}
-
-	// And GET mirrors it, from the same view the frame was built from.
-	run := e.awaitRun("done", 30*time.Second, func(r map[string]any) bool { return r["done"] == true })
-	if run["run_id"] != runID || run["summary"] != "the file is there" || run["phase"] != phaseDone {
-		t.Fatalf("GET agent = %#v", run)
-	}
-	if step, _ := run["step"].(float64); step != 2 {
-		t.Fatalf("the run took %v steps, want two", run["step"])
-	}
-	// The model was shown the screen every time, and the second call carried
-	// the first decision with it.
-	calls := e.gw.seen()
-	if len(calls) != 2 {
-		t.Fatalf("the gateway saw %d calls, want two", len(calls))
-	}
-	if calls[0].Model != "test/agent-model" || calls[0].MaxTokens != 800 {
-		t.Fatalf("the request was %#v", calls[0])
-	}
-	if !strings.Contains(calls[0].joined(), "system: You drive a terminal that runs Shell") {
-		t.Fatalf("no system prompt:\n%s", calls[0].joined())
-	}
-	if !strings.Contains(calls[0].joined(), "Goal: create a file called operator-ran") {
-		t.Fatalf("the goal is missing:\n%s", calls[0].joined())
-	}
-	// The summary is read out loud by a voice with one language in it, so the
-	// prompt has to name that language; and every screen carries what the
-	// detector says about it, which is what tells a spinner from a hung prompt.
-	if !strings.Contains(calls[0].joined(), "Write summary and note in English") {
-		t.Fatalf("the operator was not told which language to summarise in:\n%s", calls[0].joined())
-	}
-	if !strings.HasPrefix(calls[0].last(), "The terminal is ") {
-		t.Fatalf("the screen came without the detector's state:\n%s", calls[0].last())
-	}
-	if !strings.Contains(calls[1].joined(), "touch operator-ran") {
-		t.Fatalf("the second step did not carry the first decision:\n%s", calls[1].joined())
-	}
-
-	// A run lives only in memory and is not a log: once it is old enough,
-	// there is nothing to report and the page starts clean.
-	e.srv.agents.setKeep(0)
-	if run := e.runOf(); run != nil {
-		t.Fatalf("a finished run is still reported: %#v", run)
-	}
-}
-
-// One run per session, and a Cancel that reaches a run which is waiting on the
-// model rather than on the terminal.
-func TestAgentRefusesASecondRunAndCancels(t *testing.T) {
-	e := newAssistEnv(t)
-	e.gw.block()
-	e.gw.always(`{"actions":[{"key":"Escape"}],"done":false}`)
-
-	res, payload := e.startRun("look at the screen")
-	if res.StatusCode != http.StatusAccepted {
-		t.Fatalf("start: %d %#v", res.StatusCode, payload)
-	}
-	runID, _ := payload["run_id"].(string)
-
-	// A live run is in hello, so a phone that reconnects mid-run sees it
-	// without asking for it.
-	e.awaitRun("live", 30*time.Second, func(r map[string]any) bool { return r["done"] == false })
-	socket := e.dialWS(e.id, "viewer=tab-b&cols=100&rows=30")
-	hello := socket.hello()
-	live, _ := hello["agent"].(map[string]any)
-	if live == nil || live["run_id"] != runID {
-		t.Fatalf("hello carried %#v for agent", hello["agent"])
-	}
-
-	res, payload = e.startRun("something else")
-	if res.StatusCode != http.StatusConflict {
-		t.Fatalf("a second run = %d %#v", res.StatusCode, payload)
-	}
-	if other, _ := payload["run"].(map[string]any); other == nil || other["run_id"] != runID {
-		t.Fatalf("the refusal did not name the live run: %#v", payload)
-	}
-
-	began := time.Now()
-	res, payload = e.do(t, e.client, "POST", "/api/sessions/"+e.id+"/agent/cancel", "")
-	if res.StatusCode != http.StatusOK || payload["ok"] != true {
-		t.Fatalf("cancel: %d %#v", res.StatusCode, payload)
-	}
-	run := e.awaitRun("cancelled", 10*time.Second, func(r map[string]any) bool { return r["done"] == true })
-	if took := time.Since(began); took > 5*time.Second {
-		t.Fatalf("the cancel took %s", took)
-	}
-	if run["phase"] != phaseError {
-		t.Fatalf("a cancelled run is %#v", run)
-	}
-	if failure, _ := run["error"].(string); !strings.Contains(failure, "cancelled") {
-		t.Fatalf("error = %q", failure)
-	}
-	e.gw.release()
-
-	// And the session is free again: cancelling is not the end of the button.
-	e.gw.always(`{"actions":[],"done":true,"summary":"nothing needed doing"}`)
-	if res, payload := e.startRun("try again"); res.StatusCode != http.StatusAccepted {
-		t.Fatalf("a run after a cancel = %d %#v", res.StatusCode, payload)
-	}
-	e.awaitRun("done", 60*time.Second, func(r map[string]any) bool { return r["done"] == true })
-}
-
-// A model that never says done stops at the step limit rather than at the
-// budget of whoever is paying for it.
-func TestAgentStopsAtTheStepLimit(t *testing.T) {
-	e := newAssistEnv(t)
-	e.configureAgent(map[string]any{"max_steps": 2})
-	e.gw.always(`{"actions":[{"key":"Escape"}],"done":false,"summary":"still looking"}`)
-
-	if res, payload := e.startRun("keep going for ever"); res.StatusCode != http.StatusAccepted {
-		t.Fatalf("start: %d %#v", res.StatusCode, payload)
-	}
-	run := e.awaitRun("done", 90*time.Second, func(r map[string]any) bool { return r["done"] == true })
-	if run["phase"] != phaseDone {
-		t.Fatalf("a capped run is %#v", run)
-	}
-	if note, _ := run["note"].(string); !strings.Contains(note, "step limit of 2") {
-		t.Fatalf("note = %q", note)
-	}
-	if step, _ := run["step"].(float64); step != 2 {
-		t.Fatalf("the run took %v steps", run["step"])
-	}
-	if calls := e.gw.count(); calls != 2 {
-		t.Fatalf("the model was asked %d times, want two", calls)
-	}
-}
-
-// Prose instead of an object is worth exactly one more try, with the parser's
-// complaint attached. A model that cannot answer with JSON twice will not
-// answer with JSON on the fifth attempt either, and every attempt is a
-// screenful of tokens.
-func TestAgentAbortsAfterASecondUnusableAnswer(t *testing.T) {
-	e := newAssistEnv(t)
-	e.gw.always("I would press Enter now, I think.")
-
-	if res, payload := e.startRun("do the thing"); res.StatusCode != http.StatusAccepted {
-		t.Fatalf("start: %d %#v", res.StatusCode, payload)
-	}
-	run := e.awaitRun("failed", 60*time.Second, func(r map[string]any) bool { return r["done"] == true })
-	if run["phase"] != phaseError {
-		t.Fatalf("run = %#v", run)
-	}
-	if failure, _ := run["error"].(string); failure != errAgentJSON.Error() {
-		t.Fatalf("error = %q", failure)
-	}
-	if calls := e.gw.count(); calls != 2 {
-		t.Fatalf("the model was asked %d times, want one retry and no more", calls)
-	}
-	if seen := e.gw.seen(); !strings.Contains(seen[1].joined(), "not usable JSON") {
-		t.Fatalf("the retry did not carry the complaint:\n%s", seen[1].joined())
-	}
-}
-
-// A model id nothing validated on the way in is found out here, and the run
-// has to say so in words rather than dying of a 500 somewhere.
-func TestAgentReportsAnUnknownModel(t *testing.T) {
-	e := newAssistEnv(t)
-	e.configureOpenRouter(t, map[string]any{"agent_model": "nobody/nothing"})
-	e.gw.refuse(http.StatusNotFound, "nobody/nothing is not a valid model ID")
-
-	if res, payload := e.startRun("do the thing"); res.StatusCode != http.StatusAccepted {
-		t.Fatalf("start: %d %#v", res.StatusCode, payload)
-	}
-	run := e.awaitRun("failed", 60*time.Second, func(r map[string]any) bool { return r["done"] == true })
-	failure, _ := run["error"].(string)
-	if !strings.Contains(failure, "unknown model nobody/nothing") || !strings.Contains(failure, "/admin") {
-		t.Fatalf("error = %q", failure)
-	}
-}
-
-// The one policy lever: with it off the operator may not drive a bare shell,
-// which is the harness with no permission prompt of its own.
-func TestAgentRefusesAShellWhenTheLeverIsOff(t *testing.T) {
-	e := newAssistEnv(t)
-	e.configureAgent(map[string]any{"allow_shell": false})
-
-	res, payload := e.startRun("rm everything")
-	if res.StatusCode != http.StatusBadRequest {
-		t.Fatalf("a shell run = %d %#v", res.StatusCode, payload)
-	}
-	if message, _ := payload["error"].(string); !strings.Contains(message, "shell") ||
-		!strings.Contains(message, "/admin") {
-		t.Fatalf("error = %q", message)
-	}
-	if calls := e.gw.count(); calls != 0 {
-		t.Fatalf("a refused run still called the model %d times", calls)
-	}
-
-	// The switch back on is the whole difference.
-	e.configureAgent(map[string]any{"allow_shell": true})
-	e.gw.always(`{"actions":[],"done":true,"summary":"nothing needed doing"}`)
-	if res, payload := e.startRun("look around"); res.StatusCode != http.StatusAccepted {
-		t.Fatalf("with the lever on = %d %#v", res.StatusCode, payload)
-	}
-}
-
-// A run cannot start without a key, and the refusal has to say where to put
-// one - the alternative is a spinner that never becomes anything.
-func TestAgentRefusesWithoutAKey(t *testing.T) {
-	e := newAssistEnv(t)
-	e.configureOpenRouter(t, map[string]any{"api_key": ""})
-
-	res, payload := e.startRun("do the thing")
-	if res.StatusCode != http.StatusBadRequest {
-		t.Fatalf("start without a key = %d %#v", res.StatusCode, payload)
-	}
-	if message, _ := payload["error"].(string); !strings.Contains(message, "/admin") {
-		t.Fatalf("error = %q", message)
-	}
-
-	// An empty prompt is the other refusal on that route.
-	if res, _ := e.do(t, e.client, "POST", "/api/sessions/"+e.id+"/agent", `{"prompt":"   "}`); res.StatusCode != http.StatusBadRequest {
-		t.Fatalf("an empty goal = %d", res.StatusCode)
-	}
-}
-
-/* ----------------------------------------------------------- the guards */
-
-// The guards are what make an operator loop something to leave running: they
-// are all here, in one pure function, so they can be read in one go.
-func TestPlanActionsGuards(t *testing.T) {
-	names := func(plan []plannedKey) []string {
-		out := make([]string, 0, len(plan))
-		for _, p := range plan {
-			switch {
-			case p.key.Text != "":
-				out = append(out, "text:"+p.key.Text)
-			case p.key.Name != "":
-				out = append(out, p.key.Name)
-			default:
-				out = append(out, "wait:"+p.key.Wait.String())
-			}
-		}
-		return out
-	}
-
-	t.Run("a second interrupt in a row is dropped", func(t *testing.T) {
-		interrupts, last := 0, false
-		plan, notes := planActions([]agentAction{{Key: "C-c"}, {Key: "Ctrl-C"}}, config.HarnessClaude, &interrupts, &last)
-		if got := names(plan); len(got) != 1 || got[0] != "C-c" {
-			t.Fatalf("plan = %v, want one interrupt", got)
-		}
-		if len(notes) != 1 || !strings.Contains(notes[0], "dropped") {
-			t.Fatalf("notes = %v", notes)
-		}
-		if interrupts != 1 {
-			t.Fatalf("interrupts = %d", interrupts)
-		}
-		// And the counter survives the step: the third one anywhere in a run
-		// is what ends it.
-		plan, _ = planActions([]agentAction{{Key: "Enter"}, {Key: "C-c"}}, config.HarnessClaude, &interrupts, &last)
-		if got := names(plan); len(got) != 2 {
-			t.Fatalf("plan = %v", got)
-		}
-		if interrupts != 2 {
-			t.Fatalf("interrupts = %d", interrupts)
-		}
-	})
-
-	t.Run("C-d never reaches a shell", func(t *testing.T) {
-		interrupts, last := 0, false
-		plan, notes := planActions([]agentAction{{Key: "C-d"}}, config.HarnessShell, &interrupts, &last)
-		if len(plan) != 0 || len(notes) != 1 {
-			t.Fatalf("plan = %v, notes = %v", names(plan), notes)
-		}
-		// On a harness where it means "end of input" it is an ordinary key.
-		plan, _ = planActions([]agentAction{{Key: "C-d"}}, config.HarnessClaude, &interrupts, &last)
-		if got := names(plan); len(got) != 1 || got[0] != "C-d" {
-			t.Fatalf("plan = %v", got)
-		}
-	})
-
-	t.Run("a newline never submits by itself", func(t *testing.T) {
-		interrupts, last := 0, false
-		plan, notes := planActions([]agentAction{{Text: "first\nsecond"}}, config.HarnessCodex, &interrupts, &last)
-		if got := names(plan); len(got) != 1 || got[0] != "text:first second" {
-			t.Fatalf("plan = %v", got)
-		}
-		if len(notes) != 1 || !strings.Contains(notes[0], "Enter") {
-			t.Fatalf("notes = %v", notes)
-		}
-	})
-
-	t.Run("text is bounded", func(t *testing.T) {
-		interrupts, last := 0, false
-		plan, notes := planActions([]agentAction{{Text: strings.Repeat("x", agentMaxTextRunes+50)}},
-			config.HarnessCodex, &interrupts, &last)
-		if len([]rune(plan[0].key.Text)) != agentMaxTextRunes {
-			t.Fatalf("text is %d runes", len([]rune(plan[0].key.Text)))
-		}
-		if len(notes) != 1 {
-			t.Fatalf("notes = %v", notes)
-		}
-	})
-
-	t.Run("a step is bounded", func(t *testing.T) {
-		interrupts, last := 0, false
-		var many []agentAction
-		for i := 0; i < agentMaxActions+4; i++ {
-			many = append(many, agentAction{Key: "Down"})
-		}
-		plan, notes := planActions(many, config.HarnessOpenCode, &interrupts, &last)
-		if len(plan) != agentMaxActions {
-			t.Fatalf("plan has %d actions", len(plan))
-		}
-		if len(notes) != 1 || !strings.Contains(notes[0], "first 8") {
-			t.Fatalf("notes = %v", notes)
-		}
-	})
-
-	t.Run("a wait is bounded and an unknown key is refused", func(t *testing.T) {
-		interrupts, last := 0, false
-		plan, notes := planActions([]agentAction{
-			{WaitMS: 60000}, {Key: "F13"}, {Key: "pgdn"}, {},
-		}, config.HarnessCodex, &interrupts, &last)
-		got := names(plan)
-		if len(got) != 2 || got[0] != "wait:"+termux.MaxKeyWait.String() || got[1] != "PageDown" {
-			t.Fatalf("plan = %v", got)
-		}
-		if len(notes) != 3 {
-			t.Fatalf("notes = %v", notes)
-		}
-	})
-
-	t.Run("every key in the vocabulary is a tmux key name", func(t *testing.T) {
-		for _, name := range agentKeyVocabulary {
-			if got, ok := agentKeyName(strings.ToUpper(name)); !ok || got != name {
-				t.Fatalf("%q came back as %q/%v", name, got, ok)
-			}
-		}
-	})
-}
-
-// The fence a chat model puts round its answer, and the prose it puts in front
-// of it, are two different things: the first is worth stripping, the second is
-// worth a retry.
-func TestParseDecision(t *testing.T) {
-	decision, err := parseDecision("```json\n{\"actions\":[{\"key\":\"Enter\"}],\"done\":true,\"summary\":\"ok\"}\n```")
-	if err != nil {
-		t.Fatalf("a fenced object: %v", err)
-	}
-	if !decision.Done || decision.Summary != "ok" || len(decision.Actions) != 1 {
-		t.Fatalf("decision = %#v", decision)
-	}
-	if _, err := parseDecision("Sure, I would press Enter."); err == nil {
-		t.Fatal("prose parsed as a decision")
-	}
-	if _, err := parseDecision("   "); err == nil {
-		t.Fatal("an empty answer parsed as a decision")
-	}
-}
-
-// A harness that exits under the run is the one ending nothing else reports.
-// With remain-on-exit on, tmux takes the keys of a dead pane without a word
-// and capture-pane still answers its frozen screen, so a run that only learns
-// from failed calls would sit in "waiting for the terminal" until the wall
-// clock ended it - six more screenfuls of tokens and ten minutes on a phone.
-func TestAgentEndsWhenThePaneDies(t *testing.T) {
-	e := newAssistEnv(t)
-	e.gw.script(`{"actions":[{"text":"exit"},{"key":"Enter"}],"done":false,"summary":"leaving"}`)
-	e.gw.always(`{"actions":[],"done":true,"summary":"this must never be asked"}`)
-
-	if res, payload := e.startRun("close the shell"); res.StatusCode != http.StatusAccepted {
-		t.Fatalf("start: %d %#v", res.StatusCode, payload)
-	}
-	began := time.Now()
-	run := e.awaitRun("ended", 60*time.Second, func(r map[string]any) bool { return r["done"] == true })
-	// Well inside the bounded unknown wait, which is what used to happen here.
-	if took := time.Since(began); took > 30*time.Second {
-		t.Fatalf("the dead pane took %s to be noticed", took)
-	}
-	if run["phase"] != phaseError {
-		t.Fatalf("a run whose pane died is %#v", run)
-	}
-	if failure, _ := run["error"].(string); !strings.Contains(failure, "gone") {
-		t.Fatalf("error = %q, want the terminal to be gone", failure)
-	}
-	// And it did not ask the model what to do about a screen nobody is behind.
-	if calls := e.gw.count(); calls != 1 {
-		t.Fatalf("the model was asked %d times, want one", calls)
-	}
-}
-
-// The ordinary reason to press Cancel: the run typed something that takes half
-// a minute and is now in its wait. The button has to reach it there and not
-// only in the model call.
-func TestAgentCancelReachesARunWaitingOnABusyTerminal(t *testing.T) {
-	e := newAssistEnv(t)
-	e.gw.script(`{"actions":[{"text":"sleep 30"},{"key":"Enter"}],"done":false,"summary":"waiting for it"}`)
-	e.gw.always(`{"actions":[],"done":true,"summary":"this must never be asked"}`)
-
-	if res, payload := e.startRun("start the long thing"); res.StatusCode != http.StatusAccepted {
-		t.Fatalf("start: %d %#v", res.StatusCode, payload)
-	}
-	// The wait is a real one: the pane is busy for half a minute.
-	deadline := time.Now().Add(30 * time.Second)
-	for e.srv.manager.ActivityOf(e.id).State != termux.StateBusy {
-		if time.Now().After(deadline) {
-			t.Fatalf("the terminal never became busy; it is %q", e.srv.manager.ActivityOf(e.id).State)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	e.awaitRun("waiting on the terminal", 30*time.Second, func(r map[string]any) bool {
-		step, _ := r["step"].(float64)
-		return step == 1 && r["phase"] == phaseWaiting
-	})
-
-	began := time.Now()
-	res, payload := e.do(t, e.client, "POST", "/api/sessions/"+e.id+"/agent/cancel", "")
-	if res.StatusCode != http.StatusOK || payload["cancelled"] != true {
-		t.Fatalf("cancel: %d %#v", res.StatusCode, payload)
-	}
-	run := e.awaitRun("cancelled", 10*time.Second, func(r map[string]any) bool { return r["done"] == true })
-	if took := time.Since(began); took > 5*time.Second {
-		t.Fatalf("the cancel took %s with the terminal busy", took)
-	}
-	if run["phase"] != phaseError {
-		t.Fatalf("a cancelled run is %#v", run)
-	}
-	if failure, _ := run["error"].(string); !strings.Contains(failure, "cancelled") {
-		t.Fatalf("error = %q", failure)
-	}
-}
-
-// Three interrupts in one run is a model fighting the terminal rather than
-// driving it. The guard counts them across steps, and the third one ends the
-// run rather than the step.
-func TestAgentStopsAfterThreeInterrupts(t *testing.T) {
-	e := newAssistEnv(t)
-	// The Enter is what makes each C-c the first of its step: two in a row are
-	// dropped by the other half of the same guard.
-	e.gw.always(`{"actions":[{"key":"Enter"},{"key":"C-c"}],"done":false,"summary":"interrupting again"}`)
-
-	if res, payload := e.startRun("interrupt everything"); res.StatusCode != http.StatusAccepted {
-		t.Fatalf("start: %d %#v", res.StatusCode, payload)
-	}
-	run := e.awaitRun("stopped", 90*time.Second, func(r map[string]any) bool { return r["done"] == true })
-	if run["phase"] != phaseError {
-		t.Fatalf("an interrupting run ends as %#v", run)
-	}
-	if failure, _ := run["error"].(string); !strings.Contains(failure, "interrupting") {
-		t.Fatalf("error = %q", failure)
-	}
-	if note, _ := run["note"].(string); !strings.Contains(note, "three interrupts") {
-		t.Fatalf("note = %q", note)
-	}
-	if step, _ := run["step"].(float64); step != 3 {
-		t.Fatalf("the run took %v steps, want three", run["step"])
-	}
-	if calls := e.gw.count(); calls != 3 {
-		t.Fatalf("the model was asked %d times, want three", calls)
-	}
-}
-
-// The wall clock is the bound on a run that is neither finished nor stuck on
-// the model: a build that never ends, a harness that never answers. It is a
-// driver field for the same reason keep is - the ending is worth a test and
-// ten minutes of waiting is not.
-func TestAgentRunsOutOfTime(t *testing.T) {
-	e := newAssistEnv(t)
-	e.srv.agents.setWall(2 * time.Second)
-	e.gw.always(`{"actions":[{"key":"Escape"}],"done":false,"summary":"still looking"}`)
-
-	if res, payload := e.startRun("look for ever"); res.StatusCode != http.StatusAccepted {
-		t.Fatalf("start: %d %#v", res.StatusCode, payload)
-	}
-	run := e.awaitRun("out of time", 60*time.Second, func(r map[string]any) bool { return r["done"] == true })
-	if run["phase"] != phaseError {
-		t.Fatalf("a run out of time is %#v", run)
-	}
-	failure, _ := run["error"].(string)
-	if !strings.Contains(failure, "ran out of time") || !strings.Contains(failure, "2s") {
-		t.Fatalf("error = %q, want the run's own clock named", failure)
-	}
-}
-
 // A key OpenRouter will not take is not a model that does not exist, and the
 // two send an owner to different halves of the dashboard.
 func TestAssistReportsARejectedKey(t *testing.T) {
@@ -900,23 +287,56 @@ func TestAssistReportsARejectedKey(t *testing.T) {
 	}
 }
 
-// The trim keeps the system prompt and an odd tail, so that what follows the
-// system prompt is always a screen and never an answer to one the model can no
-// longer see.
-func TestTrimAgentHistoryKeepsTheScreenFirst(t *testing.T) {
-	messages := []openrouter.Message{{Role: "system", Content: "system"}}
-	for step := 1; step <= 8; step++ {
-		messages = trimAgentHistory(append(messages, openrouter.Message{
-			Role: "user", Content: fmt.Sprintf("screen %d", step)}))
-		if messages[0].Role != "system" {
-			t.Fatalf("step %d dropped the system prompt: %#v", step, messages[0])
-		}
-		if len(messages) > 1 && messages[1].Role != "user" {
-			t.Fatalf("step %d starts the tail with %q", step, messages[1].Role)
-		}
-		if last := messages[len(messages)-1]; last.Content != fmt.Sprintf("screen %d", step) {
-			t.Fatalf("step %d lost its own screen: %#v", step, last)
-		}
-		messages = append(messages, openrouter.Message{Role: "assistant", Content: "answer"})
+/* ------------------------------------------------------- the status phases */
+
+// Pressing Status is a question to a model over a network, and the page has to
+// be able to show that something is happening. The phases arrive on the socket,
+// in order, and the last one carries the answer.
+func TestStatusStreamsItsPhases(t *testing.T) {
+	e := newAssistEnv(t)
+	e.gw.always("It is sitting at a prompt.")
+	socket := e.dialWS(e.id, "viewer=tab-status&cols=100&rows=30")
+	socket.hello()
+
+	if res, payload := e.do(t, e.client, "POST", "/api/sessions/"+e.id+"/status", ""); res.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d %#v", res.StatusCode, payload)
 	}
+
+	var phases []string
+	var last map[string]any
+	socket.await("the status phases", 30*time.Second, func() bool {
+		phases = phases[:0]
+		for _, frame := range socket.ctrl {
+			if frame["t"] != "status" {
+				continue
+			}
+			phases = append(phases, fmt.Sprint(frame["phase"]))
+			last = frame
+		}
+		return len(phases) >= 4
+	})
+	if got := strings.Join(phases, ","); got != "capturing,asking,speaking,done" {
+		t.Fatalf("the phases were %s", got)
+	}
+	if last["id"] != e.id {
+		t.Fatalf("the frame names %v", last["id"])
+	}
+	if last["text"] != "It is sitting at a prompt." {
+		t.Fatalf("the last phase carries %#v", last["text"])
+	}
+
+	// And the failing path says so in the same place.
+	e.gw.refuse(http.StatusNotFound, "nobody/nothing is not a valid model ID")
+	e.configureOpenRouter(t, map[string]any{"status_model": "nobody/nothing"})
+	if res, _ := e.do(t, e.client, "POST", "/api/sessions/"+e.id+"/status", ""); res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a refused status = %d", res.StatusCode)
+	}
+	socket.await("an error phase", 30*time.Second, func() bool {
+		for _, frame := range socket.ctrl {
+			if frame["t"] == "status" && frame["phase"] == statusPhaseError {
+				return true
+			}
+		}
+		return false
+	})
 }

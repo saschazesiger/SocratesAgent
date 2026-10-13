@@ -95,6 +95,12 @@ func newBench(t *testing.T) *bench {
 		defer b.mu.Unlock()
 		return b.screen, b.screenE
 	}
+	// The bench's screen has no history, so what is on it is what is visible.
+	m.act.visible = func(context.Context, string) (string, error) {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.screen, b.screenE
+	}
 	// NoteInput and MarkRead read the clock themselves, and the ladder's
 	// answers are decided by comparing that reading with the tick's.
 	m.act.now = func() time.Time {
@@ -234,6 +240,52 @@ func TestActivityBusyIsImmediateAndIdleSettles(t *testing.T) {
 
 	if got := b.states(); len(got) != 2 || got[0] != StateBusy || got[1] != StateIdle {
 		t.Fatalf("the callback saw %v, want exactly [busy idle]", got)
+	}
+	// Both commits are status changes in the list's sense, so both were
+	// written into the row: finishing is the moment the list orders by. The
+	// last commit happened on the last tick, and the bench's clock has moved
+	// one interval past it since.
+	last := b.at().Add(-ActivityInterval).UnixMilli()
+	if got, _ := b.st.GetSession("s1"); got == nil || got.ActiveAt != last {
+		t.Fatalf("active_at = %v, want the moment of the last commit %d", got, last)
+	}
+}
+
+// TestMovesRow is the one rule for what moves a session in the list, which the
+// browser applies to its frames as well. Coming to rest from busy, starting,
+// and starting to need an answer move it; a detector that comes up after a
+// restart and finds every pane idle moves nothing.
+func TestMovesRow(t *testing.T) {
+	for _, c := range []struct {
+		prev, next State
+		want       bool
+	}{
+		{StateIdle, StateBusy, true},
+		{StateUnknown, StateBusy, true},
+		{StateBusy, StateIdle, true},
+		{StateBusy, StateWaiting, true},
+		{StateBusy, StateUnknown, true},
+		{StateIdle, StateWaiting, true},
+		{StateUnknown, StateIdle, false},
+		{StateWaiting, StateIdle, false},
+		{StateIdle, StateUnknown, false},
+		{StateBusy, StateBusy, false},
+		{StateWaiting, StateWaiting, false},
+		// A turn that ends with something still running behind it ends, and
+		// that work ending is an end too. Coming up to find it already so is
+		// the machine catching up, like coming up to find a session idle.
+		{StateBusy, StateTasks, true},
+		{StateTasks, StateIdle, true},
+		{StateTasks, StateBusy, true},
+		{StateTasks, StateUnknown, true},
+		{StateTasks, StateWaiting, true},
+		{StateUnknown, StateTasks, false},
+		{StateIdle, StateTasks, false},
+		{StateTasks, StateTasks, false},
+	} {
+		if got := MovesRow(c.prev, c.next); got != c.want {
+			t.Errorf("MovesRow(%s, %s) = %v, want %v", c.prev, c.next, got, c.want)
+		}
 	}
 }
 
@@ -480,12 +532,41 @@ func TestActivityWaitingIsReleasedByAScreenTheGuardOverwrote(t *testing.T) {
 		func() map[string]paneLine { return b.pane(row, HardQuiet) })
 }
 
+// TestActivityChangesSayWhetherTheyWereAskedFor: the busy of a harness
+// starting up is published as not asked for, and the busy after somebody has
+// typed as asked for - which is how the server finds the first prompt.
+func TestActivityChangesSayWhetherTheyWereAskedFor(t *testing.T) {
+	b := newBench(t)
+	row := b.row("s1", "claude")
+	rows := []store.Session{row}
+	b.source(harnesses.KindClaude, seen(StateBusy, ""), seen(StateIdle, ""), seen(StateIdle, ""), seen(StateBusy, ""))
+
+	b.ticks(3, rows, func() map[string]paneLine { return b.pane(row, 0) })
+	b.want("s1", StateIdle)
+	b.m.NoteTyped("s1")
+	b.tick(rows, b.pane(row, 0))
+	b.want("s1", StateBusy)
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var asked []bool
+	for _, change := range b.changes {
+		asked = append(asked, change.Activity.Asked)
+	}
+	if len(asked) != 3 || asked[0] || asked[1] || !asked[2] {
+		t.Fatalf("asked per change = %v, want false, false, true", asked)
+	}
+}
+
 // TestActivityPaneDeathMarksUnreadAndInputClearsIt.
 func TestActivityPaneDeathMarksUnreadAndInputClearsIt(t *testing.T) {
 	b := newBench(t)
 	row := b.row("s1", "claude")
 	rows := []store.Session{row}
 	b.source(harnesses.KindClaude, seen(StateBusy, ""))
+	// Somebody typed at it, so what it does from here is work that was asked
+	// for rather than a program starting up.
+	b.m.NoteTyped("s1")
 
 	b.tick(rows, b.pane(row, 0))
 	b.want("s1", StateBusy)
@@ -515,6 +596,7 @@ func TestActivityWaitingMarksUnreadAndMarkReadClearsIt(t *testing.T) {
 	row := b.row("s1", "claude")
 	rows := []store.Session{row}
 	b.source(harnesses.KindClaude, seen(StateWaiting, "permission prompt"))
+	b.m.NoteTyped("s1")
 
 	b.tick(rows, b.pane(row, 0))
 	if a := b.m.ActivityOf("s1"); a.State != StateWaiting || !a.Unread {
@@ -526,6 +608,34 @@ func TestActivityWaitingMarksUnreadAndMarkReadClearsIt(t *testing.T) {
 	}
 }
 
+// TestActivityStartUpIsNotWorkThatFinished: every harness is busy while it
+// starts and idle the moment it is ready, and that first edge is not a turn
+// ending. It must leave no unread mark - the browser chimes and notifies on
+// exactly that mark, and a session that has just been created would otherwise
+// announce itself as work somebody missed.
+func TestActivityStartUpIsNotWorkThatFinished(t *testing.T) {
+	b := newBench(t)
+	row := b.row("s1", "claude")
+	rows := []store.Session{row}
+	b.source(harnesses.KindClaude, seen(StateBusy, ""), seen(StateIdle, ""))
+
+	b.tick(rows, b.pane(row, 0))
+	b.until("s1", StateIdle, IdleSettle+1, rows, func() map[string]paneLine { return b.pane(row, 0) })
+	if a := b.m.ActivityOf("s1"); a.Unread {
+		t.Fatalf("a session nobody has typed at yet marked itself unread: %#v", a)
+	}
+
+	// And the very next turn, the one that was asked for, does mark it.
+	b.m.NoteTyped("s1")
+	b.source(harnesses.KindClaude, seen(StateBusy, ""))
+	b.until("s1", StateBusy, 2, rows, func() map[string]paneLine { return b.pane(row, 0) })
+	b.source(harnesses.KindClaude, seen(StateIdle, ""))
+	b.until("s1", StateIdle, IdleSettle+1, rows, func() map[string]paneLine { return b.pane(row, 0) })
+	if a := b.m.ActivityOf("s1"); !a.Unread {
+		t.Fatalf("a turn that was asked for and ended is unread, got %#v", a)
+	}
+}
+
 // TestActivityUnreadSurvivesAManagerRebuild: a restart of Socrates must not
 // lose "this finished while you were away".
 func TestActivityUnreadSurvivesAManagerRebuild(t *testing.T) {
@@ -533,6 +643,7 @@ func TestActivityUnreadSurvivesAManagerRebuild(t *testing.T) {
 	row := b.row("s1", "claude")
 	rows := []store.Session{row}
 	b.source(harnesses.KindClaude, seen(StateBusy, ""), seen(StateIdle, ""))
+	b.m.NoteTyped("s1")
 
 	b.tick(rows, b.pane(row, 0))
 	b.until("s1", StateIdle, IdleSettle+1, rows, func() map[string]paneLine { return b.pane(row, 0) })
@@ -571,6 +682,7 @@ func TestActivityResetKeepsUnreadAndDropsTheState(t *testing.T) {
 	row := b.row("s1", "claude")
 	rows := []store.Session{row}
 	b.source(harnesses.KindClaude, seen(StateBusy, ""), seen(StateIdle, ""))
+	b.m.NoteTyped("s1")
 
 	b.tick(rows, b.pane(row, 0))
 	b.until("s1", StateIdle, IdleSettle+1, rows, func() map[string]paneLine { return b.pane(row, 0) })
@@ -652,6 +764,16 @@ func TestActivityCodexHostnameTitleIsUnavailable(t *testing.T) {
 		{"SocratesAgent", seen(StateIdle, "")},
 		{"⠧ SocratesAgent", seen(StateBusy, "")},
 		{"[ . ] Action Required | SocratesAgent", seen(StateWaiting, "approval required")},
+		// Codex 0.158.0 puts the thread's name before the directory's.
+		{"Start background sleep command | SocratesAgent", seen(StateIdle, "")},
+		{"⠦ Start background sleep command | SocratesAgent", seen(StateBusy, "")},
+		{"⠦ ⠦ | SocratesAgent", seen(StateBusy, "")},
+		{"Start background sleep command | OtherProject", missing},
+		// A long directory name is cut short.
+		{"Start background sleep command | SocratesAg...", seen(StateIdle, "")},
+		{"SocratesAg…", seen(StateIdle, "")},
+		{"Start background sleep command | OtherProj...", missing},
+		{"Start | So...", missing},
 	}
 	for _, c := range cases {
 		got := (codexSource{}).Read(context.Background(), snapshot{
@@ -784,7 +906,7 @@ func TestActivityClaudeStatusIsFoundOnADescendant(t *testing.T) {
 // all emit session.status, and an idle for one of them must not clear
 // another's busy.
 func TestActivityOpenCodeBusySetKeepsBusy(t *testing.T) {
-	w := &openCodeWatcher{busy: map[string]bool{}, waiting: map[string]bool{}}
+	w := &openCodeWatcher{busy: map[string]bool{}, waiting: map[string]openCodePrompt{}}
 	event := func(id, kind string) {
 		w.event(fmt.Sprintf(`{"type":"session.status","properties":{"sessionID":%q,"status":{"type":%q}}}`, id, kind))
 	}
@@ -807,17 +929,84 @@ func TestActivityOpenCodeBusySetKeepsBusy(t *testing.T) {
 	if got := w.answer(); got.state != StateBusy {
 		t.Fatalf("a retry read as %#v, want busy", got)
 	}
-	w.event(`{"type":"permission.v2.asked","properties":{"id":"per_1","sessionID":"ses_a"}}`)
+	w.event(`{"type":"permission.asked","properties":{"id":"per_1","sessionID":"ses_a"}}`)
 	if got := w.answer(); got.state != StateWaiting {
 		t.Fatalf("an asked permission read as %#v, want waiting", got)
 	}
-	w.event(`{"type":"permission.v2.replied","properties":{"requestID":"per_2","sessionID":"ses_a"}}`)
+	w.event(`{"type":"permission.replied","properties":{"requestID":"per_2","sessionID":"ses_a"}}`)
 	if got := w.answer(); got.state != StateWaiting {
 		t.Fatalf("another request's reply cleared this one: %#v", got)
 	}
-	w.event(`{"type":"permission.v2.replied","properties":{"requestID":"per_1","sessionID":"ses_a"}}`)
+	w.event(`{"type":"permission.replied","properties":{"requestID":"per_1","sessionID":"ses_a"}}`)
 	if got := w.answer(); got.state != StateBusy {
 		t.Fatalf("the matching reply left %#v, want the busy underneath", got)
+	}
+}
+
+// TestActivityOpenCodePermissionEvents pins the event names OpenCode 1.17.13
+// really emits - `permission.asked` and `permission.replied`, not the
+// `permission.v2.*` an earlier pass recorded, which is why waiting was never
+// reported at all - and the arithmetic of the waiting set around them.
+func TestActivityOpenCodePermissionEvents(t *testing.T) {
+	fresh := func() *openCodeWatcher {
+		return &openCodeWatcher{busy: map[string]bool{}, waiting: map[string]openCodePrompt{}, ok: true}
+	}
+	asked := func(name, id string) string {
+		return fmt.Sprintf(`{"type":%q,"properties":{"id":%q,"sessionID":"ses_a","permission":"bash","patterns":["echo hello"]}}`, name, id)
+	}
+	replied := func(name, id string) string {
+		return fmt.Sprintf(`{"type":%q,"properties":{"sessionID":"ses_a","requestID":%q,"reply":"once"}}`, name, id)
+	}
+
+	// The real name, on an otherwise idle session.
+	w := fresh()
+	w.event(asked("permission.asked", "per_1"))
+	if got := w.answer(); got.state != StateWaiting || got.note != "permission prompt" {
+		t.Fatalf("permission.asked read as %#v, want waiting", got)
+	}
+
+	// A prompt sits on a session the status map calls busy - which is exactly
+	// what the real server reports while a prompt is open - and waiting has to
+	// beat it.
+	w = fresh()
+	w.event(`{"type":"session.status","properties":{"sessionID":"ses_a","status":{"type":"busy"}}}`)
+	w.event(asked("permission.asked", "per_1"))
+	if got := w.answer(); got.state != StateWaiting {
+		t.Fatalf("a prompt on a busy session read as %#v, want waiting", got)
+	}
+	// The reply hands the session back to the busy underneath it, not to idle.
+	w.event(replied("permission.replied", "per_1"))
+	if got := w.answer(); got.state != StateBusy {
+		t.Fatalf("the answered prompt left %#v, want busy", got)
+	}
+
+	// A reply nobody can match is still a reply: the prompts are gone.
+	w = fresh()
+	w.event(asked("permission.asked", "per_1"))
+	w.event(asked("permission.asked", "per_2"))
+	w.event(replied("permission.replied", ""))
+	if got := w.answer(); got.state != StateIdle {
+		t.Fatalf("an unmatched reply left %#v, want every prompt cleared", got)
+	}
+
+	// Two prompts, one answered: the other one still holds the session.
+	w = fresh()
+	w.event(asked("permission.asked", "per_1"))
+	w.event(asked("permission.asked", "per_2"))
+	w.event(replied("permission.replied", "per_1"))
+	if got := w.answer(); got.state != StateWaiting {
+		t.Fatalf("one of two prompts answered read as %#v, want waiting", got)
+	}
+
+	// The legacy spelling is still understood, both halves of it.
+	w = fresh()
+	w.event(asked("permission.v2.asked", "per_1"))
+	if got := w.answer(); got.state != StateWaiting {
+		t.Fatalf("the legacy permission.v2.asked read as %#v, want waiting", got)
+	}
+	w.event(replied("permission.v2.replied", "per_1"))
+	if got := w.answer(); got.state != StateIdle {
+		t.Fatalf("the legacy permission.v2.replied left %#v, want idle", got)
 	}
 }
 
@@ -866,6 +1055,7 @@ func TestActivityListSkipsSessionsThatAreNotRunning(t *testing.T) {
 	b := newBench(t)
 	row := b.row("s1", "claude")
 	b.source(harnesses.KindClaude, seen(StateBusy, ""))
+	b.m.NoteTyped("s1")
 	b.tick([]store.Session{row}, b.pane(row, 0))
 	if len(b.m.Activities()) != 1 {
 		t.Fatalf("a running session is not in the map: %#v", b.m.Activities())
@@ -1010,6 +1200,67 @@ func TestScrapeScreens(t *testing.T) {
 			"▣  Build · Glm 5.3 · 39.8s\n  ⬝⬝⬝⬝⬝⬝  10.5K (1%) · $0.02   ctrl+p commands",
 			StateIdle, true},
 		{"opencode nothing", harnesses.KindOpenCode, "Ask anything...", StateUnknown, false},
+		// The permission card can keep the bottom bar around it, `ctrl+p
+		// commands` and all, so waiting has to be read before idle.
+		{"opencode waiting", harnesses.KindOpenCode,
+			"  ┃  △ Permission required\n  ┃    # Shell command\n  ┃  $ echo hello-from-bash\n" +
+				"  ┃   Allow once   Allow always   Reject          ctrl+f fullscreen  ⇆ select  enter confirm\n" +
+				"  ⬝⬝⬝⬝⬝⬝  10.5K (1%) · $0.02   ctrl+p commands",
+			StateWaiting, true},
+		// The verbatim card at the two narrowest widths that were captured
+		// from a real OpenCode 1.17.13 (`card_45x20`, `card_60x20`). These are
+		// the rows that prove the heading alternative is the one carrying
+		// narrow terminals: below about 80 columns the hint row wraps onto its
+		// own `┃`-prefixed line, so `Reject … ctrl+f` is no longer one line and
+		// only `△ Permission required` still matches.
+		{"opencode waiting at 60 columns", harnesses.KindOpenCode,
+			"  ┃                                                         \n" +
+				"  ┃  run `echo hello-from-bash` using the bash tool         \n" +
+				"  ┃                                                         \n" +
+				"                                                            \n" +
+				"     $ echo hello-from-bash                                 \n" +
+				"                                                            \n" +
+				"     ▣  Build · Anthropic Claude Haiku Latest               \n" +
+				"                                                            \n" +
+				"  ┃                                                         \n" +
+				"  ┃  △ Permission required                                  \n" +
+				"  ┃    # Shell command                                      \n" +
+				"  ┃                                                         \n" +
+				"  ┃  $ echo hello-from-bash                                 \n" +
+				"  ┃                                                         \n" +
+				"  ┃                                                         \n" +
+				"  ┃   Allow once   Allow always   Reject                    \n" +
+				"  ┃                                                         \n" +
+				"  ┃  ctrl+f fullscreen  ⇆ select  enter confirm             \n" +
+				"  ┃                                                         \n" +
+				"                                                            ",
+			StateWaiting, true},
+		{"opencode waiting at 45 columns", harnesses.KindOpenCode,
+			"                                             \n" +
+				"     I'll run that bash command for you.     \n" +
+				"                                             \n" +
+				"     $ echo hello-from-bash                  \n" +
+				"                                             \n" +
+				"     ▣  Build · Anthropic Claude Haiku       \n" +
+				"     Latest                                  \n" +
+				"                                             \n" +
+				"  ┃                                          \n" +
+				"  ┃  △ Permission required                   \n" +
+				"  ┃    # Shell command                       \n" +
+				"  ┃                                          \n" +
+				"  ┃  $ echo hello-from-bash                  \n" +
+				"  ┃                                          \n" +
+				"  ┃                                          \n" +
+				"  ┃   Allow once   Allow always   Reject     \n" +
+				"  ┃                                          \n" +
+				"  ┃  ctrl+f fullscreen  ⇆ select  enter confi\n" +
+				"  ┃                                          \n" +
+				"                                             ",
+			StateWaiting, true},
+		{"opencode waiting on a busy screen", harnesses.KindOpenCode,
+			"⠏ Thinking   esc interrupt  ctrl+p commands\n" +
+				"  ┃   Allow once   Allow always   Reject          ctrl+f fullscreen  ⇆ select  enter confirm",
+			StateWaiting, true},
 
 		{"shell never scrapes", harnesses.KindShell, "esc to interrupt", StateUnknown, false},
 	}
@@ -1023,6 +1274,32 @@ func TestScrapeScreens(t *testing.T) {
 	// busy for an idle OpenCode bottom bar and vice versa.
 	if scrapeScreen(harnesses.KindOpenCode, "esc to interrupt").ok {
 		t.Fatal("OpenCode answered Claude's busy literal")
+	}
+	// And a plain busy bar is not a prompt: the waiting pattern is the card's
+	// own two rows, not anything the bottom bar carries.
+	busyBar := "⠏ Thinking   ⬝⬝⬝⬝⬝⬝■■  esc interrupt      tab agents  ctrl+p commands"
+	if got := scrapeScreen(harnesses.KindOpenCode, busyBar); got.state == StateWaiting {
+		t.Fatalf("a busy OpenCode bar read as %#v, want busy", got)
+	}
+	// The words alone are not the card. `capture-pane -S -40` reads the
+	// scrollback as well as the pane, and the composer paints the same `┃`
+	// gutter the card does, so the only thing that separates a real prompt
+	// from somebody typing about one is the card's own furniture: the `△`
+	// heading it and the `ctrl+f` hint closing its button row. Both of these
+	// were captured from a real OpenCode 1.17.13.
+	notCards := map[string]string{
+		"a transcript quoting the words": "  ⏺ The tool call failed because Permission required was\n" +
+			"    returned by the sandbox; retrying without it.\n" +
+			"  ⬝⬝⬝⬝⬝⬝  10.5K (1%) · $0.02   ctrl+p commands",
+		"the words typed into the composer": "  ┃\n  ┃  Permission required\n  ┃\n" +
+			"  ┃  Build · Anthropic Claude Haiku Latest OpenRouter\n" +
+			"  ╹━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+			"                     tab agents  ctrl+p commands",
+	}
+	for name, screen := range notCards {
+		if got := scrapeScreen(harnesses.KindOpenCode, screen); got.state == StateWaiting {
+			t.Errorf("%s scraped as %#v, want anything but waiting", name, got)
+		}
 	}
 }
 
@@ -1134,14 +1411,274 @@ func TestOpenCodeWatcherSeedsThenStreams(t *testing.T) {
 		return got.ok && got.state == StateIdle
 	})
 
-	events <- `{"type":"permission.v2.asked","properties":{"id":"per_9","sessionID":"ses_seed"}}`
+	events <- `{"type":"permission.asked","properties":{"id":"per_9","sessionID":"ses_seed"}}`
 	waitFor(t, 10*time.Second, "a permission prompt", func() bool {
 		return w.answer().state == StateWaiting
 	})
-	events <- `{"type":"permission.v2.replied","properties":{"requestID":"per_9","sessionID":"ses_seed"}}`
+	events <- `{"type":"permission.replied","properties":{"requestID":"per_9","sessionID":"ses_seed"}}`
 	waitFor(t, 10*time.Second, "the prompt to be answered", func() bool {
 		return w.answer().state == StateIdle
 	})
+}
+
+// TestOpenCodeWatcherSeedsPendingPermissions: a prompt raised while nothing
+// was listening is on GET /permission, and the session it belongs to is `busy`
+// in the status map for as long as it stands. Without the second seed that
+// session reads as work in progress for ever, which is the bug this pins.
+func TestOpenCodeWatcherSeedsPendingPermissions(t *testing.T) {
+	events := make(chan string, 8)
+	var answered atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/session/status":
+			// What the real server says while a prompt is open.
+			_, _ = io.WriteString(w, `{"ses_p":{"type":"busy"}}`)
+		case "/permission":
+			if r.URL.Query().Get("directory") == "" {
+				t.Error("the permission poll carried no directory")
+			}
+			if answered.Load() {
+				_, _ = io.WriteString(w, `[]`)
+				return
+			}
+			_, _ = io.WriteString(w, `[{"id":"per_seed","sessionID":"ses_p","permission":"bash"}]`)
+		case "/event":
+			flusher := w.(http.Flusher)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			for {
+				select {
+				case <-r.Context().Done():
+					return
+				case event := <-events:
+					_, _ = io.WriteString(w, "data: "+event+"\n\n")
+					flusher.Flush()
+				}
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	port, err := strconv.Atoi(strings.TrimPrefix(srv.URL, "http://127.0.0.1:"))
+	if err != nil {
+		t.Skipf("the test server is not on a loopback port: %s", srv.URL)
+	}
+	w := startOpenCodeWatcher(harnesses.ServerAccess{Port: port}, "/tmp/work")
+	defer w.stop()
+
+	// The seed alone, before one event has arrived: waiting, not the busy the
+	// status map is reporting.
+	waitFor(t, 10*time.Second, "the seeded permission prompt", func() bool {
+		got := w.answer()
+		return got.ok && got.state == StateWaiting
+	})
+
+	answered.Store(true)
+	events <- `{"type":"permission.replied","properties":{"requestID":"per_seed","sessionID":"ses_p"}}`
+	waitFor(t, 10*time.Second, "the stream to clear the prompt", func() bool {
+		got := w.answer()
+		return got.ok && got.state == StateBusy
+	})
+}
+
+// TestOpenCodeWatcherClearsAPromptAnsweredWhileTheStreamWasDown: the reply
+// event is the only thing that retires a prompt on a live stream, and a
+// stream that is down carries no events at all. The prompt answered in the gap
+// has to come back off the row on the reconnect poll, or the session sits on
+// `waiting` until it is killed.
+func TestOpenCodeWatcherClearsAPromptAnsweredWhileTheStreamWasDown(t *testing.T) {
+	var answered, streamTries atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/session/status":
+			// The session holding the prompt is busy the whole way through,
+			// so busy is exactly what must be left once the prompt is gone.
+			_, _ = io.WriteString(w, `{"ses_gap":{"type":"busy"}}`)
+		case "/permission":
+			if answered.Load() > 0 {
+				_, _ = io.WriteString(w, `[]`)
+				return
+			}
+			_, _ = io.WriteString(w, `[{"id":"per_gap","sessionID":"ses_gap"}]`)
+		case "/event":
+			// The first connection is refused: nothing can be streamed, and
+			// the poll is the only witness there is.
+			if streamTries.Add(1) == 1 {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			flusher := w.(http.Flusher)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher.Flush()
+			<-r.Context().Done()
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	// A short reconcile period as well as the poll: the prompt has to come
+	// off the row whichever of the two re-reads /permission first, and
+	// relying on the poll inside the backoff window alone is a race.
+	w := startOpenCodeWatcherEvery(harnesses.ServerAccess{Port: portOf(t, srv)}, "/tmp/work", 50*time.Millisecond)
+	defer w.stop()
+	waitFor(t, 10*time.Second, "the prompt raised while nothing was listening", func() bool {
+		got := w.answer()
+		return got.ok && got.state == StateWaiting
+	})
+
+	// Answered on the server, with no event anybody could have seen.
+	answered.Store(1)
+	waitFor(t, 10*time.Second, "the poll to retire the answered prompt", func() bool {
+		got := w.answer()
+		return got.ok && got.state == StateBusy
+	})
+}
+
+// TestOpenCodeWatcherReconcilesWhileTheStreamIsUp: a prompt can go without a
+// reply event anybody can match — the session aborted or deleted, a frame
+// lost, a `requestID` that is not the id the prompt was keyed by. The periodic
+// re-read of GET /permission is what catches all of those, so this answers the
+// prompt behind the stream's back and expects the row to come back anyway.
+func TestOpenCodeWatcherReconcilesWhileTheStreamIsUp(t *testing.T) {
+	var answered atomic.Int32
+	var opened atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/session/status":
+			_, _ = io.WriteString(w, `{"ses_r":{"type":"busy"}}`)
+		case "/permission":
+			if answered.Load() > 0 {
+				_, _ = io.WriteString(w, `[]`)
+				return
+			}
+			_, _ = io.WriteString(w, `[{"id":"per_r","sessionID":"ses_r"}]`)
+		case "/event":
+			flusher := w.(http.Flusher)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher.Flush()
+			opened.Add(1)
+			// A stream that stays open for the whole test: the poll never
+			// runs again, and only the reconcile can clear anything.
+			<-r.Context().Done()
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	w := startOpenCodeWatcherEvery(harnesses.ServerAccess{Port: portOf(t, srv)}, "/tmp/work", 50*time.Millisecond)
+	defer w.stop()
+	waitFor(t, 10*time.Second, "the stream to be up over a standing prompt", func() bool {
+		return opened.Load() > 0 && w.answer().state == StateWaiting
+	})
+
+	answered.Store(1)
+	waitFor(t, 10*time.Second, "the reconcile to retire the prompt", func() bool {
+		got := w.answer()
+		return got.ok && got.state == StateBusy
+	})
+	if opened.Load() != 1 {
+		t.Fatalf("the stream reconnected %d times; the reconcile is meant to run underneath one", opened.Load())
+	}
+}
+
+// TestOpenCodeWatcherPromptRulesWithoutTheEndpoint covers what retires a
+// prompt when GET /permission is not answering: the session going quiet, and
+// the endpoint failing often enough that no prompt can be confirmed at all.
+func TestOpenCodeWatcherPromptRulesWithoutTheEndpoint(t *testing.T) {
+	fresh := func() *openCodeWatcher {
+		return &openCodeWatcher{busy: map[string]bool{}, waiting: map[string]openCodePrompt{}, ok: true}
+	}
+
+	// A session holding a prompt reports busy for as long as it holds it, so
+	// a status of anything else is proof the prompt is gone — even though the
+	// reply that would have said so never arrived.
+	w := fresh()
+	w.event(`{"type":"session.status","properties":{"sessionID":"ses_a","status":{"type":"busy"}}}`)
+	w.event(`{"type":"permission.asked","properties":{"id":"per_1","sessionID":"ses_a"}}`)
+	w.event(`{"type":"permission.asked","properties":{"id":"per_2","sessionID":"ses_b"}}`)
+	if got := w.answer(); got.state != StateWaiting {
+		t.Fatalf("two open prompts read as %#v, want waiting", got)
+	}
+	w.event(`{"type":"session.status","properties":{"sessionID":"ses_a","status":{"type":"idle"}}}`)
+	w.mu.Lock()
+	_, stillA := w.waiting["per_1"]
+	_, stillB := w.waiting["per_2"]
+	w.mu.Unlock()
+	if stillA {
+		t.Error("the idle session kept its prompt")
+	}
+	if !stillB {
+		t.Error("one session going idle took another session's prompt with it")
+	}
+
+	// Only the idle OpenCode spells out is that proof. A status type this
+	// build does not know leaves the busy set — it is not busy — but says
+	// nothing about the prompt, which stands until something does.
+	w = fresh()
+	w.event(`{"type":"session.status","properties":{"sessionID":"ses_a","status":{"type":"busy"}}}`)
+	w.event(`{"type":"permission.asked","properties":{"id":"per_1","sessionID":"ses_a"}}`)
+	w.event(`{"type":"session.status","properties":{"sessionID":"ses_a","status":{"type":"queued"}}}`)
+	w.mu.Lock()
+	_, keptUnknown := w.waiting["per_1"]
+	stillBusy := w.busy["ses_a"]
+	w.mu.Unlock()
+	if !keptUnknown {
+		t.Error("an unrecognised session.status type retired a prompt as if it were idle")
+	}
+	if stillBusy {
+		t.Error("an unrecognised session.status type left the session in the busy set")
+	}
+
+	// A failing endpoint is not an answer: one failure must not clear a real
+	// prompt, and enough of them must not leave one standing for ever.
+	w = fresh()
+	w.event(`{"type":"permission.asked","properties":{"id":"per_1","sessionID":"ses_a"}}`)
+	w.mu.Lock()
+	for i := 0; i < openCodePermissionFails-1; i++ {
+		w.applyPermissionsLocked(nil, openCodePermissionFailed, time.Now())
+	}
+	kept := len(w.waiting)
+	w.applyPermissionsLocked(nil, openCodePermissionFailed, time.Now())
+	gone := len(w.waiting)
+	w.mu.Unlock()
+	if kept != 1 {
+		t.Fatalf("%d failures dropped the prompt already", openCodePermissionFails-1)
+	}
+	if gone != 0 {
+		t.Fatalf("%d failures left %d unconfirmable prompts", openCodePermissionFails, gone)
+	}
+
+	// And one good answer both replaces the set and forgives the failures.
+	w = fresh()
+	w.mu.Lock()
+	w.applyPermissionsLocked(nil, openCodePermissionFailed, time.Now())
+	w.applyPermissionsLocked(map[string]openCodePrompt{
+		"per_9": {session: "ses_z", seen: time.Now(), confirmed: true}}, openCodePermissionOK, time.Now())
+	fails := w.permFails
+	w.mu.Unlock()
+	if fails != 0 {
+		t.Fatalf("a good answer left %d failures counted", fails)
+	}
+	if got := w.answer(); got.state != StateWaiting {
+		t.Fatalf("the endpoint's own prompt read as %#v, want waiting", got)
+	}
+}
+
+// portOf is the loopback port of a test server, which is what the watcher
+// takes instead of a URL.
+func portOf(t *testing.T, srv *httptest.Server) int {
+	t.Helper()
+	port, err := strconv.Atoi(strings.TrimPrefix(srv.URL, "http://127.0.0.1:"))
+	if err != nil {
+		t.Skipf("the test server is not on a loopback port: %s", srv.URL)
+	}
+	return port
 }
 
 // TestOpenCodeWatcherSaysNothingWhenTheServerIsGone: a port that refuses is
@@ -1159,5 +1696,481 @@ func TestOpenCodeWatcherSaysNothingWhenTheServerIsGone(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if got := w.answer(); got.ok {
 		t.Fatalf("a refused port answered %#v", got)
+	}
+}
+
+// TestOpenCodeWatcherKeepsAPromptAskedDuringAnInFlightReconcile: the answer to
+// GET /permission describes the moment the request was computed, not the
+// moment it lands. A prompt whose event arrived while it was in flight is
+// newer than the answer, so the authoritative replace must carry it over —
+// without that, every prompt raised during a reconcile is lost for a whole
+// interval, which is exactly the window a prompt is most likely to appear in.
+func TestOpenCodeWatcherKeepsAPromptAskedDuringAnInFlightReconcile(t *testing.T) {
+	var calls atomic.Int32
+	inFlight := make(chan struct{}, 1)
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/session/status":
+			_, _ = io.WriteString(w, `{"ses_f":{"type":"busy"}}`)
+		case "/permission":
+			switch calls.Add(1) {
+			case 1:
+				// The seed poll: nothing open yet.
+				_, _ = io.WriteString(w, `[]`)
+			case 2:
+				// The reconcile the test drives: held open until the event
+				// has been fed, then answering with a set that does not
+				// contain it — because the server computed it before.
+				inFlight <- struct{}{}
+				select {
+				case <-release:
+				case <-r.Context().Done():
+					return
+				}
+				_, _ = io.WriteString(w, `[{"id":"per_other","sessionID":"ses_f"}]`)
+			default:
+				// Every later read hangs, so nothing but the one answer
+				// under test can touch the set.
+				<-r.Context().Done()
+			}
+		case "/event":
+			flusher := w.(http.Flusher)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher.Flush()
+			<-r.Context().Done()
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	w := startOpenCodeWatcherEvery(harnesses.ServerAccess{Port: portOf(t, srv)}, "/tmp/work", 50*time.Millisecond)
+	defer w.stop()
+	select {
+	case <-inFlight:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the reconcile never reached the permission endpoint")
+	}
+	// Asked while that request is on the wire.
+	w.event(`{"type":"permission.asked","properties":{"id":"per_race","sessionID":"ses_f"}}`)
+	close(release)
+
+	// The answer lands and replaces the set: `per_other` is proof it did.
+	waitFor(t, 10*time.Second, "the reconcile's own prompt", func() bool {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		_, ok := w.waiting["per_other"]
+		return ok
+	})
+	w.mu.Lock()
+	_, kept := w.waiting["per_race"]
+	w.mu.Unlock()
+	if !kept {
+		t.Fatal("a prompt asked during the in-flight reconcile was replaced away")
+	}
+	if got := w.answer(); got.state != StateWaiting {
+		t.Fatalf("the watcher reads as %#v, want waiting", got)
+	}
+}
+
+// TestOpenCodeWatcherStopDoesNotCountAsAPermissionFailure: stopping a watcher
+// cancels whatever request it has open. That cancellation is the watcher's own
+// doing, not the endpoint failing, and counting it would spend a third of the
+// budget that drops the waiting set on every stop.
+func TestOpenCodeWatcherStopDoesNotCountAsAPermissionFailure(t *testing.T) {
+	inFlight := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/session/status":
+			_, _ = io.WriteString(w, `{"ses_s":{"type":"busy"}}`)
+		case "/permission":
+			select {
+			case inFlight <- struct{}{}:
+			default:
+			}
+			<-r.Context().Done()
+		case "/event":
+			<-r.Context().Done()
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	w := startOpenCodeWatcherEvery(harnesses.ServerAccess{Port: portOf(t, srv)}, "/tmp/work", time.Hour)
+	select {
+	case <-inFlight:
+	case <-time.After(10 * time.Second):
+		w.stop()
+		t.Fatal("the poll never reached the permission endpoint")
+	}
+	w.stop()
+	// Long enough for the cancelled request to return and for whatever the
+	// poll would have done with it to have happened.
+	time.Sleep(300 * time.Millisecond)
+	w.mu.Lock()
+	fails := w.permFails
+	w.mu.Unlock()
+	if fails != 0 {
+		t.Fatalf("stopping the watcher counted %d permission failures", fails)
+	}
+}
+
+// TestOpenCodeWatcherWithoutThePermissionEndpoint: a server that answers 404
+// does not have the endpoint, which is not the same as an endpoint that is
+// failing. It says nothing about the prompts the event stream reported, so it
+// must never clear them, must not count towards the failure budget, and must
+// not be asked again.
+func TestOpenCodeWatcherWithoutThePermissionEndpoint(t *testing.T) {
+	var asks atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/session/status":
+			_, _ = io.WriteString(w, `{"ses_n":{"type":"busy"}}`)
+		case "/permission":
+			asks.Add(1)
+			w.WriteHeader(http.StatusNotFound)
+		case "/event":
+			flusher := w.(http.Flusher)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher.Flush()
+			<-r.Context().Done()
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	w := startOpenCodeWatcherEvery(harnesses.ServerAccess{Port: portOf(t, srv)}, "/tmp/work", 20*time.Millisecond)
+	defer w.stop()
+	waitFor(t, 10*time.Second, "the endpoint to be found absent", func() bool {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		return w.noPermissions
+	})
+	w.event(`{"type":"permission.asked","properties":{"id":"per_ev","sessionID":"ses_n"}}`)
+	// Many reconcile intervals: an events-only watcher keeps its prompt.
+	for i := 0; i < 10; i++ {
+		time.Sleep(20 * time.Millisecond)
+		if got := w.answer(); got.state != StateWaiting {
+			t.Fatalf("the events-only watcher read as %#v, want waiting", got)
+		}
+	}
+	w.mu.Lock()
+	fails, asked := w.permFails, asks.Load()
+	w.mu.Unlock()
+	if fails != 0 {
+		t.Errorf("an absent endpoint counted %d failures", fails)
+	}
+	if asked > 2 {
+		t.Errorf("the absent endpoint was asked %d times; it is meant to be asked once", asked)
+	}
+	// And the reply event still retires it: events-only is a full mode, not a
+	// mode where nothing can change.
+	w.event(`{"type":"permission.replied","properties":{"requestID":"per_ev","sessionID":"ses_n"}}`)
+	if got := w.answer(); got.state != StateBusy {
+		t.Fatalf("the replied prompt left %#v, want busy", got)
+	}
+}
+
+// TestOpenCodeWatcherEmptyPermissionsAgainstAnEventOnlyPrompt: `[]` is an
+// authoritative answer, except about a prompt the endpoint has never confirmed
+// and the stream has only just reported — `/permission?directory=` filters by
+// directory, and a workdir that does not match the server's answers `[]` to a
+// prompt that is genuinely open. A young event-only prompt therefore outranks
+// `[]`; an old one does not, or a real directory mismatch would pin the row to
+// waiting for the life of the session.
+func TestOpenCodeWatcherEmptyPermissionsAgainstAnEventOnlyPrompt(t *testing.T) {
+	fresh := func() *openCodeWatcher {
+		return &openCodeWatcher{busy: map[string]bool{}, waiting: map[string]openCodePrompt{},
+			reconcileEvery: time.Minute, ok: true}
+	}
+	empty := map[string]openCodePrompt{}
+
+	// Young, event-only: survives.
+	w := fresh()
+	w.event(`{"type":"permission.asked","properties":{"id":"per_1","sessionID":"ses_a"}}`)
+	w.mu.Lock()
+	w.applyPermissionsLocked(empty, openCodePermissionOK, time.Now())
+	kept := len(w.waiting)
+	w.mu.Unlock()
+	if kept != 1 {
+		t.Error("an empty answer dropped a prompt the stream had just reported")
+	}
+
+	// Older than one reconcile interval, still event-only: dropped.
+	w = fresh()
+	w.mu.Lock()
+	w.waiting["per_old"] = openCodePrompt{session: "ses_a", seen: time.Now().Add(-2 * time.Minute)}
+	w.applyPermissionsLocked(map[string]openCodePrompt{}, openCodePermissionOK, time.Now())
+	old := len(w.waiting)
+	w.mu.Unlock()
+	if old != 0 {
+		t.Error("an empty answer left an unconfirmed prompt older than the reconcile interval standing")
+	}
+
+	// Young but already confirmed by a non-empty answer: dropped, because the
+	// endpoint has been shown to see this directory's prompts.
+	w = fresh()
+	w.mu.Lock()
+	w.waiting["per_c"] = openCodePrompt{session: "ses_a", seen: time.Now(), confirmed: true}
+	w.applyPermissionsLocked(map[string]openCodePrompt{}, openCodePermissionOK, time.Now())
+	confirmed := len(w.waiting)
+	w.mu.Unlock()
+	if confirmed != 0 {
+		t.Error("an empty answer left a prompt the endpoint had confirmed and now omits")
+	}
+
+	// An absent endpoint takes nothing at all, however old the prompt is.
+	w = fresh()
+	w.mu.Lock()
+	w.waiting["per_old"] = openCodePrompt{session: "ses_a", seen: time.Now().Add(-2 * time.Minute)}
+	w.applyPermissionsLocked(nil, openCodePermissionAbsent, time.Now())
+	absent, gone := len(w.waiting), w.noPermissions
+	w.mu.Unlock()
+	if absent != 1 || !gone {
+		t.Errorf("an absent endpoint left %d prompts (want 1) and noPermissions %t (want true)", absent, gone)
+	}
+}
+
+// TestOpenCodeWatcherRetiresAnEventOnlyPromptAnsweredWhileTheStreamWasDown:
+// a server without GET /permission has only two things that can retire a
+// prompt — the reply event, and the status map. If the reply happened while
+// the stream was down there is no event to come, so the poll that reconnects
+// has to read the prompt's session being absent from /session/status as the
+// answer it is. Without that the row would say waiting for the life of the
+// session.
+func TestOpenCodeWatcherRetiresAnEventOnlyPromptAnsweredWhileTheStreamWasDown(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/session/status":
+			// Nobody is working: the session that held the prompt answered it
+			// while the stream was down, and an idle session is simply absent.
+			_, _ = io.WriteString(w, `{}`)
+		default:
+			// No /permission, and no stream either.
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	ctx := context.Background()
+	w := newOpenCodeWatcher(harnesses.ServerAccess{Port: portOf(t, srv)}, "/tmp/work", time.Minute, nil)
+	w.poll(ctx)
+	if w.permissionsSupported() {
+		t.Fatal("a 404 from /permission did not switch the watcher to events-only")
+	}
+	w.event(`{"type":"permission.asked","properties":{"id":"per_1","sessionID":"ses_a"}}`)
+	if got := w.answer(); got.state != StateWaiting {
+		t.Fatalf("the prompt read as %#v, want waiting", got)
+	}
+	if err := w.stream(ctx); err == nil {
+		t.Fatal("the stream that answered 404 reported no error")
+	}
+	w.poll(ctx)
+	if got := w.answer(); !got.ok || got.state != StateIdle {
+		t.Fatalf("the reconnect poll read as %#v, want idle: the prompt was answered while the stream was down", got)
+	}
+}
+
+// TestOpenCodeWatcherEmptyPermissionsKeepEveryYoungPrompt: the carve-out is
+// about the answer being empty, not about the set being empty as it is
+// rebuilt. Two young event-only prompts against one `[]` both survive, and
+// which of them is looked at first must not decide it.
+func TestOpenCodeWatcherEmptyPermissionsKeepEveryYoungPrompt(t *testing.T) {
+	w := &openCodeWatcher{busy: map[string]bool{}, waiting: map[string]openCodePrompt{},
+		reconcileEvery: time.Minute, ok: true}
+	w.event(`{"type":"permission.asked","properties":{"id":"per_1","sessionID":"ses_a"}}`)
+	w.event(`{"type":"permission.asked","properties":{"id":"per_2","sessionID":"ses_b"}}`)
+	w.mu.Lock()
+	w.applyPermissionsLocked(map[string]openCodePrompt{}, openCodePermissionOK, time.Now())
+	kept := len(w.waiting)
+	w.mu.Unlock()
+	if kept != 2 {
+		t.Fatalf("an empty answer left %d of two young event-only prompts, want 2", kept)
+	}
+}
+
+// TestOpenCodePollRejectsAnUndecodableStatus: a status body that will not
+// decode is no answer, the same as a 500. Reading it as an empty busy map
+// would report idle for a session that is working.
+func TestOpenCodePollRejectsAnUndecodableStatus(t *testing.T) {
+	var broken atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/session/status":
+			if broken.Load() {
+				_, _ = io.WriteString(w, `<html>not json</html>`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"ses_b":{"type":"busy"}}`)
+		case "/permission":
+			_, _ = io.WriteString(w, `[]`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	w := newOpenCodeWatcher(harnesses.ServerAccess{Port: portOf(t, srv)}, "/tmp/work", time.Minute, nil)
+	w.poll(context.Background())
+	if got := w.answer(); !got.ok || got.state != StateBusy {
+		t.Fatalf("the first poll read as %#v, want busy", got)
+	}
+	broken.Store(true)
+	w.poll(context.Background())
+	if got := w.answer(); got.ok {
+		t.Fatalf("a status body that will not decode answered %#v, want nothing at all", got)
+	}
+}
+
+// statusOf is where the store has a session filed.
+func (b *bench) statusOf(id string) string {
+	b.t.Helper()
+	row, err := b.st.GetSession(id)
+	if err != nil {
+		b.t.Fatalf("could not read %s: %v", id, err)
+	}
+	return row.Status
+}
+
+// fresh is the rows as the store has them now, which is what a real tick
+// reads: the status the detector wrote on one tick is what the next one sees.
+func (b *bench) fresh(ids ...string) []store.Session {
+	b.t.Helper()
+	out := make([]store.Session, 0, len(ids))
+	for _, id := range ids {
+		row, err := b.st.GetSession(id)
+		if err != nil {
+			b.t.Fatalf("could not read %s: %v", id, err)
+		}
+		out = append(out, *row)
+	}
+	return out
+}
+
+// TestActivityWorkFilesASessionAsInProgress: a session that was put aside -
+// pending, or waiting for a review - and is given work again is in progress
+// again. The start-up of a harness is not work, and neither is anything a
+// done session could do.
+func TestActivityWorkFilesASessionAsInProgress(t *testing.T) {
+	for _, status := range []string{store.StatusPending, store.StatusReview} {
+		t.Run(status, func(t *testing.T) {
+			b := newBench(t)
+			row := b.row("s1", "claude")
+			if err := b.st.SetSessionStatus("s1", status); err != nil {
+				t.Fatal(err)
+			}
+			panes := func() map[string]paneLine { return b.pane(row, 0) }
+
+			// Starting up: busy, then idle, and nobody has asked anything.
+			b.source(harnesses.KindClaude, seen(StateBusy, ""))
+			b.tick(b.fresh("s1"), panes())
+			b.want("s1", StateBusy)
+			if got := b.statusOf("s1"); got != status {
+				t.Fatalf("a harness starting up refiled the session as %q", got)
+			}
+			b.source(harnesses.KindClaude, seen(StateIdle, ""))
+			for i := 0; i < IdleSettle; i++ {
+				b.tick(b.fresh("s1"), panes())
+			}
+			b.want("s1", StateIdle)
+
+			// A turn somebody asked for is work.
+			b.m.NoteTyped("s1")
+			b.source(harnesses.KindClaude, seen(StateBusy, ""))
+			b.tick(b.fresh("s1"), panes())
+			b.want("s1", StateBusy)
+			if got := b.statusOf("s1"); got != store.StatusInProgress {
+				t.Fatalf("a %s session that started working is %q, want in progress", status, got)
+			}
+		})
+	}
+}
+
+// TestActivityLeavesABackgroundSessionWhereItIs: a service somebody filed as
+// background is working whenever it runs, and being typed at does not make it
+// the work in progress.
+func TestActivityLeavesABackgroundSessionWhereItIs(t *testing.T) {
+	b := newBench(t)
+	row := b.row("s1", "claude")
+	if err := b.st.SetSessionStatus("s1", store.StatusBackground); err != nil {
+		t.Fatal(err)
+	}
+	b.m.NoteTyped("s1")
+	b.source(harnesses.KindClaude, seen(StateBusy, ""))
+	b.tick(b.fresh("s1"), b.pane(row, 0))
+	b.want("s1", StateBusy)
+	if got := b.statusOf("s1"); got != store.StatusBackground {
+		t.Fatalf("a background session that worked was refiled as %q", got)
+	}
+}
+
+// TestActivitySortsTheSessionsAnUpgradeLeftUnsorted: the upgrade from flags
+// and an archive cannot tell which sessions are working, so it leaves them
+// unsorted and the detector files them - in progress if working, pending if
+// not, and pending if it cannot tell within SortWithin.
+func TestActivitySortsTheSessionsAnUpgradeLeftUnsorted(t *testing.T) {
+	b := newBench(t)
+	busy, idle, silent, stopped := b.row("busy", "claude"), b.row("idle", "codex"), b.row("silent", "opencode"),
+		b.row("stopped", "claude")
+	stopped.State = store.StateNeedsResume
+	b.source(harnesses.KindClaude, seen(StateBusy, ""))
+	b.source(harnesses.KindCodex, seen(StateIdle, ""))
+	b.source(harnesses.KindOpenCode)
+	// The rows as the upgrade left them. The store has no way to write an
+	// unsorted status, so every row is filed for review - a status the
+	// detector never writes - and the tick is handed that as unsorted.
+	for _, id := range []string{"busy", "idle", "silent", "stopped"} {
+		if err := b.st.SetSessionStatus(id, store.StatusReview); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unsorted := func() []store.Session {
+		rows := b.fresh("busy", "idle", "silent", "stopped")
+		for i := range rows {
+			if rows[i].Status == store.StatusReview {
+				rows[i].Status = store.StatusUnsorted
+			}
+		}
+		rows[3].State = stopped.State
+		return rows
+	}
+	panes := func() map[string]paneLine {
+		out := map[string]paneLine{}
+		for _, row := range []store.Session{busy, idle, silent} {
+			// Output a few seconds ago: no answer from quiescence either way.
+			for k, v := range b.pane(row, 10*time.Second) {
+				out[k] = v
+			}
+		}
+		return out
+	}
+
+	b.tick(unsorted(), panes())
+	if got := b.statusOf("busy"); got != store.StatusInProgress {
+		t.Fatalf("a working session was filed as %q", got)
+	}
+	if got := b.statusOf("stopped"); got != store.StatusPending {
+		t.Fatalf("a session that is not running was filed as %q", got)
+	}
+	for i := 0; i < IdleSettle; i++ {
+		b.tick(unsorted(), panes())
+	}
+	if got := b.statusOf("idle"); got != store.StatusPending {
+		t.Fatalf("an idle session was filed as %q", got)
+	}
+
+	// The session the detector cannot read stays unsorted until SortWithin
+	// has passed, and is pending after.
+	b.mu.Lock()
+	b.now = b.now.Add(SortWithin)
+	b.mu.Unlock()
+	b.tick(unsorted(), panes())
+	if got := b.statusOf("silent"); got != store.StatusPending {
+		t.Fatalf("a session nobody could read was filed as %q after %v", got, SortWithin)
 	}
 }

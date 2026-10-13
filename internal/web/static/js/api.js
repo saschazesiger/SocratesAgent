@@ -95,11 +95,14 @@ export function confirmDialog(options = {}) {
     body = '',
     confirmLabel = 'Confirm',
     danger = false,
+    // An alert is the same dialog with one button: something to be read and
+    // acknowledged, not a question.
+    alert = false,
   } = options;
 
   return new Promise((resolve) => {
     const dialog = el('dialog', { class: 'modal' });
-    const cancel = el('button', { class: 'btn sm', type: 'button', text: 'Cancel' });
+    const cancel = alert ? null : el('button', { class: 'btn sm', type: 'button', text: 'Cancel' });
     const accept = el('button', {
       class: 'btn sm ' + (danger ? 'danger' : 'primary'), type: 'button', text: confirmLabel,
     });
@@ -127,7 +130,7 @@ export function confirmDialog(options = {}) {
       dialog.close();
       dismiss();
     };
-    cancel.addEventListener('click', () => finish(false));
+    if (cancel) cancel.addEventListener('click', () => finish(false));
     accept.addEventListener('click', () => finish(true));
     // Escape and a click on the backdrop both mean no.
     dialog.addEventListener('cancel', (event) => {
@@ -145,8 +148,14 @@ export function confirmDialog(options = {}) {
     document.body.append(dialog);
     dialog.showModal();
     // A destructive dialog opens on the way out, not on the way through.
-    (danger ? cancel : accept).focus();
+    (danger && cancel ? cancel : accept).focus();
   });
+}
+
+// alertDialog is window.alert in the app's own clothes: it resolves once the
+// message has been dismissed.
+export function alertDialog({ title, body = '', confirmLabel = 'OK' } = {}) {
+  return confirmDialog({ title, body, confirmLabel, alert: true });
 }
 
 let toastHost = null;

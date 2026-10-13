@@ -53,6 +53,7 @@ Command line, in order:
          [--model <model>] [--effort <level>]
          --dangerously-skip-permissions
          --settings <session dir>/claude-settings.json
+         [--append-system-prompt <on-host instructions>]
 ```
 
 - `--dangerously-skip-permissions` — "Bypass all permission checks"
@@ -119,13 +120,20 @@ Generated settings file (`<session dir>/claude-settings.json`, mode 0600):
   "skipDangerousModePermissionPrompt": true,
   "disableRemoteControl": true,
   "cleanupPeriodDays": 90,
+  "ultracode": false,
   "env": { … the pane's environment … }
 }
 ```
 
 `skipDangerousModePermissionPrompt` is what stops the bypass launch sitting on
 a confirmation dialog before the user can type. `cleanupPeriodDays` is 90 so a
-transcript outlives the offline stretch it may have to be resumed after. `env`
+transcript outlives the offline stretch it may have to be resumed after.
+`ultracode` is the one key the sheet decides: off unless the person switched
+Ultracode on when creating the session, then `true` for that session's whole
+life (kept in its options as `"ultracode": true`, so a resume keeps it).
+Verified against 2.1.296: the binary documents the key as "set per session via
+the `ultracode` settings key (--settings …)", and `/effort` in a pane started
+with it reads "Ultracode on". `env`
 reaches every subprocess Claude Code starts, which is what makes a tool's
 shell look like the pane it came from.
 
@@ -154,6 +162,7 @@ names.
          [-m <model>] [-c model_reasoning_effort="<level>"]
          -c projects={"<cwd>"={trust_level="trusted"}}
          -c tui.theme="light-gray"
+         [-c developer_instructions="<on-host instructions>"]
          --no-alt-screen
          --dangerously-bypass-approvals-and-sandbox
 ```
@@ -212,7 +221,8 @@ that did not cover it would be a blocking prompt nobody would find.
 
 Generated `OPENCODE_CONFIG_CONTENT`: `share: "disabled"` (nothing a session
 does is published anywhere), `autoupdate: false`, the permission block above,
-and the model when there is one.
+the model when there is one, and `instructions: ["<session dir>/on-host.md"]`
+when the host is reachable (see below).
 
 Generated `tui.json` (mode 0600): `theme: "github"`, `mouse: true`,
 `attention.enabled: false` — a server harness has no business making a desktop
@@ -236,6 +246,42 @@ for. `--fork` is not offered: a resume continues the session it names.
 A login shell reads the profile that sets up PATH and the prompt, which is
 what makes the pane look like the machine's own terminal — a shell that did
 not read it is a shell missing the very programs it was opened for.
+
+The new-session sheet chooses Host or Container for each Shell. Host uses
+`deploy/host-shell.sh`, which redirects to the host's login shell. It is
+available only when the container was started with `--pid=host` and the right
+to enter namespaces: PID 1 must live in another mount namespace and `nsenter`
+must succeed. Container uses the local shell, including a binary configured in
+the dashboard. Host stays the default where it is available and no dashboard
+binary overrides it. The chosen execution location is saved with the session
+and used again on restart. Older sessions without a saved choice keep their
+original automatic behavior.
+
+## Agents on the host
+
+The three agents stay in the container: their binaries, credentials and
+generated files live in the data volume, which the host does not have. They
+reach the host one command at a time through `deploy/on-host.sh`, installed as
+`/usr/local/bin/on-host` — `on-host <cmd> [args]`, `on-host -c '<script>'`, or a
+script on stdin — which enters every namespace of the host's PID 1 and runs a
+login shell there as root, with the host's environment rather than the pane's.
+
+When the wrapper is shipped and the host is reachable — the same test as the
+Host shell above, probed once per process — every agent session is told so in
+the form its binary reads, appended to its own instructions and never
+replacing them:
+
+- Claude Code: `--append-system-prompt <text>`. Not
+  `--append-system-prompt-file`, whose contents 2.1.x presented to the model
+  as something it could decline to follow.
+- Codex: `-c developer_instructions="<text>"`, accepted by `--strict-config`
+  (verified against 0.156.1; an unknown key is rejected there).
+- OpenCode: the text in `<session dir>/on-host.md` (mode 0600), named in the
+  generated config's `instructions`.
+
+When the host is not reachable none of this is passed and no file is written:
+an instruction to use a command that fails would send the agent after a host
+that is not there.
 
 ## What is left in the dashboard
 

@@ -2,19 +2,13 @@ BINARY  ?= socrates
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: build run test race fmt fmt-check vet tidy-check check e2e clean docker install
+.PHONY: build test race fmt fmt-check vet tidy-check check e2e clean docker
 
-## build: compile the single binary into ./socrates
+## build: compile the single binary into ./socrates. Socrates is run as the
+## Docker image - `make docker` builds that - and this is here for the tests
+## and for a quick compile check.
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) .
-
-## run: build and start the server on http://localhost:8080
-run: build
-	./$(BINARY)
-
-## install: install the binary into $GOPATH/bin
-install:
-	go install -trimpath -ldflags "$(LDFLAGS)" .
 
 ## test: run the test suite
 test:
@@ -69,6 +63,7 @@ e2e: build
 vendor-xterm: ## re-download the pinned xterm.js bundle set
 	@bash scripts/vendor-xterm.sh
 
+## docker: build the image, which is how Socrates is run
 docker:
 	docker build -t socrates:$(VERSION) .
 

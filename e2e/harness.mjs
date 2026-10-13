@@ -277,27 +277,35 @@ export async function mockOpenRouter(context, { text = 'hello from the microphon
  * steps. Each completion takes the next entry; when the queue is empty the
  * fixed `text` is the answer again, so a scenario only has to script the steps
  * it cares about.
+ *
+ * `delay` holds every answer back for that many milliseconds, for a scenario
+ * that has to see what the page does while it waits. `refuse`, when set on
+ * the returned stub, is an HTTP status every completion is refused with.
  */
-export async function openRouterStub({ text = 'hello from the microphone', replies = [] } = {}) {
+export async function openRouterStub({ text = 'hello from the microphone', replies = [], delay = 0 } = {}) {
   const calls = [];
   const queue = [...replies];
+  const stub = { calls, text, replies: queue, refuse: 0 };
   const server = createServer((req, res) => {
     let size = 0;
     req.on('data', (chunk) => { size += chunk.length; });
-    req.on('end', () => {
+    req.on('end', () => setTimeout(() => {
       calls.push({ path: req.url, bytes: size });
       const completion = String(req.url || '').includes('chat/completions');
+      if (completion && stub.refuse) {
+        res.writeHead(stub.refuse, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'refused by the e2e stub' } }));
+        return;
+      }
       const answer = (completion && queue.length ? queue.shift() : text);
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ text: answer, choices: [{ message: { content: answer } }] }));
-    });
+    }, delay));
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const url = 'http://127.0.0.1:' + server.address().port;
-  return {
-    url, calls, text, replies: queue,
-    close: () => new Promise((resolve) => server.close(resolve)),
-  };
+  stub.url = 'http://127.0.0.1:' + server.address().port;
+  stub.close = () => new Promise((resolve) => server.close(resolve));
+  return stub;
 }
 
 /**
@@ -375,12 +383,12 @@ export async function start(options = {}) {
       if (s.context.unrouteAll) await s.context.unrouteAll().catch(() => {});
       // The context's request object shares the page's cookies, so it is
       // already signed in - and it works when the page itself is wedged.
-      const listed = await s.context.request.get(url + '/api/sessions?scope=all');
+      const listed = await s.context.request.get(url + '/api/sessions');
       const sessions = (await listed.json()).sessions || [];
       for (const session of sessions) {
         await s.context.request.delete(url + '/api/sessions/' + encodeURIComponent(session.id)).catch(() => {});
       }
-      const after = await s.context.request.get(url + '/api/sessions?scope=all');
+      const after = await s.context.request.get(url + '/api/sessions');
       left.sessions = ((await after.json()).sessions || []).length;
     } catch (err) {
       left.sessions = 'sweep failed: ' + (err && err.message);

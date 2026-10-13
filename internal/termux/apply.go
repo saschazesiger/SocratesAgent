@@ -51,6 +51,10 @@ func (m *Manager) ApplyTerminal(ctx context.Context, conf ConfOptions, windowSiz
 		{"set", "-g", "history-limit", strconv.Itoa(conf.HistoryLimit)},
 		{"set", "-g", "mouse", onOff(conf.Mouse)},
 		{"set", "-s", "extended-keys", onOff(conf.ExtendedKeys)},
+		// A copy made by a program - OSC 52 - is only forwarded to the
+		// browser when this is `on`; the default, `external`, forwards
+		// tmux's own copies and drops the program's.
+		{"set", "-s", "set-clipboard", "on"},
 	} {
 		if _, err := m.tmux.Run(ctx, args...); err != nil {
 			return err

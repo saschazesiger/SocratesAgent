@@ -70,7 +70,7 @@ func TestDiscoveryReportsWhatIsInstalledAndWhatIsNot(t *testing.T) {
 	c := New(newStore(), settingsFn(config.Default()))
 	snap := c.Refresh(context.Background())
 
-	if len(snap.Agents) != 4 {
+	if len(snap.Agents) != len(config.KnownHarnesses) {
 		t.Fatalf("expected one entry per harness, got %d", len(snap.Agents))
 	}
 	// The shell is the harness that is always there: no model list, no
@@ -211,7 +211,7 @@ func TestAStaleCacheIsStillAnsweredImmediately(t *testing.T) {
 	go func() { done <- c.Get(context.Background()) }()
 	select {
 	case snap := <-done:
-		if len(snap.Agents) != 4 {
+		if len(snap.Agents) != len(config.KnownHarnesses) {
 			t.Fatalf("the stale answer was incomplete: %#v", snap)
 		}
 	case <-time.After(2 * time.Second):
@@ -391,7 +391,7 @@ func TestTheCacheIsNotTheOldBuildsAnswer(t *testing.T) {
 	// Another schema: thrown away, so Cached has nothing.
 	old := fresh
 	old.Schema = cacheSchema - 1
-	if err := st.SetJSON(cacheKey, old); err != nil {
+	if err := st.SetJSON(CacheKey, old); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := New(st, settingsFn(config.Default())).Cached(); ok {
@@ -410,7 +410,7 @@ func TestTheCacheIsNotTheOldBuildsAnswer(t *testing.T) {
 			{ID: "sonnet", Label: "Sonnet", Efforts: []string{"low", "medium", "high"}, Default: true},
 		}
 	}
-	if err := st.SetJSON(cacheKey, stale); err != nil {
+	if err := st.SetJSON(CacheKey, stale); err != nil {
 		t.Fatal(err)
 	}
 	cached, ok := New(st, settingsFn(config.Default())).Cached()

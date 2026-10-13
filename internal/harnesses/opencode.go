@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -146,7 +145,17 @@ func (o OpenCode) plan(req PlanRequest, session []string) (LaunchPlan, error) {
 	if err != nil {
 		return LaunchPlan{}, err
 	}
-	inline, err := openCodeConfig(opts, req)
+	tuiPath := SessionFile(req.DataDir, req.SessionID, openCodeTUIFile)
+	files := []GenFile{{Path: tuiPath, Mode: 0o600, Data: tui}}
+	// OpenCode takes extra instructions only as files, which it reads next to
+	// its own and to any AGENTS.md.
+	var instructions []string
+	if text := onHostInstructions(); text != "" {
+		path := SessionFile(req.DataDir, req.SessionID, onHostFile)
+		files = append(files, GenFile{Path: path, Mode: 0o600, Data: []byte(text)})
+		instructions = append(instructions, path)
+	}
+	inline, err := openCodeConfig(opts, req, instructions)
 	if err != nil {
 		return LaunchPlan{}, err
 	}
@@ -154,7 +163,6 @@ func (o OpenCode) plan(req PlanRequest, session []string) (LaunchPlan, error) {
 	if err != nil {
 		return LaunchPlan{}, err
 	}
-	tuiPath := SessionFile(req.DataDir, req.SessionID, openCodeTUIFile)
 
 	env := baseEnv(req)
 	env["OPENCODE_DISABLE_AUTOUPDATE"] = "1"
@@ -174,6 +182,11 @@ func (o OpenCode) plan(req PlanRequest, session []string) (LaunchPlan, error) {
 	env["OPENCODE_CONFIG_CONTENT"] = string(inline)
 	env["OPENCODE_SERVER_USERNAME"] = openCodeUser
 	env["OPENCODE_SERVER_PASSWORD"] = password
+	extra, err := profileEnv(req, KindOpenCode)
+	if err != nil {
+		return LaunchPlan{}, err
+	}
+	mergeEnv(env, extra)
 
 	openCodeSecrets.Store(req.SessionID, ServerAccess{Port: port, Username: openCodeUser, Password: password})
 
@@ -181,7 +194,7 @@ func (o OpenCode) plan(req PlanRequest, session []string) (LaunchPlan, error) {
 		Argv:       argv,
 		Env:        env,
 		Cwd:        req.Cwd,
-		Files:      []GenFile{{Path: tuiPath, Mode: 0o600, Data: tui}},
+		Files:      files,
 		CLISession: strings.TrimSpace(req.CLISession),
 		Discover:   DiscoverOpenCodeAPI,
 		Port:       port,
@@ -207,7 +220,7 @@ func openCodeTUI() ([]byte, error) {
 
 // openCodeConfig is OPENCODE_CONFIG_CONTENT, which is merged last of every
 // file source and is therefore the one lever that reliably wins.
-func openCodeConfig(opts config.OpenCodeOptions, req PlanRequest) ([]byte, error) {
+func openCodeConfig(opts config.OpenCodeOptions, req PlanRequest, instructions []string) ([]byte, error) {
 	doc := map[string]any{
 		"$schema": "https://opencode.ai/config.json",
 		// Nothing a session does is published anywhere.
@@ -217,6 +230,9 @@ func openCodeConfig(opts config.OpenCodeOptions, req PlanRequest) ([]byte, error
 	}
 	if model := pick(req.Model, opts.DefaultModel); model != "" {
 		doc["model"] = model
+	}
+	if len(instructions) > 0 {
+		doc["instructions"] = instructions
 	}
 	return json.Marshal(doc)
 }
@@ -259,15 +275,18 @@ func serverPassword() (string, error) {
 }
 
 // openCodeDataDir is where OpenCode keeps its session database.
-func openCodeDataDir() string {
-	if dir := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); dir != "" {
-		return filepath.Join(dir, "opencode")
+func openCodeDataDir() string { return openCodeDataDirIn("") }
+
+// openCodeDataDirIn is the same for a program started with xdgData as its
+// XDG data home; empty means the one this process has.
+func openCodeDataDirIn(xdgData string) string {
+	if xdgData == "" {
+		xdgData = defaultXDGDataHome()
 	}
-	home := homeDir()
-	if home == "" {
+	if xdgData == "" {
 		return ""
 	}
-	return filepath.Join(home, ".local", "share", "opencode")
+	return filepath.Join(xdgData, "opencode")
 }
 
 // DiscoverModels asks the binary what it can run; see opencode_models.go.

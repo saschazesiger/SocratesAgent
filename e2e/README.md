@@ -40,11 +40,7 @@ A suite that needed three logged-in accounts would not be a suite, so
 what the product now runs. It prints a banner naming itself, its working
 directory, its `--model` and the background colour it was told about, echoes
 every line back as `you said: …`, and understands `/exit <n>`, `/spin`, `/alt`
-and `/id`. `/alt` is a real alternate screen rather than a picture of one: it
-turns mouse tracking on and keeps a two-hundred-line document it scrolls on a
-wheel report, the way the three real TUIs do, because a program's own view is
-the only thing a finger can move on a pane tmux keeps no history for. It also
-writes the same state files the real binaries write and
+and `/id`. It also writes the same state files the real binaries write and
 refuses the same way they refuse, so the discovery and resume paths are
 exercised rather than mocked.
 
@@ -115,26 +111,22 @@ gitignored. Deleting `e2e/out/` is always safe.
 | `reloadkeepsscreen` | type, reload: the same tab, the same session, the same screen, and typing still works |
 | `pages` | `/`, `/admin`, `/login` and `/setup` are clean at 390×844 and 1280×720, and the sheet is a bottom sheet on one and a dialog on the other |
 | `harnesses` | all four session types start and are seen in the browser, each with its own mark and its detail behind **Info** in the row menu |
-| `sessionlist` | rename, archive, unarchive and delete — and the working directory survives the delete |
+| `sessionlist` | rename, flag and unflag, archive, unarchive and delete — and the working directory survives the delete |
+| `browserlayout` | row menus flip upwards near the bottom and stay scrollable in short viewports; delayed local fonts give DOM and WebGL equal-width cells and matching initial pane sizes |
 | `exitoverlay` | `/exit 7` raises the overlay with its status in a plain line under it, and **Restart** brings the session back |
 | `webglrenders` | the shipped renderer paints the terminal |
-| `touchscroll` | a finger dragged down the pane reaches what scrolled off it, a drag back up returns to the live bottom, a tap is still the tap that puts the keyboard on the pane, and with tmux's mouse off the drag still reaches the history and still types nothing |
-| `touchscroll-tui` | the two histories a finger can move: tmux's own on a normal-buffer session, and a full-screen TUI's own view on the alternate screen, where tmux has none |
-| `scrollstate` | a pane scrolled back says so with **Jump to live**, the pill puts it back, and a command typed after a scroll leaves copy mode by itself rather than disappearing into it |
-| `momentum` | a flick keeps travelling after the finger has left the glass, and a finger put back down stops it |
-| `sheetkeyboard` | the new session sheet at 390×450 — the viewport an on-screen keyboard leaves — with **Start session** on screen and a session started from there |
-| `keybarreach` | all fourteen keys of the bar on screen and 44px, wrapped to two rows in portrait and one in landscape |
-| `taptargets` | no control on the session page, the list, the sheet or the dashboard is smaller than a finger |
-| `landscapetype` | a phone in landscape is 844px wide and still gets 16px fields, xterm's hidden input included |
-| `drawerselect` | tapping the session that is already open closes the drawer over the terminal it asked for |
-| `keybar` | no device gets the key bar until the ⋯ menu asks for it, on a phone or at a desk; asked for, it sends the right bytes, a sticky `Ctrl` turns the next letter into a control code, and a physical keystroke does not take it away again |
+| `touchscroll` | a finger dragged down the pane reaches what scrolled off it, a drag back up returns to the live bottom, a tap is still the tap that puts the keyboard on the pane, and with tmux's mouse off the drag types nothing |
+| `clipboard` | Ctrl-V pastes the clipboard instead of sending 0x16 — the byte Claude Code answers with "No image found in clipboard" — bracketed when the program asked for it; a Shift-drag selects and Ctrl-C copies it without interrupting; with nothing selected Ctrl-C is still 0x03; the key bar's **Paste** sends the same text; a plain drag sends tmux no mouse report, selects in the browser and is on the clipboard the moment the button is released; a plain click is still reported to the program; a double click copies the word; a right click is not reported; a middle click pastes the last selection exactly once, not once from us and once from the browser; Ctrl-V and Ctrl-C with the focus on a header button still reach the pane; an OSC 52 printed by the program, through tmux, sets the clipboard; and a drag down two rows copies both of them |
+| `touchcopy` | a finger held on the pane selects the word under it and lifting it copies, with a **Copied** toast and no click sent; held then moved it grows the selection; a short tap is still a tap |
+| `transfer` | the **Upload** button writes a file into the session's working directory under `.socrates/uploads/`, with a `.gitignore`, and puts its path on the prompt; an image pasted into the pane does the same; **Paste** puts the clipboard on the prompt; **Copy** with nothing selected opens the pane's text in a sheet and **Copy all** puts it on the clipboard; on a phone the three float over the pane and the top bar still fits |
+| `keybar` | a touch screen gets the key bar before anything asks for it and a desk does not, the ⋯ menu hides and shows it and is remembered per device; it sends the right bytes, a sticky `Ctrl` turns the next letter into a control code, and a physical keystroke does not take it away again |
 | `offlineonce` | a whole command typed with the network off arrives **exactly once** when it comes back, the lost connection is visible while it is gone, and the app shell still opens offline |
 | `sigtermreattach` | the server is killed mid-session and restarted; the pane still holds what was typed and the session is running |
 | `takeover` | a second tab with the same viewer id closes the first socket with 1012 and drives the session |
 | `offlinerestart` | the server is restarted inside an outage and the phone wakes with `online`, `focus` and `visibilitychange` at once: one handshake, and nothing typed is lost in silence |
 | `latehello` | what is typed before a slow `hello` arrives is delivered, exactly once, and leaves nothing behind |
 | `adminoptions` | every harness option round-trips and reaches the command line |
-| `tmuxinstaller` | the engine card, and an install that streams and survives a reload |
+| `tmuxcard` | the engine card on a machine whose tmux is too old |
 | `twoviewers` | two devices on one session: both see the same pane, and the size notice is shown once |
 | `backpressure` | two hundred lines printed as fast as they can be arrive whole, on screen and in the journal |
 | `deletekeepsdir` | delete kills the tmux session and removes the row, and leaves the work on disk |
@@ -144,12 +136,12 @@ gitignored. Deleting `e2e/out/` is always safe.
 | `createopencode` | OpenCode gets a port and a password of its own, and the discoverer reads the session id over its authenticated HTTP server |
 | `rebootresume` | the tmux server is killed behind Socrates' back: the row goes to `needs_resume`, opening it relaunches with **--resume**, and the banner says so once and stays away after it is dismissed |
 | `lighttheme` | the theme Codex was told to wear, the `theme=light` it read back through tmux, the white pane, and all sixteen ANSI colours drawn at 4.5:1 or better |
-| `activity-claude`, `activity-codex`, `activity-opencode`, `activity-shell` | each harness working, finishing while nobody is looking, and the row that says so |
+| `activity-claude`, `activity-codex`, `activity-opencode` | each agent working, finishing while nobody is looking, and the row that says so. There is no `activity-shell`: a shell is never given a turn, so its row carries no status at all |
 | `activity-waiting` | a permission prompt: a still amber ring, and no timeout |
 | `activity-fallback` | a harness that hangs, and the row that leaves busy anyway |
 | `unread` | bold when nobody saw it, gone when the row is opened or typed into |
 | `session-title` | a session that names itself the first time it answers, exactly once |
-| `status-speak` | **Status** spins while it asks, the answer lands on screen as words, and the same words go to `/api/voice/speak` once — the request is intercepted in the browser, so no scenario ever calls Google |
+| `status-speak` | **Status** wears a turning ring around its mark — never the mark itself, and still turning under `prefers-reduced-motion` — while it asks, the answer lands on screen as words, and the same words go to `/api/voice/speak` once — the request is intercepted in the browser, so no scenario ever calls Google |
 | `status-ticker` | the phases of a status — reading the screen, asking the model, speaking, the answer — arrive in order in one line |
 | `agent-run` | a request that needs the keyboard: a run inside the message that asked for it, a **Cancel** beside it, real keystrokes in the pane, and an ending in the conversation |
 | `chat-text` | the chat as a column beside the terminal: a question answered in words with markdown-lite, a reload that comes back to it, and a request that types |
@@ -157,9 +149,10 @@ gitignored. Deleting `e2e/out/` is always safe.
 | `no-overlap` | speech-to-text and text-to-speech are never open at once: **Status** while the microphone runs says nothing out loud, the same press with it closed does, and a recording that starts silences what is playing |
 | `typeafteroutage` | a cut socket, a locked phone, and a pane that still takes keystrokes |
 | `typekeepsfocus` | a dialog, the ⋯ menu and two sessions: the keys still land in the pane |
+| `keyboard` | on a touch screen only the top bar's button raises the on-screen keyboard: the pane and every field muted with `inputmode="none"` **and** `readonly` until it is pressed, a second press puts it away, the focus leaving every field puts the switch back, a copy of the button laid over the same spot in every dialog raises it for that dialog's field, a muted field still filled by speaking into it, and no button and nothing muted on a device with a mouse |
 | `design` | white surfaces, a mark wherever a program is named, technical strings only in **Info**, and an animation that does not restart when a row re-renders |
-| `daygroups` | the session list read by day: Today, Yesterday, This week, This month, Older — a header only over a group with something in it, and a row that keeps its element when it moves to another day |
-| `notify` | a session that stops working while nobody is looking: one chime and one notification named after it, a speaker and a bell in the header that each turn one of them off and are remembered on this device, and nothing fired for a handshake replay |
+| `folders` | the session list read by project: one folder per working directory, named after it with the whole path on hover, ordered by the project worked in most recently, `More Chats` last for the sessions Socrates housed itself; a folder shuts, says how many are behind it, is found shut after a reload and is opened again by attaching a session inside it; a folder with nothing in it is not drawn, and a row keeps its element across a re-render |
+| `notify` | a session that stops working while nobody is looking: one chime and one notification named after it, a speaker and a bell in the header that each turn one of them off and are remembered on this device, and nothing fired for a handshake replay or for a session that has only just been started |
 | `livesession` | one real session against the real Claude Code CLI (gated) |
 
 `lighttheme` measures the
@@ -170,7 +163,7 @@ re-derives them at draw time.
 
 ## Dictation needs a microphone and a gateway
 
-`chat-dictate` asks Chromium for its own fake microphone
+`dictate` and `keyboard` ask Chromium for their own fake microphone
 (`--use-fake-device-for-media-stream`) and points `openrouter.base_url` at a
 small HTTP stub the scenario starts. It has to be a real server rather than a
 Playwright route: the browser posts the recording to `/api/voice/transcribe`
@@ -185,3 +178,15 @@ real browser, with the fake CLI standing in for the three programs.
 `docs/screenshot-tunnel.png` is hand-made and is not regenerated. It is not part
 of `make e2e`: the pictures are committed, so this is only run when they need
 redoing.
+
+### Browser IDE
+
+The optional `vscode-check.mjs` smoke test uses a real code-server installation.
+It checks loading the embedded workbench, editing and saving a project file,
+switching between IDE and shell, surviving a Socrates restart, and resuming
+following loss of the tmux server. It creates and removes its own sessions.
+
+```bash
+CODE_SERVER_BINARY=/absolute/path/to/code-server node e2e/vscode-check.mjs
+# Set SOCRATES_E2E_CHROME if Chromium is installed outside the harness default.
+```

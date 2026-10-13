@@ -54,6 +54,26 @@ func (m *Manager) CapturePane(ctx context.Context, id string, lines int) (string
 	return lastLines(out, lines), nil
 }
 
+// visiblePane is what a session's pane shows right now, and none of its
+// history: the screen a line that announces something live - "1 shell", "1
+// background terminal running" - can only be on. A TUI that clears its
+// screen leaves the old one in the history (tmux's scroll-on-clear), so a
+// line that has gone from the screen is still in any capture that reaches
+// back.
+func (m *Manager) visiblePane(ctx context.Context, id string) (string, error) {
+	if err := m.Available(); err != nil {
+		return "", err
+	}
+	out, err := m.tmux.Run(ctx, "capture-pane", "-p", "-J", "-t", m.tmuxNameOf(id))
+	if err != nil {
+		if noSuchTarget(err) || serverGone(err) {
+			return "", fmt.Errorf("session %s has no pane to read", id)
+		}
+		return "", err
+	}
+	return lastLines(out, 0), nil
+}
+
 // lastLines trims the trailing blanks and keeps the final n lines, so that
 // "the last hundred and twenty lines" is what the caller actually gets:
 // capture-pane -S -n hands back n lines of history *plus* the visible pane.
@@ -93,6 +113,11 @@ func (m *Manager) SendKeys(ctx context.Context, id string, keys []Key) error {
 		if err := m.sendKey(ctx, name, id, key); err != nil {
 			return err
 		}
+		// The same rules a keystroke from a browser arms: whatever the pane
+		// does after this was asked for, so its end is worth a chime, and a
+		// permission prompt that goes quiet afterwards has been answered. The
+		// unread mark is not touched - nobody has read anything.
+		m.NoteTyped(id)
 		if key.Wait > 0 {
 			wait := key.Wait
 			if wait > MaxKeyWait {

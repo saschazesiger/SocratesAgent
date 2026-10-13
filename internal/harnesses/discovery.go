@@ -21,6 +21,10 @@ type Discovery struct {
 	// Claimed reports whether an id is already recorded against another
 	// session of this harness. It may be nil, which means nothing is claimed.
 	Claimed func(id string) bool
+	// DataHome is the XDG data home the program was started with, which is
+	// where OpenCode keeps its database. Empty means the one this process
+	// has.
+	DataHome string
 }
 
 // claimed is Claimed with the nil case folded in.

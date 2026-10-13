@@ -15,11 +15,6 @@ import (
 	"strings"
 )
 
-// ErrUnsupported is what the pseudo terminal helpers return on a platform
-// Socrates cannot run terminal sessions on. The rest of the program still
-// builds and serves there; sessions do not.
-var ErrUnsupported = errors.New("terminal sessions are not supported on this platform")
-
 // MinMajor and MinMinor are the oldest tmux Socrates works with.
 //
 // The floor is 3.3 rather than 3.0 because the generated configuration needs
@@ -129,9 +124,6 @@ type Tmux struct {
 	Sock string
 	Conf string
 	Bin  string
-	// Supervisor, when set, wraps the command that may start the server so
-	// that the server outlives the Socrates process tree.
-	Supervisor Supervisor
 	// Env is added to the environment of every tmux command. The server
 	// inherits it from the command that starts it, and its hooks read two of
 	// its variables; putting it here rather than in os.Setenv keeps those out
@@ -160,25 +152,15 @@ func (t *Tmux) RunConf(ctx context.Context, args ...string) (string, error) {
 	return t.run(ctx, t.Bin, append([]string{"-f", t.Conf, "-S", t.Sock, "-u"}, args...))
 }
 
-// RunStart executes the command that starts the server, and is the only one
-// the supervisor wraps: a transient scope per session create would be a bus
-// round trip for nothing.
+// RunStart executes the command that starts the server.
+//
+// Nothing wraps it. The tmux server daemonizes out of Socrates' process tree
+// and is reparented to PID 1, where tini - the image entrypoint - reaps it.
+// Socrates installs no reaper of its own: one would race os/exec's Wait on its
+// own children (every viewer's `tmux attach`, every discovery subprocess) and
+// turn their exits into ECHILD.
 func (t *Tmux) RunStart(ctx context.Context, args ...string) (string, error) {
-	full := append([]string{"-f", t.Conf, "-S", t.Sock, "-u"}, args...)
-	if t.Supervisor != nil {
-		bin, wrapped, ok := t.Supervisor.Wrap(t.Bin, full)
-		if ok {
-			out, err := t.run(ctx, bin, wrapped)
-			if err == nil {
-				return out, nil
-			}
-			// Supervision is a nicety, never a requirement: without it a
-			// restart of Socrates under systemd takes the sessions with it,
-			// which is the behaviour we would have had anyway.
-			t.logf("could not start the tmux server under %s (%v); starting it directly", bin, err)
-		}
-	}
-	return t.run(ctx, t.Bin, full)
+	return t.run(ctx, t.Bin, append([]string{"-f", t.Conf, "-S", t.Sock, "-u"}, args...))
 }
 
 func (t *Tmux) run(ctx context.Context, bin string, args []string) (string, error) {

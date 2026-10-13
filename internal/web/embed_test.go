@@ -41,6 +41,22 @@ func TestPagesAskForStampedAssets(t *testing.T) {
 	}
 }
 
+func TestTerminalFontsAreVersionedAndPrecached(t *testing.T) {
+	css := string(asset("css/app.css"))
+	worker := string(asset("sw.js"))
+	for _, name := range []string{"SourceCodePro-Regular.woff2", "SourceCodePro-Bold.woff2"} {
+		if !strings.Contains(css, "/static/fonts/"+name+"?v="+version) {
+			t.Errorf("font %s has no versioned CSS URL", name)
+		}
+		if !strings.Contains(worker, "'/static/fonts/"+name+"'") {
+			t.Errorf("font %s is not precached", name)
+		}
+		if data := asset("fonts/" + name); len(data) < 4 || string(data[:4]) != "wOF2" {
+			t.Errorf("font %s is not an embedded WOFF2 file", name)
+		}
+	}
+}
+
 // A relative import does not inherit the query of the file it is written in,
 // so every module has to be stamped or only the entry point is versioned.
 func TestModuleImportsAreStamped(t *testing.T) {
@@ -131,8 +147,8 @@ func TestVendoredTerminalIsStampedAndPrecached(t *testing.T) {
 	worker := string(assets["sw.js"])
 
 	refs := regexp.MustCompile(`(?:src|href)="(/static/vendor/[^"?]+)\?v=([0-9a-f]{12})"`).FindAllStringSubmatch(page, -1)
-	if len(refs) < 7 {
-		t.Fatalf("index.html loads %d vendored files; the terminal is six scripts and a stylesheet", len(refs))
+	if len(refs) < 6 {
+		t.Fatalf("index.html loads %d vendored files; the terminal is five scripts and a stylesheet", len(refs))
 	}
 	for _, ref := range refs {
 		if ref[2] != version {
@@ -154,15 +170,12 @@ func TestVendoredTerminalIsStampedAndPrecached(t *testing.T) {
 	}
 }
 
-// The old web chat's modules went with it. A file that survived a deletion is
-// how a page ends up importing half a product.
-//
-// js/chat.js is not among them any more: the name has come back for something
-// else entirely - the conversation beside a terminal, which asks a model about
-// the pane and can have it typed into. What was deleted was a chat that *was*
-// the product; this one is a panel on the session page.
+// The old web chat's modules went with it, and so did the panel that later
+// took the name: nothing on the session page asks a model to type any more.
+// A file that survived a deletion is how a page ends up importing half a
+// product.
 func TestTheChatModulesAreGone(t *testing.T) {
-	for _, name := range []string{"js/markdown.js", "js/models.js", "js/agents.js"} {
+	for _, name := range []string{"js/markdown.js", "js/models.js", "js/agents.js", "js/chat.js"} {
 		if assets[name] != nil {
 			t.Errorf("%s is still embedded", name)
 		}

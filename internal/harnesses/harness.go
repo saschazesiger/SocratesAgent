@@ -14,27 +14,27 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 )
 
-// Kind is which of the four programs a session runs. The set is closed and it
+// Kind is which of the five programs a session runs. The set is closed and it
 // matches config's harness ids: one name for one thing, everywhere.
 type Kind string
 
 const (
+	KindVSCode   Kind = Kind(config.HarnessVSCode)
 	KindShell    Kind = Kind(config.HarnessShell)
 	KindClaude   Kind = Kind(config.HarnessClaude)
 	KindCodex    Kind = Kind(config.HarnessCodex)
 	KindOpenCode Kind = Kind(config.HarnessOpenCode)
 )
 
-// ErrNoResume is what a harness with nothing to resume answers. A shell is the
-// only one: it is started again in the same directory, which is the whole of
-// what "resuming a shell" could mean.
+// ErrNoResume is what a harness without a conversation answers. Shell and
+// VS Code restart in the same directory, using their persistent files.
 var ErrNoResume = errors.New("this harness starts fresh rather than resuming")
 
 // ErrNoModels is what a harness with no model list answers. It is not a
 // failure - the shell has no models - and the catalogue treats it as one.
 var ErrNoModels = errors.New("this harness has no model list")
 
-// Harness is one of the four programs, seen as everything that has to be
+// Harness is one of the five programs, seen as everything that has to be
 // decided before it starts.
 type Harness interface {
 	Kind() Kind
@@ -59,9 +59,9 @@ type Harness interface {
 	DiscoverModels(ctx context.Context, bin string) (Catalog, error)
 }
 
-// Registry is the four harnesses in the order the picker offers them.
+// Registry is the five harnesses in the order the picker offers them.
 func Registry() []Harness {
-	return []Harness{Shell{}, Claude{}, Codex{}, OpenCode{}}
+	return []Harness{Shell{}, Claude{}, Codex{}, OpenCode{}, VSCode{}}
 }
 
 // Get returns one harness by its id.
@@ -116,7 +116,7 @@ func defaultTerm() string {
 // reading the last field of it, and 15 is white. The others decide from the
 // OSC 11 answer, which tmux gives them from the window style with nobody
 // attached - but a wrong palette on a white page is unreadable rather than
-// merely ugly, so both levers are pulled for all four.
+// merely ugly, so both levers are pulled for all five.
 //
 // TMUX is blanked so that a program which refuses to run "inside tmux" - and
 // several check exactly this variable - runs anyway. It is Socrates' tmux, and
@@ -192,17 +192,8 @@ func flag(argv []string, name, value string) []string {
 	return append(argv, name, value)
 }
 
-// homeDir is where a CLI keeps its own state. It reads the environment rather
-// than the user database because the e2e suite and the tests point HOME at a
-// scratch directory, and a harness that ignored that would write into the real
-// one.
-func homeDir() string {
-	if h := strings.TrimSpace(os.Getenv("HOME")); h != "" {
-		return h
-	}
-	h, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return h
-}
+// homeDir is where a CLI keeps its own state. It reads HOME and nothing else:
+// the image puts HOME inside the data volume so the credentials survive the
+// container, and the e2e suite and the tests point it at a scratch directory.
+// A fallback to the user database would quietly ignore both.
+func homeDir() string { return strings.TrimSpace(os.Getenv("HOME")) }

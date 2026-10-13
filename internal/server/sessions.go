@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
@@ -41,23 +42,24 @@ const journalDownloadMax = 16 << 20
 //	GET    /api/sessions/{id}       {"session":<session>}
 //	PATCH  /api/sessions/{id}       {"session":<session>}
 //	DELETE /api/sessions/{id}       {"ok":true,"workdir":"…","workdir_kept":true}
-//	POST   …/archive, …/resume,
-//	       …/restart, …/ack-resume,
-//	       …/read                   {"session":<session>}
+//	POST   …/file,
+//	       …/resume, …/restart,
+//	       …/ack-resume, …/read     {"session":<session>}
 //	                                409 {"error":"…"} when a restart was asked
-//	                                    for on a session that is still running
+//	                                    for on a session that is still running,
+//	                                    or a resume on a session that is done
 //	GET    …/journal                the raw bytes, as an attachment
+//	GET    …/usage                  {"windows":[…],"cost_usd":…}
 //	every route                     4xx/5xx {"error":"…"}
 //
 // <session> is store.Session as it serialises, plus the fields sessionView
 // adds: cli_session_state, activity, and after a resume resume_fresh and
 // resumed_from.
 //
-// handleListSessions answers the session list. scope=all includes the archived
-// ones, which is what the list's own switch asks for.
+// handleListSessions answers the session list: every session, whatever its
+// status, because the list files them itself.
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
-	includeArchived := r.URL.Query().Get("scope") == "all"
-	sessions, err := s.store.ListSessions(includeArchived)
+	sessions, err := s.store.ListSessions()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -83,11 +85,17 @@ type sessionView struct {
 	// first load, a tab that has been asleep - has to see the sidebar the same
 	// way, and the poll is the catch-up path for exactly that.
 	Activity termux.Activity `json:"activity"`
+	// DeleteAt is when a done session is deleted, so the page can say so
+	// without knowing how long done sessions are kept.
+	DeleteAt int64 `json:"delete_at,omitempty"`
 }
 
 func (s *Server) view(row *store.Session) sessionView {
 	v := sessionView{Session: row, CLISessionState: row.CLISessionState}
 	v.Activity = s.manager.ActivityOf(row.ID)
+	if row.Status == store.StatusDone {
+		v.DeleteAt = row.StatusAt + DoneRetention.Milliseconds()
+	}
 	if row.Resumed {
 		if note, ok := s.manager.ResumeNoteOf(row.ID); ok {
 			v.ResumeFresh, v.ResumedFrom = note.Fresh, note.From
@@ -110,10 +118,17 @@ type createSessionBody struct {
 	// that dropped finds the session it already made instead of making a
 	// second one, which is the whole of "start a session in a tunnel and come
 	// back to one session".
-	ClientID    string          `json:"client_id"`
-	Harness     string          `json:"harness"`
-	Model       string          `json:"model"`
-	Effort      string          `json:"effort"`
+	ClientID       string `json:"client_id"`
+	Harness        string `json:"harness"`
+	Model          string `json:"model"`
+	Effort         string `json:"effort"`
+	ShellExecution string `json:"shell_execution"`
+	// Profile is the sign-in profile the session runs in; empty is the
+	// default one.
+	Profile string `json:"profile"`
+	// Ultracode starts a Claude Code session with dynamic workflows on every
+	// task. Off unless asked for, and kept for the session's whole life.
+	Ultracode   bool            `json:"ultracode"`
 	WorkdirMode string          `json:"workdir_mode"`
 	Workdir     string          `json:"workdir"`
 	Title       string          `json:"title"`
@@ -157,9 +172,64 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("%q is not one of the harnesses", harnessID))
 		return
 	}
+	if harnessID == config.HarnessVSCode {
+		// A folder has one editor, and it is opened from the folder: see
+		// handleFolderIDE.
+		writeError(w, http.StatusBadRequest, "VS Code is opened from a folder in the sidebar, not as a new session")
+		return
+	}
 	if entry, known := settings.Harnesses.Entry(harnessID); known && !entry.Enabled {
 		writeError(w, http.StatusBadRequest, h.Label()+" is switched off in the dashboard")
 		return
+	}
+	shellExecution := body.ShellExecution
+	if body.ShellExecution != "" && harnessID != string(harnesses.KindShell) {
+		writeError(w, http.StatusBadRequest, "shell_execution is only valid for Shell sessions")
+		return
+	}
+	if harnessID == string(harnesses.KindShell) {
+		if shellExecution == "" {
+			shellExecution = harnesses.DefaultShellExecution(settings.Harnesses.Shell.Binary)
+		}
+		switch shellExecution {
+		case harnesses.ShellExecutionContainer:
+		case harnesses.ShellExecutionHost:
+			if !harnesses.HostShellAvailable() {
+				writeError(w, http.StatusBadRequest, "host shell is unavailable on this installation")
+				return
+			}
+		default:
+			writeError(w, http.StatusBadRequest, "shell_execution must be host or container")
+			return
+		}
+	}
+	profileID := strings.TrimSpace(body.Profile)
+	if status, msg := s.checkProfile(harnessID, h.Label(), shellExecution, profileID); status != 0 {
+		writeError(w, status, msg)
+		return
+	}
+	if body.Ultracode && harnessID != string(harnesses.KindClaude) {
+		writeError(w, http.StatusBadRequest, "ultracode is only valid for Claude Code sessions")
+		return
+	}
+	// What the session has to be relaunched with is kept in its options, next
+	// to whatever the client put there.
+	options := body.Options
+	choices := map[string]any{"shell_execution": shellExecution, "profile": profileID, "ultracode": body.Ultracode}
+	if shellExecution != "" || profileID != "" || body.Ultracode {
+		fields := map[string]json.RawMessage{}
+		if len(options) > 0 && string(options) != "null" {
+			if err := json.Unmarshal(options, &fields); err != nil || fields == nil {
+				writeError(w, http.StatusBadRequest, "options must be a JSON object")
+				return
+			}
+		}
+		for key, value := range choices {
+			if value != "" && value != false {
+				fields[key], _ = json.Marshal(value)
+			}
+		}
+		options, _ = json.Marshal(fields)
 	}
 
 	if err := checkSize(body.Cols, body.Rows); err != nil {
@@ -186,14 +256,17 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), createTimeout)
 	defer cancel()
 	plan, err := h.Plan(ctx, harnesses.PlanRequest{
-		SessionID: id,
-		Title:     body.Title,
-		Cwd:       workdir,
-		Model:     strings.TrimSpace(body.Model),
-		Effort:    strings.TrimSpace(body.Effort),
-		Settings:  settings,
-		DataDir:   s.dataDir,
-		Logf:      log.Printf,
+		SessionID:      id,
+		Title:          body.Title,
+		Cwd:            workdir,
+		Model:          strings.TrimSpace(body.Model),
+		Effort:         strings.TrimSpace(body.Effort),
+		ShellExecution: shellExecution,
+		Profile:        profileID,
+		Ultracode:      body.Ultracode,
+		Settings:       settings,
+		DataDir:        s.dataDir,
+		Logf:           log.Printf,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -210,7 +283,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		Effort:      strings.TrimSpace(body.Effort),
 		Workdir:     workdir,
 		WorkdirMode: mode,
-		Options:     body.Options,
+		Options:     options,
 		Cols:        body.Cols,
 		Rows:        body.Rows,
 		Plan:        plan,
@@ -328,22 +401,40 @@ func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 	s.answerWithSession(w, row.ID)
 }
 
-func (s *Server) handleArchiveSession(w http.ResponseWriter, r *http.Request) {
+// handleSetStatus files a session under a status. Done is the one status
+// that does something to the machine: the terminal is closed, so a finished
+// session stops costing anything, and the session itself is kept until
+// DoneRetention has passed. Any other status is the row and nothing more; a
+// session taken out of done is resumed the next time it is opened, like one
+// a reboot took away.
+func (s *Server) handleSetStatus(w http.ResponseWriter, r *http.Request) {
 	row, ok := s.session(w, r)
 	if !ok {
 		return
 	}
 	var body struct {
-		Archived bool `json:"archived"`
+		Status string `json:"status"`
 	}
 	if !readJSON(w, r, &body) {
 		return
 	}
-	// Archiving does not touch tmux. An archived session keeps running, which
-	// is the point of it: it is put away, not stopped.
-	if err := s.store.SetSessionArchived(row.ID, body.Archived); err != nil {
+	if !store.ValidStatus(body.Status) {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("%q is not a session status", body.Status))
+		return
+	}
+	// The status is written before the terminal is closed, so that a viewer
+	// opening the session in between is refused rather than resuming it.
+	if err := s.store.SetSessionStatus(row.ID, body.Status); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if body.Status == store.StatusDone {
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		if err := s.park(ctx, row.ID); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	s.answerWithSession(w, row.ID)
 }
@@ -354,21 +445,12 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// A run typing into a pane that is being torn down is the one way the
-	// operator could do something nobody asked for.
-	s.agents.cancel(row.ID, "the session was deleted")
-	// And a title run writing into a row that is being removed is the same
-	// kind of nothing-good.
-	s.titles.forget(row.ID)
-	// And the conversation about a screen that is about to stop existing.
-	s.chats.forget(row.ID)
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	if err := s.manager.Delete(ctx, row.ID); err != nil {
+	if err := s.deleteSession(ctx, row.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	harnesses.ForgetOpenCodeAccess(row.ID)
 	// The working directory is kept, in every mode. Work the user did is not
 	// ours to throw away, and the answer says so because the dialog does.
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -405,16 +487,12 @@ func (s *Server) ensure(w http.ResponseWriter, r *http.Request, restart bool) {
 	var next *store.Session
 	var err error
 	if restart {
-		// A restart is an interaction with the terminal, and the operator run
-		// that was driving the pane being replaced has no business carrying on
-		// into the fresh harness that comes up under the same tmux name.
-		s.agents.cancel(row.ID, "the session was restarted")
 		next, err = s.manager.Restart(ctx, row.ID)
 	} else {
 		next, err = s.manager.Ensure(ctx, row.ID)
 	}
 	switch {
-	case errors.Is(err, termux.ErrStillRunning):
+	case errors.Is(err, termux.ErrStillRunning), errors.Is(err, termux.ErrDone):
 		// Not a fault: the terminal the caller asked to replace is working,
 		// and its row was left exactly as it was.
 		writeError(w, http.StatusConflict, err.Error())

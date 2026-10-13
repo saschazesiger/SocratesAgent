@@ -29,7 +29,7 @@ const CACHE = 'socrates-shell-' + VERSION;
 // arrive before anything can be served offline at all is a file worth not
 // having in the list.
 //
-// The vendored terminal alone is 807 KB uncompressed and 212 KB gzipped -
+// The vendored terminal alone is 801 KB uncompressed and 210 KB gzipped -
 // xterm.js is 489 KB of that and the WebGL renderer 248 KB - and both earn it,
 // because a terminal that has to be fetched is a terminal that is not there in
 // a tunnel. Socrates itself serves the files as they are: the compression is
@@ -39,12 +39,13 @@ const CACHE = 'socrates-shell-' + VERSION;
 const SHELL = [
   '/',
   '/static/css/app.css',
+  '/static/fonts/SourceCodePro-Regular.woff2',
+  '/static/fonts/SourceCodePro-Bold.woff2',
   '/static/vendor/xterm.css',
   '/static/vendor/xterm.js',
   '/static/vendor/addon-fit.js',
   '/static/vendor/addon-unicode11.js',
   '/static/vendor/addon-web-links.js',
-  '/static/vendor/addon-clipboard.js',
   '/static/vendor/addon-webgl.js',
   '/static/js/net.js',
   '/static/js/api.js',
@@ -53,12 +54,15 @@ const SHELL = [
   '/static/js/keybar.js',
   '/static/js/harnesses.js',
   '/static/js/logos.js',
-  '/static/js/daygroups.js',
+  '/static/js/folders.js',
   '/static/js/combobox.js',
   '/static/js/voice.js',
   '/static/js/assist.js',
   '/static/js/notify.js',
-  '/static/js/chat.js',
+  '/static/js/dictate.js',
+  '/static/js/keyboard.js',
+  '/static/js/transfer.js',
+  '/static/manifest.json',
   '/favicon.png',
   '/static/img/logo.png',
 ].map((path) => (path === '/' ? path : path + '?v=' + VERSION));
@@ -69,7 +73,7 @@ function isShellRequest(request) {
   if (request.method !== 'GET') return false;
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return false;
-  if (url.pathname.startsWith('/api/')) return false;
+  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/ide/')) return false;
   return true;
 }
 
@@ -152,5 +156,40 @@ self.addEventListener('fetch', (event) => {
       }
       throw err;
     }
+  })());
+});
+
+// Web Push: the news that a session finished, for a phone whose page is not
+// running (internal/server/push.go). Every push is shown - a browser that
+// receives one and shows nothing is entitled to stop delivering them - and
+// one per session, so a session that finishes twice while the phone is in a
+// pocket leaves one line in the tray.
+self.addEventListener('push', (event) => {
+  let note = {};
+  try { note = event.data ? event.data.json() : {}; } catch { /* shown with the defaults */ }
+  event.waitUntil(self.registration.showNotification(note.title || 'Socrates', {
+    body: note.body || '',
+    tag: note.id ? 'socrates:' + note.id : 'socrates',
+    renotify: true,
+    icon: '/static/img/logo.png',
+    badge: '/favicon.png',
+    data: { id: note.id || '' },
+  }));
+});
+
+// A tap opens the session: in a tab that is already open when there is one,
+// which is told by message which session to show, and in a new one otherwise.
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const id = (event.notification.data && event.notification.data.id) || '';
+  event.waitUntil((async () => {
+    const tabs = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const tab = tabs.find((c) => new URL(c.url).pathname === '/') || null;
+    if (tab) {
+      await tab.focus();
+      if (id) tab.postMessage({ t: 'open', id });
+      return;
+    }
+    await self.clients.openWindow(id ? '/#' + id : '/');
   })());
 });

@@ -10,12 +10,12 @@
 
 import {
   start, setup, shot, ok, scenario, skipScenario, finish, ensureNav, wait,
-  readFakeLog, killTmux, openRouterStub, sessionsOn, windowSize, scratchDir, PASSWORD, LIVE,
+  readFakeLog, killTmux, openRouterStub, sessionsOn, windowSize, scratchDir, PASSWORD, LIVE, SHOTS,
 } from './harness.mjs';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 // The one thing the harness cannot hand over: when a session was last used is
-// the store's own record of what happened to it, so `daygroups` writes it in
+// the store's own record of what happened to it, so `folders` writes it in
 // the store itself.
 import { DatabaseSync } from 'node:sqlite';
 
@@ -54,7 +54,7 @@ async function open(s) {
 
 // startSession drives the sheet the way a person would and waits until the
 // session it made is the one on screen.
-async function startSession(page, harness) {
+async function startSession(page, harness, shellExecution = '') {
   // The hash already names whatever session this tab is on, so the wait below
   // is for it to become a different one: a second session started in the same
   // tab is otherwise "finished" before it has begun, and the id handed back is
@@ -63,8 +63,11 @@ async function startSession(page, harness) {
   await ensureNav(page);
   await page.click('#newSession');
   await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-  await page.waitForSelector('#nsHarness .seg[data-value="' + harness + '"]', { timeout: 10000 });
-  await page.click('#nsHarness .seg[data-value="' + harness + '"]');
+  await page.waitForSelector('#newSessionSheet .seg[data-value="' + harness + '"]', { timeout: 10000 });
+  await page.click('#newSessionSheet .seg[data-value="' + harness + '"]');
+  if (harness === 'shell' && shellExecution) {
+    await page.click('#nsShellExecution .seg[data-value="' + shellExecution + '"]');
+  }
   await pickModelIfNeeded(page);
   await page.click('#nsStart');
   await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
@@ -111,6 +114,23 @@ async function awaitScreen(page, needle, timeout = 20000) {
   }
 }
 
+// packed is the pane with every space and line break taken out. A narrow pane
+// wraps a long line wherever the column runs out, so a scenario that is asking
+// which characters arrived - rather than how they were laid out - has to read
+// it this way or it is asserting about the width of a phone.
+const packed = async (page) => (await screen(page)).replace(/\s+/g, '');
+
+// awaitPacked is awaitScreen against that reading.
+async function awaitPacked(page, needle, timeout = 20000) {
+  const want = needle.replace(/\s+/g, '');
+  const started = Date.now();
+  while (Date.now() - started < timeout) {
+    if ((await packed(page)).includes(want)) return true;
+    await wait(200);
+  }
+  return false;
+}
+
 // typeLine types into the terminal itself - not into a field beside it - which
 // is the path every keystroke on a laptop takes.
 //
@@ -134,6 +154,21 @@ async function focusTerm(page, timeout = 5000) {
 }
 
 const oneLine = (text) => text.replace(/\s+/g, ' ').trim().slice(0, 200);
+
+// contrastOf is the WCAG ratio between two colours as the browser reports
+// them - `rgb(r, g, b)` - which is term.js's contrast() reading computed style
+// instead of hex. A ratio is the only honest way to assert that a mark can be
+// seen: "it is a light grey" is a fact about the token, not about the eye.
+const contrastOf = (a, b) => {
+  const lum = (colour) => {
+    const [r, g, b] = (colour.match(/[\d.]+/g) || ['0', '0', '0']).slice(0, 3)
+      .map((n) => Number(n) / 255)
+      .map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
+  return (x + 0.05) / (y + 0.05);
+};
 
 // firstRow is the topmost line the pane is showing. It is the assertion that
 // catches a window that was resized under the program: tmux reflows on a
@@ -161,8 +196,11 @@ async function createshell() {
     await useDomRenderer(s);
     await open(s);
 
-    const id = await startSession(s.page, 'shell');
+    const id = await startSession(s.page, 'shell', 'container');
     ok(!!id, 'the sheet made a session and opened it', id || 'no id in the hash');
+    const created = await (await s.context.request.get(s.url + '/api/sessions/' + id)).json();
+    ok(created.session?.options?.shell_execution === 'container',
+      'the shell toggle saved container execution', JSON.stringify(created.session?.options));
 
     await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
     const marker = 'socrates-' + Date.now();
@@ -195,15 +233,6 @@ async function createshell() {
     await typeLine(s.page, "printf '\\033[37mDIMWHITE\\033[0m\\n'");
     ok(await awaitScreen(s.page, 'DIMWHITE'), 'the pane printed a line in ANSI white',
       oneLine(await screen(s.page)));
-    // The wait above is satisfied by the *echo* of the command, which contains
-    // the word inside a longer default-styled run - so at that instant there
-    // may be no span whose whole text is DIMWHITE, and the measurement below
-    // would read "none" and fail. It is rare and it is the scenario's race,
-    // not the product's: what has to be waited for is the drawn span, not the
-    // characters.
-    await s.page.waitForFunction(() => [...document.querySelectorAll('#term .xterm-rows span')]
-      .some((n) => n.textContent.trim() === 'DIMWHITE'), null, { timeout: 10000 })
-      .catch(() => { /* the assertion below says so, with what it measured */ });
     const drawn = await s.page.evaluate(() => {
       const ratio = (rgb) => {
         const [r, g, b] = rgb.match(/\d+/g).map(Number).map((c) => {
@@ -231,19 +260,17 @@ async function createshell() {
       'the theme paints on white and its ink is nearly black',
       JSON.stringify({ ...contrastFloor, black: Math.round(contrastFloor.black * 10) / 10 }));
 
-    // The header says what this session runs, with the harness's own mark.
+    // The header is the session's name: what it runs is the list row's mark.
     const header = await s.page.evaluate(() => ({
-      mark: (document.querySelector('#sessionHarness .agent-mark') || { dataset: {} }).dataset.agent,
+      mark: !!document.querySelector('.topbar .agent-mark'),
       title: (document.getElementById('sessionTitle') || {}).textContent,
-      size: (document.getElementById('termSize') || {}).textContent,
+      size: !!document.getElementById('termSize'),
     }));
-    ok(header.mark === 'shell', 'the header carries the harness mark', header.mark || 'none');
+    ok(!header.mark, 'the header carries no harness mark', String(header.mark));
     ok(/Shell/.test(header.title || ''), 'the session is named after what it runs', header.title);
-    ok(/^\d+×\d+$/.test(header.size || ''), 'the header shows the size the pane is wearing', header.size);
+    ok(!header.size, 'and no size: the pane\'s columns and rows are not the person\'s business', String(header.size));
 
     await shot(s.page, 'createshell');
-    ok(unexpected(s.errors).length === 0, 'no console errors',
-      unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
 
@@ -383,10 +410,14 @@ async function pages() {
         ok(rect.left <= 1 && Math.round(rect.width) >= viewport.width - 2,
           `the sheet is a full-width bottom sheet at ${tag}`, JSON.stringify(rect));
       }
-      // Four harnesses, each with its own mark: §E.10 rule 2.
-      const marks = await s.page.$$eval('#nsHarness .seg .agent-mark', (nodes) => nodes.map((n) => n.dataset.agent));
-      ok(marks.join(',') === 'shell,claude,codex,opencode',
-        `the sheet offers all four harnesses, each with its mark at ${tag}`, marks.join(',') || 'none');
+      // Every harness with its own mark: §E.10 rule 2. The agents come first
+      // and the shell, which is not one, is the row beneath them. VS Code is
+      // not on the sheet: a folder's editor is opened from the folder.
+      const marks = await s.page.$$eval('#nsHarness .seg .agent-mark, #nsTools .seg .agent-mark',
+        (nodes) => nodes.map((n) => n.dataset.agent));
+      ok(marks.join(',') === 'claude,codex,opencode,shell',
+        `the sheet offers the agents and then the tools, each with its mark at ${tag}`,
+        marks.join(',') || 'none');
 
       // Nothing on the sheet is hover-only any more: a choice is a mark and a
       // name, and the prose that explained the choice is gone with it.
@@ -533,6 +564,97 @@ async function harnesses() {
 // What a row can do to a session: rename it, put it away, take it back out,
 // and delete it - which is the only thing in Socrates that kills a tmux
 // session, and which keeps the working directory.
+// Exercise real popup geometry and font measurements independently of the
+// fonts installed in the host browser. This is not a Tesla firmware emulator.
+async function browserlayout() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    const id = await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm');
+    const row = '#sessionList .chat-item[data-id="' + id + '"]';
+    const geometry = () => s.page.evaluate((sel) => {
+      const box = document.querySelector(sel + ' .act').getBoundingClientRect();
+      const menu = document.querySelector('.menu');
+      const rect = menu.getBoundingClientRect();
+      return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right,
+        anchorTop: box.top, anchorBottom: box.bottom, height: innerHeight, width: innerWidth,
+        scrollable: menu.scrollHeight > menu.clientHeight };
+    }, row);
+    await s.page.click(row + ' .act');
+    await wait(180);
+    let g = await geometry();
+    ok(g.top >= g.anchorBottom && g.bottom <= g.height - 9,
+      'an upper row opens downwards inside the viewport', JSON.stringify(g));
+    await s.page.mouse.click(750, 75);
+    await s.page.$eval(row, (node) => {
+      node.style.marginTop = (document.querySelector('#sessionList').clientHeight - node.offsetHeight - 40) + 'px';
+    });
+    await s.page.click(row + ' .act');
+    await wait(180);
+    g = await geometry();
+    ok(g.bottom <= g.anchorTop && g.top >= 10,
+      'a lower row opens upwards inside the viewport', JSON.stringify(g));
+    await s.page.setViewportSize({ width: 800, height: 240 });
+    await s.page.$eval(row, (node) => { node.style.marginTop = '0px'; });
+    await wait(200);
+    g = await geometry();
+    ok(g.top >= 9 && g.bottom <= g.height - 9 && g.left >= 9 && g.right <= g.width - 9 && g.scrollable,
+      'an open menu stays visible and scrollable in a short viewport', JSON.stringify(g));
+    await s.page.$eval('.menu', (node) => { node.scrollTop = node.scrollHeight; });
+    await wait(100);
+    const scrolled = await s.page.$eval('.menu', (node) => node.scrollTop > 0
+      && node.lastElementChild.getBoundingClientRect().bottom <= node.getBoundingClientRect().bottom);
+    ok(scrolled, 'the last menu action remains reachable by scrolling', String(scrolled));
+    await s.page.mouse.click(750, 75);
+    await s.page.setViewportSize({ width: 1280, height: 720 });
+
+    // Delay both webfonts on reload: the existing session must only attach
+    // after loading, otherwise xterm measures the system fallback first.
+    await s.page.evaluate(async () => {
+      for (const registration of await navigator.serviceWorker.getRegistrations()) await registration.unregister();
+    });
+    let fontResponses = 0;
+    await s.page.route('**/*.woff2*', async (route) => {
+      await wait(400);
+      await route.continue();
+      fontResponses++;
+    });
+    await s.page.reload({ waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#term .xterm');
+    const fonts = await s.page.evaluate(async () => {
+      const url = document.querySelector('script[type="module"]').src.replace('session.js', 'term.js');
+      const { createTerm, measurePane } = await import(url);
+      const host = document.createElement('div');
+      host.style.cssText = 'position:fixed;width:600px;height:300px;top:0;left:0';
+      document.body.append(host);
+      const results = [];
+      for (const webgl of [false, true]) {
+        const initial = measurePane(host, { webgl });
+        const pane = createTerm(host, { webgl });
+        const ctx = document.createElement('canvas').getContext('2d');
+        ctx.font = '14px ' + pane.term.options.fontFamily;
+        const widths = [...'iWm0 .'].map((ch) => ctx.measureText(ch).width);
+        results.push({ family: pane.term.options.fontFamily, widths,
+          cell: pane.term._core._renderService.dimensions.css.cell.width,
+          sameSize: initial.cols === pane.term.cols && initial.rows === pane.term.rows });
+        pane.dispose();
+      }
+      host.remove();
+      return results;
+    });
+    ok(fontResponses === 2 && fonts.every((f) => f.family.startsWith('"Source Code Pro"') && f.sameSize
+      && Math.max(...f.widths) - Math.min(...f.widths) < 0.01 && Math.abs(f.cell - f.widths[0]) < 1),
+      'delayed local fonts give DOM and WebGL matching monospaced cells and initial sizes', JSON.stringify({ fontResponses, fonts }));
+    await typeLine(s.page, 'echo font-layout-ok');
+    ok(await awaitScreen(s.page, 'font-layout-ok'), 'the terminal still accepts input after reload', 'font-layout-ok');
+    await shot(s.page, 'browserlayout');
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 async function sessionlist() {
   const s = await start({ viewport: { width: 1280, height: 720 } });
   try {
@@ -563,33 +685,80 @@ async function sessionlist() {
     const stored = await (await s.context.request.get(s.url + '/api/sessions/' + id)).json();
     ok(stored.session.title === 'Renamed by the suite', 'the rename was stored', stored.session.title);
 
-    // Archive: it goes out of the active list and keeps running.
-    await menu('Archive');
-    await s.page.waitForFunction((sel) => !document.querySelector(sel), rowSelector, { timeout: 8000 });
-    ok(true, 'an archived session leaves the active list', 'gone from Active');
-    await s.page.click('#sessionScope .seg[data-scope="all"]');
-    await s.page.waitForSelector(rowSelector, { timeout: 8000 });
-    const archived = await (await s.context.request.get(s.url + '/api/sessions/' + id)).json();
-    ok(archived.session.archived === true && archived.session.state === 'running',
-      'it is archived and still running', archived.session.state);
-
-    // And back out again.
-    await menu('Unarchive');
-    await s.page.waitForFunction((sel) => {
+    // The same menu from the header, for a row that is in a shut folder.
+    const headMenu = async (label) => {
+      await s.page.click('#sessionMenu');
+      await s.page.waitForSelector('.menu', { timeout: 5000 });
+      await s.page.click('.menu .menu-item:text-is("' + label + '")');
+    };
+    const statusShown = (sel) => s.page.evaluate((sel) => {
       const row = document.querySelector(sel);
-      return row && !row.classList.contains('archived');
-    }, rowSelector, { timeout: 8000 });
-    ok(true, 'unarchiving puts it back', 'not archived');
+      const shown = (node) => !!node && !node.hidden && getComputedStyle(node).display !== 'none';
+      const mark = row && row.querySelector('.row-status');
+      const head = document.getElementById('sessionStatus');
+      return {
+        row: shown(mark) ? mark.dataset.status : '',
+        head: shown(head) ? head.textContent : '',
+        folder: row ? row.closest('.folder').dataset.folder || '' : '',
+        shelf: row ? (row.closest('.shelf') || { dataset: {} }).dataset.shelf || '' : '',
+        folderOpen: !!row && row.checkVisibility(),
+      };
+    }, sel);
+    const current = async () => (await (await s.context.request.get(s.url + '/api/sessions/' + id)).json()).session;
+
+    // A session is born in progress, which carries no mark at all.
+    const born = await statusShown(rowSelector);
+    ok(!born.row && !born.head, 'a session is born in progress, with no mark', JSON.stringify(born));
+
+    // Review pending: a mark after the name and a word in the header.
+    await menu('Review pending');
+    await s.page.waitForFunction((sel) => document.querySelector(sel + ' .row-status')?.dataset.status === 'review',
+      rowSelector, { timeout: 8000 });
+    const review = await statusShown(rowSelector);
+    ok(review.row === 'review' && review.head === 'Review pending',
+      'Review pending marks the row and the header', JSON.stringify(review));
+    await shot(s.page, 'sessionlist-review');
+    const filed = await current();
+    ok(filed.status === 'review', 'the status was stored', filed.status);
+
+    // Background: out of the way on a shelf at the bottom of its own folder
+    // that starts shut, and still running.
+    await headMenu('Background');
+    await s.page.waitForFunction((sel) => document.querySelector(sel)?.closest('.shelf')?.dataset.shelf === 'background',
+      rowSelector, { timeout: 8000 });
+    const background = await statusShown(rowSelector);
+    ok(background.shelf === 'background' && !background.folderOpen,
+      'a background session goes onto its folder’s Background shelf, shut', JSON.stringify(background));
+    const running = await current();
+    ok(running.status === 'background' && running.state === 'running',
+      'it is filed as background and still running', running.state);
+
+    // Done: the terminal is closed, the session stays, and says when it goes.
+    await headMenu('Done');
+    await s.page.waitForFunction(() => /is done/.test(document.getElementById('termOverlay')?.textContent || ''),
+      null, { timeout: 10000 });
+    const done = await current();
+    ok(done.status === 'done' && done.state === 'needs_resume' && done.delete_at > Date.now(),
+      'Done closes the terminal and keeps the session for a while', done.state + ' until ' + done.delete_at);
+    const overlay = await s.page.$eval('#termOverlay', (n) => n.textContent);
+    ok(/Deleted in/.test(overlay), 'the page says when a done session is deleted', oneLine(overlay));
+    await shot(s.page, 'sessionlist-done');
+
+    // Picked up again, it resumes on the same row.
+    await s.page.click('#termOverlay .btn.primary');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+    const back = await current();
+    ok(back.status === 'in_progress', 'picking a done session up puts it back in progress', back.status);
 
     // Delete: the row goes, the tmux session goes, the directory stays.
-    const workdir = archived.session.workdir;
+    const workdir = back.workdir;
     await menu('Delete');
     await s.page.waitForSelector('.modal[open] .btn.danger', { timeout: 5000 });
     const body = await s.page.$eval('.modal[open] .modal-body', (n) => n.textContent);
     ok(/working directory/i.test(body), 'the dialog says the working directory is kept', oneLine(body));
     await s.page.click('.modal[open] .btn.danger');
     await s.page.waitForFunction((sel) => !document.querySelector(sel), rowSelector, { timeout: 10000 });
-    const left = await (await s.context.request.get(s.url + '/api/sessions?scope=all')).json();
+    const left = await (await s.context.request.get(s.url + '/api/sessions')).json();
     ok((left.sessions || []).length === 0, 'the session is gone', (left.sessions || []).length + ' left');
 
     const { existsSync } = await import('node:fs');
@@ -770,11 +939,13 @@ async function touchscroll() {
     ok(/^mark-120/m.test(bottom), 'and dragging back up returns to the live bottom of the pane',
       oneLine(bottom.split('\n').filter((l) => l.trim()).slice(-1)[0] || ''));
 
-    // With tmux's mouse turned off in the dashboard. A drag is a command on
-    // the control channel now, not a mouse report, so the tmux setting has
-    // nothing to do with it and the history is still reachable - but the thing
-    // that setting used to protect still holds absolutely: a drag must never
-    // walk the shell's history onto the prompt.
+    // And the one gesture that is deliberately swallowed. With tmux's mouse
+    // turned off in the dashboard there is no mouse report to send and no
+    // scrollback of xterm's own to move - a pane under tmux is an alternate
+    // screen - so a wheel is arrow keys, which is a fair reading of a wheel
+    // deliberately turned in `less` and a terrible one of the gesture a phone
+    // scrolls everything with. A drag must not walk the shell's history onto
+    // the prompt.
     const off = await s.context.request.put(s.url + '/api/settings', {
       data: { settings: { terminal: { webgl: false, mouse: false } } },
     });
@@ -784,16 +955,8 @@ async function touchscroll() {
       null, { timeout: 10000 });
     const settled = await screen(s.page);
     await drag(box.top, box.bottom);
-    const moved = await screen(s.page);
-    ok(moved !== settled, 'with tmux\'s mouse off a drag still reaches the history',
-      oneLine(moved.split('\n').filter((l) => l.trim())[0] || ''));
-    // And the whole of what turning the mouse off used to protect: a drag must
-    // never walk the shell's history onto the prompt. Back at the bottom, the
-    // pane is what it was, character for character.
-    await drag(box.bottom, box.top);
-    await drag(box.bottom, box.top);
     const quiet = await screen(s.page);
-    ok(quiet === settled, 'and it typed nothing on the way',
+    ok(quiet === settled, 'with no mouse to report to, a drag scrolls nothing and types nothing',
       oneLine(quiet.split('\n').filter((l) => l.trim()).slice(-1)[0] || ''));
 
     await cdp.detach();
@@ -1007,7 +1170,7 @@ async function adminoptions() {
       await s.page.waitForFunction(() =>
         document.getElementById('nsDirHint').textContent.length > 0, null, { timeout: 5000 });
     }
-    await s.page.click('#nsHarness .seg[data-value="claude"]');
+    await s.page.click('#newSessionSheet .seg[data-value="claude"]');
     await s.page.click('#nsStart');
     await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
     await s.page.waitForFunction(() => location.hash.length > 1, null, { timeout: 30000 });
@@ -1048,30 +1211,19 @@ async function adminoptions() {
   } finally { await s.stop(); }
 }
 
-/* ------------------------------------------------------ 11. tmuxinstaller */
+/* ----------------------------------------------------------- 11. tmuxcard */
 
-// The engine card against a machine that has the wrong tmux and a package
-// manager that only pretends. Nothing is installed: `tmux` on this run's PATH
-// is a script that says 3.2a, and `apt-get` is a script that prints what
-// apt-get prints and exits.
+// The engine card against a machine whose tmux is too old. There is no
+// installer any more - Socrates runs as the Docker image and the image ships
+// tmux - so all the card owes anybody is an honest, actionable sentence.
 function stubMachine() {
-  // Through the harness, so that the run's own cleanup takes it away: this
-  // directory used to survive every tmuxinstaller run.
+  // Through the harness, so that the run's own cleanup takes it away.
   const dir = scratchDir('socrates-e2e-stub-');
   writeFileSync(join(dir, 'tmux'), '#!/bin/sh\necho "tmux 3.2a"\n', { mode: 0o755 });
-  writeFileSync(join(dir, 'apt-get'), `#!/bin/sh
-if [ "$1" = "update" ]; then
-  echo "Reading package lists..."
-  exit 0
-fi
-echo "Setting up tmux (3.6a-2) ..."
-echo "Processing triggers for ncurses-term ..."
-exit 0
-`, { mode: 0o755 });
   return dir;
 }
 
-async function tmuxinstaller() {
+async function tmuxcard() {
   const stub = stubMachine();
   const s = await start({
     viewport: { width: 1280, height: 900 },
@@ -1089,48 +1241,22 @@ async function tmuxinstaller() {
       dot: document.querySelector('#tmuxStatus .state-dot').className,
       label: document.querySelector('#tmuxStatus .state-label').textContent,
       detail: document.querySelector('#tmuxStatus').textContent,
-      install: document.getElementById('tmuxInstall').hidden
-        ? '' : document.getElementById('tmuxInstall').textContent,
+      reason: document.getElementById('tmuxReason').textContent,
     }));
     // The checklist item: 3.2a is amber and "too old", never green and "ok".
     ok(/\bold\b/.test(card.dot) && /too old/.test(card.label),
-      'tmux 3.2a is reported as too old, not as ok', card.dot + ' · ' + card.label);
+      'tmux 3.2a is reported as too old, not as ok', card.dot + ' \u00b7 ' + card.label);
     ok(card.detail.includes('3.2a') && card.detail.includes('3.3'),
       'the card shows the version it found and the one it needs', oneLine(card.detail));
-    ok(card.install.includes('apt-get'), 'and it offers the package manager it found', card.install);
+    ok(/too old/.test(card.reason),
+      'and says in a sentence what is wrong with it', oneLine(card.reason));
 
     await shot(s.page, 'tmux-card');
-    await s.page.click('#tmuxInstall');
-    // The output arrives over the event stream, line by line.
-    await s.page.waitForFunction(
-      () => /Setting up tmux/.test(document.getElementById('tmuxLog').textContent),
-      null, { timeout: 30000 });
-    const streamed = await s.page.$eval('#tmuxLog', (n) => n.textContent);
-    ok(streamed.includes('apt-get update') && streamed.includes('Reading package lists'),
-      'the installer streamed its output into the page', oneLine(streamed));
-
-    // And it survives the page being thrown away, because it is in the
-    // database and not only in the tab that watched it.
-    await s.page.reload({ waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('#tmuxLogToggle:not([hidden])', { timeout: 20000 });
-    await s.page.click('#tmuxLogToggle');
-    await s.page.waitForFunction(
-      () => /Setting up tmux/.test(document.getElementById('tmuxLog').textContent),
-      null, { timeout: 15000 });
-    const kept = await s.page.$eval('#tmuxLog', (n) => n.textContent);
-    ok(kept.includes('Setting up tmux'), 'and it is still there after a reload', oneLine(kept));
-    // The exit code is half the result: a log with no verdict makes somebody
-    // read package-manager output to find out whether it worked.
-    const verdict = await s.page.$eval('#tmuxInstallResult',
-      (n) => (n.hidden ? '' : n.textContent));
-    ok(/The last install finished/.test(verdict),
-      'and the reload says what the last install did, and when', verdict || 'nothing shown');
 
     ok(unexpected(s.errors).length === 0, 'no console errors',
       unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
-
 
 /* ------------------------------------------------------------ 12. keybar */
 
@@ -1197,36 +1323,37 @@ async function keybar() {
     await startSession(s.page, 'shell');
     await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
 
-    // Nothing on this page guesses at the hardware. The bar is not there until
-    // it is asked for, on a phone and on a desk alike, and there is no line
-    // input beside the terminal at all any more.
+    // A phone has no Escape and no arrows, so on a touch screen the bar is
+    // there before anybody asks for it. There is no line input beside the
+    // terminal at all any more.
     await wait(400);
     const untouched = await s.page.evaluate(() => ({
       bar: document.getElementById('keybar').hidden,
       composer: !!document.getElementById('composer') || !!document.getElementById('lineInput'),
-      hover: matchMedia('(hover: hover) and (pointer: fine)').matches,
+      touch: matchMedia('(hover: none) and (pointer: coarse)').matches,
     }));
-    ok(untouched.bar && !untouched.composer,
-      'a session opens with no key bar and no line input', JSON.stringify(untouched));
+    ok(!untouched.bar && untouched.touch && !untouched.composer,
+      'a session on a touch screen opens with the key bar and no line input', JSON.stringify(untouched));
 
-    // The whole of the rule, as the module itself: one remembered answer, and
-    // nothing in the exports that could decide otherwise.
+    // The whole of the rule, as the module itself: the device's answer once it
+    // has given one, and the touch screen until then.
     const decided = await s.page.evaluate(async () => {
       const mod = await import('/static/js/keybar.js');
       const fresh = mod.keyBarWanted();
-      mod.setKeyBarWanted(true);
-      const asked = mod.keyBarWanted();
       mod.setKeyBarWanted(false);
       const refused = mod.keyBarWanted();
+      mod.setKeyBarWanted(true);
+      const asked = mod.keyBarWanted();
+      localStorage.removeItem('socrates.term.keybar');
       return { fresh, asked, refused, exports: Object.keys(mod).sort().join(',') };
     });
-    ok(!decided.fresh && decided.asked && !decided.refused,
-      'the answer is the preference and nothing else', JSON.stringify(decided));
+    ok(decided.fresh && decided.asked && !decided.refused,
+      'touch decides until the menu has answered, and the answer wins after that', JSON.stringify(decided));
     ok(decided.exports === 'followViewport,keyBarWanted,mountKeyBar,setKeyBarWanted',
-      'and there is no device heuristic left to be wrong about a keyboard', decided.exports);
+      'and the module exports nothing else', decided.exports);
 
-    // A desk is the same answer: a pointer that hovers is not a request for a
-    // row of buttons.
+    // A desk has keys: a pointer that hovers is not a request for a row of
+    // buttons.
     const desk = await s.browser.newContext({
       viewport: { width: 1280, height: 720 },
       colorScheme: 'light',
@@ -1241,21 +1368,21 @@ async function keybar() {
       bar: document.getElementById('keybar').hidden,
       hover: matchMedia('(hover: hover) and (pointer: fine)').matches,
     }));
-    ok(atDesk.bar && atDesk.hover, 'a device with a pointer that hovers does not get it either',
+    ok(atDesk.bar && atDesk.hover, 'a device with a pointer that hovers does not get it',
       JSON.stringify(atDesk));
     await deskPage.close();
     await desk.close();
 
-    // The session menu is the one way in, on any device.
+    // The session menu puts it away and brings it back, on any device.
+    await s.page.click('#sessionMenu');
+    await s.page.click('.menu-item:has-text("Hide key bar")');
+    await s.page.waitForSelector('#keybar[hidden]', { state: 'attached', timeout: 10000 });
     await s.page.click('#sessionMenu');
     await s.page.click('.menu-item:has-text("Show key bar")');
     await s.page.waitForSelector('#keybar:not([hidden])', { timeout: 10000 });
 
     const keys = await s.page.$$eval('#keybar .key', (nodes) => nodes.map((n) => n.dataset.key));
-    // The order is §E.6's, and §E.6's order is the wrap: two rows of seven on
-    // a phone, with the four arrows together at the head of the second rather
-    // than split three-and-one across the fold.
-    ok(keys.join(',') === 'Escape,Tab,Control,Alt,Enter,Ctrl-C,Ctrl-D,Left,Down,Up,Right,Ctrl-Z,Paste,Keyboard',
+    ok(keys.join(',') === 'Escape,Tab,Control,Alt,Left,Down,Up,Right,Enter,Ctrl-C,Ctrl-D,Ctrl-Z,Paste',
       'the key bar carries every key of §E.6, in order', keys.join(','));
     const placed = await s.page.evaluate(() => ({
       keybarTop: document.getElementById('keybar').getBoundingClientRect().top,
@@ -1319,15 +1446,15 @@ async function keybar() {
       'a third tap puts it away', 'off');
 
     // A modifier is for the next key the person presses, and the terminal's
-    // own reports are not keys. Leaving the pane for the chat's field, and
-    // coming back to it through the keyboard button, both make xterm send a
-    // focus report on the same channel - and neither may spend an armed Ctrl.
-    await s.page.click('#agentBtn');
-    await s.page.waitForSelector('#chatPanel:not([hidden])', { timeout: 10000 });
-    await s.page.click('#chatText');
+    // own reports are not keys. Leaving the pane for a control in the bar -
+    // the sound toggle, which is about this device and nothing about the pane
+    // - and coming back to it through the top bar's keyboard button, both
+    // make xterm send a focus report on the same channel, and neither may
+    // spend an armed Ctrl.
+    await s.page.click('#soundBtn');
     await s.page.click('#keybar .key[data-key="Control"]');
     const beforeKeyboard = (await sentBytes(s.page)).length;
-    await s.page.click('#keybar .key[data-key="Keyboard"]');
+    await s.page.click('#kbBtn');
     await wait(200);
     const stillArmed = await s.page.$eval('#keybar .key[data-key="Control"]', (n) => n.className);
     ok(/\bon\b/.test(stillArmed), 'raising the keyboard does not spend the armed Ctrl', stillArmed);
@@ -1338,21 +1465,17 @@ async function keybar() {
       throughFocus.join(',') || 'nothing');
 
     // A locked Alt must not put an ESC in front of what the terminal answers.
-    // On a phone the panel is a sheet over the pane, so it is closed before
-    // the pane is tapped and opened again to take the focus off it.
-    await s.page.click('#chatClose');
     await s.page.click('#term .xterm-screen');
     await focusTerm(s.page);
     await s.page.click('#keybar .key[data-key="Alt"]');
     await s.page.click('#keybar .key[data-key="Alt"]');
     const beforeBlur = (await sentBytes(s.page)).length;
-    await s.page.click('#agentBtn');
-    await s.page.waitForSelector('#chatPanel:not([hidden])', { timeout: 10000 });
+    // The same toggle again, which puts this device's sound back where it was.
+    await s.page.click('#soundBtn');
     await wait(250);
     const reports = (await sentBytes(s.page)).slice(beforeBlur);
     ok(!reports.some((hex) => hex.startsWith('1b1b')),
       'a locked Alt leaves the terminal\u2019s own reports alone', reports.join(',') || 'nothing');
-    await s.page.click('#chatClose');
 
     // And a bar that is put away takes its modifiers with it, rather than
     // transforming keys with nothing on screen to say why.
@@ -1867,8 +1990,8 @@ async function startWithModel(page, harness, modelLabel) {
   await ensureNav(page);
   await page.click('#newSession');
   await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-  await page.waitForSelector('#nsHarness .seg[data-value="' + harness + '"]', { timeout: 10000 });
-  await page.click('#nsHarness .seg[data-value="' + harness + '"]');
+  await page.waitForSelector('#newSessionSheet .seg[data-value="' + harness + '"]', { timeout: 10000 });
+  await page.click('#newSessionSheet .seg[data-value="' + harness + '"]');
   // The model step is hidden for Shell and pre-filled for a harness that names
   // a default. Where it is neither - OpenCode reports models and no default -
   // the sheet waits for a choice, which is what a person would make.
@@ -1977,7 +2100,7 @@ async function createclaude() {
     await ensureNav(s.page);
     await s.page.click('#newSession');
     await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-    await s.page.click('#nsHarness .seg[data-value="claude"]');
+    await s.page.click('#newSessionSheet .seg[data-value="claude"]');
     await s.page.click('#nsModel .combo-input');
     await s.page.waitForSelector('#nsModel .combo-option', { timeout: 5000 });
     const shown = await s.page.$$eval('#nsModel .combo-option .combo-label', (nodes) => nodes.map((n) => n.textContent));
@@ -2012,18 +2135,16 @@ async function createclaude() {
     ok(row.cli_session_state === 'known' || row.cli_session_state === 'verified',
       'and the row knows it is holding one', row.cli_session_state);
 
-    // §E.10 rule 2 and 3: the header names the model beside the mark of what
-    // runs it, and nothing else - the path is in Info, from the same menu.
+    // §E.10 rule 2 and 3: the header is the name and nothing else - neither
+    // the mark nor the model; those and the path are in Info.
     const badge = await s.page.evaluate(() => {
-      const host = document.getElementById('sessionHarness');
+      const bar = document.querySelector('.topbar');
       return {
-        mark: (host.querySelector('.agent-mark') || { dataset: {} }).dataset.agent,
-        model: (host.querySelector('.b-model') || {}).textContent,
-        tips: host.querySelectorAll('.tip').length,
+        mark: !!bar.querySelector('.agent-mark'),
+        model: /haiku/i.test(bar.textContent),
       };
     });
-    ok(badge.mark === 'claude' && badge.model === 'haiku' && badge.tips === 0,
-      'the header badge carries the mark and the model, and nothing else',
+    ok(!badge.mark && !badge.model, 'the header names neither the harness nor the model',
       JSON.stringify(badge));
     await s.page.click('#sessionMenu');
     await s.page.click('.menu-item:has-text("Info")');
@@ -2091,6 +2212,141 @@ async function createclaude() {
 
     ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
       unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+/* -------------------------------------------------------------- profiles */
+
+// A profile is a second set of sign-ins. It is added in the dashboard, offered
+// by the sheet with the account each choice means, and reaches the launched
+// program as the directory its CLI keeps the account in - and it cannot be
+// deleted while a session still runs in it.
+async function profiles() {
+  const s = await start({ viewport: { width: 1280, height: 900 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#profileList .profile-row', { timeout: 20000 });
+    await s.page.fill('#profileName', 'Business');
+    await s.page.click('#profileAdd');
+    await s.page.waitForFunction(() => document.querySelectorAll('#profileList .profile-row').length === 2,
+      null, { timeout: 10000 });
+    const listed = await (await s.context.request.get(s.url + '/api/profiles')).json();
+    const business = (listed.profiles || []).find((p) => p.name === 'Business');
+    ok(!!business && /^p-[0-9a-f]{12}$/.test(business.id), 'the dashboard added the profile',
+      JSON.stringify(listed.profiles));
+    await shot(s.page, 'profiles-admin');
+
+    await open(s);
+    await ensureNav(s.page);
+    await s.page.click('#newSession');
+    await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    await s.page.click('#newSessionSheet .seg[data-value="claude"]');
+    await s.page.waitForSelector('#nsProfileField:not([hidden]) #nsProfile .drop-button', { timeout: 10000 });
+    await s.page.click('#nsProfile .drop-button');
+    const choice = '#nsProfile .drop-option[data-value="' + business.id + '"]';
+    await s.page.waitForSelector(choice, { timeout: 5000 });
+    const offered = await s.page.$$eval('#nsProfile .drop-option .profile-entry-name', (nodes) => nodes.map((n) => n.textContent));
+    ok(offered.join(',') === 'Default,Business', 'the sheet offers the default profile and the new one',
+      offered.join(','));
+    await s.page.click(choice);
+    const face = await s.page.$eval('#nsProfile .drop-face .profile-entry-name', (n) => n.textContent);
+    ok(face === 'Business', 'the dropdown shows the profile chosen', face);
+    const hint = await s.page.$eval('#nsProfileHint', (n) => n.textContent);
+    ok(/not signed in/.test(hint), 'and says that Claude Code still has to sign in there', hint);
+    await s.page.click('#nsModel .combo-input');
+    await s.page.waitForSelector('#nsModel .combo-option', { timeout: 5000 });
+    await s.page.click('#nsModel .combo-option:has(.combo-label:text-is("Haiku"))');
+    // Ultracode is Claude Code's alone, and off until it is switched on.
+    const ultra = await s.page.$eval('#nsUltracodeField', (n) => ({
+      hidden: n.hidden, off: n.querySelector('.seg[data-value="off"]').getAttribute('aria-pressed'),
+    }));
+    ok(!ultra.hidden && ultra.off === 'true', 'the sheet offers Ultracode for Claude Code, off', JSON.stringify(ultra));
+    await s.page.click('#nsUltracode .seg[data-value="on"]');
+    await shot(s.page, 'profiles-sheet');
+    await s.page.click('#nsStart');
+    await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
+    await s.page.waitForFunction(() => location.hash.length > 1, null, { timeout: 30000 });
+    const id = await s.page.evaluate(() => location.hash.slice(1));
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    ok(await awaitScreen(s.page, 'FAKE claude', 25000), 'the session is up', oneLine(await screen(s.page)));
+
+    const launch = lastLaunch(s, 'claude') || { env: {} };
+    const dir = (launch.env || {}).CLAUDE_CONFIG_DIR || '';
+    ok(dir.endsWith('/profiles/' + business.id + '/claude'),
+      'Claude Code was started on the profile\'s own directory', dir);
+    const row = await sessionRow(s, id);
+    ok(row.options && row.options.profile === business.id, 'and the session remembers its profile',
+      JSON.stringify(row.options));
+    const settingsFile = (launch.argv || [])[(launch.argv || []).indexOf('--settings') + 1] || '';
+    let ultracode = 'unreadable';
+    try { ultracode = JSON.parse(readFileSync(settingsFile, 'utf8')).ultracode; } catch { /* reported below */ }
+    ok(row.options.ultracode === true && ultracode === true,
+      'and Claude Code was started with Ultracode on', JSON.stringify({ options: row.options, ultracode }));
+
+    await s.page.click('#sessionMenu');
+    await s.page.click('.menu-item:has-text("Info")');
+    await s.page.waitForSelector('dialog.modal .facts', { timeout: 5000 });
+    const facts = await s.page.$$eval('dialog.modal .fact', (nodes) => nodes.map((n) => n.textContent));
+    ok(facts.includes('Profile: Business') && facts.includes('Ultracode on'),
+      'Info names the profile and Ultracode', oneLine(facts.join(' · ')));
+    await s.page.click('dialog.modal .modal-actions .btn');
+    await s.page.waitForSelector('dialog.modal', { state: 'detached', timeout: 5000 });
+
+    const refused = await s.context.request.delete(s.url + '/api/profiles/' + business.id);
+    ok(refused.status() === 409, 'a profile a session runs in cannot be deleted', String(refused.status()));
+
+    // A session keeps the profile it was started in: its menu offers none.
+    await s.page.click('#sessionMenu');
+    const menuItems = await s.page.$$eval('.menu .menu-item', (nodes) => nodes.map((n) => n.textContent));
+    ok(!menuItems.includes('Default') && !menuItems.includes('Business'),
+      'the session menu offers no profile to move to', menuItems.join(','));
+    await s.page.click('#term', { position: { x: 40, y: 40 } });
+    await s.page.waitForSelector('.menu', { state: 'detached', timeout: 10000 });
+
+    // The next sheet starts on the profile the last session was started in.
+    await ensureNav(s.page);
+    await s.page.click('#newSession');
+    await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    await s.page.click('#newSessionSheet .seg[data-value="claude"]');
+    await s.page.waitForSelector('#nsProfileField:not([hidden]) #nsProfile .drop-face', { timeout: 10000 });
+    const next = await s.page.$eval('#nsProfile .drop-face .profile-entry-name', (n) => n.textContent);
+    ok(next === 'Business', 'the next sheet starts on the same profile', next);
+    const ultraAgain = await s.page.$eval('#nsUltracode .seg[data-value="off"]', (n) => n.getAttribute('aria-pressed'));
+    ok(ultraAgain === 'true', 'but with Ultracode off again', ultraAgain);
+    await s.page.click('#newSessionSheet .seg[data-value="codex"]');
+    const ultraCodex = await s.page.$eval('#nsUltracodeField', (n) => n.hidden);
+    ok(ultraCodex, 'and Codex is not offered it', String(ultraCodex));
+    await s.page.click('#nsCancel');
+
+    // The dashboard's order is the sheet's: a row moves by its grip, with the
+    // arrow keys or dragged, and the order is saved as soon as it is let go.
+    const order = async () => ((await (await s.context.request.get(s.url + '/api/profiles')).json()).profiles || [])
+      .map((p) => p.name).join(',');
+    await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
+    await s.page.waitForFunction(() => document.querySelectorAll('#profileList .profile-row').length === 2,
+      null, { timeout: 20000 });
+    await s.page.focus('#profileList .profile-row[data-id="' + business.id + '"] .profile-grip');
+    await s.page.keyboard.press('ArrowUp');
+    let moved = '';
+    for (let i = 0; i < 40 && moved !== 'Business,Default'; i++) { await s.page.waitForTimeout(100); moved = await order(); }
+    ok(moved === 'Business,Default', 'the arrow keys move a profile up the list', moved);
+    const grip = await s.page.$eval('#profileList .profile-row[data-id="' + business.id + '"] .profile-grip', (n) => {
+      const box = n.getBoundingClientRect();
+      return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    });
+    const last = await s.page.$eval('#profileList .profile-row:last-child', (n) => n.getBoundingClientRect().bottom);
+    await s.page.mouse.move(grip.x, grip.y);
+    await s.page.mouse.down();
+    await s.page.mouse.move(grip.x, last - 4, { steps: 8 });
+    await s.page.mouse.up();
+    for (let i = 0; i < 40 && moved !== 'Default,Business'; i++) { await s.page.waitForTimeout(100); moved = await order(); }
+    ok(moved === 'Default,Business', 'and dragging puts it back', moved);
+    const rows = await s.page.$$eval('#profileList .profile-row', (nodes) => nodes.map((n) => n.dataset.id));
+    ok(rows.join(',') === ',' + business.id, 'where the list shows it', rows.join(','));
+
+    ok(unexpected(s.errors).length === 0, 'no unexpected console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
 
@@ -2191,7 +2447,32 @@ async function createopencode() {
     const conversation = await conversationOf(s.page);
     ok(/^ses_/.test(conversation), 'which is the session the program itself is in',
       conversation || 'none');
+    await s.page.waitForFunction(() => document.getElementById('sessionUsage')?.innerText.includes('~$1.25'),
+      null, { timeout: 20000 });
+    const cost = await s.page.$eval('#sessionUsage', (node) => node.innerText.trim());
+    ok(cost.includes('~$1.25'), 'its estimated cost is in the header', cost);
     await shot(s.page, 'createopencode');
+
+    await s.page.setViewportSize({ width: 390, height: 844 });
+    await wait(300);
+    const mobileHeader = await s.page.evaluate(() => {
+      const bar = document.querySelector('.topbar');
+      const speak = document.getElementById('micBtn');
+      const status = document.getElementById('statusBtn');
+      return {
+        height: Math.round(bar.getBoundingClientRect().height),
+        usage: document.getElementById('sessionUsage').innerText.trim(),
+        speakBorder: getComputedStyle(speak).borderTopWidth,
+        separator: getComputedStyle(status, '::before').width,
+        overflow: document.documentElement.scrollWidth - innerWidth,
+      };
+    });
+    ok(mobileHeader.usage.includes('~$1.25') && mobileHeader.height === 82,
+      'the borderless usage line stays visible in the narrow header', JSON.stringify(mobileHeader));
+    ok(mobileHeader.speakBorder === '0px' && mobileHeader.separator === '1px' && mobileHeader.overflow <= 0,
+      'header actions use separators without overflowing', JSON.stringify(mobileHeader));
+    await shot(s.page, 'createopencode-phone');
+    await s.page.setViewportSize({ width: 1280, height: 720 });
 
     const before = await endAndRestart(s, 'opencode', 0);
     ok(await awaitScreen(s.page, 'FAKE opencode', 25000), 'Restart brought OpenCode back',
@@ -2199,6 +2480,21 @@ async function createopencode() {
     const again = launchesOf(s, 'opencode').slice(before);
     ok(again.length === 1 && argvOf(again[0]).includes('--session ' + conversation),
       'and it was resumed on the session the server had named', argvOf(again[0]));
+
+    // A limit window says how long it has until it renews, not only how full
+    // it is. The fake programs keep no limits, so the reading is the page's.
+    const renews = new Date(Date.now() + (2 * 60 + 36) * 60000 + 30000).toISOString();
+    await s.page.route('**/api/sessions/*/usage', (route) => route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ windows: [{ label: '5h', used_percent: 42, resets_at: renews }], cost_usd: 1.25 }),
+    }));
+    await s.page.reload({ waitUntil: 'domcontentloaded' });
+    await s.page.waitForFunction(() => /5h\s*42%/.test(document.getElementById('sessionUsage')?.innerText || ''),
+      null, { timeout: 20000 });
+    const limit = await s.page.$eval('#sessionUsage', (node) => ({ text: node.innerText.trim(), title: node.title }));
+    ok(/\(2h 3[67]m left\)/.test(limit.text) && /resets in 2h 3[67]m/.test(limit.title),
+      'the header says how long the limit has until it renews', JSON.stringify(limit));
+    await s.page.unroute('**/api/sessions/*/usage');
 
     ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
       unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
@@ -2424,9 +2720,6 @@ async function twoviewers() {
       && notices[0].text === 'Another viewer resized this session to ' + moved.replace('x', '×') + '.',
       'and the line holds that sentence and nothing else',
       JSON.stringify(notices.length ? notices[0].text : ''));
-    ok(await s.page.$eval('#termSize', (n) => n.textContent) === moved.replace('x', '×'),
-      'the first viewer now shows the window the second one set',
-      await s.page.$eval('#termSize', (n) => n.textContent));
 
     // One pane, two windows onto it: what either types, both see.
     const fromSecond = 'second-' + Math.random().toString(36).slice(2, 8);
@@ -2623,7 +2916,7 @@ async function deletekeepsdir() {
     await s.page.waitForFunction((sel) => !document.querySelector(sel),
       '#sessionList .chat-item[data-id="' + id + '"]', { timeout: 10000 });
 
-    const left = await (await s.context.request.get(s.url + '/api/sessions?scope=all')).json();
+    const left = await (await s.context.request.get(s.url + '/api/sessions')).json();
     ok((left.sessions || []).length === 0, 'the row is gone', (left.sessions || []).length + ' left');
     let live = sessionsOn(s.data);
     for (let i = 0; i < 20 && live.includes('soc_' + id); i += 1) {
@@ -2675,7 +2968,7 @@ async function recoveredsession() {
     await s.page.waitForFunction((want) => [...document.querySelectorAll('#sessionList .chat-item')]
       .some((n) => n.dataset.id === want), stray, { timeout: 20000 }).catch(() => {});
 
-    const listed = await (await s.context.request.get(s.url + '/api/sessions?scope=all')).json();
+    const listed = await (await s.context.request.get(s.url + '/api/sessions')).json();
     const found = (listed.sessions || []).find((row) => row.id === stray);
     ok(!!found, 'the orphan was taken in rather than killed', found ? found.id : 'not listed');
     ok(!!found && found.title === 'Recovered session', 'and it is called what it is',
@@ -2841,16 +3134,16 @@ async function design() {
     ok(Object.values(surfaces).every(white),
       'every surface on the session page is the same white', JSON.stringify(surfaces));
 
-    // Rule 2 - a mark wherever a harness is named. The sheet names all four,
-    // the header names this session's, and the row in the list names it again.
+    // Rule 2 - a mark wherever a harness is named. The sheet names them all,
+    // and the row in the list names this session's.
     await s.page.click('#newSession');
     await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-    const sheetMarks = await s.page.$$eval('#nsHarness .seg', (nodes) =>
+    const sheetMarks = await s.page.$$eval('#nsHarness .seg, #nsTools .seg', (nodes) =>
       nodes.map((n) => ({
         harness: n.dataset.value,
         mark: (n.querySelector('.agent-mark') || { dataset: {} }).dataset.agent || 'none',
       })));
-    ok(sheetMarks.length === 4 && sheetMarks.every((one) => one.mark === one.harness),
+    ok(sheetMarks.length === 5 && sheetMarks.every((one) => one.mark === one.harness),
       'the sheet gives every harness its own mark', JSON.stringify(sheetMarks));
 
     // Where a session works is a dropdown, and it opens on a list of places
@@ -2876,12 +3169,10 @@ async function design() {
       .catch(() => {});
 
     const marks = await s.page.evaluate((sessionId) => ({
-      header: (document.querySelector('#sessionHarness .agent-mark') || { dataset: {} }).dataset.agent,
       row: (document.querySelector('#sessionList .chat-item[data-id="' + sessionId + '"] .agent-mark')
         || { dataset: {} }).dataset.agent,
     }), id);
-    ok(marks.header === 'shell' && marks.row === 'shell',
-      'and so do the header and the row in the list', JSON.stringify(marks));
+    ok(marks.row === 'shell', 'and so does the row in the list', JSON.stringify(marks));
 
     // Rule 3 - technical strings are hover-only. The working directory, the
     // tmux session name and the state word are facts about the machine; what
@@ -2943,15 +3234,34 @@ async function design() {
       after.sameRow ? 'the same row' : 'a new row');
 
     // Rule 4 again, on the mark that says a session is working. It is the
-    // agent's own mark with a hairline ring around it, one faint arc on white,
-    // and it turns once every 900 ms - the same beat as the resume spinner.
-    await typeLine(s.page, 'sleep 6');
-    const spinning = await awaitRow(s.page, id, (r) => r.busy, 10000);
+    // agent's own mark with a hairline ring around it, one arc in the page's
+    // own ink, and it turns once every 900 ms - the same beat as the resume
+    // spinner. The arc is the ink and not a grey, because the whole of the
+    // motion is that one arc: drawn in the faintest text colour on a ring in
+    // the faintest line, it turned and nobody could see it turning, which is
+    // the same thing as not turning at all.
+    //
+    // It takes an agent session: a shell and an editor are the two programs
+    // nothing is asked of and nothing is reported back by, so their rows carry
+    // no status at all and there is no ring on them to look at. The shell is
+    // stepped back onto afterwards, because the rest of this scenario is about
+    // the pane it owns.
+    const working = await startSession(s.page, 'claude');
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    await awaitRow(s.page, working, (r) => !r.busy, 20000);
+    const workingRow = await sessionRow(s, working);
+    await typeLine(s.page, '/busy 20000');
+    await clickRow(s.page, id);
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const spinning = await awaitRow(s.page, working, (r) => r.busy, 10000);
     ok(spinning.ok, 'a session that is working turns its own mark into a ring', took(spinning));
     const ring = spinning.seen ? spinning.seen.ring : null;
-    ok(!!ring && ring.colour === 'rgb(155, 158, 166)',
-      'the arc is the faintest text colour, on white and on nothing else',
-      ring ? ring.colour : 'no ring');
+    ok(!!ring && ring.colour === 'rgb(23, 24, 27)' && ring.rest === 'rgb(220, 221, 225)',
+      'the arc that moves is the page\u2019s ink, on a ring a shade under it',
+      ring ? ring.colour + ' on ' + ring.rest : 'no ring');
+    ok(!!ring && contrastOf(ring.colour, ring.rest) >= 3,
+      'so the arc is legible against the ring it turns on',
+      ring ? contrastOf(ring.colour, ring.rest).toFixed(1) + ':1' : 'no ring');
     const beat = ring ? Math.round(parseFloat(ring.motion) * 1000) : 0;
     ok(beat >= 120 && beat <= 900, 'and it turns at the app\u2019s own pace', beat + ' ms');
 
@@ -2961,49 +3271,70 @@ async function design() {
       const mark = document.querySelector(sel + ' .row-mark');
       const anim = mark ? mark.getAnimations({ subtree: true })[0] : null;
       return anim ? Number(anim.currentTime) : -1;
-    }, rowSel(id));
-    await s.context.request.patch(s.url + '/api/sessions/' + id, { data: { title: renamed + ' again' } });
+    }, rowSel(working));
+    const spinnerName = workingRow.title + ' renamed';
+    await s.context.request.patch(s.url + '/api/sessions/' + working, { data: { title: spinnerName } });
     await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
     await s.page.waitForFunction((want) =>
       [...document.querySelectorAll('#sessionList .chat-item .label')].some((n) => n.textContent === want),
-    renamed + ' again', { timeout: 20000 });
+    spinnerName, { timeout: 20000 });
     const spunAfter = await s.page.evaluate((sel) => {
       const mark = document.querySelector(sel + ' .row-mark');
       const anim = mark ? mark.getAnimations({ subtree: true })[0] : null;
       return anim ? Number(anim.currentTime) : -1;
-    }, rowSel(id));
+    }, rowSel(working));
     ok(spunBefore >= 0 && spunAfter > spunBefore,
       'and a re-render of its row does not restart it',
       Math.round(spunBefore) + ' ms -> ' + Math.round(spunAfter) + ' ms');
 
     // Turning decoration off must not turn off the one thing that says work is
-    // still happening, so the ring is drawn complete and still instead.
+    // still happening: the ring has no reduced-motion behaviour of its own and
+    // turns at the same pace here as everywhere else. Drawn still it reads as
+    // a session that has stopped - which is exactly how it was read, from a
+    // desk whose system had "reduce motion" on.
     await s.page.emulateMedia({ reducedMotion: 'reduce' });
     await wait(200);
-    const still = await rowActivity(s.page, id);
-    ok(!!still.ring && still.ring.name === 'none',
-      'with reduced motion the ring is drawn complete and does not turn',
-      still.ring ? still.ring.name : 'no ring');
+    const still = await rowActivity(s.page, working);
+    ok(!!still.ring && still.ring.name === 'spin' && still.ring.motion === '0.9s',
+      'with reduced motion the ring turns at the pace it always turns at',
+      still.ring ? still.ring.name + ' ' + still.ring.motion : 'no ring');
+    const slow = await s.page.evaluate((sel) => {
+      const mark = document.querySelector(sel + ' .row-mark');
+      const anim = mark ? mark.getAnimations({ subtree: true })[0] : null;
+      if (!anim) return -1;
+      const was = Number(anim.currentTime);
+      return new Promise((done) => setTimeout(() =>
+        done(Number(anim.currentTime) - was), 400));
+    }, rowSel(working));
+    ok(slow > 100, 'and it is really running, not a still frame with a name on it',
+      Math.round(slow) + ' ms of turn in 400 ms');
     await s.page.emulateMedia({ reducedMotion: null });
 
-    // Rule 2 and rule 3 in the top bar: the two things a session can be asked
-    // are marks, their words are in the label a reader gets, and there is no
-    // mode switch beside them any more - what the answer sounds like follows
-    // from how the question was asked.
-    const header = await s.page.evaluate(() => ['statusBtn', 'agentBtn'].map((id) => {
-      const node = document.getElementById(id);
-      return {
-        text: (node.textContent || '').trim(),
-        label: node.getAttribute('aria-label'),
-        title: node.title,
-        svg: node.querySelectorAll('svg').length,
+    // Rule 2 and rule 3 in the top bar: Status is a mark with its words in
+    // the label a reader gets, and the microphone beside it is the one control
+    // that carries a word, because it is the one a thumb has to find.
+    const header = await s.page.evaluate(() => {
+      const read = (id) => {
+        const node = document.getElementById(id);
+        return {
+          text: (node.textContent || '').trim(),
+          label: node.getAttribute('aria-label'),
+          title: node.title,
+          svg: node.querySelectorAll('svg').length,
+          height: Math.round(node.getBoundingClientRect().height),
+        };
       };
-    }));
-    ok(header.every((one) => one.text === '' && one.svg === 1 && one.label === one.title),
-      'the two header buttons are marks, with their words in the label',
-      JSON.stringify(header));
-    ok(header[0].label === 'Summarize this session' && header[1].label === 'Ask the agent',
-      'and the words say what pressing them does', header.map((one) => one.label).join(' / '));
+      return { status: read('statusBtn'), mic: read('micBtn') };
+    });
+    ok(header.status.text === '' && header.status.svg === 1
+      && header.status.label === header.status.title,
+      'Status is a mark, with its words in the label', JSON.stringify(header.status));
+    ok(header.status.label === 'Summarize this session' && header.mic.label === 'Speak',
+      'and the words say what pressing them does',
+      header.status.label + ' / ' + header.mic.label);
+    ok(header.mic.text === 'Speak' && header.mic.height >= 44,
+      'the microphone is the one that carries its word, at a size a thumb can hit',
+      JSON.stringify(header.mic));
     const gone = await s.page.evaluate(() => ({
       auto: document.querySelectorAll('.auto-switch').length,
       bar: !!document.getElementById('audioBar'),
@@ -3025,7 +3356,8 @@ async function design() {
       }
       return parts.join(' ');
     });
-    ok(!/\b(exact|quiet|unknown|run_id|phase)\b/.test(spoken) && !spoken.includes(id),
+    ok(!/\b(exact|quiet|unknown|run_id|phase)\b/.test(spoken)
+      && !spoken.includes(id) && !spoken.includes(working),
       'nothing the detector knows is written on the page in words',
       oneLine((/\b(exact|quiet|unknown|run_id|phase)\b/.exec(spoken) || ['none'])[0]));
 
@@ -3049,19 +3381,17 @@ async function design() {
       return {
         width: Math.round(bar.getBoundingClientRect().width),
         brand: seen('.brand-name'),
-        scope: seen('#sessionScope'),
         label: seen('#sessionList .chat-item .label'),
         newWords: seen('#newSession .btn-label'),
         foot: seen('#logout .btn-label'),
         mark: !!row && !!row.querySelector('.agent-mark'),
         named: row ? row.title : '',
         fill: getComputedStyle(bar).backgroundColor,
-        cols: document.getElementById('termSize').textContent,
       };
     });
     ok(wide > 200 && rail.width <= 72 && rail.width < wide,
       'the collapse control takes the sidebar down to a rail', wide + ' -> ' + rail.width + ' px');
-    ok(!rail.brand && !rail.scope && !rail.label && !rail.newWords && !rail.foot
+    ok(!rail.brand && !rail.label && !rail.newWords && !rail.foot
       && rail.mark && rail.named.length > 0,
     'the rail is marks and no words, and a row is named in its tooltip', JSON.stringify(rail));
     ok(white(rail.fill), 'and the rail is the same white as everything else', rail.fill);
@@ -3080,15 +3410,17 @@ async function design() {
 
     // The rail gives its width to the pane, which is measured in characters
     // and so has to be measured again: expanding the sidebar takes those
-    // columns back.
-    const railCols = await s.page.$eval('#termSize', (n) => n.textContent);
+    // columns back. The drawn screen is whole columns wide, so its width is
+    // the column count in pixels.
+    const screenWidth = () => s.page.$eval('#term .xterm-screen',
+      (n) => Math.round(n.getBoundingClientRect().width));
+    const railCols = await screenWidth();
     await s.page.click('#sideCollapse');
     await wait(600);
-    const wideCols = await s.page.$eval('#termSize', (n) => n.textContent);
-    const colsOf = (text) => Number(String(text).split('×')[0]) || 0;
-    ok(colsOf(railCols) > colsOf(wideCols),
+    const wideCols = await screenWidth();
+    ok(railCols > wideCols,
       'and the pane is re-measured when the stage changes width',
-      railCols + ' (rail) -> ' + wideCols + ' (column)');
+      railCols + ' px (rail) -> ' + wideCols + ' px (column)');
 
     /* ----------------------------------- a line that puts itself away */
 
@@ -3172,17 +3504,29 @@ const rowActivity = (page, id) => page.evaluate((sel) => {
   if (!row) return null;
   const mark = row.querySelector('.row-mark');
   const label = row.querySelector('.label');
+  const glass = row.querySelector('.row-tasks');
+  const glassBox = glass ? glass.getBoundingClientRect() : null;
   const ring = mark ? getComputedStyle(mark, '::after') : null;
   return {
     busy: !!mark && mark.classList.contains('busy'),
     waiting: !!mark && mark.classList.contains('waiting'),
+    tasks: !!mark && mark.classList.contains('tasks'),
+    // The hourglass, as drawn: shown at all, and how big.
+    glass: glass && getComputedStyle(glass).display !== 'none' && glassBox.width > 0
+      ? { w: Math.round(glassBox.width), h: Math.round(glassBox.height) }
+      : null,
     unread: row.classList.contains('unread'),
     active: row.classList.contains('active'),
     dots: row.querySelectorAll('.dot').length,
     said: mark ? mark.title : '',
     weight: label ? getComputedStyle(label).fontWeight : '',
     ring: ring
-      ? { colour: ring.borderTopColor, motion: ring.animationDuration, name: ring.animationName }
+      ? {
+        colour: ring.borderTopColor,
+        rest: ring.borderBottomColor,
+        motion: ring.animationDuration,
+        name: ring.animationName,
+      }
       : null,
   };
 }, rowSel(id));
@@ -3242,11 +3586,11 @@ async function secondTab(s, id) {
 }
 
 // A turn that takes a measurable amount of time, in the words each program
-// understands. The three fakes carry the real furniture and the real signals;
-// a shell is busy because something other than the shell is in the foreground.
-async function keepBusy(page, harness, ms) {
-  if (harness === 'shell') await typeLine(page, 'sleep ' + Math.round(ms / 1000));
-  else await typeLine(page, '/busy ' + ms);
+// understands. The three fakes carry the real furniture and the real signals.
+// There is no shell here: a shell is never given a turn, so it has no status
+// to watch and nothing to wait for the end of.
+async function keepBusy(page, ms) {
+  await typeLine(page, '/busy ' + ms);
 }
 
 // activityFor is one harness's whole story: it starts working and the row says
@@ -3268,7 +3612,7 @@ async function activityFor(harness) {
     const settled = await awaitRow(s.page, id, (r) => !r.busy, 20000);
     ok(settled.ok, harness + ' settles into idle before it is given anything to do', took(settled));
 
-    await keepBusy(s.page, harness, 8000);
+    await keepBusy(s.page, 8000);
     const spun = await awaitRow(s.page, id, (r) => r.busy, 8000);
     ok(spun.ok, 'the row spins while ' + harness + ' is working', took(spun));
     ok(!spun.seen || spun.seen.ring === null || spun.seen.ring.name === 'spin',
@@ -3289,10 +3633,56 @@ async function activityFor(harness) {
   } finally { await s.stop(); }
 }
 
+// tasksFor is the turn that ends while something it started is still running:
+// a background shell or a monitor under Claude Code, a background terminal
+// under Codex, a background sub-agent under OpenCode. The row is neither
+// working nor done - no ring, an hourglass on the mark's corner - and the bold
+// and the chime wait for that work to end.
+async function tasksFor(harness) {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    const other = await startSession(s.page, 'shell');
+    const id = await startSession(s.page, harness);
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const settled = await awaitRow(s.page, id, (r) => !r.busy && !r.tasks, 20000);
+    ok(settled.ok, harness + ' settles into idle first', took(settled));
+
+    await typeLine(s.page, '/bg 9000');
+    await clickRow(s.page, other);
+    const pending = await awaitRow(s.page, id, (r) => r.tasks, 10000);
+    ok(pending.ok, 'the turn ends with work still running, and the row says so', took(pending));
+    const seen = pending.seen || {};
+    ok(!seen.busy && !seen.waiting && seen.ring && seen.ring.name === 'none',
+      'there is no ring: nothing is being worked on', JSON.stringify(seen.ring));
+    ok(!!seen.glass && seen.glass.w >= 10 && seen.glass.w <= 14,
+      'an hourglass sits on the corner of the mark', JSON.stringify(seen.glass));
+    ok(seen.said === 'Turn finished · a background task is still running',
+      'and the mark says what it means', seen.said);
+    ok(!seen.unread, 'a turn that left work running is not unread', String(seen.unread));
+    const server = await sessionRow(s, id);
+    ok(server.activity && server.activity.state === 'tasks' && !server.activity.unread,
+      'the server says the same', JSON.stringify(server.activity));
+    await s.page.locator(rowSel(id)).screenshot({ path: join(SHOTS, 'tasks-' + harness + '-row.png') });
+
+    const done = await awaitRow(s.page, id, (r) => !r.tasks && !r.busy && r.unread, 30000);
+    ok(done.ok, 'when the work ends the hourglass goes and the name goes bold', took(done));
+    ok(!done.seen || !done.seen.glass, 'no hourglass is left behind', JSON.stringify(done.seen && done.seen.glass));
+
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+const taskclaude = () => tasksFor('claude');
+const taskcodex = () => tasksFor('codex');
+const taskopencode = () => tasksFor('opencode');
+
 const activityclaude = () => activityFor('claude');
 const activitycodex = () => activityFor('codex');
 const activityopencode = () => activityFor('opencode');
-const activityshell = () => activityFor('shell');
 
 // A permission prompt is the one state that may sit for an hour: the person it
 // is waiting for is driving. So it is drawn differently from working - an amber
@@ -3545,10 +3935,14 @@ const rang = (page) => page.evaluate(() => ({
   toasts: (window.__toasts || []).slice(),
 }));
 
-// drive makes one turn happen in a Shell session and waits for it to be over,
-// which is the edge the whole feature hangs off.
-async function drive(s, id, seconds = 2) {
-  await keepBusy(s.page, 'shell', seconds * 1000);
+// drive makes one turn happen and waits for it to be over, which is the edge
+// the whole feature hangs off.
+//
+// It is a Claude session and not a shell because a shell has no turns: nothing
+// is asked of it and nothing is reported back, so its row carries no status
+// and it never chimes.
+async function drive(s, id, ms = 2000) {
+  await keepBusy(s.page, ms);
   const spun = await awaitRow(s.page, id, (r) => r.busy, 10000);
   const done = spun.ok && (await awaitRow(s.page, id, (r) => !r.busy, 20000)).ok;
   // The frame that ends the turn and the call it makes are the same tick, but
@@ -3608,13 +4002,21 @@ async function notify() {
         sound: kept.sound.pressed, notify: kept.notify.pressed,
       }));
 
-    const id = await startSession(s.page, 'shell');
+    const opened = await rang(s.page);
+    const id = await startSession(s.page, 'claude');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    // A session that has only just been made goes through its own first
-    // busy-to-idle, and that one is real: the count is taken afterwards.
+    // Every harness is busy while it starts up and idle the moment it is
+    // ready, and that is not a turn ending: a session that has just been made
+    // has been asked nothing, so nothing it does on its way to a prompt is
+    // worth a sound on a phone in somebody's pocket.
     const settled = await awaitRow(s.page, id, (r) => !r.busy, 20000);
-    ok(settled.ok, 'the new session settles before anything is counted', took(settled));
+    ok(settled.ok, 'the new session settles into idle', took(settled));
     await wait(1200);
+    const started = await rang(s.page);
+    ok(started.beeps === opened.beeps && started.notes.length === opened.notes.length,
+      'and starting one says nothing at all, with both switches on',
+      (started.beeps - opened.beeps) + ' chime(s), '
+      + (started.notes.length - opened.notes.length) + ' note(s)');
     const title = await s.page.$eval(rowSel(id) + ' .label', (n) => n.textContent);
 
     // Two more controls that are never hidden is two more things a phone's
@@ -3634,8 +4036,7 @@ async function notify() {
         sound: box('soundBtn'),
         notify: box('notifyBtn'),
         menu: box('sessionMenu'),
-        mark: !!document.querySelector('#sessionHarness .agent-mark')
-          && document.querySelector('#sessionHarness').getBoundingClientRect().width > 8,
+        title: document.getElementById('sessionTitle').getBoundingClientRect().width,
       };
     });
     ok(narrow.overflow <= 1, 'a phone with a session attached does not scroll sideways',
@@ -3643,12 +4044,12 @@ async function notify() {
     ok(narrow.sound >= 26 && narrow.notify >= 26 && narrow.sound === narrow.menu,
       'and both toggles are still the size of the other controls beside them',
       JSON.stringify(narrow));
-    ok(narrow.mark, 'and the harness still has room for its mark', String(narrow.mark));
+    ok(narrow.title > 40, 'and the session\'s name still has room', String(narrow.title));
     await s.page.setViewportSize({ width: 1280, height: 720 });
     await wait(500);
 
     let before = await rang(s.page);
-    ok(await drive(s, id, 3), 'a turn in the shell starts and finishes', 'sleep 3');
+    ok(await drive(s, id, 3000), 'a turn starts and finishes', '/busy 3000');
     let after = await rang(s.page);
     ok(after.beeps - before.beeps === 1, 'it chimed exactly once',
       (after.beeps - before.beeps) + ' chime(s)');
@@ -3669,7 +4070,7 @@ async function notify() {
       && muted.sound.shown === 'ico-off',
       'muting shows the crossed-out speaker and says the words', JSON.stringify(muted.sound));
     before = await rang(s.page);
-    ok(await drive(s, id, 3), 'a second turn starts and finishes', 'sleep 3');
+    ok(await drive(s, id, 3000), 'a second turn starts and finishes', '/busy 3000');
     after = await rang(s.page);
     ok(after.beeps - before.beeps === 0 && after.notes.length - before.notes.length === 1,
       'muted, it is silent and still notifies',
@@ -3681,7 +4082,7 @@ async function notify() {
       () => document.getElementById('notifyBtn').getAttribute('aria-pressed') === 'false',
       null, { timeout: 5000 });
     before = await rang(s.page);
-    ok(await drive(s, id, 3), 'a third turn starts and finishes', 'sleep 3');
+    ok(await drive(s, id, 3000), 'a third turn starts and finishes', '/busy 3000');
     after = await rang(s.page);
     ok(after.notes.length - before.notes.length === 0 && after.beeps - before.beeps === 0,
       'with both off, a finished turn says nothing at all',
@@ -3704,7 +4105,7 @@ async function notify() {
     // The handshake replays every running session's state, and a replay is not
     // news: a page that reloads while a turn is running must not ring for a
     // turn that started before it existed.
-    await keepBusy(s.page, 'shell', 12000);
+    await keepBusy(s.page, 12000);
     const running = await awaitRow(s.page, id, (r) => r.busy, 10000);
     ok(running.ok, 'a turn is still running when the page is reloaded', took(running));
     await s.page.reload({ waitUntil: 'domcontentloaded' });
@@ -3733,8 +4134,13 @@ async function notify() {
       'and the page says why, where the tap was', JSON.stringify(said.toasts.slice(-2)));
 
     await shot(s.page, 'notify');
-    ok(unexpected(s.errors).length === 0, 'no console errors',
-      unexpected(s.errors).join(' | ') || '0');
+    // The bell subscribes to Web Push where the browser offers it. The test
+    // browser is an incognito profile, where Chrome refuses and says so in the
+    // console itself; the page falls back to its own notification, which is
+    // what the assertions above measure.
+    const PUSH_REFUSED = /Push API in incognito/;
+    ok(unexpected(s.errors, PUSH_REFUSED).length === 0, 'no console errors',
+      unexpected(s.errors, PUSH_REFUSED).join(' | ') || '0');
   } finally { await s.stop(); }
 }
 
@@ -3794,80 +4200,85 @@ const noticeText = (page) => page.evaluate(() => {
   return line ? line.textContent : '';
 });
 
-// TITLE_MIN_AGE is the server's own gate, in milliseconds: a turn that
-// finishes before a session is this old is the harness settling in, not an
-// answer, and it is not named after.
-const TITLE_MIN_AGE = 30000;
-
-// A session names itself. The first answer a harness gives *once the session is
-// old enough for that answer to be about the work* is what the sidebar row and
-// the header are called from then on, and neither is reloaded to find out: the
-// name arrives on the socket every browser already has open.
+// A session names itself. The first prompt it is sent is what the sidebar row
+// and the header are called from then on - once, in English, in a few words -
+// and neither is reloaded to find out: the name arrives on the socket every
+// browser already has open. While the model is being asked the name pulses,
+// and a naming that fails says so in a dialog rather than never arriving.
 async function sessiontitle() {
-  const want = 'Fixing the failing parser test';
+  const want = 'Fix failing parser test';
   // With the quotes and the full stop a model puts round a title, because
-  // taking them off again is part of the feature.
-  const stub = await openRouterStub({ text: '"' + want + '."' });
+  // taking them off again is part of the feature. Held back long enough for
+  // the pulse to be seen.
+  const stub = await openRouterStub({ text: '"' + want + '."', delay: 1500 });
   const asked = () => stub.calls.filter((c) => String(c.path).includes('chat/completions')).length;
   const s = await start({ viewport: { width: 1280, height: 720 } });
   try {
     await setup(s.page, s.url);
     await useDomRenderer(s);
-    const saved = await s.context.request.put(s.url + '/api/settings', {
-      data: { settings: { openrouter: { api_key: 'e2e-key', base_url: stub.url } } },
-    });
-    ok(saved.ok(), 'the gateway is pointed at the stub', saved.status() + ' ' + stub.url);
+    await pointGateway(s, stub);
     await open(s);
     const id = await startSession(s.page, 'claude');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    const born = await createdAt(s, id);
 
     const before = await s.page.$eval(rowSel(id) + ' .label', (n) => n.textContent.trim());
     ok(before.startsWith('Claude Code'), 'it starts life under the placeholder name', before);
 
+    // The harness starting up is busy and then idle before anybody has typed.
+    // That is not a prompt, and a name made from that screen is the name of
+    // the program.
     const settled = await awaitRow(s.page, id, (r) => !r.busy, 20000);
     ok(settled.ok, 'it settles before it is given anything to do', took(settled));
+    await wait(1500);
+    ok(asked() === 0, 'the start-up is not named after', asked() + ' calls');
 
-    // The turn that finishes too early. A harness starting up looks like work,
-    // and a name made from that screen is the name of the program.
-    await keepBusy(s.page, 'claude', 3000);
+    // The first prompt: the moment it goes to work, the name is asked for and
+    // pulses until it arrives.
+    await keepBusy(s.page, 3000);
     const spun = await awaitRow(s.page, id, (r) => r.busy, 10000);
     ok(spun.ok, 'it goes to work on the first thing it is asked', took(spun));
-    const stopped = await awaitRow(s.page, id, (r) => !r.busy, 20000);
-    ok(stopped.ok, 'and that first turn finishes', took(stopped));
-    const age = Date.now() - born;
-    ok(age < TITLE_MIN_AGE, 'it finished inside the first half minute of the session',
-      (age / 1000).toFixed(1) + ' s old');
-    await wait(2000);
-    const early = await s.page.$eval(rowSel(id) + ' .label', (n) => n.textContent.trim());
-    ok(asked() === 0 && early === before, 'so nothing was asked and the placeholder stayed',
-      asked() + ' calls, ' + early);
-
-    // Past the mark, the next turn to finish is the one that names it.
-    await wait(Math.max(0, TITLE_MIN_AGE - (Date.now() - born)) + 500);
-    await keepBusy(s.page, 'claude', 3000);
-    const again = await awaitRow(s.page, id, (r) => r.busy, 10000);
-    ok(again.ok, 'it is asked a second thing, now that it has been alive a while', took(again));
+    await s.page.waitForSelector(rowSel(id) + ' .label.titling', { timeout: 10000 });
+    ok(true, 'the row pulses while the name is being thought of', 'label.titling');
+    const pulsing = await s.page.$eval('#sessionTitle', (n) => n.classList.contains('titling'));
+    ok(pulsing, 'and so does the header of the session being watched', String(pulsing));
 
     await s.page.waitForFunction((arg) => {
       const node = document.querySelector(arg.sel);
-      return !!node && node.textContent.trim() === arg.want;
-    }, { sel: rowSel(id) + ' .label', want }, { timeout: 45000 });
-    ok(true, 'the row renames itself when that answer arrives, with no reload', want);
+      return !!node && node.textContent.trim() === arg.want && !node.classList.contains('titling');
+    }, { sel: rowSel(id) + ' .label', want }, { timeout: 30000 });
+    ok(true, 'the row renames itself and stops pulsing, with no reload', want);
 
     const header = await s.page.$eval('#sessionTitle', (n) => n.textContent.trim());
     ok(header === want, 'and the header of the session being watched says the same', header);
 
-    // Once. A third turn is not a second name, and it is not asked for again.
-    const asks = asked();
-    await keepBusy(s.page, 'claude', 1500);
+    // Once. A second prompt is not a second name, and it is not asked for again.
     await awaitRow(s.page, id, (r) => !r.busy, 20000);
-    await wait(2000);
+    const asks = asked();
+    await keepBusy(s.page, 1500);
+    await awaitRow(s.page, id, (r) => r.busy, 10000);
+    await awaitRow(s.page, id, (r) => !r.busy, 20000);
+    await wait(2500);
     ok(asks === 1 && asked() === 1, 'the naming happened exactly once', asks + ' then ' + asked());
     const still = await s.page.$eval(rowSel(id) + ' .label', (n) => n.textContent.trim());
     ok(still === want, 'and the name it was given stayed', still);
-
     await shot(s.page, 'session-title');
+
+    // A gateway that refuses is said out loud, in a dialog, and the pulse
+    // stops.
+    stub.refuse = 401;
+    const failing = await startSession(s.page, 'claude');
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const quiet = await awaitRow(s.page, failing, (r) => !r.busy, 20000);
+    ok(quiet.ok, 'a second session settles', took(quiet));
+    await keepBusy(s.page, 1500);
+    await s.page.waitForSelector('dialog.modal[open]', { timeout: 15000 });
+    const said = await s.page.$eval('dialog.modal[open]', (n) => n.textContent);
+    ok(/Could not name the session/.test(said) && /API key/.test(said),
+      'a failed naming opens a dialog that says why', said.trim().slice(0, 160));
+    const stillPulsing = await s.page.$$eval(rowSel(failing) + ' .label.titling', (n) => n.length);
+    ok(stillPulsing === 0, 'and the row stops pulsing', String(stillPulsing));
+    await s.page.click('dialog.modal[open] .btn.primary');
+
     ok(unexpected(s.errors).length === 0, 'no console errors',
       unexpected(s.errors).join(' | ') || '0');
   } finally {
@@ -3875,19 +4286,6 @@ async function sessiontitle() {
     await stub.close();
   }
 }
-
-// createdAt is when the server thinks a session began, which is the clock the
-// age gate reads. A scenario that timed from its own `Date.now()` would be
-// measuring the browser instead.
-async function createdAt(s, id) {
-  const res = await s.context.request.get(s.url + '/api/sessions/' + encodeURIComponent(id));
-  const body = await res.json();
-  const born = body && body.session && body.session.created_at;
-  ok(typeof born === 'number' && born > 0, 'the session says when it began', String(born));
-  return born;
-}
-
-// The helpers the chat scenarios share.
 
 // pointGateway saves the key and the stub's address the way the dashboard
 // would, which is the only supported way to make this app talk to a mock.
@@ -3917,43 +4315,6 @@ async function watchTicker(page) {
   return () => page.evaluate(() => window.__ticker.slice());
 }
 
-// openChat is the header's spark button, which is the one way in on a device
-// with a keyboard.
-async function openChat(page) {
-  await page.waitForSelector('#agentBtn:not([hidden]):not([disabled])', { timeout: 15000 });
-  await page.click('#agentBtn');
-  await page.waitForSelector('#chatPanel:not([hidden])', { timeout: 10000 });
-}
-
-// askChat types a question into the panel and sends it with Enter, which is
-// the path a person takes.
-async function askChat(page, text) {
-  await page.waitForSelector('#chatText:not([disabled])', { timeout: 10000 });
-  await page.fill('#chatText', text);
-  await page.press('#chatText', 'Enter');
-}
-
-// chatBubbles is the conversation as it is drawn.
-const chatBubbles = (page) => page.evaluate(() => [...document.querySelectorAll('#chatLog .chat-msg')]
-  .map((n) => ({
-    who: n.classList.contains('user') ? 'user' : 'assistant',
-    text: n.innerText.trim(),
-    run: !!n.querySelector('.chat-run'),
-    failed: n.classList.contains('failed'),
-  })));
-
-// awaitBubble waits for the conversation to satisfy something about it.
-async function awaitBubble(page, test, timeout = 60000) {
-  const started = Date.now();
-  let seen = [];
-  while (Date.now() - started < timeout) {
-    seen = await chatBubbles(page);
-    if (test(seen)) return { ok: true, seen, ms: Date.now() - started };
-    await wait(200);
-  }
-  return { ok: false, seen, ms: Date.now() - started };
-}
-
 /* ------------------------------------------------------- 34. status-speak */
 
 // The Status button: one request, a spinner while it is being made, the answer
@@ -3973,6 +4334,12 @@ async function statusspeak() {
     await startSession(s.page, 'claude');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
 
+    // The status is held for a moment on its way out, so that what the button
+    // does while it waits is measured rather than caught in passing.
+    await s.page.route('**/api/sessions/*/status', async (route) => {
+      await new Promise((done) => setTimeout(done, 2500));
+      await route.fallback();
+    });
     await s.page.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 15000 });
     await s.page.click('#statusBtn');
     // The tap has to land visibly before the answer does: the button spins and
@@ -3982,6 +4349,56 @@ async function statusspeak() {
       null, { timeout: 5000 }).then(() => true).catch(() => false);
     ok(spinning, 'the button says the tap landed before the answer arrives',
       spinning ? 'the spinner is on it' : 'nothing happened');
+
+    // And what it spins is a ring around the mark, never the mark itself. The
+    // drawing is a screen being read out; a screen that is turning is a
+    // drawing of nothing, and it was read as one. It is the same ring, the
+    // same hairline, the same arc in the page's own ink and the same 900 ms as
+    // the one a working session wears in the sidebar, because it means the
+    // same thing in both places.
+    const ring = await s.page.evaluate(() => {
+      const btn = document.getElementById('statusBtn');
+      const after = getComputedStyle(btn, '::after');
+      const mark = getComputedStyle(btn.querySelector('svg'));
+      return {
+        name: after.animationName,
+        beat: after.animationDuration,
+        size: Math.round(parseFloat(after.width) || 0),
+        arc: after.borderTopColor,
+        rest: after.borderRightColor,
+        onTheMark: mark.animationName,
+        glyph: Math.round(parseFloat(mark.width) || 0),
+      };
+    });
+    ok(ring.name === 'spin' && ring.onTheMark === 'none',
+      'and it is a ring that turns, not the drawing',
+      'ring: ' + ring.name + ', mark: ' + ring.onTheMark);
+    ok(ring.size > ring.glyph,
+      'drawn outside the mark, the way a working session is drawn in the sidebar',
+      ring.size + 'px around a ' + ring.glyph + 'px mark');
+    ok(ring.beat === '0.9s' && ring.arc === 'rgb(23, 24, 27)' && ring.rest === 'rgb(220, 221, 225)',
+      'in the page\u2019s own ink, on a ring a shade under it, at the app\u2019s own pace',
+      ring.beat + ' ' + ring.arc + ' on ' + ring.rest);
+    ok(contrastOf(ring.arc, ring.rest) >= 3,
+      'so the arc is legible against the ring it turns on',
+      contrastOf(ring.arc, ring.rest).toFixed(1) + ':1');
+
+    // Turning decoration off must not turn off the one thing that says the
+    // answer is still being made, so the ring keeps its own pace here as the
+    // sidebar's does. Squashed to .01ms it is not a slower ring, it is a still
+    // one - and a still ring says the opposite of what it is there to say.
+    await s.page.emulateMedia({ reducedMotion: 'reduce' });
+    await wait(120);
+    const calm = await s.page.evaluate(() => {
+      const after = getComputedStyle(document.getElementById('statusBtn'), '::after');
+      const node = document.getElementById('statusBtn');
+      const anim = node.getAnimations({ subtree: true })[0] || null;
+      return { name: after.animationName, beat: after.animationDuration, running: !!anim };
+    });
+    ok(calm.name === 'spin' && calm.beat === '0.9s' && calm.running,
+      'with reduced motion it turns at the pace it always turns at, rather than standing still',
+      calm.name + ' ' + calm.beat + (calm.running ? ', running' : ', not running'));
+    await s.page.emulateMedia({ reducedMotion: null });
 
     await s.page.waitForFunction(() => {
       const host = document.getElementById('termNotice');
@@ -4093,157 +4510,11 @@ async function statusticker() {
   }
 }
 
-/* --------------------------------------------------------- 36. agent-run */
+/* ---------------------------------------------------------- 36. dictate */
 
-// The operator run, asked for in the chat: a request that needs the keyboard,
-// a progress line while it types, real keystrokes in a real pane, and an
-// ending that lands in the conversation that asked for it.
-async function agentrun() {
-  const decide = JSON.stringify({ reply: 'Typing it for you now.', act: 'echo the greeting' });
-  const step1 = JSON.stringify({
-    actions: [{ text: 'echo hello-from-the-operator' }, { key: 'Enter' }],
-    done: false, summary: 'typing the greeting', note: '',
-  });
-  const step2 = JSON.stringify({ actions: [], done: true, summary: 'the greeting was typed', note: '' });
-  const stub = await openRouterStub({ text: step2, replies: [decide, step1, step2] });
-  const s = await start({ viewport: { width: 1280, height: 720 } });
-  try {
-    await setup(s.page, s.url);
-    await useDomRenderer(s);
-    await pointGateway(s, stub);
-    await open(s);
-    // A shell, because a session that names itself would spend one of the
-    // scripted answers on its own title.
-    await startSession(s.page, 'shell');
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    const lines = await watchTicker(s.page);
-
-    await openChat(s.page);
-    await askChat(s.page, 'say hello in the terminal');
-
-    const replied = await awaitBubble(s.page, (msgs) => msgs.some((m) => m.run));
-    ok(replied.ok, 'the answer that starts a run carries the run inside it',
-      JSON.stringify(replied.seen.map((m) => m.who + ': ' + oneLine(m.text))));
-    const cancel = await s.page.$eval('#chatLog .chat-run .btn', (n) => n.textContent).catch(() => '');
-    ok(cancel === 'Cancel', 'and the way to stop it is in that same message', cancel || 'no button');
-
-    const stepped = await s.page.waitForFunction(
-      () => (window.__ticker || []).some((l) => /^Step \d/.test(l)),
-      null, { timeout: 45000 }).then(() => true).catch(() => false);
-    ok(stepped, 'the ticker says which step it is on', oneLine((await lines()).join(' → ')));
-
-    const typed = await awaitScreen(s.page, 'hello-from-the-operator', 90000);
-    ok(typed, 'the operator typed into the pane and pressed Enter',
-      oneLine(await screen(s.page)).slice(-90));
-
-    const ended = await awaitBubble(s.page, (msgs) =>
-      msgs.some((m) => m.who === 'assistant' && /greeting was typed/.test(m.text)), 90000);
-    ok(ended.ok, 'and the run ends by saying what it did, in the conversation that asked',
-      JSON.stringify(ended.seen.map((m) => oneLine(m.text)).slice(-2)));
-
-    await shot(s.page, 'agent-run');
-    ok(unexpected(s.errors).length === 0, 'no console errors',
-      unexpected(s.errors).join(' | ') || '0');
-  } finally {
-    await s.stop();
-    await stub.close();
-  }
-}
-
-/* --------------------------------------------------------- 37. chat-text */
-
-// The chat with a keyboard: a question that is answered in words, a reply that
-// survives a reload because it is stored, and a request that is not a question
-// at all - which reaches the pane as keystrokes.
-async function chattext() {
-  const answer = JSON.stringify({
-    reply: 'It is sitting at a prompt.\n\nNothing is running; type `ls` to look around.',
-    act: null,
-  });
-  const decide = JSON.stringify({ reply: 'Doing it now.', act: 'make the marker file' });
-  const step1 = JSON.stringify({
-    actions: [{ text: 'echo chat-typed-this' }, { key: 'Enter' }], done: false, summary: 'typing',
-  });
-  const step2 = JSON.stringify({ actions: [], done: true, summary: 'it was typed' });
-  const stub = await openRouterStub({ text: step2, replies: [answer, decide, step1, step2] });
-  const s = await start({ viewport: { width: 1280, height: 720 } });
-  try {
-    await setup(s.page, s.url);
-    await useDomRenderer(s);
-    await pointGateway(s, stub);
-    await open(s);
-    await startSession(s.page, 'shell');
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-
-    // Before anything is asked, the pane has the width; the panel takes its
-    // own column and the terminal refits rather than being covered.
-    const before = await s.page.$eval('#termWrap', (n) => Math.round(n.getBoundingClientRect().width));
-    await openChat(s.page);
-    const layout = await s.page.evaluate(() => {
-      const panel = document.getElementById('chatPanel').getBoundingClientRect();
-      const term = document.getElementById('termWrap').getBoundingClientRect();
-      return {
-        panel: Math.round(panel.width),
-        term: Math.round(term.width),
-        beside: Math.round(term.right) <= Math.round(panel.left) + 2,
-        fill: getComputedStyle(document.getElementById('chatPanel')).backgroundColor,
-      };
-    });
-    ok(layout.beside && layout.panel >= 320 && layout.panel <= 400,
-      'on a desk it is a column beside the terminal', JSON.stringify(layout));
-    ok(layout.term < before, 'and the terminal gives up the width rather than being covered',
-      before + ' → ' + layout.term);
-    ok(layout.fill === WHITE, 'on the same white as everything else', layout.fill);
-
-    await askChat(s.page, 'what is this session doing?');
-    const said = await awaitBubble(s.page, (msgs) =>
-      msgs.length >= 2 && msgs[1].who === 'assistant' && /sitting at a prompt/.test(msgs[1].text));
-    ok(said.ok, 'a question is answered in words', JSON.stringify(said.seen.map((m) => m.who + ': ' + oneLine(m.text))));
-    ok(said.seen[0].who === 'user' && said.seen[0].text === 'what is this session doing?',
-      'and what was asked is in the thread above it', oneLine(said.seen[0].text));
-    ok(!said.seen[1].run, 'a question did not start a run', said.seen[1].run ? 'it did' : 'it did not');
-
-    // Markdown-lite and nothing heavier: paragraphs, and a backticked flag as
-    // code rather than as a word with two grave accents round it.
-    const shape = await s.page.evaluate(() => {
-      const bubble = [...document.querySelectorAll('#chatLog .chat-msg.assistant')].pop();
-      return { paras: bubble.querySelectorAll('p').length, code: (bubble.querySelector('code') || {}).textContent || '' };
-    });
-    ok(shape.paras === 2 && shape.code === 'ls', 'the answer is paragraphs and inline code, nothing heavier',
-      JSON.stringify(shape));
-
-    // It is stored, so a phone that reloads is not a phone that lost the
-    // conversation.
-    await s.page.reload({ waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    await openChat(s.page);
-    const kept = await awaitBubble(s.page, (msgs) => msgs.length >= 2, 20000);
-    ok(kept.ok && /sitting at a prompt/.test(kept.seen[1].text),
-      'a reload comes back to the conversation it was in',
-      JSON.stringify(kept.seen.map((m) => m.who)));
-
-    // And a request that is not a question reaches the keyboard.
-    await askChat(s.page, 'make a marker file');
-    const acted = await awaitBubble(s.page, (msgs) => msgs.some((m) => m.run));
-    ok(acted.ok, 'a request that needs the terminal starts a run instead of an answer',
-      JSON.stringify(acted.seen.map((m) => oneLine(m.text)).slice(-2)));
-    ok(await awaitScreen(s.page, 'chat-typed-this', 90000),
-      'and the keystrokes land in the pane', oneLine(await screen(s.page)).slice(-90));
-
-    await shot(s.page, 'chat-text');
-    ok(unexpected(s.errors).length === 0, 'no console errors',
-      unexpected(s.errors).join(' | ') || '0');
-  } finally {
-    await s.stop();
-    await stub.close();
-  }
-}
-
-/* ------------------------------------------------------ 38. chat-dictate */
-
-// micRow is the chat's header and its recording sheet as the panel is actually
-// drawing them: the pill, the loudspeaker switch, and - while one is running -
-// the sheet with the two endings a recording has.
+// micRow is the microphone and its recording sheet as the page is actually
+// drawing them: the pill in the top bar and - while one is running - the sheet
+// with the two endings a recording has.
 const micRow = (page) => page.evaluate(() => {
   const node = (id) => document.getElementById(id);
   const box = (id) => {
@@ -4252,37 +4523,31 @@ const micRow = (page) => page.evaluate(() => {
     const r = n.getBoundingClientRect();
     return { w: Math.round(r.width), h: Math.round(r.height) };
   };
-  const sheet = node('chatRecSheet');
-  const clock = node('chatRecTime');
-  const pill = node('chatMic');
+  const sheet = node('recSheet');
+  const clock = node('recTime');
+  const pill = node('micBtn');
   return {
-    pillInHead: !!pill && !!pill.closest('.chat-head'),
+    pillInBar: !!pill && !!pill.closest('.topbar'),
     pillText: pill ? pill.textContent.trim() : '',
-    pillBox: box('chatMic'),
+    pillBox: box('micBtn'),
     pillDisabled: !!pill && pill.disabled,
-    micInRow: !!document.querySelector('.chat-compose #chatMic'),
-    composeParts: [...document.querySelectorAll('.chat-compose > *')].map((n) => n.id || n.tagName),
-    speak: node('chatSpeak') ? node('chatSpeak').getAttribute('aria-pressed') : 'missing',
-    speakInHead: !!node('chatSpeak') && !!node('chatSpeak').closest('.chat-head'),
+    panel: !!node('chatPanel'),
     open: !!sheet && sheet.open,
-    keep: box('chatRecSend'),
-    drop: box('chatRecCancel'),
-    labels: ['chatRecSend', 'chatRecCancel'].map((id) => (node(id) || {}).textContent || '').join(','),
-    bars: document.querySelectorAll('#chatRecMeter .rec-bar').length,
+    keep: box('recSend'),
+    drop: box('recCancel'),
+    labels: ['recSend', 'recCancel'].map((id) => (node(id) || {}).textContent || '').join(','),
+    bars: document.querySelectorAll('#recMeter .rec-bar').length,
     clock: clock ? clock.textContent.trim() : '',
-    stored: (() => { try { return localStorage.getItem('socrates.chat.speak'); } catch { return 'blocked'; } })(),
   };
 });
 
-// The microphone in the chat, which is the only microphone there is: a pill in
-// the header that opens a sheet, two endings while it records, a discarded
-// recording that costs nothing, a loudspeaker switch that the first dictation
-// turns on and a hand can turn off again, and any answer readable again by
-// double-tapping it.
-async function chatdictate() {
-  const spoken = JSON.stringify({ reply: 'It is waiting for you.', act: null });
-  const written = JSON.stringify({ reply: 'Nothing is running in it.', act: null });
-  const stub = await openRouterStub({ text: 'what is this session doing', replies: [spoken, written] });
+// The microphone, which is the only way into a session that is not a keyboard:
+// a pill in the top bar that opens a sheet, two endings while it records, a
+// discarded recording that costs nothing, and a kept one whose words are put
+// on the prompt of the pane - and left there, because the Enter that runs them
+// is the person's.
+async function dictate() {
+  const stub = await openRouterStub({ text: 'echo dictated-into-the-pane' });
   const s = await start({
     viewport: { width: 390, height: 844 },
     touch: true,
@@ -4296,9 +4561,8 @@ async function chatdictate() {
   try {
     await setup(s.page, s.url);
     await useDomRenderer(s);
-    // A dedicated transcriber, so that a recording and a question arrive at
-    // the stub on different routes: the transcript is its fixed answer and
-    // the conversation gets the scripted ones.
+    // A dedicated transcriber, so what comes back is the stub's fixed answer
+    // rather than anything the page had to reason about.
     const saved = await s.context.request.put(s.url + '/api/settings', {
       data: {
         settings: {
@@ -4307,41 +4571,54 @@ async function chatdictate() {
       },
     });
     ok(saved.ok(), 'the gateway is pointed at the stub', saved.status() + ' ' + stub.url);
-    // The answer is held back for a moment, which is the window in which the
-    // page is reliably reading - a headless browser's audio clock is not.
-    const said = await stubSpeech(s.context, { seconds: 1, delay: 1200 });
     const transcribes = [];
     await s.page.route('**/api/voice/transcribe', async (route) => {
       transcribes.push(route.request().method());
-      await route.fallback();
-    });
-    const asked = [];
-    await s.page.route('**/api/sessions/*/chat', async (route) => {
-      if (route.request().method() === 'POST') {
-        try { asked.push(route.request().postDataJSON() || {}); } catch { asked.push({}); }
-      }
       await route.fallback();
     });
 
     await open(s);
     await startSession(s.page, 'shell');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    await openChat(s.page);
 
     const idle = await micRow(s.page);
-    ok(idle.pillInHead && /Speak/.test(idle.pillText) && !idle.micInRow,
-      'the microphone is a pill in the header, and the input row is a field and a Send',
-      JSON.stringify(idle.composeParts) + ' / ' + idle.pillText);
+    ok(idle.pillInBar && /Speak/.test(idle.pillText),
+      'the microphone is a pill in the top bar', idle.pillText);
     ok(idle.pillBox && idle.pillBox.h >= 44,
-      'the pill is big enough to be hit by a thumb', JSON.stringify(idle.pillBox));
-    ok(idle.speakInHead && idle.speak === 'false',
-      'the loudspeaker switch is beside it and starts off', idle.speak);
-    ok(!idle.open, 'and no recording sheet is open', String(idle.open));
+      'big enough to be hit by a thumb', JSON.stringify(idle.pillBox));
+    ok(!idle.panel, 'and there is no chat panel behind it any more', String(idle.panel));
+    ok(!idle.open, 'no recording sheet is open', String(idle.open));
+
+    // The bar it moved into was already the tightest row on the page, and this
+    // is the narrowest width the stylesheet has a rule for. The pill gives up
+    // its word there and keeps its 44px - what makes it findable by a thumb is
+    // the ring - and nothing may be pushed past the edge to make room for it.
+    await s.page.setViewportSize({ width: 320, height: 844 });
+    await wait(400);
+    const tight = await s.page.evaluate(() => {
+      const bar = document.querySelector('.topbar').getBoundingClientRect();
+      const parts = [...document.querySelectorAll('.topbar > *')]
+        .map((n) => n.getBoundingClientRect())
+        .filter((box) => box.width > 0 && box.height > 0);
+      const pill = document.getElementById('micBtn').getBoundingClientRect();
+      return {
+        over: Math.round(Math.max(0, Math.max(...parts.map((b) => b.right)) - bar.right)),
+        doc: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        pill: { w: Math.round(pill.width), h: Math.round(pill.height) },
+        word: getComputedStyle(document.getElementById('micText')).display,
+      };
+    });
+    ok(tight.over === 0 && tight.doc <= 1,
+      'at 320px every control is still inside the bar', JSON.stringify(tight));
+    ok(tight.pill.w === 44 && tight.pill.h >= 44 && tight.word === 'none',
+      'and the microphone gave up its word rather than its size', JSON.stringify(tight.pill));
+    await s.page.setViewportSize({ width: 390, height: 844 });
+    await wait(400);
 
     // Recording: a sheet with the level it is hearing and the two things that
     // can happen to a recording, both of them large.
-    await s.page.click('#chatMic');
-    await s.page.waitForSelector('#chatRecSheet[open]', { timeout: 15000 });
+    await s.page.click('#micBtn');
+    await s.page.waitForSelector('#recSheet[open]', { timeout: 15000 });
     await wait(1300);
     const rec = await micRow(s.page);
     ok(rec.open && rec.keep && rec.drop,
@@ -4354,112 +4631,70 @@ async function chatdictate() {
     ok(/^\d+:\d\d$/.test(rec.clock),
       'the clock says how long it has been listening', rec.clock);
     ok(rec.pillDisabled, 'and the pill cannot start a second one', String(rec.pillDisabled));
-    await shot(s.page, 'chat-dictate-recording');
+    await shot(s.page, 'dictate-recording');
     const fits = await s.page.evaluate(() => {
-      const head = document.querySelector('.chat-head').getBoundingClientRect();
+      const bar = document.querySelector('.topbar').getBoundingClientRect();
       const middle = (box) => (box.top + box.bottom) / 2;
-      const parts = [...document.querySelectorAll('.chat-head > *')]
-        .map((n) => n.getBoundingClientRect());
-      const buttons = [...document.querySelectorAll('#chatRecSheet .rec-big')]
+      // Only what is actually on screen: a control the bar has hidden lays
+      // out to nothing, and nothing is not misaligned. Copy, paste and upload
+      // float under the bar on a phone, on purpose (transfer.js).
+      const parts = [...document.querySelectorAll('.topbar > :not(#transfer)')]
+        .map((n) => n.getBoundingClientRect())
+        .filter((box) => box.width > 0 && box.height > 0);
+      const buttons = [...document.querySelectorAll('#recSheet .rec-big')]
         .map((n) => n.getBoundingClientRect());
       return {
-        aligned: parts.every((box) => Math.abs(middle(box) - middle(head)) <= 2),
-        inside: parts.every((box) => box.left >= head.left - 1 && box.right <= head.right + 1),
-        title: Math.round(parts[0].width),
+        aligned: parts.every((box) => Math.abs(middle(box) - middle(bar)) <= 2),
+        inside: parts.every((box) => box.left >= bar.left - 1 && box.right <= bar.right + 1),
         buttonsInside: buttons.every((box) => box.left >= 0 && box.right <= window.innerWidth + 1),
       };
     });
-    ok(fits.aligned && fits.inside && fits.title > 0 && fits.buttonsInside,
-      'the header still fits on a phone, and so does the sheet', JSON.stringify(fits));
+    ok(fits.aligned && fits.inside && fits.buttonsInside,
+      'the bar still fits on a phone, and so does the sheet', JSON.stringify(fits));
 
-    // Discard: the audio is thrown away. Nothing is transcribed, nothing is
-    // asked, and nothing is said about it.
-    await s.page.click('#chatRecCancel');
-    await s.page.waitForSelector('#chatRecSheet:not([open])', { state: 'attached', timeout: 10000 });
+    // Discard: the audio is thrown away. Nothing is transcribed, and nothing
+    // reaches the pane.
+    await s.page.click('#recCancel');
+    await s.page.waitForSelector('#recSheet:not([open])', { state: 'attached', timeout: 10000 });
     await wait(800);
     const after = await micRow(s.page);
     ok(!after.open && !after.pillDisabled, 'Cancel closes it and gives the microphone back',
       JSON.stringify(after));
-    ok(transcribes.length === 0 && asked.length === 0 && (await chatBubbles(s.page)).length === 0,
-      'and it costs nothing: no transcription, no question, no message',
-      transcribes.length + ' transcribe, ' + asked.length + ' chat');
+    ok(transcribes.length === 0, 'and it costs nothing: nothing was transcribed',
+      transcribes.length + ' transcribe(s)');
+    ok(!(await packed(s.page)).includes(stub.text.replace(/\s+/g, '')),
+      'nothing reached the pane', oneLine(await screen(s.page)).slice(-60));
 
-    // Send: transcribed, posted as a question that was spoken, answered, and
-    // the answer read out loud without anybody asking for that.
-    await s.page.click('#chatMic');
-    await s.page.waitForSelector('#chatRecSheet[open]', { timeout: 15000 });
+    // Send: transcribed once, and the words are put on the prompt verbatim.
+    await s.page.click('#micBtn');
+    await s.page.waitForSelector('#recSheet[open]', { timeout: 15000 });
     await wait(1300);
-    await s.page.click('#chatRecSend');
-    const posted = await awaitBubble(s.page, (msgs) =>
-      msgs.some((m) => m.who === 'user' && m.text === stub.text), 60000);
-    ok(posted.ok, 'Send makes what was heard the message, verbatim and unconfirmed',
-      JSON.stringify(posted.seen.map((m) => m.who + ': ' + oneLine(m.text))));
+    await s.page.click('#recSend');
+    const landed = await awaitPacked(s.page, stub.text, 60000);
+    ok(landed, 'Send types what was heard into the pane, verbatim and unconfirmed',
+      oneLine(await screen(s.page)).slice(-90));
     ok(transcribes.length === 1, 'and it was transcribed exactly once',
       transcribes.length + ' request(s)');
-    const replied = await awaitBubble(s.page, (msgs) =>
-      msgs.some((m) => m.who === 'assistant' && /waiting for you/.test(m.text)), 60000);
-    ok(replied.ok, 'the agent answers it',
-      JSON.stringify(replied.seen.map((m) => oneLine(m.text)).slice(-1)));
-    ok(asked.length === 1 && asked[0].auto === true,
-      'a question that was spoken is sent as one', JSON.stringify(asked));
-    const switched = await micRow(s.page);
-    ok(switched.speak === 'true' && switched.stored === 'on',
-      'dictating once turns the loudspeaker on, and this device remembers it',
-      switched.speak + ', stored ' + switched.stored);
-    for (let i = 0; i < 80 && said.length === 0; i += 1) await wait(200);
-    ok(said.length === 1 && /waiting for you/.test(said[0] || ''),
-      'and its answer is read out loud, unasked', said.length + ': ' + oneLine(said[0] || ''));
 
-    await s.page.waitForFunction(() => !document.getElementById('statusBtn').classList.contains('speaking'),
-      null, { timeout: 20000 }).catch(() => {});
-
-    // The switch is the only rule, and a hand can turn it off again: from here
-    // on the answers are written and nothing is read out loud.
-    await s.page.click('#chatSpeak');
-    const off = await micRow(s.page);
-    ok(off.speak === 'false' && off.stored === 'off',
-      'and it can be turned off again by hand', off.speak + ', stored ' + off.stored);
-    await askChat(s.page, 'and what should I do next?');
-    const second = await awaitBubble(s.page, (msgs) =>
-      msgs.some((m) => m.who === 'assistant' && /Nothing is running/.test(m.text)), 60000);
-    ok(second.ok, 'a typed question is answered in words',
-      JSON.stringify(second.seen.map((m) => oneLine(m.text)).slice(-1)));
+    // And it stops there. The words are on the prompt, not run: the shell has
+    // not echoed anything, because nothing pressed Enter for it.
     await wait(1500);
-    ok(asked.length === 2 && asked[1].auto === false,
-      'with the loudspeaker off a question is sent to be read rather than heard',
-      JSON.stringify(asked.map((a) => a.auto)));
-    ok(said.length === 1, 'so nothing was read out loud for it', said.length + ' render(s)');
+    const before = await packed(s.page);
+    ok(before.split('dictated-into-the-pane').length === 2,
+      'the line is on the prompt once and was not run', oneLine(await screen(s.page)).slice(-90));
 
-    // Any answer can be asked for out loud afterwards: two taps on the bubble.
-    const bubble = '#chatLog .chat-msg.assistant';
-    const hint = await s.page.$eval(bubble, (n) => n.title);
-    ok(hint === 'Double-tap to read aloud', 'an answer says it can be read out loud', hint);
-    await s.page.tap(bubble);
-    await s.page.tap(bubble);
-    for (let i = 0; i < 80 && said.length === 1; i += 1) await wait(200);
-    ok(said.length === 2 && /waiting for you/.test(said[1] || ''),
-      'a double-tap on it reads that answer, and only that one',
-      said.length + ': ' + oneLine(said[1] || ''));
-    const reading = await s.page.waitForFunction(
-      () => document.getElementById('statusBtn').classList.contains('speaking'),
-      null, { timeout: 10000 }).then(() => true).catch(() => false);
-    ok(reading, 'and while it is being read the page says so',
-      reading ? 'the header button offers to stop' : 'nothing said it was reading');
+    // The Enter is the person's, and it is the ordinary keyboard that sends it.
+    // The focus is already in the pane, because that is where the words went.
+    await s.page.keyboard.press('Enter');
+    let ran = false;
+    for (const started = Date.now(); !ran && Date.now() - started < 30000;) {
+      ran = (await packed(s.page)).split('dictated-into-the-pane').length > 2;
+      if (!ran) await wait(200);
+    }
+    ok(ran, 'and pressing it runs the line that was dictated, and the shell answers',
+      oneLine(await screen(s.page)).slice(-90));
 
-    // The same gesture again is silence, not a second reading. It is the
-    // mouse's double-click this time, far enough after the taps that it
-    // cannot be one of them being replayed - which is a gesture, not a
-    // second one.
-    await wait(900);
-    await s.page.dblclick(bubble);
-    const stopped = await s.page.waitForFunction(
-      () => !document.getElementById('statusBtn').classList.contains('speaking'),
-      null, { timeout: 10000 }).then(() => true).catch(() => false);
-    await wait(800);
-    ok(stopped && said.length === 2, 'a second double-tap stops the reading rather than starting another',
-      (stopped ? 'stopped' : 'still reading') + ', ' + said.length + ' render(s)');
-
-    await shot(s.page, 'chat-dictate');
+    await shot(s.page, 'dictate');
     ok(unexpected(s.errors).length === 0, 'no console errors',
       unexpected(s.errors).join(' | ') || '0');
   } finally {
@@ -4468,7 +4703,7 @@ async function chatdictate() {
   }
 }
 
-/* -------------------------------------------------------- 39. no-overlap */
+/* -------------------------------------------------------- 37. no-overlap */
 
 // Speech-to-text and text-to-speech are one device talking to itself, so they
 // never overlap: while a microphone is open nothing is read out loud, and a
@@ -4493,12 +4728,11 @@ async function nooverlap() {
     await open(s);
     await startSession(s.page, 'shell');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    await openChat(s.page);
 
     // A recording is running, and Status is pressed: the answer arrives on
     // the screen, and it is not read into the microphone.
-    await s.page.click('#chatMic');
-    await s.page.waitForSelector('#chatRecSheet[open]', { timeout: 15000 });
+    await s.page.click('#micBtn');
+    await s.page.waitForSelector('#recSheet[open]', { timeout: 15000 });
     // The recording sheet is modal, so Status is pressed through the page
     // rather than through the pointer the backdrop is holding.
     await s.page.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 15000 });
@@ -4513,8 +4747,8 @@ async function nooverlap() {
 
     // The recording is thrown away, and the same button says the same thing
     // out loud - so what stopped the voice was the microphone and nothing else.
-    await s.page.click('#chatRecCancel');
-    await s.page.waitForSelector('#chatRecSheet:not([open])', { state: 'attached', timeout: 10000 });
+    await s.page.click('#recCancel');
+    await s.page.waitForSelector('#recSheet:not([open])', { state: 'attached', timeout: 10000 });
     await s.page.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 20000 });
     await s.page.click('#statusBtn');
     for (let i = 0; i < 120 && said.length === 0; i += 1) await wait(200);
@@ -4719,796 +4953,1232 @@ async function typekeepsfocus() {
   } finally { await s.stop(); }
 }
 
-/* --------------------------------------------------------- 41. daygroups */
+/* ----------------------------------------------------------- 41. folders */
 
-// The sidebar is read by day - today's sessions, yesterday's, what is left of
-// the week, of the month, and everything older - so it is drawn that way, with
-// a quiet header over each group and no group that has nothing in it.
+// The sidebar is read by project - one folder per directory sessions work in,
+// "More Chats" at the bottom for the ones Socrates housed itself, and a folder
+// a person can shut and find shut again tomorrow.
 //
 // A list with history in it cannot be waited for, so it is made: the moment a
 // session was last used is written straight into the store.
 
 // backdate rewrites when a session was last used.
 //
-// There is no API for it and there should not be: `updated_at` is the store's
-// own record of things that happened to a session, not something a client gets
-// to choose. So the scenario writes the two columns itself, with node's own
-// SQLite against the same file the server has open, which is the smallest
-// thing that can produce a "last month".
+// There is no API for it and there should not be: `active_at` is the store's
+// own record of when a session's status last changed, not something a client
+// gets to choose. So the scenario writes the three clocks itself, with node's
+// own SQLite against the same file the server has open, which is the smallest
+// thing that can produce a folder that was worked in last week.
 function backdate(s, moments) {
   const db = new DatabaseSync(join(s.data, 'socrates.db'), { timeout: 10000 });
   try {
-    const set = db.prepare('UPDATE sessions SET updated_at = ?, created_at = ? WHERE id = ?');
+    const set = db.prepare('UPDATE sessions SET active_at = ?, updated_at = ?, created_at = ? WHERE id = ?');
     for (const [id, at] of Object.entries(moments)) {
-      const done = set.run(at, at, id);
+      const done = set.run(at, at, at, id);
       if (Number(done.changes) !== 1) throw new Error('no session ' + id + ' to backdate');
     }
   } finally { db.close(); }
 }
 
-// dayPlan is the groups today can have, in the order the list draws them, each
-// with a moment that is certainly inside it. The calendar is this machine's own
-// local one, which is the calendar the browser groups by.
-//
-// Not every group exists on every day of the year: on a Monday or a Tuesday the
-// week has no room for a third group, and in the first days of a month the
-// month has none for a fourth. Those are ordinary days, so the scenario asks
-// for what today can have rather than pretending every day is a Friday.
-function dayPlan(now = Date.now()) {
-  const midnight = new Date(now);
-  midnight.setHours(0, 0, 0, 0);
-  // Days are moved by the calendar rather than by subtracting hours, because
-  // twice a year a day is 23 or 25 hours long.
-  const back = (days) => {
-    const day = new Date(midnight);
-    day.setDate(day.getDate() - days);
-    return day;
-  };
-  const noon = (day) => new Date(day).setHours(12, 0, 0, 0);
-  const yesterday = back(1);
-  const week = back((midnight.getDay() + 6) % 7);
-  const month = new Date(midnight.getFullYear(), midnight.getMonth(), 1);
-  const plan = [
-    { key: 'today', label: 'Today', at: now },
-    { key: 'yesterday', label: 'Yesterday', at: noon(yesterday) },
-  ];
-  if (week.getTime() < yesterday.getTime()) plan.push({ key: 'week', label: 'This week', at: noon(week) });
-  if (month.getTime() < week.getTime()) plan.push({ key: 'month', label: 'This month', at: noon(month) });
-  // Older is half a day before the earliest boundary above it - the first of
-  // the month, or the Monday of this week when the month started after it,
-  // which is what the first days of a month look like. Half a day is enough
-  // whatever the clocks did that night.
-  const oldest = Math.min(month.getTime(), week.getTime());
-  plan.push({ key: 'older', label: 'Older', at: oldest - 12 * 3600 * 1000 });
-  return plan;
-}
-
-// listing is what the sidebar is actually showing: every child in order,
-// headers and rows alike, with whatever marker it was stamped with.
+// listing is what the sidebar is actually showing: every folder in order, with
+// the rows under it and whatever marker each was stamped with.
 const listing = (page) => page.evaluate(() => [...document.getElementById('sessionList').children]
   .map((node) => ({
-    group: node.classList.contains('chat-group') ? node.textContent : '',
-    row: node.classList.contains('chat-item') ? node.querySelector('.label').textContent : '',
-    id: node.dataset.id || '',
+    folder: node.dataset.folder || '',
+    name: (node.querySelector('.folder-name') || {}).textContent || '',
+    title: (node.querySelector('.folder-head') || {}).title || '',
+    open: (node.querySelector('.folder-head') || {}).getAttribute
+      ? node.querySelector('.folder-head').getAttribute('aria-expanded') : '',
+    count: (node.querySelector('.folder-count') || {}).textContent || '',
+    shown: !!node.querySelector('.folder-rows') && node.querySelector('.folder-rows').checkVisibility(),
     stamp: node.dataset.stamp || '',
-    archived: node.classList.contains('archived'),
-    other: node.classList.contains('chat-group') || node.classList.contains('chat-item')
-      ? '' : node.className || node.tagName,
+    rows: [...node.querySelectorAll('.chat-item')].map((row) => ({
+      id: row.dataset.id,
+      row: row.querySelector('.label').textContent,
+      done: row.classList.contains('done'),
+      stamp: row.dataset.stamp || '',
+      seen: row.checkVisibility(),
+    })),
+    other: node.classList.contains('folder') ? '' : node.className || node.tagName,
   })));
 
-// under is which header each row is below, by the name the row reads.
+// under is which folder each row is in, by the name the row reads.
 function under(shown) {
   const out = new Map();
-  let head = '';
-  for (const node of shown) {
-    if (node.group) head = node.group;
-    else if (node.row) out.set(node.row, head);
-  }
+  for (const folder of shown) for (const row of folder.rows) out.set(row.row, folder.name);
   return out;
 }
 
-// stampAll marks every header and row on screen, so the next render can be
+// stampAll marks every folder and row on screen, so the next render can be
 // asked whether it kept them or built new ones.
 const stampAll = (page) => page.evaluate(() => {
-  for (const node of document.getElementById('sessionList').children) {
-    node.dataset.stamp = node.dataset.id || node.dataset.group || 'other';
+  for (const folder of document.getElementById('sessionList').children) {
+    folder.dataset.stamp = folder.dataset.folder || 'other';
+    for (const row of folder.querySelectorAll('.chat-item')) row.dataset.stamp = row.dataset.id;
   }
 });
 
-async function daygroups() {
+async function folders() {
   const s = await start({ viewport: { width: 1280, height: 720 } });
   try {
     await setup(s.page, s.url);
     await useDomRenderer(s);
     await open(s);
 
-    // The calendar first, on its own. Which day a moment belongs to is a pure
-    // function in a module of its own, so it can be asked directly - and it
-    // has to be, because a group the plan below cannot reach today (a month
-    // that started inside this week, which is what the first days of a month
-    // look like) is still a group the page draws on other days.
-    const calendar = await s.page.evaluate(async () => {
-      const day = await import('/static/js/daygroups.js');
-      // A Thursday, so every group has room: the week started on the Monday
-      // and the month before that.
-      const now = new Date(2026, 8, 17, 10, 30).getTime();
-      const at = (year, month, date, hour = 12) => new Date(year, month, date, hour).getTime();
+    // The grouping first, on its own. Which folder a session belongs in, what
+    // that folder is called and where it sits are a pure function in a module
+    // of its own, so they can be asked directly - and they have to be,
+    // because two projects with the same name in different places is the case
+    // the naming exists for and not one a running server can be made to have
+    // cheaply.
+    const pure = await s.page.evaluate(async () => {
+      const mod = await import('/static/js/folders.js');
+      const at = (n) => ({ active_at: n });
+      const dirs = (list) => mod.foldersOf(list).map((f) => f.label + '(' + f.sessions.length + ')').join(' | ');
       return {
-        groups: day.DAY_GROUPS.map((one) => one.key + '=' + one.label).join(' | '),
-        said: [
-          ['the small hours of today', at(2026, 8, 17, 0)],
-          ['tonight', at(2026, 8, 17, 23)],
-          ['a clock that runs ahead', at(2026, 8, 18, 1)],
-          ['last night', at(2026, 8, 16, 23)],
-          ['the Monday this week started on', at(2026, 8, 14, 0)],
-          ['the Sunday before it', at(2026, 8, 13, 23)],
-          ['the first of this month', at(2026, 8, 1)],
-          ['the last of the month before', at(2026, 7, 31)],
-          ['a row with no timestamp at all', 0],
-        ].map(([what, ts]) => what + ': ' + day.bucketOf(ts, now)).join(' | '),
-        moment: day.momentOf({ updated_at: 7, created_at: 3 }) + ',' + day.momentOf({ created_at: 3 }),
+        keys: [
+          ['a project', { workdir: '/root/browser', workdir_mode: 'preset' }],
+          ['the same one with a trailing slash', { workdir: '/root/browser/', workdir_mode: 'custom' }],
+          ['a directory Socrates made up', { workdir: '/data/workspaces/claude-1', workdir_mode: 'dynamic' }],
+          ['a row from a server that never said', { workdir: '/root/browser' }],
+          ['a row with no directory at all', { workdir: '' }],
+        ].map(([what, row]) => what + ': ' + mod.folderKeyOf(row)).join(' | '),
+        order: dirs([
+          { ...at(30), workdir: '/root/old', workdir_mode: 'preset' },
+          { ...at(90), workdir: '/data/w/x', workdir_mode: 'dynamic' },
+          { ...at(50), workdir: '/root/new', workdir_mode: 'preset' },
+          { ...at(70), workdir: '/root/new', workdir_mode: 'preset' },
+        ]),
+        clash: dirs([
+          { ...at(9), workdir: '/srv/one/web', workdir_mode: 'preset' },
+          { ...at(8), workdir: '/srv/two/web', workdir_mode: 'preset' },
+          { ...at(7), workdir: '/srv/one/api', workdir_mode: 'preset' },
+        ]),
+        inside: mod.foldersOf([
+          { active_at: 10, id: 'old', workdir: '/root/browser', workdir_mode: 'preset' },
+          { active_at: 30, id: 'new', workdir: '/root/browser', workdir_mode: 'preset' },
+          { active_at: 20, id: 'mid', workdir: '/root/browser', workdir_mode: 'preset' },
+        ])[0].sessions.map((one) => one.id).join(','),
+        moment: mod.momentOf({ active_at: 9, updated_at: 7, created_at: 3 }) + ','
+          + mod.momentOf({ updated_at: 7, created_at: 3 }) + ',' + mod.momentOf({ created_at: 3 }),
+        moves: [['idle', 'busy'], ['busy', 'idle'], ['busy', 'waiting'], ['idle', 'waiting'],
+          ['unknown', 'idle'], ['waiting', 'idle'], ['busy', 'busy'], ['', 'idle']]
+          .map(([from, to]) => (from || 'nothing') + '>' + to + '=' + mod.movesRow(from, to)).join(' '),
       };
     });
-    ok(calendar.groups === 'today=Today | yesterday=Yesterday | week=This week'
-      + ' | month=This month | older=Older',
-      'the five groups, in the order the list draws them', calendar.groups);
-    ok(calendar.said === 'the small hours of today: today | tonight: today'
-      + ' | a clock that runs ahead: today | last night: yesterday'
-      + ' | the Monday this week started on: week | the Sunday before it: month'
-      + ' | the first of this month: month | the last of the month before: older'
-      + ' | a row with no timestamp at all: older',
-      'and every boundary of the local calendar is where a person would put it', calendar.said);
-    ok(calendar.moment === '7,3', 'a session is grouped by its last use, and by its creation if it has none',
-      calendar.moment);
+    ok(pure.keys === 'a project: /root/browser | the same one with a trailing slash: /root/browser'
+      + ' | a directory Socrates made up: #more | a row from a server that never said: /root/browser'
+      + ' | a row with no directory at all: #more',
+      'a session belongs to the directory it works in, and one of Socrates’ own making to "More Chats"',
+      pure.keys);
+    ok(pure.order === 'new(2) | old(1) | More Chats(1)',
+      'the folders are ordered by the session that moved most recently, and "More Chats" is last whatever is in it',
+      pure.order);
+    ok(pure.clash === 'one/web(1) | two/web(1) | api(1)',
+      'a folder is named after its directory, and takes a parent when that would not tell it from another',
+      pure.clash);
+    ok(pure.inside === 'new,mid,old', 'inside a folder the sessions are newest first', pure.inside);
+    ok(pure.moment === '9,7,3',
+      'a session is ordered by its last status change, by its last write from an older server, else by its creation',
+      pure.moment);
+    ok(pure.moves === 'idle>busy=true busy>idle=true busy>waiting=true idle>waiting=true'
+      + ' unknown>idle=false waiting>idle=false busy>busy=false nothing>idle=false',
+      'starting, finishing and needing an answer move a row; a detector catching up does not', pure.moves);
 
-    const plan = dayPlan();
-    const create = async (title) => {
-      const made = await s.context.request.post(s.url + '/api/sessions',
-        { data: { harness: 'shell', title } });
+    // Now the real thing: three projects and two sessions with no project at
+    // all. A typed-in directory is a decision the dashboard has to allow, so
+    // it is allowed the way a person would allow it.
+    const allowed = await s.context.request.put(s.url + '/api/settings',
+      { data: { settings: { workspace: { allow_custom: true } } } });
+    ok(allowed.ok(), 'a typed-in working directory is allowed on this Socrates', allowed.status());
+
+    const projects = {
+      browser: join(s.data, 'projects', 'browser'),
+      socrates: join(s.data, 'projects', 'socrates'),
+      // The same name in another place, which is what makes a bare name a lie.
+      other: join(s.data, 'elsewhere', 'browser'),
+    };
+    for (const dir of Object.values(projects)) mkdirSync(dir, { recursive: true });
+
+    const create = async (title, workdir, harness = 'shell') => {
+      const made = await s.context.request.post(s.url + '/api/sessions', {
+        data: workdir
+          ? { harness, title, workdir_mode: 'custom', workdir }
+          : { harness, title },
+      });
       if (!made.ok()) throw new Error('could not create ' + title + ': ' + made.status());
       return (await made.json()).session.id;
     };
-    // One session per group, oldest group first, and a second one for today so
-    // that the order inside a group can be asserted at all. They are made over
-    // the API rather than through the sheet: `createshell` is where starting a
-    // session is proven, and what is under test here is when it was last used.
-    const ids = {};
-    for (const group of [...plan].reverse()) ids[group.key] = await create('Group ' + group.key);
-    const second = await create('Group today two');
+    // Oldest first, so that the order the server lists them in is the order
+    // the folders are asserted in below.
+    const ids = {
+      socrates: await create('Socrates one', projects.socrates),
+      otherBrowser: await create('The other browser', projects.other),
+      browserOld: await create('Browser one', projects.browser),
+      loose: await create('No project one'),
+      browserNew: await create('Browser two', projects.browser),
+      looseNew: await create('No project two'),
+    };
+    // A week apart, so that the order of the folders is a fact about when each
+    // project was last worked in rather than about the second they were made.
+    const day = 24 * 3600 * 1000;
+    const now = Date.now();
+    backdate(s, {
+      [ids.socrates]: now - 9 * day,
+      [ids.otherBrowser]: now - 7 * day,
+      [ids.browserOld]: now - 5 * day,
+      [ids.loose]: now - 4 * day,
+      [ids.browserNew]: now - 3 * day,
+      [ids.looseNew]: now - 2 * day,
+    });
 
-    // The one session of the Yesterday group is archived, which is how "only
-    // groups with something in them" gets a group that is empty in Active and
-    // not in All - and how an archived row gets asserted to be in its own day
-    // like every other row.
-    const archived = ids.yesterday;
-    const away = await s.context.request.post(s.url + '/api/sessions/' + archived + '/archive',
-      { data: { archived: true } });
-    if (!away.ok()) throw new Error('could not archive: ' + away.status());
-
-    // Written after the archive, because archiving is something that happened
-    // to the session and bumped the very column being set here.
-    const moments = {};
-    for (const group of plan) if (group.key !== 'today') moments[ids[group.key]] = group.at;
-    backdate(s, moments);
-    ok(true, 'a session for every group today can have, backdated in the store',
-      plan.map((g) => g.label).join(' | '));
+    // The oldest project's one session is done. It stays in its project, on
+    // the project's Done shelf, and the project - with no work in progress
+    // left - goes under the ones that have some.
+    const away = await s.context.request.post(s.url + '/api/sessions/' + ids.socrates + '/file',
+      { data: { status: 'done' } });
+    ok(away.ok(), 'the oldest project’s one session is done', away.status());
+    backdate(s, { [ids.socrates]: now - 9 * day });
 
     await open(s);
     await s.page.waitForFunction((n) => document.querySelectorAll('#sessionList .chat-item').length === n,
-      plan.length, { timeout: 20000 });
+      6, { timeout: 20000 });
 
     const active = await listing(s.page);
-    const heads = active.filter((n) => n.group).map((n) => n.group);
-    const wantActive = plan.map((g) => g.label).filter((label) => label !== 'Yesterday');
-    ok(heads.join(' | ') === wantActive.join(' | '),
-      'the list is grouped by day, in order, and a group with nothing in it is not drawn',
-      heads.join(' | '));
-    ok(active.every((n) => !n.other), 'and the list holds nothing but headers and rows',
-      active.filter((n) => n.other).map((n) => n.other).join(' | ') || 'headers and rows');
+    // Two of the three projects are called `browser`, so both of them take a
+    // parent: a name that is a name for one of them and a lie for the other
+    // would be worse than the path either of them came from.
+    ok(active.map((f) => f.name).join(' | ') === 'projects/browser | elsewhere/browser | socrates | More Chats',
+      'the list is folders: the project worked in most recently first, one with only finished work after them, and "More Chats" last',
+      active.map((f) => f.name).join(' | '));
+    ok(active.every((f) => !f.other), 'and the list holds nothing but folders',
+      active.filter((f) => f.other).map((f) => f.other).join(' | ') || 'folders');
+    ok(active[0].title === projects.browser && active[3].title === 'Sessions in a directory of their own',
+      'the whole path is on the folder rather than in it, and "More Chats" says what it holds instead',
+      active[0].title + ' | ' + active[3].title);
+    ok(!active.some((f) => f.name.startsWith('/')),
+      'no folder reads as a path', active.map((f) => f.name).join(' | '));
 
     const where = under(active);
-    const misplaced = plan.filter((g) => g.key !== 'yesterday')
-      .filter((g) => where.get('Group ' + g.key) !== g.label);
-    ok(misplaced.length === 0 && where.get('Group today two') === 'Today',
-      'every session is under the day it was last used on',
-      [...where].map(([title, head]) => head + ': ' + title).join(' | '));
+    ok(where.get('Browser two') === 'projects/browser' && where.get('Browser one') === 'projects/browser'
+      && where.get('No project one') === 'More Chats' && where.get('No project two') === 'More Chats'
+      && where.get('The other browser') === 'elsewhere/browser',
+      'every session is in the directory it works in, and the ones with a directory of their own are together',
+      [...where].map(([title, folder]) => folder + ': ' + title).join(' | '));
+    ok(active[0].rows.map((r) => r.row).join(',') === 'Browser two,Browser one',
+      'and inside a folder the newest is first', active[0].rows.map((r) => r.row).join(','));
 
-    const listed = await (await s.context.request.get(s.url + '/api/sessions')).json();
-    const server = (listed.sessions || []).map((one) => one.id);
-    const drawn = active.filter((n) => n.id).map((n) => n.id);
-    ok(drawn.join(',') === server.join(',') && drawn.includes(second),
-      'and the rows keep the order the server gave them, newest first',
-      drawn.length + ' rows in the order the server listed them');
-
-    // All: the archived session comes back, in its own day, and everything
-    // that was on screen is still the element it was.
-    const before = new Set(active.filter((n) => n.group || n.row).map((n) => n.id || n.group));
+    // The Done shelf starts shut. Opening it shows the done session, and
+    // everything that was on screen is still the element it was.
+    const doneShelf = '#sessionList .folder[data-folder="' + projects.socrates + '"] .shelf[data-shelf="done"] .folder-head';
+    const shelfState = () => s.page.$eval(doneShelf, (head) => ({
+      open: head.getAttribute('aria-expanded'),
+      shown: head.closest('.shelf').querySelector('.folder-rows').checkVisibility(),
+      count: head.querySelector('.folder-count').textContent,
+    }));
+    const shutShelf = await shelfState();
+    ok(shutShelf.open === 'false' && !shutShelf.shown && shutShelf.count === '1',
+      'the Done shelf of a folder starts shut, and says how many are on it', JSON.stringify(shutShelf));
+    const before = new Set(active.flatMap((f) => [f.folder, ...f.rows.map((r) => r.id)]));
     await stampAll(s.page);
-    await s.page.click('#sessionScope .seg[data-scope="all"]');
-    await s.page.waitForFunction((n) => document.querySelectorAll('#sessionList .chat-item').length === n,
-      plan.length + 1, { timeout: 15000 });
+    await s.page.click(doneShelf);
+    await s.page.waitForFunction((sel) => document.querySelector(sel)
+      .getAttribute('aria-expanded') === 'true', doneShelf, { timeout: 5000 });
     const all = await listing(s.page);
-    const allHeads = all.filter((n) => n.group).map((n) => n.group);
-    ok(allHeads.join(' | ') === plan.map((g) => g.label).join(' | '),
-      'All is grouped the same way, and brings back the group Active had nothing in',
-      allHeads.join(' | '));
-    const archivedRow = all.find((n) => n.id === archived);
-    ok(!!archivedRow && archivedRow.archived && under(all).get('Group yesterday') === 'Yesterday',
-      'an archived session is in its own day like any other row',
-      archivedRow ? under(all).get('Group yesterday') + (archivedRow.archived ? ' (archived)' : '') : 'no row');
-    const kept = all.filter((n) => before.has(n.id || n.group) && n.stamp);
-    ok(kept.length === before.size,
-      'and every header and row that was already there survived the re-render',
-      kept.length + ' of ' + before.size + ' elements kept');
+    const doneRow = all.flatMap((f) => f.rows).find((r) => r.id === ids.socrates);
+    ok(!!doneRow && doneRow.done && doneRow.seen && under(all).get('Socrates one') === 'socrates',
+      'a done session stays in its project, on the project’s Done shelf',
+      doneRow ? under(all).get('Socrates one') + (doneRow.done ? ' (done)' : '') : 'no row');
+    const kept = all.filter((f) => before.has(f.folder) && f.stamp).length
+      + all.flatMap((f) => f.rows).filter((r) => before.has(r.id) && r.stamp).length;
+    ok(kept === before.size,
+      'and every folder and row that was already there survived the re-render',
+      kept + ' of ' + before.size + ' elements kept');
 
-    // A rename is a use, so the row moves to Today - taking its element with
-    // it, and leaving no empty header behind.
+    // Shutting a folder. The rows go, the count says how many went, and the
+    // caret turns rather than the words changing.
+    const browserHead = '#sessionList .folder[data-folder="' + projects.browser + '"] .folder-head';
+    const caretBefore = await s.page.$eval(browserHead + ' .caret', (n) => getComputedStyle(n).transform);
+    await s.page.click(browserHead);
+    await s.page.waitForFunction((sel) => document.querySelector(sel)
+      .getAttribute('aria-expanded') === 'false', browserHead, { timeout: 5000 });
+    const shut = await listing(s.page);
+    // The caret turns rather than jumps, so it is waited for: what is asserted
+    // is where it ends up, not where it was a frame after the click.
+    await s.page.waitForFunction((sel) => getComputedStyle(document.querySelector(sel + ' .caret'))
+      .transform === 'none', browserHead, { timeout: 5000 });
+    const caretAfter = await s.page.$eval(browserHead + ' .caret', (n) => getComputedStyle(n).transform);
+    ok(shut[0].open === 'false' && !shut[0].shown && shut[0].rows.every((r) => !r.seen),
+      'a folder that is shut hides its sessions and says so to a reader that cannot see it',
+      shut[0].open + ', rows shown: ' + shut[0].rows.filter((r) => r.seen).length);
+    ok(shut[0].count === '2' && caretBefore !== caretAfter,
+      'and says how many are behind it, with the caret turned', shut[0].count + ', ' + caretAfter);
+    ok(shut.slice(1).every((f) => f.shown), 'the other folders are untouched',
+      shut.filter((f) => f.shown).map((f) => f.name).join(' | '));
+    const visibleCount = await s.page.$$eval('#sessionList .folder-count',
+      (nodes) => nodes.filter((n) => n.checkVisibility()).length);
+    ok(visibleCount === 1, 'an open folder counts nothing: the rows under it are the count', visibleCount);
+    await shot(s.page, 'folders-shut');
+
+    // It is a fact about this device, so a reload finds it the way it was
+    // left - and the sessions in it are still there, not gone.
     await stampAll(s.page);
-    const renamed = 'Group older, used again';
-    await s.context.request.patch(s.url + '/api/sessions/' + ids.older, { data: { title: renamed } });
-    // A wake is how the page is told to look again: the same event a phone
-    // sends when it comes back.
-    await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
-    await s.page.waitForFunction((want) => [...document.querySelectorAll('#sessionList .chat-item .label')]
-      .some((n) => n.textContent === want), renamed, { timeout: 20000 });
-    const moved = await listing(s.page);
-    const movedRow = moved.find((n) => n.id === ids.older);
-    ok(!!movedRow && movedRow.stamp === ids.older,
-      'a row that moves to another day keeps the element it had',
-      movedRow ? movedRow.stamp || 'a new row' : 'gone');
-    const first = moved.filter((n) => n.id)[0] || {};
-    ok(under(moved).get(renamed) === 'Today' && first.id === ids.older,
-      'and it is the newest row of Today', under(moved).get(renamed) + ', row 1 of the list');
-    const movedHeads = moved.filter((n) => n.group).map((n) => n.group);
-    ok(movedHeads.join(' | ') === plan.map((g) => g.label).filter((label) => label !== 'Older').join(' | '),
-      'the day it left is gone with it, and the rest of the headers are unchanged',
-      movedHeads.join(' | '));
-    ok(movedHeads.length > 1 && moved.filter((n) => n.group).every((n) => n.stamp),
-      'and the headers that stay are the elements that were already there',
-      moved.filter((n) => n.group).map((n) => n.stamp).join(' | '));
+    await open(s);
+    await s.page.waitForFunction((n) => document.querySelectorAll('#sessionList .chat-item').length === n,
+      6, { timeout: 20000 });
+    const reloaded = await listing(s.page);
+    ok(reloaded[0].name === 'projects/browser' && reloaded[0].open === 'false' && !reloaded[0].shown
+      && reloaded[0].rows.length === 2,
+      'a reload finds the folder shut, with its sessions still in it',
+      reloaded[0].name + ': ' + reloaded[0].open + ', ' + reloaded[0].rows.length + ' rows');
 
-    // The header is a label, not a band: the surface under it is the page's one
-    // white, and a hairline is what separates the groups.
-    const style = await s.page.evaluate(() => [...document.querySelectorAll('#sessionList .chat-group')]
+    // Opening the session that is inside it is what opens the folder: a row
+    // nobody can see is a session nobody can get back to.
+    await s.page.goto(s.url + '/#' + ids.browserNew, { waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    await s.page.waitForFunction((id) => {
+      const row = document.querySelector('.chat-item[data-id="' + id + '"]');
+      return !!row && row.classList.contains('active') && row.checkVisibility();
+    }, ids.browserNew, { timeout: 15000 });
+    const opened = await listing(s.page);
+    ok(opened[0].open === 'true' && opened[0].rows.every((r) => r.seen),
+      'attaching a session inside a shut folder opens it', opened[0].name + ': ' + opened[0].open);
+
+    // And shutting it again is one click, from the state the page is in.
+    await s.page.click(browserHead);
+    await s.page.waitForFunction((sel) => document.querySelector(sel)
+      .getAttribute('aria-expanded') === 'false', browserHead, { timeout: 5000 });
+    await s.page.click(browserHead);
+    await s.page.waitForFunction((sel) => document.querySelector(sel)
+      .getAttribute('aria-expanded') === 'true', browserHead, { timeout: 5000 });
+    ok(true, 'and the same head shuts and opens it again', 'twice');
+
+    // A session started in a directory nothing has used yet makes the folder
+    // for it, at the top, because it is the newest thing that happened.
+    const fresh = join(s.data, 'projects', 'brandnew');
+    mkdirSync(fresh, { recursive: true });
+    const freshId = await create('Brand new', fresh);
+    await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await s.page.waitForFunction((id) => !!document.querySelector('.chat-item[data-id="' + id + '"]'),
+      freshId, { timeout: 20000 });
+    const made = await listing(s.page);
+    ok(made[0].name === 'brandnew' && made[0].open === 'true' && made[0].rows.length === 1,
+      'the first session in a new directory makes its folder, open, at the top',
+      made[0].name + ': ' + made[0].open);
+
+    // A folder that is shut must not be able to hide the two things this page
+    // exists to make noticeable. A session in the project is given something
+    // to do, the page steps off it, and the folder is shut over the top of it
+    // - and the head has to say both that something is running in there and,
+    // when it ends, that nobody has seen it.
+    //
+    // It takes an agent session, because a shell is one of the two programs
+    // nothing is asked of: its row carries no status, so there would be
+    // nothing for a shut folder to roll up.
+    const agent = await create('Browser agent', projects.browser, 'claude');
+    await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await s.page.waitForFunction((id) => !!document.querySelector('.chat-item[data-id="' + id + '"]'),
+      agent, { timeout: 20000 });
+    await clickRow(s.page, agent);
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const ready = await awaitRow(s.page, agent, (r) => !r.busy, 20000);
+    ok(ready.ok, 'the agent session in the project settles before it is given anything', took(ready));
+    await typeLine(s.page, '/busy 6000');
+    const busyRow = await awaitRow(s.page, agent, (r) => r.busy, 10000);
+    ok(busyRow.ok, 'the session in the project is working', took(busyRow));
+    await clickRow(s.page, ids.looseNew);
+    await s.page.click(browserHead);
+    await s.page.waitForFunction((sel) => document.querySelector(sel)
+      .getAttribute('aria-expanded') === 'false', browserHead, { timeout: 5000 });
+    const rollup = (page) => page.evaluate((sel) => {
+      const head = document.querySelector(sel);
+      const dot = head.querySelector('.folder-dot');
+      return {
+        busy: head.classList.contains('busy'),
+        waiting: head.classList.contains('waiting'),
+        unread: head.classList.contains('unread'),
+        dot: dot.checkVisibility(),
+        count: head.querySelector('.folder-count').textContent,
+      };
+    }, browserHead);
+    const working = await rollup(s.page);
+    ok(working.busy && working.dot && !working.unread && working.count === '3',
+      'a shut folder says that something inside it is working', JSON.stringify(working));
+    const started = Date.now();
+    let finished = working;
+    while (Date.now() - started < 30000) {
+      finished = await rollup(s.page);
+      if (finished.unread && !finished.busy) break;
+      await wait(300);
+    }
+    ok(finished.unread && !finished.busy,
+      'and when the turn ends with nobody looking, that nobody has seen it',
+      JSON.stringify(finished) + ' after ' + ((Date.now() - started) / 1000).toFixed(1) + ' s');
+    await s.page.click(browserHead);
+    await s.page.waitForFunction((sel) => document.querySelector(sel)
+      .getAttribute('aria-expanded') === 'true', browserHead, { timeout: 5000 });
+
+    // The head is a label, not a band: the surface under it is the page's one
+    // white, and a hairline is what separates the folders.
+    const style = await s.page.evaluate(() => [...document.querySelectorAll('#sessionList > .folder > .folder-bar')]
       .map((node) => {
-        const css = getComputedStyle(node);
-        return { fill: css.backgroundColor, top: css.borderTopWidth, size: css.fontSize };
+        const css = getComputedStyle(node.querySelector('.folder-head'));
+        return { fill: css.backgroundColor, top: getComputedStyle(node).borderTopWidth, size: css.fontSize };
       }));
     ok(style.length > 1 && style.every((one) => one.fill === 'rgba(0, 0, 0, 0)')
       && style[0].top === '0px' && style.slice(1).every((one) => one.top === '1px'),
-      'a header is a quiet label on white, hairline-separated below the first',
+      'a head is a quiet label on white, hairline-separated below the first',
       JSON.stringify(style));
 
-    await shot(s.page, 'daygroups');
-    ok(unexpected(s.errors).length === 0, 'no console errors',
-      unexpected(s.errors).join(' | ') || '0');
-  } finally { await s.stop(); }
-}
+    await shot(s.page, 'folders');
 
-/* ------------------------------------------------ 8c. the phone audit
-
-   Eight scenarios out of the audit of this app on an iPhone-shaped browser.
-   Every one of them was a script that reproduced a defect before it was
-   fixed; they are here so that it stays fixed. `docs/design/DEVIATIONS.md`
-   records what each one found. */
-
-// finger drives Chrome's own touch pipeline over CDP, so `touch-action` and
-// any gesture the browser might have claimed are part of what is proved. A
-// synthesised touch event in the page would prove neither.
-function finger(cdp) {
-  return {
-    async drag(x, from, to, steps = 15, stepMs = 16) {
-      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y: from }] });
-      for (let i = 1; i <= steps; i += 1) {
-        const y = Math.round(from + ((to - from) * i) / steps);
-        await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y }] });
-        await wait(stepMs);
-      }
-      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-      await wait(350);
-    },
-  };
-}
-
-// paneBox is where a finger may land on the pane without touching its edges.
-const paneBox = (page) => page.$eval('#term .xterm-screen', (n) => {
-  const r = n.getBoundingClientRect();
-  return {
-    x: Math.round(r.x + r.width / 2),
-    top: Math.round(r.y + 60),
-    bottom: Math.round(r.bottom - 60),
-  };
-});
-
-// smallTargets returns every control on screen under 44x44 CSS pixels, which
-// is Apple's own floor for something a finger has to hit.
-//
-// Two things are deliberately not counted. xterm's helper textarea is an
-// invisible one-character input that follows the cursor - nothing aims at it,
-// the pane around it is the target - and a link inside a sentence is a word,
-// not a button: making one 44px tall would put a hole in the paragraph.
-const smallTargets = (page) => page.evaluate(() => {
-  const out = [];
-  for (const el of document.querySelectorAll('button, a, input, select, textarea, [role="button"], summary, .switch')) {
-    const r = el.getBoundingClientRect();
-    if (!r.width || !r.height) continue;
-    const st = getComputedStyle(el);
-    if (st.visibility === 'hidden' || st.display === 'none' || st.pointerEvents === 'none') continue;
-    if (r.bottom < 0 || r.top > innerHeight || r.right < 0 || r.left > innerWidth) continue;
-    if (el.classList.contains('xterm-helper-textarea')) continue;
-    if (el.tagName === 'A' && el.closest('.hint, .card-sub, p')) continue;
-    if (r.width < 44 || r.height < 44) {
-      out.push((el.id || el.className.toString().split(' ')[0] || el.tagName.toLowerCase())
-        + ' ' + Math.round(r.width) + 'x' + Math.round(r.height));
-    }
-  }
-  return out;
-});
-
-// A full-screen TUI, which is what this product is carried on a phone for.
-//
-// tmux keeps no scrollback for an alternate screen - its history belongs to
-// the normal buffer - so the only thing a finger can move there is the
-// program's own view, and the program tracks the mouse in order to be asked.
-// The server is what knows which of the two a pane is, and it says so in the
-// handshake and again after every scroll; the browser cannot tell, because a
-// tmux client draws every pane on the alternate screen and tracks the mouse
-// for all of them.
-async function touchscrolltui() {
-  const s = await start({ viewport: { width: 390, height: 844 }, touch: true });
-  try {
-    await setup(s.page, s.url);
-    await useDomRenderer(s);
-    await open(s);
-    await startSession(s.page, 'claude');
-    await s.page.waitForSelector('#term .xterm', { timeout: 30000 });
-    await wait(1500);
-
-    const cdp = await s.context.newCDPSession(s.page);
-    const f = finger(cdp);
-
-    // First on the normal buffer, where tmux's own history is what moves.
-    await typeLine(s.page, '/spin');
-    ok(await awaitScreen(s.page, 'spin 200'), 'the fake filled the pane past its bottom',
-      oneLine(await screen(s.page)));
-    let box = await paneBox(s.page);
-    const before = await screen(s.page);
-    await f.drag(box.x, box.top, box.bottom);
-    const back = await screen(s.page);
-    ok(back !== before && /spin \d+/.test(back),
-      'a finger on a normal-buffer session moves tmux\'s own history',
-      oneLine(back.split('\n').filter((l) => l.trim())[0] || ''));
-    ok(await s.page.evaluate(() => !document.getElementById('termJump').hidden),
-      'and the pane says it is no longer live');
-    await s.page.tap('#termJump');
-    await wait(600);
-
-    // Then on the alternate screen, which is what Codex and OpenCode draw.
-    await typeLine(s.page, '/alt');
-    ok(await awaitScreen(s.page, 'ALTERNATE'), 'the fake went to the alternate screen',
-      oneLine(await screen(s.page)));
-    await wait(600);
-    box = await paneBox(s.page);
-    const altBefore = await screen(s.page);
-    await f.drag(box.x, box.top, box.bottom);
-    const altAfter = await screen(s.page);
-    const topLine = (text) => Number((text.match(/^alt-(\d+)/m) || [0, 0])[1]);
-    const travelled = topLine(altBefore) - topLine(altAfter);
-    // The distance, not the direction. A mouse report has no magnitude - it
-    // says "the wheel turned up", once - so a batch dispatched as a single
-    // WheelEvent carrying the whole delta moved a real Claude Code transcript
-    // two or three lines for a drag the length of the screen. The finger here
-    // travelled (bottom - top) pixels; at three document lines per report the
-    // program should move roughly that many lines, and the floor below is set
-    // well under it so the assertion is about "a screenful" rather than about
-    // the fake's own step.
-    const fingerLines = Math.round((box.bottom - box.top) / 17);
-    ok(topLine(altAfter) > 0 && travelled >= fingerLines,
-      'a finger on a full-screen TUI scrolls the program\'s own view about as far as it moved',
-      'alt-' + topLine(altBefore) + ' -> alt-' + topLine(altAfter)
-        + ' = ' + travelled + ' lines for a finger worth ' + fingerLines);
-    ok(!/spin|\$ |> $/.test(altAfter.split('\n').slice(-1)[0] || ''),
-      'and it typed nothing into it',
-      oneLine(altAfter.split('\n').filter((l) => l.trim()).slice(-1)[0] || ''));
-
-    await cdp.detach();
-    ok(unexpected(s.errors).length === 0, 'no console errors',
-      unexpected(s.errors).join(' | ') || '0');
-  } finally { await s.stop(); }
-}
-
-// Scrolling back puts the pane in tmux's copy mode, and copy mode is a place a
-// person can be without knowing it: the screen is still and every keystroke is
-// read as one of its own commands. Two things answer that, and both are here.
-async function scrollstate() {
-  const s = await start({ viewport: { width: 390, height: 844 }, touch: true });
-  try {
-    await setup(s.page, s.url);
-    await useDomRenderer(s);
-    await open(s);
-    await startSession(s.page, 'shell');
-    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
-    await typeLine(s.page, 'i=1; while [ $i -le 300 ]; do echo "mark-$i"; i=$((i+1)); done');
-    ok(await awaitScreen(s.page, 'mark-300', 25000), 'the shell printed past the bottom',
-      oneLine(await screen(s.page)));
-    await wait(500);
-
-    const cdp = await s.context.newCDPSession(s.page);
-    const f = finger(cdp);
-    const box = await paneBox(s.page);
-    ok(await s.page.evaluate(() => document.getElementById('termJump').hidden),
-      'a live pane says nothing about being live');
-
-    await f.drag(box.x, box.top, box.bottom);
-    const pill = await s.page.evaluate(() => {
-      const el = document.getElementById('termJump');
-      const r = el.getBoundingClientRect();
-      return { hidden: el.hidden, text: el.textContent, w: Math.round(r.width), h: Math.round(r.height) };
-    });
-    ok(!pill.hidden && pill.text === 'Jump to live',
-      'a pane scrolled back raises the pill that says so', JSON.stringify(pill));
-    // tmux paints its own position indicator - `23:13 [40/464]` - in yellow at
-    // the top right of a pane in copy mode, which is the one thing on screen
-    // this product does not paint white (§E.10). `copy-mode -H` suppresses it.
-    const scrolled = await screen(s.page);
-    ok(!/\[\d+\/\d+\]/.test(scrolled),
-      'and tmux does not paint its own position indicator over the white pane',
-      oneLine(scrolled.split('\n').filter((l) => l.trim())[0] || ''));
-    await shot(s.page, 'scrollstate-pill');
-
-    await s.page.tap('#termJump');
-    await wait(800);
-    ok(await awaitScreen(s.page, 'mark-300', 5000), 'tapping it returns to the live bottom',
-      oneLine((await screen(s.page)).split('\n').filter((l) => l.trim()).slice(-1)[0] || ''));
-    ok(await s.page.evaluate(() => document.getElementById('termJump').hidden),
-      'and the pill goes with it');
-
-    // A glide outlives the finger. Type while one is still running and the
-    // pane leaves copy mode for the keystroke - and the next glide batch used
-    // to put it straight back in, so the screen jumped away from what had just
-    // been typed and the pill came back. A flick, then a line, with no pause.
-    await f.drag(box.x, box.top, box.bottom, 6, 4);
-    await typeLine(s.page, 'echo RACE');
-    ok(await awaitScreen(s.page, 'RACE', 8000),
-      'a line typed while the glide is still running reaches the shell',
-      oneLine((await screen(s.page)).split('\n').filter((l) => l.trim()).slice(-2).join(' | ')));
-    await wait(900);
-    const settledAfterRace = await s.page.evaluate(() => ({
-      pill: !document.getElementById('termJump').hidden,
-      last: [...document.querySelectorAll('#term .xterm-rows > div')]
-        .map((n) => n.innerText.trim()).filter(Boolean).slice(-2).join(' | '),
-    }));
-    ok(!settledAfterRace.pill,
-      'and the glide does not put the pane back into copy mode behind it',
-      JSON.stringify(settledAfterRace));
-
-    // And the half that works whether or not the pill was ever noticed.
-    await f.drag(box.x, box.top, box.bottom);
-    await wait(300);
-    await typeLine(s.page, 'echo AFTERSCROLL');
-    ok(await awaitScreen(s.page, 'AFTERSCROLL', 8000),
-      'a command typed after a scroll leaves copy mode by itself and reaches the shell',
-      oneLine(await screen(s.page)));
-    ok(await s.page.evaluate(() => document.getElementById('termJump').hidden),
-      'and the pane is live again');
-
-    await cdp.detach();
-    ok(unexpected(s.errors).length === 0, 'no console errors',
-      unexpected(s.errors).join(' | ') || '0');
-  } finally { await s.stop(); }
-}
-
-// A flick is not a drag that stopped. A phone that halts the instant the
-// finger leaves the glass does not read as scrolling at all.
-async function momentum() {
-  const s = await start({ viewport: { width: 390, height: 844 }, touch: true });
-  try {
-    await setup(s.page, s.url);
-    await useDomRenderer(s);
-    await open(s);
-    await startSession(s.page, 'shell');
-    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
-    await typeLine(s.page, 'i=1; while [ $i -le 400 ]; do echo "mark-$i"; i=$((i+1)); done');
-    ok(await awaitScreen(s.page, 'mark-400', 25000), 'the shell printed four hundred lines',
-      oneLine(await screen(s.page)));
-    await wait(500);
-
-    const cdp = await s.context.newCDPSession(s.page);
-    const f = finger(cdp);
-    const box = await paneBox(s.page);
-    const top = (text) => Number((text.match(/^mark-(\d+)/m) || [0, 0])[1]);
-
-    // A fast flick: few steps, no time between them.
-    await f.drag(box.x, box.top, box.bottom, 6, 4);
-    const atRelease = top(await screen(s.page));
-    await wait(900);
-    const afterGlide = top(await screen(s.page));
-    ok(atRelease > 0 && afterGlide > 0 && afterGlide < atRelease,
-      'a flick keeps travelling after the finger has left the glass',
-      'mark-' + atRelease + ' -> mark-' + afterGlide);
-
-    // And a finger put back down stops it, the way it does everywhere else.
-    await f.drag(box.x, box.top, box.bottom, 6, 4);
-    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: box.x, y: box.top }] });
-    await wait(60);
-    const caught = top(await screen(s.page));
-    await wait(700);
-    const still = top(await screen(s.page));
-    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-    ok(still === caught, 'and a finger put back down stops it',
-      'mark-' + caught + ' -> mark-' + still);
-
-    await cdp.detach();
-    ok(unexpected(s.errors).length === 0, 'no console errors',
-      unexpected(s.errors).join(' | ') || '0');
-  } finally { await s.stop(); }
-}
-
-// The new-session sheet with the on-screen keyboard up. iOS does not shrink
-// 100vh for a keyboard, so a sheet sized by it kept its own Start button below
-// the fold on the one device the sheet is used from - and a sheet that cannot
-// be completed is a product that cannot be started.
-async function sheetkeyboard() {
-  // 390x450 is about what an iPhone's visual viewport becomes with the
-  // keyboard up, and it is the viewport the sheet has to fit into.
-  const s = await start({ viewport: { width: 390, height: 450 }, touch: true });
-  try {
-    await setup(s.page, s.url);
-    await open(s);
-    await ensureNav(s.page);
-    await s.page.click('#newSession');
-    await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 10000 });
-    await wait(500);
-
-    const box = await s.page.evaluate(() => {
-      const sheet = document.querySelector('#newSessionSheet');
-      const startBtn = document.getElementById('nsStart');
-      const r = sheet.getBoundingClientRect();
-      const b = startBtn.getBoundingClientRect();
-      return {
-        sheetTop: Math.round(r.top), sheetBottom: Math.round(r.bottom),
-        startTop: Math.round(b.top), startBottom: Math.round(b.bottom),
-        innerH: innerHeight,
-        scrollable: sheet.scrollHeight > sheet.clientHeight,
-        maxHeight: getComputedStyle(sheet).maxHeight,
-      };
-    });
-    ok(box.sheetBottom <= box.innerH + 1 && box.sheetTop >= 0,
-      'the sheet fits inside the viewport the keyboard left', JSON.stringify(box));
-    ok(box.startBottom <= box.innerH && box.startTop >= 0,
-      'and Start session is on screen without scrolling for it',
-      'start ' + box.startTop + '..' + box.startBottom + ' of ' + box.innerH);
-    await shot(s.page, 'sheet-keyboard');
-
-    // And it still starts a session from there.
-    await s.page.click('#nsHarness .seg[data-value="shell"]');
-    await wait(200);
-    await s.page.click('#nsStart');
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    ok(true, 'and the session it started opened');
-
-    ok(unexpected(s.errors).length === 0, 'no console errors',
-      unexpected(s.errors).join(' | ') || '0');
-  } finally { await s.stop(); }
-}
-
-// Seven of the key bar's fourteen keys used to start off the right edge of a
-// 390px phone, in a bar whose scrollbar is hidden, with nothing to say they
-// were there - and the seven it hid were the arrows, Enter, ^C, ^D, ^Z, Paste
-// and the keyboard button.
-async function keybarreach() {
-  const measure = async (s, label) => {
-    const bar = await s.page.evaluate(() => {
-      const b = document.getElementById('keybar');
-      const keys = [...b.querySelectorAll('.key')];
-      return {
-        rows: new Set(keys.map((k) => Math.round(k.getBoundingClientRect().top))).size,
-        offScreen: keys.filter((k) => {
-          const r = k.getBoundingClientRect();
-          return r.right > innerWidth + 1 || r.bottom > innerHeight + 1 || r.left < -1;
-        }).map((k) => k.dataset.key),
-        smallest: Math.min(...keys.map((k) => Math.round(k.getBoundingClientRect().height))),
-        count: keys.length,
-      };
-    });
-    ok(bar.count === 14 && bar.offScreen.length === 0,
-      label + ': every key on the bar is on screen', JSON.stringify(bar));
-    ok(bar.smallest >= 44, label + ': and every one of them is a 44px target',
-      bar.smallest + 'px');
-    return bar;
-  };
-
-  const s = await start({ viewport: { width: 390, height: 844 }, touch: true });
-  try {
-    await setup(s.page, s.url);
-    await useDomRenderer(s);
-    await open(s);
-    await startSession(s.page, 'shell');
-    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
-    await s.page.evaluate(() => localStorage.setItem('socrates.term.keybar', 'on'));
-    await s.page.reload({ waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('#keybar .key', { timeout: 15000 });
-    await wait(800);
-
-    const portrait = await measure(s, 'portrait');
-    ok(portrait.rows === 2, 'portrait: the bar wraps to two rows rather than hiding half of itself',
-      portrait.rows + ' rows');
-    // Four arrows are one control, and a wrap that puts three at the end of a
-    // row and the fourth at the start of the next makes a thumb hunt for the
-    // one that moves right.
-    const arrows = await s.page.evaluate(() => {
-      const rowOf = (k) => Math.round(k.getBoundingClientRect().top);
-      const keys = [...document.querySelectorAll('#keybar .key')];
-      const four = ['Left', 'Down', 'Up', 'Right'].map((name) =>
-        keys.find((k) => k.dataset.key === name));
-      return { rows: [...new Set(four.map(rowOf))].length,
-        order: four.map((k) => keys.indexOf(k)).join(',') };
-    });
-    ok(arrows.rows === 1, 'portrait: and the four arrows sit together on one row',
-      JSON.stringify(arrows));
-    await shot(s.page, 'keybar-portrait');
-
-    await s.page.setViewportSize({ width: 844, height: 390 });
-    await wait(700);
-    await measure(s, 'landscape');
-    await shot(s.page, 'keybar-landscape');
-
-    ok(unexpected(s.errors).length === 0, 'no console errors',
-      unexpected(s.errors).join(' | ') || '0');
-  } finally { await s.stop(); }
-}
-
-// Every control a finger has to hit, on the two pages a phone spends its time
-// on. They were all sized for a mouse - 24 to 38 pixels, hit on a desk by
-// hovering first.
-async function taptargets() {
-  const s = await start({ viewport: { width: 390, height: 844 }, touch: true });
-  try {
-    await setup(s.page, s.url);
-    await useDomRenderer(s);
-    await open(s);
-    await startSession(s.page, 'shell');
-    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
-    await wait(600);
-
-    ok((await smallTargets(s.page)).length === 0, 'the session page has no control under 44x44',
-      (await smallTargets(s.page)).join(', ') || 'all 44 or more');
-
-    // Six 44px buttons and a name have to fit across 390 pixels. When they do
-    // not the column scrolls sideways under them and what goes off the left
-    // edge is the button that opens the session list, which is the one thing
-    // on the bar a phone cannot do without.
-    const bar = await s.page.evaluate(() => {
-      const top = document.querySelector('.topbar');
-      const app = document.querySelector('.app');
-      return { scrollW: top.scrollWidth, clientW: top.clientWidth, appScrollLeft: app.scrollLeft,
-        menuLeft: Math.round(document.getElementById('menuBtn').getBoundingClientRect().left) };
-    });
-    ok(bar.scrollW <= bar.clientW && bar.appScrollLeft === 0 && bar.menuLeft >= 0,
-      'and the top bar fits its column rather than pushing a button off the edge',
-      JSON.stringify(bar));
-
-    await ensureNav(s.page);
+    // On a phone the sidebar is a drawer, and a folder in it is tapped rather
+    // than clicked: the head has to be a target a thumb can hit, and the whole
+    // of it has to be inside the drawer.
+    await s.page.setViewportSize({ width: 390, height: 844 });
+    // The sidebar only becomes a drawer once the narrow layout has been
+    // applied, and asking for the drawer before that would find the column
+    // already where it belongs and never open anything.
     await wait(400);
-    ok((await smallTargets(s.page)).length === 0, 'nor does the session list',
-      (await smallTargets(s.page)).join(', ') || 'all 44 or more');
+    await ensureNav(s.page);
+    // The drawer slides in over 220 ms, and a control that is still moving is
+    // one Playwright refuses to click.
+    await wait(600);
+    const thumb = await s.page.evaluate((sel) => {
+      const box = document.querySelector(sel).getBoundingClientRect();
+      return {
+        height: Math.round(box.height),
+        width: Math.round(box.width),
+        // Against the window, not against the list: a drawer that never came
+        // out holds a head that is perfectly placed inside a list nobody can
+        // see.
+        inside: box.left >= 0 && box.right <= window.innerWidth,
+      };
+    }, browserHead);
+    ok(thumb.height >= 30 && thumb.width >= 200 && thumb.inside,
+      'on a phone a folder head is a target a thumb can hit', JSON.stringify(thumb));
+    await s.page.click(browserHead);
+    await s.page.waitForFunction((sel) => document.querySelector(sel)
+      .getAttribute('aria-expanded') === 'false', browserHead, { timeout: 5000 });
+    await shot(s.page, 'folders-phone');
 
-    await s.page.click('#newSession');
-    await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 10000 });
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+/* -------------------------------------------------------- 46. clipboard */
+
+// Copy and paste, which is the one thing a terminal in a browser has to
+// borrow from the browser.
+//
+// The defect this scenario exists for: xterm.js turns Ctrl and a letter into
+// that letter's control code with no exception for V, so Ctrl-V reached the
+// pane as 0x16 - which Claude Code has bound to "paste an image from the
+// clipboard" - and the text never left the browser at all, because a keydown
+// xterm has cancelled is a paste the browser never performs. What was pasted
+// was "No image found in clipboard".
+//
+// So: 0x16 must not be sent, the text must arrive, a paste must be bracketed
+// when the program asked for bracketing, Ctrl-C over a selection must copy,
+// and Ctrl-C over nothing must still be the interrupt it has always been.
+async function clipboard() {
+  const s = await start({
+    viewport: { width: 1280, height: 720 },
+    // The clipboard is the assertion, so the page is allowed to read it back.
+    // Nothing in the app reads it on this path - the browser's own paste is
+    // what carries the text - but the scenario has to see what was copied.
+    permissions: ['clipboard-read', 'clipboard-write'],
+  });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await recordInput(s.page);
+    await open(s);
+    await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+    await s.page.click('#term .xterm-screen');
+    await focusTerm(s.page);
+
+    // Every byte the pane was sent since a moment ago, one hex pair per byte.
+    const since = async (mark) => (await sentBytes(s.page)).slice(mark)
+      .flatMap((frame) => frame.match(/../g) || []);
+    const mark = async () => (await sentBytes(s.page)).length;
+    const hexOf = (text) => Buffer.from(text, 'utf8').toString('hex').match(/../g);
+    const has = (bytes, want) => bytes.join(',').includes(want.join(','));
+
+    const line = 'paste-' + Math.random().toString(36).slice(2, 8);
+    await s.page.evaluate((text) => navigator.clipboard.writeText(text), 'echo ' + line);
+
+    const beforePaste = await mark();
+    await s.page.keyboard.press('Control+V');
     await wait(400);
-    ok((await smallTargets(s.page)).length === 0, 'nor does the new session sheet',
-      (await smallTargets(s.page)).join(', ') || 'all 44 or more');
-    await s.page.click('#nsCancel');
-    await wait(300);
+    const pasted = await since(beforePaste);
+    ok(!pasted.includes('16'), 'Ctrl-V does not send 0x16 to the pane',
+      pasted.join(',') || 'nothing');
+    ok(has(pasted, hexOf('echo ' + line)), 'it sends the clipboard instead',
+      pasted.join(',') || 'nothing');
+    await s.page.keyboard.press('Enter');
+    ok(await awaitScreen(s.page, line, 20000), 'and the shell runs the line that was pasted',
+      oneLine(await screen(s.page)).slice(-60));
 
-    await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('#saveTop', { timeout: 15000 });
-    await wait(1500);
-    const admin = await s.page.evaluate(() => {
-      const out = [];
-      for (const el of document.querySelectorAll('button, select, input[type=text], input[type=number], input[type=password], .switch, .switch .track')) {
-        const r = el.getBoundingClientRect();
-        if (!r.width || !r.height) continue;
-        const floor = el.classList.contains('track') ? 32 : 44;
-        if (r.height < floor) {
-          out.push((el.id || el.className.toString().split(' ')[0]) + ' ' + Math.round(r.height));
+    // Bracketed paste is the program's own request, and it is the shell that
+    // makes it here: with ?2004h set, what arrives has to be wrapped, which is
+    // what stops an editor from auto-indenting every line of a paste.
+    await typeLine(s.page, "printf '\\033[?2004h'");
+    await wait(500);
+    await s.page.evaluate(() => navigator.clipboard.writeText('bracketed'));
+    const beforeBracket = await mark();
+    await s.page.keyboard.press('Control+V');
+    await wait(400);
+    const bracketed = await since(beforeBracket);
+    ok(has(bracketed, hexOf('\x1b[200~bracketed\x1b[201~')),
+      'a paste is bracketed when the program asked to be told that a paste is a paste',
+      bracketed.join(',') || 'nothing');
+    await s.page.keyboard.press('Control+U');
+    await typeLine(s.page, "printf '\\033[?2004l'");
+    await wait(400);
+
+    // The other direction. xterm 6 keeps its selection in its own model and
+    // never puts one in the DOM, so the browser's copy event carries nothing:
+    // without this the pane could not be copied out of at all.
+    const said = 'copy-' + Math.random().toString(36).slice(2, 8);
+    await typeLine(s.page, 'echo ' + said);
+    ok(await awaitScreen(s.page, said, 20000), 'a line to copy is on the screen',
+      oneLine(await screen(s.page)).slice(-60));
+    // Selected the way a person selects it: the pointer dragged across the row
+    // the words are on, with Shift held - tmux tracks the mouse, so a plain
+    // drag is a mouse report and Shift is what takes the pointer back from
+    // the program. (A plain drag is not lost either: it puts tmux into its own
+    // copy mode, and what tmux copies reaches this clipboard over OSC 52.)
+    const box = await s.page.evaluate((want) => {
+      const rows = document.querySelector('#term .xterm-rows');
+      for (const row of rows.children) {
+        const text = row.innerText.replace(/ /g, ' ');
+        if (text.includes(want) && !text.includes('echo ' + want)) {
+          const r = row.getBoundingClientRect();
+          return { x: r.left, y: r.top + r.height / 2, right: r.right };
         }
       }
-      return out;
-    });
-    ok(admin.length === 0, 'and neither does the dashboard, switches included',
-      admin.slice(0, 10).join(', ') || 'all big enough');
-    await shot(s.page, 'taptargets-admin');
+      return null;
+    }, said);
+    ok(!!box, 'the row it printed on is where the pointer will go',
+      box ? Math.round(box.x) + ',' + Math.round(box.y) : 'not found');
+    await s.page.keyboard.down('Shift');
+    await s.page.mouse.move(box.x + 2, box.y);
+    await s.page.mouse.down();
+    await s.page.mouse.move(box.right - 2, box.y, { steps: 12 });
+    await s.page.mouse.up();
+    await s.page.keyboard.up('Shift');
+    await wait(200);
+    const selected = await s.page.evaluate(() => document
+      .querySelectorAll('#term .xterm-selection div').length > 0);
+    ok(selected, 'a drag across the pane selects it', selected ? 'selected' : 'no selection');
 
+    const beforeCopy = await mark();
+    await s.page.keyboard.press('Control+C');
+    await wait(300);
+    const onCopy = await since(beforeCopy);
+    ok(!onCopy.includes('03'), 'Ctrl-C over a selection does not interrupt the program',
+      onCopy.join(',') || 'nothing');
+    const held = await s.page.evaluate(() => navigator.clipboard.readText());
+    ok(held.includes(said), 'it copies the selection to the clipboard',
+      JSON.stringify(oneLine(held)));
+    const stillSelected = await s.page.evaluate(() => document
+      .querySelectorAll('#term .xterm-selection div').length > 0);
+    ok(!stillSelected, 'and the selection is spent, so the next Ctrl-C is a Ctrl-C again',
+      stillSelected ? 'still selected' : 'cleared');
+
+    // Which is the assertion that matters most: an interrupt that a stray
+    // selection could swallow is a terminal nobody can stop a program in.
+    const beforeIntr = await mark();
+    await s.page.keyboard.press('Control+C');
+    await wait(300);
+    const onIntr = await since(beforeIntr);
+    ok(onIntr.includes('03'), 'Ctrl-C with nothing selected still sends 0x03',
+      onIntr.join(',') || 'nothing');
+
+    // And the key bar's own Paste button, which is the only way in on a phone.
+    await s.page.evaluate(() => navigator.clipboard.writeText('from-the-bar'));
+    await s.page.click('#sessionMenu');
+    await s.page.click('.menu-item:has-text("Show key bar")');
+    await s.page.waitForSelector('#keybar:not([hidden])', { timeout: 10000 });
+    const beforeBar = await mark();
+    await s.page.click('#keybar .key[data-key="Paste"]');
+    await wait(400);
+    const fromBar = await since(beforeBar);
+    ok(has(fromBar, hexOf('from-the-bar')), 'the key bar’s Paste button pastes the same text',
+      fromBar.join(',') || 'nothing');
+    await s.page.keyboard.press('Control+U');
+
+
+    // The pointer, without Shift. tmux tracks the mouse, so xterm on its own
+    // hands a plain drag to tmux as mouse reports - and tmux's copy mode, its
+    // buffer and an OSC 52 with no gesture behind it were what a person's copy
+    // then depended on. On a Mac there was no Shift to fall back on either.
+    // Now a plain drag is a selection in the browser, copied on release; a
+    // plain click is still the click a program may be waiting for.
+    // rowOf is the row a word was printed on - the output, not the command
+    // that printed it - waited for, because a repaint after a resize empties
+    // the rows for a frame.
+    const rowOf = async (want) => {
+      const find = (want) => {
+        const rows = document.querySelector('#term .xterm-rows');
+        for (const row of rows.children) {
+          const text = row.innerText.replace(/\u00a0/g, ' ');
+          if (text.includes(want) && !text.includes('echo ' + want)) {
+            const r = row.getBoundingClientRect();
+            return { x: r.left, y: r.top + r.height / 2, right: r.right };
+          }
+        }
+        return null;
+      };
+      await s.page.waitForFunction(find, want, { timeout: 5000 }).catch(() => {});
+      return s.page.evaluate(find, want);
+    };
+    const selectedNow = () => s.page.evaluate(() => document
+      .querySelectorAll('#term .xterm-selection div').length > 0);
+    const REPORT = hexOf('\x1b[<');
+
+    await s.page.click('#sessionMenu');
+    await s.page.click('.menu-item:has-text("Hide key bar")');
+    await wait(300);
+    const plain = 'drag-' + Math.random().toString(36).slice(2, 8);
+    await typeLine(s.page, 'echo ' + plain + ' second-word');
+    ok(await awaitScreen(s.page, plain + ' second-word', 20000), 'a line for the pointer is on the screen',
+      oneLine(await screen(s.page)).slice(-60));
+    await wait(300);
+    const row = await rowOf(plain);
+    ok(!!row, 'and the row it is on is known', row ? Math.round(row.x) + ',' + Math.round(row.y)
+      : 'not found in: ' + JSON.stringify(await s.page.evaluate((want) => [...document.querySelector('#term .xterm-rows').children]
+        .map((r) => r.innerText).filter((t) => t.includes(want)), plain)));
+
+    await s.page.evaluate(() => navigator.clipboard.writeText('stale'));
+    const beforeDrag = await mark();
+    await s.page.mouse.move(row.x + 2, row.y);
+    await s.page.mouse.down();
+    await s.page.mouse.move(row.right - 2, row.y, { steps: 12 });
+    await s.page.mouse.up();
+    await wait(300);
+    const duringDrag = await since(beforeDrag);
+    ok(!has(duringDrag, REPORT), 'a plain drag - no Shift - sends no mouse report to tmux',
+      duringDrag.join(',') || 'nothing');
+    ok(await selectedNow(), 'it selects in the browser instead', 'selected');
+    const afterDrag = await s.page.evaluate(() => navigator.clipboard.readText());
+    ok(afterDrag.includes(plain + ' second-word'),
+      'and the selection is on the clipboard the moment the button is released',
+      JSON.stringify(oneLine(afterDrag)));
+
+    const beforeClick = await mark();
+    await s.page.mouse.click(row.x + 2, row.y);
+    await wait(300);
+    const onClick = await since(beforeClick);
+    ok(has(onClick, hexOf('\x1b[<0;')), 'a plain click is still reported to the program, at its release',
+      onClick.join(',') || 'nothing');
+    ok(!(await selectedNow()), 'and it clears the selection, as a click does', 'cleared');
+
+    await s.page.evaluate(() => navigator.clipboard.writeText('stale'));
+    await s.page.mouse.dblclick(row.x + 2, row.y);
+    await wait(300);
+    const word = await s.page.evaluate(() => navigator.clipboard.readText());
+    ok(word === plain, 'a double click takes the word under the pointer, and copies it',
+      JSON.stringify(oneLine(word)));
+
+    const beforeRight = await mark();
+    await s.page.mouse.click(row.x + 2, row.y, { button: 'right' });
+    await wait(300);
+    const onRight = await since(beforeRight);
+    ok(!has(onRight, REPORT), 'a right click is not reported, so tmux opens no menu of its own',
+      onRight.join(',') || 'nothing');
+
+    const beforeMiddle = await mark();
+    await s.page.mouse.click(row.x + 2, row.y, { button: 'middle' });
+    await wait(300);
+    const onMiddle = await since(beforeMiddle);
+    ok(has(onMiddle, hexOf(plain)), 'a middle click pastes the last thing selected, as it does on X11',
+      onMiddle.join(',') || 'nothing');
+    // Once, not twice: Chrome on Linux pastes the X11 primary selection on a
+    // middle click as well, and that paste is not stopped by preventDefault
+    // on the press.
+    const pastes = onMiddle.join(',').split(hexOf('\x1b[200~').join(',')).length - 1;
+    ok(pastes === 1, 'exactly once, not once from us and once from the browser', String(pastes));
+    ok(!has(onMiddle, REPORT), 'and is not reported to tmux, which would paste a buffer of its own',
+      onMiddle.join(',') || 'nothing');
+    await s.page.keyboard.press('Control+U');
+
+    // The keys with the focus somewhere else on the page - after a click on
+    // the sidebar, say. The browser fires paste and copy on whatever has the
+    // focus, and unless that is a field of its own they are the pane's.
+    await s.page.evaluate(() => document.querySelector('#sessionMenu').focus());
+    ok(await s.page.evaluate(() => document.activeElement === document.querySelector('#sessionMenu')),
+      'the focus is on a button in the header, not on the terminal', 'the session menu button');
+    const away = 'away-' + Math.random().toString(36).slice(2, 8);
+    await s.page.evaluate((text) => navigator.clipboard.writeText(text), away);
+    const beforeAway = await mark();
+    await s.page.keyboard.press('Control+V');
+    await wait(400);
+    const onAway = await since(beforeAway);
+    ok(has(onAway, hexOf(away)), 'Ctrl-V with the focus elsewhere on the page still pastes into the pane',
+      onAway.join(',') || 'nothing');
+    ok(await s.page.evaluate(() => document.activeElement === document.querySelector('#term .xterm-helper-textarea')),
+      'and the pane has the focus again', 'textarea');
+    await s.page.keyboard.press('Control+U');
+
+    await s.page.mouse.move(row.x + 2, row.y);
+    await s.page.mouse.down();
+    await s.page.mouse.move(row.right - 2, row.y, { steps: 8 });
+    await s.page.mouse.up();
+    await wait(200);
+    await s.page.evaluate(() => document.querySelector('#sessionMenu').focus());
+    await s.page.evaluate(() => navigator.clipboard.writeText('stale'));
+    const beforeAwayCopy = await mark();
+    await s.page.keyboard.press('Control+C');
+    await wait(300);
+    const awayCopy = await s.page.evaluate(() => navigator.clipboard.readText());
+    ok(awayCopy.includes(plain), 'Ctrl-C with the focus elsewhere copies the pane’s selection',
+      JSON.stringify(oneLine(awayCopy)));
+    ok(!(await since(beforeAwayCopy)).includes('03'), 'and interrupts nothing',
+      (await since(beforeAwayCopy)).join(',') || 'nothing');
+
+    // Two rows, which is how output is actually copied: xterm's `select()`
+    // takes a length in cells and wraps it across lines, so the selection has
+    // to be the block between the two points and not part of one row. Both
+    // rows are looked up again here, because every command typed since has
+    // pushed the screen up by one.
+    await s.page.click('#term .xterm-screen');
+    await focusTerm(s.page);
+    const second = 'wrap-' + Math.random().toString(36).slice(2, 8);
+    await typeLine(s.page, 'echo ' + second);
+    ok(await awaitScreen(s.page, second, 20000), 'a second row to select down to is on the screen',
+      oneLine(await screen(s.page)).slice(-60));
+    const upper = await rowOf(plain);
+    const lower = await rowOf(second);
+    ok(!!upper && !!lower && lower.y > upper.y, 'and the two rows are one above the other',
+      upper && lower ? Math.round(upper.y) + ' -> ' + Math.round(lower.y) : 'not found');
+    await s.page.evaluate(() => navigator.clipboard.writeText('stale'));
+    await s.page.mouse.move(upper.x + 2, upper.y);
+    await s.page.mouse.down();
+    await s.page.mouse.move(lower.right - 2, lower.y, { steps: 12 });
+    await s.page.mouse.up();
+    await wait(300);
+    const bothRows = await s.page.evaluate(() => navigator.clipboard.readText());
+    ok(bothRows.includes(plain) && bothRows.includes(second),
+      'a drag down two rows copies both of them', JSON.stringify(oneLine(bothRows)));
+
+    // What a program copies. OSC 52 is how tmux's own copy mode reaches the
+    // clipboard, and how a program inside it does; tmux forwards it with no
+    // selection named - `52;;` - which is what the stock addon threw away.
+    await s.page.click('#term .xterm-screen');
+    await focusTerm(s.page);
+    const osc = 'osc-' + Math.random().toString(36).slice(2, 8);
+    await s.page.evaluate(() => navigator.clipboard.writeText('stale'));
+    await typeLine(s.page, "printf '\\033]52;;" + Buffer.from(osc, 'utf8').toString('base64') + "\\a'");
+    await wait(800);
+    const fromProgram = await s.page.evaluate(() => navigator.clipboard.readText());
+    ok(fromProgram === osc, 'an OSC 52 from the program, through tmux, sets the clipboard',
+      JSON.stringify(oneLine(fromProgram)));
+
+    await shot(s.page, 'clipboard');
     ok(unexpected(s.errors).length === 0, 'no console errors',
       unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
 
-// A phone held in landscape is 844px wide, so every rule keyed on a phone's
-// portrait width missed it - which is the one orientation somebody fills a
-// form in. A field under 16px zooms iOS Safari the moment it takes focus, and
-// a zoomed page scrolls sideways.
-async function landscapetype() {
-  const s = await start({ viewport: { width: 844, height: 390 }, touch: true });
+/* ------------------------------------------------------- 46b. touchcopy */
+
+// A phone has no pointer to drag and no Ctrl to press, and xterm 6 selects
+// with a mouse and nothing else - so there was no way to copy a line out of a
+// pane on the device this product is carried on. A finger held still on the
+// pane now selects the word under it, grows the selection when it moves on,
+// and copies when it lifts, saying so with a toast.
+async function touchcopy() {
+  const s = await start({
+    viewport: { width: 390, height: 844 },
+    touch: true,
+    permissions: ['clipboard-read', 'clipboard-write'],
+  });
   try {
     await setup(s.page, s.url);
     await useDomRenderer(s);
-    await open(s);
-
-    const small = (page) => page.evaluate(() => {
-      const out = [];
-      for (const el of document.querySelectorAll('input, textarea, select')) {
-        const st = getComputedStyle(el);
-        if (st.display === 'none' || st.visibility === 'hidden') continue;
-        const size = parseFloat(st.fontSize);
-        if (size < 16) out.push((el.id || el.className.toString().split(' ')[0] || el.type) + ' ' + size);
-      }
-      return out;
-    });
-
-    await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('#saveTop', { timeout: 15000 });
-    await wait(1500);
-    ok((await small(s.page)).length === 0,
-      'no field on the dashboard is under 16px in landscape',
-      (await small(s.page)).slice(0, 8).join(', ') || 'all 16 or more');
-
+    await recordInput(s.page);
     await open(s);
     await startSession(s.page, 'shell');
     await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
-    await s.page.click('#agentBtn');
-    await s.page.waitForSelector('#chatText', { timeout: 10000 });
-    await wait(400);
-    ok((await small(s.page)).length === 0,
-      'nor is the chat field, nor xterm\'s own hidden input',
-      (await small(s.page)).slice(0, 8).join(', ') || 'all 16 or more');
-    const helper = await s.page.$eval('#term .xterm-helper-textarea',
-      (n) => getComputedStyle(n).fontSize);
-    ok(parseFloat(helper) >= 16,
-      'the terminal\'s helper textarea is 16px, so tapping the pane does not zoom the page', helper);
 
+    const first = 'hold-' + Math.random().toString(36).slice(2, 6);
+    const line = first + ' more-' + Math.random().toString(36).slice(2, 6);
+    await typeLine(s.page, 'echo ' + line);
+    ok(await awaitScreen(s.page, line, 20000), 'a line to copy is on the screen',
+      oneLine(await screen(s.page)).slice(-60));
+    await wait(300);
+    const row = await s.page.evaluate((want) => {
+      const rows = document.querySelector('#term .xterm-rows');
+      for (const r of rows.children) {
+        if (r.innerText.includes(want) && !r.innerText.includes('echo ' + want)) {
+          const b = r.getBoundingClientRect();
+          return { x: b.left, y: b.top + b.height / 2, right: b.right };
+        }
+      }
+      return null;
+    }, first);
+    ok(!!row, 'and the row it is on is known', row ? Math.round(row.x) + ',' + Math.round(row.y)
+      : 'not found in: ' + JSON.stringify(await s.page.evaluate((want) => [...document.querySelector('#term .xterm-rows').children]
+        .map((r) => r.innerText).filter((t) => t.includes(want)), plain)));
+    const cdp = await s.context.newCDPSession(s.page);
+    const finger = async (x, y, type) => cdp.send('Input.dispatchTouchEvent', {
+      type, touchPoints: type === 'touchEnd' ? [] : [{ x, y }],
+    });
+    const sent = async () => (await sentBytes(s.page)).length;
+    const hexOf = (text) => Buffer.from(text, 'utf8').toString('hex').match(/../g);
+    const has = (frames, want) => frames.flatMap((f) => f.match(/../g) || []).join(',').includes(want.join(','));
+
+    // Held still: the word under the finger.
+    await s.page.evaluate(() => navigator.clipboard.writeText('stale'));
+    const before = await sent();
+    await finger(row.x + 4, row.y, 'touchStart');
+    await wait(700);
+    await finger(row.x + 4, row.y, 'touchEnd');
+    await wait(300);
+    const word = await s.page.evaluate(() => navigator.clipboard.readText());
+    ok(word === first, 'a finger held on the pane selects the word under it, and lifting it copies',
+      JSON.stringify(oneLine(word)));
+    const toasted = await s.page.evaluate(() => [...document.querySelectorAll('.toast')].map((t) => t.textContent));
+    ok(toasted.some((t) => /Copied/.test(t)), 'and says so, because a phone shows nothing else',
+      toasted.join(' | ') || 'no toast');
+    const after = (await sentBytes(s.page)).slice(before);
+    ok(!has(after, hexOf('\x1b[<')), 'the hold was not a tap: no click reached the program',
+      after.join(',') || 'nothing');
+
+    // Held then moved: the selection grows with the finger.
+    await s.page.evaluate(() => navigator.clipboard.writeText('stale'));
+    await finger(row.x + 4, row.y, 'touchStart');
+    await wait(700);
+    for (let i = 1; i <= 8; i++) {
+      await finger(row.x + 4 + ((row.right - 8 - row.x) * i) / 8, row.y, 'touchMove');
+      await wait(30);
+    }
+    await finger(row.right - 4, row.y, 'touchEnd');
+    await wait(300);
+    const grown = await s.page.evaluate(() => navigator.clipboard.readText());
+    ok(grown.startsWith(line), 'moved on, the finger grows the selection to where it lifts',
+      JSON.stringify(oneLine(grown)));
+    ok(await s.page.evaluate(() => window.scrollY === 0), 'and the page did not scroll under it',
+      String(await s.page.evaluate(() => window.scrollY)));
+
+    // A tap is still a tap.
+    const beforeTap = await sent();
+    await finger(row.x + 4, row.y, 'touchStart');
+    await wait(60);
+    await finger(row.x + 4, row.y, 'touchEnd');
+    await wait(400);
+    const onTap = (await sentBytes(s.page)).slice(beforeTap);
+    ok(has(onTap, hexOf('\x1b[<0;')), 'a short tap is the click it always was', onTap.join(',') || 'nothing');
+
+    await shot(s.page, 'touchcopy');
     ok(unexpected(s.errors).length === 0, 'no console errors',
       unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
 
-// The drawer, and the row a thumb is most likely to hit: the session that is
-// already open. It used to leave the list covering the terminal it had just
-// been asked for.
-async function drawerselect() {
-  const s = await start({ viewport: { width: 390, height: 844 }, touch: true });
+/* --------------------------------------------------------- 47. keyboard */
+
+// keyboardable is the whole promise, measured: what may raise the on-screen
+// keyboard, what may not, and the one button that does. `inputmode="none"` is
+// the request a browser is asked to honour and `readonly` is the fact it
+// cannot argue with; both are checked, because the promise is "never", and a
+// promise that holds on some phones is not one.
+const keyboardable = (page) => page.evaluate(() => {
+  const muted = (node) => !!node && node.getAttribute('inputmode') === 'none' && node.readOnly;
+  const btn = document.getElementById('kbBtn');
+  const pane = document.querySelector('#term textarea');
+  const active = document.activeElement;
+  const copies = [...document.querySelectorAll('.kb-copy')];
+  const copy = copies[0];
+  const r = btn.getBoundingClientRect();
+  const c = copy ? copy.getBoundingClientRect() : null;
+  return {
+    shown: !!btn.checkVisibility && btn.checkVisibility(),
+    open: btn.getAttribute('aria-pressed'),
+    filled: btn.classList.contains('on'),
+    label: btn.getAttribute('aria-label'),
+    pane: muted(pane),
+    paneOpen: !!pane && !muted(pane),
+    focus: active ? (active.closest('#term') ? 'pane' : active.closest('dialog') ? 'dialog' : active.localName) : null,
+    focusMuted: !!active && muted(active),
+    fields: [...document.querySelectorAll('input.input')]
+      .filter((n) => n.checkVisibility && n.checkVisibility())
+      .map((n) => ({ id: n.id || n.className, muted: muted(n) })),
+    mics: [...document.querySelectorAll('.dictate')]
+      .filter((n) => n.checkVisibility && n.checkVisibility())
+      .map((row) => ({ field: !!row.querySelector('input'), mic: !!row.querySelector('.mic-btn') })),
+    copies: copies.length,
+    copy: copy ? {
+      inDialog: !!copy.closest('dialog[open]'),
+      shown: copy.checkVisibility(),
+      over: Math.abs(c.left - r.left) < 2 && Math.abs(c.top - r.top) < 2,
+      open: copy.getAttribute('aria-pressed'),
+    } : null,
+    keyboardKey: !!document.querySelector('#keybar [data-key="Keyboard"]'),
+  };
+});
+
+// The keyboard switch: on a touch screen nothing raises the on-screen keyboard
+// but the button in the top bar - not the pane, not a field, not a dialog - and
+// a second press puts it away. The button is pressable everywhere, dialogs
+// included, and on a device with a mouse none of it applies.
+async function keyboard() {
+  // What the stub hears is what a person would say to filter that list, so the
+  // words land somewhere with a visible consequence rather than in a field
+  // nobody looks at again.
+  const stub = await openRouterStub({ text: 'dynamic' });
+  // Wide enough that the session list is a column rather than a drawer. The
+  // touch screen is the part that matters and it is on.
+  const s = await start({
+    viewport: { width: 1100, height: 900 },
+    touch: true,
+    permissions: ['microphone'],
+    args: [
+      '--use-fake-ui-for-media-stream',
+      '--use-fake-device-for-media-stream',
+      '--autoplay-policy=no-user-gesture-required',
+    ],
+  });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    const saved = await s.context.request.put(s.url + '/api/settings', {
+      data: {
+        settings: {
+          openrouter: { api_key: 'e2e-key', base_url: stub.url, transcribe_model: 'openai/whisper-1' },
+        },
+      },
+    });
+    ok(saved.ok(), 'the gateway is pointed at the stub', saved.status() + ' ' + stub.url);
+
+    await open(s);
+    await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    await wait(400);
+
+    /* ------------------------------------------------------ shut by default */
+
+    const off = await keyboardable(s.page);
+    ok(off.shown && off.open === 'false' && !off.filled,
+      'the button is in the bar, and the keyboard starts put away',
+      JSON.stringify({ shown: off.shown, open: off.open, filled: off.filled }));
+    ok(/show the keyboard/i.test(off.label || ''), 'and it says what a press does', off.label);
+    ok(off.pane, 'the pane cannot raise the keyboard: inputmode=none, and read-only for the phones that ignore it',
+      off.pane ? 'inputmode=none and readonly' : 'an ordinary text field');
+    ok(!off.keyboardKey, 'and the key bar has no keyboard key of its own any more', String(off.keyboardKey));
+
+    // Tapping the pane is the gesture that used to open the keyboard on every
+    // tap. It still puts the focus where it belongs, and that is all it does.
+    await s.page.click('#term');
+    await wait(200);
+    const tapped = await keyboardable(s.page);
+    ok(tapped.focus === 'pane' && tapped.focusMuted && tapped.open === 'false',
+      'a tap on the pane takes the focus with the keyboard shut',
+      JSON.stringify({ focus: tapped.focus, muted: tapped.focusMuted, open: tapped.open }));
+
+    /* ------------------------------------------------ the pane, by the button */
+
+    await s.page.click('#kbBtn');
+    await wait(200);
+    const up = await keyboardable(s.page);
+    ok(up.open === 'true' && up.filled && up.paneOpen && up.focus === 'pane' && !up.focusMuted,
+      'a press raises it for the pane: the pane is an ordinary field again, and has the focus',
+      JSON.stringify({ open: up.open, filled: up.filled, paneOpen: up.paneOpen, focus: up.focus }));
+    ok(/hide the keyboard/i.test(up.label || ''), 'and the button now says it puts it away', up.label);
+    await s.page.click('#term');
+    await wait(200);
+    const stays = await keyboardable(s.page);
+    ok(stays.open === 'true' && stays.paneOpen,
+      'a tap on the pane while it is up leaves it up', JSON.stringify({ open: stays.open }));
+    await s.page.click('#kbBtn');
+    await wait(200);
+    const down = await keyboardable(s.page);
+    ok(down.open === 'false' && down.pane && down.focus === 'pane',
+      'a second press puts it away, and the pane keeps the focus for a real keyboard',
+      JSON.stringify({ open: down.open, pane: down.pane, focus: down.focus }));
+
+    // The system can put the keyboard away without the page hearing of it -
+    // here a viewport that shrank for it and then came back only part of the
+    // way. The button goes by the keyboard it can see, not by its own word:
+    // the next press raises it again rather than "putting away" nothing.
+    const viewport = (gap) => s.page.evaluate((g) => {
+      Object.defineProperty(window.visualViewport, 'height',
+        { configurable: true, get: () => window.innerHeight - g });
+      window.visualViewport.dispatchEvent(new Event('resize'));
+    }, gap);
+    await s.page.click('#kbBtn');
+    await viewport(320);
+    await wait(100);
+    await viewport(110);
+    await wait(1700);
+    const stale = await keyboardable(s.page);
+    await s.page.click('#kbBtn');
+    await wait(200);
+    const raised = await keyboardable(s.page);
+    ok(stale.open === 'true' && raised.open === 'true' && raised.paneOpen && raised.focus === 'pane',
+      'a press over a keyboard the system took away raises it again',
+      JSON.stringify({ before: stale.open, after: raised.open, paneOpen: raised.paneOpen, focus: raised.focus }));
+    await viewport(320);
+    await wait(100);
+    await s.page.click('#kbBtn');
+    await wait(200);
+    const lowered = await keyboardable(s.page);
+    ok(lowered.open === 'false' && lowered.pane,
+      'and a press over one that is really up still puts it away', JSON.stringify({ open: lowered.open }));
+    await s.page.evaluate(() => {
+      delete window.visualViewport.height;
+      window.visualViewport.dispatchEvent(new Event('resize'));
+    });
+
+    // Leaving every field is the keyboard going away on its own, and the
+    // button follows it rather than staying pressed over nothing.
+    await s.page.click('#kbBtn');
+    await wait(150);
+    await s.page.click('#soundBtn');
+    await wait(250);
+    const left = await keyboardable(s.page);
+    ok(left.open === 'false' && left.pane,
+      'the focus leaving every field puts the switch back', JSON.stringify({ open: left.open, pane: left.pane }));
+    await s.page.click('#soundBtn');
+
+    /* ------------------------------------------------------- in a dialog */
+
+    await s.page.click('#newSession');
+    await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 10000 });
+    await wait(500);
+    const sheet = await keyboardable(s.page);
+    ok(sheet.fields.length >= 1 && sheet.fields.every((f) => f.muted),
+      'every field on the sheet is muted', JSON.stringify(sheet.fields));
+    ok(sheet.mics.length >= 1 && sheet.mics.every((row) => row.field && row.mic),
+      'and every one has its microphone', JSON.stringify(sheet.mics));
+    ok(sheet.copies === 1 && sheet.copy && sheet.copy.inDialog && sheet.copy.shown && sheet.copy.over,
+      'the button is pressable over the dialog, in the very spot the bar has it',
+      JSON.stringify(sheet.copy));
+    await shot(s.page, 'keyboard-sheet');
+
+    await s.page.click('#newSessionSheet .kb-copy');
+    await wait(200);
+    const typing = await keyboardable(s.page);
+    ok(typing.open === 'true' && typing.copy && typing.copy.open === 'true'
+      && typing.focus === 'dialog' && !typing.focusMuted,
+      'pressed there, it raises the keyboard for the dialog\'s field',
+      JSON.stringify({ open: typing.open, copy: typing.copy, focus: typing.focus, muted: typing.focusMuted }));
+    await s.page.click('#newSessionSheet .kb-copy');
+    await wait(200);
+    const shut = await keyboardable(s.page);
+    ok(shut.open === 'false' && shut.fields.every((f) => f.muted),
+      'and pressed again, puts it away', JSON.stringify({ open: shut.open, fields: shut.fields }));
+
+    // A field is still filled by speaking to it. What comes back is what would
+    // have been typed: it goes in the field and the field is told, so the list
+    // filters exactly as it does under a finger.
+    await s.page.click('#nsDir .mic-btn');
+    await s.page.waitForSelector('#recSheet[open]', { timeout: 15000 });
+    await wait(1200);
+    await s.page.click('#recSend');
+    const heard = await s.page.waitForFunction(
+      (want) => document.querySelector('#nsDir .combo-input').value === want,
+      stub.text, { timeout: 60000 }).then(() => true).catch(() => false);
+    ok(heard, 'a muted field is filled by speaking into it',
+      await s.page.$eval('#nsDir .combo-input', (n) => n.value));
+    await s.page.click('#newSessionSheet .sheet-title');
+    await s.page.click('#nsCancel');
+    await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 10000 })
+      .catch(() => {});
+
+    // The dialog that asks for one line of text is a field like any other.
+    await s.page.click('#sessionMenu');
+    const items = await s.page.$$eval('.menu-item', (nodes) => nodes.map((n) => n.textContent));
+    ok(items.some((one) => /key bar/i.test(one)),
+      'the key bar is this device\'s choice again, and the menu offers it', JSON.stringify(items));
+    await s.page.click('.menu-item:has-text("Rename")');
+    await s.page.waitForSelector('dialog.modal', { timeout: 10000 });
+    await wait(400);
+    const rename = await keyboardable(s.page);
+    ok(rename.fields.length === 1 && rename.fields[0].muted && rename.mics.length === 1
+      && rename.copy && rename.copy.shown && rename.copy.over,
+      'so is the rename dialog: its field muted, with a microphone, and the button over it',
+      JSON.stringify({ fields: rename.fields, mics: rename.mics, copy: rename.copy }));
+    await s.page.click('dialog.modal .kb-copy');
+    await wait(200);
+    const renaming = await keyboardable(s.page);
+    ok(renaming.open === 'true' && renaming.focus === 'dialog' && !renaming.focusMuted,
+      'and the button raises the keyboard for it', JSON.stringify({ open: renaming.open, focus: renaming.focus }));
+    await s.page.click('dialog.modal .kb-copy');
+    await wait(200);
+    // A tablet in its case types on keys of its own, and a muted field is
+    // given back to them rather than swallowing the key.
+    await s.page.keyboard.type('xy');
+    const keyed = await s.page.evaluate(() => {
+      const node = document.activeElement;
+      return { value: node.value, ro: node.readOnly, dialog: !!node.closest('dialog') };
+    });
+    ok(keyed.dialog && keyed.value.endsWith('xy') && !keyed.ro,
+      'a key pressed on real keys lands in the muted field', JSON.stringify(keyed));
+    await s.page.keyboard.press('Escape');
+    await s.page.waitForSelector('dialog.modal', { state: 'detached', timeout: 10000 }).catch(() => {});
+    await wait(300);
+    const after = await keyboardable(s.page);
+    ok(after.copies === 0 && after.open === 'false' && after.pane,
+      'a closed dialog takes its copy of the button with it, and the pane is muted again',
+      JSON.stringify({ copies: after.copies, open: after.open, pane: after.pane }));
+
+    /* ------------------------------------------------- not on a desk */
+
+    const desk = await s.browser.newContext({ viewport: { width: 1280, height: 720 }, colorScheme: 'light' });
+    await desk.addCookies(await s.context.cookies());
+    const deskPage = await desk.newPage();
+    const openId = await s.page.evaluate(() => location.hash.slice(1));
+    await deskPage.goto(s.url + '/#' + openId, { waitUntil: 'domcontentloaded' });
+    await deskPage.waitForSelector('#term .xterm', { timeout: 20000 });
+    await wait(600);
+    const atDesk = await keyboardable(deskPage);
+    ok(!atDesk.shown && atDesk.paneOpen,
+      'a device with a mouse has no button and no muted field', JSON.stringify({ shown: atDesk.shown, paneOpen: atDesk.paneOpen }));
+    await deskPage.close();
+    await desk.close();
+
+    // Tesla's browser is a Chromium that says its pointer is fine and can
+    // hover, with no touch points to give it away: its name is what does.
+    const car = await s.browser.newContext({
+      viewport: { width: 1280, height: 720 },
+      colorScheme: 'light',
+      userAgent: 'Mozilla/5.0 (X11; GNU/Linux) AppleWebKit/537.36 (KHTML, like Gecko) '
+        + 'Chromium/120.0.6099.0 Chrome/120.0.6099.0 Safari/537.36 Tesla/2024.26.7',
+    });
+    await car.addCookies(await s.context.cookies());
+    const carPage = await car.newPage();
+    await carPage.goto(s.url + '/#' + openId, { waitUntil: 'domcontentloaded' });
+    await carPage.waitForSelector('#term .xterm', { timeout: 20000 });
+    await wait(600);
+    const inCar = await keyboardable(carPage);
+    ok(inCar.shown && inCar.pane && inCar.open === 'false',
+      'a car that says it has a mouse still has the button, and a muted pane',
+      JSON.stringify({ shown: inCar.shown, pane: inCar.pane, open: inCar.open }));
+    await carPage.click('#kbBtn');
+    await wait(200);
+    const carUp = await keyboardable(carPage);
+    ok(carUp.open === 'true' && carUp.paneOpen && carUp.focus === 'pane',
+      'and its button raises the keyboard for the pane',
+      JSON.stringify({ open: carUp.open, paneOpen: carUp.paneOpen, focus: carUp.focus }));
+    await carPage.close();
+    await car.close();
+
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally {
+    await s.stop();
+    await stub.close();
+  }
+}
+
+/* --------------------------------------------------------- 48. transfer */
+
+// Copy, paste and upload as buttons: a file lands in the working directory
+// and its path on the prompt, the clipboard reaches the pane, the pane's text
+// reaches the clipboard - and on a phone the three leave the full bar and
+// float over the pane instead.
+async function transfer() {
+  const s = await start({
+    viewport: { width: 1280, height: 720 },
+    permissions: ['clipboard-read', 'clipboard-write'],
+  });
   try {
     await setup(s.page, s.url);
     await useDomRenderer(s);
     await open(s);
-    await startSession(s.page, 'shell');
-    const first = await s.page.evaluate(() => location.hash.slice(1));
-    await startSession(s.page, 'shell');
-    const second = await s.page.evaluate(() => location.hash.slice(1));
+    const hiddenBefore = await s.page.evaluate(() => document.getElementById('transfer').hidden);
+    ok(hiddenBefore, 'with nothing attached there is nothing to copy into', String(hiddenBefore));
+    const id = await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+    await s.page.waitForSelector('#transfer:not([hidden])', { timeout: 10000 });
+    const inBar = await s.page.evaluate(() => {
+      const bar = document.querySelector('.topbar').getBoundingClientRect();
+      const box = document.getElementById('transfer').getBoundingClientRect();
+      return { inside: box.top >= bar.top - 1 && box.bottom <= bar.bottom + 1, width: Math.round(box.width) };
+    });
+    ok(inBar.inside && inBar.width > 100, 'at a desk the three buttons are cells of the bar', JSON.stringify(inBar));
+    await s.page.click('#term .xterm-screen');
+    await focusTerm(s.page);
+
+    const res = await s.context.request.get(s.url + '/api/sessions/' + id);
+    const workdir = (await res.json()).session.workdir;
+
+    // Upload: the picker, a file name with a space in it, and the path that
+    // comes back on the prompt.
+    const png = Buffer.from('89504e470d0a1a0a' + '00'.repeat(24), 'hex');
+    await s.page.setInputFiles('input[type=file]', { name: 'shot one.png', mimeType: 'image/png', buffer: png });
+    const where = join(workdir, '.socrates', 'uploads', 'shot-one.png');
+    ok(await awaitPacked(s.page, '.socrates/uploads/shot-one.png'),
+      'the uploaded file\'s path is put on the prompt', oneLine(await screen(s.page)).slice(-90));
+    let stored = null;
+    try { stored = readFileSync(where); } catch { /* reported below */ }
+    ok(!!stored && stored.equals(png), 'the file is in the working directory, byte for byte',
+      where + ' ' + (stored ? stored.length + ' bytes' : 'missing'));
+    let ignore = '';
+    try { ignore = readFileSync(join(workdir, '.socrates', 'uploads', '.gitignore'), 'utf8'); } catch { /* below */ }
+    ok(ignore === '*\n', 'and git is told to look away', JSON.stringify(ignore));
+    await s.page.keyboard.press('Control+U');
+
+    // An image pasted into the pane takes the same road.
+    await s.page.evaluate(() => {
+      const data = new DataTransfer();
+      data.items.add(new File([new Uint8Array([137, 80, 78, 71])], 'clip.png', { type: 'image/png' }));
+      document.querySelector('#term .xterm-helper-textarea')
+        .dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+    });
+    ok(await awaitPacked(s.page, '.socrates/uploads/clip.png'),
+      'a pasted image is uploaded and its path put on the prompt', oneLine(await screen(s.page)).slice(-90));
+    await s.page.keyboard.press('Control+U');
+
+    // Paste: the clipboard, into the pane, by the button.
+    const line = 'pasted-' + Math.random().toString(36).slice(2, 8);
+    await s.page.evaluate((text) => navigator.clipboard.writeText(text), 'echo ' + line);
+    await s.page.click('#pasteBtn');
+    ok(await awaitScreen(s.page, 'echo ' + line), 'the paste button puts the clipboard on the prompt',
+      oneLine(await screen(s.page)).slice(-60));
+    await s.page.keyboard.press('Enter');
+    await awaitScreen(s.page, line + '\n');
+
+    // Copy with nothing selected: the pane's text in a sheet, and Copy all.
+    await s.page.click('#copyBtn');
+    await s.page.waitForSelector('.copy-sheet[open]', { timeout: 5000 });
+    const shown = await s.page.$eval('.copy-sheet textarea', (n) => n.value);
+    ok(shown.includes(line), 'with nothing selected, Copy opens the pane\'s text', shown.slice(-80));
+    await s.page.click('.copy-sheet .btn.primary');
+    await s.page.waitForSelector('.copy-sheet', { state: 'detached', timeout: 5000 });
+    const copied = await s.page.evaluate(() => navigator.clipboard.readText());
+    ok(copied === shown, 'and Copy all puts all of it on the clipboard', copied.length + ' of ' + shown.length + ' chars');
+
+    /* ------------------------------------------------------- on a phone */
+
+    const phone = await s.browser.newContext({
+      viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, colorScheme: 'light',
+    });
+    await phone.addCookies(await s.context.cookies());
+    const phonePage = await phone.newPage();
+    await phonePage.goto(s.url + '/#' + id, { waitUntil: 'domcontentloaded' });
+    await phonePage.waitForSelector('#transfer:not([hidden])', { timeout: 20000 });
     await wait(600);
-
-    const drawer = () => s.page.evaluate(() =>
-      Math.round(document.getElementById('sidebar').getBoundingClientRect().left));
-
-    await ensureNav(s.page);
-    await wait(400);
-    await s.page.tap(`#sessionList .chat-item[data-id="${first}"]`);
-    await wait(900);
-    ok(await drawer() < -10 && await s.page.evaluate(() => location.hash.slice(1)) === first,
-      'tapping another session switches to it and closes the drawer',
-      'hash=' + await s.page.evaluate(() => location.hash.slice(1)) + ' drawer=' + await drawer());
-
-    await ensureNav(s.page);
-    await wait(400);
-    await s.page.tap(`#sessionList .chat-item[data-id="${first}"]`);
-    await wait(900);
-    ok(await drawer() < -10,
-      'and tapping the session that is already open closes it too',
-      'drawer=' + await drawer());
-    ok(await s.page.evaluate(() => location.hash.slice(1)) === first,
-      'with the address bar still naming it', second ? 'not ' + second : '');
-    await shot(s.page, 'drawer-select');
+    const placed = await phonePage.evaluate(() => {
+      const bar = document.querySelector('.topbar');
+      const box = document.getElementById('transfer').getBoundingClientRect();
+      return {
+        floats: getComputedStyle(document.getElementById('transfer')).position === 'absolute',
+        below: box.top >= bar.getBoundingClientRect().bottom,
+        onScreen: box.right <= innerWidth && box.left >= 0,
+        fits: bar.scrollWidth <= bar.clientWidth,
+        clear: document.getElementById('termLines').getBoundingClientRect().top >= box.bottom,
+      };
+    });
+    ok(placed.floats && placed.below && placed.onScreen && placed.fits && placed.clear,
+      'on a phone the three float over the pane, the bar still fits, and a notice starts under them', JSON.stringify(placed));
+    await phonePage.close();
+    await phone.close();
 
     ok(unexpected(s.errors).length === 0, 'no console errors',
       unexpected(s.errors).join(' | ') || '0');
@@ -5523,54 +6193,52 @@ const ALL = [
   ['reloadkeepsscreen', 'a reload keeps the screen and the input path', reloadkeepsscreen],
   ['pages', 'every page is clean at a phone and at a desk', pages],
   ['harnesses', 'all four session types start and are seen in the browser', harnesses],
+  ['browserlayout', 'popup placement and bundled terminal font metrics', browserlayout],
   ['sessionlist', 'rename, archive, unarchive and delete', sessionlist],
-  ['daygroups', 'the list is grouped by day, and a row keeps its element when it moves', daygroups],
+  ['folders', 'the list is folders per project, shut and reopened, and a row keeps its element', folders],
   ['exitoverlay', 'a pane that ends, its status under the sentence, and Restart', exitoverlay],
   ['webglrenders', 'the shipped renderer paints the terminal', webglrenders],
   ['touchscroll', 'a finger scrolls the pane, and a tap is still a tap', touchscroll],
-  ['touchscroll-tui', 'a finger on a full-screen TUI, and on the history under it', touchscrolltui],
-  ['scrollstate', 'a pane scrolled back says so, and swallows nothing typed into it', scrollstate],
-  ['momentum', 'a flick keeps travelling, and a finger put back down stops it', momentum],
-  ['sheetkeyboard', 'the new session sheet with the keyboard up', sheetkeyboard],
-  ['keybarreach', 'every key on the bar is on screen and 44px', keybarreach],
-  ['taptargets', 'no control on a phone is smaller than a finger', taptargets],
-  ['landscapetype', 'a phone in landscape keeps the type a phone needs', landscapetype],
-  ['drawerselect', 'the drawer closes for the session already open', drawerselect],
-  ['keybar', 'no device gets the key bar unasked, and asked for it sends the right bytes', keybar],
+  ['keybar', 'a touch screen gets the key bar unasked, a desk does not, and it sends the right bytes', keybar],
   ['offlineonce', 'a line typed with no network arrives exactly once', offlineonce],
   ['sigtermreattach', 'a restarted server reattaches to the pane that kept running', sigtermreattach],
   ['takeover', 'a second tab with the same viewer id takes the pane over', takeover],
   ['offlinerestart', 'a restart during an outage, a wake storm, and nothing lost in silence', offlinerestart],
   ['latehello', 'what is typed before a late hello is delivered, exactly once', latehello],
   ['adminoptions', 'the basics round-trip and the fixed policy reaches the command line', adminoptions],
-  ['tmuxinstaller', 'the engine card, and an install that streams and survives a reload', tmuxinstaller],
+  ['tmuxcard', 'the engine card on a machine whose tmux is too old', tmuxcard],
   ['twoviewers', 'two devices on one session, and one notice about the size', twoviewers],
   ['backpressure', 'two hundred lines arrive whole, on screen and in the journal', backpressure],
   ['deletekeepsdir', 'delete kills the tmux session and keeps the work', deletekeepsdir],
   ['recoveredsession', 'a tmux session with no row is taken in, never killed', recoveredsession],
   ['createclaude', 'Claude Code from the sheet to the command line, and back after an exit', createclaude],
   ['createcodex', 'Codex is trusted where it works, and its conversation is found', createcodex],
+  ['profiles', 'a second set of sign-ins, from the dashboard to the command line', profiles],
   ['createopencode', 'OpenCode names its session over its own authenticated server', createopencode],
   ['rebootresume', 'a machine that rebooted, and the session that comes back with its conversation', rebootresume],
   ['lighttheme', 'the white terminal, from the launch flag to the drawn pixel', lighttheme],
   ['activity-claude', 'Claude Code working, finishing, and a name that goes bold', activityclaude],
   ['activity-codex', 'Codex working, finishing, and a name that goes bold', activitycodex],
   ['activity-opencode', 'OpenCode working, finishing, and a name that goes bold', activityopencode],
-  ['activity-shell', 'a shell with something running in it, and the row that says so', activityshell],
+  ['tasks-claude', 'Claude Code done with its turn, a shell still running: an hourglass, then bold', taskclaude],
+  ['tasks-codex', 'Codex done with its turn, a background terminal still running', taskcodex],
+  ['tasks-opencode', 'OpenCode done with its turn, a background sub-agent still running', taskopencode],
   ['activity-waiting', 'a permission prompt: a still amber ring, and no timeout', activitywaiting],
   ['activity-fallback', 'a harness that hangs, and the row that leaves busy anyway', activityfallback],
   ['unread', 'bold when nobody saw it, gone when the row is opened or typed into', unread],
   ['notify', 'a chime and a notification when a session stops working, and two switches', notify],
-  ['session-title', 'a session that names itself the first time it answers', sessiontitle],
+  ['session-title', 'a session that names itself on its first prompt', sessiontitle],
   ['status-speak', 'Status says what the screen shows, on the page and out loud', statusspeak],
   ['status-ticker', 'the phases of a status, in order, in one line', statusticker],
-  ['agent-run', 'a request that needs the keyboard, and keystrokes in the pane', agentrun],
-  ['chat-text', 'a question answered in words, and a request that types', chattext],
-  ['chat-dictate', 'a recording with two endings, a spoken answer, and a bubble read again', chatdictate],
+  ['dictate', 'a recording with two endings, and the words it kept on the prompt', dictate],
   ['no-overlap', 'the microphone and the voice are never open at the same time', nooverlap],
   ['typeafteroutage', 'a cut socket, a locked phone, and a pane that still takes keystrokes', typeafteroutage],
   ['typekeepsfocus', 'a dialog, the ⋯ menu and two sessions: the keys still land in the pane', typekeepsfocus],
+  ['keyboard', 'on a touch screen only the button raises the keyboard, in every dialog too', keyboard],
   ['design', 'white surfaces, marks, hover-only detail and motion that does not restart', design],
+  ['clipboard', 'copy and paste: the keys, a plain drag, a click, a middle click, and OSC 52', clipboard],
+  ['touchcopy', 'a finger held on the pane selects, grows and copies', touchcopy],
+  ['transfer', 'copy, paste and upload buttons, a pasted image, and the phone layout', transfer],
   ['livesession', 'one real session against the real Claude Code CLI', livesession, { live: true }],
 ];
 

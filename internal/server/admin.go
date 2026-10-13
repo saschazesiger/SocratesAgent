@@ -217,7 +217,7 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 // tmuxChecks are the terminal engine's three rows: the binary and its version,
 // the socket this Socrates owns, and how many sessions are on it.
 func (s *Server) tmuxChecks(ctx context.Context) []checkResult {
-	report := s.tmuxAdmin.detect(ctx, false)
+	report := s.tmuxAdmin.detect(ctx)
 	engine := checkResult{Name: "tmux", OK: report.OK}
 	switch {
 	case report.OK:
@@ -257,7 +257,7 @@ func (s *Server) tmuxChecks(ctx context.Context) []checkResult {
 // and leaves their ids behind the "i".
 func (s *Server) recoveredCheck() checkResult {
 	row := checkResult{Name: "Recovered sessions", OK: true, Summary: "none"}
-	sessions, err := s.store.ListSessions(true)
+	sessions, err := s.store.ListSessions()
 	if err != nil {
 		row.OK, row.Summary, row.Detail = false, "unreadable", err.Error()
 		return row
@@ -378,7 +378,7 @@ func harnessStateCheck(id string) (checkResult, bool) {
 // row of green for a machine on which every session opens on "Choose the text
 // style" or on the sign-in screen.
 func claudeSignInCheck() checkResult {
-	onboarded, account := harnesses.ClaudeSignIn()
+	onboarded, account := harnesses.ClaudeSignIn("", "")
 	row := checkResult{Name: "Claude Code sign-in"}
 	switch {
 	case onboarded && account != "":

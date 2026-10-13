@@ -35,6 +35,7 @@ func TestConfIsApplied(t *testing.T) {
 		{"the active window style matches it", []string{"show", "-gv", "window-active-style"}, "fg=#17181b,bg=#ffffff"},
 		{"a dead pane keeps the screen", []string{"show", "-gv", "remain-on-exit-format"}, ""},
 		{"passthrough is on for Claude Code", []string{"show", "-gv", "allow-passthrough"}, "on"},
+		{"a program's clipboard copies are forwarded, not dropped", []string{"show", "-sv", "set-clipboard"}, "on"},
 		{"the status line is off", []string{"show", "-gv", "status"}, "off"},
 		{"the server does not exit when empty", []string{"show", "-sv", "exit-empty"}, "off"},
 	} {

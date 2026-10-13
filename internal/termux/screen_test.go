@@ -56,6 +56,50 @@ func TestCapturePaneReadsWhatThePanePrinted(t *testing.T) {
 	}
 }
 
+// TestVisiblePaneLeavesTheHistoryOut: a program that clears its screen
+// leaves the old one in the history (scroll-on-clear), so a line it took away
+// is still in a capture that reaches back and must not be in the visible one.
+func TestVisiblePaneLeavesTheHistoryOut(t *testing.T) {
+	l := newLab(t)
+	dir := realDir(t, l.dataDir)
+	row := l.create(shellSpec(dir, "/bin/sh"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := l.SendKeys(ctx, row.ID, []Key{
+		{Text: `printf '1 background terminal running\n'; printf '\033[2J\033[H'; echo after-the-clear`},
+		{Name: "Enter", Wait: 200 * time.Millisecond},
+	}); err != nil {
+		t.Fatalf("could not type into the pane: %v", err)
+	}
+	var visible string
+	waitFor(t, 10*time.Second, "the screen after the clear", func() bool {
+		var err error
+		visible, err = l.visiblePane(ctx, row.ID)
+		return err == nil && strings.Contains(visible, "after-the-clear")
+	})
+	if hasLine(visible, "1 background terminal running") {
+		t.Fatalf("the visible screen kept a line the program cleared away:\n%s", visible)
+	}
+	history, err := l.CapturePane(ctx, row.ID, 40)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	if !hasLine(history, "1 background terminal running") {
+		t.Logf("this tmux did not keep the cleared screen in its history:\n%s", history)
+	}
+}
+
+// hasLine is whether a screen has a line that is exactly want.
+func hasLine(screen, want string) bool {
+	for _, line := range strings.Split(screen, "\n") {
+		if strings.TrimSpace(line) == want {
+			return true
+		}
+	}
+	return false
+}
+
 // TestSendKeysNeedsNoViewer is the whole reason the operator loop runs on the
 // server: a run has to keep working with every browser closed.
 func TestSendKeysNeedsNoViewer(t *testing.T) {

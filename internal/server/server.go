@@ -24,7 +24,11 @@ import (
 // Version is stamped at build time.
 var Version = "dev"
 
-const settingsKey = "settings"
+// SettingsKey is where the settings document lives in the key/value table.
+// It is exported because `socrates export` and `socrates import` read and
+// write that document without a server, and two spellings of one key is one
+// spelling too many.
+const SettingsKey = "settings"
 
 // Server wires storage, the terminal sessions and the HTTP handlers together.
 type Server struct {
@@ -53,18 +57,11 @@ type Server struct {
 
 	mu       sync.RWMutex
 	settings config.Settings
-	// agentRunOf answers with the operator run of one session, or nil. It is
-	// installed by the loop that owns the runs, so that the transport can put
-	// a run into hello without knowing what a run is.
-	agentRunOf func(sessionID string) any
-	// agents owns those runs: one per session at a time, in a goroutine that
-	// outlives the request that started it and the browser that asked for it.
-	agents *agentDriver
 	// titles names a session once, the first time it has answered anything.
 	titles *titleDriver
-	// chats owns the conversation beside each terminal: what was said, and the
-	// goroutine that answers it after the request has gone.
-	chats *chatDriver
+	// push is Web Push: the notification that reaches a phone whose page is
+	// not running.
+	push *pusher
 
 	mux *http.ServeMux
 
@@ -73,6 +70,22 @@ type Server struct {
 	// wsRate is the per address ceiling on WebSocket handshakes, guarded by
 	// loginMu because it is the same kind of defence.
 	wsRate map[string]*attempt
+
+	// ideMu makes finding or creating the editor of a folder one step, so
+	// two taps on the same folder cannot start two editors on it.
+	ideMu sync.Mutex
+
+	// profilesMu makes each change to the profile list one read and one
+	// write, so two of them cannot each save a list without the other.
+	profilesMu sync.Mutex
+
+	// usage holds the short-lived account limit reading shared by every tab.
+	// Session costs are read from each CLI's own transcript and are not cached
+	// here: the files are already local and change after every answer.
+	usageMu     sync.Mutex
+	claudeUsage map[string]cachedLimits
+	usageHTTP   *http.Client
+	usageURL    string
 }
 
 type attempt struct {
@@ -92,15 +105,17 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 		writeTimeout: defaultWriteTimeout,
 		loginFail:    map[string]*attempt{},
 		wsRate:       map[string]*attempt{},
+		usageHTTP:    &http.Client{Timeout: 8 * time.Second},
+		usageURL:     "https://api.anthropic.com/api/oauth/usage",
 	}
 
 	settings := config.Default()
-	if err := st.GetJSON(settingsKey, &settings); err != nil && err != store.ErrNotFound {
+	if err := st.GetJSON(SettingsKey, &settings); err != nil && err != store.ErrNotFound {
 		return nil, err
 	}
 	settings.Normalize()
 	s.settings = settings
-	if err := st.SetJSON(settingsKey, settings); err != nil {
+	if err := st.SetJSON(SettingsKey, settings); err != nil {
 		return nil, err
 	}
 
@@ -117,20 +132,13 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	// The namer is built before the manager, because the manager is what
 	// calls into it.
 	s.titles = newTitleDriver(s)
+	s.push = newPusher(st)
 	manager, err := termux.New(st, cfg)
 	if err != nil {
 		return nil, err
 	}
 	s.manager = manager
 	s.catalog = catalog.New(st, s.Settings)
-
-	// The operator runs, and the one hook the transport needs to put a live
-	// run into hello and into GET .../agent from the same place.
-	s.agents = newAgentDriver(s)
-	s.chats = newChatDriver(s)
-	s.mu.Lock()
-	s.agentRunOf = s.agents.runView
-	s.mu.Unlock()
 
 	s.tunnel = tunnel.New(s.Settings, s.LocalURL, filepath.Join(dataDir, "bin"))
 
@@ -151,7 +159,6 @@ func managerConfig(dataDir string, settings config.Settings) termux.Config {
 			ExtendedKeys: settings.Terminal.ExtendedKeys,
 		},
 		WindowSize: settings.Terminal.WindowSize,
-		Supervisor: termux.DetectSupervisor(),
 	}
 }
 
@@ -174,6 +181,7 @@ func (s *Server) StartSessions(ctx context.Context) error {
 	// The detector starts after Adopt, so that its first tick sees the
 	// sessions that survived the last run rather than an empty server.
 	s.manager.StartActivity(ctx)
+	s.startSweep(ctx)
 	return nil
 }
 
@@ -198,7 +206,7 @@ func (s *Server) Settings() config.Settings {
 func (s *Server) saveSettings(next config.Settings) error {
 	next.Normalize()
 	previous := s.Settings().Tunnel
-	if err := s.store.SetJSON(settingsKey, next); err != nil {
+	if err := s.store.SetJSON(SettingsKey, next); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -285,30 +293,35 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/login", s.handleLogin)
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
 
+	mux.HandleFunc("/ide/{id}/", s.auth(s.handleVSCode))
+	mux.HandleFunc("POST /api/ide", s.auth(s.handleFolderIDE))
+
 	// Terminal sessions
 	mux.HandleFunc("GET /api/sessions", s.auth(s.handleListSessions))
 	mux.HandleFunc("POST /api/sessions", s.auth(s.handleCreateSession))
 	mux.HandleFunc("GET /api/sessions/{id}", s.auth(s.handleGetSession))
 	mux.HandleFunc("PATCH /api/sessions/{id}", s.auth(s.handleRenameSession))
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.auth(s.endingViewers(s.handleDeleteSession)))
-	mux.HandleFunc("POST /api/sessions/{id}/archive", s.auth(s.handleArchiveSession))
+	mux.HandleFunc("POST /api/sessions/{id}/file", s.auth(s.handleSetStatus))
 	mux.HandleFunc("POST /api/sessions/{id}/resume", s.auth(s.handleResumeSession))
 	mux.HandleFunc("POST /api/sessions/{id}/restart", s.auth(s.handleRestartSession))
 	mux.HandleFunc("POST /api/sessions/{id}/ack-resume", s.auth(s.handleAckResume))
 	mux.HandleFunc("POST /api/sessions/{id}/read", s.auth(s.handleMarkRead))
-	// What a terminal is doing, said out loud, and the operator that drives it.
+	mux.HandleFunc("GET /api/sessions/{id}/usage", s.auth(s.handleSessionUsage))
+	// What a terminal is doing, said out loud.
 	mux.HandleFunc("POST /api/sessions/{id}/status", s.auth(s.handleSessionStatus))
-	mux.HandleFunc("POST /api/sessions/{id}/agent", s.auth(s.handleAgentStart))
-	mux.HandleFunc("GET /api/sessions/{id}/agent", s.auth(s.handleAgentRun))
-	mux.HandleFunc("POST /api/sessions/{id}/agent/cancel", s.auth(s.handleAgentCancel))
-	mux.HandleFunc("GET /api/sessions/{id}/chat", s.auth(s.handleChatHistory))
-	mux.HandleFunc("POST /api/sessions/{id}/chat", s.auth(s.handleChatPost))
 	mux.HandleFunc("GET /api/sessions/{id}/journal", s.auth(s.handleJournal))
+	mux.HandleFunc("POST /api/sessions/{id}/upload", s.auth(s.handleUpload))
 	mux.HandleFunc("GET /api/sessions/{id}/ws", s.auth(s.handleSessionWS))
 
 	// The harness catalogue: what can be started, and where.
 	mux.HandleFunc("GET /api/harnesses", s.auth(s.handleHarnesses))
 	mux.HandleFunc("POST /api/harnesses/refresh", s.auth(s.handleRefreshHarnesses))
+	mux.HandleFunc("GET /api/profiles", s.auth(s.handleListProfiles))
+	mux.HandleFunc("POST /api/profiles", s.auth(s.handleCreateProfile))
+	mux.HandleFunc("PUT /api/profiles/order", s.auth(s.handleReorderProfiles))
+	mux.HandleFunc("PATCH /api/profiles/{id}", s.auth(s.handleRenameProfile))
+	mux.HandleFunc("DELETE /api/profiles/{id}", s.auth(s.handleDeleteProfile))
 
 	// Admin
 	mux.HandleFunc("GET /api/settings", s.auth(s.handleGetSettings))
@@ -317,10 +330,8 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/preferences", s.auth(s.handlePreferences))
 	mux.HandleFunc("POST /api/diagnostics", s.auth(s.handleDiagnostics))
 
-	// The terminal engine: is tmux here, and the install that puts it there.
+	// The terminal engine: is tmux here and can it run a session.
 	mux.HandleFunc("GET /api/tmux", s.auth(s.handleTmux))
-	mux.HandleFunc("POST /api/tmux/install", s.auth(s.handleTmuxInstall))
-	mux.HandleFunc("GET /api/tmux/events", s.auth(s.handleTmuxEvents))
 
 	// Cloudflare tunnel
 	mux.HandleFunc("GET /api/tunnel", s.auth(s.handleTunnelStatus))
@@ -332,6 +343,12 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/voice/transcribe", s.auth(s.handleTranscribe))
 	mux.HandleFunc("POST /api/voice/speak", s.auth(s.handleSpeak))
 	mux.HandleFunc("POST /api/voice/check", s.auth(s.handleVoiceCheck))
+
+	// Web Push
+	mux.HandleFunc("GET /api/push", s.auth(s.handlePushKey))
+	mux.HandleFunc("POST /api/push/subscribe", s.auth(s.handlePushSubscribe))
+	mux.HandleFunc("POST /api/push/unsubscribe", s.auth(s.handlePushUnsubscribe))
+	mux.HandleFunc("POST /api/push/test", s.auth(s.handlePushTest))
 
 	// Liveness, and the one endpoint nothing in the browser calls: the
 	// container's HEALTHCHECK is what asks for it, because a process that is

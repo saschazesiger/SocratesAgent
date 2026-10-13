@@ -132,7 +132,7 @@ func TestCreateSessionIsIdempotentOnClientID(t *testing.T) {
 	if retry.ID != "a1" {
 		t.Fatalf("retry created a second session: %#v", retry)
 	}
-	list, err := st.ListSessions(true)
+	list, err := st.ListSessions()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestCreateSessionIsIdempotentOnClientID(t *testing.T) {
 	if err := st.CreateSession(newSession("b2")); err != nil {
 		t.Fatal(err)
 	}
-	if list, _ = st.ListSessions(true); len(list) != 3 {
+	if list, _ = st.ListSessions(); len(list) != 3 {
 		t.Fatalf("sessions = %d", len(list))
 	}
 }
@@ -172,18 +172,18 @@ func TestTmuxNameIsUnique(t *testing.T) {
 	}
 }
 
-func TestListSessionsOrdersAndHidesArchived(t *testing.T) {
+func TestListSessionsOrdersAndListsEveryStatus(t *testing.T) {
 	st := openTest(t)
 	for _, id := range []string{"a1", "a2"} {
 		if err := st.CreateSession(newSession(id)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// Touching a1 puts it in front: the list is ordered by activity.
-	if err := st.NoteAttach("a1"); err != nil {
+	// a1 coming up puts it in front: the list is ordered by status change.
+	if err := st.SetSessionState("a1", StateRunning, -1, ""); err != nil {
 		t.Fatal(err)
 	}
-	list, err := st.ListSessions(false)
+	list, err := st.ListSessions()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,22 +191,128 @@ func TestListSessionsOrdersAndHidesArchived(t *testing.T) {
 		t.Fatalf("list = %#v", list)
 	}
 
-	if err := st.SetSessionArchived("a2", true); err != nil {
+	// A done session is still listed: the page files it, the store does not.
+	if err := st.SetSessionStatus("a2", StatusDone); err != nil {
 		t.Fatal(err)
 	}
-	if list, _ = st.ListSessions(false); len(list) != 1 || list[0].ID != "a1" {
-		t.Fatalf("archived session still listed: %#v", list)
+	if list, _ = st.ListSessions(); len(list) != 2 || list[1].Status != StatusDone {
+		t.Fatalf("done session = %#v", list)
 	}
-	list, _ = st.ListSessions(true)
-	if len(list) != 2 {
-		t.Fatalf("archived session missing from the full list: %#v", list)
+}
+
+// The list is ordered by when a session's status last changed, and by nothing
+// else: opening a session to read it, renaming it or resizing it are things
+// that happen to the row, and a row that moved for being looked at was the
+// complaint. A state that is actually new moves it; the same state written
+// again does not.
+func TestListSessionsMovesOnlyOnAStatusChange(t *testing.T) {
+	st := openTest(t)
+	for _, id := range []string{"a1", "a2"} {
+		if err := st.CreateSession(newSession(id)); err != nil {
+			t.Fatal(err)
+		}
 	}
-	// A restored session is indistinguishable from one that was never away.
-	if err := st.SetSessionArchived("a2", false); err != nil {
+	// A known order to start from: a2's status changed after a1's.
+	if err := st.NoteSessionActivity("a1", 1000); err != nil {
 		t.Fatal(err)
 	}
-	if list, _ = st.ListSessions(false); len(list) != 2 || list[1].Archived {
-		t.Fatalf("restored session = %#v", list)
+	if err := st.NoteSessionActivity("a2", 2000); err != nil {
+		t.Fatal(err)
+	}
+	order := func() string {
+		t.Helper()
+		list, err := st.ListSessions()
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids := make([]string, 0, len(list))
+		for _, one := range list {
+			ids = append(ids, one.ID)
+		}
+		return strings.Join(ids, ",")
+	}
+	if got := order(); got != "a2,a1" {
+		t.Fatalf("order = %s, want a2,a1", got)
+	}
+
+	// Everything a person does to the row of a1 leaves it where it is.
+	if err := st.NoteAttach("a1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateSessionTitle("a1", "Read again"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSessionSize("a1", 100, 30); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSessionStatus("a1", StatusReview); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSessionStatus("a1", StatusInProgress); err != nil {
+		t.Fatal(err)
+	}
+	if got := order(); got != "a2,a1" {
+		t.Fatalf("after being read, renamed, resized and refiled the order is %s, want a2,a1", got)
+	}
+	got, _ := st.GetSession("a1")
+	if got.ActiveAt != 1000 || got.UpdatedAt == 1000 {
+		t.Fatalf("active_at = %d and updated_at = %d: the two must not be the same clock", got.ActiveAt, got.UpdatedAt)
+	}
+
+	// The program of a1 coming up is a status change, and moves it.
+	if err := st.SetSessionState("a1", StateRunning, -1, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := order(); got != "a1,a2" {
+		t.Fatalf("after a state change the order is %s, want a1,a2", got)
+	}
+	moved, _ := st.GetSession("a1")
+	// The same state written again - the lifecycle poll confirming what it
+	// already knew - is not a change.
+	if err := st.SetSessionState("a2", StateStarting, -1, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := order(); got != "a1,a2" {
+		t.Fatalf("after the same state again the order is %s, want a1,a2", got)
+	}
+	// And a status change the detector reports moves the row to that moment.
+	if err := st.NoteSessionActivity("a2", moved.ActiveAt+1); err != nil {
+		t.Fatal(err)
+	}
+	if got := order(); got != "a2,a1" {
+		t.Fatalf("after the detector's change the order is %s, want a2,a1", got)
+	}
+}
+
+// A status comes back as set and starts its own clock, a session is born in
+// progress whatever the caller's struct says, and a status that is not one of
+// the five is refused.
+func TestSessionStatusRoundTrip(t *testing.T) {
+	st := openTest(t)
+	born := newSession("a1")
+	born.Status, born.StatusAt = StatusDone, 5
+	if err := st.CreateSession(born); err != nil {
+		t.Fatal(err)
+	}
+	if born.Status != StatusInProgress || born.StatusAt != born.CreatedAt {
+		t.Fatalf("a new session is %q since %d, want in progress since it was created", born.Status, born.StatusAt)
+	}
+	for _, status := range []string{StatusReview, StatusPending, StatusDone, StatusBackground, StatusInProgress} {
+		if err := st.SetSessionStatus("a1", status); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := st.GetSession("a1")
+		if got.Status != status || got.StatusAt < born.CreatedAt {
+			t.Fatalf("after setting %q the session is %q since %d", status, got.Status, got.StatusAt)
+		}
+	}
+	for _, bad := range []string{"", "archived", "Done"} {
+		if err := st.SetSessionStatus("a1", bad); err == nil {
+			t.Fatalf("status %q was accepted", bad)
+		}
+	}
+	if err := st.SetSessionStatus("nope", StatusPending); err != ErrNotFound {
+		t.Fatalf("filing a missing session = %v", err)
 	}
 }
 
@@ -565,7 +671,7 @@ func TestCreateSessionRefusesInvalidOptions(t *testing.T) {
 	if err := st.CreateSession(sess); err != nil {
 		t.Fatal(err)
 	}
-	list, err := st.ListSessions(true)
+	list, err := st.ListSessions()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -581,12 +687,13 @@ func TestCreateSessionOverwritesTheFieldsTheRowOwns(t *testing.T) {
 	sess := newSession("a1")
 	sess.Resumed = true
 	sess.LastAttached = 5
-	sess.Archived, sess.ArchivedAt = true, 5
+	sess.Status, sess.StatusAt = StatusDone, 5
 	sess.ExitStatus = 3
 	if err := st.CreateSession(sess); err != nil {
 		t.Fatal(err)
 	}
-	if sess.Resumed || sess.LastAttached != 0 || sess.Archived || sess.ArchivedAt != 0 || sess.ExitStatus != -1 {
+	if sess.Resumed || sess.LastAttached != 0 || sess.Status != StatusInProgress || sess.StatusAt != sess.CreatedAt ||
+		sess.ExitStatus != -1 {
 		t.Fatalf("the caller's struct disagrees with the row: %#v", sess)
 	}
 	stored, err := st.GetSession("a1")
@@ -594,7 +701,7 @@ func TestCreateSessionOverwritesTheFieldsTheRowOwns(t *testing.T) {
 		t.Fatal(err)
 	}
 	if stored.Resumed != sess.Resumed || stored.LastAttached != sess.LastAttached ||
-		stored.Archived != sess.Archived || stored.ExitStatus != sess.ExitStatus {
+		stored.Status != sess.Status || stored.StatusAt != sess.StatusAt || stored.ExitStatus != sess.ExitStatus {
 		t.Fatalf("stored = %#v, caller holds = %#v", stored, sess)
 	}
 }
@@ -783,6 +890,10 @@ func TestMigrateAddsTheTitleSource(t *testing.T) {
 		VALUES('a1', 'claude', '/srv/repo', 'preset', 1, 1)`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := old.Exec(`INSERT INTO sessions(id, harness, workdir, workdir_mode, created_at, updated_at, archived_at)
+		VALUES('a2', 'claude', '/srv/repo', 'preset', 1, 1, 5)`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := old.Exec(`PRAGMA user_version = 3`); err != nil {
 		t.Fatal(err)
 	}
@@ -800,11 +911,67 @@ func TestMigrateAddsTheTitleSource(t *testing.T) {
 	if got.TitleSource != "" {
 		t.Fatalf("the migrated session is named by %q", got.TitleSource)
 	}
+	// The order the upgrade shows is the order the build before it showed:
+	// the last thing that happened to the row stands in for its last status
+	// change. A session that was not archived is left unsorted for the
+	// activity detector, and an archived one is done from now on - not from
+	// when it was archived, or the upgrade would delete it on the spot.
+	if got.ActiveAt != 1 || got.Status != StatusUnsorted {
+		t.Fatalf("the migrated session has active_at %d and status %q", got.ActiveAt, got.Status)
+	}
+	archived, err := st.GetSession("a2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archived.Status != StatusDone || archived.StatusAt < time.Now().Add(-time.Minute).UnixMilli() {
+		t.Fatalf("the archived session is %q since %d, want done since now", archived.Status, archived.StatusAt)
+	}
+	if has, err := hasColumn(st.db, "sessions", "archived_at"); err != nil || has {
+		t.Fatalf("archived_at is still there (%v)", err)
+	}
 	if err := st.SetAutoSessionTitle("a1", "A name"); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := st.GetSession("a1"); got.TitleSource != TitleAuto {
 		t.Fatalf("the migrated column does not take a value: %#v", got)
+	}
+}
+
+// The conversations of the chat that used to sit beside a terminal were kept
+// in the key/value table, one document per session, and the only thing that
+// ever removed one was the chat itself. With the chat gone they are rows
+// nothing can reach - including for sessions that have since been deleted - so
+// opening a database written by an older build sweeps them out.
+func TestOpeningSweepsOutTheOldConversations(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "socrates.db")
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetKV("chat.a1", `[{"role":"user","text":"hello"}]`); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetKV("settings", `{"voice":{"language":"de"}}`); err != nil {
+		t.Fatal(err)
+	}
+	// The build that wrote those rows did not know about the sweep.
+	if _, err := st.db.Exec(`PRAGMA user_version = 4`); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	st, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopening: %v", err)
+	}
+	defer st.Close()
+	if _, err := st.GetKV("chat.a1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("the old conversation is still there: %v", err)
+	}
+	if got, err := st.GetKV("settings"); err != nil || got == "" {
+		t.Fatalf("the sweep took the settings with it: %q %v", got, err)
 	}
 }
 

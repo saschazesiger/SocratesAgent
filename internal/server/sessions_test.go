@@ -5,6 +5,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 )
@@ -145,8 +147,11 @@ func (e *sessionEnv) configureWorkspace(root string, allowCustom bool, preset st
 			e.t.Fatal(err)
 		}
 	}
+	// These tests exercise tmux and the local shell. On a machine that can
+	// redirect to the host, pin the fixture to /bin/sh so terminal assertions
+	// do not depend on the host's profile, prompt, or installed programs.
 	body := fmt.Sprintf(`{"settings":{"workspace":{"root":%q,"allow_custom":%t,"default_harness":"shell",
-		"presets":[{"label":"Preset","path":%q}]}}}`, root, allowCustom, preset)
+		"presets":[{"label":"Preset","path":%q}]},"harnesses":{"shell":{"binary":"/bin/sh"}}}}`, root, allowCustom, preset)
 	res, payload := e.do(e.t, e.client, "PUT", "/api/settings", body)
 	if res.StatusCode != http.StatusOK {
 		e.t.Fatalf("settings: %d %#v", res.StatusCode, payload)
@@ -338,25 +343,51 @@ func TestSessionLifecycle(t *testing.T) {
 		t.Fatalf("an empty name should be refused, got %d", res.StatusCode)
 	}
 
-	// Archiving hides a session from the default list and leaves it running.
-	res, _ = e.do(t, e.client, "POST", "/api/sessions/"+id+"/archive", `{"archived":true}`)
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("archive: %d", res.StatusCode)
-	}
-	_, payload = e.do(t, e.client, "GET", "/api/sessions", "")
-	if list, _ := payload["sessions"].([]any); len(list) != len(cases)-1 {
-		t.Fatalf("an archived session should be hidden, %d of %d left", len(list), len(cases))
-	}
-	_, payload = e.do(t, e.client, "GET", "/api/sessions?scope=all", "")
-	if list, _ := payload["sessions"].([]any); len(list) != len(cases) {
-		t.Fatalf("scope=all should show it again, got %d", len(list))
+	// A status is where the person files a session. Anything but done is the
+	// row and nothing more: the terminal keeps running and the list keeps it.
+	res, payload = e.do(t, e.client, "POST", "/api/sessions/"+id+"/file", `{"status":"review"}`)
+	if res.StatusCode != http.StatusOK || payload["session"].(map[string]any)["status"] != store.StatusReview {
+		t.Fatalf("review: %d %#v", res.StatusCode, payload)
 	}
 	if !e.hasTmuxSession(id) {
-		t.Fatal("archiving must not stop a session")
+		t.Fatal("filing a session for review must not stop it")
 	}
-	res, _ = e.do(t, e.client, "POST", "/api/sessions/"+id+"/archive", `{"archived":false}`)
+	res, _ = e.do(t, e.client, "POST", "/api/sessions/"+id+"/file", `{"status":"archived"}`)
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a status that is not one should be refused, got %d", res.StatusCode)
+	}
+
+	// Done closes the terminal and keeps the session, with the moment it is
+	// deleted on it, and opening it does not bring the terminal back.
+	res, payload = e.do(t, e.client, "POST", "/api/sessions/"+id+"/file", `{"status":"done"}`)
+	done, _ := payload["session"].(map[string]any)
+	if res.StatusCode != http.StatusOK || done["status"] != store.StatusDone || done["state"] != store.StateNeedsResume {
+		t.Fatalf("done: %d %#v", res.StatusCode, payload)
+	}
+	if e.hasTmuxSession(id) {
+		t.Fatal("a done session kept its tmux session")
+	}
+	if at, _ := done["status_at"].(float64); done["delete_at"] != at+float64(DoneRetention.Milliseconds()) {
+		t.Fatalf("a done session is deleted at %v, want %v after %v", done["delete_at"], DoneRetention, at)
+	}
+	_, payload = e.do(t, e.client, "GET", "/api/sessions", "")
+	if list, _ := payload["sessions"].([]any); len(list) != len(cases) {
+		t.Fatalf("a done session should still be listed, got %d of %d", len(list), len(cases))
+	}
+	res, _ = e.do(t, e.client, "POST", "/api/sessions/"+id+"/resume", "")
+	if res.StatusCode != http.StatusConflict || e.hasTmuxSession(id) {
+		t.Fatalf("resuming a done session: %d, tmux session back: %v", res.StatusCode, e.hasTmuxSession(id))
+	}
+
+	// Taken out of done, it is resumed the next time it is opened.
+	res, _ = e.do(t, e.client, "POST", "/api/sessions/"+id+"/file", `{"status":"in_progress"}`)
 	if res.StatusCode != http.StatusOK {
-		t.Fatalf("unarchive: %d", res.StatusCode)
+		t.Fatalf("back in progress: %d", res.StatusCode)
+	}
+	res, payload = e.do(t, e.client, "POST", "/api/sessions/"+id+"/resume", "")
+	if res.StatusCode != http.StatusOK || payload["session"].(map[string]any)["state"] != store.StateRunning ||
+		!e.hasTmuxSession(id) {
+		t.Fatalf("resume after done: %d %#v", res.StatusCode, payload)
 	}
 
 	// Delete is the one path that kills a tmux session, and it keeps the
@@ -473,6 +504,47 @@ func TestRestartAfterExit(t *testing.T) {
 	}
 	if !e.hasTmuxSession(id) {
 		t.Fatal("the restarted session has no tmux session")
+	}
+}
+
+func TestShellExecutionChoiceIsStoredAndRestarted(t *testing.T) {
+	e := newSessionEnv(t)
+	for _, body := range []string{
+		`{"harness":"shell","shell_execution":"elsewhere"}`,
+		`{"harness":"claude","shell_execution":"container"}`,
+	} {
+		res, _ := e.create(body)
+		if res.StatusCode != http.StatusBadRequest {
+			t.Fatalf("invalid shell execution %s answered %d", body, res.StatusCode)
+		}
+	}
+	if !harnesses.HostShellAvailable() {
+		res, _ := e.create(`{"harness":"shell","shell_execution":"host"}`)
+		if res.StatusCode != http.StatusBadRequest {
+			t.Fatalf("unavailable host shell answered %d", res.StatusCode)
+		}
+	}
+	res, session := e.create(`{"harness":"shell","shell_execution":"container","options":{"note":"kept"}}`)
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("container shell create: %d %#v", res.StatusCode, session)
+	}
+	id := sessionID(t, session)
+	options, _ := session["options"].(map[string]any)
+	if options["shell_execution"] != "container" || options["note"] != "kept" {
+		t.Fatalf("stored shell options = %#v", options)
+	}
+	if _, err := e.tmux("send-keys", "-t", termux.TmuxName(id), "exit", "Enter"); err != nil {
+		t.Fatal(err)
+	}
+	e.waitForState(id, 15*time.Second, store.StateExited)
+	res, payload := e.do(t, e.client, "POST", "/api/sessions/"+id+"/restart", "")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("restart: %d %#v", res.StatusCode, payload)
+	}
+	restarted, _ := payload["session"].(map[string]any)
+	options, _ = restarted["options"].(map[string]any)
+	if options["shell_execution"] != "container" || restarted["state"] != store.StateRunning {
+		t.Fatalf("restarted shell = %#v", restarted)
 	}
 }
 
@@ -602,6 +674,11 @@ func TestHarnessCatalogue(t *testing.T) {
 	if payload["sessions_available"] != true {
 		t.Fatalf("sessions should be available here: %#v", payload)
 	}
+	shellExecution, _ := payload["shell_execution"].(map[string]any)
+	if shellExecution["host_available"] != harnesses.HostShellAvailable() ||
+		shellExecution["default"] != harnesses.DefaultShellExecution(e.srv.Settings().Harnesses.Shell.Binary) {
+		t.Fatalf("shell execution capability = %#v", shellExecution)
+	}
 	workspace, _ := payload["workspace"].(map[string]any)
 	if workspace["allow_custom"] != true || workspace["root"] != filepath.Join(e.home, "workspaces") {
 		t.Fatalf("workspace = %#v", workspace)
@@ -622,7 +699,7 @@ func TestSessionAPIRequiresAuth(t *testing.T) {
 		{"GET", "/api/sessions/x"},
 		{"PATCH", "/api/sessions/x"},
 		{"DELETE", "/api/sessions/x"},
-		{"POST", "/api/sessions/x/archive"},
+		{"POST", "/api/sessions/x/file"},
 		{"POST", "/api/sessions/x/restart"},
 		{"POST", "/api/sessions/x/resume"},
 		{"POST", "/api/sessions/x/ack-resume"},
@@ -1143,5 +1220,118 @@ func TestRestartAndDeleteWorkWhenTheTmuxSessionIsGone(t *testing.T) {
 	}
 	if _, err := e.store.GetSession(id); err == nil {
 		t.Fatal("the row survived a delete that answered 200")
+	}
+}
+
+// The sweep is what keeps done sessions cheap and short-lived: a done session
+// that still has a terminal - an archived one from before statuses, or a park
+// that did not finish - has it closed, and one whose retention has run out is
+// deleted, working directory kept. A background session is left alone.
+func TestSweepParksAndDeletesDoneSessions(t *testing.T) {
+	e := newSessionEnv(t)
+	dir := filepath.Join(e.work, "done")
+	res, session := e.create(fmt.Sprintf(`{"harness":"shell","workdir_mode":"custom","workdir":%q}`, dir))
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d %#v", res.StatusCode, session)
+	}
+	id := sessionID(t, session)
+	// A background session is a service, and the sweep never touches it.
+	res, service := e.create(fmt.Sprintf(`{"harness":"shell","workdir_mode":"custom","workdir":%q}`,
+		filepath.Join(e.work, "service")))
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d %#v", res.StatusCode, service)
+	}
+	serviceID := sessionID(t, service)
+	if err := e.store.SetSessionStatus(serviceID, store.StatusBackground); err != nil {
+		t.Fatal(err)
+	}
+	// Filed as done behind the manager's back, which is what the upgrade does.
+	if err := e.store.SetSessionStatus(id, store.StatusDone); err != nil {
+		t.Fatal(err)
+	}
+	e.srv.sweep(context.Background(), time.Now())
+	row, err := e.store.GetSession(id)
+	if err != nil {
+		t.Fatalf("a done session inside its retention was deleted: %v", err)
+	}
+	if e.hasTmuxSession(id) || row.State != store.StateNeedsResume {
+		t.Fatalf("the sweep left a done session running: state %s, tmux %v", row.State, e.hasTmuxSession(id))
+	}
+
+	e.srv.sweep(context.Background(), time.Now().Add(DoneRetention+time.Minute))
+	if !e.hasTmuxSession(serviceID) {
+		t.Fatal("the sweep stopped a background session")
+	}
+	if _, err := e.store.GetSession(serviceID); err != nil {
+		t.Fatalf("the sweep deleted a background session: %v", err)
+	}
+	if _, err := e.store.GetSession(id); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a done session past its retention is still there: %v", err)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("the sweep removed the working directory: %v", err)
+	}
+}
+
+// ultracodeSetting reads the ultracode key of the settings file a Claude Code
+// session was last started with.
+func (e *sessionEnv) ultracodeSetting(id string) any {
+	e.t.Helper()
+	raw, err := os.ReadFile(harnesses.SessionFile(e.srv.dataDir, id, "claude-settings.json"))
+	if err != nil {
+		e.t.Fatalf("claude-settings.json: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		e.t.Fatalf("claude-settings.json: %v", err)
+	}
+	return doc["ultracode"]
+}
+
+func TestClaudeSessionKeepsItsUltracode(t *testing.T) {
+	e := newSessionEnv(t)
+	if res, _ := e.create(`{"harness":"codex","ultracode":true}`); res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("ultracode for Codex answered %d", res.StatusCode)
+	}
+
+	res, session := e.create(`{"harness":"claude"}`)
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d %#v", res.StatusCode, session)
+	}
+	off := sessionID(t, session)
+	if options, _ := session["options"].(map[string]any); options["ultracode"] != nil {
+		t.Fatalf("a session nobody asked ultracode for stores %#v", options)
+	}
+	if got := e.ultracodeSetting(off); got != false {
+		t.Fatalf("ultracode = %v by default", got)
+	}
+
+	res, session = e.create(`{"harness":"claude","ultracode":true}`)
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d %#v", res.StatusCode, session)
+	}
+	sid := sessionID(t, session)
+	if options, _ := session["options"].(map[string]any); options["ultracode"] != true {
+		t.Fatalf("stored options = %#v", options)
+	}
+	if got := e.ultracodeSetting(sid); got != true {
+		t.Fatalf("ultracode = %v when asked for", got)
+	}
+	e.waitForPane(sid, "FAKE claude")
+
+	// A resume is planned from the row, so it comes back with ultracode on.
+	if _, err := e.tmux("kill-session", "-t", termux.TmuxName(sid)); err != nil {
+		t.Fatal(err)
+	}
+	e.waitForState(sid, 15*time.Second, store.StateNeedsResume)
+	if err := os.Remove(harnesses.SessionFile(e.srv.dataDir, sid, "claude-settings.json")); err != nil {
+		t.Fatal(err)
+	}
+	res, payload := e.do(t, e.client, "POST", "/api/sessions/"+sid+"/resume", "")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("resume: %d %#v", res.StatusCode, payload)
+	}
+	if got := e.ultracodeSetting(sid); got != true {
+		t.Fatalf("after the resume ultracode = %v", got)
 	}
 }

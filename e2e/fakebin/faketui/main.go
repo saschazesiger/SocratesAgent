@@ -98,29 +98,8 @@ func main() {
 	out("> ")
 
 	line := make([]byte, 0, 256)
-	// esc collects one escape sequence at a time. Without it an SGR mouse
-	// report - which is what a wheel is, and what tmux forwards to a program
-	// that asked for one - would be typed into the prompt one character at a
-	// time as `[<64;40;12M`.
-	esc := make([]byte, 0, 32)
 	for chunk := range input {
 		for _, b := range chunk {
-			if len(esc) > 0 {
-				esc = append(esc, b)
-				if b >= '@' && b <= '~' && len(esc) > 2 {
-					if button, ok := sgrWheel(esc); ok {
-						altWheel(button == 64)
-					}
-					esc = esc[:0]
-				} else if len(esc) > 24 {
-					esc = esc[:0]
-				}
-				continue
-			}
-			if b == 0x1b {
-				esc = append(esc, b)
-				continue
-			}
 			switch b {
 			case '\r', '\n':
 				out("\r\n")
@@ -153,66 +132,6 @@ func main() {
 	restore()
 }
 
-// The alternate screen the fake wears for /alt: a document taller than the
-// pane, and where in it the window currently sits.
-const (
-	altLines = 200
-	altRows  = 12
-)
-
-var (
-	altOn  bool
-	altTop int
-)
-
-// drawAlt paints the window over the document, with the banner the older
-// scenarios look for kept at the top of it.
-func drawAlt() {
-	if altTop < 0 {
-		altTop = 0
-	}
-	if altTop > altLines-altRows {
-		altTop = altLines - altRows
-	}
-	out("\x1b[2J\x1b[H+----------------+\r\n|  ALTERNATE     |\r\n+----------------+\r\n")
-	for i := 0; i < altRows; i++ {
-		out("alt-%d\r\n", altTop+i+1)
-	}
-}
-
-// altWheel moves that window. Up the wheel is back through the document,
-// which is the direction a finger dragged down the glass asks for.
-func altWheel(up bool) {
-	if !altOn {
-		return
-	}
-	if up {
-		altTop -= 3
-	} else {
-		altTop += 3
-	}
-	drawAlt()
-}
-
-// sgrWheel reads an SGR mouse report and answers with its button when it is a
-// wheel: 64 is up, 65 is down. Anything else - a click, a drag, a release, a
-// sequence that is not a mouse report at all - is not ours.
-func sgrWheel(esc []byte) (int, bool) {
-	text := string(esc)
-	if !strings.HasPrefix(text, "\x1b[<") || (!strings.HasSuffix(text, "M") && !strings.HasSuffix(text, "m")) {
-		return 0, false
-	}
-	fields := strings.Split(text[3:len(text)-1], ";")
-	if len(fields) != 3 {
-		return 0, false
-	}
-	button, err := strconv.Atoi(fields[0])
-	if err != nil || (button != 64 && button != 65) {
-		return 0, false
-	}
-	return button, true
-}
-
 // handle runs one line of input and reports whether the program should exit.
 func handle(line string, session *sessionState) (bool, int) {
 	line = strings.TrimSpace(line)
@@ -231,17 +150,7 @@ func handle(line string, session *sessionState) (bool, int) {
 		}
 		return false, 0
 	case line == "/alt":
-		// The alternate screen, with mouse tracking on and a document of its
-		// own to scroll - which is what Codex and OpenCode are. It matters
-		// that the fake tracks the mouse: tmux keeps no history for an
-		// alternate screen (verified: copy-mode plus twenty scroll-up leaves
-		// the same three lines), so the only thing a finger can move there is
-		// the program's own view, and the wheel report is the only way to ask
-		// for it.
-		altOn = true
-		altTop = altLines - altRows
-		out("\x1b[?1049h\x1b[?1000h\x1b[?1006h")
-		drawAlt()
+		out("\x1b[?1049h\x1b[H+----------------+\r\n|  ALTERNATE     |\r\n+----------------+\r\n")
 		return false, 0
 	case line == "/id":
 		out("session %s\r\n", session.id)
@@ -253,6 +162,12 @@ func handle(line string, session *sessionState) (bool, int) {
 		// The runaway guard's fixture: the furniture of a turn in flight, and
 		// then nothing at all - no output, no signal update.
 		session.busy(millis(line, "/hang", 20000), false)
+		return false, 0
+	case strings.HasPrefix(line, "/bg"):
+		// A turn that ends with something it started still running behind
+		// it, for that long - and then what each real program does when it
+		// stops.
+		session.background(millis(line, "/bg", 6000))
 		return false, 0
 	case line == "/ask":
 		session.ask()
@@ -296,6 +211,9 @@ type sessionState struct {
 	askID  string
 	paint  chan struct{}
 	events *sseHub
+	// children is the background sub-agents /bg started under OpenCode, by
+	// id, with the session that started them.
+	children map[string]string
 }
 
 func startSession(name string, args []string, cwd string) (*sessionState, error) {
@@ -465,6 +383,38 @@ func (s *sessionState) startOpenCode(args []string) error {
 	mux.HandleFunc("/event", authed(s.serveEvents))
 	mux.HandleFunc("/session/status", authed(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, s.events.snapshot())
+	}))
+	// The prompts that are open right now, which is what a detector seeds its
+	// waiting set from when it (re)connects and re-reads while the stream is
+	// up. An empty array when there is none. The `directory` query the real
+	// server takes is ignored on purpose: one fake serves exactly one session
+	// in one working directory, so there is nothing to filter, and answering
+	// whatever is asked keeps the fake from having a second opinion about
+	// which directory a prompt belongs to.
+	mux.HandleFunc("/permission", authed(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, s.pendingPermissions())
+	}))
+	// Session details carry the running cost in current OpenCode, which is the
+	// value Socrates mirrors into the header. A fixed non-zero number makes the
+	// browser scenario prove both the authenticated endpoint and its rendering.
+	mux.HandleFunc("/session/", authed(func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/session/")
+		// A background sub-agent says whose it is, which is how the watcher
+		// tells one it was never introduced to from a session of its own.
+		if parent, ok := s.childOf(id); ok {
+			writeJSON(w, map[string]any{"id": id, "parentID": parent, "directory": s.cwd})
+			return
+		}
+		exists, err := openCodeHasSession(id)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !exists {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, map[string]any{"id": id, "directory": s.cwd, "cost": 1.25})
 	}))
 	mux.HandleFunc("/session", authed(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
@@ -959,6 +909,77 @@ func (s *sessionState) paintIdle() {
 	out("> ")
 }
 
+// background is /bg: the turn is over and something it started goes on for d,
+// said the way each real program says it (Claude Code 2.1.281, Codex 0.158.0,
+// OpenCode 1.18.32 with background sub-agents). When it ends, Claude and
+// OpenCode take the turn up again to report on it; Codex only takes its line
+// away.
+func (s *sessionState) background(d time.Duration) {
+	s.stopPaint()
+	child := s.statusID() + "_bg"
+	switch s.name {
+	case "claude":
+		s.writeStatusFile("shell", "")
+		out("\r\n✻ Worked for 3s · done · 1 shell still running\r\n❯ \r\n" +
+			"  ⏵⏵ auto mode on · 1 shell · ← for agents · ↓ to manage\r\n")
+	case "codex":
+		s.setTitle(filepath.Base(s.cwd))
+		out("\r\n• OK\r\n  1 background terminal running · /ps to view · /stop to close\r\n" +
+			"› Ask Codex to do anything\r\n")
+	case "opencode":
+		s.mu.Lock()
+		if s.children == nil {
+			s.children = map[string]string{}
+		}
+		s.children[child] = s.statusID()
+		s.mu.Unlock()
+		s.events.publish(map[string]any{
+			"type": "session.created",
+			"properties": map[string]any{
+				"sessionID": child,
+				"info":      map[string]any{"id": child, "parentID": s.statusID()},
+			},
+		})
+		s.setStatus("idle", "")
+		s.events.setStatus(child, "busy")
+		s.events.publish(map[string]any{
+			"type":       "session.status",
+			"properties": map[string]any{"sessionID": child, "status": map[string]any{"type": "busy"}},
+		})
+		out("\r\n  ⠹ General Task (background) — Sleep\r\n▣  Build · fake · 3.0s\r\n" +
+			"  ⬝⬝⬝⬝⬝⬝  10.5K (1%%) · $0.02   ctrl+p commands\r\n")
+	default:
+		return
+	}
+	go func() {
+		time.Sleep(d)
+		switch s.name {
+		case "codex":
+			// The line goes, by a repaint, and Codex stays idle.
+			out("\x1b[2J\x1b[H• OK\r\n› Ask Codex to do anything\r\n")
+		case "opencode":
+			s.events.setStatus(child, "idle")
+			s.events.publish(map[string]any{
+				"type":       "session.status",
+				"properties": map[string]any{"sessionID": child, "status": map[string]any{"type": "idle"}},
+			})
+			s.busy(800*time.Millisecond, true)
+		default:
+			out("\x1b[2J\x1b[H● Background command completed (exit code 0)\r\n")
+			s.busy(800*time.Millisecond, true)
+		}
+	}()
+}
+
+// childOf is the parent of a background sub-agent this fake started, for GET
+// /session/:id.
+func (s *sessionState) childOf(id string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	parent, ok := s.children[id]
+	return parent, ok
+}
+
 // ask puts the verbatim permission prompt of this harness on the screen and
 // says so through its own signal.
 func (s *sessionState) ask() {
@@ -980,14 +1001,36 @@ func (s *sessionState) ask() {
 			"  Press enter to confirm or esc to cancel\r\n")
 		s.setTitle("[ . ] Action Required | " + filepath.Base(s.cwd))
 	case "opencode":
-		// OpenCode's own prompt has no verified screen shape, so the fake
-		// paints a plain one and the event stream carries the fact.
-		out("\r\n  Allow this command?  [y/n]\r\n")
+		// The card OpenCode paints, bottom bar and all: the bar still carries
+		// `ctrl+p commands`, which is the idle literal, so a scraper has to
+		// read the permission rows first.
+		out("\r\n  ┃  △ Permission required\r\n  ┃    # Shell command\r\n" +
+			"  ┃  $ echo hello-from-bash\r\n" +
+			"  ┃   Allow once   Allow always   Reject" +
+			"          ctrl+f fullscreen  ⇆ select  enter confirm\r\n" +
+			"  ⬝⬝⬝⬝⬝⬝  10.5K (1%%) · $0.02   ctrl+p commands\r\n")
 		s.events.publish(map[string]any{
-			"type":       "permission.v2.asked",
-			"properties": map[string]any{"id": askID, "sessionID": s.statusID(), "action": "bash"},
+			"type": "permission.asked",
+			"properties": map[string]any{
+				"id": askID, "sessionID": s.statusID(),
+				"permission": "bash", "patterns": []string{"echo hello"},
+			},
 		})
 	}
+}
+
+// pendingPermissions is the prompt this fake is holding, if it is holding one,
+// in the shape GET /permission answers with.
+func (s *sessionState) pendingPermissions() []map[string]any {
+	s.mu.Lock()
+	asked, askID := s.asked, s.askID
+	s.mu.Unlock()
+	if !asked || s.name != "opencode" || askID == "" {
+		return []map[string]any{}
+	}
+	return []map[string]any{{
+		"id": askID, "sessionID": s.statusID(), "permission": "bash",
+	}}
 }
 
 // answerAsked takes the answer to a prompt that is on screen, and reports
@@ -1009,7 +1052,7 @@ func (s *sessionState) answerAsked(line string) bool {
 	s.mu.Unlock()
 	if s.name == "opencode" {
 		s.events.publish(map[string]any{
-			"type": "permission.v2.replied",
+			"type": "permission.replied",
 			"properties": map[string]any{
 				"requestID": askID, "sessionID": s.statusID(), "reply": "once",
 			},
@@ -1035,8 +1078,13 @@ func (s *sessionState) setStatus(status, waitingFor string) {
 			s.setTitle(filepath.Base(s.cwd))
 		}
 	case "opencode":
+		// A real OpenCode session holding a permission prompt keeps reporting
+		// busy until the prompt is answered — the stream and GET
+		// /session/status both — and it is that busy that the watcher's
+		// session-idle rule reads as "the prompt is still open". Anything
+		// else here would have the fake retire its own prompt.
 		kind := "idle"
-		if status == "busy" {
+		if status == "busy" || status == "waiting" {
 			kind = "busy"
 		}
 		s.events.setStatus(s.statusID(), kind)
@@ -1054,8 +1102,12 @@ func (s *sessionState) setStatus(status, waitingFor string) {
 func (s *sessionState) setTitle(text string) { out("\x1b]2;%s\x07", text) }
 
 // statusFilePath is where Claude Code keeps the file the detector reads:
-// ~/.claude/sessions/<pid>.json, keyed by the process's own pid.
+// $CLAUDE_CONFIG_DIR/sessions/<pid>.json, or ~/.claude/sessions/<pid>.json
+// without one, keyed by the process's own pid.
 func (s *sessionState) statusFilePath() string {
+	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
+		return filepath.Join(dir, "sessions", strconv.Itoa(os.Getpid())+".json")
+	}
 	home := os.Getenv("HOME")
 	if home == "" {
 		return ""

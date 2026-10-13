@@ -26,6 +26,8 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}"
 FROM node:22-bookworm-slim
 ARG INSTALL_AGENTS=1
 ARG INSTALL_CLOUDFLARED=1
+ARG INSTALL_VSCODE=1
+ARG CODE_SERVER_VERSION=4.137.0
 ARG TARGETARCH
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
@@ -41,10 +43,43 @@ RUN apt-get update \
       echo "warning: could not install cloudflared, remote access stays off"; \
     fi
 
-COPY --from=build /out/socrates /usr/local/bin/socrates
+# code-server supplies the browser IDE, including its extension host and terminal.
+RUN if [ "$INSTALL_VSCODE" = "1" ]; then \
+      curl -fsSL "https://github.com/coder/code-server/releases/download/v${CODE_SERVER_VERSION}/code-server-${CODE_SERVER_VERSION}-linux-${TARGETARCH:-amd64}.tar.gz" -o /tmp/code-server.tar.gz \
+      && mkdir -p /opt/code-server \
+      && tar -xzf /tmp/code-server.tar.gz -C /opt/code-server --strip-components=1 \
+      && ln -s /opt/code-server/bin/code-server /usr/local/bin/code-server \
+      && rm /tmp/code-server.tar.gz; \
+    fi
 
+COPY --from=build /out/socrates /usr/local/bin/socrates
+COPY deploy/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
+# The host shell. It is what a Shell session runs when the container was started
+# with --pid=host and the right to enter namespaces, and it is unreachable and
+# therefore never named when it was not: internal/harnesses/shell.go probes
+# before it offers. See "A shell on the host" in the README.
+COPY deploy/host-shell.sh /usr/local/bin/socrates-host-shell
+
+# The agents' way onto the host: one command at a time, `on-host kubectl ...`.
+# Under the same condition as the host shell, each agent is told it exists -
+# internal/harnesses/hostexec.go - and otherwise it is a file nobody mentions.
+COPY deploy/on-host.sh /usr/local/bin/on-host
+
+# HOME is inside the volume on purpose. Every credential the three CLIs hold,
+# and every transcript Socrates resumes a session from, is written under $HOME
+# by the CLI itself - ~/.claude and ~/.claude.json, ~/.codex,
+# ~/.local/share/opencode - and with HOME at /root all of it would sit in the
+# container layer, where `docker rm` takes it. In the volume it survives the
+# container, which is what makes signing in once, or importing a signed-in
+# machine's credentials, a thing you do once rather than every time.
+#
+# code-server's own state (~/.local/share/code-server, its extensions) follows
+# the same variable, so the browser IDE keeps its extensions too.
 ENV SOCRATES_DATA_DIR=/data \
-    SOCRATES_ADDR=:8080
+    SOCRATES_ADDR=:8080 \
+    HOME=/data/home
+RUN mkdir -p /data/home
 VOLUME ["/data"]
 EXPOSE 8080
 
@@ -65,6 +100,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s \
 # does the same thing from the outside and is equally fine.
 #
 # A container restart is a reboot: the tmux server dies with the container, so
-# sessions come back through the resume path rather than surviving. Under
-# systemd (deploy/socrates.service) they survive instead - see the README.
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/socrates"]
+# sessions come back through the resume path rather than surviving - see the
+# README. Bringing the container itself back is a restart policy on the run,
+# not anything Socrates does.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh", "/usr/local/bin/socrates"]

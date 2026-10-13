@@ -49,16 +49,10 @@ let defaults = null;
 // so it is not in FIELDS. There is no model catalogue endpoint any more - it
 // went with the chat API - so the combobox is what it is with no items: a text
 // field that takes any id, with the id already in use offered back.
-//
-// `openrouter.title_model` is deliberately not here. It named a chat, and
-// nothing generates a name any more: a session is named after the program and
-// the moment it started, and renamed by hand. The setting survives in the
-// document because it costs nothing there; a control for it would promise
-// something that does not happen.
 const MODEL_PICKERS = [
   ['orTranscribe', 'openrouter.transcribe_model'],
   ['orStatus', 'openrouter.status_model'],
-  ['orAgent', 'openrouter.agent_model'],
+  ['orTitle', 'openrouter.title_model'],
 ];
 
 // FIELDS is every control that is one element and one path. Everything with a
@@ -75,8 +69,6 @@ const FIELDS = [
   ['mouseOn', 'terminal.mouse', 'bool'],
   ['extendedKeys', 'terminal.extended_keys', 'bool'],
   ['webgl', 'terminal.webgl', 'bool'],
-  ['agentAllowShell', 'agent.allow_shell', 'bool'],
-  ['agentMaxSteps', 'agent.max_steps', 'int'],
   ['voiceLanguage', 'voice.language'],
   ['sttPrompt', 'voice.stt_prompt'],
   ['googleKey', 'voice.google_api_key'],
@@ -123,6 +115,7 @@ const CODEX_EFFORTS = ['', 'minimal', 'low', 'medium', 'high', 'xhigh'];
 // these; everything else about the launch is policy, not a setting.
 const OPTIONS = {
   shell: [],
+  vscode: [],
   claude: [
     { key: 'default_model', label: 'Default model', type: 'model',
       hint: 'A session started without a model of its own uses this one.' },
@@ -171,6 +164,7 @@ async function load() {
   renderDefaultHarness();
   renderPresets();
   bind();
+  loadProfiles();
   loadHarnesses();
   refreshTmux();
   if (data.local_url) localURL = data.local_url;
@@ -253,7 +247,7 @@ function renderDefaultHarness() {
   const host = $('defaultHarness');
   if (!host) return;
   host.innerHTML = '';
-  for (const id of ['shell', 'claude', 'codex', 'opencode']) {
+  for (const id of ['shell', 'claude', 'codex', 'opencode', 'vscode']) {
     const button = el('button', {
       class: 'seg with-mark', type: 'button', 'data-value': id,
       onclick: () => {
@@ -301,12 +295,204 @@ function readPresets() {
   }).filter((preset) => preset.path !== '');
 }
 
+/* -------------------------------------------------------------- profiles */
+
+// Profiles are not part of the settings document: each change is its own
+// request and is live at once, because a profile is a directory on the
+// machine and the document's Save would otherwise be what decides when a
+// directory full of sign-ins is deleted.
+
+const LOGIN_NAMES = [['claude', 'Claude'], ['codex', 'Codex'], ['opencode', 'OpenCode']];
+
+async function loadProfiles() {
+  const host = $('profileList');
+  if (!host) return;
+  try {
+    const data = await api('/api/profiles');
+    renderProfiles(data.profiles || []);
+  } catch (err) {
+    host.textContent = errorMessage(err);
+  }
+}
+
+function loginSummary(profile) {
+  const accounts = profile.accounts || {};
+  return LOGIN_NAMES.map(([id, name]) => {
+    const login = accounts[id] || {};
+    const who = login.account || (login.signed_in ? 'signed in' : 'not signed in');
+    const limits = ((profile.limits || {})[id] || [])
+      .filter((w) => w.label === '5h' || w.label === '7d')
+      .map((w) => {
+        const left = harnesses.untilReset(w);
+        return w.label + ' ' + Math.round(w.used_percent) + '%' + (left ? ' · ' + left + ' left' : '');
+      }).join(', ');
+    return name + ': ' + who + (limits ? ' (' + limits + ')' : '');
+  }).join(' · ') + (profile.sessions ? ' · ' + profile.sessions + ' session' + (profile.sessions === 1 ? '' : 's') : '');
+}
+
+function renderProfiles(list) {
+  const host = $('profileList');
+  host.innerHTML = '';
+  for (const profile of list) {
+    const row = profileRow(profile);
+    row.dataset.id = profile.id;
+    row.prepend(profileGrip(profile));
+    host.append(row);
+  }
+}
+
+// The order of the list is the order the new-session sheet offers the
+// profiles in. A row is moved by its grip - dragged with a mouse or a finger,
+// or with the arrow keys once the grip has the focus - and the order is saved
+// the moment it is let go.
+
+function profileOrder(host) {
+  return [...host.querySelectorAll('.profile-row')].map((row) => row.dataset.id);
+}
+
+async function saveProfileOrder(host, before) {
+  const order = profileOrder(host);
+  if (order.join('\n') === before.join('\n')) return;
+  try {
+    await api('/api/profiles/order', { method: 'PUT', body: { order } });
+  } catch (err) {
+    toast(errorMessage(err), 'error');
+    await loadProfiles();
+  }
+}
+
+function profileGrip(profile) {
+  const grip = el('button', {
+    class: 'profile-grip', type: 'button', title: 'Drag to reorder',
+    'aria-label': 'Move ' + profile.name + ' (arrow keys)',
+    html: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>',
+  });
+  grip.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+    event.preventDefault();
+    const row = grip.closest('.profile-row');
+    const host = row.parentElement;
+    const before = profileOrder(host);
+    if (event.key === 'ArrowUp' && row.previousElementSibling) row.previousElementSibling.before(row);
+    else if (event.key === 'ArrowDown' && row.nextElementSibling) row.nextElementSibling.after(row);
+    grip.focus();
+    saveProfileOrder(host, before);
+  });
+  grip.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const row = grip.closest('.profile-row');
+    const host = row.parentElement;
+    const before = profileOrder(host);
+    row.classList.add('dragging');
+    // The row follows the pointer through the list: it goes before the first
+    // other row whose middle is below the pointer, or to the end. Moving the
+    // row takes it out of the document for a moment, which ends any pointer
+    // capture, so the pointer is followed on the window instead.
+    const move = (e) => {
+      if (e.pointerId !== event.pointerId) return;
+      const target = [...host.querySelectorAll('.profile-row')].find((other) => {
+        if (other === row) return false;
+        const box = other.getBoundingClientRect();
+        return e.clientY < box.top + box.height / 2;
+      });
+      if (target) { if (row.nextElementSibling !== target) target.before(row); }
+      else if (host.lastElementChild !== row) host.append(row);
+    };
+    const end = (e) => {
+      if (e.pointerId !== event.pointerId) return;
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', end);
+      window.removeEventListener('pointercancel', end);
+      row.classList.remove('dragging');
+      saveProfileOrder(host, before);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', end);
+    window.addEventListener('pointercancel', end);
+  });
+  return grip;
+}
+
+function profileRow(profile) {
+  const logins = el('div', { class: 'profile-logins', text: loginSummary(profile) });
+  if (profile.default) {
+    return el('div', { class: 'profile-row' },
+      el('span', { class: 'profile-default', text: profile.name }),
+      el('span', { class: 'hint', text: 'the CLIs\' own sign-ins' }),
+      el('span'),
+      logins);
+  }
+  const name = el('input', {
+    class: 'input', type: 'text', maxlength: '40', value: profile.name,
+    'aria-label': 'Name of ' + profile.name,
+  });
+  const rename = el('button', { class: 'btn sm', type: 'button', text: 'Rename' });
+  const remove = el('button', { class: 'btn sm', type: 'button', text: 'Delete' });
+  rename.addEventListener('click', async () => {
+    const next = name.value.trim();
+    if (!next || next === profile.name) return;
+    busyButton(rename, true, 'Saving…');
+    try {
+      await api('/api/profiles/' + encodeURIComponent(profile.id), { method: 'PATCH', body: { name: next } });
+      toast('Renamed to ' + next + '.');
+      await loadProfiles();
+    } catch (err) {
+      toast(errorMessage(err), 'error');
+    } finally {
+      busyButton(rename, false);
+    }
+  });
+  // Deleting takes the profile's sign-ins and conversations with it, so the
+  // first tap only asks and the second one, within a few seconds, deletes.
+  let armed = null;
+  remove.addEventListener('click', async () => {
+    if (!armed) {
+      remove.textContent = 'Really delete?';
+      armed = setTimeout(() => { armed = null; remove.textContent = 'Delete'; }, 4000);
+      return;
+    }
+    clearTimeout(armed);
+    armed = null;
+    busyButton(remove, true, 'Deleting…');
+    try {
+      await api('/api/profiles/' + encodeURIComponent(profile.id), { method: 'DELETE' });
+      toast(profile.name + ' and its sign-ins were deleted.');
+      await loadProfiles();
+    } catch (err) {
+      toast(errorMessage(err), 'error');
+      busyButton(remove, false);
+      remove.textContent = 'Delete';
+    }
+  });
+  return el('div', { class: 'profile-row' }, name, rename, remove, logins);
+}
+
+async function addProfile() {
+  const input = $('profileName');
+  const name = input.value.trim();
+  if (!name) {
+    toast('Give the profile a name first.');
+    input.focus();
+    return;
+  }
+  const button = $('profileAdd');
+  busyButton(button, true, 'Adding…');
+  try {
+    await api('/api/profiles', { method: 'POST', body: { name } });
+    input.value = '';
+    toast(name + ' was added. Start a session in it to sign in.');
+    await loadProfiles();
+  } catch (err) {
+    toast(errorMessage(err), 'error');
+  } finally {
+    busyButton(button, false);
+  }
+}
+
 /* ------------------------------------------------------- the tmux engine */
 
 const TMUX_LABEL = { ok: 'tmux is ready', old: 'tmux is too old', missing: 'tmux is missing' };
-
-let tmuxReport = null;
-let tmuxStream = null;
 
 function tmuxState(report) {
   if (report.ok) return 'ok';
@@ -314,21 +500,17 @@ function tmuxState(report) {
 }
 
 function renderTmux(report) {
-  tmuxReport = report;
   const host = $('tmuxStatus');
   let dot = host.querySelector(':scope > .state-dot');
   if (!dot) {
     dot = el('span', { class: 'state-dot' });
     host.prepend(dot);
   }
-  const state = report.installing ? 'installing' : tmuxState(report);
-  for (const name of ['ok', 'old', 'missing', 'installing']) setClass(dot, name, state === name);
+  const state = tmuxState(report);
+  for (const name of ['ok', 'old', 'missing']) setClass(dot, name, state === name);
   while (dot.nextSibling) dot.nextSibling.remove();
 
-  const parts = [el('span', {
-    class: 'state-label',
-    text: report.installing ? 'Installing tmux…' : TMUX_LABEL[state],
-  })];
+  const parts = [el('span', { class: 'state-label', text: TMUX_LABEL[state] })];
   if (report.version) {
     parts.push(el('span', { class: 'sep', text: '·' }));
     parts.push(el('span', { class: 'muted', text: 'tmux ' + report.version }));
@@ -343,116 +525,13 @@ function renderTmux(report) {
   host.append(...parts);
 
   $('tmuxReason').textContent = report.ok ? '' : (report.reason || '');
-
-  const install = $('tmuxInstall');
-  install.hidden = report.ok || !report.can_install;
-  install.disabled = !!report.installing;
-  install.textContent = report.installing ? 'Installing…' : 'Install tmux with ' + report.manager;
-
-  const manual = $('tmuxManualField');
-  manual.hidden = report.ok || !report.command;
-  if (!manual.hidden) $('tmuxManual').value = report.command;
-
-  const toggle = $('tmuxLogToggle');
-  toggle.hidden = !(report.log || []).length && !report.installing;
-  renderInstallResult(report);
-  renderTmuxLog(report.log || []);
-}
-
-// renderInstallResult is the sentence above the log: what the last install did
-// and when. Without it a reload after a failure shows a log and no verdict,
-// and somebody has to read package-manager output to find out whether it
-// worked.
-function renderInstallResult(report) {
-  const node = $('tmuxInstallResult');
-  if (!node) return;
-  const exit = report.last_exit;
-  if (report.installing || exit === undefined || exit === null || exit < 0 || !report.last_at) {
-    node.hidden = true;
-    node.textContent = '';
-    return;
-  }
-  node.hidden = false;
-  setClass(node, 'bad', exit !== 0);
-  node.textContent = (exit === 0
-    ? 'The last install finished'
-    : 'The last install failed (exit ' + exit + ') — the output says why')
-    + ' · ' + sinceWhen(report.last_at);
-}
-
-// sinceWhen is a timestamp as a person would say it. Anything older than a day
-// is a date, because "37 hours ago" is not how anybody thinks about it.
-function sinceWhen(at) {
-  const seconds = Math.max(0, Math.round((Date.now() - at) / 1000));
-  if (seconds < 60) return 'just now';
-  if (seconds < 3600) return Math.round(seconds / 60) + ' min ago';
-  if (seconds < 86400) return Math.round(seconds / 3600) + ' h ago';
-  return new Date(at).toLocaleDateString();
-}
-
-function renderTmuxLog(lines) {
-  const log = $('tmuxLog');
-  if (lines.length) log.dataset.lines = String(lines.length);
-  if (log.hidden) return;
-  log.textContent = lines.join('\n') || 'no output yet';
-  log.scrollTop = log.scrollHeight;
 }
 
 async function refreshTmux() {
   try {
-    const report = await api('/api/tmux');
-    renderTmux(report);
-    if (report.installing) watchInstall();
+    renderTmux(await api('/api/tmux'));
   } catch (err) {
     if (!isOffline(err)) toast(errorMessage(err), 'error');
-  }
-}
-
-// watchInstall subscribes to the progress stream. It is the same LiveStream
-// the session page uses, so the backoff, the watchdog and the connection bar
-// are the ones the rest of the app already has.
-function watchInstall() {
-  if (tmuxStream) return;
-  const lines = [...(tmuxReport && tmuxReport.log ? tmuxReport.log : [])];
-  $('tmuxLog').hidden = false;
-  $('tmuxLogToggle').hidden = false;
-  $('tmuxLogToggle').textContent = 'Hide output';
-  tmuxStream = new LiveStream({
-    url: () => '/api/tmux/events',
-    reportsGlobal: false,
-    onMessage: (event) => {
-      if (!event) return;
-      if (event.type === 'line') {
-        lines.push(event.line);
-        renderTmuxLog(lines);
-        return;
-      }
-      if (event.type !== 'done') return;
-      tmuxStream.stop();
-      tmuxStream = null;
-      toast(event.ok ? 'tmux installed' : 'The install failed — the output says why.',
-        event.ok ? '' : 'error');
-      refreshTmux();
-      // A successful install is the moment sessions become possible, and the
-      // catalogue is what every page asks about that. Asking again here is
-      // what keeps the sheet's Start from staying disabled behind a card that
-      // says tmux is ready.
-      if (event.ok) loadHarnesses(true).catch(() => {});
-    },
-  });
-  tmuxStream.start();
-}
-
-async function installTmux() {
-  const button = $('tmuxInstall');
-  busyButton(button, true, 'Installing…');
-  try {
-    await api('/api/tmux/install', { method: 'POST', body: {} });
-    watchInstall();
-  } catch (err) {
-    toast(errorMessage(err), 'error');
-  } finally {
-    busyButton(button, false, 'Installing…');
   }
 }
 
@@ -481,7 +560,7 @@ function cleanVersion(text) {
 function harnessLabel(id) {
   const found = harnesses.list().find((h) => h.id === id);
   if (found) return found.label;
-  return { shell: 'Shell', claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode' }[id] || id;
+  return { vscode: 'VS Code', shell: 'Shell', claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode' }[id] || id;
 }
 
 function optionPath(id, key) { return 'harnesses.' + id + '.' + key; }
@@ -515,7 +594,7 @@ function renderHarnesses(status) {
     host.append(el('div', { class: 'hint',
       text: 'Showing the programs from your last visit — this machine could not be asked just now.' }));
   }
-  for (const id of ['shell', 'claude', 'codex', 'opencode']) {
+  for (const id of ['shell', 'claude', 'codex', 'opencode', 'vscode']) {
     const harness = found.find((h) => h.id === id);
     if (harness) host.append(harnessCard(harness, status === 'refreshing'));
   }
@@ -563,7 +642,7 @@ function harnessCard(harness, refreshing) {
     ),
     harness.error ? el('div', { class: 'agent-note bad', text: harness.error }) : null,
     harness.notes ? el('p', { class: 'card-sub', text: harness.notes }) : null,
-    harness.id === 'shell' ? null : modelList(harness),
+    ['shell', 'vscode'].includes(harness.id) ? null : modelList(harness),
     field('Binary path', binary,
       'Leave it empty to look the program up on PATH, which is what a normal installation wants.'),
   );
@@ -722,14 +801,11 @@ function bind() {
   $('runChecks').addEventListener('click', runChecks);
   $('changePw').addEventListener('click', changePassword);
   $('presetAdd').addEventListener('click', () => $('presetDirs').append(presetRow()));
-  $('windowSize').addEventListener('change', renderWindowSizeHint);
-  $('tmuxInstall').addEventListener('click', installTmux);
-  $('tmuxLogToggle').addEventListener('click', () => {
-    const log = $('tmuxLog');
-    log.hidden = !log.hidden;
-    $('tmuxLogToggle').textContent = log.hidden ? 'Show output' : 'Hide output';
-    if (!log.hidden) refreshTmux();
+  $('profileAdd').addEventListener('click', addProfile);
+  $('profileName').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); addProfile(); }
   });
+  $('windowSize').addEventListener('change', renderWindowSizeHint);
   $('tunnelStart').addEventListener('click', startTunnel);
   $('tunnelStop').addEventListener('click', stopTunnel);
   $('tunnelMode').addEventListener('change', renderTunnelMode);

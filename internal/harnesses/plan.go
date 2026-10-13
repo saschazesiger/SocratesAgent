@@ -3,7 +3,7 @@
 // configuration files it reads, and what is known about the session id the
 // program keeps for itself.
 //
-// This file holds the types alone. The four harnesses and the registry that
+// This file holds the types alone. The five harnesses and the registry that
 // offers them live beside it.
 package harnesses
 
@@ -64,14 +64,24 @@ type LaunchPlan struct {
 
 // PlanRequest is what a plan is built from.
 type PlanRequest struct {
-	SessionID  string
-	Title      string
-	Cwd        string
-	Model      string
-	Effort     string
-	CLISession string
-	Settings   config.Settings
-	DataDir    string
+	SessionID string
+	Title     string
+	Cwd       string
+	Model     string
+	Effort    string
+	// ShellExecution selects the machine for a Shell session. Empty keeps the
+	// launch behavior of sessions created before this choice existed.
+	ShellExecution string
+	CLISession     string
+	// Profile is the id of the sign-in profile the session runs in, and
+	// empty for the default one. See profiles.go.
+	Profile string
+	// Ultracode is Claude Code's standing dynamic-workflow orchestration,
+	// chosen on the sheet when the session is created and kept for its whole
+	// life. Off unless asked for; no other harness has it.
+	Ultracode bool
+	Settings  config.Settings
+	DataDir   string
 	// Logf is the caller's log, for the one thing a plan does that can fail
 	// without stopping the launch: pinning Claude Code's global config, whose
 	// failure costs the session its trust entry and therefore its prompt. It

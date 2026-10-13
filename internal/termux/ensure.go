@@ -47,6 +47,9 @@ func (m *Manager) ensureLocked(ctx context.Context, sessionID string) (*store.Se
 	if err != nil {
 		return nil, err
 	}
+	if row.Status == store.StatusDone {
+		return row, ErrDone
+	}
 	switch row.State {
 	case store.StateRunning, store.StateExited, store.StateFailed:
 		// Exited attaches too: the pane is dead but the screen it left is
@@ -74,6 +77,9 @@ func (m *Manager) Restart(ctx context.Context, sessionID string) (*store.Session
 	row, err := m.st.GetSession(sessionID)
 	if err != nil {
 		return nil, err
+	}
+	if row.Status == store.StatusDone {
+		return nil, ErrDone
 	}
 	if m.Available() == nil && row.TmuxName != "" && !m.paneIsDead(row.TmuxName) {
 		return nil, fmt.Errorf("%w: %s", ErrStillRunning, row.TmuxName)
@@ -143,16 +149,9 @@ func (m *Manager) resume(ctx context.Context, row *store.Session) (*store.Sessio
 	if m.cfg.Settings == nil {
 		return nil, errors.New("this manager was built without settings, so it cannot plan a resume")
 	}
-	req := harnesses.PlanRequest{
-		SessionID:  row.ID,
-		Title:      row.Title,
-		Cwd:        row.Workdir,
-		Model:      row.Model,
-		Effort:     row.Effort,
-		CLISession: strings.TrimSpace(row.CLISessionID),
-		Settings:   m.cfg.Settings(),
-		DataDir:    m.cfg.DataDir,
-		Logf:       m.logf,
+	req, err := m.planRequest(row)
+	if err != nil {
+		return m.planFailed(row, err)
 	}
 	if row.CLISessionState == store.CLILost {
 		req.CLISession = ""
@@ -172,7 +171,6 @@ func (m *Manager) resume(ctx context.Context, row *store.Session) (*store.Sessio
 	}
 
 	var plan harnesses.LaunchPlan
-	var err error
 	if req.CLISession != "" {
 		plan, err = h.ResumePlan(ctx, req)
 		if errors.Is(err, harnesses.ErrNoResume) {
@@ -221,6 +219,41 @@ func (m *Manager) resume(ctx context.Context, row *store.Session) (*store.Sessio
 		m.logf("could not record the resume of session %s: %v", row.ID, err)
 	}
 	return m.st.GetSession(row.ID)
+}
+
+// planRequest is the request a session is planned from again: what its row
+// remembers, and the options it was started with.
+func (m *Manager) planRequest(row *store.Session) (harnesses.PlanRequest, error) {
+	req := harnesses.PlanRequest{
+		SessionID:  row.ID,
+		Title:      row.Title,
+		Cwd:        row.Workdir,
+		Model:      row.Model,
+		Effort:     row.Effort,
+		CLISession: strings.TrimSpace(row.CLISessionID),
+		Settings:   m.cfg.Settings(),
+		DataDir:    m.cfg.DataDir,
+		Logf:       m.logf,
+	}
+	if len(row.Options) > 0 {
+		var options struct {
+			ShellExecution string `json:"shell_execution"`
+			Profile        string `json:"profile"`
+			Ultracode      bool   `json:"ultracode"`
+		}
+		// Options that are not an object were never written by Socrates and
+		// carry neither field; only a shell has a choice that cannot be
+		// guessed, so only a shell refuses them.
+		if err := json.Unmarshal(row.Options, &options); err != nil && row.Harness == string(harnesses.KindShell) {
+			return req, err
+		}
+		if row.Harness == string(harnesses.KindShell) {
+			req.ShellExecution = options.ShellExecution
+		}
+		req.Profile = options.Profile
+		req.Ultracode = options.Ultracode && row.Harness == string(harnesses.KindClaude)
+	}
+	return req, nil
 }
 
 // planFailed records a launch that could not even be planned - a binary that
@@ -404,9 +437,10 @@ func (m *Manager) discoverCLISession(ctx context.Context, id string, plan harnes
 	// run the CLI in by hand - from handing this pane somebody else's
 	// conversation.
 	d := harnesses.Discovery{
-		Cwd:     plan.Cwd,
-		Since:   since,
-		Claimed: func(cli string) bool { return m.cliHeldElsewhere(id, cli) },
+		Cwd:      plan.Cwd,
+		Since:    since,
+		Claimed:  func(cli string) bool { return m.cliHeldElsewhere(id, cli) },
+		DataHome: strings.TrimSpace(plan.Env["XDG_DATA_HOME"]),
 	}
 	switch plan.Discover {
 	case harnesses.DiscoverCodexRollout:
@@ -464,7 +498,7 @@ func (m *Manager) cliHeldElsewhere(id, cli string) bool {
 	if cli == "" {
 		return false
 	}
-	rows, err := m.st.ListSessions(true)
+	rows, err := m.st.ListSessions()
 	if err != nil {
 		// Not knowing is not the same as knowing it is free, but refusing
 		// every id on a database hiccup would leave the session pending for
@@ -489,8 +523,8 @@ func codexHome(env map[string]string) string {
 	if dir := strings.TrimSpace(os.Getenv("CODEX_HOME")); dir != "" {
 		return dir
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
+	home := strings.TrimSpace(os.Getenv("HOME"))
+	if home == "" {
 		return ""
 	}
 	return filepath.Join(home, ".codex")

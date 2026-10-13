@@ -62,10 +62,7 @@ type Config struct {
 	WindowSize      string
 	JournalMaxBytes int64
 	JournalKeep     int
-	// Supervisor wraps the command that starts the tmux server. Nil is the
-	// right answer everywhere except under systemd.
-	Supervisor Supervisor
-	Logf       func(format string, args ...any)
+	Logf            func(format string, args ...any)
 	// Settings is the live configuration, read whenever a session has to be
 	// planned again. A resume after a reboot builds its own launch plan, and
 	// the plan is only ever as current as the settings it is built from.
@@ -100,18 +97,8 @@ type Manager struct {
 	confFallback bool
 	pollFails    int
 	missed       map[string]int
-	// scrolled holds the sessions a viewer has left in tmux copy mode, so the
-	// input path can leave it before a keystroke disappears into it (scroll.go).
-	scrolled map[string]bool
-	// scrollLocks serialises the copy-mode commands per session, so that two
-	// fingers on two devices cannot interleave a copy-mode with a send-keys -X,
-	// and so that a keystroke cannot slip between the check for copy mode and
-	// the byte. One lock per session rather than one for all of them: the
-	// handshake reads the pane's state, and a global lock would put every
-	// reconnect behind one slow session (scroll.go).
-	scrollLocks map[string]*sync.Mutex
-	hookLn      net.Listener
-	closed      bool
+	hookLn       net.Listener
+	closed       bool
 
 	// locks serialises everything that relaunches one session, and watchers
 	// holds the cancel of its detached session-id watcher.
@@ -161,13 +148,11 @@ func New(st *store.Store, cfg Config) (*Manager, error) {
 	}
 	m := &Manager{
 		st: st, cfg: cfg,
-		live:        map[string]*liveSession{},
-		missed:      map[string]int{},
-		scrolled:    map[string]bool{},
-		scrollLocks: map[string]*sync.Mutex{},
-		locks:       map[string]*sync.Mutex{},
-		watchers:    map[string]context.CancelFunc{},
-		plans:       map[string]harnesses.LaunchPlan{},
+		live:     map[string]*liveSession{},
+		missed:   map[string]int{},
+		locks:    map[string]*sync.Mutex{},
+		watchers: map[string]context.CancelFunc{},
+		plans:    map[string]harnesses.LaunchPlan{},
 	}
 	m.act = newActivity(m)
 	m.discoverCtx, m.discoverStop = context.WithCancel(context.Background())
@@ -205,11 +190,10 @@ func New(st *store.Store, cfg Config) (*Manager, error) {
 		m.tmuxVersion = v
 	}
 	m.tmux = &Tmux{
-		Sock:       filepath.Join(cfg.DataDir, "tmux.sock"),
-		Conf:       filepath.Join(cfg.DataDir, "tmux.conf"),
-		Bin:        bin,
-		Supervisor: cfg.Supervisor,
-		Logf:       cfg.Logf,
+		Sock: filepath.Join(cfg.DataDir, "tmux.sock"),
+		Conf: filepath.Join(cfg.DataDir, "tmux.conf"),
+		Bin:  bin,
+		Logf: cfg.Logf,
 	}
 	m.tmux.Env = m.serverEnv()
 	return m, nil
@@ -262,7 +246,32 @@ func (m *Manager) Start(ctx context.Context) error {
 	if err := WriteConf(m.tmux.Conf, m.confOptions()); err != nil {
 		return err
 	}
+	m.ensureClipboard(ctx)
 	return m.listenHooks()
+}
+
+// ensureClipboard puts the one option the browser's clipboard path depends on
+// onto a tmux server that is already running.
+//
+// The generated configuration is read when the tmux *server* starts, and the
+// whole point of the substrate is that the sessions outlive us - so an install
+// that upgrades keeps the server it has, and a new line in the file reaches it
+// only when the machine is next rebooted. `set-clipboard` cannot wait for
+// that: with the default `external`, every copy made in tmux's own copy mode
+// is decoded and thrown away instead of being sent to the browser. It is a
+// server option, so one command is the whole of it, and a failure is not fatal
+// - a Socrates that cannot set it still runs sessions.
+func (m *Manager) ensureClipboard(ctx context.Context) {
+	if m.Available() != nil {
+		return
+	}
+	running, err := m.tmux.Running(ctx)
+	if err != nil || !running {
+		return
+	}
+	if _, err := m.tmux.Run(ctx, "set", "-s", "set-clipboard", "on"); err != nil {
+		log.Printf("terminal sessions: could not turn tmux's clipboard forwarding on: %v", err)
+	}
 }
 
 // Close lets go of everything Socrates owns and nothing tmux owns. The whole
@@ -422,6 +431,12 @@ func cliStateFor(plan harnesses.LaunchPlan) string {
 // caller answers 409 rather than putting a working terminal behind an error
 // overlay.
 var ErrStillRunning = errors.New("the session is still running; it will not be replaced")
+
+// ErrDone is the refusal to start the program of a session that is done. Its
+// terminal was closed on purpose, and opening the session to read it must
+// not bring the terminal back: the session has to be given another status
+// first.
+var ErrDone = errors.New("the session is done; give it another status to resume it")
 
 // Relaunch starts a session's program again under the name its row already
 // carries: the reboot case, where the row survived and the tmux server did
@@ -751,7 +766,12 @@ func (m *Manager) Attach(ctx context.Context, sessionID, viewerID string, cols, 
 	}
 
 	cmd := exec.Command(m.tmuxPath, "-S", m.tmux.Sock, "attach", "-t", row.TmuxName)
-	cmd.Env = append(os.Environ(), "TMUX=")
+	// The terminal this client is attached from is xterm.js, whatever the
+	// server's own environment says - and under a service manager it says
+	// nothing at all. TERM is what tmux reads its terminal-features from, and
+	// the clipboard feature (the Ms capability) is what decides whether a copy
+	// made in tmux is sent to the browser as OSC 52 or kept to itself.
+	cmd.Env = append(os.Environ(), "TMUX=", "TERM=xterm-256color")
 	master, tty, err := startPTY(cmd, cols, rows)
 	if err != nil {
 		return nil, err
@@ -892,6 +912,52 @@ func (m *Manager) Viewers(sessionID string) []*Viewer {
 
 // ---------------------------------------------------------------- deleting
 
+// Park closes the terminal of a session that is done and keeps everything
+// else: the row, the journal, the working directory and the program's own
+// conversation id. What is left is exactly what a reboot leaves behind, so
+// the row says needs_resume and a later resume picks the conversation up
+// again - but only once the session is no longer done, which Ensure checks.
+//
+// It takes the session's lock, so a resume that is under way finishes before
+// the terminal it made is closed rather than racing it.
+func (m *Manager) Park(ctx context.Context, sessionID string) error {
+	unlock := m.lockSession(sessionID)
+	defer unlock()
+	row, err := m.st.GetSession(sessionID)
+	if err != nil {
+		return err
+	}
+	if err := m.stop(ctx, row); err != nil {
+		return err
+	}
+	if row.State == store.StateNeedsResume {
+		return nil
+	}
+	return m.st.SetSessionState(sessionID, store.StateNeedsResume, -1, "")
+}
+
+// stop closes every viewer of a session and kills its tmux session, which is
+// what deleting a session and parking one have in common. A session that is
+// already gone is not an error: that is the state being asked for.
+func (m *Manager) stop(ctx context.Context, row *store.Session) error {
+	for _, v := range m.Viewers(row.ID) {
+		_ = v.Close()
+	}
+	if m.Available() == nil && row.TmuxName != "" {
+		// A bare pipe-pane closes the journal; then the session goes.
+		_, _ = m.tmux.Run(ctx, "pipe-pane", "-t", row.TmuxName)
+		if _, err := m.tmux.Run(ctx, "kill-session", "-t", row.TmuxName); err != nil && !serverGone(err) &&
+			!noSuchTarget(err) {
+			return err
+		}
+	}
+	m.mu.Lock()
+	delete(m.live, row.ID)
+	delete(m.missed, row.ID)
+	m.mu.Unlock()
+	return nil
+}
+
 // Delete kills a session, and is the only thing in Socrates that ever does.
 // The working directory is left alone: work the user did is not ours to throw
 // away.
@@ -900,26 +966,12 @@ func (m *Manager) Delete(ctx context.Context, sessionID string) error {
 	if err != nil {
 		return err
 	}
-	for _, v := range m.Viewers(sessionID) {
-		_ = v.Close()
-	}
-	if m.Available() == nil && row.TmuxName != "" {
-		// A bare pipe-pane closes the journal; then the session goes.
-		_, _ = m.tmux.Run(ctx, "pipe-pane", "-t", row.TmuxName)
-		if _, err := m.tmux.Run(ctx, "kill-session", "-t", row.TmuxName); err != nil && !serverGone(err) &&
-			!strings.Contains(strings.ToLower(Stderr(err)), "can't find session") {
-			return err
-		}
+	if err := m.stop(ctx, row); err != nil {
+		return err
 	}
 	if err := m.st.DeleteSession(sessionID); err != nil {
 		return err
 	}
-	m.mu.Lock()
-	delete(m.live, sessionID)
-	delete(m.missed, sessionID)
-	delete(m.scrolled, sessionID)
-	delete(m.scrollLocks, sessionID)
-	m.mu.Unlock()
 	// The watcher would otherwise keep looking for a conversation id for
 	// another quarter of an hour and then write it to a row that is gone.
 	m.forgetSession(sessionID)
