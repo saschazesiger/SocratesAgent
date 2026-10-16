@@ -539,3 +539,43 @@ func TestAPreparedSessionsPlaceholderFollowsItsHarness(t *testing.T) {
 		t.Fatalf("a given name became %q", row.Title)
 	}
 }
+
+func TestCompanionProfilesAreTheActiveSessionsInTheFolder(t *testing.T) {
+	session := func(id, harness, workdir, state, status, options string, activeAt int64) store.Session {
+		return store.Session{ID: id, Harness: harness, Workdir: workdir, State: state, Status: status,
+			Options: json.RawMessage(options), ActiveAt: activeAt}
+	}
+	rows := []store.Session{
+		session("a", "claude", "/srv/app", store.StateRunning, store.StatusInProgress, `{"profile":"p-a"}`, 10),
+		session("b", "claude", "/srv/app/", store.StateRunning, store.StatusReview, `{"profile":"p-b"}`, 30),
+		session("c", "claude", "/srv/app", store.StateRunning, store.StatusDone, `{"profile":"p-c"}`, 50),
+		session("d", "claude", "/srv/app", store.StateExited, store.StatusInProgress, `{"profile":"p-d"}`, 50),
+		session("e", "codex", "/srv/app", store.StateRunning, store.StatusInProgress, `{"profile":"p-e"}`, 50),
+		session("f", "claude", "/srv/other", store.StateRunning, store.StatusInProgress, `{"profile":"p-f"}`, 50),
+		session("g", "claude", "/srv/app", store.StateStarting, store.StatusInProgress, `{}`, 20),
+		session("self", "claude", "/srv/app", store.StateRunning, store.StatusInProgress, `{"profile":"p-self"}`, 90),
+	}
+	got := companionProfiles(rows, "claude", "/srv/app", "self")
+	want := map[string]int64{"p-a": 10, "p-b": 30, "": 20}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("companionProfiles = %v, want %v", got, want)
+	}
+	views := []profileView{{ID: ""}, {ID: "p-a"}, {ID: "p-b"}}
+	// The recommended profile wins when a companion runs in it...
+	if id, ok := companionProfile(views, got, "p-a"); !ok || id != "p-a" {
+		t.Fatalf("companionProfile with p-a recommended = %q, %v", id, ok)
+	}
+	// ...and otherwise the one active last.
+	if id, ok := companionProfile(views, got, "p-x"); !ok || id != "p-b" {
+		t.Fatalf("companionProfile = %q, %v; want p-b", id, ok)
+	}
+	// A deleted profile is not joined.
+	if _, ok := companionProfile(views[:1], map[string]int64{"p-gone": 5}, ""); ok {
+		t.Fatal("companionProfile chose a profile that no longer exists")
+	}
+	// A host shell has no profile to share.
+	shells := []store.Session{session("h", "shell", "/srv/app", store.StateRunning, store.StatusInProgress, `{"shell_execution":"host","profile":"p-a"}`, 5)}
+	if got := companionProfiles(shells, "shell", "/srv/app", ""); len(got) != 0 {
+		t.Fatalf("companionProfiles for a host shell = %v", got)
+	}
+}

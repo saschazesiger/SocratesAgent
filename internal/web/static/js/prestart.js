@@ -1,4 +1,4 @@
-// The panel of a prepared session ("preStart").
+// The panel of a prepared session ("PreStart").
 //
 // A prepared session is a session whose settings and first prompt are written
 // before anything runs. It has no terminal, so its panel stands where the
@@ -200,6 +200,8 @@ const PATCH_FIELDS = {
  *   started(row, e)  the session started: attach it the way a new one is
  *   refresh()        read the session list again now
  *   measure()        the {cols, rows} the terminal it becomes will have
+ *   nameFromPrompt(session, text)
+ *                    name the session after the prompt written so far
  *
  * It hands back show/update/hide for the page, and field(), which is where
  * the keyboard switch raises the keyboard when nothing else had the focus.
@@ -268,6 +270,10 @@ function openPanel(ctx, first) {
     applied: '',
     // A start in progress, and the timers that watch a scheduled one.
     starting: false,
+    // Whether something has been written in the field here, and whether the
+    // session has been named after it since: that happens once.
+    wrote: false,
+    named: false,
     dueTimers: [],
     tick: null,
   };
@@ -275,7 +281,7 @@ function openPanel(ctx, first) {
   /* ----------------------------------------------------------- markup */
 
   const textarea = el('textarea', {
-    class: 'textarea prestart-text', id: 'psPrompt', rows: '10', spellcheck: 'true',
+    class: 'textarea prestart-text', id: 'psPrompt', rows: '14', spellcheck: 'true',
     placeholder: 'What should it do? This is sent as the first prompt the moment the session starts.',
     'aria-describedby': 'psSave',
   });
@@ -311,7 +317,7 @@ function openPanel(ctx, first) {
   host.replaceChildren(el('div', { class: 'prestart-scroll' },
     el('div', { class: 'prestart-inner' },
       el('div', { class: 'prestart-head' },
-        el('span', { class: 'prestart-badge', html: PRESTART_SVG + '<span>preStart</span>' }),
+        el('span', { class: 'prestart-badge', html: PRESTART_SVG + '<span>PreStart</span>' }),
         el('span', { class: 'prestart-lede', text: 'Nothing runs yet. It starts with these settings and this prompt.' })),
       el('div', { class: 'prestart-grid' },
         el('div', { class: 'prestart-main' },
@@ -352,6 +358,7 @@ function openPanel(ctx, first) {
   /* ------------------------------------------------------------ events */
 
   const onInput = () => {
+    st.wrote = true;
     grow();
     st.tooLong = false;
     // The copy on this device first: from here on the text survives a tab
@@ -363,6 +370,7 @@ function openPanel(ctx, first) {
     st.saveTimer = setTimeout(() => save(), DRAFT_DEBOUNCE);
   };
   textarea.addEventListener('input', onInput);
+  textarea.addEventListener('blur', () => nameFromPrompt());
   host.addEventListener('keydown', onKey);
   startAt.addEventListener('change', () => {
     if (!startAt.value) { schedule(0); return; }
@@ -389,6 +397,16 @@ function openPanel(ctx, first) {
   /* ------------------------------------------------------------- draft */
 
   function dirty() { return st.saved === null || textarea.value !== st.saved; }
+
+  // The first time the field is left after something was written in it, the
+  // session is named after its prompt, so that the sidebar says roughly what
+  // it is for before it has ever run. Once per panel, and never over a name
+  // somebody gave it; the arrow beside the name does it again on request.
+  function nameFromPrompt() {
+    if (st.named || !st.wrote || session.title_source || !textarea.value.trim()) return;
+    st.named = true;
+    if (ctx.nameFromPrompt) ctx.nameFromPrompt(session, textarea.value);
+  }
 
   function grow() {
     // Auto-growing: the field is as tall as what is in it, and the panel
@@ -899,6 +917,8 @@ function openPanel(ctx, first) {
     // the answer is then either saved, or "started" with a warning that it
     // was not sent - never silence. Offline, it stays on this device.
     if (st.loaded && dirty() && !st.conflict && !st.tooLong) save();
+    // A panel left for another session counts as the field being left.
+    nameFromPrompt();
     st.closed = true;
     clearTimeout(st.saveTimer);
     clearTimeout(st.retryTimer);

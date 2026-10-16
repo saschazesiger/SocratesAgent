@@ -217,7 +217,7 @@ Binding like the rest. Detail: `docs/design/DESIGN.md` §K and §L.
 - **The S3 client is hand written**, standard library only, like `webpush`. The deployed store
   (Hetzner, Ceph RGW) needs `x-amz-content-sha256` on every request and compares `If-Match` against
   the unquoted ETag; both are pinned.
-- **preStart: a session can be prepared before anything runs** — Claude Code, Codex and OpenCode
+- **PreStart: a session can be prepared before anything runs** — Claude Code, Codex and OpenCode
   only, switched on in the new-session sheet (off every time it opens). Its panel shows the sheet's
   own settings (one form builder for both) and a large prompt field that saves itself and is backed
   up through the bucket. **Start is exactly a new session's start** — one server function for both —

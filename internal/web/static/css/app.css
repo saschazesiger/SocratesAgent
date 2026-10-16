@@ -473,9 +473,10 @@ html:not(.touch) #kbBtn, html:not(.touch) .kb-copy { display: none !important; }
 .folder-ide:hover .agent-mark,
 .folder-ide.running .agent-mark { opacity: 1; filter: none; }
 .folder-ide.active { background: var(--bg-sunken); }
-/* A shelf is a folder inside a folder: the background and done sessions of
-   one project, under its rows. No hairline - it is part of the folder above -
-   and set in a little, so it reads as belonging to it. */
+/* A shelf is a folder inside a folder: the prepared sessions of one project
+   above its rows, its background and done sessions under them. No hairline -
+   it is part of the folder around it - and set in a little, so it reads as
+   belonging to it. */
 .shelf > .folder-bar { margin: 2px 0 0; border-top: 0; }
 .shelf > .folder-bar .folder-head { padding: 6px 10px 4px 18px; font-size: 10px; }
 .shelf > .folder-rows { padding-left: 8px; }
@@ -683,20 +684,41 @@ html:not(.touch) #kbBtn, html:not(.touch) .kb-copy { display: none !important; }
   background: var(--bg);
   z-index: 3;
 }
-.topbar .title {
+/* The name and the arrow that names the session again. The pair is the
+   spacer between the menu and the controls; the arrow sits right after the
+   name rather than at the far end, so it reads as being about the name. */
+.topbar .title-wrap {
   flex: 1 1 auto;
   /* Enough for a word and an ellipsis. Below the width where even this fits,
      the rule further down hides the title outright rather than showing one
      letter, which reads as a glitch rather than as a name. */
   min-width: 5.5em;
+  display: flex;
+  align-items: center;
+  padding: 0 8px 0 14px;
+}
+.topbar .title {
+  flex: 0 1 auto;
+  min-width: 0;
   font-size: 14.5px;
   font-weight: 550;
   letter-spacing: -.01em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding: 0 14px;
 }
+.topbar .title-regen {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  margin-left: 4px;
+  color: var(--text-faint);
+}
+.topbar .title-regen:hover { color: var(--text-soft); }
+.topbar .title-regen svg { width: 15px; height: 15px; }
+/* While a name is being thought of, the arrow turns and cannot be pressed. */
+.topbar .title-regen:disabled { cursor: default; opacity: 1; }
+.topbar .title-regen:disabled svg { animation: spin 1s linear infinite; }
 
 .usage-strip {
   position: relative;
@@ -1396,7 +1418,7 @@ html:not(.touch) #kbBtn, html:not(.touch) .kb-copy { display: none !important; }
    Still `flex: 1 1 auto`, so it goes on being the space between the name and
    the controls wherever there is any to give. */
 @container (max-width: 345px) {
-  .topbar .title { visibility: hidden; min-width: 0; }
+  .topbar .title-wrap { visibility: hidden; min-width: 0; }
 }
 @container (max-width: 380px) {
   /* Narrower still: the controls give up the last of their spacing. */
@@ -2083,6 +2105,8 @@ body.stale .icon-btn.working::after { animation-play-state: paused; opacity: .4;
   font-size: 10.5px;
   font-weight: 550;
 }
+/* Sessions of this program already active in this profile, in this folder. */
+.profile-entry-tag.here { color: var(--accent); }
 .profile-entry-account {
   font-family: var(--mono);
   font-size: 11px;
@@ -2537,7 +2561,7 @@ body.stale .chat-item .row-mark.busy::after { animation-play-state: paused; opac
   color: var(--blue);
 }
 .chat-item .row-when svg { width: 12px; height: 12px; display: block; }
-/* The group itself wears the panel's mark beside its name. */
+/* The PreStart shelf wears the panel's mark beside its name. */
 .folder-head .folder-icon {
   flex: none;
   width: 13px;
@@ -2546,6 +2570,7 @@ body.stale .chat-item .row-mark.busy::after { animation-play-state: paused; opac
   color: var(--text-soft);
 }
 .folder-head .folder-icon svg { width: 100%; height: 100%; display: block; }
+.shelf > .folder-bar .folder-icon { width: 11px; height: 11px; }
 @media (min-width: 901px) {
   body.side-collapsed .chat-item .row-text,
   body.side-collapsed .chat-item .row-when { display: none; }
@@ -2613,7 +2638,7 @@ body.stale .chat-item .row-mark.busy::after { animation-play-state: paused; opac
 /* As tall as what is in it (prestart.js sets the height), and never shorter
    than a good part of the screen: the prompt is the reason the panel exists. */
 .prestart-text {
-  min-height: max(220px, 36vh);
+  min-height: max(300px, 48vh);
   resize: none;
   overflow: hidden;
   padding: 12px 14px;

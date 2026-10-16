@@ -148,6 +148,28 @@ function nameFolders(folders) {
 export const SHELVES = ['background', 'done'];
 
 /**
+ * PREPARED is the shelf of a folder's prepared sessions (PreStart): settings
+ * and a first prompt, nothing running yet. They are that folder's too - it is
+ * where they will work - but they are what comes next rather than what is
+ * finished, so their shelf is drawn above the folder's sessions, and open.
+ */
+export const PREPARED = 'prestart';
+
+/** isPrepared is a session that has its settings and its prompt and has not started. */
+export function isPrepared(session) { return !!session && session.state === 'prestart'; }
+
+// byStart is the order of a prepared shelf: the ones that start by
+// themselves first, the soonest at the top - the order they will happen in -
+// and the rest newest first.
+function byStart(a, b) {
+  const at = Number(a.start_at) || 0;
+  const bt = Number(b.start_at) || 0;
+  if (!at !== !bt) return at ? -1 : 1;
+  if (at && bt && at !== bt) return at - bt;
+  return momentOf(b) - momentOf(a);
+}
+
+/**
  * IDE is the harness a folder has one of. VS Code is not started from the
  * new-session sheet but from the folder's own mark, and it is not a row: it
  * is the folder's editor, so it is drawn on the folder.
@@ -172,8 +194,9 @@ export function ideOf(sessions, key) {
 
 /**
  * foldersOf is the sidebar, worked out: one folder per project directory and
- * one for everything Socrates housed itself, each holding its sessions newest
- * first, its shelved sessions most recently filed first, and its editor.
+ * one for everything Socrates housed itself, each holding its prepared
+ * sessions in the order they will start, its sessions newest first, its
+ * shelved sessions most recently filed first, and its editor.
  *
  * The folders are ordered by the session that moved most recently in each, so
  * the project being worked on is at the top and stays there while it is being
@@ -199,26 +222,33 @@ export function foldersOf(sessions) {
   for (const folder of folders) {
     folder.ide = ideOf(folder.all, folder.key);
     folder.sessions = [];
+    folder.prepared = [];
     folder.shelves = Object.fromEntries(SHELVES.map((status) => [status, []]));
     for (const session of folder.all) {
       if (session === folder.ide) continue;
-      if (SHELVES.includes(session.status)) folder.shelves[session.status].push(session);
+      if (isPrepared(session)) folder.prepared.push(session);
+      else if (SHELVES.includes(session.status)) folder.shelves[session.status].push(session);
       else folder.sessions.push(session);
     }
     delete folder.all;
     folder.sessions.sort((a, b) => momentOf(b) - momentOf(a));
+    folder.prepared.sort(byStart);
     for (const status of SHELVES) {
       folder.shelves[status].sort((a, b) => (Number(b.status_at) || 0) - (Number(a.status_at) || 0));
     }
     const rest = [folder.ide, ...SHELVES.flatMap((status) => folder.shelves[status])];
-    folder.at = folder.sessions.length
-      ? momentOf(folder.sessions[0])
+    const work = [...folder.sessions, ...folder.prepared];
+    folder.at = work.length
+      ? Math.max(...work.map(momentOf))
       : Math.max(0, ...rest.map(momentOf));
   }
   nameFolders(folders);
+  // A prepared session is work about to happen, so it holds its folder up
+  // among the ones being worked in.
+  const working = (folder) => folder.sessions.length + folder.prepared.length > 0;
   folders.sort((a, b) => {
     if ((a.key === MORE_KEY) !== (b.key === MORE_KEY)) return a.key === MORE_KEY ? 1 : -1;
-    if (!a.sessions.length !== !b.sessions.length) return a.sessions.length ? -1 : 1;
+    if (working(a) !== working(b)) return working(a) ? -1 : 1;
     return b.at - a.at;
   });
   return folders;

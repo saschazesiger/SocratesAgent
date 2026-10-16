@@ -63,8 +63,15 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
       </button>
       <!-- The name is edited where it is read: a click makes it editable and
-           Enter or leaving it commits. -->
-      <div class="title" id="sessionTitle">Socrates</div>
+           Enter or leaving it commits. The arrow beside it has a model name
+           the session again, from its first prompt and its screen. -->
+      <div class="title-wrap">
+        <div class="title" id="sessionTitle">Socrates</div>
+        <button class="icon-btn title-regen" id="titleRegen" type="button" hidden
+                title="Name this session again from what it is about" aria-label="Name this session again">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>
+        </button>
+      </div>
       <!-- Where the person filed this session. In progress, what every session
            starts as, says nothing. -->
       <span class="tag status" id="sessionStatus" hidden></span>
@@ -149,7 +156,7 @@
         <!-- Before the first session exists there is nothing to attach to. -->
         <div class="term-empty" id="termEmpty" hidden></div>
       </div>
-      <!-- A prepared session (preStart) has no terminal yet. Its panel takes
+      <!-- A prepared session (PreStart) has no terminal yet. Its panel takes
            the pane's place: its settings, its first prompt and its Start
            button. prestart.js draws it. -->
       <section class="prestart" id="prestart" aria-label="Prepared session" hidden></section>
@@ -172,13 +179,13 @@
        nsDir, nsModelField and the rest - and the panel of a prepared session
        draws the same controls with the same code, so the two never differ. -->
   <div id="nsForm"></div>
-  <!-- preStart: the session is stored with these settings and a field for its
+  <!-- PreStart: the session is stored with these settings and a field for its
        first prompt, and nothing runs until it is started - by hand, or at a
        time set in its panel. Only for the programs a prompt can be handed to,
        and off every time the sheet opens. -->
   <div class="field" id="nsPrestartField" hidden>
-    <label>preStart</label>
-    <div class="seg-row" id="nsPrestart" role="group" aria-label="preStart">
+    <label>PreStart</label>
+    <div class="seg-row" id="nsPrestart" role="group" aria-label="PreStart">
       <button class="seg" type="button" data-value="off" aria-pressed="true">
         <span class="seg-text"><span class="seg-label">Off</span></span>
       </button>

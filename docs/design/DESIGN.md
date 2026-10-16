@@ -104,7 +104,7 @@ Repo: `/root/SocratesAgent`, module `github.com/saschazesiger/SocratesAgent`, Go
 - [I. Work packages](#i-work-packages) — WP1…WP10 (WP9 split into 9a/9b) with scope, acceptance and dependencies
 - [J. Risks and mitigations](#j-risks-and-mitigations)
 - [K. S3 as the store of record](#k-s3-as-the-store-of-record) — the bucket layout, encryption, write-through, start and hydrate, the lease, connect mode, the storage banner
-- [L. Prepared sessions (preStart) and the scheduled start](#l-prepared-sessions-prestart-and-the-scheduled-start) — the row, one launch path, the prompt file, the scheduler, the panel
+- [L. Prepared sessions (PreStart) and the scheduled start](#l-prepared-sessions-prestart-and-the-scheduled-start) — the row, one launch path, the prompt file, the scheduler, the panel
 - [Appendix A: reviewer notes not adopted](#appendix-a-reviewer-notes-not-adopted)
 - [Appendix B: quick reference](#appendix-b-quick-reference-for-an-implementer)
 
@@ -3448,7 +3448,7 @@ top bar — "Storage unreachable since 14:02. 3 changes are waiting to be backed
 Socrates (host) took over this bucket. Changes made here are no longer backed up." — and nothing at
 all while the bucket is fine.
 
-# L. Prepared sessions (preStart) and the scheduled start
+# L. Prepared sessions (PreStart) and the scheduled start
 
 ## L.1 The row
 
@@ -3505,6 +3505,16 @@ acknowledged exactly that text, and a copy based on an older revision opens the 
 native `datetime-local` (local time, to the minute) with a clear button and a relative hint. A
 start by anyone — this button, another device, the clock — reaches the page as a row that is no
 longer prepared, and the panel becomes that session's terminal.
+
+In the sidebar a prepared row is its folder's (`folders.js` — a dynamic one is "More Chats"'s), on
+a **PreStart** shelf drawn above the folder's rows and open by default; the ones with a start time
+come first, soonest at the top. The first time the prompt field loses the focus after something was
+written in it, the panel asks `POST /api/sessions/{id}/title` with `unnamed` and the field's text:
+the session is named after its prompt, once, and only while nobody has named it (`title_source`
+empty). The same endpoint without `unnamed` is the arrow beside the name in the top bar, for every
+session but an editor: it names the session again from its first prompt (the draft) and its screen,
+whatever it was called. It answers when the name is there — a prepared session has no socket for
+`title` frames — and still sends the frames to every other browser.
 
 ---
 

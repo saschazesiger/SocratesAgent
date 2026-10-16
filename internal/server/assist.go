@@ -266,10 +266,21 @@ func (d *titleDriver) observe(sessionID string, a termux.Activity) {
 	d.mu.Lock()
 	prev := d.seen[sessionID]
 	d.seen[sessionID] = a.State
-	_, running := d.live[sessionID]
-	if running || !a.Asked || a.State != termux.StateBusy || prev == termux.StateBusy {
-		d.mu.Unlock()
+	d.mu.Unlock()
+	if !a.Asked || a.State != termux.StateBusy || prev == termux.StateBusy {
 		return
+	}
+	d.launch(sessionID, d.run)
+}
+
+// launch runs fn in the background as the one title run a session may have
+// at a time, bounded by titleTimeout. It answers false, and runs nothing,
+// while another one is still going.
+func (d *titleDriver) launch(sessionID string, fn func(context.Context, string)) bool {
+	d.mu.Lock()
+	if _, running := d.live[sessionID]; running {
+		d.mu.Unlock()
+		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), titleTimeout)
 	d.live[sessionID] = cancel
@@ -282,8 +293,9 @@ func (d *titleDriver) observe(sessionID string, a termux.Activity) {
 			delete(d.live, sessionID)
 			d.mu.Unlock()
 		}()
-		d.run(ctx, sessionID)
+		fn(ctx, sessionID)
 	}()
+	return true
 }
 
 // forget drops what is remembered about a session and stops a run that is
@@ -316,20 +328,24 @@ func (d *titleDriver) run(ctx context.Context, sessionID string) {
 	if row.Harness == config.HarnessShell {
 		return
 	}
-	settings := d.srv.Settings()
-	key := strings.TrimSpace(settings.OpenRouter.APIKey)
-	if key == "" {
+	namer, ok := d.srv.titleNamer()
+	if !ok {
 		// Not configured is not a fault: automatic names are simply off, and
 		// the placeholder name stays.
 		return
 	}
-	model := strings.TrimSpace(settings.OpenRouter.TitleModel)
-	if model == "" {
-		model = config.DefaultTitleModel
-	}
 
 	d.srv.emitTitle(sessionID, titlePhaseStart, "", "")
-	title, problem := d.ask(ctx, row.Harness, sessionID, key, settings.OpenRouter.BaseURL, model)
+	title, problem := "", ""
+	screen, err := d.srv.manager.CapturePane(ctx, sessionID, titleScreenLines)
+	switch {
+	case err != nil:
+		problem = "the screen could not be read: " + err.Error()
+	case strings.TrimSpace(screen) == "":
+		problem = "the screen was empty, so there was nothing to name the session after"
+	default:
+		title, problem = namer.ask(ctx, titlePrompt(row.Harness, screen))
+	}
 	if deleted := ctx.Err() == context.Canceled; deleted {
 		// forget: the session is gone, and so is anybody to tell.
 		return
@@ -354,40 +370,207 @@ func (d *titleDriver) run(ctx context.Context, sessionID string) {
 	d.srv.emitTitle(sessionID, titlePhaseDone, title, "")
 }
 
-// ask captures the screen and has the model name it. It answers with a title
-// or with a sentence saying why there is none.
-func (d *titleDriver) ask(ctx context.Context, harness, sessionID, key, baseURL, model string) (string, string) {
-	screen, err := d.srv.manager.CapturePane(ctx, sessionID, titleScreenLines)
-	if err != nil {
-		return "", "the screen could not be read: " + err.Error()
+// titleNamer is the gateway and the model sessions are named with, and false
+// while no OpenRouter key is set - automatic names are then off.
+type titleNamer struct {
+	key, baseURL, model string
+}
+
+func (s *Server) titleNamer() (titleNamer, bool) {
+	settings := s.Settings()
+	key := strings.TrimSpace(settings.OpenRouter.APIKey)
+	if key == "" {
+		return titleNamer{}, false
 	}
-	if strings.TrimSpace(screen) == "" {
-		return "", "the screen was empty, so there was nothing to name the session after"
+	model := strings.TrimSpace(settings.OpenRouter.TitleModel)
+	if model == "" {
+		model = config.DefaultTitleModel
 	}
+	return titleNamer{key: key, baseURL: settings.OpenRouter.BaseURL, model: model}, true
+}
+
+// ask has the model answer a naming instruction. It answers with a title or
+// with a sentence saying why there is none.
+func (n titleNamer) ask(ctx context.Context, instruction string) (string, string) {
 	temperature := 0.3
-	client := openrouter.New(baseURL, key)
+	client := openrouter.New(n.baseURL, n.key)
 	res, err := client.Chat(ctx, openrouter.ChatRequest{
-		Model:       model,
-		Messages:    []openrouter.Message{{Role: "user", Content: titlePrompt(harness, screen)}},
+		Model:       n.model,
+		Messages:    []openrouter.Message{{Role: "user", Content: instruction}},
 		Temperature: &temperature,
 		MaxTokens:   titleMaxTokens,
 	}, nil)
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return "", fmt.Sprintf("the title model %s did not answer within %s", model, titleTimeout)
+			return "", fmt.Sprintf("the title model %s did not answer within %s", n.model, titleTimeout)
 		}
-		_, why := modelProblem(err, model, "title")
+		_, why := modelProblem(err, n.model, "title")
 		return "", why
 	}
 	title := cleanTitle(res.Content)
 	if title == "" {
-		why := "the title model " + model + " answered with nothing usable"
+		why := "the title model " + n.model + " answered with nothing usable"
 		if res.FinishReason == "length" {
 			why += " (it ran out of tokens, probably while reasoning)"
 		}
 		return "", why
 	}
 	return title, ""
+}
+
+/* ------------------------------------------------- a naming asked for */
+
+// retitlePromptRunes is how much of a first prompt the namer is shown. A
+// prompt can be a hundred kilobytes; what it is about is in its beginning.
+const retitlePromptRunes = 4000
+
+// handleRetitleSession names a session again, now, from what there is to go
+// by: the first prompt - the prepared session's field as it is on screen, or
+// the draft it was started with - and the screen of a session that has one.
+//
+// It is the button beside the name, which replaces whatever the session was
+// called, and the first time somebody leaves a prepared session's prompt
+// field ("unnamed"), which names only a session nobody has named yet - and
+// says nothing when there is nothing to do, because nobody pressed anything.
+//
+// It answers when the name is there, with the session: a prepared session
+// has no socket for the "title" frames to arrive on. The frames still go to
+// every other browser, so their rows pulse and take the new name too; a
+// failure is said to the one who asked, and only stops the pulse elsewhere.
+// A run outlives a request that gave up waiting for it, and still saves.
+func (s *Server) handleRetitleSession(w http.ResponseWriter, r *http.Request) {
+	row, ok := s.session(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Prompt  string `json:"prompt"`
+		Unnamed bool   `json:"unnamed"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	quiet := func(code int, why string) {
+		if body.Unnamed {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		writeError(w, code, why)
+	}
+	if row.Harness == config.HarnessVSCode {
+		quiet(http.StatusBadRequest, "an editor is named after its folder")
+		return
+	}
+	if body.Unnamed && row.TitleSource != "" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	namer, ok := s.titleNamer()
+	if !ok {
+		quiet(http.StatusConflict, "automatic titles are off: open /admin and set an OpenRouter API key")
+		return
+	}
+	prompt := ""
+	if row.State == store.StatePrestart {
+		// The field can be ahead of the saved draft by a pause in the typing.
+		prompt = strings.TrimSpace(body.Prompt)
+	}
+	if prompt == "" {
+		if draft, err := s.store.GetDraft(row.ID); err == nil {
+			prompt = strings.TrimSpace(draft.Text)
+		}
+	}
+	if runes := []rune(prompt); len(runes) > retitlePromptRunes {
+		prompt = string(runes[:retitlePromptRunes])
+	}
+	if prompt == "" && row.State == store.StatePrestart {
+		quiet(http.StatusConflict, "there is nothing to name it after yet: write the first prompt")
+		return
+	}
+	was := row.Title
+	// The problem the run ended with, or "" once it saved or lost to a
+	// rename by hand.
+	result := make(chan string, 1)
+	launched := s.titles.launch(row.ID, func(ctx context.Context, id string) {
+		s.emitTitle(id, titlePhaseStart, "", "")
+		screen := ""
+		if row.State != store.StatePrestart {
+			// A session whose program has ended has no pane, and then the
+			// first prompt is all there is.
+			screen, _ = s.manager.CapturePane(ctx, id, titleScreenLines)
+		}
+		title, problem := "", ""
+		if prompt == "" && strings.TrimSpace(screen) == "" {
+			problem = "there was nothing to name the session after: no first prompt, and no screen"
+		} else {
+			title, problem = namer.ask(ctx, retitlePrompt(row.Harness, prompt, screen))
+		}
+		if ctx.Err() == context.Canceled {
+			result <- "the session was deleted"
+			return
+		}
+		if problem == "" {
+			var err error
+			if body.Unnamed {
+				err = s.store.SetAutoSessionTitle(id, title)
+			} else {
+				err = s.store.ReplaceSessionTitle(id, was, title)
+			}
+			switch {
+			case errors.Is(err, store.ErrNotFound):
+				// Renamed by hand in the meantime: that name wins.
+				title = ""
+			case err != nil:
+				title, problem = "", "the title could not be saved: "+err.Error()
+			}
+		}
+		s.emitTitle(id, titlePhaseDone, title, "")
+		result <- problem
+	})
+	if !launched {
+		quiet(http.StatusConflict, "the session is being named already")
+		return
+	}
+	select {
+	case problem := <-result:
+		if problem != "" {
+			writeError(w, http.StatusBadGateway, problem)
+			return
+		}
+		s.answerWithSession(w, row.ID)
+	case <-r.Context().Done():
+	}
+}
+
+// retitlePrompt is the instruction for a naming somebody asked for: the first
+// prompt, the screen, or both - whichever the session has.
+func retitlePrompt(harness, prompt, screen string) string {
+	label := harnessLabel(harness)
+	var b strings.Builder
+	switch {
+	case prompt != "" && screen != "":
+		b.WriteString("Below are the first prompt a user wrote for a session of " + label +
+			" and the latest screen of its terminal. ")
+	case prompt != "":
+		b.WriteString("Below is the first prompt a user wrote for a session of " + label + ". ")
+	default:
+		b.WriteString("Below is the latest screen of a terminal running " + label + ". ")
+	}
+	b.WriteString("Give this session a title that says what it is about, as short and plain as " +
+		"possible: 2 to 5 words, in English even if the session is in another language. " +
+		"Name the task, not the program - never mention " + label + ". ")
+	if screen != "" {
+		b.WriteString("Where the screen shows the work has moved on, name what it is about now. ")
+	}
+	b.WriteString("Answer with the title and nothing else: no quotation marks, no full stop at the end, " +
+		"no markdown, no explanation.")
+	if prompt != "" {
+		b.WriteString("\nFirst prompt:\n" + prompt)
+	}
+	if screen != "" {
+		b.WriteString("\nScreen:\n" + screen)
+	}
+	return b.String()
 }
 
 // titlePrompt is the naming instruction, screen included.

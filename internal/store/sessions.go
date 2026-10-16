@@ -349,6 +349,26 @@ func (s *Store) SetAutoSessionTitle(id, title string) error {
 	return s.updateNameless(id, `title = ?, title_source = ?`, title, TitleAuto)
 }
 
+// ReplaceSessionTitle records a name a model came up with because somebody
+// asked for a new one, whoever named the session before. It applies only
+// while the session is still called was: a rename by hand while the model was
+// thinking is the newer wish, and ErrNotFound back means it won.
+func (s *Store) ReplaceSessionTitle(id, was, title string) error {
+	s.lock()
+	defer s.unlock()
+	res, err := s.db.Exec(`UPDATE sessions SET title = ?, title_source = ?, updated_at = ? WHERE id = ? AND title = ?`,
+		title, TitleAuto, now(), id, was)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return ErrNotFound
+	}
+	s.bump()
+	s.touch(SessionObject(id))
+	return nil
+}
+
 // MarkSessionTitled records that the one automatic naming has happened, for a
 // run that produced nothing usable. Without it a model that answers with an
 // empty string would be asked again on every later turn.

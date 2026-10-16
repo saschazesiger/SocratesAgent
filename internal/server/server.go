@@ -317,6 +317,8 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/sessions", s.auth(s.handleCreateSession))
 	mux.HandleFunc("GET /api/sessions/{id}", s.auth(s.handleGetSession))
 	mux.HandleFunc("PATCH /api/sessions/{id}", s.auth(s.handleRenameSession))
+	// A new name, from a model, because somebody asked for one.
+	mux.HandleFunc("POST /api/sessions/{id}/title", s.auth(s.handleRetitleSession))
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.auth(s.endingViewers(s.handleDeleteSession)))
 	mux.HandleFunc("POST /api/sessions/{id}/file", s.auth(s.handleSetStatus))
 	mux.HandleFunc("POST /api/sessions/{id}/resume", s.auth(s.started(s.handleResumeSession)))

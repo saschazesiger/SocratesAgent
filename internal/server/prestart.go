@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -16,7 +17,7 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 )
 
-// Prepared sessions ("preStart"): a session whose settings and first prompt
+// Prepared sessions ("PreStart"): a session whose settings and first prompt
 // are written before anything runs, and which starts - by a button, or by
 // itself at a time - exactly as a new session with those settings would.
 //
@@ -539,7 +540,7 @@ func (s *Server) prestartSpec(ctx context.Context, row *store.Session, cols, row
 		spec.Cols, spec.Rows = cols, rows
 	}
 	if options.ProfileAuto {
-		spec.Profile = s.autoProfile(ctx, row.Harness, options.Profile)
+		spec.Profile = s.autoProfile(ctx, row, options.Profile)
 	}
 	draft, err := s.store.GetDraft(row.ID)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -549,22 +550,94 @@ func (s *Server) prestartSpec(ctx context.Context, row *store.Session, cols, row
 	return spec, nil
 }
 
-// autoProfile is the profile a session asked to be started "wherever there is
-// most left" runs in: the recommendation the sheet shows, made here at the
-// moment of the start, because a scheduled start has no sheet. A harness
-// with nothing to choose by - no readings yet, or no limits at all, like
-// OpenCode - keeps fallback.
-func (s *Server) autoProfile(ctx context.Context, harnessID, fallback string) string {
+// autoProfile is the profile a session asked to be started "automatically"
+// runs in, chosen here at the moment of the start, because a scheduled start
+// has no sheet. An active session of the same program in the same folder
+// comes first: Claude Code sessions in one profile can reach each other, and
+// a session started beside another is meant to. Otherwise it is the
+// recommendation the sheet shows - the most usage left before it renews. A
+// harness with nothing to choose by - no readings yet, or no limits at all,
+// like OpenCode - keeps fallback.
+func (s *Server) autoProfile(ctx context.Context, row *store.Session, fallback string) string {
 	views, err := s.profileViews()
 	if err != nil {
 		log.Printf("could not read the profiles to choose one: %v", err)
 		return fallback
 	}
 	s.fillLimits(ctx, views)
-	if id, ok := recommendProfiles(views, time.Now())[harnessID]; ok {
-		return id
+	recommended, haveRecommended := recommendProfiles(views, time.Now())[row.Harness]
+	if row.WorkdirMode != store.WorkdirDynamic {
+		rows, err := s.store.ListSessions()
+		if err != nil {
+			log.Printf("could not read the sessions to choose a profile: %v", err)
+		} else if id, ok := companionProfile(views, companionProfiles(rows, row.Harness, row.Workdir, row.ID), recommended); ok {
+			return id
+		}
+	}
+	if haveRecommended {
+		return recommended
 	}
 	return fallback
+}
+
+// companionProfiles is the profiles the active sessions of a program in one
+// folder run in, each with the last moment one of them was active. A session
+// is active while its program runs and nobody has called it done; a host
+// shell signs in to nothing of ours, and self is the session being started.
+// The sheet's companions (harnesses.js) are the same rule.
+func companionProfiles(rows []store.Session, harnessID, workdir, self string) map[string]int64 {
+	out := map[string]int64{}
+	if workdir == "" {
+		return out
+	}
+	workdir = filepath.Clean(workdir)
+	for i := range rows {
+		row := &rows[i]
+		if row.ID == self || row.Harness != harnessID || row.Status == store.StatusDone {
+			continue
+		}
+		if row.State != store.StateRunning && row.State != store.StateStarting {
+			continue
+		}
+		if row.Workdir == "" || filepath.Clean(row.Workdir) != workdir || hostShell(row) {
+			continue
+		}
+		id := sessionProfile(row)
+		out[id] = max(out[id], row.ActiveAt)
+	}
+	return out
+}
+
+// companionProfile is the one of the companions' profiles a new session
+// joins: the recommended one when it is among them, and otherwise the one
+// whose session was active last. A profile deleted since is not one.
+func companionProfile(views []profileView, companions map[string]int64, recommended string) (string, bool) {
+	best, bestAt, found := "", int64(0), false
+	for _, v := range views {
+		at, ok := companions[v.ID]
+		if !ok {
+			continue
+		}
+		if v.ID == recommended {
+			return v.ID, true
+		}
+		if !found || at > bestAt {
+			best, bestAt, found = v.ID, at, true
+		}
+	}
+	return best, found
+}
+
+// hostShell reports whether a session is a shell run on the host, which has
+// no profile to share.
+func hostShell(row *store.Session) bool {
+	if row.Harness != string(harnesses.KindShell) || len(row.Options) == 0 {
+		return false
+	}
+	var options struct {
+		ShellExecution string `json:"shell_execution"`
+	}
+	return json.Unmarshal(row.Options, &options) == nil && options.ShellExecution == "host"
 }
 
 // answerWithSessionCode is answerWithSession with a status of its own.

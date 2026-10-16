@@ -159,6 +159,49 @@ export function recommendedProfile(harnessId) {
   return Object.prototype.hasOwnProperty.call(recommended, harnessId) ? recommended[harnessId] : undefined;
 }
 
+// The sessions the page knows of, handed over by session.js, which keeps the
+// list. The sheet only reads it, to find the sessions a new one would join.
+let sessionList = () => [];
+
+export function useSessions(read) { sessionList = read; }
+
+const sameDir = (a, b) => String(a || '').replace(/\/+$/, '') === String(b || '').replace(/\/+$/, '');
+
+// companions is the profiles the active sessions of a program in one folder
+// run in, each with how many there are and when one was last active. Claude
+// Code sessions in one profile can reach each other, so a session started
+// beside another joins its profile. A session is active while its program
+// runs and nobody has called it done; a host shell signs in to nothing. The
+// server's companionProfiles (internal/server/prestart.go) is the same rule.
+function companions(harnessId, workdir) {
+  const out = new Map();
+  if (!harnessId || !workdir) return out;
+  for (const s of sessionList() || []) {
+    if (s.harness !== harnessId || s.status === 'done') continue;
+    if (s.state !== 'running' && s.state !== 'starting') continue;
+    if (!sameDir(s.workdir, workdir) || s.options?.shell_execution === 'host') continue;
+    const id = s.options?.profile || '';
+    const seen = out.get(id) || { count: 0, activeAt: 0 };
+    out.set(id, { count: seen.count + 1, activeAt: Math.max(seen.activeAt, s.active_at || 0) });
+  }
+  return out;
+}
+
+// companionProfile is the profile among the companions' a new session joins:
+// the recommended one when it is among them, and otherwise the one active
+// last. undefined when there is none to join.
+function companionProfile(found, harnessId) {
+  const recommended = recommendedProfile(harnessId);
+  let best;
+  for (const p of profiles()) {
+    const seen = found.get(p.id);
+    if (!seen) continue;
+    if (p.id === recommended) return p.id;
+    if (best === undefined || seen.activeAt > found.get(best).activeAt) best = p.id;
+  }
+  return best;
+}
+
 // limitWindows is the two windows a profile's limits are judged by.
 function limitWindows(profile, harnessId) {
   const windows = ((profile && profile.limits) || {})[harnessId] || [];
@@ -315,8 +358,10 @@ function signInHint(profile, harnessId) {
 // profileEntry is a profile as the dropdown shows it: its name, the account
 // this program is signed in as there, and a bar for each limit window - how
 // full each account is and how long until it renews, which is what choosing
-// between them comes down to.
-function profileEntry(profile, harnessId, recommended) {
+// between them comes down to. Two tags say why one would be picked: the
+// sessions of this program already active in it in this folder, and the most
+// usage left.
+function profileEntry(profile, harnessId, recommended, here) {
   const meters = limitWindows(profile, harnessId).map((w) => {
     const used = Math.max(0, Math.min(100, Math.round(Number(w.used_percent) || 0)));
     const left = untilReset(w);
@@ -331,6 +376,11 @@ function profileEntry(profile, harnessId, recommended) {
   return el('span', { class: 'profile-entry' },
     el('span', { class: 'profile-entry-head' },
       el('span', { class: 'profile-entry-name', text: profile.name }),
+      here ? el('span', {
+        class: 'profile-entry-tag here',
+        title: 'Sessions in one profile can reach each other',
+        text: (here > 1 ? here + ' ' : '') + 'running here',
+      }) : null,
       recommended ? el('span', { class: 'profile-entry-tag', text: 'most left' }) : null),
     el('span', { class: 'profile-entry-account', text: accountLabel(profile, harnessId) }),
     meters.length ? el('span', { class: 'profile-usage' }, meters) : null);
@@ -498,7 +548,7 @@ export function settingsForm(options = {}) {
   const pick = {
     harness: '', model: '', effort: '', mode: DYNAMIC, workdir: '',
     shellExecution: shellCapability.default === 'host' && shellCapability.host_available ? 'host' : 'container',
-    profile: lastProfile(), profileChosen: false, profileAuto: false, ultracode: false,
+    profile: lastProfile(), profileChosen: false, profileAuto: false, profileJoined: false, ultracode: false,
   };
 
   const hostButton = shellExecutionRow.querySelector('[data-value="host"]');
@@ -573,6 +623,7 @@ export function settingsForm(options = {}) {
     if (pick.mode !== CUSTOM) return;
     pick.workdir = dirPath.value.trim();
     renderDir();
+    if (pick.harness) renderProfile();
     onChange('dir');
   });
 
@@ -606,7 +657,8 @@ export function settingsForm(options = {}) {
       ...profiles().map((p) => ({ value: p.id, profile: p })),
     ],
     renderItem: (item) => (item.auto ? autoEntry() : profileEntry(item.profile, pick.harness,
-      recommendedProfile(pick.harness) === item.value && profiles().length > 1)),
+      recommendedProfile(pick.harness) === item.value && profiles().length > 1,
+      companions(pick.harness, pick.workdir).get(item.value)?.count || 0)),
     onChange: (value) => {
       if (value === AUTO_PROFILE) {
         pick.profileChosen = false;
@@ -615,6 +667,7 @@ export function settingsForm(options = {}) {
         pick.profile = value;
         pick.profileChosen = true;
         pick.profileAuto = false;
+        pick.profileJoined = false;
         rememberProfile(value);
       }
       renderProfileHint();
@@ -633,6 +686,8 @@ export function settingsForm(options = {}) {
     dirPathRow.hidden = mode !== CUSTOM;
     if (mode === CUSTOM && focus) dirPath.focus();
     renderDir();
+    // Another folder has other sessions to join.
+    if (pick.harness) renderProfile();
   }
 
   function renderDir() {
@@ -682,16 +737,21 @@ export function settingsForm(options = {}) {
     const wanted = all.length > 1 && PROFILE_HARNESSES.includes(pick.harness) && !onHost;
     profileField.hidden = !wanted;
     if (!wanted) return;
-    // Until somebody picks a profile, the program decides: the account with
-    // the most usage left before it renews, where that is known, and the
-    // last one chosen otherwise. A session that starts later decides later.
+    // Until somebody picks a profile, the program decides: the profile an
+    // active session of the same program in this folder runs in, so the two
+    // can reach each other; else the account with the most usage left before
+    // it renews, where that is known; and the last one chosen otherwise. A
+    // session that starts later decides later, by the same rule.
+    pick.profileJoined = false;
     if (!pick.profileChosen) {
       if (deferredProfile(pick.harness)) {
         pick.profileAuto = true;
       } else {
+        const joined = companionProfile(companions(pick.harness, pick.workdir), pick.harness);
         const recommended = recommendedProfile(pick.harness);
-        pick.profileAuto = recommended !== undefined && all.some((p) => p.id === recommended);
-        pick.profile = pick.profileAuto ? recommended : lastProfile();
+        pick.profileJoined = joined !== undefined;
+        pick.profileAuto = pick.profileJoined || (recommended !== undefined && all.some((p) => p.id === recommended));
+        pick.profile = pick.profileJoined ? joined : pick.profileAuto ? recommended : lastProfile();
       }
     }
     if (!all.some((p) => p.id === pick.profile)) pick.profile = '';
@@ -705,8 +765,13 @@ export function settingsForm(options = {}) {
     const chosen = deferred() ? null : profiles().find((p) => p.id === pick.profile);
     const signIn = chosen ? signInHint(chosen, pick.harness) : '';
     let words = '';
-    if (deferred()) words = 'Chosen when the session starts: the profile with the most usage left at that moment.';
-    else if (pick.profileAuto) words = 'Chosen automatically: the most usage left before it renews.';
+    if (deferred()) {
+      words = 'Chosen when the session starts: the profile of an active ' + label(pick.harness)
+        + ' session in this folder, or else the one with the most usage left at that moment.';
+    } else if (pick.profileJoined) {
+      words = 'Chosen automatically: another ' + label(pick.harness)
+        + ' session in this folder runs in it, and sessions in one profile can reach each other.';
+    } else if (pick.profileAuto) words = 'Chosen automatically: the most usage left before it renews.';
     profileHint.textContent = signIn || words;
   }
 
@@ -858,7 +923,7 @@ export function settingsForm(options = {}) {
 function autoEntry() {
   return el('span', { class: 'profile-entry' },
     el('span', { class: 'profile-entry-head' }, el('span', { class: 'profile-entry-name', text: 'Automatic' })),
-    el('span', { class: 'profile-entry-account', text: 'the most usage left when it starts' }));
+    el('span', { class: 'profile-entry-account', text: 'a session running in this folder, or the most usage left' }));
 }
 
 /**
@@ -884,7 +949,7 @@ export async function openNewSessionSheet() {
   const start = document.getElementById('nsStart');
   const cancel = document.getElementById('nsCancel');
 
-  // preStart is off on every opening: what the sheet is for, most of the
+  // PreStart is off on every opening: what the sheet is for, most of the
   // time, is a terminal now.
   let prestartOn = false;
   const prepared = (harnessId) => prestartOn && canPrestart(harnessId);
@@ -908,7 +973,7 @@ export async function openNewSessionSheet() {
   }
   if (prestartRow) pressed(prestartRow, 'off');
 
-  // render is the part of the sheet around the form: whether preStart is on
+  // render is the part of the sheet around the form: whether PreStart is on
   // offer, what the button says it does, and what stands in the way.
   function render() {
     const harnessId = form.harness();

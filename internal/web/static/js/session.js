@@ -21,7 +21,9 @@ import {
 } from './api.js';
 import { connectionSource } from './net.js';
 import { agentMark } from './logos.js';
-import { MORE_KEY, SHELVES, IDE, foldersOf, folderKeyOf, ideOf, momentOf, movesRow } from './folders.js';
+import {
+  MORE_KEY, SHELVES, PREPARED, IDE, foldersOf, folderKeyOf, ideOf, isPrepared, momentOf, movesRow,
+} from './folders.js';
 import * as harnesses from './harnesses.js';
 import { createTerm, measurePane, loadTerminalFonts } from './term.js';
 import { mountAssist } from './assist.js';
@@ -681,7 +683,7 @@ const state = {
 
 const dom = {};
 const ids = ['sidebar', 'navScrim', 'menuBtn', 'sideCollapse', 'newSession', 'sessionList',
-  'activityLive', 'sessionTitle', 'sessionStatus', 'sessionUsage',
+  'activityLive', 'sessionTitle', 'titleRegen', 'sessionStatus', 'sessionUsage',
   'transfer', 'copyBtn', 'pasteBtn', 'uploadBtn',
   'statusBtn', 'kbBtn', 'optionsBtn',
   'stage', 'termWrap', 'term', 'termOverlay', 'termLines', 'termNotice',
@@ -697,17 +699,6 @@ const STATE_WORDS = {
   prestart: 'Prepared',
 };
 
-// isPrepared is a session that has its settings and its first prompt and has
-// not been started: no terminal, no program, nothing to attach to.
-function isPrepared(session) { return !!session && session.state === 'prestart'; }
-
-// The group prepared sessions are listed in, at the very top of the list.
-// Like MORE_KEY it is not a path, so it cannot be any project's folder.
-const PRESTART_KEY = '#prestart';
-
-// listKeyOf is the group a row is drawn in: its project's folder, or the
-// prepared sessions' own group while it has not been started.
-function listKeyOf(session) { return isPrepared(session) ? PRESTART_KEY : folderKeyOf(session); }
 
 // What a session is doing, in the words the "i" uses. `unknown` has no word:
 // a row with no evidence yet says nothing rather than guessing.
@@ -813,12 +804,10 @@ function renderList() {
   // its bottom, shut until it is opened - the services first, then what is
   // finished, most recently filed first, until the server deletes it. A
   // folder's VS Code is not a row at all: it is drawn on the folder's head.
-  // Prepared sessions are not any project's yet - nothing has run in their
-  // directory, and a dynamic one does not even exist - so they are one group
-  // of their own above every folder: what is waiting to be started.
-  const folders = foldersOf(wanted.filter((s) => !isPrepared(s)));
-  const prepared = preparedGroup(wanted);
-  if (prepared) folders.unshift(prepared);
+  // Prepared sessions are their folder's as well - it is where they will
+  // work - on a shelf of their own above its sessions, open: what is waiting
+  // to be started comes before what is running.
+  const folders = foldersOf(wanted);
   // The list is patched rather than rebuilt: taking a connected node out of
   // the page and putting it back restarts its animations, and a row that
   // fades in again every few seconds is a page that looks broken. The folders
@@ -847,20 +836,21 @@ function renderList() {
       || buildFolder(folder);
     placeFolder(section);
     const placeRow = placer(section.querySelector(':scope > .folder-rows'));
-    placeRows(host, placeRow, folder.sessions, seenRows);
-    // The shelves come after the rows, inside the same folder, so shutting
-    // the folder puts them away with everything else in it.
-    for (const status of SHELVES) {
-      const filed = folder.shelves[status];
-      if (!filed.length) continue;
-      const shelf = { key: shelfKey(folder.key, status), status, label: STATUS_WORDS[status], path: '', sessions: filed };
+    const placeShelf = (status, label, filed) => {
+      if (!filed.length) return;
+      const shelf = { key: shelfKey(folder.key, status), status, label, path: '', sessions: filed };
       const node = section.querySelector(':scope > .folder-rows > .shelf[data-shelf="' + status + '"]')
         || buildFolder(shelf);
       seenShelves.add(node);
       placeRow(node);
       placeRows(host, placer(node.querySelector(':scope > .folder-rows')), filed, seenRows);
       updateFolder(node, shelf);
-    }
+    };
+    placeShelf(PREPARED, 'PreStart', folder.prepared);
+    placeRows(host, placeRow, folder.sessions, seenRows);
+    // The other shelves come after the rows, inside the same folder, so
+    // shutting the folder puts them away with everything else in it.
+    for (const status of SHELVES) placeShelf(status, STATUS_WORDS[status], folder.shelves[status]);
     updateFolder(section, folder);
   }
   // What is left over: a session that was deleted, and a folder or a shelf
@@ -878,26 +868,6 @@ function renderList() {
   for (const node of [...host.children]) {
     if (!node.classList.contains('folder') || !seenFolders.has(node.dataset.folder)) node.remove();
   }
-}
-
-// preparedGroup is the prepared sessions as a folder the list can draw, or
-// null when there are none. The ones that start by themselves come first,
-// the soonest at the top - that is the order they will happen in - and the
-// rest follow newest first.
-function preparedGroup(sessions) {
-  const rows = sessions.filter(isPrepared);
-  if (!rows.length) return null;
-  rows.sort((a, b) => {
-    const at = Number(a.start_at) || 0;
-    const bt = Number(b.start_at) || 0;
-    if (!at !== !bt) return at ? -1 : 1;
-    if (at && bt && at !== bt) return at - bt;
-    return momentOf(b) - momentOf(a);
-  });
-  return {
-    key: PRESTART_KEY, label: 'preStart', path: '', sessions: rows, ide: null,
-    shelves: Object.fromEntries(SHELVES.map((status) => [status, []])),
-  };
 }
 
 // placeRows draws one run of rows where `place` has got to. A row is looked
@@ -934,17 +904,20 @@ function cssId(id) { return String(id).replace(/\\/g, '\\\\').replace(/"/g, '\\"
 const FOLDERS_KEY = 'socrates.folders';
 const closedFolders = new Set();
 
-// The shelves of background and done sessions inside each folder. They are
-// the two that start shut - a service is meant to run unseen, and what is
-// done is finished - so for them the set records the opposite: being in it
-// means the person opened it. A shelf's key is its folder's and its status,
-// joined by a character no path and no status can hold.
+// The shelves inside each folder: prepared sessions above its rows, and
+// background and done sessions below them. The last two start shut - a
+// service is meant to run unseen, and what is done is finished - so for them
+// the set records the opposite: being in it means the person opened it. The
+// prepared shelf is open like a folder: it is what comes next. A shelf's key
+// is its folder's and its status, joined by a character no path and no
+// status can hold.
 function shelfKey(folderKey, status) { return folderKey + '\u0000' + status; }
 function shelfOf(key) {
   const at = key.lastIndexOf('\u0000');
   return at < 0 ? '' : key.slice(at + 1);
 }
 const SHELF_TITLES = {
+  [PREPARED]: 'PreStart: settings and a first prompt, started by hand or at a time',
   background: 'Background sessions: services left running on purpose, never deleted',
   done: 'Done sessions: their terminals are closed, and each is deleted a day after it was marked done',
 };
@@ -983,16 +956,18 @@ function toggleFolder(key) {
  * It is called when one is attached rather than when one is clicked: a row
  * inside a shut folder cannot be clicked at all, and the session this tab is
  * meant to be on - the one in the address, or the one just started - has to
- * be on screen whatever the folder it landed in was left as. A shelved
- * session needs its shelf opened as well as its folder; an editor is on the
- * folder's head, which is on screen whenever the folder is.
+ * be on screen whatever the folder it landed in was left as. A shelved or
+ * prepared session needs its shelf opened as well as its folder; an editor
+ * is on the folder's head, which is on screen whenever the folder is.
  */
 function openFolder(session) {
   if (!session) return;
-  const key = listKeyOf(session);
+  const key = folderKeyOf(session);
   let changed = closedFolders.delete(key);
   const status = statusOf(session);
-  if (!isPrepared(session) && SHELVES.includes(status)
+  if (isPrepared(session)) {
+    if (closedFolders.delete(shelfKey(key, PREPARED))) changed = true;
+  } else if (SHELVES.includes(status)
     && !(session.harness === IDE && ideOf(state.sessions, key) === session)) {
     const shelf = shelfKey(key, status);
     if (!closedFolders.has(shelf)) { closedFolders.add(shelf); changed = true; }
@@ -1021,22 +996,20 @@ function buildFolder(folder) {
     onclick: () => toggleFolder(folder.key),
   },
   el('span', { class: 'caret', html: CARET_SVG }),
-  // The prepared sessions' group wears the mark their panel wears, so it
-  // reads as a different kind of thing from a project.
-  folder.key === PRESTART_KEY ? el('span', { class: 'folder-icon', html: PRESTART_SVG }) : null,
+  // The prepared sessions' shelf wears the mark their panel wears, so it
+  // reads as a different kind of thing from the sessions under it.
+  folder.status === PREPARED ? el('span', { class: 'folder-icon', html: PRESTART_SVG }) : null,
   el('span', { class: 'folder-name' }),
   el('span', { class: 'folder-dot', 'aria-hidden': 'true' }),
   el('span', { class: 'folder-count' }));
-  // Nothing has run in a prepared session's directory yet, so its group has
-  // no editor to open.
-  const ide = folder.status || folder.key === MORE_KEY || folder.key === PRESTART_KEY ? null : el('button', {
+  const ide = folder.status || folder.key === MORE_KEY ? null : el('button', {
     class: 'icon-btn folder-ide',
     type: 'button',
     onclick: () => openFolderIDE(folder.key),
   }, agentMark(IDE, 15));
   const attrs = folder.status
     ? { class: 'folder shelf', 'data-shelf': folder.status }
-    : { class: 'folder' + (folder.key === PRESTART_KEY ? ' prestart-group' : ''), 'data-folder': folder.key };
+    : { class: 'folder', 'data-folder': folder.key };
   return el('section', attrs,
     el('div', { class: 'folder-bar' }, head, ide),
     el('div', { class: 'folder-rows', id }));
@@ -1053,10 +1026,7 @@ function updateFolder(section, folder) {
   // The whole path is technical detail, so it is where every technical string
   // on this page is: on hover, and nowhere in the words. "More Chats" and the
   // shelves have no path, so their tooltip says what they hold instead.
-  head.title = SHELF_TITLES[folder.status] || folder.path
-    || (folder.key === PRESTART_KEY
-      ? 'Prepared sessions: settings and a first prompt, started by hand or at a time'
-      : 'Sessions in a directory of their own');
+  head.title = SHELF_TITLES[folder.status] || folder.path || 'Sessions in a directory of their own';
   // Shut, a folder has to say what is behind it: the two things this page
   // exists to make noticeable - an agent that needs an answer, and one that
   // finished something nobody has seen - would otherwise be hidden by the
@@ -1081,7 +1051,7 @@ function updateFolder(section, folder) {
   setClass(head, 'waiting', waiting);
   setClass(head, 'busy', busy && !waiting);
   setClass(head, 'unread', unread);
-  let count = folder.sessions.length;
+  let count = folder.sessions.length + (folder.prepared ? folder.prepared.length : 0);
   if (folder.shelves) for (const status of SHELVES) count += folder.shelves[status].length;
   head.querySelector('.folder-count').textContent = String(count);
   const ide = section.querySelector(':scope > .folder-bar > .folder-ide');
@@ -1848,6 +1818,7 @@ function showEmpty() {
     unreachable ? null : el('button', { class: 'btn primary', type: 'button', text: 'New session', onclick: newSession }),
   );
   dom.sessionTitle.textContent = 'Socrates';
+  dom.titleRegen.hidden = true;
   stopUsage();
   if (state.assist) state.assist.attached();
   if (state.transfer) state.transfer.attached();
@@ -1881,7 +1852,7 @@ function applySession(session) {
   }
   state.current = session;
   dom.sessionTitle.textContent = session.title;
-  setClass(dom.sessionTitle, 'titling', state.titling.has(session.id));
+  drawTitling(session.id);
   const status = statusOf(session);
   dom.sessionStatus.hidden = status === 'in_progress';
   dom.sessionStatus.textContent = STATUS_WORDS[status];
@@ -2537,6 +2508,49 @@ function renameRow(id, title) {
   renderList();
 }
 
+// drawTitling shows in the header whether the session on screen is being
+// named: the name pulses and the arrow beside it turns. An editor is named
+// after its folder, so it has no arrow.
+function drawTitling(id) {
+  const titling = state.titling.has(id);
+  setClass(dom.sessionTitle, 'titling', titling);
+  dom.titleRegen.hidden = !state.current || state.current.harness === IDE;
+  dom.titleRegen.disabled = titling;
+}
+
+// retitleSession asks for a new name for the session on screen, from what it
+// is about: its first prompt - as the PreStart field holds it right now, for
+// a prepared one - and its screen. The answer is the renamed session; other
+// browsers hear of it in title frames.
+//
+// `unnamed` is the PreStart panel naming a session after its prompt the
+// first time the field is left: only a session nobody has named yet, and a
+// failure is a toast rather than a dialog, because nobody pressed anything.
+async function retitleSession(session, { unnamed = false, prompt } = {}) {
+  if (!session || state.titling.has(session.id)) return;
+  const field = isPrepared(session) && state.prestart && state.prestart.shownId() === session.id
+    ? state.prestart.field() : null;
+  // The arrow turns from the press, not from the first frame back - and a
+  // prepared session has no socket for a frame to come back on.
+  state.titling.add(session.id);
+  if (state.current && state.current.id === session.id) drawTitling(session.id);
+  renderList();
+  try {
+    const data = await api('/api/sessions/' + encodeURIComponent(session.id) + '/title', {
+      method: 'POST', attempts: 1, timeout: 45000,
+      body: { prompt: prompt ?? (field ? field.value : ''), unnamed },
+    });
+    if (data && data.session) replaceSession(data.session);
+  } catch (err) {
+    if (unnamed) toast('Could not name the session: ' + errorMessage(err), 'error');
+    else alertDialog({ title: 'Could not name the session', body: errorMessage(err) });
+  } finally {
+    state.titling.delete(session.id);
+    if (state.current && state.current.id === session.id) drawTitling(session.id);
+    renderList();
+  }
+}
+
 // titleFrame follows the automatic naming of a session: the name pulses from
 // the moment the model is asked until it has answered, and an answer that is
 // a failure is said in a dialog - a name that silently never arrives is a
@@ -2546,9 +2560,7 @@ function titleFrame(frame) {
   if (!id) return;
   if (frame.phase === 'start') state.titling.add(id);
   else state.titling.delete(id);
-  if (state.current && state.current.id === id) {
-    setClass(dom.sessionTitle, 'titling', state.titling.has(id));
-  }
+  if (state.current && state.current.id === id) drawTitling(id);
   if (frame.title) renameRow(id, frame.title);
   else renderList();
   if (frame.phase === 'error') {
@@ -2921,6 +2933,7 @@ function wire() {
   dom.sessionTitle.addEventListener('click', () => {
     if (state.current) renameSession(state.current);
   });
+  dom.titleRegen.addEventListener('click', () => retitleSession(state.current));
   // The on-screen keyboard, which on a touch screen this button raises and
   // puts away and nothing else does. With no field focused, it is raised for
   // the pane.
@@ -3022,6 +3035,7 @@ async function boot() {
     },
     refresh: () => refreshList(),
     measure: () => measureForStart(),
+    nameFromPrompt: (session, prompt) => retitleSession(session, { unnamed: true, prompt }),
   });
   followViewport();
   // Whether the bucket is taking what is done here. Silent while it is.
@@ -3034,6 +3048,9 @@ async function boot() {
   // The catalogue decides whether a folder offers VS Code, so the list is
   // drawn again once it is in.
   harnesses.load().then(() => renderList()).catch(() => { /* the sheet says so when it is opened */ });
+  // The sheet starts a session in the profile of the ones already active in
+  // its folder, and this list is where it finds them.
+  harnesses.useSessions(() => state.sessions);
   try {
     const prefs = await api('/api/preferences', { attempts: 1, timeout: 8000 });
     if (prefs && prefs.terminal) state.terminal = { ...state.terminal, ...prefs.terminal };

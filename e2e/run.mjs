@@ -2382,6 +2382,58 @@ async function profiles() {
     ok(ultraCodex, 'and Codex is not offered it', String(ultraCodex));
     await s.page.click('#nsCancel');
 
+    // A session started beside an active one of the same program joins its
+    // profile, whatever the last sheet chose: Claude Code sessions in one
+    // profile can reach each other. A done one is no reason to.
+    const allowed = await s.context.request.put(s.url + '/api/settings',
+      { data: { settings: { workspace: { allow_custom: true } } } });
+    ok(allowed.ok(), 'a typed-in working directory is allowed on this Socrates', allowed.status());
+    const project = join(s.data, 'projects', 'shared');
+    mkdirSync(project, { recursive: true });
+    const made = await s.context.request.post(s.url + '/api/sessions', {
+      data: { harness: 'claude', model: 'haiku', title: 'Beside', workdir_mode: 'custom', workdir: project },
+    });
+    ok(made.ok(), 'a Claude Code session runs in the default profile in a project', made.status());
+    const beside = made.ok() ? (await made.json()).session.id : '';
+    const sheetIn = async (workdir) => {
+      await open(s);
+      await ensureNav(s.page);
+      await s.page.click('#newSession');
+      await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+      await s.page.click('#newSessionSheet .seg[data-value="claude"]');
+      await s.page.click('#nsDir .combo-input');
+      await s.page.waitForSelector('#nsDir .combo-option[data-value="custom"]', { timeout: 5000 });
+      await s.page.click('#nsDir .combo-option[data-value="custom"]');
+      await s.page.fill('#nsDirPath', workdir);
+      await s.page.waitForSelector('#nsProfileField:not([hidden]) #nsProfile .drop-face', { timeout: 10000 });
+      await s.page.click('#nsProfile .drop-button');
+      await s.page.waitForSelector('#nsProfile .drop-option', { timeout: 5000 });
+      const seen = await s.page.evaluate(() => ({
+        face: document.querySelector('#nsProfile .drop-face .profile-entry-name').textContent,
+        here: [...document.querySelectorAll('#nsProfile .drop-option')]
+          .filter((n) => n.querySelector('.profile-entry-tag.here'))
+          .map((n) => n.querySelector('.profile-entry-name').textContent + ': ' + n.querySelector('.profile-entry-tag.here').textContent),
+        hint: document.getElementById('nsProfileHint').textContent,
+      }));
+      await s.page.click('#nsProfile .drop-button');
+      return seen;
+    };
+    const joined = await sheetIn(project + '/');
+    ok(joined.face === 'Default' && joined.here.join(',') === 'Default: running here',
+      'the sheet picks the profile a Claude Code session in that folder runs in, and marks it', JSON.stringify(joined));
+    // The fake Claude Code is signed in nowhere, and how to sign in is the
+    // hint that matters more; the reason is the hint everywhere else.
+    ok(/another Claude Code session in this folder|not signed in/.test(joined.hint), 'and the hint says why, or how to sign in',
+      joined.hint);
+    await shot(s.page, 'profiles-joined');
+    await s.page.click('#nsCancel');
+    const filed = await s.context.request.post(s.url + '/api/sessions/' + beside + '/file', { data: { status: 'done' } });
+    ok(filed.ok(), 'that session is done', filed.status());
+    const alone = await sheetIn(project);
+    ok(alone.face === 'Business' && alone.here.length === 0,
+      'a done session is not joined: the sheet starts on the last profile again', JSON.stringify(alone));
+    await s.page.click('#nsCancel');
+
     // The dashboard's order is the sheet's: a row moves by its grip, with the
     // arrow keys or dragged, and the order is saved as soon as it is let go.
     const order = async () => ((await (await s.context.request.get(s.url + '/api/profiles')).json()).profiles || [])
@@ -4321,6 +4373,45 @@ async function sessiontitle() {
     ok(still === want, 'and the name it was given stayed', still);
     await shot(s.page, 'session-title');
 
+    // The arrow beside the name asks again, from the screen, whatever the
+    // session is called.
+    const again = 'Parser work, named again';
+    stub.replies.push(again);
+    const arrow = await s.page.$eval('#titleRegen', (n) => !n.hidden);
+    ok(arrow, 'the header has an arrow beside the name', String(arrow));
+    await s.page.click('#titleRegen');
+    const renamed = await s.page.waitForFunction((w) => document.getElementById('sessionTitle').textContent.trim() === w
+      && !document.getElementById('titleRegen').disabled, again, { timeout: 15000 }).then(() => true, () => false);
+    ok(renamed && asked() === 2, 'pressing it names the session again', await s.page.$eval('#sessionTitle', (n) => n.textContent.trim())
+      + ', ' + asked() + ' calls');
+
+    // A prepared session is named after its prompt the first time its field
+    // is left - once.
+    const made = await s.context.request.post(s.url + '/api/sessions', { data: { prestart: true, harness: 'claude' } });
+    ok(made.ok(), 'a prepared session is made', made.status());
+    const prepared = (await made.json()).session.id;
+    await s.page.click(rowSel(prepared));
+    await s.page.waitForSelector('#prestart:not([hidden]) #psPrompt:not([readonly])', { timeout: 15000 });
+    const planned = 'Prepared login fix';
+    stub.replies.push(planned);
+    await s.page.fill('#psPrompt', 'Fix the login redirect after the session expires');
+    await s.page.$eval('#psPrompt', (n) => n.blur());
+    const named = await s.page.waitForFunction((arg) => {
+      const label = document.querySelector(arg.sel);
+      return !!label && label.textContent.trim() === arg.want
+        && document.getElementById('sessionTitle').textContent.trim() === arg.want;
+    }, { sel: rowSel(prepared) + ' .label', want: planned }, { timeout: 15000 }).then(() => true, () => false);
+    ok(named, 'leaving its prompt field names a prepared session after the prompt',
+      await s.page.$eval(rowSel(prepared) + ' .label', (n) => n.textContent.trim()));
+    await shot(s.page, 'session-title-prestart');
+    await s.page.focus('#psPrompt');
+    await s.page.type('#psPrompt', ' and keep the page');
+    await s.page.$eval('#psPrompt', (n) => n.blur());
+    await wait(1500);
+    ok(asked() === 3, 'leaving it again does not ask again', asked() + ' calls');
+    await s.page.click(rowSel(id));
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+
     // A gateway that refuses is said out loud, in a dialog, and the pulse
     // stops.
     stub.refuse = 401;
@@ -6246,7 +6337,7 @@ async function transfer() {
   } finally { await s.stop(); }
 }
 
-/* ------------------------------------------------- preStart and the bucket */
+/* ------------------------------------------------- PreStart and the bucket */
 
 // localInput is a moment the way a datetime-local field spells it: this
 // browser's local time, to the minute. The page and the suite run on the
@@ -6292,7 +6383,7 @@ async function prestart() {
     await open(s);
     const { page } = s;
 
-    // The sheet: preStart is offered for an agent, not for a shell, and turns
+    // The sheet: PreStart is offered for an agent, not for a shell, and turns
     // the button into Prepare.
     await ensureNav(page);
     await page.click('#newSession');
@@ -6302,7 +6393,7 @@ async function prestart() {
     const forShell = await page.$eval('#nsPrestartField', (n) => n.hidden);
     await page.click('#newSessionSheet .seg[data-value="claude"]');
     const forClaude = await page.$eval('#nsPrestartField', (n) => !n.hidden);
-    ok(forShell && forClaude, 'the sheet offers preStart for Claude Code and not for a shell',
+    ok(forShell && forClaude, 'the sheet offers PreStart for Claude Code and not for a shell',
       JSON.stringify({ shellHidden: forShell, claudeShown: forClaude }));
     const offByDefault = await page.$eval('#nsPrestart .seg[data-value="off"]', (n) => n.getAttribute('aria-pressed'));
     await page.click('#nsPrestart .seg[data-value="on"]');
@@ -6328,14 +6419,17 @@ async function prestart() {
       'and nothing was started for it: no tmux session, no launch',
       sessionsOn(s.data).length + ' tmux sessions, ' + launchesOf(s, 'claude').length + ' launches');
     const group = await page.evaluate((sid) => {
-      const first = document.querySelector('#sessionList .folder');
+      const row = document.querySelector('#sessionList .chat-item[data-id="' + sid + '"]');
+      const shelf = row && row.closest('.shelf');
       return {
-        first: first && first.dataset.folder,
-        inside: !!(first && first.querySelector('.chat-item[data-id="' + sid + '"]')),
+        shelf: shelf && shelf.dataset.shelf,
+        open: !!shelf && !shelf.classList.contains('closed'),
+        first: !!shelf && shelf.parentElement.firstElementChild === shelf,
+        folder: !!(shelf && shelf.parentElement.closest('.folder[data-folder]')),
       };
     }, id);
-    ok(group.first === '#prestart' && group.inside, 'its row is in the preStart group, at the very top of the list',
-      JSON.stringify(group));
+    ok(group.shelf === 'prestart' && group.open && group.first && group.folder,
+      'its row is on its folder\'s PreStart shelf, open, above the folder\'s sessions', JSON.stringify(group));
 
     // The prompt saves itself, and the bucket takes it.
     await page.waitForFunction(() => !document.getElementById('psPrompt').disabled, null, { timeout: 10000 });
@@ -6386,10 +6480,10 @@ async function prestart() {
     const echoed = await awaitScreen(page, 'you said: after the prompt', 15000).then(() => true, () => false);
     ok(echoed, 'and the terminal takes keystrokes like any other');
     const moved = await page.evaluate((sid) => {
-      const prepared = document.querySelector('#sessionList .folder[data-folder="#prestart"]');
-      return !prepared && !!document.querySelector('#sessionList .chat-item[data-id="' + sid + '"]');
+      const row = document.querySelector('#sessionList .chat-item[data-id="' + sid + '"]');
+      return !!row && !row.closest('.shelf[data-shelf="prestart"]');
     }, id);
-    ok(moved, 'its row left the preStart group for the ordinary ones', String(moved));
+    ok(moved, 'its row left the PreStart shelf for its folder\'s sessions', String(moved));
     draft = await draftOf(s, id);
     const refused = await s.context.request.put(s.url + '/api/sessions/' + id + '/draft',
       { data: { text: 'too late', base_rev: draft.rev } });

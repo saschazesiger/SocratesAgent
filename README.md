@@ -208,9 +208,9 @@ the phone locked. On an iPhone, add Socrates to the Home Screen and turn
 them on from there; Safari allows push only for an installed web app. Over
 plain http they appear only while the page is open.
 
-## Prepared sessions (preStart)
+## Prepared sessions (PreStart)
 
-Switch **preStart** on in the new-session sheet (Claude Code, Codex and
+Switch **PreStart** on in the new-session sheet (Claude Code, Codex and
 OpenCode) and **Prepare** stores the session without starting anything. It
 opens as a panel instead of a terminal: the same settings as the sheet, all
 still changeable, and a large field for the first prompt, which is saved as you
@@ -221,7 +221,9 @@ program's first message. **Start automatically** takes a date and time instead:
 the server starts it then by itself, even with no browser open, and sends a
 notification either way. A server that was down at that moment starts it as
 soon as it is back; a start that failed is not retried, and the panel says
-why. Prepared sessions are listed in their own group at the top of the sidebar.
+why. A prepared session is listed in its folder, under **PreStart** above the
+sessions that are running there. The first time you leave the prompt field
+after writing in it, the session is named after the prompt.
 
 ## Files
 
