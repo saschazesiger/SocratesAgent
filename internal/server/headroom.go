@@ -61,12 +61,24 @@ func (s *Server) fillLimits(ctx context.Context, views []profileView) {
 }
 
 // current is a reading as it stands now: a window whose renewal has passed
-// since it was taken is empty again.
+// since it was taken is empty again. The renewal is handed on in one shape -
+// whole seconds in UTC - whatever the source wrote: Anthropic's endpoint
+// writes microseconds and an offset, and a browser is only obliged to parse
+// the simplified ISO form. A renewal that is not a time at all is left out
+// rather than passed on for the page to show as "Invalid Date".
 func current(windows []usageWindow, now time.Time) []usageWindow {
 	out := make([]usageWindow, 0, len(windows))
 	for _, w := range windows {
-		if at, err := time.Parse(time.RFC3339, w.ResetsAt); err == nil && !at.After(now) {
-			w.UsedPercent, w.ResetsAt = 0, ""
+		if w.ResetsAt != "" {
+			at, err := time.Parse(time.RFC3339, w.ResetsAt)
+			switch {
+			case err != nil:
+				w.ResetsAt = ""
+			case !at.After(now):
+				w.UsedPercent, w.ResetsAt = 0, ""
+			default:
+				w.ResetsAt = at.UTC().Format(time.RFC3339)
+			}
 		}
 		out = append(out, w)
 	}

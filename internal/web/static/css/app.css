@@ -161,7 +161,8 @@ a { color: inherit; }
    top: laid over the bar's own button by script, and in the corner when the
    bar has none on screen. A device with a mouse and no sign of a finger has
    keys, and neither is shown there; keyboard.js decides which device is
-   which, generously, and says so with html.touch. */
+   which, generously, unless the options menu has said, and says so with
+   html.touch. */
 .kb-copy {
   position: fixed;
   top: calc(10px + env(safe-area-inset-top, 0px));
@@ -190,13 +191,6 @@ html:not(.touch) #kbBtn, html:not(.touch) .kb-copy { display: none !important; }
 /* While the voice is reading, the same button is the way to stop it. */
 .icon-btn.speaking { color: var(--text); background: var(--bg-hover); }
 .icon-btn svg { width: 17px; height: 17px; }
-/* A switch whose two states are one drawing and the same drawing with a stroke
-   through it. Which of the two is shown is the button's own pressed state, so
-   there is nothing for a script to keep in step - and neither state is filled:
-   sound being on is the ordinary case, not a mode somebody armed. */
-.icon-btn.toggle .ico-off { display: none; }
-.icon-btn.toggle[aria-pressed="false"] .ico-on { display: none; }
-.icon-btn.toggle[aria-pressed="false"] .ico-off { display: block; }
 
 /* ------------------------------------------------------------------ forms */
 
@@ -711,11 +705,21 @@ html:not(.touch) #kbBtn, html:not(.touch) .kb-copy { display: none !important; }
   align-items: center;
   gap: 7px;
   align-self: stretch;
+  margin: 0;
   padding: 0 13px;
+  border: 0;
+  border-radius: 0;
+  background: none;
   color: var(--text-soft);
   font: 11.5px/1 var(--mono);
   white-space: nowrap;
+  text-align: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
 }
+.usage-strip[hidden] { display: none; }
+.usage-strip:hover, .usage-strip[aria-expanded="true"] { background: var(--bg-hover); }
+.usage-strip:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .usage-strip::before,
 .topbar > .icon-btn::before,
 .transfer > .icon-btn::before,
@@ -1357,15 +1361,32 @@ html:not(.touch) #kbBtn, html:not(.touch) .kb-copy { display: none !important; }
     left: calc(10px + env(safe-area-inset-left, 0px));
     right: calc(10px + env(safe-area-inset-right, 0px));
     bottom: 3px;
-    justify-content: center;
+    /* Centred by the margins of its two ends rather than by
+       justify-content: a centred line that is too long overflows on both
+       sides, and the left one cannot be scrolled to. */
+    justify-content: flex-start;
     height: 24px;
     border: 0;
+    border-radius: var(--r-sm);
     padding: 0;
-    overflow: hidden;
+    /* What does not fit is swiped along rather than cut off, and fitUsage()
+       tightens it first: the spacing, then the cost. */
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
   }
+  .topbar.has-usage .usage-strip::-webkit-scrollbar { display: none; }
+  .topbar.has-usage .usage-strip > :first-child { margin-left: auto; }
+  .topbar.has-usage .usage-strip > :last-child { margin-right: auto; }
   .topbar.has-usage .usage-strip::before { display: none; }
   /* "(2h 36m)" says enough on a phone; the word is for the desk. */
   .topbar.has-usage .usage-left { display: none; }
+  .topbar.has-usage .usage-strip:is(.fit-1, .fit-2, .fit-3) { gap: 4px; font-size: 11px; }
+  .topbar.has-usage .usage-strip.fit-3 { font-size: 10px; }
+  .usage-strip:is(.fit-1, .fit-2, .fit-3) .usage-part { gap: 2px; }
+  .usage-strip:is(.fit-1, .fit-2, .fit-3) .usage-part + .usage-part::before { margin-right: 2px; }
+  .topbar.has-usage .usage-strip:is(.fit-2, .fit-3) .usage-cost { display: none; }
+  .topbar.has-usage .usage-strip:is(.fit-2, .fit-3) > :first-child { margin-left: 0; }
 }
 /* Narrower than this the title has room for one letter and an ellipsis that
    does not fit, which reads as a glitch rather than as a name. It keeps its
@@ -1860,6 +1881,61 @@ body.stale .icon-btn.working::after { animation-play-state: paused; opacity: .4;
 .menu-sep { flex-shrink: 0; height: 1px; margin: 5px 4px; background: var(--line); }
 .menu-item.checked { font-weight: 600; }
 .menu-item.checked::after { content: " \2713"; }
+.menu-item:disabled { cursor: default; opacity: .5; }
+.menu-item:disabled:hover { background: none; }
+
+/* A choice of the options menu: the words and what they are about on the
+   left, and the same switch the admin page uses on the right, drawn from the
+   item's own aria-checked so there is nothing to keep in step. */
+.menu-switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 44px;
+}
+.menu-switch-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.menu-switch-name { color: var(--text); }
+.menu-switch-hint { font-size: 11.5px; color: var(--text-faint); line-height: 1.3; }
+.menu-switch-track {
+  flex: none;
+  width: 34px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--line-strong);
+  transition: background .18s ease;
+}
+.menu-switch-track::after {
+  content: "";
+  display: block;
+  width: 16px;
+  height: 16px;
+  margin: 2px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: var(--shadow-sm);
+  transition: transform .18s cubic-bezier(.3, .8, .4, 1);
+}
+.menu-switch[aria-checked="true"] .menu-switch-track { background: var(--accent); }
+.menu-switch[aria-checked="true"] .menu-switch-track::after { transform: translateX(14px); }
+
+/* The whole reading behind the usage strip: one block per window, with how
+   full it is and when exactly it renews. */
+.usage-pop { width: 280px; padding: 6px 4px; gap: 2px; }
+.usage-row { flex-shrink: 0; padding: 8px 10px; }
+.usage-row + .usage-row { border-top: 1px solid var(--line); }
+.usage-row-head { display: flex; justify-content: space-between; gap: 12px; font-size: 13.5px; }
+.usage-row-name { color: var(--text); font-weight: 550; }
+.usage-row-used { color: var(--text-soft); font-family: var(--mono); font-size: 12.5px; }
+.usage-row-reset { margin-top: 5px; font-size: 12px; color: var(--text-faint); }
+.usage-meter {
+  margin-top: 7px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  overflow: hidden;
+}
+.usage-meter > span { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
 
 /* ------------------------------------------------------------- combobox */
 

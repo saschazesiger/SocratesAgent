@@ -28,7 +28,7 @@ import { mountAssist } from './assist.js';
 import { mountNotify } from './notify.js';
 import { mountTransfer } from './transfer.js';
 import { mountKeyBar, keyBarWanted, setKeyBarWanted, followViewport } from './keybar.js';
-import { initKeyboard, guard, watchFrame, dictated } from './keyboard.js';
+import { initKeyboard, guard, watchFrame, dictated, touchScreen, setTouchMode } from './keyboard.js';
 import { mountPrestart, forgetDraft, whenShort, PRESTART_SVG, CLOCK_SVG } from './prestart.js';
 import { mountStorageBanner } from './storage.js';
 
@@ -627,10 +627,17 @@ const state = {
   // reload still knows which session this tab was looking at, and reopens it
   // the moment the list can be read.
   wanted: '',
-  // The overflow menu a row or the header last opened, so a second one
-  // replaces it rather than stacking on it, and the button it hangs from.
+  // The menu a row, the options button or the usage strip last opened, so a
+  // second one replaces it rather than stacking on it, and the button it
+  // hangs from.
   menu: null,
   menuAnchor: null,
+  // What the open menu draws itself from, for a menu that stays open while
+  // its switches are pressed and is drawn again around their new positions,
+  // and what puts it back under its button after that.
+  menuBuild: null,
+  menuPosition: null,
+  menuCleanup: null,
   // The session whose relaunch this tab has asked for and not yet been
   // answered about. It is what keeps the pressed Restart pressed across a list
   // refresh, and what stops a second press starting a second relaunch.
@@ -655,6 +662,10 @@ const state = {
   // The session that poll is for, so a newer row of the same session keeps it.
   usageFor: '',
   usageRefresh: null,
+  // The last reading, which the countdowns are redrawn from between polls,
+  // and the timer that does it.
+  usage: null,
+  usageTick: null,
   // Status and the microphone, mounted once in boot().
   assist: null,
   // Copy, paste and upload, mounted once in boot().
@@ -672,7 +683,7 @@ const dom = {};
 const ids = ['sidebar', 'navScrim', 'menuBtn', 'sideCollapse', 'newSession', 'sessionList',
   'activityLive', 'sessionTitle', 'sessionStatus', 'sessionUsage',
   'transfer', 'copyBtn', 'pasteBtn', 'uploadBtn',
-  'statusBtn', 'kbBtn', 'soundBtn', 'notifyBtn', 'sessionMenu',
+  'statusBtn', 'kbBtn', 'optionsBtn',
   'stage', 'termWrap', 'term', 'termOverlay', 'termLines', 'termNotice',
   'termTicker', 'tickerWindow', 'termEmpty',
   'micBtn', 'micText',
@@ -1571,36 +1582,138 @@ function replaceSession(next) {
   renderList();
 }
 
-// One menu shape for both the row's "…" and the header's, so a session can be
-// renamed from wherever it is being looked at.
+// The row's "…": everything that can be done to one session. What belongs to
+// this device rather than to a session - the key bar, touch mode, sound and
+// notifications - is in the options menu of the top bar instead.
 function openRowMenu(anchor, id) {
   const session = sessionOf(id);
   if (!session) return;
-  closeMenu();
+  if (toggleMenuOf(anchor)) return;
   // A folder's editor is not work that is filed: it is open or it is not, and
   // closing it keeps everything it remembers, which is kept per folder.
   const editor = session.harness === IDE;
   // A prepared session has no terminal, so no keys, no scrollback and no
   // status to file it under yet: it can be looked at, named and deleted.
   const prepared = isPrepared(session);
-  const menu = el('div', { class: 'menu', role: 'menu' },
+  const item = (text, run, kind) => menuItem(text, run, kind);
+  showMenu(anchor, () => [
     item('Info', () => infoDialog(session)),
     editor ? null : item('Rename', () => renameSession(session)),
-    session.harness === 'vscode' || prepared ? null : item(dom.keybar.hidden ? 'Show key bar' : 'Hide key bar', () => {
-      const on = dom.keybar.hidden;
-      setKeyBarWanted(on);
-      showKeyBar(on);
-    }),
     editor || prepared ? null : el('div', { class: 'menu-label', text: 'Status' }),
     ...(editor || prepared ? [] : STATUSES.map((one) => item(one.label, () => setStatus(session, one.id),
       statusOf(session) === one.id ? 'checked' : ''))),
     el('div', { class: 'menu-sep' }),
     editor && state.current?.id === session.id ? item('Reload editor', () => attach(session)) : null,
     prepared ? null : item(editor ? 'Download server log' : 'Download scrollback', () => downloadJournal(session)),
-    item(editor ? 'Close VS Code' : 'Delete', () => deleteSession(session), 'danger'));
+    item(editor ? 'Close VS Code' : 'Delete', () => deleteSession(session), 'danger'),
+  ]);
+}
+
+/**
+ * openOptionsMenu is the top bar's "⋮": the choices that belong to this
+ * device and not to any session, each a switch that shows where it is. It
+ * stays open while they are pressed, so several can be set in one go; a tap
+ * anywhere else, Escape or the button again closes it.
+ */
+function openOptionsMenu(anchor) {
+  if (toggleMenuOf(anchor)) return;
+  showMenu(anchor, () => {
+    const keys = keyBarWanted();
+    const touch = touchScreen();
+    const notifyAvailable = !!notifier && notifier.notifyAvailable();
+    return [
+      el('div', { class: 'menu-label', text: 'This device' }),
+      menuSwitch('Key bar', 'Esc, Tab, Ctrl, arrows', keys, () => {
+        setKeyBarWanted(!keys);
+        applyKeyBar();
+      }, 'keybar'),
+      menuSwitch('Touch mode', 'Keyboard button in the top bar', touch, () => {
+        setTouchMode(!touch);
+        // The key bar follows the touch screen until it has been asked for
+        // or put away on its own, so a device that has only ever been told
+        // about touch mode gets the bar that goes with it.
+        applyKeyBar();
+      }, 'touch'),
+      el('div', { class: 'menu-sep' }),
+      menuSwitch('Sound', 'A chime when a session finishes', !!notifier && notifier.soundOn(), () => {
+        if (notifier) notifier.setSound(!notifier.soundOn());
+      }, 'sound'),
+      menuSwitch('Notifications',
+        notifyAvailable ? 'When a session finishes or needs an answer' : 'Not available in this browser',
+        !!notifier && notifier.notifyOn(), () => {
+          if (notifier) notifier.setNotify(!notifier.notifyOn());
+        }, 'notify', !notifyAvailable),
+    ];
+  });
+}
+
+// menuItem is one action of a menu: it closes the menu and does its thing.
+function menuItem(text, run, kind) {
+  return el('button', {
+    class: 'menu-item ' + (kind || ''), type: 'button', role: 'menuitem', text,
+    onclick: () => { closeMenu(); run(); },
+  });
+}
+
+// menuSwitch is one on/off choice of a menu that stays open: the words, what
+// they are about, and a switch that shows the answer. The menu is drawn
+// again after each press, from the state itself rather than from the press,
+// so a choice the browser refused - a notification permission - shows as
+// the "off" it really is.
+function menuSwitch(text, hint, on, toggle, name, disabled) {
+  return el('button', {
+    class: 'menu-item menu-switch', type: 'button', role: 'menuitemcheckbox',
+    'aria-checked': on ? 'true' : 'false', 'data-option': name, disabled: !!disabled,
+    onclick: () => {
+      toggle();
+      redrawMenu();
+    },
+  },
+  el('span', { class: 'menu-switch-text' },
+    el('span', { class: 'menu-switch-name', text }),
+    hint ? el('span', { class: 'menu-switch-hint', text: hint }) : null),
+  el('span', { class: 'menu-switch-track', 'aria-hidden': 'true' }));
+}
+
+// toggleMenuOf closes the menu `anchor` opened, and says so: a second press
+// of the button a menu hangs from puts the menu away instead of opening it
+// again.
+function toggleMenuOf(anchor) {
+  if (state.menu && state.menuAnchor === anchor) {
+    closeMenu();
+    return true;
+  }
+  closeMenu();
+  return false;
+}
+
+// redrawMenu draws the open menu again from what it is built from, in place.
+function redrawMenu() {
+  if (!state.menu || !state.menuBuild) return;
+  const focused = document.activeElement && state.menu.contains(document.activeElement)
+    ? document.activeElement.dataset.option : '';
+  state.menu.replaceChildren(...state.menuBuild().filter(Boolean));
+  if (focused) {
+    const again = state.menu.querySelector('[data-option="' + cssId(focused) + '"]');
+    if (again) again.focus({ preventScroll: true });
+  }
+  state.menuPosition?.();
+}
+
+/**
+ * showMenu hangs a menu from `anchor`, inside what can be seen of the
+ * viewport, and keeps it there while the page scrolls or a phone's keyboard
+ * moves things. `build` draws its contents, and draws them again when a
+ * switch in it is pressed (redrawMenu).
+ */
+function showMenu(anchor, build, { className = '', role = 'menu' } = {}) {
+  closeMenu();
+  const menu = el('div', { class: 'menu ' + className, role });
+  menu.append(...build().filter(Boolean));
   document.body.append(menu);
   const position = (event) => {
     if (event?.target === menu) return;
+    if (!anchor.isConnected) { closeMenu(); return; }
     const box = anchor.getBoundingClientRect();
     const viewport = window.visualViewport;
     const left = (viewport?.offsetLeft || 0) + 10;
@@ -1616,44 +1729,75 @@ function openRowMenu(anchor, id) {
     menu.style.maxHeight = Math.max(0, Math.min(bottom - top, upwards ? above : below)) + 'px';
     const y = upwards ? box.top - 6 - menu.offsetHeight : box.bottom + 6;
     menu.style.top = Math.max(top, Math.min(y, bottom - menu.offsetHeight)) + 'px';
+    // Hung from its button's left edge, unless that would run it off the
+    // right of the screen - which, for a button at the end of the top bar,
+    // it always would, so there it ends where the button ends.
     menu.style.left = Math.max(left, Math.min(box.left, right - menu.offsetWidth)) + 'px';
   };
   position();
+  // A press anywhere else closes it. It is listened for from the next tick,
+  // so the press that opened the menu is not taken for one that closes it,
+  // and before anything else hears it, so a control that keeps its clicks to
+  // itself still closes it.
+  //
+  // A press inside the menu is the menu's own: an item closes it itself, and
+  // a switch leaves it open. A press on the button it hangs from is the
+  // button's, which closes it (toggleMenuOf) - closed here first, the button
+  // would only open it again.
+  const outside = (event) => {
+    if (menu.contains(event.target) || anchor.contains(event.target)) return;
+    closeMenu();
+  };
+  // Escape is for the menu while one is open, and not for the pane under it.
+  const escape = (event) => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeMenu();
+  };
+  const armed = setTimeout(() => document.addEventListener('click', outside, true), 0);
+  document.addEventListener('keydown', escape, true);
   window.addEventListener('resize', position);
   document.addEventListener('scroll', position, true);
   window.visualViewport?.addEventListener('resize', position);
   window.visualViewport?.addEventListener('scroll', position);
   state.menuCleanup = () => {
+    clearTimeout(armed);
+    document.removeEventListener('click', outside, true);
+    document.removeEventListener('keydown', escape, true);
     window.removeEventListener('resize', position);
     document.removeEventListener('scroll', position, true);
     window.visualViewport?.removeEventListener('resize', position);
     window.visualViewport?.removeEventListener('scroll', position);
   };
   state.menu = menu;
+  state.menuBuild = build;
+  state.menuPosition = position;
   // The button that opened the menu keeps the focus while it is open, and a
   // button with the focus answers Enter and space - so it is handed back when
   // the menu goes, or the next thing typed re-opens the menu instead of
   // reaching the pane.
   state.menuAnchor = anchor;
-  setTimeout(() => document.addEventListener('click', closeMenu, { once: true }), 0);
-
-  function item(text, run, kind) {
-    return el('button', {
-      class: 'menu-item ' + (kind || ''), type: 'button', role: 'menuitem', text,
-      onclick: () => { closeMenu(); run(); },
-    });
-  }
+  anchor.setAttribute('aria-expanded', 'true');
+  return menu;
 }
 
 function closeMenu() {
   if (!state.menu) return;
   state.menuCleanup?.();
   state.menuCleanup = null;
-  state.menu.remove();
+  const menu = state.menu;
   state.menu = null;
+  state.menuBuild = null;
+  state.menuPosition = null;
+  // The focus may be on one of the menu's own switches, and an element that
+  // is removed while it has the focus takes it nowhere.
+  const inside = menu.contains(document.activeElement);
+  menu.remove();
   const anchor = state.menuAnchor;
   state.menuAnchor = null;
-  if (anchor && document.activeElement === anchor) anchor.blur();
+  if (anchor) anchor.setAttribute('aria-expanded', 'false');
+  if (anchor && (inside || document.activeElement === anchor)) anchor.blur();
   // The menu took the focus out of the pane, so the menu gives it back.
   keepTypingAlive();
 }
@@ -1705,7 +1849,6 @@ function showEmpty() {
   );
   dom.sessionTitle.textContent = 'Socrates';
   stopUsage();
-  dom.sessionMenu.hidden = true;
   if (state.assist) state.assist.attached();
   if (state.transfer) state.transfer.attached();
   dom.sessionStatus.hidden = true;
@@ -1743,11 +1886,10 @@ function applySession(session) {
   dom.sessionStatus.hidden = status === 'in_progress';
   dom.sessionStatus.textContent = STATUS_WORDS[status];
   dom.sessionStatus.dataset.status = status;
-  dom.sessionMenu.hidden = false;
   dom.termEmpty.hidden = true;
 
   // What it runs and on which model is in the list's mark and in "Info" in
-  // the session menu; the bar keeps its width for the name. A prepared
+  // the row's menu; the bar keeps its width for the name. A prepared
   // session has no conversation to cost anything yet, and its panel shows
   // each profile's limits where the profile is chosen.
   if (isPrepared(session)) {
@@ -1762,13 +1904,24 @@ function applySession(session) {
 }
 
 const USAGE_REFRESH = 30000;
+// How often the countdowns are redrawn from the reading on screen. A reading
+// is asked for every thirty seconds, but one that cannot be had - no signal,
+// a slow endpoint - must not leave "2h 36m" standing for an hour.
+const USAGE_TICK = 15000;
+
+// What each window is called where there is room to say it.
+const WINDOW_NAMES = { '5h': '5-hour limit', '7d': 'Weekly limit', Fable: 'Fable weekly limit' };
 
 function stopUsage() {
   state.usageGeneration += 1;
   if (state.usageTimer) clearInterval(state.usageTimer);
+  if (state.usageTick) clearInterval(state.usageTick);
   state.usageTimer = null;
+  state.usageTick = null;
   state.usageFor = '';
   state.usageRefresh = null;
+  state.usage = null;
+  if (state.menuAnchor === dom.sessionUsage) closeMenu();
   dom.sessionUsage.hidden = true;
   dom.sessionUsage.innerHTML = '';
   dom.sessionUsage.title = '';
@@ -1796,29 +1949,48 @@ function startUsage(session) {
         attempts: 1, timeout: 10000,
       });
       if (generation !== state.usageGeneration || !state.current || state.current.id !== session.id) return;
+      state.usage = usage;
       drawUsage(usage);
     } catch { /* quota is useful context, never a reason to disturb the terminal */ }
   };
   refresh();
   state.usageRefresh = refresh;
   state.usageTimer = setInterval(refresh, USAGE_REFRESH);
+  state.usageTick = setInterval(() => {
+    if (generation === state.usageGeneration && state.usage) drawUsage(state.usage);
+  }, USAGE_TICK);
+}
+
+/**
+ * limitWindows is a reading's windows as they stand now: the share used,
+ * clamped, and how long until each renews. A window whose renewal has passed
+ * since the reading was taken has renewed, and is empty until the next
+ * reading says otherwise - the same rule the server applies.
+ */
+function limitWindows(usage, now = Date.now()) {
+  const windows = Array.isArray(usage && usage.windows) ? usage.windows : [];
+  return windows.filter((w) => w && w.label).map((w) => {
+    const at = w.resets_at ? new Date(w.resets_at).getTime() : NaN;
+    const renewed = Number.isFinite(at) && at <= now;
+    const used = renewed ? 0 : Math.max(0, Math.min(100, Math.round(Number(w.used_percent) || 0)));
+    const left = renewed ? '' : harnesses.untilReset(w, now);
+    return { label: w.label, used, left, renewed, at: left ? at : NaN };
+  });
 }
 
 function drawUsage(usage) {
-  const windows = Array.isArray(usage && usage.windows) ? usage.windows : [];
   const parts = [];
   const details = [];
-  for (const window of windows) {
-    const used = Math.max(0, Math.min(100, Math.round(Number(window.used_percent) || 0)));
+  for (const window of limitWindows(usage)) {
     // How long until the window renews is shown, not only hovered: whether
     // 80% is a problem depends on whether it is gone in ten minutes.
-    const left = harnesses.untilReset(window);
-    parts.push(el('span', { class: 'usage-part' },
+    parts.push(el('span', { class: 'usage-part', 'data-window': window.label },
       el('span', { class: 'usage-label', text: window.label }),
-      el('span', { text: used + '%' }),
-      left ? el('span', { class: 'usage-reset' }, '(' + left,
+      el('span', { class: 'usage-used', text: window.used + '%' }),
+      window.left ? el('span', { class: 'usage-reset' }, '(' + window.left,
         el('span', { class: 'usage-left', text: ' left' }), ')') : null));
-    details.push(window.label + ': ' + used + '% used' + (left ? ' · ' + harnesses.resetDetail(window) : ''));
+    details.push(window.label + ': ' + window.used + '% used'
+      + (window.left ? ' · resets in ' + window.left + ' (' + renewalTime(window.at) + ')' : ''));
   }
   if (Number.isFinite(usage && usage.cost_usd)) {
     const value = Number(usage.cost_usd);
@@ -1829,8 +2001,76 @@ function drawUsage(usage) {
   dom.sessionUsage.innerHTML = '';
   dom.sessionUsage.append(...parts);
   dom.sessionUsage.title = details.join('\n');
+  dom.sessionUsage.setAttribute('aria-label', details.join('. ') || 'Usage');
   dom.sessionUsage.hidden = parts.length === 0;
   dom.sessionUsage.closest('.topbar').classList.toggle('has-usage', parts.length > 0);
+  fitUsage();
+  if (parts.length === 0 && state.menuAnchor === dom.sessionUsage) closeMenu();
+  // The reading that is open says what the strip now says.
+  if (state.menuAnchor === dom.sessionUsage) redrawMenu();
+}
+
+/**
+ * fitUsage keeps the strip on its one line where its width is given to it -
+ * a phone's, where it is the bar's second line. Three windows and a cost are
+ * more than 360px say in full, so it gives up, in order, its spacing, the
+ * cost (which the reading behind a tap still has) and a point of type size
+ * before anything about a limit. What is still too wide can be swiped along: nothing is cut off where
+ * it cannot be reached.
+ */
+function fitUsage() {
+  const strip = dom.sessionUsage;
+  strip.classList.remove('fit-1', 'fit-2', 'fit-3');
+  if (strip.hidden) return;
+  for (const level of ['fit-1', 'fit-2', 'fit-3']) {
+    if (strip.scrollWidth <= strip.clientWidth + 1) return;
+    strip.classList.add(level);
+  }
+}
+
+/**
+ * renewalTime is when a window renews, the way a clock on a wall says it:
+ * "today 14:30", "tomorrow 09:00", or the weekday and date for later.
+ */
+function renewalTime(at, now = new Date()) {
+  const when = new Date(at);
+  if (!Number.isFinite(when.getTime())) return '';
+  const clock = when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const day = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((day(when) - day(now)) / 86400000);
+  if (days === 0) return 'today ' + clock;
+  if (days === 1) return 'tomorrow ' + clock;
+  return when.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' }) + ', ' + clock;
+}
+
+/**
+ * openUsage is the whole reading behind the strip: each window, how full it
+ * is, and when exactly it renews. It is what the tooltip says at a desk, for
+ * a touch screen that has no tooltips.
+ */
+function openUsage(anchor) {
+  if (!state.usage || toggleMenuOf(anchor)) return;
+  showMenu(anchor, () => {
+    const usage = state.usage || {};
+    const rows = limitWindows(usage).map((window) => el('div', { class: 'usage-row', 'data-window': window.label },
+      el('div', { class: 'usage-row-head' },
+        el('span', { class: 'usage-row-name', text: WINDOW_NAMES[window.label] || window.label }),
+        el('span', { class: 'usage-row-used', text: window.used + '% used' })),
+      el('div', { class: 'usage-meter', 'aria-hidden': 'true' },
+        el('span', { style: 'width:' + window.used + '%' })),
+      el('div', { class: 'usage-row-reset',
+        text: window.left ? 'Resets in ' + window.left + ' · ' + renewalTime(window.at)
+          : window.renewed ? 'Renewed · waiting for the next reading'
+            : 'No renewal time reported' })));
+    if (Number.isFinite(usage.cost_usd)) {
+      rows.push(el('div', { class: 'usage-row usage-row-cost' },
+        el('div', { class: 'usage-row-head' },
+          el('span', { class: 'usage-row-name', text: 'This session' }),
+          el('span', { class: 'usage-row-used', text: '~$' + Number(usage.cost_usd).toFixed(2) })),
+        el('div', { class: 'usage-row-reset', text: 'Estimated API-equivalent cost' })));
+    }
+    return rows;
+  }, { className: 'usage-pop', role: 'dialog' });
 }
 
 // drawOverlay is §E.7's table. Everything it can say is a state the session is
@@ -2258,10 +2498,17 @@ function revealIDE(frame, loading, current) {
   look();
 }
 
-// The key bar is asked for or it is not there: no device decides for itself
-// whether it has a keyboard, because the two that matter - a tablet in a
-// case, a laptop with a touch screen - are the two it would get wrong. The
-// session menu is the one way in, and the answer is kept per device.
+// The key bar follows touch mode until this device has said otherwise: the
+// two devices a guess gets wrong - a tablet in a case, a laptop with a touch
+// screen - are what the options menu is for, and the answer is kept per
+// device.
+
+// applyKeyBar shows the bar or puts it away as this device now wants it, on
+// the session on screen - when that session has a bar at all: an editor and
+// a prepared session do not, and get it when a terminal is next opened.
+function applyKeyBar() {
+  if (state.keybar) showKeyBar(keyBarWanted());
+}
 
 function showKeyBar(on) {
   dom.keybar.hidden = !on;
@@ -2665,9 +2912,11 @@ function wire() {
   if (dom.sideCollapse) {
     dom.sideCollapse.addEventListener('click', () => showSidebar(!sidebarCollapsed()));
   }
-  dom.sessionMenu.addEventListener('click', (event) => {
-    if (state.current) openRowMenu(event.currentTarget, state.current.id);
-  });
+  dom.optionsBtn.addEventListener('click', (event) => openOptionsMenu(event.currentTarget));
+  dom.sessionUsage.addEventListener('click', (event) => openUsage(event.currentTarget));
+  // The strip is fitted to the width it has, and that changes with the bar.
+  if (window.ResizeObserver) new ResizeObserver(() => fitUsage()).observe(dom.sessionUsage.closest('.topbar'));
+  else window.addEventListener('resize', fitUsage);
   // The name is edited where it is read.
   dom.sessionTitle.addEventListener('click', () => {
     if (state.current) renameSession(state.current);
@@ -2753,12 +3002,13 @@ async function boot() {
   });
   // The chime and the notification. Mounted here rather than in mountAssist
   // because they are not about the session on screen: they fire for whichever
-  // session finished, and their two switches are in the bar whether or not
-  // anything is attached.
+  // session finished, and their two switches are in the options menu whether
+  // or not anything is attached.
   notifier = mountNotify({
-    dom,
     sessionOf,
     select: (id) => selectSession(id),
+    // A permission the browser answers late lands in a menu still open.
+    changed: () => redrawMenu(),
   });
   // The panel of a prepared session. Its Start ends where a new session's
   // does: the row it answers with replaces the prepared one, and

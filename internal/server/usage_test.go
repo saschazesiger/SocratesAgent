@@ -11,8 +11,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
+	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
 
 func TestClaudeLimitsAndSessionCost(t *testing.T) {
@@ -120,5 +122,51 @@ func TestOpenCodeSessionCostUsesItsAuthenticatedSessionAPI(t *testing.T) {
 	}, "ses_one", "/work tree")
 	if cost == nil || *cost != 2.3456 {
 		t.Fatalf("cost = %v", cost)
+	}
+}
+
+// The header reads the session's usage view, and every renewal in it is in the
+// one shape a browser is sure to parse - and a window whose renewal has passed
+// since the reading was taken is empty again, as it is in the sheet.
+func TestSessionUsageViewNormalizesRenewals(t *testing.T) {
+	e := newEnv(t)
+	e.do(t, e.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+	e.srv.dataDir = t.TempDir()
+	dir := harnesses.ClaudeConfigDirFor(e.srv.dataDir, "")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"),
+		[]byte(`{"claudeAiOauth":{"accessToken":"secret","expiresAt":4102444800000}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(150 * time.Minute).In(time.FixedZone("CEST", 2*3600))
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"five_hour":{"utilization":42,"resets_at":%q},"seven_day":{"utilization":80,"resets_at":%q}}`,
+			future.Format("2006-01-02T15:04:05.000000-07:00"), time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
+	}))
+	defer api.Close()
+	e.srv.usageURL, e.srv.usageHTTP = api.URL, api.Client()
+	row := &store.Session{ID: "limits", Harness: "claude", Workdir: e.srv.dataDir, WorkdirMode: "custom", State: store.StateRunning}
+	if err := e.store.CreateSession(row); err != nil {
+		t.Fatal(err)
+	}
+
+	res, payload := e.do(t, e.client, "GET", "/api/sessions/limits/usage", "")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("usage: %d", res.StatusCode)
+	}
+	windows, _ := payload["windows"].([]any)
+	if len(windows) != 2 {
+		t.Fatalf("windows = %#v", payload["windows"])
+	}
+	five, _ := windows[0].(map[string]any)
+	want := future.UTC().Truncate(time.Second).Format(time.RFC3339)
+	if five["label"] != "5h" || five["used_percent"] != 42.0 || five["resets_at"] != want {
+		t.Fatalf("the five-hour window = %#v, want resets_at %s", five, want)
+	}
+	week, _ := windows[1].(map[string]any)
+	if week["label"] != "7d" || week["used_percent"] != 0.0 || week["resets_at"] != nil {
+		t.Fatalf("a renewed window = %#v", week)
 	}
 }

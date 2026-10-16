@@ -31,6 +31,11 @@
 // says it has a mouse would otherwise get no button at all, and a keyboard
 // over half the display on every tap. Beside every field is still the
 // microphone that fills it without any keys at all.
+//
+// The guess is only the default. "Touch mode" in the options menu answers
+// the question for this device - on, for a browser that hides its finger; off,
+// for a tablet in a keyboard case that would rather have ordinary fields - and
+// the answer is remembered and wins over every sign from then on.
 
 import { el, setClass } from './api.js';
 import { record, recPhase } from './dictate.js';
@@ -46,6 +51,16 @@ const TOUCH_QUERIES = ['(hover: none)', '(pointer: coarse)', '(any-pointer: coar
 const TOUCH_BROWSER = /\bTesla\/|QtCarBrowser/;
 let touch = false;
 
+// What the options menu last answered on this device: 'on', 'off', or '' for
+// "decide by the signs".
+const TOUCH_PREF = 'socrates.touch';
+function touchPref() {
+  try {
+    const saved = localStorage.getItem(TOUCH_PREF);
+    return saved === 'on' || saved === 'off' ? saved : '';
+  } catch { return ''; /* a private window: the signs decide */ }
+}
+
 function looksTouch() {
   return TOUCH_QUERIES.some((query) => query.matches)
     || navigator.maxTouchPoints > 0
@@ -54,8 +69,14 @@ function looksTouch() {
 }
 
 // becomeTouch puts the page under the switch the first time it learns it is
-// on a touch screen, with the button, its copy and every field following.
+// on a touch screen, with the button, its copy and every field following -
+// unless this device has said it does not want that.
 function becomeTouch() {
+  if (touchPref() === 'off') return;
+  enterTouch();
+}
+
+function enterTouch() {
   if (touch) return;
   touch = true;
   document.documentElement.classList.add('touch');
@@ -68,10 +89,33 @@ function becomeTouch() {
   if (isField(active)) refocus(active);
 }
 
-/** touchScreen is whether this device has been taken for a touch screen. */
+// leaveTouch is touch mode turned off: the button and its copy go, the
+// switch's own keyboard is put down, and every field is an ordinary field
+// again - one a tap raises the device's keyboard for, as on any other page.
+function leaveTouch() {
+  if (!touch) return;
+  open = false;
+  touch = false;
+  document.documentElement.classList.remove('touch');
+  applyAll();
+  paint();
+  placeCopy();
+}
+
+/** touchScreen is whether the page is in touch mode on this device. */
 export function touchScreen() { return touch; }
 
-if (looksTouch()) {
+/**
+ * setTouchMode is the options menu's answer, remembered for this device. It
+ * takes effect at once: no reload, and nothing typed so far is touched.
+ */
+export function setTouchMode(on) {
+  try { localStorage.setItem(TOUCH_PREF, on ? 'on' : 'off'); } catch { /* still for this page */ }
+  if (on) enterTouch();
+  else leaveTouch();
+}
+
+if (touchPref() === 'on' || (touchPref() !== 'off' && looksTouch())) {
   touch = true;
   document.documentElement.classList.add('touch');
 }

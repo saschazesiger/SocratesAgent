@@ -131,10 +131,15 @@ async function phoneShot() {
     await rename(s, id, 'Claude Code · on the train');
     await typeLine(s.page, 'what changed in the store package today?');
     await seen(s.page, 'you said:');
-    // The bar is off until it is asked for, and the session menu is where it
-    // is asked for - which is what the picture is of.
-    await s.page.click('#sessionMenu');
-    await s.page.click('.menu-item:has-text("Show key bar")');
+    // The bar is asked for in the options menu - which is what the picture
+    // is of. It may already be up on a touch screen; the switch is pressed
+    // only when it is not.
+    await s.page.click('#optionsBtn');
+    await s.page.waitForSelector('.menu [data-option="keybar"]', { timeout: 10000 });
+    if (await s.page.$eval('.menu [data-option="keybar"]', (n) => n.getAttribute('aria-checked') !== 'true')) {
+      await s.page.click('.menu [data-option="keybar"]');
+    }
+    await s.page.keyboard.press('Escape');
     await s.page.waitForSelector('#keybar:not([hidden])', { timeout: 10000 }).catch(() => {});
     await wait(600);
 

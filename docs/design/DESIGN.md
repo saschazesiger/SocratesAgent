@@ -2,6 +2,18 @@
 
 **Revision 4** (2026-09-02). Supersedes revisions 1, 2 and 3 in full.
 
+- **rev 11** (2026-10-16) — **the options menu.** The top bar's `⋮` (`#optionsBtn`) is no longer
+  the session's menu: it holds what belongs to this device, as switches that stay open while they
+  are pressed — **Key bar**, **Touch mode**, **Sound** and **Notifications** — and it is there
+  whether or not a session is attached. The sound and bell buttons are gone from the bar, and what
+  can be done to a session (Info, Rename, Status, Download, Delete) is in its row's `…` only.
+  Touch mode is the keyboard switch's question answered by hand: `localStorage['socrates.touch']`
+  (`on`/`off`, absent until the menu is used) wins over every sign of a finger; the key bar
+  still follows touch mode until it has been set on its own. The usage strip is a button: a tap
+  opens each window's share, a meter and when exactly it renews ("Resets in 2h 36m · today 14:30"),
+  because a touch screen has no tooltip; its countdowns are redrawn every 15 s from the last
+  reading, and a window whose renewal has passed reads 0% until the next one. The server hands every
+  renewal on as whole-second UTC RFC 3339, and drops one that is not a time.
 - **rev 10** (2026-10-07) — **Web Push, uploads, and copy and paste as buttons.** The bell now
   subscribes this browser to Web Push where it can (a worker, a push manager, a secure context):
   the server keeps a VAPID key and the subscriptions in the kv table (`push.vapid`,

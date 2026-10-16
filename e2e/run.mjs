@@ -155,6 +155,50 @@ async function focusTerm(page, timeout = 5000) {
 
 const oneLine = (text) => text.replace(/\s+/g, ' ').trim().slice(0, 200);
 
+// The top bar's ⋮ is this device's options: switches, in a menu that stays
+// open while they are pressed. openOptions opens it when it is not open.
+async function openOptions(page) {
+  if (await page.$('.menu [data-option]')) return;
+  await page.click('#optionsBtn');
+  await page.waitForSelector('.menu [data-option]', { timeout: 5000 });
+}
+
+// option presses one switch of the options menu and answers where it now is.
+// A switch that waits on the browser - notifications - is waited for by the
+// caller.
+async function option(page, name) {
+  await openOptions(page);
+  await page.click('.menu [data-option="' + name + '"]');
+  return page.$eval('.menu [data-option="' + name + '"]', (n) => n.getAttribute('aria-checked') === 'true');
+}
+
+// options is every switch of the menu as it is drawn: on or off, and whether
+// it can be pressed.
+async function options(page) {
+  await openOptions(page);
+  return page.$$eval('.menu [data-option]', (nodes) => Object.fromEntries(nodes.map((n) => [n.dataset.option, {
+    on: n.getAttribute('aria-checked') === 'true',
+    disabled: n.disabled,
+    text: n.textContent.trim(),
+  }])));
+}
+
+// closeOptions puts the menu away the way a key does.
+async function closeOptions(page) {
+  if (!(await page.$('.menu'))) return;
+  await page.keyboard.press('Escape');
+  await page.waitForSelector('.menu', { state: 'detached', timeout: 5000 });
+}
+
+// rowMenu opens the "…" of the session on screen, in the list - where what
+// can be done to a session is, now that the top bar's ⋮ is this device's.
+async function rowMenu(page) {
+  await ensureNav(page);
+  const id = await page.evaluate(() => location.hash.slice(1));
+  await page.click('#sessionList .chat-item[data-id="' + id + '"] .act');
+  await page.waitForSelector('.menu .menu-item', { timeout: 5000 });
+}
+
 // contrastOf is the WCAG ratio between two colours as the browser reports
 // them - `rgb(r, g, b)` - which is term.js's contrast() reading computed style
 // instead of hex. A ratio is the only honest way to assert that a mark can be
@@ -685,11 +729,17 @@ async function sessionlist() {
     const stored = await (await s.context.request.get(s.url + '/api/sessions/' + id)).json();
     ok(stored.session.title === 'Renamed by the suite', 'the rename was stored', stored.session.title);
 
-    // The same menu from the header, for a row that is in a shut folder.
+    // The same menu for a row that has been filed onto a shelf, which starts
+    // shut: the shelf is opened first, the way a person would find the row.
     const headMenu = async (label) => {
-      await s.page.click('#sessionMenu');
-      await s.page.waitForSelector('.menu', { timeout: 5000 });
-      await s.page.click('.menu .menu-item:text-is("' + label + '")');
+      const shelf = await s.page.$eval(rowSelector, (row) => (row.checkVisibility()
+        ? '' : (row.closest('.shelf') || { dataset: {} }).dataset.shelf || ''));
+      if (shelf) {
+        await s.page.click('.shelf[data-shelf="' + shelf + '"] > .folder-bar > .folder-head');
+        await s.page.waitForFunction((sel) => document.querySelector(sel)?.checkVisibility(),
+          rowSelector, { timeout: 5000 });
+      }
+      await menu(label);
     };
     const statusShown = (sel) => s.page.evaluate((sel) => {
       const row = document.querySelector(sel);
@@ -1373,13 +1423,13 @@ async function keybar() {
     await deskPage.close();
     await desk.close();
 
-    // The session menu puts it away and brings it back, on any device.
-    await s.page.click('#sessionMenu');
-    await s.page.click('.menu-item:has-text("Hide key bar")');
+    // The options menu puts it away and brings it back, on any device, and
+    // stays open between the two.
+    ok(!(await option(s.page, 'keybar')), 'the options menu switches the key bar off', 'off');
     await s.page.waitForSelector('#keybar[hidden]', { state: 'attached', timeout: 10000 });
-    await s.page.click('#sessionMenu');
-    await s.page.click('.menu-item:has-text("Show key bar")');
+    ok(await option(s.page, 'keybar'), 'and on again, from the menu still open', 'on');
     await s.page.waitForSelector('#keybar:not([hidden])', { timeout: 10000 });
+    await closeOptions(s.page);
 
     const keys = await s.page.$$eval('#keybar .key', (nodes) => nodes.map((n) => n.dataset.key));
     ok(keys.join(',') === 'Escape,Tab,Control,Alt,Left,Down,Up,Right,Enter,Ctrl-C,Ctrl-D,Ctrl-Z,Paste',
@@ -1447,12 +1497,14 @@ async function keybar() {
 
     // A modifier is for the next key the person presses, and the terminal's
     // own reports are not keys. Leaving the pane for a control in the bar -
-    // the sound toggle, which is about this device and nothing about the pane
+    // the options menu, which is about this device and nothing about the pane
     // - and coming back to it through the top bar's keyboard button, both
     // make xterm send a focus report on the same channel, and neither may
     // spend an armed Ctrl.
-    await s.page.click('#soundBtn');
+    await s.page.click('#optionsBtn');
+    await s.page.waitForSelector('.menu [data-option]', { timeout: 5000 });
     await s.page.click('#keybar .key[data-key="Control"]');
+    await s.page.waitForSelector('.menu', { state: 'detached', timeout: 5000 });
     const beforeKeyboard = (await sentBytes(s.page)).length;
     await s.page.click('#kbBtn');
     await wait(200);
@@ -1470,17 +1522,24 @@ async function keybar() {
     await s.page.click('#keybar .key[data-key="Alt"]');
     await s.page.click('#keybar .key[data-key="Alt"]');
     const beforeBlur = (await sentBytes(s.page)).length;
-    // The same toggle again, which puts this device's sound back where it was.
-    await s.page.click('#soundBtn');
+    // Out of the pane to the options menu and back to it with Escape, which
+    // is the menu's and not the pane's.
+    await s.page.click('#optionsBtn');
+    await s.page.waitForSelector('.menu [data-option]', { timeout: 5000 });
+    await closeOptions(s.page);
     await wait(250);
     const reports = (await sentBytes(s.page)).slice(beforeBlur);
     ok(!reports.some((hex) => hex.startsWith('1b1b')),
       'a locked Alt leaves the terminal\u2019s own reports alone', reports.join(',') || 'nothing');
 
+    // Escape went to the menu, not to the pane: no ESC of its own was sent.
+    ok(!reports.includes('1b'), 'and the Escape that closed the menu never reached the pane',
+      reports.join(',') || 'nothing');
+
     // And a bar that is put away takes its modifiers with it, rather than
     // transforming keys with nothing on screen to say why.
-    await s.page.click('#sessionMenu');
-    await s.page.click('.menu-item:has-text("Hide key bar")');
+    await option(s.page, 'keybar');
+    await closeOptions(s.page);
     await wait(200);
     const hidden = await s.page.evaluate(() => ({
       bar: document.getElementById('keybar').hidden,
@@ -1492,8 +1551,8 @@ async function keybar() {
 
     // Asked for, it is asked for until it is not: a reload comes back to a
     // bar rather than to a decision made again.
-    await s.page.click('#sessionMenu');
-    await s.page.click('.menu-item:has-text("Show key bar")');
+    await option(s.page, 'keybar');
+    await closeOptions(s.page);
     await s.page.waitForSelector('#keybar:not([hidden])', { timeout: 5000 });
     await s.page.reload({ waitUntil: 'domcontentloaded' });
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
@@ -2149,7 +2208,7 @@ async function createclaude() {
     });
     ok(!badge.mark && !badge.model, 'the header names neither the harness nor the model',
       JSON.stringify(badge));
-    await s.page.click('#sessionMenu');
+    await rowMenu(s.page);
     await s.page.click('.menu-item:has-text("Info")');
     await s.page.waitForSelector('dialog.modal .facts', { timeout: 5000 });
     const facts = await s.page.$$eval('dialog.modal .fact', (nodes) => nodes.map((n) => n.textContent));
@@ -2288,7 +2347,7 @@ async function profiles() {
     ok(row.options.ultracode === true && ultracode === true,
       'and Claude Code was started with Ultracode on', JSON.stringify({ options: row.options, ultracode }));
 
-    await s.page.click('#sessionMenu');
+    await rowMenu(s.page);
     await s.page.click('.menu-item:has-text("Info")');
     await s.page.waitForSelector('dialog.modal .facts', { timeout: 5000 });
     const facts = await s.page.$$eval('dialog.modal .fact', (nodes) => nodes.map((n) => n.textContent));
@@ -2301,7 +2360,7 @@ async function profiles() {
     ok(refused.status() === 409, 'a profile a session runs in cannot be deleted', String(refused.status()));
 
     // A session keeps the profile it was started in: its menu offers none.
-    await s.page.click('#sessionMenu');
+    await rowMenu(s.page);
     const menuItems = await s.page.$$eval('.menu .menu-item', (nodes) => nodes.map((n) => n.textContent));
     ok(!menuItems.includes('Default') && !menuItems.includes('Business'),
       'the session menu offers no profile to move to', menuItems.join(','));
@@ -3921,26 +3980,20 @@ async function stubNotify(page) {
   });
 }
 
-// The two toggles as the page has drawn them: what they claim, what they are
-// called, and which of their two glyphs is the one on screen.
-const toggles = (page) => page.evaluate(() => {
-  const read = (id) => {
-    const btn = document.getElementById(id);
-    if (!btn) return null;
-    const svgs = [...btn.querySelectorAll('svg')];
-    return {
-      pressed: btn.getAttribute('aria-pressed'),
-      title: btn.title,
-      label: btn.getAttribute('aria-label'),
-      disabled: !!btn.disabled,
-      visible: !!btn.checkVisibility && btn.checkVisibility(),
-      shown: svgs.filter((n) => getComputedStyle(n).display !== 'none')
-        .map((n) => n.getAttribute('class')).join(','),
-      strokes: [...new Set(svgs.map((n) => n.getAttribute('stroke-width')))].join(','),
-    };
-  };
-  return { sound: read('soundBtn'), notify: read('notifyBtn') };
-});
+// The two switches as the options menu draws them: what they claim, what they
+// say, and whether they can be pressed. The menu is left open; the next
+// option() or closeOptions() is what the scenario does with it.
+const toggles = async (page) => {
+  const all = await options(page);
+  return { sound: all.sound, notify: all.notify };
+};
+
+// awaitNotify waits for the notification switch to settle where the browser's
+// answer put it - the permission is asked for asynchronously.
+const awaitNotify = (page, on) => page.waitForFunction((want) => {
+  const node = document.querySelector('.menu [data-option="notify"]');
+  return !!node && node.getAttribute('aria-checked') === want;
+}, on ? 'true' : 'false', { timeout: 5000 });
 
 const rang = (page) => page.evaluate(() => ({
   beeps: (window.__beeps || []).length,
@@ -3975,46 +4028,43 @@ async function notify() {
     await useDomRenderer(s);
     await open(s);
 
-    // Both are facts about this device, so they are in the bar before there
-    // is a session to have an opinion about.
+    // Both are facts about this device, so they are in the options menu
+    // before there is a session to have an opinion about - and they are no
+    // longer buttons of their own in the bar.
+    const bar = await s.page.evaluate(() => ({
+      options: !!document.getElementById('optionsBtn')?.checkVisibility(),
+      sound: !!document.getElementById('soundBtn'),
+      notify: !!document.getElementById('notifyBtn'),
+    }));
+    ok(bar.options && !bar.sound && !bar.notify,
+      'the options button is in the header with no session attached, and the two toggles are not',
+      JSON.stringify(bar));
     const fresh = await toggles(s.page);
-    ok(!!fresh.sound && fresh.sound.visible && !!fresh.notify && fresh.notify.visible,
-      'both toggles are in the header with no session attached', JSON.stringify({
-        sound: fresh.sound && fresh.sound.visible, notify: fresh.notify && fresh.notify.visible,
-      }));
-    ok(fresh.sound.pressed === 'true' && fresh.sound.title === 'Sound on'
-      && fresh.sound.label === 'Sound on',
-      'sound is on by default, and says so in both places', JSON.stringify(fresh.sound));
-    ok(fresh.notify.pressed === 'false' && fresh.notify.title === 'Notifications off'
-      && !fresh.notify.disabled,
+    ok(!!fresh.sound && !!fresh.notify, 'both switches are in the options menu',
+      JSON.stringify(fresh));
+    ok(fresh.sound.on && /^Sound/.test(fresh.sound.text),
+      'sound is on by default, and says so', JSON.stringify(fresh.sound));
+    ok(!fresh.notify.on && !fresh.notify.disabled && /^Notifications/.test(fresh.notify.text),
       'notifications are off by default, because a permission has to be asked for',
       JSON.stringify(fresh.notify));
-    ok(fresh.sound.shown === 'ico-on' && fresh.notify.shown === 'ico-off',
-      'and each shows exactly the glyph of the state it is in',
-      fresh.sound.shown + ' / ' + fresh.notify.shown);
-    ok(fresh.sound.strokes === '1.7' && fresh.notify.strokes === '1.7',
-      'the crossed-out glyph is the same stroke weight as the plain one',
-      fresh.sound.strokes + ' / ' + fresh.notify.strokes);
 
-    await s.page.click('#notifyBtn');
-    await s.page.waitForFunction(
-      () => document.getElementById('notifyBtn').getAttribute('aria-pressed') === 'true',
-      null, { timeout: 5000 });
+    await option(s.page, 'notify');
+    await awaitNotify(s.page, true);
     const asked = await rang(s.page);
     ok(asked.asked === 1, 'turning notifications on asks the browser, from the click',
       asked.asked + ' request(s)');
     const on = await toggles(s.page);
-    ok(on.notify.title === 'Notifications on' && on.notify.shown === 'ico-on',
-      'and the button says so', JSON.stringify(on.notify));
+    ok(on.notify.on, 'and the switch says so, in the menu that stayed open', JSON.stringify(on.notify));
+    await closeOptions(s.page);
 
     // Per device, so a reload finds them where they were left.
     await s.page.reload({ waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('#soundBtn', { timeout: 15000 });
+    await s.page.waitForSelector('#optionsBtn', { timeout: 15000 });
     const kept = await toggles(s.page);
-    ok(kept.sound.pressed === 'true' && kept.notify.pressed === 'true',
-      'a reload keeps both choices', JSON.stringify({
-        sound: kept.sound.pressed, notify: kept.notify.pressed,
-      }));
+    ok(kept.sound.on && kept.notify.on, 'a reload keeps both choices', JSON.stringify({
+      sound: kept.sound.on, notify: kept.notify.on,
+    }));
+    await closeOptions(s.page);
 
     const opened = await rang(s.page);
     const id = await startSession(s.page, 'claude');
@@ -4033,9 +4083,8 @@ async function notify() {
       + (started.notes.length - opened.notes.length) + ' note(s)');
     const title = await s.page.$eval(rowSel(id) + ' .label', (n) => n.textContent);
 
-    // Two more controls that are never hidden is two more things a phone's
-    // top bar has to fit, with a session attached and every other control in
-    // it. The bar gives up its spacing rather than spilling off the edge, and
+    // A phone's top bar has to fit every control with a session attached.
+    // The bar gives up its spacing rather than spilling off the edge, and
     // nothing in it may become untappable doing so.
     await s.page.setViewportSize({ width: 390, height: 844 });
     await wait(500);
@@ -4047,16 +4096,15 @@ async function notify() {
       };
       return {
         overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-        sound: box('soundBtn'),
-        notify: box('notifyBtn'),
-        menu: box('sessionMenu'),
+        options: box('optionsBtn'),
+        speak: box('statusBtn'),
         title: document.getElementById('sessionTitle').getBoundingClientRect().width,
       };
     });
     ok(narrow.overflow <= 1, 'a phone with a session attached does not scroll sideways',
       narrow.overflow + 'px');
-    ok(narrow.sound >= 26 && narrow.notify >= 26 && narrow.sound === narrow.menu,
-      'and both toggles are still the size of the other controls beside them',
+    ok(narrow.options >= 26 && narrow.options === narrow.speak,
+      'and the options button is the size of the other controls beside it',
       JSON.stringify(narrow));
     ok(narrow.title > 40, 'and the session\'s name still has room', String(narrow.title));
     await s.page.setViewportSize({ width: 1280, height: 720 });
@@ -4078,11 +4126,11 @@ async function notify() {
 
     // Muted: the notification is the one that survives, because it is the one
     // that can be read afterwards.
-    await s.page.click('#soundBtn');
+    ok(!(await option(s.page, 'sound')), 'the sound switch turns it off', 'off');
+    await closeOptions(s.page);
     const muted = await toggles(s.page);
-    ok(muted.sound.pressed === 'false' && muted.sound.title === 'Sound off'
-      && muted.sound.shown === 'ico-off',
-      'muting shows the crossed-out speaker and says the words', JSON.stringify(muted.sound));
+    ok(!muted.sound.on, 'and the menu says so when it is opened again', JSON.stringify(muted.sound));
+    await closeOptions(s.page);
     before = await rang(s.page);
     ok(await drive(s, id, 3000), 'a second turn starts and finishes', '/busy 3000');
     after = await rang(s.page);
@@ -4091,10 +4139,9 @@ async function notify() {
       (after.beeps - before.beeps) + ' chime(s), '
       + (after.notes.length - before.notes.length) + ' note(s)');
 
-    await s.page.click('#notifyBtn');
-    await s.page.waitForFunction(
-      () => document.getElementById('notifyBtn').getAttribute('aria-pressed') === 'false',
-      null, { timeout: 5000 });
+    await option(s.page, 'notify');
+    await awaitNotify(s.page, false);
+    await closeOptions(s.page);
     before = await rang(s.page);
     ok(await drive(s, id, 3000), 'a third turn starts and finishes', '/busy 3000');
     after = await rang(s.page);
@@ -4107,11 +4154,10 @@ async function notify() {
     // otherwise have plenty to say. Turning sound on plays it once, which is
     // how a person hears what they have just chosen.
     const quiet = await rang(s.page);
-    await s.page.click('#soundBtn');
-    await s.page.click('#notifyBtn');
-    await s.page.waitForFunction(
-      () => document.getElementById('notifyBtn').getAttribute('aria-pressed') === 'true',
-      null, { timeout: 5000 });
+    await option(s.page, 'sound');
+    await option(s.page, 'notify');
+    await awaitNotify(s.page, true);
+    await closeOptions(s.page);
     const previewed = await rang(s.page);
     ok(previewed.beeps - quiet.beeps === 1, 'turning sound on plays it once as a preview',
       (previewed.beeps - quiet.beeps) + ' chime(s)');
@@ -4133,17 +4179,15 @@ async function notify() {
 
     // A browser that says no. The switch may not claim something it cannot
     // do, and the reason belongs where the tap was.
-    await s.page.click('#notifyBtn');
-    await s.page.waitForFunction(
-      () => document.getElementById('notifyBtn').getAttribute('aria-pressed') === 'false',
-      null, { timeout: 5000 });
+    await option(s.page, 'notify');
+    await awaitNotify(s.page, false);
     await s.page.evaluate(() => { window.__perm = 'denied'; });
-    await s.page.click('#notifyBtn');
+    await option(s.page, 'notify');
     await wait(600);
     const denied = await toggles(s.page);
     const said = await rang(s.page);
-    ok(denied.notify.pressed === 'false' && denied.notify.title === 'Notifications off',
-      'a refused permission leaves the switch off', JSON.stringify(denied.notify));
+    ok(!denied.notify.on, 'a refused permission leaves the switch off', JSON.stringify(denied.notify));
+    await closeOptions(s.page);
     ok(said.toasts.some((t) => /blocked for this site/.test(t)),
       'and the page says why, where the tap was', JSON.stringify(said.toasts.slice(-2)));
 
@@ -4916,15 +4960,13 @@ async function typekeepsfocus() {
     ok(await awaitScreen(s.page, dialogMark, 15000), 'typing works after a dialog was opened and closed',
       oneLine(await screen(s.page)));
 
-    // And the ⋯ menu, opened and dismissed the way a stray tap dismisses it.
-    await s.page.click('#sessionMenu');
-    await s.page.waitForSelector('.menu', { timeout: 10000 });
-    // Taken by one of its own entries, which is how a menu usually goes: the
-    // button that opened it keeps the focus, and the entry is the one whose
-    // only effect is on this device. By its words, not its position: nth-child
-    // named Rename, which opens a dialog and swallows everything typed next -
-    // so this assertion has been measuring a rename since it was written.
-    await s.page.click('.menu .menu-item:has-text("key bar")');
+    // And the ⋮ menu: two of its switches pressed - the focus is on the
+    // switch now, inside a menu that stays open - and then dismissed the way
+    // a stray tap dismisses it. Both presses are the key bar's, so the
+    // device ends where it started.
+    await option(s.page, 'keybar');
+    await option(s.page, 'keybar');
+    await s.page.click('#term .xterm-screen');
     await s.page.waitForSelector('.menu', { state: 'detached', timeout: 10000 });
     const menuMark = 'menu-' + mark;
     await s.page.keyboard.type('echo ' + menuMark);
@@ -5514,8 +5556,8 @@ async function clipboard() {
 
     // And the key bar's own Paste button, which is the only way in on a phone.
     await s.page.evaluate(() => navigator.clipboard.writeText('from-the-bar'));
-    await s.page.click('#sessionMenu');
-    await s.page.click('.menu-item:has-text("Show key bar")');
+    ok(await option(s.page, 'keybar'), 'the options menu puts the key bar up', 'on');
+    await closeOptions(s.page);
     await s.page.waitForSelector('#keybar:not([hidden])', { timeout: 10000 });
     const beforeBar = await mark();
     await s.page.click('#keybar .key[data-key="Paste"]');
@@ -5554,8 +5596,8 @@ async function clipboard() {
       .querySelectorAll('#term .xterm-selection div').length > 0);
     const REPORT = hexOf('\x1b[<');
 
-    await s.page.click('#sessionMenu');
-    await s.page.click('.menu-item:has-text("Hide key bar")');
+    await option(s.page, 'keybar');
+    await closeOptions(s.page);
     await wait(300);
     const plain = 'drag-' + Math.random().toString(36).slice(2, 8);
     await typeLine(s.page, 'echo ' + plain + ' second-word');
@@ -5623,9 +5665,9 @@ async function clipboard() {
     // The keys with the focus somewhere else on the page - after a click on
     // the sidebar, say. The browser fires paste and copy on whatever has the
     // focus, and unless that is a field of its own they are the pane's.
-    await s.page.evaluate(() => document.querySelector('#sessionMenu').focus());
-    ok(await s.page.evaluate(() => document.activeElement === document.querySelector('#sessionMenu')),
-      'the focus is on a button in the header, not on the terminal', 'the session menu button');
+    await s.page.evaluate(() => document.querySelector('#optionsBtn').focus());
+    ok(await s.page.evaluate(() => document.activeElement === document.querySelector('#optionsBtn')),
+      'the focus is on a button in the header, not on the terminal', 'the options button');
     const away = 'away-' + Math.random().toString(36).slice(2, 8);
     await s.page.evaluate((text) => navigator.clipboard.writeText(text), away);
     const beforeAway = await mark();
@@ -5643,7 +5685,7 @@ async function clipboard() {
     await s.page.mouse.move(row.right - 2, row.y, { steps: 8 });
     await s.page.mouse.up();
     await wait(200);
-    await s.page.evaluate(() => document.querySelector('#sessionMenu').focus());
+    await s.page.evaluate(() => document.querySelector('#optionsBtn').focus());
     await s.page.evaluate(() => navigator.clipboard.writeText('stale'));
     const beforeAwayCopy = await mark();
     await s.page.keyboard.press('Control+C');
@@ -5952,12 +5994,14 @@ async function keyboard() {
     // button follows it rather than staying pressed over nothing.
     await s.page.click('#kbBtn');
     await wait(150);
-    await s.page.click('#soundBtn');
+    await s.page.click('#optionsBtn');
     await wait(250);
     const left = await keyboardable(s.page);
     ok(left.open === 'false' && left.pane,
       'the focus leaving every field puts the switch back', JSON.stringify({ open: left.open, pane: left.pane }));
-    await s.page.click('#soundBtn');
+    // The same button again puts its menu away.
+    await s.page.click('#optionsBtn');
+    await s.page.waitForSelector('.menu', { state: 'detached', timeout: 5000 });
 
     /* ------------------------------------------------------- in a dialog */
 
@@ -6004,12 +6048,15 @@ async function keyboard() {
     await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 10000 })
       .catch(() => {});
 
+    // The key bar and touch mode are this device's choices, in the options
+    // menu - and on a touch screen touch mode is on before anybody asks.
+    const offered = await options(s.page);
+    ok(!!offered.keybar && !!offered.touch && offered.touch.on,
+      'the key bar and touch mode are in the options menu, touch mode on', JSON.stringify(offered));
+    await closeOptions(s.page);
+
     // The dialog that asks for one line of text is a field like any other.
-    await s.page.click('#sessionMenu');
-    const items = await s.page.$$eval('.menu-item', (nodes) => nodes.map((n) => n.textContent));
-    ok(items.some((one) => /key bar/i.test(one)),
-      'the key bar is this device\'s choice again, and the menu offers it', JSON.stringify(items));
-    await s.page.click('.menu-item:has-text("Rename")');
+    await s.page.click('#sessionTitle');
     await s.page.waitForSelector('dialog.modal', { timeout: 10000 });
     await wait(400);
     const rename = await keyboardable(s.page);
@@ -6607,6 +6654,330 @@ async function storagebanner() {
   }
 }
 
+/* ------------------------------------------------------------- options */
+
+// The top bar's ⋮ is this device's options and nothing about a session: the
+// key bar, touch mode, sound and notifications, as switches in a menu that
+// stays open while they are pressed. Each is kept per device and takes effect
+// at once. And beside it, the limits: how full each window is, how long until
+// it renews, and - a tap away, because a phone has no tooltip - when exactly.
+async function optionsmenu() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+
+    const look = () => s.page.evaluate(() => {
+      const area = document.querySelector('#term .xterm-helper-textarea');
+      return {
+        touch: document.documentElement.classList.contains('touch'),
+        kb: !!document.getElementById('kbBtn')?.checkVisibility(),
+        bar: document.getElementById('keybar').hidden ? 'hidden' : 'shown',
+        pane: area ? { mode: area.getAttribute('inputmode') || '', ro: area.readOnly } : null,
+        stored: {
+          touch: localStorage.getItem('socrates.touch'),
+          keybar: localStorage.getItem('socrates.term.keybar'),
+        },
+        expanded: document.getElementById('optionsBtn').getAttribute('aria-expanded'),
+        menu: !!document.querySelector('.menu'),
+      };
+    });
+
+    // Before any session: the button is there and the menu holds the four.
+    const empty = await s.page.evaluate(() => ({
+      button: !!document.getElementById('optionsBtn')?.checkVisibility(),
+      gone: ['soundBtn', 'notifyBtn', 'sessionMenu'].filter((id) => document.getElementById(id)),
+    }));
+    ok(empty.button && empty.gone.length === 0,
+      'the options button is in the bar before any session, and the old buttons are gone', JSON.stringify(empty));
+    const first = await options(s.page);
+    ok(Object.keys(first).join(',') === 'keybar,touch,sound,notify',
+      'the menu holds the key bar, touch mode, sound and notifications', Object.keys(first).join(','));
+    ok(!first.keybar.on && !first.touch.on && first.sound.on && !first.notify.on,
+      'each where a desk starts: no key bar, no touch mode, sound on, notifications off',
+      JSON.stringify(Object.fromEntries(Object.entries(first).map(([k, v]) => [k, v.on]))));
+    const words = await s.page.$$eval('.menu .menu-item', (nodes) => nodes.map((n) => n.textContent));
+    ok(!words.some((w) => /Rename|Delete|Info|Download|Done|Background/.test(w)),
+      'and nothing that is done to a session', oneLine(words.join(' | ')));
+    const opened = await look();
+    ok(opened.expanded === 'true' && !opened.touch && !opened.kb, 'the button says its menu is open',
+      JSON.stringify(opened));
+
+    // Three ways to put it away: the button again, Escape, a press elsewhere.
+    await s.page.click('#optionsBtn');
+    const byButton = await s.page.waitForSelector('.menu', { state: 'detached', timeout: 3000 })
+      .then(() => true).catch(() => false);
+    await openOptions(s.page);
+    await s.page.keyboard.press('Escape');
+    const byEscape = await s.page.waitForSelector('.menu', { state: 'detached', timeout: 3000 })
+      .then(() => true).catch(() => false);
+    await openOptions(s.page);
+    await s.page.click('#termEmpty .empty-title');
+    const byPress = await s.page.waitForSelector('.menu', { state: 'detached', timeout: 3000 })
+      .then(() => true).catch(() => false);
+    ok(byButton && byEscape && byPress, 'the button again, Escape and a press elsewhere each close it',
+      JSON.stringify({ byButton, byEscape, byPress }));
+    ok((await look()).expanded === 'false', 'and the button says so', (await look()).expanded);
+
+    const id = await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+    await wait(400);
+    const desk = await look();
+    ok(desk.bar === 'hidden' && desk.pane && desk.pane.mode !== 'none' && !desk.pane.ro,
+      'a session at a desk: no key bar, and an ordinary pane', JSON.stringify(desk));
+
+    // The key bar, from the menu, which stays open.
+    ok(await option(s.page, 'keybar'), 'the key bar switch goes on', 'on');
+    await s.page.waitForSelector('#keybar:not([hidden])', { timeout: 5000 });
+    const barOn = await look();
+    ok(barOn.menu && barOn.bar === 'shown' && barOn.stored.keybar === 'on',
+      'the bar is up at once, written down for this device, and the menu is still open', JSON.stringify(barOn));
+
+    // Touch mode on: the keyboard button, and a muted pane.
+    ok(await option(s.page, 'touch'), 'the touch mode switch goes on', 'on');
+    const touchOn = await look();
+    ok(touchOn.touch && touchOn.kb && touchOn.pane.mode === 'none' && touchOn.pane.ro
+      && touchOn.stored.touch === 'on',
+      'touch mode on: the keyboard button is in the bar and the pane waits for it', JSON.stringify(touchOn));
+    await closeOptions(s.page);
+    await s.page.click('#kbBtn');
+    await wait(250);
+    const raised = await s.page.evaluate(() => {
+      const area = document.querySelector('#term .xterm-helper-textarea');
+      return {
+        pressed: document.getElementById('kbBtn').getAttribute('aria-pressed'),
+        mode: area.getAttribute('inputmode') || '',
+        focus: document.activeElement === area,
+      };
+    });
+    ok(raised.pressed === 'true' && raised.mode !== 'none' && raised.focus,
+      'and the keyboard button raises the keyboard for the pane', JSON.stringify(raised));
+
+    // Per device: a reload comes back to both.
+    await s.page.reload({ waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    await wait(500);
+    const reloaded = await look();
+    ok(reloaded.touch && reloaded.kb && reloaded.bar === 'shown' && reloaded.pane.mode === 'none',
+      'a reload keeps touch mode and the key bar', JSON.stringify(reloaded));
+
+    // Off, and a finger on the page does not turn it back on: the answer
+    // wins over every sign.
+    ok(!(await option(s.page, 'touch')), 'the touch mode switch goes off', 'off');
+    await s.page.evaluate(() => document.body.dispatchEvent(
+      new PointerEvent('pointerdown', { pointerType: 'touch', bubbles: true })));
+    await wait(200);
+    const touchOff = await look();
+    ok(!touchOff.touch && !touchOff.kb && touchOff.pane.mode !== 'none' && !touchOff.pane.ro
+      && touchOff.stored.touch === 'off',
+      'touch mode off: no keyboard button, an ordinary pane, and a finger does not undo it', JSON.stringify(touchOff));
+    ok(touchOff.bar === 'shown', 'the key bar asked for on its own stays up', touchOff.bar);
+
+    // A device that has never said anything about the key bar gets the one
+    // that goes with touch mode, at once.
+    await s.page.evaluate(() => localStorage.removeItem('socrates.term.keybar'));
+    await option(s.page, 'touch');
+    await s.page.waitForSelector('#keybar:not([hidden])', { timeout: 5000 }).catch(() => {});
+    const follows = await look();
+    await option(s.page, 'touch');
+    await s.page.waitForSelector('#keybar[hidden]', { state: 'attached', timeout: 5000 }).catch(() => {});
+    const followsOff = await look();
+    ok(follows.bar === 'shown' && followsOff.bar === 'hidden' && followsOff.stored.keybar === null,
+      'until it is set on its own, the key bar follows touch mode',
+      JSON.stringify({ on: follows.bar, off: followsOff.bar, stored: followsOff.stored.keybar }));
+    const now = await options(s.page);
+    ok(!now.keybar.on && !now.touch.on, 'and the menu, drawn again, shows both where they are',
+      JSON.stringify({ keybar: now.keybar.on, touch: now.touch.on }));
+    await closeOptions(s.page);
+
+    // The pane takes typing after all of it, and Escape for the menu never
+    // reached it.
+    const typed = 'opt-' + Math.random().toString(36).slice(2, 8);
+    await typeLine(s.page, 'echo ' + typed);
+    ok(await awaitScreen(s.page, typed, 15000), 'the pane still takes a typed line', oneLine(await screen(s.page)).slice(-60));
+
+    // What is done to a session is in its row, and the key bar is not.
+    await rowMenu(s.page);
+    const rowItems = await s.page.$$eval('.menu .menu-item', (nodes) => nodes.map((n) => n.textContent));
+    ok(rowItems.includes('Info') && rowItems.includes('Rename') && rowItems.includes('Delete')
+      && !rowItems.some((w) => /key bar/i.test(w)),
+      'the row menu holds the session’s actions and no device option', rowItems.join(','));
+    await s.page.keyboard.press('Escape');
+    await s.page.waitForSelector('.menu', { state: 'detached', timeout: 3000 });
+
+    /* ------------------------------------------------------- the limits */
+
+    // A reading until the strip has drawn it, and then none: everything after
+    // that is the page's own clock. The five-hour window renews in 2h 36m and
+    // some seconds, so its countdown crosses a minute while it is on screen;
+    // the Fable window renews in a few seconds, and is empty once it has.
+    const at = Date.now();
+    const five = new Date(at + (2 * 60 + 36) * 60000 + 20000).toISOString();
+    const week = new Date(at + ((3 * 24 + 4) * 60 + 30) * 60000).toISOString();
+    const lapsing = new Date(at + 25000).toISOString();
+    let failing = false;
+    let refused = 0;
+    await s.page.route('**/api/sessions/*/usage', (route) => {
+      if (failing) { refused += 1; return route.abort(); }
+      return route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          windows: [
+            { label: '5h', used_percent: 42.4, resets_at: five },
+            { label: '7d', used_percent: 30, resets_at: week },
+            { label: 'Fable', used_percent: 90, resets_at: lapsing },
+          ],
+          cost_usd: 1.25,
+        }),
+      });
+    });
+    await s.page.reload({ waitUntil: 'domcontentloaded' });
+    await s.page.waitForFunction(() => /5h\s*42%/.test(document.getElementById('sessionUsage')?.innerText || ''),
+      null, { timeout: 20000 });
+    const strip = await s.page.$eval('#sessionUsage', (n) => ({ text: n.innerText.replace(/\s+/g, ' ').trim(), title: n.title }));
+    ok(/5h 42% \(2h 37m left\)/.test(strip.text) && /7d 30% \(3d 4h left\)/.test(strip.text)
+      && /Fable 90% \(1m left\)/.test(strip.text) && /~\$1\.25/.test(strip.text),
+      'the strip says how full each window is and how long until it renews', strip.text);
+    ok(/5h: 42% used · resets in 2h 37m \((today|tomorrow) /.test(strip.title),
+      'and the tooltip says when, by the clock', oneLine(strip.title));
+    failing = true;
+
+    // The reading behind a tap.
+    await s.page.click('#sessionUsage');
+    await s.page.waitForSelector('.usage-pop .usage-row', { timeout: 5000 });
+    const pop = await s.page.evaluate((times) => ({
+      rows: [...document.querySelectorAll('.usage-pop .usage-row')].map((row) => ({
+        name: row.querySelector('.usage-row-name')?.textContent,
+        used: row.querySelector('.usage-row-used')?.textContent,
+        reset: row.querySelector('.usage-row-reset')?.textContent,
+        meter: row.querySelector('.usage-meter > span')?.style.width || '',
+      })),
+      clocks: times.map((t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
+      expanded: document.getElementById('sessionUsage').getAttribute('aria-expanded'),
+    }), [five, week]);
+    const [r5, r7, rf, rc] = pop.rows;
+    ok(pop.rows.length === 4 && r5.name === '5-hour limit' && r5.used === '42% used' && r5.meter === '42%'
+      && r7.name === 'Weekly limit' && rf.name === 'Fable weekly limit' && rc.used === '~$1.25',
+      'a tap opens every window by name, with its share and a meter, and the cost', JSON.stringify(pop.rows));
+    ok(/^Resets in 2h 37m · (today|tomorrow) /.test(r5.reset) && r5.reset.endsWith(pop.clocks[0]),
+      'the five-hour window says when exactly it renews', r5.reset + ' vs ' + pop.clocks[0]);
+    ok(/^Resets in 3d 4h · /.test(r7.reset) && r7.reset.endsWith(pop.clocks[1]),
+      'and so does the week, with its day', r7.reset + ' vs ' + pop.clocks[1]);
+    ok(pop.expanded === 'true', 'the strip says its reading is open', pop.expanded);
+    await wait(300);
+    await shot(s.page, 'options-usage-desk');
+
+    // The countdowns move with no new reading at all - every request after
+    // the first fails - and the open reading moves with them. The Fable
+    // window renews on screen and is empty again.
+    const ticked = await s.page.waitForFunction(() => {
+      const text = document.getElementById('sessionUsage').innerText.replace(/\s+/g, ' ');
+      return /5h 42% \(2h 36m left\)/.test(text) && /Fable 0%/.test(text) && !/Fable 0% \(/.test(text);
+    }, null, { timeout: 30000 }).then(() => true).catch(() => false);
+    const afterTick = await s.page.evaluate(() => ({
+      strip: document.getElementById('sessionUsage').innerText.replace(/\s+/g, ' ').trim(),
+      fable: [...document.querySelectorAll('.usage-pop .usage-row')]
+        .map((row) => row.textContent).find((t) => /Fable/.test(t)) || 'closed',
+    }));
+    ok(ticked, 'the countdown goes on with the network failing, and a renewed window reads 0%', afterTick.strip);
+    ok(/0% used/.test(afterTick.fable) && /Renewed/.test(afterTick.fable),
+      'and the open reading says the same', afterTick.fable);
+    for (let i = 0; i < 40 && refused === 0; i += 1) await wait(500);
+    ok(refused >= 1, 'it went on asking all the while, and was refused', refused + ' refused request(s)');
+    await s.page.keyboard.press('Escape');
+    await s.page.waitForSelector('.usage-pop', { state: 'detached', timeout: 3000 });
+
+    // A phone: the strip is the bar's second line, every limit and its
+    // countdown on it, nothing off the edge; the reading opens on screen.
+    await s.page.setViewportSize({ width: 360, height: 740 });
+    await wait(500);
+    const phone = await s.page.evaluate(() => {
+      const strip = document.getElementById('sessionUsage');
+      const box = strip.getBoundingClientRect();
+      const parts = [...strip.querySelectorAll('.usage-part')]
+        .filter((p) => p.checkVisibility())
+        .map((p) => { const r = p.getBoundingClientRect(); return { text: p.innerText.replace(/\s+/g, ' '), left: r.left, right: r.right }; });
+      return {
+        overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        stripLeft: box.left, stripRight: box.right,
+        fits: strip.scrollWidth <= strip.clientWidth + 1,
+        level: strip.className,
+        parts,
+        height: Math.round(document.querySelector('.topbar').getBoundingClientRect().height),
+      };
+    });
+    const inside = phone.parts.every((p) => p.left >= phone.stripLeft - 1 && p.right <= phone.stripRight + 1);
+    ok(phone.overflow <= 1 && phone.fits && inside && phone.height === 82,
+      'on a phone every limit and its countdown fit on the second line', JSON.stringify(phone));
+    ok(phone.parts.filter((p) => /\(\d/.test(p.text)).length >= 2,
+      'with the countdowns still there', phone.parts.map((p) => p.text).join(' · '));
+    await s.page.click('#sessionUsage');
+    await s.page.waitForSelector('.usage-pop .usage-row', { timeout: 5000 });
+    const popBox = await s.page.$eval('.usage-pop', (n) => {
+      const r = n.getBoundingClientRect();
+      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, w: innerWidth, h: innerHeight };
+    });
+    ok(popBox.left >= 0 && popBox.right <= popBox.w && popBox.bottom <= popBox.h,
+      'and its reading opens inside the screen', JSON.stringify(popBox));
+    await wait(300);
+    await shot(s.page, 'options-usage-phone');
+    await s.page.keyboard.press('Escape');
+
+    // The worst a reading can be, on the narrowest phone in use: three full
+    // windows, each days from renewing, and a cost. The strip tightens
+    // itself, and the countdowns of the limits are the last thing it gives up.
+    failing = false;
+    const far = new Date(Date.now() + ((6 * 24 + 23) * 60 + 30) * 60000).toISOString();
+    await s.page.unroute('**/api/sessions/*/usage');
+    await s.page.route('**/api/sessions/*/usage', (route) => route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        windows: [
+          { label: '5h', used_percent: 100, resets_at: new Date(Date.now() + (4 * 60 + 59) * 60000).toISOString() },
+          { label: '7d', used_percent: 100, resets_at: far },
+          { label: 'Fable', used_percent: 100, resets_at: far },
+        ],
+        cost_usd: 1234.5,
+      }),
+    }));
+    await s.page.setViewportSize({ width: 360, height: 740 });
+    await s.page.reload({ waitUntil: 'domcontentloaded' });
+    await s.page.waitForFunction(() => /Fable\s*100%/.test(document.getElementById('sessionUsage')?.innerText || ''),
+      null, { timeout: 20000 });
+    await wait(300);
+    const worst = await s.page.evaluate(() => {
+      const strip = document.getElementById('sessionUsage');
+      return {
+        fits: strip.scrollWidth <= strip.clientWidth + 1,
+        level: strip.className,
+        text: [...strip.querySelectorAll('.usage-part')].filter((p) => p.checkVisibility())
+          .map((p) => p.innerText.replace(/\s+/g, ' ')).join(' · '),
+        overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      };
+    });
+    ok(worst.fits && worst.overflow <= 1 && (worst.text.match(/\(\d/g) || []).length === 3,
+      'the fullest reading still fits a 360px phone with all three countdowns', JSON.stringify(worst));
+    await shot(s.page, 'options-usage-worst');
+
+    // The options menu on the phone, too.
+    await openOptions(s.page);
+    const menuBox = await s.page.$eval('.menu', (n) => {
+      const r = n.getBoundingClientRect();
+      return { left: r.left, right: r.right, bottom: r.bottom, w: innerWidth, h: innerHeight, scroll: n.scrollHeight > n.clientHeight + 1 };
+    });
+    ok(menuBox.left >= 0 && menuBox.right <= menuBox.w && menuBox.bottom <= menuBox.h && !menuBox.scroll,
+      'the options menu opens whole inside a phone’s screen', JSON.stringify(menuBox));
+    await wait(300);
+    await shot(s.page, 'options-menu-phone');
+    await closeOptions(s.page);
+    await s.page.unroute('**/api/sessions/*/usage');
+
+    ok(id && unexpected(s.errors, OFFLINE_NOISE).length === 0, 'no unexpected console errors',
+      unexpected(s.errors, OFFLINE_NOISE).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 // -------------------------------------------------------------------- run
 
 const ALL = [
@@ -6648,15 +7019,16 @@ const ALL = [
   ['activity-waiting', 'a permission prompt: a still amber ring, and no timeout', activitywaiting],
   ['activity-fallback', 'a harness that hangs, and the row that leaves busy anyway', activityfallback],
   ['unread', 'bold when nobody saw it, gone when the row is opened or typed into', unread],
-  ['notify', 'a chime and a notification when a session stops working, and two switches', notify],
+  ['notify', 'a chime and a notification when a session stops working, and two switches in the options menu', notify],
   ['session-title', 'a session that names itself on its first prompt', sessiontitle],
   ['status-speak', 'Status says what the screen shows, on the page and out loud', statusspeak],
   ['status-ticker', 'the phases of a status, in order, in one line', statusticker],
   ['dictate', 'a recording with two endings, and the words it kept on the prompt', dictate],
   ['no-overlap', 'the microphone and the voice are never open at the same time', nooverlap],
   ['typeafteroutage', 'a cut socket, a locked phone, and a pane that still takes keystrokes', typeafteroutage],
-  ['typekeepsfocus', 'a dialog, the ⋯ menu and two sessions: the keys still land in the pane', typekeepsfocus],
+  ['typekeepsfocus', 'a dialog, the ⋮ menu and two sessions: the keys still land in the pane', typekeepsfocus],
   ['keyboard', 'on a touch screen only the button raises the keyboard, in every dialog too', keyboard],
+  ['options', 'the ⋮ is this device\u2019s options, and the limits say when they renew', optionsmenu],
   ['design', 'white surfaces, marks, hover-only detail and motion that does not restart', design],
   ['clipboard', 'copy and paste: the keys, a plain drag, a click, a middle click, and OSC 52', clipboard],
   ['touchcopy', 'a finger held on the pane selects, grows and copies', touchcopy],

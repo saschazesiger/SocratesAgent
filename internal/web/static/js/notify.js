@@ -11,7 +11,8 @@
 // Both switches are per device and per browser, because that is what they
 // are: a speaker this phone has, and a permission this browser granted this
 // origin. Neither is a setting on the server, so neither is in the settings
-// document.
+// document. They are in the options menu of the top bar, with the other
+// choices that belong to this device rather than to a session.
 //
 // This module knows nothing about the session page. It is handed a completion
 // - which session, what it went to, what it came from - and the two ways to
@@ -57,16 +58,18 @@ function remember(key, on) {
 }
 
 /**
- * mountNotify wires the two header toggles and hands back the one thing the
- * page calls into.
+ * mountNotify sets up the chime and the notification and hands back what the
+ * page calls into: the completion, and the two switches the options menu
+ * draws.
  *
  * `ctx` is everything this module is not allowed to own:
- *   dom        the shared id map
  *   sessionOf  a session by id, or null - the name a notification is titled with
  *   select     open a session, for a notification that is clicked
+ *   changed    told whenever either switch moves, so a menu that is open
+ *              shows where it now is
  */
 export function mountNotify(ctx) {
-  const { dom } = ctx;
+  const changed = () => { try { ctx.changed?.(); } catch { /* a menu that went away */ } };
 
   // iOS Safari has no Notification outside a home-screen app, so the button
   // says so rather than failing when it is pressed.
@@ -330,33 +333,12 @@ export function mountNotify(ctx) {
     if (id) quiet.set(id, Date.now() + SETTLE);
   }
 
-  /* -------------------------------------------------------- the two toggles */
-
-  function paintSound() {
-    const btn = dom.soundBtn;
-    if (!btn) return;
-    btn.setAttribute('aria-pressed', sound ? 'true' : 'false');
-    const words = sound ? 'Sound on' : 'Sound off';
-    btn.title = words;
-    btn.setAttribute('aria-label', words);
-  }
-
-  function paintNotify() {
-    const btn = dom.notifyBtn;
-    if (!btn) return;
-    const words = !available
-      ? 'Notifications are not available in this browser'
-      : (notify ? 'Notifications on' : 'Notifications off');
-    btn.disabled = !available;
-    btn.setAttribute('aria-pressed', notify ? 'true' : 'false');
-    btn.title = words;
-    btn.setAttribute('aria-label', words);
-  }
+  /* -------------------------------------------------------- the two switches */
 
   function setSound(on) {
     sound = !!on;
     remember(SOUND_KEY, sound);
-    paintSound();
+    changed();
     // Turning it on is the gesture the browser wanted, and hearing it once is
     // the only way to know what has been turned on. It counts against the
     // rate limit like any other chime.
@@ -366,26 +348,36 @@ export function mountNotify(ctx) {
     }
   }
 
-  async function toggleNotify() {
-    if (!available) return;
-    if (notify) {
+  // One question at a time: a second tap while the browser is still asking
+  // for permission would ask twice, and the second verdict could undo the
+  // first.
+  let asking = null;
+
+  async function setNotify(on) {
+    if (!available || asking) return;
+    if (!on) {
+      if (!notify) return;
       notify = false;
       remember(NOTIFY_KEY, false);
-      paintNotify();
+      changed();
       if (pushable) unsubscribe().catch(() => { /* the server forgets it when the push service says gone */ });
       return;
     }
+    if (notify) return;
     // Asked from inside the click, because a permission prompt raised out of a
-    // gesture is a prompt the browser dismisses on the page's behalf.
+    // gesture is a prompt the browser dismisses on the page's behalf - which
+    // is why nothing is awaited before it.
+    asking = (async () => {
+      try { return await window.Notification.requestPermission(); } catch { return null; }
+    })();
     let verdict;
-    try { verdict = await window.Notification.requestPermission(); }
-    catch { verdict = null; }
+    try { verdict = await asking; } finally { asking = null; }
     // The old callback form of the same call answers nothing and writes the
     // verdict onto the constructor instead.
     if (!verdict) verdict = window.Notification.permission;
     notify = verdict === 'granted';
     remember(NOTIFY_KEY, notify);
-    paintNotify();
+    changed();
     if (!notify) {
       toast('Notifications are blocked for this site in the browser.', 'error');
       return;
@@ -397,17 +389,13 @@ export function mountNotify(ctx) {
       // The page's own notification still works while it is open, so this is
       // a warning about the locked phone, not a switch that failed.
       toast('Notifications only work while this page is open: ' + errorMessage(err), 'error');
+      return;
     }
+    // Turned off again while the subscription was being made: the switch is
+    // what the person sees, so the server is told to stop as well.
+    if (!notify) unsubscribe().catch(() => { /* the server forgets it when the push service says gone */ });
   }
 
-  if (dom.soundBtn) dom.soundBtn.addEventListener('click', () => setSound(!sound));
-  if (dom.notifyBtn) {
-    dom.notifyBtn.addEventListener('click', () => {
-      toggleNotify().catch(() => { /* the toast above is the whole of the report */ });
-    });
-  }
-  paintSound();
-  paintNotify();
   // A device that turned notifications on before is subscribed again on every
   // load, which is how a server that lost its list - or got a new key - finds
   // it again.
@@ -418,6 +406,11 @@ export function mountNotify(ctx) {
     hush,
     soundOn: () => sound,
     notifyOn: () => notify && available,
+    /** notifyAvailable is false where this browser has no notifications. */
+    notifyAvailable: () => available,
+    setSound,
+    /** setNotify turns notifications on - asking the browser - or off. */
+    setNotify: (on) => setNotify(on).catch(() => { /* the toast is the whole of the report */ }),
     /**
      * signOut stops pushes to this device: a browser that has signed out must
      * not go on showing the names of the sessions. Signing in again
