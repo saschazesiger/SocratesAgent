@@ -200,11 +200,12 @@ reading answers out loud.
 
 ## Notifications
 
-The bell in the top bar turns them on for this device. Over HTTPS (the
+**Notifications** in the options menu (the `⋮` at the right of the top bar)
+turns them on for this device. Over HTTPS (the
 Cloudflare tunnel, or `localhost`) they are Web Push: Socrates sends one when a
 session finishes or needs an answer, and it arrives with the page closed and
-the phone locked. On an iPhone, add Socrates to the Home Screen and turn the
-bell on from there; Safari allows push only for an installed web app. Over
+the phone locked. On an iPhone, add Socrates to the Home Screen and turn
+them on from there; Safari allows push only for an installed web app. Over
 plain http they appear only while the page is open.
 
 ## Prepared sessions (preStart)

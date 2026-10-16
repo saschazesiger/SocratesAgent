@@ -249,3 +249,16 @@ Binding like the rest. Detail: `docs/design/DESIGN.md` §K and §L.
 - **Every schema upgrade is backed up** (`socrates.db.pre-v8.bak`), and the redeploy script copies
   the database before the swap and refuses a swap that would leave production on the connect page.
   *Why:* the old build refuses a migrated database, so a rollback needs the file as it was.
+
+## Revision 7 — the options menu, 2026-10-16
+
+- **The top bar's `⋮` is this device's options, not the session's menu.** Key bar, touch mode,
+  sound and notifications are switches in it, and it stays open while they are pressed. *Why:* the
+  four are facts about this phone or this browser, two of them were buttons crowding a phone's bar
+  and the key bar was hidden in a menu about something else; everything about a session is
+  already in its row's `…`.
+- **Touch mode can be set by hand, per device, and the setting wins.** *Why:* the guess is right
+  for a phone and wrong for a tablet in a keyboard case or a browser that hides its finger, and
+  the mistake was not one the person could correct.
+- **The limits say when they renew, and a tap says exactly when.** *Why:* whether 80% matters
+  depends on whether the window renews in ten minutes, and on a phone a tooltip does not exist.

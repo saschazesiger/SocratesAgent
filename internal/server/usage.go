@@ -71,6 +71,11 @@ func (s *Server) handleSessionUsage(w http.ResponseWriter, r *http.Request) {
 		zero := 0.0
 		view.CostUSD = &zero
 	}
+	// The header shows when each window renews, so a reading is passed on as
+	// it stands now - the same rule the new-session sheet's meters follow.
+	if view.Windows != nil {
+		view.Windows = current(view.Windows, time.Now())
+	}
 	writeJSON(w, http.StatusOK, view)
 }
 

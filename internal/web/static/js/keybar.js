@@ -4,8 +4,8 @@
 // CLIs this app exists to drive need all of them. So the keys they lack are a
 // row of buttons that write the same bytes a real key would.
 //
-// It is on by default on a touch screen and off everywhere else, and the
-// session menu turns it on or off for this device, which is remembered and
+// It is on by default in touch mode and off everywhere else, and the
+// options menu turns it on or off for this device, which is remembered and
 // wins from then on. A guess about the hardware is wrong on a tablet in a case
 // or a laptop with a touch screen, and that is what the menu is for; but a
 // phone with no Escape and no arrows in sight is the case the bar exists for,
@@ -45,9 +45,9 @@ function isTypedKey(data) {
 }
 
 /**
- * keyBarWanted is whether the bar is shown on this device: what the session
- * menu last answered here, or - before it has been asked - whether this is a
- * touch screen.
+ * keyBarWanted is whether the bar is shown on this device: what the options
+ * menu last answered here, or - before it has been asked - whether the page
+ * is in touch mode.
  */
 export function keyBarWanted() {
   let saved = null;
@@ -58,7 +58,7 @@ export function keyBarWanted() {
   return touchScreen();
 }
 
-/** setKeyBarWanted records the answer the session menu gave. */
+/** setKeyBarWanted records the answer the options menu gave. */
 export function setKeyBarWanted(on) {
   try { localStorage.setItem(KEYBAR_PREF, on ? 'on' : 'off'); } catch { /* not fatal */ }
 }
