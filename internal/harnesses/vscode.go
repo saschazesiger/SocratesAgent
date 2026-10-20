@@ -47,6 +47,14 @@ func VSCodeSessionID(folder string) string {
 	return hex.EncodeToString(sum[:16])
 }
 
+// VSCodeBlankID is the session id of the editor with no folder open. It is
+// fixed for the same reason a folder's is: the browser keeps what the
+// workbench remembers under its address.
+var VSCodeBlankID = func() string {
+	sum := sha256.Sum256([]byte("vscode:blank"))
+	return hex.EncodeToString(sum[:16])
+}()
+
 // vscodeDefaults is the settings.json a folder's editor starts with. Both are
 // about the editor surviving a restart of Socrates or of the machine: unsaved
 // edits come back from their backups, and the integrated terminals come back

@@ -2009,3 +2009,68 @@ pressed while it is on screen. "More Chats" has none.
   folder's rows, starts shut like the old folders did, and its open state is
   keyed `<folder>\0<status>`. A folder with nothing but shelved sessions sorts
   after the folders with work in progress, and before "More Chats".
+
+## Home, questions and the answer operator (2026-10-19)
+
+Against HOME.md, revision 2. What the first review changed - the equal
+`digest_rev` and the other 409s, the answer policy and the fixed key
+vocabulary, the run ending when the answer is taken, the step limit as `error`,
+revs and activity seqs from the clock, the 4401 close and the per-login
+handshake ceiling - is in HOME.md itself now, not here.
+
+- **§1.3 — "Never for tools" is `codingHarness()`** (claude, codex, opencode) in
+  `digest.go`: `harnesses.IsTool` does not exist, and a list of the three agents
+  is the same rule said the other way round.
+- **§1.4 — the run object has no `note`**; the model's note is parsed and not
+  shown.
+- **§1.3/§1.4 — `modelProblem` says "home" and "question-answering"**, so the
+  sentence never reads "pick a operator model".
+- **§2.2 — the stream does not drive the page-wide connection bar.** The bar is
+  the terminal's; Home says how its own numbers are ("Live", "Reconnecting…",
+  "Offline · updated …"), and "Connecting…" before anything was heard.
+- **§2.3 — a reload of `#<id>` lands on Home**, as the boot rule says; the e2e
+  scenarios that reload a session go back to it through the address
+  (`reloadBack` in `e2e/run.mjs`), and a new tab opens one at `#open=<id>`.
+  Deleting the open session shows Home rather than the next session.
+- **§2.3 — a question notification opens Home with the dialog over it**, the
+  same way the address `#q=<id>` does (the worker's message, the page's own
+  notification and the address all go through one function): Home is what is
+  under the dialog when it closes. (This used to open the dialog over whatever
+  was on the stage.)
+- **§1.5 — a question is pushed from idle as well as from work**: a session's
+  committed activity entering `waiting` from `busy`, `tasks` or `idle` (not
+  from `unknown`, and only with the unread mark) is pushed once per prompt, and
+  waits up to 8 s for the digest to read the prompt's words. "Finished" keeps
+  the chime's rule.
+- **§2.5 — small additions**: a second tap on a chosen option moves to the next
+  item before the last one; Enter sends from the own-answer field (Shift-Enter
+  is a new line in the field, typed as a space: a terminal prompt is one line,
+  §1.4); the digits pick options; Close is top left, because the
+  keyboard button's copy sits top right. Relative times use the browser's
+  clock, not the hello's `now`.
+- **§3 — the faketui repaints from the top on every change** instead of
+  redrawing in place, so a narrow pane that wraps never leaves half a menu
+  behind; the Codex and OpenCode question screens are its own design, not
+  captures.
+- **§3 — the e2e gateway stub keeps digests apart.** A server with a key now
+  digests every coding session on its own, so `openRouterStub` recognises a
+  digest by its first sentence, answers it "nothing asked" unless the scenario
+  says otherwise, keeps it in `stub.digests` and never lets it take an entry of
+  the reply queue: the scenarios that count or script their own calls are
+  unchanged.
+
+## The outcome of a turn (2026-10-20)
+
+- **HOME.md §5 — the task list is read from `TaskCreate`/`TaskUpdate`, not `TodoWrite`.** The
+  transcripts of Claude Code 2.1.252 on this machine record the task list that way (a
+  `TaskCreate` whose `tool_result` says "Task #N created", then `TaskUpdate {taskId, status}`);
+  no transcript here holds a `TodoWrite`, so it is not read (HARNESS-POLICY: only what was seen
+  in the real program).
+- **HOME.md §5.1 — the hourglass is shared.** The verdict being read is drawn with the
+  background-task hourglass, as the owner chose, under its own class (`checking`), so the e2e
+  selectors and the `tasks` state are unchanged.
+- **HOME.md §5.4 — a turn somebody reads before its verdict is in is not pushed**, as a question
+  in prose somebody has seen is not (`askedInProse`).
+- **§3 — `/tasks [done]`** in the faketui works through a three-task list and records it as
+  Claude Code 2.1 does; the `outcome` scenario reads the verdict from it.
+

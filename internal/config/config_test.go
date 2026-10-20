@@ -267,9 +267,10 @@ func TestHarnessSettingsAlwaysValidate(t *testing.T) {
 	}
 }
 
-// The Status button and the namer each pick their own model, and neither may
-// be left without one: an empty field is a form nobody filled in, and a button
-// that answers "pick a model first" is a setup step nobody asked for.
+// The Status button, the namer, Home's digests and the answer operator each
+// pick their own model, and none may be left without one: an empty field is a
+// form nobody filled in, and a button that answers "pick a model first" is a
+// setup step nobody asked for.
 func TestAssistModelsAreDefaulted(t *testing.T) {
 	s := Settings{}
 	s.Normalize()
@@ -279,12 +280,38 @@ func TestAssistModelsAreDefaulted(t *testing.T) {
 	if s.OpenRouter.TitleModel != DefaultTitleModel {
 		t.Errorf("title model = %q", s.OpenRouter.TitleModel)
 	}
+	if s.OpenRouter.HomeModel != "google/gemini-3.5-flash" {
+		t.Errorf("home model = %q", s.OpenRouter.HomeModel)
+	}
+	if s.OpenRouter.OperatorModel != "anthropic/claude-sonnet-5.5" {
+		t.Errorf("operator model = %q", s.OpenRouter.OperatorModel)
+	}
+	if d := Default(); d.OpenRouter.HomeModel != DefaultHomeModel || d.OpenRouter.OperatorModel != DefaultOperatorModel {
+		t.Errorf("a fresh document is not seeded with them: %#v", d.OpenRouter)
+	}
 
 	// A chosen model is kept.
 	s = Settings{}
 	s.OpenRouter.StatusModel, s.OpenRouter.TitleModel = "someone/cheap", "someone/quick"
+	s.OpenRouter.HomeModel, s.OpenRouter.OperatorModel = "someone/glance", "someone/careful"
 	s.Normalize()
-	if s.OpenRouter.StatusModel != "someone/cheap" || s.OpenRouter.TitleModel != "someone/quick" {
+	if s.OpenRouter.StatusModel != "someone/cheap" || s.OpenRouter.TitleModel != "someone/quick" ||
+		s.OpenRouter.HomeModel != "someone/glance" || s.OpenRouter.OperatorModel != "someone/careful" {
 		t.Errorf("a chosen model was replaced: %#v", s.OpenRouter)
+	}
+}
+
+// The operator that was removed had a model of its own, and an old settings
+// document may still carry it. The answer operator is a new name on purpose:
+// that old value must not come back as the model that now types into a
+// session, so it is ignored and the new field takes its default.
+func TestTheOldAgentModelIsNotTheOperatorModel(t *testing.T) {
+	var s Settings
+	if err := json.Unmarshal([]byte(`{"openrouter":{"agent_model":"someone/old"}}`), &s); err != nil {
+		t.Fatal(err)
+	}
+	s.Normalize()
+	if s.OpenRouter.OperatorModel != DefaultOperatorModel {
+		t.Errorf("operator model = %q, want the default", s.OpenRouter.OperatorModel)
 	}
 }

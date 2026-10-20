@@ -175,3 +175,40 @@ func TestVSCodeDataIsPerFolder(t *testing.T) {
 		t.Fatal("two folders must not share an editor state")
 	}
 }
+
+// TestBlankIDE: the empty editor is made once, found after that, works in a
+// directory of its own, and comes back under the same address once closed.
+func TestBlankIDE(t *testing.T) {
+	e := newSessionEnv(t)
+	res, payload := e.do(t, e.client, "PUT", "/api/settings", `{"settings":{"harnesses":{"vscode":{"binary":"/bin/sh"}}}}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("settings: %d %#v", res.StatusCode, payload)
+	}
+	open := func() (*http.Response, map[string]any) {
+		t.Helper()
+		res, payload := e.do(t, e.client, "POST", "/api/ide/blank", "")
+		session, _ := payload["session"].(map[string]any)
+		return res, session
+	}
+	res, first := open()
+	if res.StatusCode != http.StatusCreated || first["harness"] != "vscode" || first["workdir_mode"] != "dynamic" {
+		t.Fatalf("first open: %d %#v", res.StatusCode, first)
+	}
+	if sessionID(t, first) != harnesses.VSCodeBlankID {
+		t.Fatalf("the empty editor's id is not fixed: %v", first["id"])
+	}
+	if info, err := os.Stat(first["workdir"].(string)); err != nil || !info.IsDir() {
+		t.Fatalf("the empty editor has no directory: %v", err)
+	}
+	res, again := open()
+	if res.StatusCode != http.StatusOK || sessionID(t, again) != sessionID(t, first) {
+		t.Fatalf("there is one empty editor: %d %v and %v", res.StatusCode, again["id"], first["id"])
+	}
+	if res, _ := e.do(t, e.client, "DELETE", "/api/sessions/"+sessionID(t, first), ""); res.StatusCode != http.StatusOK {
+		t.Fatalf("close: %d", res.StatusCode)
+	}
+	res, reopened := open()
+	if res.StatusCode != http.StatusCreated || sessionID(t, reopened) != sessionID(t, first) {
+		t.Fatalf("a reopened empty editor must keep its address: %d %v", res.StatusCode, reopened["id"])
+	}
+}

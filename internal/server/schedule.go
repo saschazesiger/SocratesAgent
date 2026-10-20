@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log"
 	"sync/atomic"
@@ -176,6 +175,9 @@ func (sc *scheduler) startOne(ctx context.Context, row store.Session) bool {
 	if errors.Is(err, errNotDue) {
 		return false
 	}
+	// Started or put back, the row has moved, and nobody pressed anything
+	// that would have told the other pages.
+	sc.srv.events.poke()
 	title := row.Title
 	if next != nil {
 		title = next.Title
@@ -209,11 +211,11 @@ func (sc *scheduler) nextDue() int64 {
 
 // announce is a Web Push about one session, through the same subscriptions
 // and the same service worker as "Finished" and "Needs an answer". The person
-// who scheduled a start is, by definition, not watching for it.
+// who scheduled a start is, by definition, not watching for it. It is on the
+// session's topic like the others: a phone that was off is told the latest
+// about the session - the question its first turn asked, say - rather than
+// that it started.
 func (sc *scheduler) announce(id, title, body, urgency string) {
-	payload, err := json.Marshal(pushNote{Title: title, Body: body, ID: id})
-	if err != nil {
-		return
-	}
-	go sc.srv.push.broadcast(webpush.Message{Payload: payload, TTL: pushTTL, Urgency: urgency})
+	note := pushNote{Title: title, Body: body, ID: id, Kind: pushStarted}
+	go sc.srv.push.broadcast(note, webpush.Message{TTL: pushTTL, Urgency: urgency, Topic: pushTopic(id)})
 }

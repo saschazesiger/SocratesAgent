@@ -262,3 +262,24 @@ Binding like the rest. Detail: `docs/design/DESIGN.md` §K and §L.
   the mistake was not one the person could correct.
 - **The limits say when they renew, and a tap says exactly when.** *Why:* whether 80% matters
   depends on whether the window renews in ten minutes, and on a phone a tooltip does not exist.
+
+## Revision 8 — the outcome of a turn, 2026-10-20
+
+- **A finished turn can be judged: complete, partly done, waiting on you, blocked.** Optional,
+  off by default, one switch in Admin. *Why:* the detector says a session is at its prompt, not
+  whether the task it was given is done, and that is the question a person glancing at Home has.
+- **It is the digest's read, not a second call.** *Why:* the digest already reads every turn's
+  end, and one answer cannot say "complete" next to an open question; a question makes it
+  "Waiting on you".
+- **While it is read the session shows the hourglass and sits under Background tasks, and its
+  notification, chime and announcement wait up to 45 s.** A turn that goes on before the verdict
+  is not announced. *Why:* the turn is over and something about it is still going on, and a
+  notification that says how the work was left is worth a few seconds.
+- **Never on a start, a restart or a resume; only after somebody typed.** *Why:* nothing was
+  asked, so there is nothing to judge.
+- **It files nothing.** Where a session is filed stays the person's. *Why:* the 2026-09-23 rule
+  that a turn's end files nothing as review stands.
+- **Claude's transcript is read for the instruction, the answer and the task list; the others
+  give the screen.** The reason is always English. Verdicts are kept on this machine, not in the
+  bucket.
+

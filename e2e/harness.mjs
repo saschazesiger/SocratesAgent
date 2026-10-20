@@ -373,6 +373,19 @@ export async function mockOpenRouter(context, { text = 'hello from the microphon
   }));
 }
 
+// DIGEST_MARKER is the sentence every digest instruction opens with
+// (digestMarker in internal/server/digest.go).
+export const DIGEST_MARKER = 'You read the terminal of a coding session for Home';
+
+// isDigest says whether a completion request is one of Home's digests.
+export function isDigest(json) {
+  const first = json && Array.isArray(json.messages) && json.messages[0];
+  return !!first && typeof first.content === 'string' && first.content.startsWith(DIGEST_MARKER);
+}
+
+// NOTHING_ASKED is the digest of a session that asks nothing.
+const NOTHING_ASKED = JSON.stringify({ summary: 'Working in the e2e workspace.', context: '', question: null });
+
 /**
  * openRouterStub is the same fixed answer, served over HTTP.
  *
@@ -395,25 +408,58 @@ export async function mockOpenRouter(context, { text = 'hello from the microphon
  * `delay` holds every answer back for that many milliseconds, for a scenario
  * that has to see what the page does while it waits. `refuse`, when set on
  * the returned stub, is an HTTP status every completion is refused with.
+ *
+ * Home digests every coding session on its own (internal/server/digest.go),
+ * whatever a scenario is about, so a server with a key calls the gateway for
+ * those too, at moments no scenario chooses. They are told apart by the
+ * sentence every digest instruction opens with, kept in `digests` rather
+ * than `calls`, and never take an entry of the queue: a scenario that counts
+ * what it asked for, or scripts the operator's steps, counts and scripts
+ * exactly that. Unless `answer` says otherwise a digest is told that nothing
+ * is being asked.
+ *
+ * `answer` is for a scenario that is about those calls - Home's digests and
+ * the answer operator - which arrive in an order no queue can predict. It is
+ * handed each completion's request as JSON and returns the reply, or
+ * undefined to leave it to the queue and `text`. Every call keeps its request
+ * as `json`, so a scenario can read what the server asked. It may return a
+ * promise, to hold one call back for as long as a scenario needs, and
+ * `{ status, message }` refuses that one call with that HTTP status.
  */
-export async function openRouterStub({ text = 'hello from the microphone', replies = [], delay = 0 } = {}) {
+export async function openRouterStub({ text = 'hello from the microphone', replies = [], delay = 0, answer = null } = {}) {
   const calls = [];
+  const digests = [];
   const queue = [...replies];
-  const stub = { calls, text, replies: queue, refuse: 0 };
+  const stub = { calls, digests, text, replies: queue, refuse: 0 };
   const server = createServer((req, res) => {
-    let size = 0;
-    req.on('data', (chunk) => { size += chunk.length; });
-    req.on('end', () => setTimeout(() => {
-      calls.push({ path: req.url, bytes: size });
+    const chunks = [];
+    req.on('data', (chunk) => { chunks.push(chunk); });
+    req.on('end', () => setTimeout(async () => {
+      const raw = Buffer.concat(chunks);
+      let json = null;
+      try { json = JSON.parse(raw.toString('utf8')); } catch { /* a recording, not JSON */ }
       const completion = String(req.url || '').includes('chat/completions');
+      const digest = completion && isDigest(json);
+      (digest ? digests : calls).push({ path: req.url, bytes: raw.length, json });
       if (completion && stub.refuse) {
         res.writeHead(stub.refuse, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'refused by the e2e stub' } }));
         return;
       }
-      const answer = (completion && queue.length ? queue.shift() : text);
+      let reply;
+      if (completion && answer && json) {
+        try { reply = await answer(json); } catch (err) { reply = 'the e2e stub could not answer: ' + err.message; }
+      }
+      // A refusal of this one call: { status, message }.
+      if (reply && typeof reply === 'object' && reply.status) {
+        res.writeHead(reply.status, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: reply.message || 'refused by the e2e stub' } }));
+        return;
+      }
+      if (reply === undefined && digest) reply = NOTHING_ASKED;
+      if (reply === undefined) reply = completion && queue.length ? queue.shift() : text;
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ text: answer, choices: [{ message: { content: answer } }] }));
+      res.end(JSON.stringify({ text: reply, choices: [{ message: { content: reply } }] }));
     }, delay));
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -475,10 +521,12 @@ export async function start(options = {}) {
 
   // restart takes the server down with SIGTERM - which deliberately leaves the
   // agent hosts running - and brings it back on the same port and data dir.
-  s.restart = async (env = {}) => {
+  // `between` runs while it is down: a reboot, say, that takes tmux with it.
+  s.restart = async (env = {}, between = null) => {
     s.server.kill('SIGTERM');
     const outcome = await Promise.race([s.exited, wait(9000).then(() => 'timeout')]);
     if (outcome === 'timeout') { s.server.kill('SIGKILL'); await s.exited; }
+    if (between) await between();
     const again = spawnServer({ data, port, live, env: { ...(options.env || {}), ...env }, s3prefix });
     s.server = again.server; s.log = again.log; s.exited = again.exited;
     await waitForHealth(url);

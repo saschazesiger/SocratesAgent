@@ -140,6 +140,8 @@ func NewConnect(opts ConnectOptions, state ConnectState) *ConnectServer {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /static/", http.StripPrefix("/static/", web.Static()).ServeHTTP)
 	mux.HandleFunc("GET /favicon.png", web.Favicon)
+	mux.HandleFunc("GET /apple-touch-icon.png", web.AppleTouchIcon)
+	mux.HandleFunc("GET /apple-touch-icon-precomposed.png", web.AppleTouchIcon)
 	mux.HandleFunc("GET /sw.js", web.ServiceWorker)
 	mux.HandleFunc("GET /setup", func(w http.ResponseWriter, r *http.Request) { web.ServePage(w, r, "setup.html") })
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {

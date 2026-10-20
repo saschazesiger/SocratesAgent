@@ -198,6 +198,13 @@ approvals in between. Without the flags nothing is said and nothing changes.
 Both optional, both in Admin: **OpenRouter** for dictation, **Google Cloud** for
 reading answers out loud.
 
+With an OpenRouter key, **Check each turn's outcome** (Admin → Status & naming,
+off by default) has every finished turn judged as complete, partly done (with
+what is still open), waiting on you, or blocked. The session shows an hourglass
+while that is read, and its notification waits up to 45 seconds to say it. For
+Claude Code the read is also given the last instruction, the last answer and
+the task list from its transcript.
+
 ## Notifications
 
 **Notifications** in the options menu (the `⋮` at the right of the top bar)
@@ -207,6 +214,13 @@ session finishes or needs an answer, and it arrives with the page closed and
 the phone locked. On an iPhone, add Socrates to the Home Screen and turn
 them on from there; Safari allows push only for an installed web app. Over
 plain http they appear only while the page is open.
+
+A question notification shows the question itself when it can be read in
+time, and tapping it opens Home with that question ready to answer. The app
+icon's badge is the number of sessions waiting for an answer (questions and
+permission prompts), and a notification for a question that has been answered
+elsewhere is removed. On Android, a long press on the installed app's icon
+offers **Questions** and **Home**.
 
 ## Prepared sessions (PreStart)
 

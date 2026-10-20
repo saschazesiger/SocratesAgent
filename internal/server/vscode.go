@@ -115,6 +115,44 @@ func (s *Server) handleFolderIDE(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "the folder "+folder+" is gone")
 		return
 	}
+	s.startIDE(w, r, harnesses.VSCodeSessionID(folder), func(_ config.Settings, label string) (string, string, string, error) {
+		return folder, source.WorkdirMode, label + " · " + filepath.Base(folder), nil
+	})
+}
+
+// handleBlankIDE answers the VS Code mark at the top of the sidebar with an
+// editor that has no folder open: the one there is, or a new one. Like a
+// folder's editor there is only ever one, and every tab it is opened in is
+// another window onto it.
+//
+//	POST /api/ide/blank   200 {"session":<session>} for the editor it has
+//	                      201 {"session":<session>} for a new one
+//	                      201 {"session":<session>,"error":"…"} when it
+//	                          could not start
+//
+// It works in a directory of its own in the workspace, the way a dynamic
+// session does, so its terminals start somewhere that is nobody's project and
+// closing it takes nothing with it but that directory.
+func (s *Server) handleBlankIDE(w http.ResponseWriter, r *http.Request) {
+	s.ideMu.Lock()
+	defer s.ideMu.Unlock()
+	id := harnesses.VSCodeBlankID
+	if row, err := s.store.GetSession(id); err == nil && row.Status != store.StatusDone {
+		writeJSON(w, http.StatusOK, map[string]any{"session": s.view(row)})
+		return
+	}
+	s.startIDE(w, r, id, func(settings config.Settings, label string) (string, string, string, error) {
+		dir, err := harnesses.ResolveWorkdir(settings, harnesses.WorkdirDynamic, "", config.HarnessVSCode, id)
+		return dir, store.WorkdirDynamic, label, err
+	})
+}
+
+// startIDE starts the editor under id, in the directory where answers, and
+// answers the request with it. Both callers return a live editor before they
+// get here, so a row already under the id is one somebody filed as done. It
+// makes way: the id is the editor's address, and what the editor remembers is
+// not in the row. The caller holds ideMu.
+func (s *Server) startIDE(w http.ResponseWriter, r *http.Request, id string, where func(settings config.Settings, label string) (dir, mode, title string, err error)) {
 	if err := s.manager.Available(); err != nil {
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
@@ -125,17 +163,18 @@ func (s *Server) handleFolderIDE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h, _ := harnesses.Get(config.HarnessVSCode)
-	id := harnesses.VSCodeSessionID(folder)
 	ctx, cancel := context.WithTimeout(r.Context(), createTimeout)
 	defer cancel()
-	// A row under this id is this folder's editor, and it was not returned
-	// above, so it is one somebody filed as done. It makes way: the id is the
-	// folder's, and what the editor remembers is not in the row.
 	if _, err := s.store.GetSession(id); err == nil {
 		if err := s.deleteSession(ctx, id); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+	}
+	folder, mode, title, err := where(settings, h.Label())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 	plan, err := h.Plan(ctx, harnesses.PlanRequest{
 		SessionID: id,
@@ -145,16 +184,21 @@ func (s *Server) handleFolderIDE(w http.ResponseWriter, r *http.Request) {
 		Logf:      log.Printf,
 	})
 	if err != nil {
+		if mode == store.WorkdirDynamic {
+			// It was made for this editor a moment ago and nothing has run in
+			// it; os.Remove only removes it while that is true.
+			_ = os.Remove(folder)
+		}
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	row, err := s.manager.Create(ctx, termux.Spec{
 		ID:          id,
-		Title:       h.Label() + " · " + filepath.Base(folder),
+		Title:       title,
 		TitleSource: store.TitleUser,
 		Harness:     config.HarnessVSCode,
 		Workdir:     folder,
-		WorkdirMode: source.WorkdirMode,
+		WorkdirMode: mode,
 		Plan:        plan,
 	})
 	if err != nil {

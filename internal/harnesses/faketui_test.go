@@ -405,3 +405,116 @@ func firstDiff(a, b string) int {
 	}
 	return min(len(a), len(b))
 }
+
+// TestFakeTUIAsksTheWayClaudeCodeAsks launches the fake through the real
+// Claude launcher and opens its question menu: the transcript it writes the
+// question into is the one VerifyCLISession finds for the session id the
+// launcher minted, which is how the server looks for a pending question too,
+// and a digit typed into the pane is the answer FAKE_LOG and the transcript
+// record.
+func TestFakeTUIAsksTheWayClaudeCodeAsks(t *testing.T) {
+	bin := fakeBinDir(t)
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".claude")
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	lab := newTmuxLab(t)
+
+	data := t.TempDir()
+	cwd := filepath.Join(home, "work")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	req := PlanRequest{SessionID: "asking", Title: "a session", Cwd: cwd, Settings: config.Default(), DataDir: data}
+	plan, err := Claude{}.Plan(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range plan.Files {
+		if err := os.MkdirAll(filepath.Dir(f.Path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(f.Path, f.Data, f.Mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plan.Argv[0] = filepath.Join(bin, "claude")
+	fakeLog := filepath.Join(data, "fake.log")
+	plan.Env["FAKE_LOG"] = fakeLog
+	plan.Env["CLAUDE_CONFIG_DIR"] = configDir
+
+	lab.start("asking", plan)
+	lab.waitForPane("asking", "FAKE claude")
+	lab.run("send-keys", "-t", "asking", "-l", "/question")
+	lab.run("send-keys", "-t", "asking", "Enter")
+	lab.waitForPane("asking", "Which database should we use?")
+
+	req.CLISession = plan.CLISession
+	if found, err := (Claude{}).VerifyCLISession(context.Background(), req); err != nil || !found {
+		t.Fatalf("the transcript of %s is not where VerifyCLISession looks: %v %v", plan.CLISession, found, err)
+	}
+	transcript, err := filepath.Glob(filepath.Join(configDir, "projects", "*", plan.CLISession+".jsonl"))
+	if err != nil || len(transcript) != 1 {
+		t.Fatalf("transcripts %v: %v", transcript, err)
+	}
+	use := lastBlock(t, transcript[0])
+	input, _ := json.Marshal(use["input"])
+	if use["type"] != "tool_use" || use["name"] != "AskUserQuestion" || !strings.Contains(string(input), `"label":"SQLite"`) {
+		t.Fatalf("the pending question was recorded as %v", use)
+	}
+
+	lab.run("send-keys", "-t", "asking", "2")
+	lab.waitForPane("asking", "· Which database should we use? → SQLite")
+
+	result := lastBlock(t, transcript[0])
+	if result["type"] != "tool_result" || result["tool_use_id"] != use["id"] {
+		t.Fatalf("the answer was recorded as %v, for %v", result, use["id"])
+	}
+	raw, err := os.ReadFile(fakeLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var answered struct {
+		Event   string `json:"event"`
+		Answers []struct {
+			Choices []string `json:"choices"`
+		} `json:"answers"`
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		var rec struct {
+			Event string `json:"event"`
+		}
+		if json.Unmarshal([]byte(line), &rec) == nil && rec.Event == "answer" {
+			_ = json.Unmarshal([]byte(line), &answered)
+		}
+	}
+	if len(answered.Answers) != 1 || strings.Join(answered.Answers[0].Choices, ",") != "SQLite" {
+		t.Fatalf("FAKE_LOG holds the answer %+v", answered)
+	}
+	// The launch reader still finds the launch, with an answer logged after it.
+	if launch := lastLaunch(t, fakeLog, "claude"); len(launch.Argv) == 0 {
+		t.Fatalf("the launch record was lost behind the answer: %+v", launch)
+	}
+}
+
+// lastBlock is the last content block of a Claude transcript.
+func lastBlock(t *testing.T, path string) map[string]any {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var last map[string]any
+	for _, line := range strings.Split(string(raw), "\n") {
+		var rec struct {
+			Message struct {
+				Content []map[string]any `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal([]byte(line), &rec) == nil && len(rec.Message.Content) > 0 {
+			last = rec.Message.Content[len(rec.Message.Content)-1]
+		}
+	}
+	return last
+}

@@ -4,8 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Set up · Socrates</title>
+<meta name="description" content="A web terminal for Claude Code, Codex, OpenCode and your shell.">
+<meta name="theme-color" content="#ffffff">
+<meta name="format-detection" content="telephone=no">
+<!-- The same install tags as index.html (see there): a page can be added to
+     the Home Screen from wherever it happens to be, and iOS reads them from
+     the page that is open at the time. -->
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Socrates">
 <link rel="icon" href="/favicon.png">
-<link rel="apple-touch-icon" href="/static/img/logo.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/static/img/apple-touch-icon.png">
+<link rel="manifest" href="/static/manifest.json">
 <link rel="stylesheet" href="/static/css/app.css">
 <style>
   /* The storage step's own pieces. Everything else is the auth card the
@@ -152,7 +163,7 @@
         <div class="field">
           <label for="key">OpenRouter API key <span style="font-weight:400;color:var(--text-faint)">· optional</span></label>
           <input class="input mono" type="password" id="key" placeholder="sk-or-v1-…" autocomplete="off">
-          <div class="hint">It transcribes what you dictate into a session, and nothing else: the coding programs bring their own credentials, and the voice that reads answers out loud has a key of its own in Admin → Voice. Get one at openrouter.ai/keys — you can also add it later.</div>
+          <div class="hint">It transcribes what you dictate, and it runs the spoken status, the session names, Home's summaries and questions — which send the screen of every coding session to OpenRouter — and the operator that types your answers into a session. The coding programs bring their own credentials, and the voice that reads answers out loud has a key of its own in Admin → Voice. Get one at openrouter.ai/keys — you can also add it later.</div>
         </div>
         <div class="divider"></div>
         <div class="field">

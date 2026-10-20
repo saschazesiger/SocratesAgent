@@ -50,8 +50,10 @@ const BACKUP_CHECKS = [3000, 7000, 15000, 30000];
 const MAX_DRAFT_BYTES = 100 << 10;
 
 // How close a scheduled start has to be before the panel keeps an eye on the
-// clock for it. The list is read every fifteen seconds anyway; this is what
-// makes the switch to the terminal follow the start within a second or two.
+// clock for it. The list arrives on the event stream as it changes (and is
+// polled every five to fifteen seconds only while the stream is down); this
+// is what makes the switch to the terminal follow the start within a second
+// or two even then.
 const SCHEDULE_WATCH = 10 * 60 * 1000;
 
 const encoder = new TextEncoder();

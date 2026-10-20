@@ -31,7 +31,10 @@ func TestSealOpen(t *testing.T) {
 		if !bytes.HasPrefix(sealed, []byte("SOC1")) || len(sealed) != 4+NonceSize+len(plain)+16 {
 			t.Fatalf("format: %d bytes for %d", len(sealed), len(plain))
 		}
-		if len(plain) > 0 && bytes.Contains(sealed, plain) {
+		// Only a plaintext long enough not to turn up in random bytes by
+		// chance says anything: a one-byte "x" is somewhere in the 33 bytes
+		// of nonce, ciphertext and tag about one run in eight.
+		if len(plain) >= 16 && bytes.Contains(sealed, plain) {
 			t.Fatal("plaintext visible in sealed data")
 		}
 		got, err := Open(k, "sessions/abc.json", sealed)

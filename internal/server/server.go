@@ -2,6 +2,7 @@
 package server
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -64,6 +66,12 @@ type Server struct {
 	// push is Web Push: the notification that reaches a phone whose page is
 	// not running.
 	push *pusher
+	// events is the event stream every page without a terminal listens on,
+	// digests are Home's reading of every coding session, and answers is the
+	// operator that types a person's answer to a question into one (HOME.md).
+	events  *eventHub
+	digests *digester
+	answers *operatorDriver
 
 	mux *http.ServeMux
 
@@ -98,6 +106,12 @@ type Server struct {
 	claudeUsage map[string]cachedLimits
 	usageHTTP   *http.Client
 	usageURL    string
+
+	// titleSeq numbers the title frames (emitTitle). A page holds a terminal
+	// socket and the event stream at once, and hears every one of them twice;
+	// the number is how it knows the second for the same frame, and not a
+	// second failure to be told about in a second dialog.
+	titleSeq atomic.Int64
 }
 
 type attempt struct {
@@ -145,6 +159,14 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	// calls into it.
 	s.titles = newTitleDriver(s)
 	s.push = newPusher(st)
+	// Every push says how many sessions are asking (the app icon's badge),
+	// counted the way Home counts them.
+	s.push.asking = s.askingSet
+	s.events = newEventHub(s)
+	s.digests = newDigester(s)
+	// A turn's end waits for its outcome before it is pushed.
+	s.push.checking = s.digests.outcomePending
+	s.answers = newOperatorDriver(s)
 	s.sched = newScheduler(s)
 	manager, err := termux.New(st, cfg)
 	if err != nil {
@@ -195,6 +217,8 @@ func (s *Server) StartSessions(ctx context.Context) error {
 	// sessions that survived the last run rather than an empty server.
 	s.manager.StartActivity(ctx)
 	s.startSweep(ctx)
+	// The look at waiting screens Home's questions are kept current by.
+	s.digests.start(ctx)
 	// Last, once every session that survived is adopted: a scheduled start
 	// that fell due while the server was down is started by its first pass.
 	s.sched.start(ctx)
@@ -204,6 +228,7 @@ func (s *Server) StartSessions(ctx context.Context) error {
 // StopSessions lets go of everything Socrates owns and nothing tmux owns: the
 // sessions themselves keep running, which is the whole point of them.
 func (s *Server) StopSessions() {
+	s.push.stop()
 	if err := s.manager.Close(); err != nil {
 		log.Printf("terminal sessions: %v", err)
 	}
@@ -221,7 +246,8 @@ func (s *Server) Settings() config.Settings {
 
 func (s *Server) saveSettings(next config.Settings) error {
 	next.Normalize()
-	previous := s.Settings().Tunnel
+	before := s.Settings()
+	previous := before.Tunnel
 	if err := s.store.SetJSON(SettingsKey, next); err != nil {
 		return err
 	}
@@ -229,7 +255,26 @@ func (s *Server) saveSettings(next config.Settings) error {
 	s.settings = next
 	s.mu.Unlock()
 	s.reconcileTunnel(previous, next.Tunnel)
+	// A key saved while Home is open - from this page or another device -
+	// is a key the digests that could only say "no key" have been waiting
+	// for; nothing else would read an idle session again before its next
+	// turn.
+	if s.digests != nil && !sameHomeReader(before.OpenRouter, next.OpenRouter) {
+		go s.digests.settingsChanged()
+	}
+	// The outcomes switched off: the verdicts there are go with them, and a
+	// notification waiting for one goes out without it.
+	if s.digests != nil && before.OpenRouter.Outcomes && !next.OpenRouter.Outcomes {
+		s.digests.clearOutcomes()
+	}
 	return nil
+}
+
+// sameHomeReader is whether two settings read Home's digests the same way:
+// the same key, gateway and model.
+func sameHomeReader(a, b config.OpenRouterSettings) bool {
+	return strings.TrimSpace(a.APIKey) == strings.TrimSpace(b.APIKey) && a.BaseURL == b.BaseURL &&
+		strings.TrimSpace(a.HomeModel) == strings.TrimSpace(b.HomeModel)
 }
 
 // reconcileTunnel applies a settings change to the running tunnel.
@@ -299,6 +344,10 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /setup", s.pageSetup)
 	mux.Handle("GET /static/", http.StripPrefix("/static/", web.Static()))
 	mux.HandleFunc("GET /favicon.png", web.Favicon)
+	// iOS asks the root for the home screen icon in some flows whatever the
+	// page's head says, and asks before anybody has signed in.
+	mux.HandleFunc("GET /apple-touch-icon.png", web.AppleTouchIcon)
+	mux.HandleFunc("GET /apple-touch-icon-precomposed.png", web.AppleTouchIcon)
 	// The offline shell worker is deliberately outside the auth wall: it holds
 	// no data, and it has to be reachable to be updated.
 	mux.HandleFunc("GET /sw.js", web.ServiceWorker)
@@ -311,6 +360,7 @@ func (s *Server) routes() {
 
 	mux.HandleFunc("/ide/{id}/", s.auth(s.handleVSCode))
 	mux.HandleFunc("POST /api/ide", s.auth(s.handleFolderIDE))
+	mux.HandleFunc("POST /api/ide/blank", s.auth(s.handleBlankIDE))
 
 	// Terminal sessions
 	mux.HandleFunc("GET /api/sessions", s.auth(s.handleListSessions))
@@ -333,6 +383,14 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/sessions/{id}/usage", s.auth(s.handleSessionUsage))
 	// What a terminal is doing, said out loud.
 	mux.HandleFunc("POST /api/sessions/{id}/status", s.auth(s.handleSessionStatus))
+	// Home: the event stream, its hello as a poll, the reading of a session's
+	// screen, and the operator that answers the question it found there.
+	mux.HandleFunc("GET /api/events", s.auth(s.handleEvents))
+	mux.HandleFunc("GET /api/home", s.auth(s.handleHome))
+	mux.HandleFunc("POST /api/sessions/{id}/digest", s.auth(s.handleDigestNow))
+	mux.HandleFunc("POST /api/sessions/{id}/answer", s.auth(s.handleAnswer))
+	mux.HandleFunc("GET /api/sessions/{id}/answer", s.auth(s.handleAnswerRun))
+	mux.HandleFunc("POST /api/sessions/{id}/answer/cancel", s.auth(s.handleAnswerCancel))
 	mux.HandleFunc("GET /api/sessions/{id}/journal", s.auth(s.started(s.handleJournal)))
 	mux.HandleFunc("POST /api/sessions/{id}/upload", s.auth(s.started(s.handleUpload)))
 	mux.HandleFunc("GET /api/sessions/{id}/ws", s.auth(s.started(s.handleSessionWS)))
@@ -436,6 +494,54 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		log.Printf("server: write json: %v", err)
 	}
+}
+
+// compressFrom is the smallest answer worth compressing.
+const compressFrom = 1 << 10
+
+// writeJSONCompressed is writeJSON gzipped for a client that takes it, for
+// the answers that carry every session: Home's state is polled every few
+// seconds by a page whose stream is down, which is a page on a bad link, and
+// sixty sessions with their digests are a hundred kilobytes as text and a
+// tenth of that compressed.
+func writeJSONCompressed(w http.ResponseWriter, r *http.Request, code int, v any) {
+	body, err := json.Marshal(v)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "the answer could not be encoded")
+		return
+	}
+	body = append(body, '\n')
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Add("Vary", "Accept-Encoding")
+	if len(body) < compressFrom || !acceptsGzip(r) {
+		w.WriteHeader(code)
+		_, _ = w.Write(body)
+		return
+	}
+	w.Header().Set("Content-Encoding", "gzip")
+	w.WriteHeader(code)
+	zw, _ := gzip.NewWriterLevel(w, gzip.BestSpeed)
+	if _, err := zw.Write(body); err != nil {
+		log.Printf("server: write json: %v", err)
+	}
+	_ = zw.Close()
+}
+
+// acceptsGzip is whether a request's Accept-Encoding takes gzip, and does not
+// refuse it with q=0.
+func acceptsGzip(r *http.Request) bool {
+	for _, part := range strings.Split(r.Header.Get("Accept-Encoding"), ",") {
+		name, params, _ := strings.Cut(strings.TrimSpace(part), ";")
+		if !strings.EqualFold(strings.TrimSpace(name), "gzip") {
+			continue
+		}
+		if q, ok := strings.CutPrefix(strings.ReplaceAll(params, " ", ""), "q="); ok {
+			weight, err := strconv.ParseFloat(q, 64)
+			return err == nil && weight > 0
+		}
+		return true
+	}
+	return false
 }
 
 func writeError(w http.ResponseWriter, code int, msg string) {

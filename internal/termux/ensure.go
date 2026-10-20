@@ -75,6 +75,14 @@ func (m *Manager) ensureLocked(ctx context.Context, sessionID string) (*store.Se
 // its own - used to leave a perfectly healthy terminal recorded as failed, in
 // a state nothing polls out of again.
 func (m *Manager) Restart(ctx context.Context, sessionID string) (*store.Session, error) {
+	return m.RestartAfter(ctx, sessionID, nil)
+}
+
+// RestartAfter is Restart with something to do once the restart is certain to
+// happen - every refusal is behind it - and before the program is launched:
+// what was driving the old program is stopped there, and only there. A
+// restart that is refused leaves it running.
+func (m *Manager) RestartAfter(ctx context.Context, sessionID string, before func()) (*store.Session, error) {
 	unlock := m.lockSession(sessionID)
 	defer unlock()
 	row, err := m.st.GetSession(sessionID)
@@ -91,6 +99,9 @@ func (m *Manager) Restart(ctx context.Context, sessionID string) (*store.Session
 	}
 	if m.Available() == nil && row.TmuxName != "" && !m.paneIsDead(row.TmuxName) {
 		return nil, fmt.Errorf("%w: %s", ErrStillRunning, row.TmuxName)
+	}
+	if before != nil {
+		before()
 	}
 	if err := m.st.SetSessionState(row.ID, store.StateNeedsResume, -1, ""); err != nil {
 		return nil, err

@@ -1458,15 +1458,25 @@ func TestTerminalEveryKeystrokeAfterHelloReachesThePane(t *testing.T) {
 	})
 
 	// And the journal, which is the reconnect and the download, holds it too.
+	// The journal is written by a sink process that tmux pipes the pane into,
+	// so it can lag the socket by a moment: it is read until it holds the
+	// line, not once.
 	c.waitFor(marker)
-	res, err := e.client.Get(e.server.URL + "/api/sessions/" + id + "/journal")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer res.Body.Close()
-	journal, err := io.ReadAll(res.Body)
-	if err != nil {
-		t.Fatal(err)
+	var journal []byte
+	for until := time.Now().Add(10 * time.Second); ; {
+		res, err := e.client.Get(e.server.URL + "/api/sessions/" + id + "/journal")
+		if err != nil {
+			t.Fatal(err)
+		}
+		journal, err = io.ReadAll(res.Body)
+		res.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(journal), marker) || time.Now().After(until) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	if !strings.Contains(string(journal), marker) {
 		t.Fatalf("the journal is missing the line the pane ran (%d bytes)", len(journal))

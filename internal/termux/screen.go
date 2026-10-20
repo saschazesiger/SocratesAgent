@@ -74,6 +74,32 @@ func (m *Manager) visiblePane(ctx context.Context, id string) (string, error) {
 	return lastLines(out, 0), nil
 }
 
+// VisiblePane is visiblePane for the server: the screen as it is now and none
+// of its history. Home's digests hash it to tell a prompt that moved on from
+// one that is still the same, and a capture that reached back would change
+// with every line the history gained, not with what the person can see.
+func (m *Manager) VisiblePane(ctx context.Context, id string) (string, error) {
+	return m.visiblePane(ctx, id)
+}
+
+// StyledPane is VisiblePane with its colours and attributes kept as SGR
+// escapes (`-e`). It is for the one thing the text of a screen does not
+// carry: which option a TUI that highlights in colour only - OpenCode's cards
+// - has its highlight on.
+func (m *Manager) StyledPane(ctx context.Context, id string) (string, error) {
+	if err := m.Available(); err != nil {
+		return "", err
+	}
+	out, err := m.tmux.Run(ctx, "capture-pane", "-p", "-J", "-e", "-t", m.tmuxNameOf(id))
+	if err != nil {
+		if noSuchTarget(err) || serverGone(err) {
+			return "", fmt.Errorf("session %s has no pane to read", id)
+		}
+		return "", err
+	}
+	return lastLines(out, 0), nil
+}
+
 // lastLines trims the trailing blanks and keeps the final n lines, so that
 // "the last hundred and twenty lines" is what the caller actually gets:
 // capture-pane -S -n hands back n lines of history *plus* the visible pane.
@@ -95,9 +121,17 @@ type Key struct {
 	Text string
 	// Name is a tmux key name: Enter, Escape, Tab, Up, C-c, and the rest.
 	Name string
+	// Repeat is how many times Name is pressed, for a value above one: a
+	// line cleared with BSpace is one action, not one per character.
+	Repeat int
 	// Wait is how long to sleep after this action, capped at MaxKeyWait.
 	Wait time.Duration
 }
+
+// repeatChunk is how many presses of one key go in one send-keys, so that a
+// long run of them is a few commands and none with an argument list of
+// thousands.
+const repeatChunk = 200
 
 // SendKeys types into a pane.
 //
@@ -134,26 +168,37 @@ func (m *Manager) SendKeys(ctx context.Context, id string, keys []Key) error {
 }
 
 func (m *Manager) sendKey(ctx context.Context, name, id string, key Key) error {
-	var args []string
+	var calls [][]string
 	switch {
 	case key.Text != "":
 		// -H rather than -l: byte exact for UTF-8, and immune to the
 		// differences between tmux versions in how -l treats a backslash.
-		args = []string{"send-keys", "-t", name, "-H"}
+		args := []string{"send-keys", "-t", name, "-H"}
 		for _, b := range []byte(key.Text) {
 			args = append(args, hex.EncodeToString([]byte{b}))
 		}
+		calls = append(calls, args)
 	case key.Name != "":
-		args = []string{"send-keys", "-t", name, key.Name}
+		// Several key names in one send-keys are pressed in order, which is
+		// the same in every tmux (-N is not).
+		for left := max(key.Repeat, 1); left > 0; left -= repeatChunk {
+			args := []string{"send-keys", "-t", name}
+			for range min(left, repeatChunk) {
+				args = append(args, key.Name)
+			}
+			calls = append(calls, args)
+		}
 	default:
 		// A pause and nothing else.
 		return nil
 	}
-	if _, err := m.tmux.Run(ctx, args...); err != nil {
-		if noSuchTarget(err) || serverGone(err) {
-			return fmt.Errorf("session %s has no pane to type into", id)
+	for _, args := range calls {
+		if _, err := m.tmux.Run(ctx, args...); err != nil {
+			if noSuchTarget(err) || serverGone(err) {
+				return fmt.Errorf("session %s has no pane to type into", id)
+			}
+			return err
 		}
-		return err
 	}
 	return nil
 }

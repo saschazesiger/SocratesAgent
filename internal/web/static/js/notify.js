@@ -19,6 +19,7 @@
 // say so.
 
 import { api, toast, errorMessage } from './api.js';
+import { outcomeNews } from './outcome.js';
 
 const SOUND_KEY = 'socrates.sound';
 const NOTIFY_KEY = 'socrates.notify';
@@ -41,8 +42,70 @@ const CHIME_EVERY = 1500;
 const SETTLE = 5000;
 
 // What a notification says under the session's name. The words are the
-// sidebar's own, so the phone and the page agree about what happened.
+// sidebar's own, so the phone and the page agree about what happened, and
+// a permission prompt is said as one, as the server's push says it.
 const BODY = { idle: 'Finished', waiting: 'Needs an answer' };
+const PERMISSION_BODY = 'Needs your permission';
+
+// The worker's own icon and status-bar silhouette (sw.js), so a notification
+// the page shows looks like one the worker shows.
+const NOTE_ICON = '/static/img/icon-192.png';
+const NOTE_BADGE = '/static/img/badge-96.png';
+
+// iOS and iPadOS - which calls itself a Mac, and is told apart by its touch
+// screen. Safari there has notifications only inside an app added to the
+// Home Screen, so the options menu says how to get them rather than that
+// they do not exist.
+const IOS = /iPad|iPhone|iPod/.test(navigator.userAgent || '')
+  || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+function standalone() {
+  if (navigator.standalone === true) return true;
+  try { return !!window.matchMedia && window.matchMedia('(display-mode: standalone)').matches; } catch { return false; }
+}
+
+// targetOf is where a tap on a piece of news goes, by the same rule as the
+// worker's (sw.js): it rides along in the notification's data, so a
+// notification the page shows is handled by the worker's click as well.
+function targetOf(id, kind) {
+  if (!id) return '/';
+  if (kind === 'question') return '/#q=' + encodeURIComponent(id);
+  if (kind === 'finished' || kind === 'started') return '/#open=' + encodeURIComponent(id);
+  return '/';
+}
+
+// A tap on a notification reaches the page as a message from the worker, and
+// on a phone the page it reaches may be the one the tap has just woken or
+// launched: the message can be on its way before boot() has awaited the
+// fonts and mounted anything. So the listener is attached the moment this
+// module is evaluated, and what arrives before mountNotify is kept, in
+// order, until it hands the messages to the page.
+//
+// The worker also says when a push has just written the app's icon and the
+// tray ({t:'pushed'}), with the asking set as it was counted when the push
+// went out - which a page that is open may know better. One that arrives
+// before the mount is not kept: the page's first state writes both anyway.
+const early = [];
+let onOpen = null;
+let onPushed = null;
+if ('serviceWorker' in navigator) {
+  try {
+    navigator.serviceWorker.addEventListener('message', (event) => {
+      const msg = event.data;
+      if (msg && msg.t === 'pushed') {
+        if (onPushed) onPushed();
+        return;
+      }
+      if (!msg || msg.t !== 'open' || !msg.id) return;
+      const kind = typeof msg.kind === 'string' ? msg.kind : '';
+      if (onOpen) onOpen(String(msg.id), kind);
+      else early.push({ id: String(msg.id), kind });
+    });
+    // A page's messages from its worker are held until it says it is
+    // listening; DOMContentLoaded says so too, but later than this.
+    if (typeof navigator.serviceWorker.startMessages === 'function') navigator.serviceWorker.startMessages();
+  } catch { /* a browser whose worker cannot talk to the page: the address carries it instead */ }
+}
 
 function stored(key, fallback) {
   try {
@@ -59,14 +122,21 @@ function remember(key, on) {
 
 /**
  * mountNotify sets up the chime and the notification and hands back what the
- * page calls into: the completion, and the two switches the options menu
- * draws.
+ * page calls into: the completion, the questions for the app's badge, and
+ * the two switches the options menu draws.
  *
  * `ctx` is everything this module is not allowed to own:
- *   sessionOf  a session by id, or null - the name a notification is titled with
- *   select     open a session, for a notification that is clicked
- *   changed    told whenever either switch moves, so a menu that is open
- *              shows where it now is
+ *   sessionOf    a session by id, or null - the name a notification is titled with
+ *   select       open a session, for a notification that is clicked
+ *   question     open the question a session is asking, for a "Needs an
+ *                answer" that is clicked - Home, and the dialog over it
+ *   asksInProse  whether a session's turn ended on a question in prose
+ *   pushed       told when a push has just written the app's icon and the
+ *                tray, so that a page whose state is newer writes them again
+ *   outcome      the verdict a session's last turn has, or is waiting for
+ *   questionOf   the question a session's digest holds, or null
+ *   changed      told whenever either switch moves, so a menu that is open
+ *                shows where it now is
  */
 export function mountNotify(ctx) {
   const changed = () => { try { ctx.changed?.(); } catch { /* a menu that went away */ } };
@@ -74,6 +144,9 @@ export function mountNotify(ctx) {
   // iOS Safari has no Notification outside a home-screen app, so the button
   // says so rather than failing when it is pressed.
   const available = typeof window.Notification === 'function';
+  // Safari on an iPhone, not opened from the Home Screen: notifications are
+  // there to be had, by adding the app first.
+  const addToHome = IOS && !available && !standalone();
 
   let sound = stored(SOUND_KEY, true);
   // Off by default: it is the one switch that cannot be honoured without
@@ -92,9 +165,10 @@ export function mountNotify(ctx) {
   let lastChime = 0;
   // Which commit of each session has already been rung for, by its `since`.
   //
-  // A change reaches the page twice by two honest routes - the broadcast
-  // frame and the fifteen-second poll - and a poll that was in flight when
-  // the turn ended answers with the state before it. That reads as
+  // A change reaches the page more than once by honest routes - the terminal
+  // socket's frame, the event stream's frame, and the activity a list (a
+  // hello, a fallback poll, a fetch) carries - and a list that was read just
+  // before the turn ended answers with the state before it. That reads as
   // idle -> busy -> idle, and the second edge is the same commit as the
   // first. One commit is one piece of news.
   const rung = new Map();
@@ -168,29 +242,108 @@ export function mountNotify(ctx) {
 
   /* ----------------------------------------------------- the notification */
 
-  function show(id, next, session) {
+  // show is the notification of a page that is open and has no push
+  // subscription. It is shown through the worker's registration wherever
+  // there is one, in the very shape the worker shows a push in - the same
+  // tag, the same data - so that a tap on it is handled by the worker's
+  // click like any other, and goes through the same door into the page.
+  // That is also the only way there is on iOS and on Android, which have no
+  // `new Notification` at all; the constructor is left for a browser with no
+  // worker running.
+  async function show(id, next, session, news = null) {
     if (!notify || !available) return;
     // A device the server pushes to is told by its worker, page or no page.
     if (pushing) return;
     if (window.Notification.permission !== 'granted') return;
-    const body = BODY[next.state];
+    let body = news ? news.body : BODY[next.state];
     if (!body) return;
+    if (!news && next.state === 'waiting' && next.note === 'permission prompt') body = PERMISSION_BODY;
+    const kind = news ? news.kind : (next.state === 'waiting' ? 'question' : 'finished');
+    const title = session.title || 'Socrates';
+    // One notification per session: the tag replaces the previous one, so a
+    // session that finishes twice while the phone is locked leaves one line
+    // in the tray and not a column of them.
+    const options = {
+      body,
+      tag: 'socrates:' + id,
+      renotify: true,
+      icon: NOTE_ICON,
+      badge: NOTE_BADGE,
+      data: { id, kind, url: targetOf(id, kind) },
+    };
+    let reg = null;
+    if ('serviceWorker' in navigator) {
+      try { reg = await navigator.serviceWorker.getRegistration(); } catch { /* none to be had */ }
+    }
+    if (reg && reg.active && typeof reg.showNotification === 'function') {
+      try { await reg.showNotification(title, options); } catch { /* a browser that refuses the call */ }
+      return;
+    }
     try {
-      // One notification per session: the tag replaces the previous one, so a
-      // session that finishes twice while the phone is locked leaves one line
-      // in the tray and not a column of them.
-      const note = new window.Notification(session.title, {
-        body,
-        tag: 'socrates:' + id,
-        renotify: true,
-        icon: '/static/img/logo.png',
-      });
+      const note = new window.Notification(title, options);
       note.onclick = () => {
         try { window.focus(); } catch { /* a browser that will not come forward */ }
-        ctx.select(id);
+        follow(id, kind);
         note.close();
       };
     } catch { /* a browser that has the constructor and refuses the call */ }
+  }
+
+  /* ------------------------------------------------------- the app's badge */
+
+  // The number on the app's icon is the number of questions waiting - every
+  // session the Questions card counts, a menu or a permission prompt or a
+  // question in prose - and the worker sets it from every push. The page
+  // sets it too, whenever what it holds changes, so that answering a
+  // question here takes it off the icon now rather than at the next push.
+  // What it last set, and for which sessions: -1 and null are "nothing yet".
+  let badgeSet = -1;
+  let askingKey = null;
+
+  function setBadge(count) {
+    try {
+      const done = count > 0
+        ? (typeof navigator.setAppBadge === 'function' ? navigator.setAppBadge(count) : null)
+        : (typeof navigator.clearAppBadge === 'function' ? navigator.clearAppBadge() : null);
+      // iOS draws a badge only for an app that may notify, and says so by
+      // refusing; a badge that is not drawn is not worth a word.
+      if (done && done.catch) done.catch(() => { /* no badge on this device */ });
+    } catch { /* the same answer, thrown instead of rejected */ }
+  }
+
+  // closeAnswered takes out of the tray the questions that are not asking any
+  // more: a question answered here, or at the machine, or on another device,
+  // is not something to tap on later and be told there is nothing there.
+  async function closeAnswered(still) {
+    if (!('serviceWorker' in navigator)) return;
+    try {
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (!reg || typeof reg.getNotifications !== 'function') return;
+      for (const note of await reg.getNotifications()) {
+        const data = note.data || {};
+        if (data.kind === 'question' && data.id && !still.has(data.id)) note.close();
+      }
+    } catch { /* a tray that cannot be read is left as it is */ }
+  }
+
+  /**
+   * asking is told the sessions that are asking whenever they may have
+   * changed, by a page whose state is known to be current. The badge is only
+   * written when its number moved, and the tray only looked through when the
+   * set did - this is called on every frame. `force` is a page coming back
+   * into view: a push may have written the icon meanwhile, so the page's own
+   * memory of it proves nothing.
+   */
+  function asking(ids, { force = false } = {}) {
+    const list = [...new Set((ids || []).map(String))].sort();
+    const key = list.join('\n');
+    if (!force && key === askingKey) return;
+    askingKey = key;
+    if (force || list.length !== badgeSet) {
+      badgeSet = list.length;
+      setBadge(list.length);
+    }
+    closeAnswered(new Set(list));
   }
 
   /* ------------------------------------------------------------ web push */
@@ -260,14 +413,28 @@ export function mountNotify(ctx) {
     await api('/api/push/unsubscribe', { method: 'POST', body: { endpoint } });
   }
 
-  // A tap on a pushed notification lands in a tab that was already open, and
-  // the worker says which session it was about.
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.addEventListener('message', (event) => {
-      const msg = event.data;
-      if (msg && msg.t === 'open' && msg.id) ctx.select(msg.id);
-    });
+  // follow is a notification that was tapped. A question opens the dialog that
+  // answers it, which is what the notification was about; anything else
+  // opens the session. A "Finished" whose turn ended on a question in prose
+  // is a question by the time it is tapped - the digest that read it came
+  // after the news - and opens the dialog as well.
+  function follow(id, kind) {
+    const asks = kind === 'question' || (!!ctx.asksInProse && ctx.asksInProse(id));
+    if (asks && ctx.question) ctx.question(id);
+    else ctx.select(id);
   }
+
+  // A tap on a notification lands in a tab that was already open, and the
+  // worker says which session it was about, and what kind of news it was
+  // (the listener at the top of this module). What came before this mount is
+  // handed over once the page's own start-up has run to its first wait: a
+  // tap opens a session or a question, and the page's boot, which puts Home
+  // on the stage, must not come after it and undo it.
+  queueMicrotask(() => {
+    onOpen = follow;
+    for (const msg of early.splice(0)) follow(msg.id, msg.kind);
+  });
+  onPushed = () => { try { ctx.pushed?.(); } catch { /* the next push or the next look puts it right */ } };
 
   /* ------------------------------------------------------- the completion */
 
@@ -300,6 +467,7 @@ export function mountNotify(ctx) {
    * ending on its own.
    */
   function completed(id, next, prev) {
+    if (next) followHeld(id, next);
     if (!prev || !next) return;
     if (prev.state !== 'busy' && prev.state !== 'tasks') return;
     if (next.state !== 'idle' && next.state !== 'waiting') return;
@@ -309,6 +477,20 @@ export function mountNotify(ctx) {
     // A commit inside the settling window is counted as rung, so the poll
     // that repeats it a moment later does not ring for it either.
     if (Date.now() < (quiet.get(id) || 0)) return;
+    // A turn whose verdict is being read waits for it, as its push does: the
+    // chime and the notification are one piece of news, and the news is how
+    // the turn left the work (judged).
+    const outcome = next.state === 'idle' && ctx.outcome ? ctx.outcome(id) : null;
+    if (outcome && outcome.phase === 'pending' && Number(outcome.since) === Number(next.since)) {
+      hold(id, next, outcome);
+      return;
+    }
+    ring(id, next, null);
+  }
+
+  // ring is the chime and the notification of one turn's end, saying news
+  // when there is a verdict to say.
+  function ring(id, next, news) {
     if (sound) {
       const now = Date.now();
       if (now - lastChime >= CHIME_EVERY) {
@@ -319,7 +501,54 @@ export function mountNotify(ctx) {
     // A notification is titled with the session's name, so one that is not in
     // the list yet is heard and not shown.
     const session = ctx.sessionOf(id);
-    if (session) show(id, next, session);
+    if (session) show(id, next, session, news);
+  }
+
+  // The turns' ends waiting for their verdicts, keyed by session: what the
+  // change was, the idle it ended on, and the end of the wait.
+  const judging = new Map();
+
+  function hold(id, next, outcome) {
+    drop(id);
+    const wait = Math.max(0, (Number(outcome.due) || 0) - Date.now());
+    const timer = setTimeout(() => {
+      const held = judging.get(id);
+      if (!held) return;
+      drop(id);
+      ring(id, held.next, null);
+    }, wait);
+    judging.set(id, { next, since: Number(next.since), timer });
+  }
+
+  function drop(id) {
+    const held = judging.get(id);
+    if (!held) return;
+    clearTimeout(held.timer);
+    judging.delete(id);
+  }
+
+  // follow lets go of a turn's end that turned out not to be one - the
+  // session is working, asking or running something again - or that somebody
+  // has read meanwhile. A tick of unknown is nothing, and the prompt it comes
+  // back to is the same idle in a new commit.
+  function followHeld(id, next) {
+    const held = judging.get(id);
+    if (!held || next.state === 'unknown') return;
+    if (next.state !== 'idle' || !next.unread) drop(id);
+    else held.since = Number(next.since);
+  }
+
+  /**
+   * judged is the verdict on a turn. A turn's end waiting for exactly this
+   * idle is heard and shown now, saying it; one that failed to be judged is
+   * "Finished", as it would have been without.
+   */
+  function judged(id, outcome) {
+    const held = judging.get(id);
+    if (!held || !outcome || Number(outcome.since) !== held.since) return;
+    drop(id);
+    const question = ctx.questionOf ? ctx.questionOf(id) : null;
+    ring(id, held.next, outcomeNews(outcome, question));
   }
 
   /**
@@ -351,10 +580,10 @@ export function mountNotify(ctx) {
   // One question at a time: a second tap while the browser is still asking
   // for permission would ask twice, and the second verdict could undo the
   // first.
-  let asking = null;
+  let prompting = null;
 
   async function setNotify(on) {
-    if (!available || asking) return;
+    if (!available || prompting) return;
     if (!on) {
       if (!notify) return;
       notify = false;
@@ -367,11 +596,11 @@ export function mountNotify(ctx) {
     // Asked from inside the click, because a permission prompt raised out of a
     // gesture is a prompt the browser dismisses on the page's behalf - which
     // is why nothing is awaited before it.
-    asking = (async () => {
+    prompting = (async () => {
       try { return await window.Notification.requestPermission(); } catch { return null; }
     })();
     let verdict;
-    try { verdict = await asking; } finally { asking = null; }
+    try { verdict = await prompting; } finally { prompting = null; }
     // The old callback form of the same call answers nothing and writes the
     // verdict onto the constructor instead.
     if (!verdict) verdict = window.Notification.permission;
@@ -379,7 +608,10 @@ export function mountNotify(ctx) {
     remember(NOTIFY_KEY, notify);
     changed();
     if (!notify) {
-      toast('Notifications are blocked for this site in the browser.', 'error');
+      // On an iPhone there is no site setting to point at: the app's own
+      // entry in the Settings app is where it is turned on again.
+      toast(IOS ? 'Notifications are off for Socrates: turn them on in Settings → Notifications → Socrates.'
+        : 'Notifications are blocked for this site in the browser.', 'error');
       return;
     }
     if (!pushable) return;
@@ -403,11 +635,25 @@ export function mountNotify(ctx) {
 
   return {
     completed,
+    judged,
     hush,
     soundOn: () => sound,
     notifyOn: () => notify && available,
     /** notifyAvailable is false where this browser has no notifications. */
     notifyAvailable: () => available,
+    /**
+     * notifyHint is the line under the switch in the options menu: what it
+     * does, or why it cannot here and what would change that.
+     */
+    notifyHint() {
+      if (addToHome) return 'Add to Home Screen for notifications';
+      if (!available) return IOS ? 'Needs iOS 16.4 or later' : 'Not available in this browser';
+      let denied = false;
+      try { denied = window.Notification.permission === 'denied'; } catch { /* asked when pressed */ }
+      if (IOS && denied) return 'Turned off in Settings → Notifications → Socrates';
+      return 'When a session finishes or needs an answer';
+    },
+    asking,
     setSound,
     /** setNotify turns notifications on - asking the browser - or off. */
     setNotify: (on) => setNotify(on).catch(() => { /* the toast is the whole of the report */ }),

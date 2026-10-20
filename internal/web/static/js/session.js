@@ -33,6 +33,12 @@ import { mountKeyBar, keyBarWanted, setKeyBarWanted, followViewport } from './ke
 import { initKeyboard, guard, watchFrame, dictated, touchScreen, setTouchMode } from './keyboard.js';
 import { mountPrestart, forgetDraft, whenShort, PRESTART_SVG, CLOCK_SVG } from './prestart.js';
 import { mountStorageBanner } from './storage.js';
+import { mountEvents } from './events.js';
+import { mountHome, questionQueue, connectionLine } from './home.js';
+import { openQuestions, updateQuestions, questionsOpen, closeQuestions } from './question.js';
+import {
+  OUTCOME_WORDS, OUTCOME_SVG, HOURGLASS_SVG, CHECKING_WORDS, outcomeCurrent, outcomeMark, outcomeLine,
+} from './outcome.js';
 
 /* ------------------------------------------------------------- transport */
 
@@ -629,6 +635,10 @@ const state = {
   // reload still knows which session this tab was looking at, and reopens it
   // the moment the list can be read.
   wanted: '',
+  // The store revision of the list on screen. A list read over HTTP that is
+  // older than what the stream has already drawn is dropped rather than
+  // drawn over it: see applyList.
+  listRev: null,
   // The menu a row, the options button or the usage strip last opened, so a
   // second one replaces it rather than stacking on it, and the button it
   // hangs from.
@@ -657,6 +667,17 @@ const state = {
   // The sessions whose automatic name is being asked for right now. Their
   // name pulses, in the list and in the header, until the answer is in.
   titling: new Set(),
+  // Of those, the ones this page asked for itself (retitleSession), which
+  // its own request settles; the others are only settled by a title frame,
+  // and a frame can be lost (see forgetTitling).
+  namingHere: new Set(),
+  // The number of the newest title frame drawn. Every title frame comes
+  // twice - on the terminal socket and on the event stream - and the second
+  // is the same news, not a second failure to open a second dialog for.
+  titleSeq: 0,
+  // The seq of the start frame of each naming in progress, so the ceiling of
+  // one naming does not end the next one of the same session.
+  titleStarts: new Map(),
   // The current session's quota/cost poll. A generation number makes a slow
   // answer for the previous session harmless after a quick row switch.
   usageTimer: null,
@@ -679,18 +700,46 @@ const state = {
   // The panel a prepared session is shown in instead of a terminal,
   // mounted once in boot().
   prestart: null,
+  // Home, the page the stage shows when no session is open, and the event
+  // stream that keeps it - and the sidebar - live whatever is on the stage.
+  // Both mounted once in boot().
+  home: null,
+  events: null,
+  // What a model last read off each session's screen (HOME.md §1.3), and the
+  // answer the operator is giving to each (§1.4), keyed by session id. Both
+  // in memory only, like the activity: the server re-derives the one and
+  // keeps the other for two minutes, and a hello carries both again.
+  digests: new Map(),
+  answers: new Map(),
+  // The verdict on each session's last turn (outcome.js), keyed by id: the
+  // same kind of thing, re-derived by the server and carried by every hello.
+  outcomes: new Map(),
+  // Whether a hello or a poll has handed over the digests since this page
+  // loaded. Until one has, a session the page holds no digest for has not
+  // been read for this page, rather than read and found asking nothing.
+  digestsHeard: false,
+  // The app's badge may say something other than what the page last told it
+  // (tellAsking): the page was away, and a push wrote it meanwhile, or a push
+  // has just written it. It is written again from the first state the page
+  // holds that is the server's as of after staleSince (badgeWrittenElsewhere).
+  badgeStale: true,
+  staleSince: 0,
+  // `#questions` - the app's "Questions" shortcut - asked for the dialog at
+  // the first question, and the page does not yet know whether there is one
+  // (questionsWhenKnown).
+  questionsWanted: false,
 };
 
 const dom = {};
-const ids = ['sidebar', 'navScrim', 'menuBtn', 'sideCollapse', 'newSession', 'sessionList',
-  'activityLive', 'sessionTitle', 'titleRegen', 'sessionStatus', 'sessionUsage',
+const ids = ['sidebar', 'navScrim', 'menuBtn', 'blankIDE', 'homeBtn', 'sideCollapse', 'newSession', 'sessionList',
+  'activityLive', 'sessionTitle', 'titleRegen', 'sessionStatus', 'sessionOutcome', 'sessionUsage',
   'transfer', 'copyBtn', 'pasteBtn', 'uploadBtn',
   'statusBtn', 'kbBtn', 'optionsBtn',
   'stage', 'termWrap', 'term', 'termOverlay', 'termLines', 'termNotice',
-  'termTicker', 'tickerWindow', 'termEmpty',
+  'termTicker', 'tickerWindow',
   'micBtn', 'micText',
   'recSheet', 'recMeter', 'recTime', 'recSend', 'recCancel',
-  'keybar', 'logout', 'prestart'];
+  'keybar', 'logout', 'prestart', 'home'];
 for (const id of ids) dom[id] = document.getElementById(id);
 
 const STATE_WORDS = {
@@ -711,11 +760,9 @@ const ACTIVITY_WORDS = {
 
 // The hourglass a row's mark carries while the agent's turn is over and
 // something it started - a background shell, a monitor, a sub-agent - is
-// still running: not working, and not done either.
-const TASKS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-  + '<path d="M5 2.5h14M5 21.5h14"/><path d="M7 2.5v2.2c0 2.6 5 4.6 5 7.3 0 2.7-5 4.7-5 7.3v2.2"/>'
-  + '<path d="M17 2.5v2.2c0 2.6-5 4.6-5 7.3 0 2.7 5 4.7 5 7.3v2.2"/>'
-  + '<path d="M8.5 20.5c0-1.6 3.5-3 3.5-4.5 0 1.5 3.5 2.9 3.5 4.5z" fill="currentColor" stroke-width="1"/></svg>';
+// still running: not working, and not done either. The same hourglass says
+// that a finished turn's verdict is being read (outcome.js).
+const TASKS_SVG = HOURGLASS_SVG;
 
 /**
  * activityOf is what a session is doing, for the page to draw.
@@ -731,6 +778,23 @@ const TASKS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" st
 function activityOf(session) {
   if (!session || harnesses.isTool(session.harness)) return null;
   return state.activity.get(session.id) || null;
+}
+
+/**
+ * outcomeOf is the verdict on the turn a session is resting after, or null:
+ * one made for another turn is not drawn (outcomeCurrent), and a session that
+ * is not running has no turn to rest after.
+ */
+function outcomeOf(session) {
+  if (!session || session.state !== 'running') return null;
+  return outcomeCurrent(state.outcomes.get(session.id), activityOf(session));
+}
+
+// checking is whether a session's turn has ended and its verdict is being
+// read: the hourglass, as for background work, and the notification waits.
+function checking(session) {
+  const outcome = outcomeOf(session);
+  return !!outcome && outcome.phase === 'pending';
 }
 
 // Where the work in a session stands, as the person files it. In progress is
@@ -783,7 +847,60 @@ function sessionOf(id) { return state.sessions.find((s) => s.id === id) || null;
 
 /* -------------------------------------------------------- the session list */
 
+// renderList draws everything the list and the activity are shown in: the
+// sidebar, and Home and the question dialog when they are on screen. They are
+// drawn from the same state at the same moments, so a number on Home can
+// never be ahead of, or behind, the row it counts.
 function renderList() {
+  releaseHolds();
+  drawList();
+  drawLive();
+  drawOutcomeTag();
+}
+
+// drawOutcomeTag is the verdict on the open session's last turn, as a tag
+// beside where it is filed: "Checking…" while it is read, then its word. A
+// tap says why, and what is still open.
+function drawOutcomeTag() {
+  const tag = dom.sessionOutcome;
+  if (!tag) return;
+  const session = state.current ? sessionOf(state.current.id) || state.current : null;
+  const outcome = session ? outcomeOf(session) : null;
+  const kind = outcomeMark(outcome);
+  const pending = !!outcome && outcome.phase === 'pending';
+  tag.hidden = !pending && !kind;
+  if (tag.hidden) return;
+  const key = (pending ? 'pending' : kind) + '|' + (outcome.reason || '') + '|' + (outcome.error || '');
+  if (tag.dataset.key === key) return;
+  tag.dataset.key = key;
+  tag.dataset.kind = pending ? 'checking' : kind;
+  tag.innerHTML = pending ? TASKS_SVG : (OUTCOME_SVG[kind] || '');
+  tag.append(el('span', { text: pending ? 'Checking…' : (kind === 'error' ? 'Not checked' : OUTCOME_WORDS[kind]) }));
+  tag.title = outcomeLine(outcome);
+}
+
+// showOutcome is a tap on the tag: the verdict in full.
+function showOutcome() {
+  const session = state.current ? sessionOf(state.current.id) || state.current : null;
+  const outcome = session ? outcomeOf(session) : null;
+  if (!outcome || outcome.phase === 'pending') return;
+  const todos = Array.isArray(outcome.todos) ? outcome.todos : [];
+  const body = outcome.phase === 'error'
+    ? (outcome.error || 'The outcome could not be checked.')
+    : [outcome.reason, todos.length ? 'Still open: ' + todos.join(' · ') : ''].filter(Boolean).join(' ');
+  alertDialog({ title: outcome.phase === 'error' ? 'Outcome not checked' : OUTCOME_WORDS[outcome.kind], body });
+}
+
+function drawLive() {
+  if (state.home) state.home.render();
+  updateQuestions();
+  tellAsking();
+  questionsWhenKnown();
+}
+
+function drawList() {
+  // The empty editor goes where VS Code is switched off, like a folder's mark.
+  dom.blankIDE.hidden = !harnesses.ideAvailable();
   const host = dom.sessionList;
   const wanted = state.sessions;
   if (!wanted.length) {
@@ -1046,7 +1163,7 @@ function updateFolder(section, folder) {
     if (act.state === 'waiting') waiting = true;
     // Work left running behind a finished turn is still something going on
     // in there, and the closed folder says so the same quiet way.
-    if (act.state === 'busy' || act.state === 'tasks') busy = true;
+    if (act.state === 'busy' || act.state === 'tasks' || checking(session)) busy = true;
   }
   setClass(head, 'waiting', waiting);
   setClass(head, 'busy', busy && !waiting);
@@ -1103,6 +1220,45 @@ async function openFolderIDE(key) {
   }
 }
 
+// Whether the empty editor is being asked for right now, so that a second
+// tap waits for the first rather than opening a second tab.
+let openingBlankIDE = false;
+
+/**
+ * openBlankIDE is the VS Code mark at the top of the sidebar: an editor with
+ * no folder open, in a new tab. There is one, shared by every tab it is
+ * opened in; it is listed under "More Chats", where it can be stopped.
+ */
+async function openBlankIDE() {
+  if (openingBlankIDE) return;
+  openingBlankIDE = true;
+  // The tab is opened inside the click. One opened once the editor answers
+  // would be a pop-up, and browsers block those.
+  const tab = window.open('', '_blank');
+  if (tab) {
+    tab.document.title = 'VS Code';
+    tab.document.body.style.font = '15px system-ui, sans-serif';
+    tab.document.body.textContent = 'Opening VS Code…';
+  }
+  try {
+    const data = await api('/api/ide/blank', { method: 'POST', attempts: 2, timeout: 60000 });
+    replaceSession(data.session);
+    if (data.error) throw new Error(data.error);
+    const url = (await readyIDE(data.session, () => true)) + ideQuery(data.session);
+    // A tab closed while it waited was closed on purpose.
+    if (tab) {
+      if (!tab.closed) tab.location.replace(url);
+    } else if (!window.open(url, '_blank')) {
+      toast('Allow pop-ups to open VS Code in a new tab.', 'error');
+    }
+  } catch (err) {
+    if (tab) tab.close();
+    toast(errorMessage(err), 'error');
+  } finally {
+    openingBlankIDE = false;
+  }
+}
+
 function buildRow(session) {
   const row = el('div', {
     class: 'chat-item',
@@ -1111,7 +1267,8 @@ function buildRow(session) {
     tabindex: '0',
   },
   el('span', { class: 'row-mark' }, agentMark(session.harness, 18),
-    el('span', { class: 'row-tasks', html: TASKS_SVG })),
+    el('span', { class: 'row-tasks', html: TASKS_SVG }),
+    el('span', { class: 'row-outcome' })),
   // The name, and under it - for a prepared session only - the first line
   // of its prompt, which is what tells two prepared sessions apart before
   // either has a name of its own.
@@ -1161,6 +1318,13 @@ function rowFacts(session) {
       + (act.note ? ' · ' + act.note : '')
       + (act.source ? ' · ' + act.source : '')
       + (act.since ? ' · since ' + clockOf(act.since) : ''));
+  }
+  const outcome = outcomeOf(session);
+  if (outcome) {
+    facts.push(outcomeLine(outcome));
+    if (outcome.phase === 'ready' && Array.isArray(outcome.todos) && outcome.todos.length) {
+      facts.push('Open: ' + outcome.todos.join(' · '));
+    }
   }
   if (session.model) facts.push(session.model + (session.effort ? ' · ' + session.effort : ''));
   if (session.cli_session_state && session.cli_session_state !== 'none') {
@@ -1252,10 +1416,25 @@ function updateRow(row, session) {
   const tasks = live && !!act && act.state === 'tasks';
   setClass(mark, 'waiting', waiting);
   setClass(mark, 'tasks', tasks);
+  // The verdict on the turn: the hourglass while it is being read - the turn
+  // is over and something about it is still going on - and its own mark on
+  // the same corner once it is in.
+  const outcome = live ? outcomeOf(session) : null;
+  const judging = !!outcome && outcome.phase === 'pending';
+  setClass(mark, 'checking', judging);
+  const kind = outcomeMark(outcome);
+  const badge = row.querySelector('.row-outcome');
+  if (badge.dataset.kind !== kind) {
+    badge.dataset.kind = kind;
+    badge.innerHTML = OUTCOME_SVG[kind] || '';
+  }
+  setClass(mark, 'judged', !!kind);
   let word = STATE_WORDS[session.state] || session.state;
   if (busy) word = ACTIVITY_WORDS.busy;
   if (waiting) word = ACTIVITY_WORDS.waiting;
   if (tasks) word = ACTIVITY_WORDS.tasks;
+  if (judging) word = CHECKING_WORDS;
+  else if (kind) word = outcomeLine(outcome);
   mark.title = word;
   setClass(row, 'unread', !!act && !!act.unread && !attached);
 }
@@ -1272,12 +1451,19 @@ let notifier = null;
  * come through here, so the sidebar and the announcement cannot disagree
  * about what changed.
  */
-function mergeActivity(sessions) {
+function mergeActivity(sessions, { full = false } = {}) {
   if (!sessions) return;
   let changed = false;
-  for (const [id, next] of Object.entries(sessions)) {
-    if (!next || typeof next !== 'object') continue;
+  for (const [id, picture] of Object.entries(sessions)) {
+    if (!picture || typeof picture !== 'object') continue;
     const prev = state.activity.get(id) || null;
+    // A change that is older than the one held - a frame from another socket
+    // that was overtaken, a snapshot taken a moment before the commit - is not
+    // drawn over the newer one. A hello is the whole state at one moment and
+    // is taken as it is, which is also what heals a server that restarted.
+    if (!full && prev && olderActivity(picture, prev)) continue;
+    // An `unknown` from a session that is running is not known yet: see heldOver.
+    const next = heldOver(id, picture, prev);
     state.activity.set(id, next);
     if (prev && prev.state === next.state && prev.unread === next.unread && prev.note === next.note) continue;
     changed = true;
@@ -1300,8 +1486,58 @@ function mergeActivity(sessions) {
     if (!session || harnesses.isTool(session.harness) || statusOf(session) === 'background') continue;
     announce(id, next, prev);
     if (notifier) notifier.completed(id, next, prev);
+    if (heldLine.has(id)) followAnnounce(id, next);
   }
   if (changed) renderList();
+}
+
+/**
+ * heldOver is what a running session's `unknown` means: not known yet. A
+ * server that has just restarted reads every pane again, and until its first
+ * commit every session is `unknown` - in the hello as much as in a frame - and
+ * a read that found nothing for a tick says the same. Neither is news that a
+ * session stopped asking or working, so the last state that was known is kept,
+ * under the newer picture's order and unread mark, until a state that is
+ * known replaces it. The picture as it came is kept beside it (`held`) for the
+ * moment the row stops running (releaseHolds): a dead pane is `unknown` too,
+ * and a session that is started again must not come back with the question it
+ * was asking in its last life.
+ */
+function heldOver(id, next, prev) {
+  if (next.state !== 'unknown' || !prev || !prev.state || prev.state === 'unknown') return next;
+  const session = sessionOf(id);
+  if (!session || session.state !== 'running') return next;
+  return { ...prev, seq: next.seq, unread: next.unread, held: prev.held || next };
+}
+
+// releaseHolds lets go of every state heldOver kept for a session that is no
+// longer running: what it holds from then on is what the server said.
+function releaseHolds() {
+  for (const [id, act] of state.activity) {
+    if (!act || !act.held) continue;
+    const session = sessionOf(id);
+    if (session && session.state === 'running') continue;
+    state.activity.set(id, { ...act.held, seq: act.seq, unread: act.unread });
+  }
+}
+
+/**
+ * olderActivity says whether `next` is a picture from before the one `prev`
+ * is. The server's `seq` answers it exactly: it moves on with every picture it
+ * publishes - a new state, a note, the unread mark - and starts from the clock,
+ * so one from before a restart is below every one after it. A server too old
+ * to send it leaves `since` - the moment of the last committed change - which
+ * can only tell a strictly older commit: two pictures of the same commit are
+ * never called older by it, which is why a list read over HTTP does not bring
+ * its activity to sessions the live stream already speaks for (applyList).
+ */
+function olderActivity(next, prev) {
+  const a = Number(next.seq);
+  const b = Number(prev.seq);
+  if (Number.isFinite(a) && Number.isFinite(b) && next.seq != null && prev.seq != null) return a < b;
+  const at = Number(next.since) || 0;
+  const was = Number(prev.since) || 0;
+  return at > 0 && was > 0 && at < was;
 }
 
 // announce is the sidebar said out loud, for a reader who cannot see it. Only
@@ -1334,6 +1570,52 @@ function announce(id, next, prev) {
   if (before && next.state !== 'busy' && next.state !== 'tasks' && next.state !== 'waiting') line = who + ' finished';
   if (next.state === 'waiting' && (!prev || prev.state !== 'waiting')) line = who + ' needs an answer';
   if (!line) return;
+  // A turn whose verdict is being read is said with it, as its notification
+  // is, or as it is once the wait is over.
+  const outcome = next.state === 'idle' ? state.outcomes.get(id) : null;
+  if (outcome && outcome.phase === 'pending' && Number(outcome.since) === Number(next.since)) {
+    holdAnnounce(id, who, outcome);
+    return;
+  }
+  say(line);
+}
+
+// The lines waiting for a verdict (holdAnnounce), keyed by session.
+const heldLine = new Map();
+
+function holdAnnounce(id, who, outcome) {
+  dropAnnounce(id);
+  const wait = Math.max(0, (Number(outcome.due) || 0) - Date.now());
+  const timer = setTimeout(() => releaseAnnounce(id, null), wait);
+  heldLine.set(id, { who, since: Number(outcome.since), timer });
+}
+
+// releaseAnnounce says a held line, with its verdict when there is one.
+function releaseAnnounce(id, outcome) {
+  const held = heldLine.get(id);
+  if (!held) return;
+  dropAnnounce(id);
+  const word = outcome && outcome.phase === 'ready' ? OUTCOME_WORDS[outcome.kind] : '';
+  say(held.who + ' finished' + (word ? ': ' + word.toLowerCase() : ''));
+}
+
+function dropAnnounce(id) {
+  const held = heldLine.get(id);
+  if (!held) return;
+  clearTimeout(held.timer);
+  heldLine.delete(id);
+}
+
+// followAnnounce lets go of a held line whose turn turned out not to be over,
+// or that somebody has read meanwhile.
+function followAnnounce(id, next) {
+  const held = heldLine.get(id);
+  if (!held || next.state === 'unknown') return;
+  if (next.state !== 'idle' || !next.unread) dropAnnounce(id);
+  else held.since = Number(next.since);
+}
+
+function say(line) {
   announcePending = line;
   if (announceTimer) return;
   const wait = Math.max(0, ANNOUNCE_EVERY - (Date.now() - announcedAt));
@@ -1356,31 +1638,7 @@ function refreshSoon() {
 async function refreshList() {
   try {
     const data = await api('/api/sessions', { attempts: 2, timeout: 12000 });
-    state.sessions = data.sessions || [];
-    // The list is the catch-up path for a sidebar nobody has a socket open
-    // for: every view carries the activity of its own session.
-    const seen = {};
-    for (const row of state.sessions) if (row && row.activity) seen[row.id] = row.activity;
-    mergeActivity(seen);
-    state.loading = false;
-    state.reachable = true;
-    if (state.current) {
-      const fresh = sessionOf(state.current.id);
-      if (fresh) applySession(fresh);
-      else if (state.prestart && state.prestart.shownId() === state.current.id) {
-        // A prepared session deleted on another device. A terminal finds
-        // out through its socket; a panel has none, and would otherwise go
-        // on saving into a session that is not there.
-        detach();
-        showEmpty();
-      }
-    }
-    renderList();
-    // The tab was looking at a session before it lost the network, and the
-    // list is the first thing that can prove the session is still there. This
-    // is what makes an offline reload come back to the pane it was on -
-    // together with the line that was typed into it and never sent.
-    openWanted();
+    applyList(data.sessions || [], { rev: data.rev, source: 'fetch' });
     return state.sessions;
   } catch (err) {
     state.loading = false;
@@ -1389,6 +1647,416 @@ async function refreshList() {
     if (!isOffline(err)) toast(errorMessage(err), 'error');
     return state.sessions;
   }
+}
+
+/**
+ * applyList takes the whole list of sessions as the server has it and draws
+ * it. It is the one path every full list comes through - a fetch, the event
+ * stream's hello and its `sessions` frames, the fallback poll - so a list
+ * that arrived by any of them is drawn by the same rules.
+ */
+function applyList(rows, { rev, source = 'hello' } = {}) {
+  const live = !!state.events && state.events.live();
+  const numbered = typeof rev === 'number' && Number.isFinite(rev);
+  // A list is a picture of the store at one revision. The stream's lists come
+  // in order on one socket, and a hello starts that order again (a server
+  // that restarted counts from the beginning). A list read over HTTP while
+  // the stream is live can have been read before a change the stream has
+  // already drawn - a deleted session would come back - so one older than
+  // what is on screen is dropped. While the stream is down, an HTTP list is
+  // the only news there is and is taken.
+  if (numbered && typeof state.listRev === 'number' && rev < state.listRev
+    && (source === 'stream' || (source === 'fetch' && live))) return;
+  if (source === 'hello') state.listRev = numbered ? rev : null;
+  else if (numbered) state.listRev = typeof state.listRev === 'number' ? Math.max(state.listRev, rev) : rev;
+  if (source === 'fetch' && state.events) state.events.noteFresh();
+  state.sessions = Array.isArray(rows) ? rows.filter(Boolean) : [];
+  // The list is the catch-up path for a sidebar nobody has a socket open
+  // for: every view carries the activity of its own session. While the
+  // stream is live it carries every committed change as a frame of its own,
+  // in order, so the activity a list was read with - a moment earlier - is
+  // only taken for a session the page has heard nothing about yet.
+  const seen = {};
+  for (const row of state.sessions) {
+    if (!row.activity) continue;
+    if (source !== 'hello' && live && state.activity.has(row.id)) continue;
+    seen[row.id] = row.activity;
+  }
+  mergeActivity(seen, { full: source === 'hello' });
+  state.loading = false;
+  state.reachable = true;
+  if (state.current) {
+    const fresh = sessionOf(state.current.id);
+    if (fresh) applySession(fresh);
+    else if (state.prestart && state.prestart.shownId() === state.current.id) {
+      // A prepared session deleted on another device. A terminal finds
+      // out through its socket; a panel has none, and would otherwise go
+      // on saving into a session that is not there.
+      detach();
+      showHome({ replace: true });
+    }
+  }
+  // What is known about a session that is gone goes with it.
+  for (const map of [state.digests, state.answers]) {
+    for (const id of [...map.keys()]) if (!sessionOf(id)) map.delete(id);
+  }
+  renderList();
+  // The tab was asked for a session the list could not yet prove was there
+  // - a notification opened while the network was down - and this is the
+  // first list that can. Home leaves `wanted` empty, so nothing is attached
+  // behind a person who is reading it.
+  openWanted();
+}
+
+/* ------------------------------------------------------ the event stream */
+
+// What the stream hands over that the list does not: the digest of each
+// session and the answer run of each. A hello replaces both maps, because a
+// hello is the whole state at that moment; a frame changes one entry.
+function replaceMap(map, entries) {
+  map.clear();
+  if (!entries || typeof entries !== 'object') return;
+  for (const [id, value] of Object.entries(entries)) if (value) map.set(id, value);
+}
+
+// replaceAnswers is replaceMap for the runs, with one exception: a run that
+// started after the moment the state was read (`now`, the server's clock, as
+// `started` is) is newer than the picture, not ended by it. That is a poll
+// that was in flight while this page's own answer went in.
+function replaceAnswers(entries, now) {
+  const keep = [];
+  const at = Number(now) || 0;
+  if (at > 0) {
+    for (const [id, run] of state.answers) if (Number(run.started) > at) keep.push([id, run]);
+  }
+  replaceMap(state.answers, entries);
+  for (const [id, run] of keep) if (!state.answers.has(id)) state.answers.set(id, run);
+}
+
+// carriedOver is a digest with what the page held for the session kept in
+// it while the new one is still being read. The server keeps the previous
+// summary, context and question while a digest is pending, so Home does not
+// blink; a server that has just restarted has nothing to keep - its digests
+// lived in memory - and its first word about every session is a pending
+// digest with nothing in it. The page keeps what it had instead, until the
+// new server has read the screen and says what is there now. A question
+// kept that way is `carried`: this server has not seen it yet, and it may
+// have been answered at the machine while there was no server to see it.
+// Home keeps a question in prose counted, but says it is checking whether it
+// still asks, and offers no Answer, until the read says (home.js).
+function carriedOver(held, digest) {
+  if (!held || !digest || digest.phase !== 'pending' || digest.question || digest.summary || digest.context) return digest;
+  const question = held.question || null;
+  return { ...digest, summary: held.summary || '', context: held.context || '', question, carried: !!question };
+}
+
+// replaceDigests is the hello's digests. A running session the hello has no
+// digest for is one a restarted server has not read yet - a server only
+// forgets the digest of a session that was deleted - so what the page held
+// stays, as pending, until it has: a question asked in prose would
+// otherwise leave the Questions card for the moment of the read.
+//
+// Whether a session is running is what the hello's own rows say (`rows`),
+// not the list the page held before it: across a reboot that list still
+// says running where the hello says needs_resume. A program that is not
+// running is not read again - only a running one is digested - so a pending
+// digest kept for it would never be replaced, and once the session was
+// resumed the question its last life asked would be counted again and shown
+// as being read for good. What it was doing is kept, as the last word about
+// it; the question goes with the program that asked it.
+function replaceDigests(entries, rows) {
+  const held = new Map(state.digests);
+  const listed = Array.isArray(rows) ? new Map(rows.filter(Boolean).map((row) => [row.id, row])) : null;
+  replaceMap(state.digests, entries);
+  for (const [id, digest] of held) {
+    const now = state.digests.get(id);
+    if (now) {
+      state.digests.set(id, carriedOver(digest, now));
+      continue;
+    }
+    const session = listed ? listed.get(id) : sessionOf(id);
+    if (!session) continue;
+    if (session.state === 'running') state.digests.set(id, { ...digest, phase: 'pending', carried: !!digest.question });
+    else state.digests.set(id, { ...digest, question: null, phase: digest.phase === 'pending' ? 'ready' : digest.phase });
+  }
+}
+
+function digestFrame(id, digest) {
+  if (digest) state.digests.set(id, carriedOver(state.digests.get(id), digest)); else state.digests.delete(id);
+  drawLive();
+}
+
+// outcomeFrame is a verdict that changed, or went (null). Every outcome frame
+// comes twice - on the terminal socket and on the event stream - and one
+// that is older than the one held is not drawn over it.
+function outcomeFrame(id, outcome) {
+  const held = state.outcomes.get(id);
+  if (outcome) {
+    if (held && Number(held.rev) > Number(outcome.rev)) return;
+    state.outcomes.set(id, outcome);
+  } else {
+    state.outcomes.delete(id);
+  }
+  if (outcome && outcome.phase !== 'pending') {
+    releaseAnnounce(id, outcome);
+    if (notifier) notifier.judged(id, outcome);
+  }
+  renderList();
+}
+
+function answerFrame(id, run) {
+  if (run) state.answers.set(id, run); else state.answers.delete(id);
+  drawLive();
+}
+
+// adoptDigest is a digest that came back on an HTTP answer - a Read again, a
+// refusal that says the question changed. The stream may already have
+// delivered a newer one (the "ready" after the "pending" this answer
+// carries), and an answer slower than the stream must not put the older one
+// back. Revisions only go up within one server's life; a server that
+// restarted is told apart by its hello, which replaces the map.
+function adoptDigest(id, digest) {
+  if (!digest) return;
+  const held = state.digests.get(id);
+  if (held && Number(held.rev) >= Number(digest.rev)) return;
+  digestFrame(id, digest);
+}
+
+const RUN_ORDER = { waiting: 0, thinking: 1, acting: 1, done: 2, error: 2 };
+
+// adoptRun is a run that came back on an HTTP answer or a poll, under the
+// same rule: only a later picture of the same run, or a run started later.
+function adoptRun(id, run) {
+  if (!run) return;
+  const held = state.answers.get(id);
+  if (held && held.run_id === run.run_id) {
+    const was = RUN_ORDER[held.phase] || 0;
+    const now = RUN_ORDER[run.phase] || 0;
+    if (was > now || (was === now && (Number(held.step) || 0) > (Number(run.step) || 0))) return;
+  } else if (held && Number(held.started) > Number(run.started)) return;
+  answerFrame(id, run);
+}
+
+function mountStream() {
+  return mountEvents({
+    hello: (data) => {
+      forgetTitling();
+      if ('digests' in data) {
+        replaceDigests(data.digests, data.sessions);
+        state.digestsHeard = true;
+      }
+      if ('answers' in data) replaceAnswers(data.answers, data.now);
+      if ('outcomes' in data) replaceMap(state.outcomes, data.outcomes);
+      if (Array.isArray(data.sessions)) applyList(data.sessions, { rev: data.rev, source: 'hello' });
+      else drawLive();
+    },
+    sessions: (rows, rev) => applyList(rows, { rev, source: 'stream' }),
+    activity: (sessions) => mergeActivity(sessions),
+    title: (frame) => titleFrame(frame),
+    digest: digestFrame,
+    outcome: outcomeFrame,
+    answer: answerFrame,
+    // A pong: the page is as current as the moment its ping was sent, which
+    // is what a question asked for by a notification is waiting to know -
+    // and a badge a push wrote over (badgeWrittenElsewhere).
+    fresh: () => {
+      updateQuestions();
+      tellAsking();
+    },
+    status: () => drawLive(),
+    // A poll that could not be answered while the stream is down. It is said
+    // on Home and in the sidebar's empty state rather than in a toast: it
+    // repeats every few seconds for as long as the outage lasts.
+    unreachable: () => {
+      state.loading = false;
+      state.reachable = false;
+      renderList();
+    },
+    fast: () => homeShown() || questionsOpen(),
+  });
+}
+
+// streamConnection is how the event stream is, for Home's connection line
+// and the question dialog's (connectionLine).
+function streamConnection() {
+  const events = state.events;
+  return {
+    status: events ? events.status() : 'connecting',
+    updatedAt: events ? events.updatedAt() : 0,
+    blocked: events ? events.blocked() : false,
+    pollEvery: events ? events.pollEvery() : 0,
+    resuming: events ? events.resuming() : false,
+    quiet: events ? events.quiet() : false,
+  };
+}
+
+// questionsCtx is what the question dialog is drawn from: the same queue
+// the Questions card counts, and the maps the stream keeps current.
+const questionsCtx = {
+  queue: () => questionQueue(homeCtx()),
+  sessionOf,
+  activityOf,
+  digestOf: (id) => state.digests.get(id) || null,
+  answerOf: (id) => state.answers.get(id) || null,
+  adoptDigest,
+  adoptRun,
+  folderOf: (session) => folderLabelOf(session),
+  // Delivering: live, and not a stream that is quiet and being checked -
+  // the runs are asked about meanwhile rather than waited for.
+  live: () => !!state.events && state.events.live() && !state.events.quiet(),
+  // How current what the dialog shows is, by Home's rule: the dialog is a
+  // modal over Home, and Home's own line is behind it.
+  connection: () => connectionLine(streamConnection(), state.reachable),
+  // The moment the page's state is known to be the server's as of, and
+  // whether the last attempt to read one got through: a question asked for
+  // by a link is only called gone once a state newer than the link says so.
+  freshAt: () => (state.events ? state.events.stateAt() : 0),
+  // Whether the digests have been handed over at all since the page loaded:
+  // a question in prose is only found by its digest, and a page that has
+  // none yet cannot say there is no question (question.js `beingRead`).
+  digestsHeard: () => state.digestsHeard,
+  reachable: () => state.reachable,
+  select: (id) => selectSession(id),
+};
+
+// The sidebar's own tests, handed to Home so that it counts with them rather
+// than with copies of them.
+function homeCtx() {
+  return {
+    sessions: () => state.sessions,
+    activityOf,
+    statusOf,
+    digestOf: (id) => state.digests.get(id) || null,
+    outcomeOf,
+    checking,
+  };
+}
+
+/** showQuestions opens the question dialog, at one session or the oldest. */
+function showQuestions(id) {
+  openQuestions(questionsCtx, id || '');
+  if (state.events) {
+    state.events.refresh();
+    // A session asked for - a notification, a link, a row - is only called
+    // not asking against a state newer than the ask, and a stream that says
+    // it is live may be a socket that died quietly: it is asked now.
+    if (id) state.events.confirm();
+  }
+}
+
+/**
+ * questionOnHome is a question asked for from outside the page - the address
+ * `#q=<id>`, a notification tapped in this tab or in its worker's tray - and
+ * every one of them comes through here, so all of them land the same way:
+ * Home on the stage, and the question dialog over it at that question. Home
+ * is what is under the dialog when it closes, which is what a person who
+ * came for one question wants to see next - whatever else is asking.
+ *
+ * `replace` is for an address that asked for it: that entry is the page's
+ * own and is replaced by Home. A notification adds Home as a step, so Back
+ * returns to the session that was on screen.
+ */
+function questionOnHome(id, { replace = false } = {}) {
+  if (!homeShown()) showHome({ replace });
+  else if (location.hash !== '#home') history.replaceState(history.state, '', '#home');
+  showQuestions(id);
+}
+
+// openOnNews is a session asked for from outside the page - a notification
+// that it finished or was started - by the same rule as its address
+// (`#open=<id>`): it is wanted, so a tab that does not hold the list yet
+// opens it the moment the list proves it is there (openWanted). A question
+// dialog still open from an earlier tap is closed first, as its own "Open
+// session" closes it: a modal left in front would hold the session asked for
+// inert behind it.
+function openOnNews(id) {
+  closeQuestions();
+  state.wanted = id;
+  if (!state.current || state.current.id !== id) selectSession(id);
+}
+
+/**
+ * questionsOnHome is `#questions`, the address of the app's "Questions"
+ * shortcut: Home, and the dialog over it at the oldest question - or Home
+ * alone when nothing is asking. Whether anything is is only known once the
+ * page holds a current state (a question in prose is in the digests a hello
+ * brings), so a cold start waits for one (questionsWhenKnown).
+ */
+function questionsOnHome({ replace = false } = {}) {
+  if (!homeShown()) showHome({ replace });
+  else if (location.hash !== '#home') history.replaceState(history.state, '', '#home');
+  state.questionsWanted = true;
+  questionsWhenKnown();
+}
+
+function questionsWhenKnown() {
+  if (!state.questionsWanted) return;
+  // Gone from Home in the meantime, or opened some other way: the person
+  // has moved on, and the dialog is not put in front of what they went to.
+  if (!homeShown() || questionsOpen()) { state.questionsWanted = false; return; }
+  if (!knownCurrent() || !state.digestsHeard) return;
+  state.questionsWanted = false;
+  if (questionQueue(homeCtx()).length) showQuestions('');
+}
+
+/**
+ * knownCurrent says whether what the page holds is the server's state now,
+ * as far as the page can know: a hello or a poll has arrived since it
+ * loaded, and the stream is live, or it is down but a poll has read the
+ * state within the window Home calls current (connectionLine). A page
+ * coming back from being hidden, or a live stream whose ping is unanswered,
+ * holds what may be old, and old is not something to put on the app's icon.
+ */
+function knownCurrent() {
+  const events = state.events;
+  if (!events || !(events.stateAt() > 0) || !state.reachable) return false;
+  const conn = streamConnection();
+  const line = connectionLine(conn, state.reachable);
+  if (line.kind === 'live' || line.kind === 'polling') return true;
+  return line.kind === 'connecting' && conn.status !== 'live' && !conn.resuming && conn.updatedAt > 0;
+}
+
+/**
+ * tellAsking hands the sessions that are asking - the Questions card's own
+ * list - to the notifier, for the number on the app's icon and the
+ * questions in the tray that were answered. It is called wherever Home is
+ * drawn from the stream, and on the pong that follows the page coming back
+ * into view or a push arriving (badgeWrittenElsewhere); a page
+ * whose state is not known to be current says nothing, because a number from
+ * before the phone slept is worse than the number the last push left.
+ */
+function tellAsking() {
+  if (!notifier || !knownCurrent()) return;
+  // Written over by a push: what the page held then is not what to write
+  // back - it may be from before the phone slept, or behind the push by the
+  // moment the push took to arrive - so only a state from after it is.
+  if (state.badgeStale && !(state.events.stateAt() >= state.staleSince)) return;
+  const force = state.badgeStale;
+  state.badgeStale = false;
+  notifier.asking(questionQueue(homeCtx()).map((session) => session.id), { force });
+}
+
+/**
+ * badgeWrittenElsewhere is the app's badge and tray written by something
+ * other than this page: a push while the page was away, or one that has just
+ * arrived. They are written again (tellAsking, forced) from the first state
+ * the server sends after this moment - a hello, a poll, or the pong to the
+ * ping asked for here - and never from the one the page holds now: a page
+ * that was frozen in a pocket can come back with a socket that looks live
+ * and a state from before every question that was pushed meanwhile, and
+ * those questions' notifications would be closed as answered.
+ */
+function badgeWrittenElsewhere() {
+  state.badgeStale = true;
+  state.staleSince = Date.now();
+  if (state.events) state.events.confirm();
+}
+
+// folderLabelOf is the name the sidebar gives a session's folder.
+function folderLabelOf(session) {
+  const key = folderKeyOf(session);
+  const folder = foldersOf(state.sessions).find((one) => one.key === key);
+  return folder ? folder.label : '';
 }
 
 /**
@@ -1405,7 +2073,12 @@ async function refreshList() {
 function openWanted() {
   if (state.current || state.socket || state.pendingAttach) return;
   const session = state.wanted && sessionOf(state.wanted);
-  if (session) attach(session);
+  if (!session) return;
+  attach(session);
+  // The address says what is on screen, which until now was Home - in place
+  // of the entry the page itself wrote, so Back leaves rather than coming
+  // back here through the link it was opened at.
+  if (location.hash !== '#' + session.id) history.replaceState(history.state, '', '#' + session.id);
 }
 
 /* ---------------------------------------------------- the session actions */
@@ -1527,10 +2200,12 @@ async function deleteSession(session) {
     await api('/api/sessions/' + encodeURIComponent(session.id), { method: 'DELETE' });
     forgetDraft(session.id);
     state.sessions = state.sessions.filter((s) => s.id !== session.id);
+    // The session on screen is gone, and what is left to look at is Home -
+    // not whichever session happens to be next in the list, which is a
+    // terminal nobody asked for.
     if (state.current && state.current.id === session.id) {
       detach();
-      const next = state.sessions.find((s) => !isDone(s)) || state.sessions[0];
-      if (next) selectSession(next.id); else showEmpty();
+      showHome({ replace: true });
     }
     renderList();
     toast(editor ? 'VS Code was closed. Its state was kept.'
@@ -1609,7 +2284,7 @@ function openOptionsMenu(anchor) {
         if (notifier) notifier.setSound(!notifier.soundOn());
       }, 'sound'),
       menuSwitch('Notifications',
-        notifyAvailable ? 'When a session finishes or needs an answer' : 'Not available in this browser',
+        notifier ? notifier.notifyHint() : 'Not available in this browser',
         !!notifier && notifier.notifyOn(), () => {
           if (notifier) notifier.setNotify(!notifier.notifyOn());
         }, 'notify', !notifyAvailable),
@@ -1788,7 +2463,7 @@ function closeMenu() {
  * dialog and an open menu all keep it.
  */
 function keepTypingAlive() {
-  if (!state.term) return;
+  if (!state.term || homeShown()) return;
   if (state.menu || document.querySelector('dialog[open]')) return;
   const active = document.activeElement;
   if (active && active.isConnected
@@ -1798,34 +2473,55 @@ function keepTypingAlive() {
 
 /* ------------------------------------------------------- the terminal view */
 
-function showEmpty() {
+function homeShown() { return !!state.home && state.home.shown(); }
+
+/**
+ * showHome puts Home on the stage: what every session is doing, as numbers
+ * and as a list. It is the landing page, and it is what is left when the
+ * session on screen goes away.
+ *
+ * Nothing is attached while it is shown - no terminal, no socket, no panel -
+ * so nothing on it can take the focus, and the top bar is reset to the state
+ * it has with no session: no status, no usage, no copy and paste.
+ */
+function showHome({ replace = false } = {}) {
+  if (state.pendingAttach) { clearTimeout(state.pendingAttach); state.pendingAttach = null; }
+  detach();
   state.current = null;
+  state.wanted = '';
   dom.keybar.hidden = true;
-  dom.termEmpty.hidden = false;
-  dom.termEmpty.innerHTML = '';
-  // Unreachable is not empty. A page that could not read the list says so and
-  // keeps the session it was asked for, because the signal is what is
-  // missing - not the session.
-  const unreachable = !state.reachable;
-  dom.termEmpty.append(
-    el('h2', { class: 'empty-title', text: unreachable ? 'No connection' : 'No session open' }),
-    el('p', {
-      class: 'empty-body',
-      text: unreachable
-        ? 'This session opens again as soon as there is signal.'
-        : 'Start one and it opens here as a terminal.',
-    }),
-    unreachable ? null : el('button', { class: 'btn primary', type: 'button', text: 'New session', onclick: newSession }),
-  );
-  dom.sessionTitle.textContent = 'Socrates';
+  dom.termWrap.hidden = true;
+  dom.sessionTitle.textContent = 'Home';
   dom.titleRegen.hidden = true;
   stopUsage();
   if (state.assist) state.assist.attached();
   if (state.transfer) state.transfer.attached();
   dom.sessionStatus.hidden = true;
+  dom.sessionOutcome.hidden = true;
   dom.termOverlay.hidden = true;
   clearNotice();
-  if (state.reachable) { state.wanted = ''; location.hash = ''; }
+  // A move the person made is a step Back can undo; the page putting its
+  // own address in order - a link it was opened at, a session that went - is
+  // not, and replaces the entry rather than leaving one that reopens what
+  // was already dealt with.
+  if (location.hash !== '#home') {
+    if (replace) history.replaceState(history.state, '', '#home');
+    else location.hash = '#home';
+  }
+  closeNav();
+  dom.homeBtn.setAttribute('aria-pressed', 'true');
+  if (state.home) state.home.show();
+  if (state.events) state.events.refresh();
+  // No row is the one on screen any more.
+  drawList();
+}
+
+// hideHome takes Home off the stage, for a session that is being put there.
+function hideHome() {
+  dom.homeBtn.setAttribute('aria-pressed', 'false');
+  if (!homeShown()) return;
+  state.home.hide();
+  if (state.events) state.events.refresh();
 }
 
 // applySession draws everything about a session that is not the pane itself.
@@ -1857,7 +2553,7 @@ function applySession(session) {
   dom.sessionStatus.hidden = status === 'in_progress';
   dom.sessionStatus.textContent = STATUS_WORDS[status];
   dom.sessionStatus.dataset.status = status;
-  dom.termEmpty.hidden = true;
+  drawOutcomeTag();
 
   // What it runs and on which model is in the list's mark and in "Info" in
   // the row's menu; the bar keeps its width for the name. A prepared
@@ -2283,6 +2979,7 @@ function detach() {
  */
 function attach(session) {
   detach();
+  hideHome();
   // A session nobody can see is a session nobody can leave: the row is the
   // only way back to it, so the folder it is in is opened if the person had
   // shut it.
@@ -2373,10 +3070,41 @@ function attach(session) {
 
 // Start through the existing resume API, then wait for the IDE's HTTP server.
 // A generation keeps a slow launch from replacing a subsequently selected pane.
+/**
+ * readyIDE wakes an editor and waits for it to answer, and resolves with the
+ * address it is served at - or with '' when current says it is no longer
+ * wanted. It throws what went wrong.
+ */
+async function readyIDE(session, current) {
+  const data = await api('/api/sessions/' + encodeURIComponent(session.id) + '/resume', {
+    method: 'POST', timeout: 60000,
+  });
+  if (!current()) return '';
+  replaceSession(data.session);
+  if (data.error) throw new Error(data.error);
+  const base = '/ide/' + encodeURIComponent(session.id) + '/';
+  for (let attempt = 0; attempt < 60 && current(); attempt += 1) {
+    try {
+      const response = await fetch(base + 'healthz', { cache: 'no-store', signal: AbortSignal.timeout(3000) });
+      if (response.ok) return current() ? base : '';
+    } catch { /* code-server may still be starting */ }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  if (current()) throw new Error('VS Code did not become ready. Check the session log or retry.');
+  return '';
+}
+
+// ideQuery is what an editor is opened on: its folder, or - for the empty
+// editor, whose directory is only somewhere for its terminals to start -
+// code-server's empty window.
+function ideQuery(session) {
+  if (session.workdir_mode === 'dynamic') return '?ew=true';
+  return '?folder=' + encodeURIComponent(session.workdir);
+}
+
 async function openIDE(session, generation) {
   if (['failed', 'exited'].includes(session.state)) return;
   const current = () => generation === ideGeneration;
-  const base = '/ide/' + encodeURIComponent(session.id) + '/';
   // What stands on the stage until there is an editor on it: a turning mark
   // and a line of words, the same shape the pane's own overlay uses for a
   // session that is coming back.
@@ -2385,38 +3113,23 @@ async function openIDE(session, generation) {
   const loading = el('div', { class: 'ide-loading' }, spinner, words);
   dom.term.replaceChildren(loading);
   try {
-    const data = await api('/api/sessions/' + encodeURIComponent(session.id) + '/resume', {
-      method: 'POST', timeout: 60000,
+    const base = await readyIDE(session, current);
+    if (!base) return;
+    const frame = el('iframe', {
+      class: 'ide-frame', title: 'VS Code',
+      src: base + ideQuery(session),
+      allow: 'clipboard-read; clipboard-write',
     });
-    if (!current()) return;
-    replaceSession(data.session);
-    if (data.error) throw new Error(data.error);
-    for (let attempt = 0; attempt < 60 && current(); attempt += 1) {
-      try {
-        const response = await fetch(base + 'healthz', { cache: 'no-store', signal: AbortSignal.timeout(3000) });
-        if (response.ok) {
-          if (!current()) return;
-          const frame = el('iframe', {
-            class: 'ide-frame', title: 'VS Code',
-            src: base + '?folder=' + encodeURIComponent(session.workdir),
-            allow: 'clipboard-read; clipboard-write',
-          });
-          // The card stays on top of the frame rather than being replaced by
-          // it. `healthz` answers as soon as code-server's HTTP server is
-          // listening, and the workbench is ten more seconds of white after
-          // that - which is the one thing on this page that reads as broken.
-          words.textContent = 'Loading the editor…';
-          dom.term.replaceChildren(frame, loading);
-          // The editor's fields are under the keyboard switch like the page's.
-          watchFrame(frame);
-          onStatus('live');
-          revealIDE(frame, loading, current);
-          return;
-        }
-      } catch { /* code-server may still be starting */ }
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
-    if (current()) throw new Error('VS Code did not become ready. Check the session log or retry.');
+    // The card stays on top of the frame rather than being replaced by it.
+    // `healthz` answers as soon as code-server's HTTP server is listening, and
+    // the workbench is ten more seconds of white after that - which is the one
+    // thing on this page that reads as broken.
+    words.textContent = 'Loading the editor…';
+    dom.term.replaceChildren(frame, loading);
+    // The editor's fields are under the keyboard switch like the page's.
+    watchFrame(frame);
+    onStatus('live');
+    revealIDE(frame, loading, current);
   } catch (err) {
     if (!current()) return;
     // A mark that turns is a promise that something is still happening, and
@@ -2533,6 +3246,7 @@ async function retitleSession(session, { unnamed = false, prompt } = {}) {
   // The arrow turns from the press, not from the first frame back - and a
   // prepared session has no socket for a frame to come back on.
   state.titling.add(session.id);
+  state.namingHere.add(session.id);
   if (state.current && state.current.id === session.id) drawTitling(session.id);
   renderList();
   try {
@@ -2546,10 +3260,15 @@ async function retitleSession(session, { unnamed = false, prompt } = {}) {
     else alertDialog({ title: 'Could not name the session', body: errorMessage(err) });
   } finally {
     state.titling.delete(session.id);
+    state.namingHere.delete(session.id);
     if (state.current && state.current.id === session.id) drawTitling(session.id);
     renderList();
   }
 }
+
+// How long a naming can go without its end being heard before the page
+// stops waiting for it: the server's titleTimeout (30 s) and a margin.
+const TITLE_CEILING = 45000;
 
 // titleFrame follows the automatic naming of a session: the name pulses from
 // the moment the model is asked until it has answered, and an answer that is
@@ -2558,8 +3277,25 @@ async function retitleSession(session, { unnamed = false, prompt } = {}) {
 function titleFrame(frame) {
   const id = frame.id;
   if (!id) return;
-  if (frame.phase === 'start') state.titling.add(id);
-  else state.titling.delete(id);
+  const seq = Number(frame.seq) || 0;
+  if (seq) {
+    if (seq <= state.titleSeq) return;
+    state.titleSeq = seq;
+  }
+  if (frame.phase === 'start') {
+    state.titling.add(id);
+    // A naming is over within titleTimeout (30 s on the server). One whose
+    // end was never heard - a server that restarted under it, a frame sent
+    // while this page's socket was down - stops pulsing after that and a
+    // margin, rather than for as long as the page is open.
+    setTimeout(() => {
+      if (state.titleStarts.get(id) === seq) forgetTitling([id]);
+    }, TITLE_CEILING);
+    state.titleStarts.set(id, seq);
+  } else {
+    state.titling.delete(id);
+    state.titleStarts.delete(id);
+  }
   if (state.current && state.current.id === id) drawTitling(id);
   if (frame.title) renameRow(id, frame.title);
   else renderList();
@@ -2570,6 +3306,26 @@ function titleFrame(frame) {
       body: (session ? '“' + session.title + '”: ' : '') + (frame.text || 'the title model failed.'),
     });
   }
+}
+
+// forgetTitling lets go of namings whose end this page may never hear. The
+// event stream's hello is the whole state again, and nothing in it says a
+// session is being named: a frame lost while the stream was down, or a
+// naming a restarted server dropped, would otherwise pulse - and keep the
+// arrow beside the name disabled - until the page is reloaded. A naming
+// still going says so again with its done frame, which renames the row.
+// What this page asked for itself is settled by its own request.
+function forgetTitling(ids = [...state.titling]) {
+  let moved = false;
+  for (const id of ids) {
+    if (state.namingHere.has(id) || !state.titling.has(id)) continue;
+    state.titling.delete(id);
+    state.titleStarts.delete(id);
+    moved = true;
+  }
+  if (!moved) return;
+  if (state.current) drawTitling(state.current.id);
+  renderList();
 }
 
 /**
@@ -2600,6 +3356,12 @@ function onControl(sessionId, frame) {
   // so this frame is about whichever session it names and not about the one
   // this socket is attached to.
   if (frame.t === 'title') { titleFrame(frame); return; }
+  // The answer the operator is giving is broadcast on the session's own
+  // sockets as well as on the event stream, so a dialog opened over this
+  // terminal hears it even while the stream is reconnecting.
+  if (frame.t === 'answer') { if (frame.id) answerFrame(frame.id, frame.run || null); return; }
+  // A verdict is about whichever session it names, as a title is.
+  if (frame.t === 'outcome') { if (frame.id) outcomeFrame(frame.id, frame.outcome || null); return; }
   if (!state.current || state.current.id !== sessionId) return;
   switch (frame.t) {
     case 'hello':
@@ -2761,18 +3523,22 @@ function measureNewPane() {
 }
 
 // measureForStart is measureNewPane from wherever the page is: a prepared
-// session's panel stands where the pane would be, so the pane is put back
-// for the length of the measurement - one synchronous step, never painted.
+// session's panel or Home stands where the pane would be, so the pane is put
+// back for the length of the measurement - one synchronous step, never
+// painted.
 function measureForStart() {
   if (state.term) return state.term.size();
   const panelWas = dom.prestart.hidden;
+  const homeWas = dom.home.hidden;
   const wrapWas = dom.termWrap.hidden;
   dom.prestart.hidden = true;
+  dom.home.hidden = true;
   dom.termWrap.hidden = false;
   try {
     return measureNewPane();
   } finally {
     dom.prestart.hidden = panelWas;
+    dom.home.hidden = homeWas;
     dom.termWrap.hidden = wrapWas;
   }
 }
@@ -2917,6 +3683,8 @@ function restoreSidebar() {
 
 function wire() {
   dom.newSession.addEventListener('click', newSession);
+  dom.blankIDE.append(agentMark(IDE, 18));
+  dom.blankIDE.addEventListener('click', openBlankIDE);
   dom.menuBtn.addEventListener('click', () => {
     if (document.body.classList.contains('nav-open')) closeNav(); else openNav();
   });
@@ -2934,6 +3702,7 @@ function wire() {
     if (state.current) renameSession(state.current);
   });
   dom.titleRegen.addEventListener('click', () => retitleSession(state.current));
+  dom.sessionOutcome.addEventListener('click', () => showOutcome());
   // The on-screen keyboard, which on a touch screen this button raises and
   // puts away and nothing else does. With no field focused, it is raised for
   // the pane.
@@ -2947,11 +3716,36 @@ function wire() {
     try { await api('/api/logout', { method: 'POST' }); } catch { /* going anyway */ }
     location.href = '/login';
   });
-  window.addEventListener('hashchange', () => {
-    const id = location.hash.replace(/^#/, '');
-    if (id) state.wanted = id;
-    if (id && (!state.current || state.current.id !== id)) selectSession(id);
+  dom.homeBtn.addEventListener('click', () => {
+    if (homeShown()) closeNav(); else showHome();
   });
+  window.addEventListener('hashchange', () => {
+    const route = routeOf(location.hash);
+    if (route.kind === 'home') {
+      if (!homeShown()) showHome();
+      return;
+    }
+    if (route.kind === 'question') {
+      questionOnHome(route.id, { replace: true });
+      return;
+    }
+    if (route.kind === 'questions') {
+      questionsOnHome({ replace: true });
+      return;
+    }
+    openOnNews(route.id);
+  });
+  // The page coming back into view - unlocked, switched to, restored from
+  // the back-forward cache - is where the app's badge is put right: pushes
+  // may have written it while the page was away. It is written once the
+  // page holds a state from after it came back, which for a page that slept
+  // is the stream's next hello, and for one that did not the pong to a ping.
+  const back = () => {
+    if (document.visibilityState !== 'visible') return;
+    badgeWrittenElsewhere();
+  };
+  document.addEventListener('visibilitychange', back);
+  window.addEventListener('pageshow', back);
   // Anything that ends with the focus nowhere - a dialog closing, a menu
   // item, a notice being dismissed - hands it back to the pane on the next
   // tick, once the browser has settled on where it went.
@@ -2976,13 +3770,28 @@ function wire() {
   window.addEventListener('online', updateStale);
   window.addEventListener('offline', updateStale);
   setInterval(updateStale, 1000);
-  // The list is state, not a stream: it is re-read when the page wakes and
-  // slowly while it is being looked at, so a session another tab started or
-  // deleted does not sit there being wrong.
-  onWake(() => refreshList());
-  setInterval(() => {
-    if (document.visibilityState === 'visible') refreshList();
-  }, 15000);
+  // The list is not polled here any more: the event stream carries it, and
+  // while the stream is down it polls the same state itself (events.js), on
+  // a wake as well as on a timer.
+}
+
+/**
+ * routeOf reads what an address asks for (HOME.md §2.3): Home for `#home` and
+ * for nothing at all, the question dialog for `#q=<id>`, the dialog at the
+ * oldest question for `#questions` (the app's shortcut), and a session for
+ * `#open=<id>` - the form a notification opens a cold tab with - or `#<id>`.
+ */
+function routeOf(hash) {
+  const raw = String(hash || '').replace(/^#/, '');
+  if (!raw || raw === 'home') return { kind: 'home', id: '' };
+  if (raw === 'questions') return { kind: 'questions', id: '' };
+  let id = raw;
+  let kind = 'session';
+  if (raw.startsWith('q=')) { kind = 'question'; id = raw.slice(2); }
+  else if (raw.startsWith('open=')) { kind = 'open'; id = raw.slice(5); }
+  try { id = decodeURIComponent(id); } catch { /* an id is never escaped by this app */ }
+  if (!id) return { kind: 'home', id: '' };
+  return { kind, id };
 }
 
 async function boot() {
@@ -3019,9 +3828,29 @@ async function boot() {
   // or not anything is attached.
   notifier = mountNotify({
     sessionOf,
-    select: (id) => selectSession(id),
+    // "Finished" opens the session, as its address would - also in a tab
+    // that does not hold the list yet.
+    select: (id) => openOnNews(id),
+    // "Needs an answer" opens the question itself, on Home, the way the
+    // address `#q=` does: the dialog has its own way into the session.
+    question: (id) => questionOnHome(id),
+    // A turn that ended on a question in prose is a question too, though its
+    // news was "Finished": the digest that found the question says so.
+    asksInProse: (id) => {
+      const digest = state.digests.get(id);
+      return !!(digest && digest.question && digest.question.source === 'text');
+    },
+    // A turn's end whose verdict is being read waits for it (outcome.js).
+    outcome: (id) => state.outcomes.get(id) || null,
+    questionOf: (id) => {
+      const digest = state.digests.get(id);
+      return (digest && digest.question) || null;
+    },
     // A permission the browser answers late lands in a menu still open.
     changed: () => redrawMenu(),
+    // A push wrote the icon and the tray from the set it was counted with;
+    // this page may know a newer one.
+    pushed: () => badgeWrittenElsewhere(),
   });
   // The panel of a prepared session. Its Start ends where a new session's
   // does: the row it answers with replaces the prepared one, and
@@ -3037,14 +3866,29 @@ async function boot() {
     measure: () => measureForStart(),
     nameFromPrompt: (session, prompt) => retitleSession(session, { unnamed: true, prompt }),
   });
+  // Home, drawn from the sidebar's own state and tests.
+  state.home = mountHome({
+    host: dom.home,
+    ...homeCtx(),
+    words: { state: STATE_WORDS, activity: ACTIVITY_WORDS },
+    connection: streamConnection,
+    serverNow: () => (state.events ? state.events.serverNow() : Date.now()),
+    reachable: () => state.reachable,
+    loading: () => state.loading,
+    select: (id) => selectSession(id),
+    newSession: () => newSession(),
+    openQuestions: (id) => showQuestions(id),
+  });
   followViewport();
   // Whether the bucket is taking what is done here. Silent while it is.
   mountStorageBanner(document.getElementById('storageBanner'));
-  // Read before anything is fetched: on an offline reload this is the only
-  // thing the page knows about what it was doing.
-  state.wanted = location.hash.replace(/^#/, '');
+  // Read before anything is fetched. Home is the landing page whatever the
+  // address was (HOME.md §2.3), except for the two forms a notification
+  // opens a tab with - a question, and a session - and the app's
+  // "Questions" shortcut, which is Home with the dialog over it.
+  const route = routeOf(location.hash);
   state.loading = true;
-  renderList();
+  showHome({ replace: true });
   // The catalogue decides whether a folder offers VS Code, so the list is
   // drawn again once it is in.
   harnesses.load().then(() => renderList()).catch(() => { /* the sheet says so when it is opened */ });
@@ -3055,16 +3899,23 @@ async function boot() {
     const prefs = await api('/api/preferences', { attempts: 1, timeout: 8000 });
     if (prefs && prefs.terminal) state.terminal = { ...state.terminal, ...prefs.terminal };
   } catch { /* the defaults above are the shipped ones */ }
+  // A session a notification asked for is wanted before the list is read, so
+  // that an offline start opens it the moment the list can prove it exists.
+  // From here on `openWanted` is the only thing that attaches on its own, so
+  // there is one rule about when that is allowed and one place it lives.
+  if (route.kind === 'open') state.wanted = route.id;
   await refreshList();
-  // A tab with no session in its URL opens the newest one. From here on
-  // `openWanted` is the only thing that attaches on its own, so there is one
-  // rule about when that is allowed and one place it lives.
-  if (!state.wanted || !sessionOf(state.wanted)) {
-    const first = state.sessions.find((s) => !isDone(s)) || state.sessions[0];
-    state.wanted = first ? first.id : state.wanted;
-  }
-  openWanted();
-  if (!state.current && !state.socket && !state.pendingAttach) showEmpty();
+  // The stream from here on: the list, the activity, the digests and the
+  // answers, live, whatever is on the stage.
+  state.events = mountStream();
+  state.events.start();
+  drawLive();
+  // Only if the person is still where boot put them: "New session" works
+  // from the first line of boot, and a session started while the list was
+  // being fetched is not torn down for the dialog (openWanted's rule).
+  if (!homeShown() || state.current || state.socket || state.pendingAttach) return;
+  if (route.kind === 'question') questionOnHome(route.id);
+  else if (route.kind === 'questions') questionsOnHome({ replace: true });
 }
 
 boot();

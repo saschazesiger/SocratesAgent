@@ -364,6 +364,9 @@ func (s *Server) handlePutDraft(w http.ResponseWriter, r *http.Request) {
 	unlock := s.starts.lock(row.ID)
 	draft, err := s.store.SaveDraft(row.ID, body.Text, body.BaseRev)
 	unlock()
+	// The list carries the draft's revision and its first line, so a save
+	// is news for every other page that shows the row.
+	s.events.poke()
 	switch {
 	case errors.Is(err, store.ErrConflict):
 		// Another device saved first. Both texts exist now - theirs here,
@@ -406,6 +409,8 @@ func (s *Server) handleStartSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// Started or put back, the row has moved.
+	defer s.events.poke()
 	ctx, cancel := context.WithTimeout(r.Context(), createTimeout)
 	defer cancel()
 	next, status, err := s.startPrepared(ctx, row.ID, body.Cols, body.Rows, false)
@@ -640,8 +645,10 @@ func hostShell(row *store.Session) bool {
 	return json.Unmarshal(row.Options, &options) == nil && options.ShellExecution == "host"
 }
 
-// answerWithSessionCode is answerWithSession with a status of its own.
+// answerWithSessionCode is answerWithSession with a status of its own, and
+// tells every other open page the same way.
 func (s *Server) answerWithSessionCode(w http.ResponseWriter, code int, id string) {
+	s.events.poke()
 	row, err := s.store.GetSession(id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

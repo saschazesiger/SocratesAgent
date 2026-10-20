@@ -103,6 +103,9 @@ func newEnv(t *testing.T) *testEnv {
 	t.Cleanup(func() {
 		ts.Close()
 		srv.StopTunnel()
+		// A question still waiting for its words would be pushed from a
+		// closed store when its timer fired.
+		srv.push.stop()
 		st.Close()
 	})
 

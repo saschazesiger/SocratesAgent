@@ -53,6 +53,8 @@ const MODEL_PICKERS = [
   ['orTranscribe', 'openrouter.transcribe_model'],
   ['orStatus', 'openrouter.status_model'],
   ['orTitle', 'openrouter.title_model'],
+  ['orHome', 'openrouter.home_model'],
+  ['orOperator', 'openrouter.operator_model'],
 ];
 
 // FIELDS is every control that is one element and one path. Everything with a
@@ -60,6 +62,7 @@ const MODEL_PICKERS = [
 // is built and read below.
 const FIELDS = [
   ['orKey', 'openrouter.api_key'],
+  ['orOutcomes', 'openrouter.outcomes', 'bool'],
   ['workspaceRoot', 'workspace.root'],
   ['allowCustomDir', 'workspace.allow_custom', 'bool'],
   ['windowSize', 'terminal.window_size'],

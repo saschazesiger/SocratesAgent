@@ -36,6 +36,11 @@
   --accent-text: #ffffff;
   --green: #1a9a63;
   --amber: #b8811a;
+  /* The same three hues dark enough to carry text, and white text on them, at
+     the 4.5:1 a 15px label needs - in sunlight, on a car screen, at arm's length. */
+  --amber-strong: #8a5d0c;
+  --green-strong: #12754b;
+  --red-strong: #b42f2f;
   --red: #cf3f3f;
   --blue: #2f6df6;
   --r-sm: 8px;
@@ -70,6 +75,12 @@
 html, body {
   height: 100%;
   margin: 0;
+  /* Installed on a phone, Socrates is an app, and an app's frame does not
+     stretch: a drag past the end of a list would otherwise pull the whole page
+     down with it - the rubber band on an iPhone, a reload on Android - and in a
+     standalone window there is no browser around it to make that look like the
+     page rather than the app coming loose. Lists inside keep scrolling. */
+  overscroll-behavior: none;
   /* Font inflation changes DOM measurements without changing canvas glyphs. */
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
@@ -345,6 +356,12 @@ html:not(.touch) #kbBtn, html:not(.touch) .kb-copy { display: none !important; }
      them, so collapsing the sidebar is one number changing rather than a
      second layout. */
   grid-template-columns: var(--side-w, 264px) minmax(0, 1fr);
+  /* A phone on its side is wide enough for the column, and its notch is then
+     on the left: the column grows by the inset and pads it away (below), so
+     the list keeps the width it always has and nothing in it is under the
+     notch. Everywhere without a notch the inset is 0 and this is the line
+     above. */
+  grid-template-columns: calc(var(--side-w, 264px) + env(safe-area-inset-left, 0px)) minmax(0, 1fr);
   transition: grid-template-columns .16s var(--ease);
   /* --app-h is the visual viewport, which is the only height a phone with its
      keyboard up tells the truth about; keybar.js keeps it current and it is
@@ -359,6 +376,9 @@ html:not(.touch) #kbBtn, html:not(.touch) .kb-copy { display: none !important; }
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* Column or drawer, the sidebar is what sits against the left edge, so it
+     is what keeps clear of a notch there. */
+  padding-left: env(safe-area-inset-left, 0px);
 }
 /* A column has nothing beside it to tap, so the scrim only exists once the
    sidebar has become a drawer. */
@@ -395,6 +415,21 @@ html:not(.touch) #kbBtn, html:not(.touch) .kb-copy { display: none !important; }
   border: 1px solid var(--line);
 }
 .side-toggle .ico-rail { display: none; }
+/* Home is the same hairline square, and pressed - the sunken grey of the row
+   that is open - while it is the page on the stage. It is not a .side-toggle:
+   a phone hides those, and a drawer needs its way home as much as a column. */
+.home-btn {
+  flex: none;
+  border: 1px solid var(--line);
+}
+.home-btn svg { width: 18px; height: 18px; }
+/* The empty editor is the same square, wearing the mark the folders' editors
+   wear. */
+.blank-ide-btn {
+  flex: none;
+  border: 1px solid var(--line);
+}
+.home-btn[aria-pressed="true"] { background: var(--bg-sunken); color: var(--text); }
 .brand .mark {
   width: 26px;
   height: 26px;
@@ -585,6 +620,21 @@ html:not(.touch) #kbBtn, html:not(.touch) .kb-copy { display: none !important; }
 .tag.status[data-status="pending"] { color: var(--amber); border-color: currentColor; }
 .tag.status[data-status="background"] { color: var(--text-soft); border-color: currentColor; }
 .tag.status[data-status="done"] { color: var(--green); border-color: currentColor; }
+/* How the last turn left the work: a tag that is a button, because a tap
+   says why. */
+.tag.outcome {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: inherit;
+  background: none;
+  cursor: pointer;
+  color: var(--outcome, var(--text-soft));
+  border-color: currentColor;
+}
+.tag.outcome[hidden] { display: none; }
+.tag.outcome svg { width: 11px; height: 11px; flex: none; }
+.tag.outcome[data-kind="checking"] { cursor: default; }
 .tag {
   flex: none;
   font-size: 10.5px;
@@ -678,7 +728,12 @@ html:not(.touch) #kbBtn, html:not(.touch) .kb-copy { display: none !important; }
   display: flex;
   align-items: center;
   gap: 0;
-  padding: 0 10px;
+  /* Beside the column the bar's right end is the screen's edge, and on a
+     phone turned on its side that edge can be the notch. Its left end is the
+     column's border, which the column already keeps clear; under the drawer
+     breakpoint, where the bar starts at the edge, its rules there add the left
+     inset too. */
+  padding: 0 calc(10px + env(safe-area-inset-right, 0px)) 0 10px;
   position: relative;
   border-bottom: 1px solid var(--line);
   background: var(--bg);
@@ -860,6 +915,9 @@ html:not(.touch) #kbBtn, html:not(.touch) .kb-copy { display: none !important; }
   color: var(--text);
   width: min(440px, calc(100vw - 32px));
   max-height: calc(100vh - 64px);
+  /* The height a phone actually shows, toolbars and all; the line above is
+     for a browser that does not know the unit. */
+  max-height: calc(100dvh - 64px);
   overflow: auto;
   animation: pop .22s var(--ease) backwards;
 }
@@ -1005,7 +1063,12 @@ html:not(.touch) #kbBtn, html:not(.touch) .kb-copy { display: none !important; }
   z-index: 5;
   background: var(--bg);
   border-bottom: 1px solid var(--line);
-  padding: 0 22px;
+  /* Edge to edge at every width, so a phone on its side puts its notch over
+     one end of it unless the insets are added. */
+  padding: 0
+           calc(22px + env(safe-area-inset-right, 0px))
+           0
+           calc(22px + env(safe-area-inset-left, 0px));
   height: 58px;
   display: flex;
   align-items: center;
@@ -1236,7 +1299,11 @@ html:not(.touch) #kbBtn, html:not(.touch) .kb-copy { display: none !important; }
      is not a slower ring, it is a still one, and a mark whose whole meaning is
      "this is happening right now" cannot be drawn still. That is what it was
      drawn as, and it was read as a session that had stopped. */
-  .chat-item .row-mark.busy::after { animation-duration: .9s !important; }
+  .chat-item .row-mark.busy::after,
+  .home-mark.busy::after { animation-duration: .9s !important; }
+  /* Home's word for a stream that is coming back beats like the bar's. */
+  .home-conn[data-status="connecting"] .home-conn-dot,
+  .q-conn[data-status="connecting"] .q-conn-dot { animation-duration: 2.4s !important; }
   /* And the ring a working button wears is the same ring for the same reason:
      it is the only thing on the page that says the tap landed and the answer
      is being made. Drawn still it says the opposite. */
@@ -1256,7 +1323,6 @@ html:not(.touch) #kbBtn, html:not(.touch) .kb-copy { display: none !important; }
     /* Narrower than the screen either way, so the conversation behind it stays
        visible and the scrim is tappable. */
     width: min(274px, 84vw);
-    padding-left: env(safe-area-inset-left, 0px);
     z-index: 40;
     transform: translateX(-100%);
     transition: transform .22s cubic-bezier(.3,.8,.4,1);
@@ -1295,6 +1361,7 @@ html:not(.touch) #kbBtn, html:not(.touch) .kb-copy { display: none !important; }
              0
              calc(12px + env(safe-area-inset-left, 0px));
   }
+  .home-inner { --home-notch-left: env(safe-area-inset-left, 0px); }
 }
 
 /* Two fields side by side need room for both. This is the admin page's own
@@ -1307,7 +1374,13 @@ html:not(.touch) #kbBtn, html:not(.touch) .kb-copy { display: none !important; }
 /* A phone in portrait. The admin page is all cards inside cards, and its three
    layers of padding are what a 320px screen cannot afford. */
 @media (max-width: 620px) {
-  .admin-top { padding: 0 14px; gap: 8px; }
+  .admin-top {
+    padding: 0
+             calc(14px + env(safe-area-inset-right, 0px))
+             0
+             calc(14px + env(safe-area-inset-left, 0px));
+    gap: 8px;
+  }
   .admin-wrap { padding: 18px 14px calc(48px + env(safe-area-inset-bottom, 0px)); }
   .card { padding: 18px 16px; border-radius: var(--r); }
   .check .nm { min-width: 0; }
@@ -1568,18 +1641,7 @@ html:not(.touch) #kbBtn, html:not(.touch) .kb-copy { display: none !important; }
 }
 .overlay-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
 
-/* Nothing is open yet. */
-.term-empty {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  text-align: center;
-  padding: 24px;
-}
+/* Nothing there yet: Home with no sessions, or with no signal. */
 .empty-title { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -.02em; }
 .empty-body { margin: 0; color: var(--text-soft); font-size: 14px; }
 
@@ -1840,6 +1902,11 @@ body.stale .icon-btn.working::after { animation-play-state: paused; opacity: .4;
    on: a small hourglass on the mark's lower right corner, on a disc of the
    row's own background so it reads over the logo at 18px. */
 .chat-item .row-tasks { display: none; }
+/* The same hourglass while a finished turn's verdict is being read, and the
+   verdict's own mark in its place once it is in (outcome.js). */
+.chat-item .row-outcome { display: none; }
+.chat-item .row-mark.checking .row-tasks,
+.chat-item .row-mark.judged .row-outcome,
 .chat-item .row-mark.tasks .row-tasks {
   display: block;
   position: absolute;
@@ -1854,9 +1921,22 @@ body.stale .icon-btn.working::after { animation-play-state: paused; opacity: .4;
   pointer-events: none;
   transition: background .16s var(--ease);
 }
-.chat-item:hover .row-mark.tasks .row-tasks { background: var(--bg-hover); }
-.chat-item.active .row-mark.tasks .row-tasks { background: var(--bg-sunken); }
-.row-tasks svg { width: 100%; height: 100%; display: block; }
+.chat-item:hover .row-mark.tasks .row-tasks,
+.chat-item:hover .row-mark.checking .row-tasks,
+.chat-item:hover .row-mark.judged .row-outcome { background: var(--bg-hover); }
+.chat-item.active .row-mark.tasks .row-tasks,
+.chat-item.active .row-mark.checking .row-tasks,
+.chat-item.active .row-mark.judged .row-outcome { background: var(--bg-sunken); }
+.row-tasks svg,
+.row-outcome svg { width: 100%; height: 100%; display: block; }
+/* Each verdict in its own colour, the header's tag and Home's badge alike. */
+:is(.row-outcome, .tag.outcome, .home-badge, .home-row-outcome)[data-kind="complete"] { --outcome: var(--green); }
+:is(.row-outcome, .tag.outcome, .home-badge, .home-row-outcome)[data-kind="partial"] { --outcome: var(--blue); }
+:is(.row-outcome, .tag.outcome, .home-badge, .home-row-outcome)[data-kind="needs_input"] { --outcome: var(--amber); }
+:is(.row-outcome, .tag.outcome, .home-badge, .home-row-outcome)[data-kind="blocked"] { --outcome: var(--red); }
+:is(.row-outcome, .tag.outcome, .home-badge, .home-row-outcome)[data-kind="error"] { --outcome: var(--text-faint); }
+:is(.row-outcome, .tag.outcome, .home-badge, .home-row-outcome):is([data-kind="checking"], [data-kind="tasks"]) { --outcome: var(--text-soft); }
+.chat-item .row-mark.judged .row-outcome { color: var(--outcome, var(--text-soft)); }
 /* A name whose session finished something nobody has seen. The session being
    looked at is never bold - the page never gives it the class. */
 .chat-item.unread .label { font-weight: 600; color: var(--text); }
@@ -2740,4 +2820,694 @@ body.stale .chat-item .row-mark.busy::after { animation-play-state: paused; opac
   .prestart .btn,
   .prestart .seg-row .seg { min-height: 44px; }
   .prestart .mic-btn { width: 44px; height: 44px; }
+}
+
+/* ------------------------------------------------------------------ home
+
+   What every session is doing, as numbers and as a list. The same white and
+   the same hairlines as everything else: a card is a hairline box, a number
+   is ink, and the one thing in colour is the one thing that wants somebody -
+   the questions, in the amber a waiting row's ring already wears. */
+.home {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  background: var(--bg);
+}
+.home-scroll {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.home-inner {
+  max-width: 1080px;
+  margin: 0 auto;
+  /* Clear of a landscape notch: on the right always, and on the left once
+     the sidebar is a drawer (--home-notch-left) - a column takes that inset
+     itself (.sidebar). Push taps land here. */
+  padding: 22px
+           calc(var(--home-pad, 24px) + env(safe-area-inset-right, 0px))
+           calc(40px + env(safe-area-inset-bottom, 0px))
+           calc(var(--home-pad, 24px) + var(--home-notch-left, 0px));
+}
+.home-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.home-head-text { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.home-title {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -.025em;
+}
+.home-title-mark { display: inline-flex; color: var(--text-soft); }
+.home-title-mark svg { width: 22px; height: 22px; display: block; }
+.home-new { flex: none; }
+/* How live the numbers are, in words: a green dot that is the bar's own when
+   it is, an amber one that beats while the stream comes back, and a grey one
+   with the age of what is shown when it is not coming back yet. */
+.home-conn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--text-soft);
+}
+.home-conn-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+}
+.home-conn[data-status="connecting"] .home-conn-dot { background: var(--amber); animation: pulse 1.6s ease-in-out infinite; }
+.home-conn[data-status="offline"] { color: var(--text-faint); }
+.home-conn[data-status="offline"] .home-conn-dot { background: var(--text-faint); }
+.home-conn[data-status="polling"] .home-conn-dot { background: var(--text-soft); }
+
+/* The questions first and largest, the other nine beside it in a grid that
+   keeps its shape: a card with nothing in it is drawn quiet, never taken
+   away, so a number changing never moves the others. */
+.home-numbers {
+  display: grid;
+  grid-template-columns: minmax(250px, 1fr) 2.6fr;
+  gap: 12px;
+  margin-bottom: 28px;
+}
+.home-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 10px;
+}
+.home-card {
+  appearance: none;
+  font: inherit;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+  min-height: 92px;
+  padding: 13px 15px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color .16s var(--ease), box-shadow .16s var(--ease), background .16s var(--ease);
+}
+.home-card:hover { border-color: var(--line-strong); }
+.home-card:active { background: var(--bg-hover); }
+.home-card[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.home-count {
+  font-size: 28px;
+  font-weight: 650;
+  line-height: 1.1;
+  letter-spacing: -.03em;
+  font-variant-numeric: tabular-nums;
+  transition: opacity .16s var(--ease);
+}
+.home-card-label { font-size: 13px; font-weight: 550; }
+.home-card-sub {
+  max-width: 100%;
+  font-size: 12px;
+  color: var(--text-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Quiet, and still readable: a large number at 3.8:1. */
+.home-card.zero .home-count { color: #80838a; }
+.home-card.zero .home-card-label { color: var(--text-soft); }
+/* Numbers that are not live are not drawn as if they were. */
+.home.not-live .home-count { opacity: .45; }
+.home-questions {
+  justify-content: space-between;
+  gap: 14px;
+  padding: 18px 20px;
+}
+.home-q-main { display: flex; align-items: center; gap: 16px; min-width: 0; max-width: 100%; }
+.home-q-words { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.home-questions .home-count { font-size: 52px; }
+.home-questions .home-card-label { font-size: 17px; font-weight: 600; }
+.home-questions .home-card-sub { font-size: 13px; color: var(--text-soft); }
+.home-q-answer { display: none; }
+.home-questions.asking { border-color: var(--amber); background: #fdf8ef; }
+.home-questions.asking:hover { box-shadow: inset 0 0 0 1px var(--amber); }
+.home-questions.asking .home-count { color: var(--amber); }
+.home-questions.asking .home-q-answer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  min-height: 52px;
+  border-radius: 999px;
+  background: var(--amber-strong);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+/* The sessions behind the numbers: one large row each, a hairline between. */
+.home-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+.home-list-title { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -.015em; }
+.home-segs {
+  display: inline-flex;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.home-seg {
+  appearance: none;
+  font: inherit;
+  font-size: 13px;
+  min-height: 32px;
+  padding: 0 14px;
+  border: 0;
+  border-left: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--text-soft);
+  cursor: pointer;
+}
+.home-seg:first-child { border-left: 0; }
+.home-seg:hover { background: var(--bg-hover); color: var(--text); }
+.home-seg[aria-pressed="true"] { color: var(--text); font-weight: 550; background: var(--bg-sunken); }
+.home-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 74px;
+  padding: 13px 10px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  transition: background .16s var(--ease);
+  animation: fade .24s var(--ease) both;
+}
+.home-row:hover { background: var(--bg-hover); }
+.home-mark-wrap { position: relative; flex: none; display: inline-flex; }
+.home-mark { position: relative; flex: none; display: inline-flex; margin: 0 4px; }
+/* The hourglass of background work or of a verdict being read, and the
+   verdict's mark, on the corner of the agent's mark - the sidebar's, larger. */
+.home-badge {
+  position: absolute;
+  right: -3px;
+  bottom: -5px;
+  width: 17px;
+  height: 17px;
+  padding: 2px;
+  border-radius: 50%;
+  background: var(--bg);
+  color: var(--outcome, var(--text-soft));
+  pointer-events: auto;
+}
+.home-badge[hidden] { display: none; }
+.home-badge svg { width: 100%; height: 100%; display: block; }
+.home-row:hover .home-badge { background: var(--bg-hover); }
+.home-mark.busy::after,
+.home-mark.waiting::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  border: 1.5px solid var(--line-strong);
+  pointer-events: none;
+}
+.home-mark.waiting::after { border-color: var(--amber); }
+.home-mark.busy::after { border-top-color: var(--accent); animation: spin 900ms linear infinite; }
+body.stale .home-mark.busy::after { animation-play-state: paused; opacity: .4; }
+.home-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.home-row-title,
+.home-row-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-row-title { font-size: 15px; font-weight: 550; }
+/* The title is the row's button - what a screen reader and a keyboard open the
+   session with - and looks like the text it is. */
+button.home-row-title {
+  appearance: none;
+  display: block;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 550;
+  text-align: left;
+  cursor: pointer;
+}
+.home-row.unread button.home-row-title { font-weight: 700; }
+.home-row.unread .home-row-title { font-weight: 700; }
+.home-row.done .home-row-title { color: var(--text-faint); }
+.home-row.done .agent-mark { opacity: .4; filter: grayscale(1); }
+.home-row-meta { font-size: 12.5px; color: var(--text-soft); }
+.home-row-summary {
+  font-size: 13.5px;
+  color: var(--text);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.home-row-summary.pending { color: var(--text-faint); }
+/* Why the turn was judged so, and what it left open. */
+.home-row-outcome { display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; color: var(--text-soft); }
+.home-row-outcome[hidden] { display: none; }
+.home-row-reason { color: var(--outcome, var(--text-soft)); }
+.home-row-todos { margin: 0; padding-left: 18px; }
+.home-row-todos li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.btn.home-answer {
+  flex: none;
+  height: 44px;
+  padding: 0 20px;
+  font-size: 15px;
+  background: var(--amber-strong);
+  border-color: var(--amber-strong);
+}
+.btn.home-answer:hover { background: #7a520a; border-color: #7a520a; box-shadow: none; transform: none; }
+.home-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 48px 16px;
+  text-align: center;
+}
+.home-empty-body { margin: 0; color: var(--text-faint); font-size: 14px; }
+@container (max-width: 760px) {
+  .home-numbers { grid-template-columns: 1fr; }
+  .home-questions { flex-direction: row; align-items: center; min-height: 0; }
+  .home-questions.asking .home-q-answer { align-self: center; flex: none; padding: 0 26px; }
+}
+@container (max-width: 560px) {
+  .home-inner {
+    --home-pad: 16px;
+    padding-top: 16px;
+    padding-bottom: calc(32px + env(safe-area-inset-bottom, 0px));
+  }
+  .home-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  /* On a phone the nine cards are a number and a word each, so the list
+     under them is still within a thumb's reach; what a card is about is one
+     tap away, in that list. */
+  .home-grid .home-card { min-height: 0; padding: 10px 13px; }
+  .home-grid .home-card-sub { display: none; }
+  .home-count { font-size: 24px; }
+  .home-questions .home-count { font-size: 40px; }
+  .home-q-main { gap: 12px; }
+  .home-row { gap: 12px; padding: 12px 4px; }
+  .btn.home-answer { padding: 0 16px; }
+}
+@container (max-width: 400px) {
+  .home-questions { flex-direction: column; align-items: stretch; }
+  .home-questions.asking .home-q-answer { align-self: stretch; }
+  .home-new span { display: none; }
+  .home-new { width: 40px; padding: 0; }
+}
+/* A finger aims at all of it. */
+html.touch .home-card { min-height: 104px; }
+html.touch .home-grid .home-card { min-height: 72px; }
+html.touch .home-row { min-height: 88px; }
+html.touch .home-seg { min-height: 44px; padding: 0 18px; font-size: 14px; }
+html.touch .btn.home-answer { height: 52px; padding: 0 24px; font-size: 16px; }
+
+/* ------------------------------------------------------- the question sheet
+
+   One question at a time, as large as the screen allows: the whole screen on
+   a phone and on a touch screen like a car's, a wide dialog at a desk. The
+   options are the biggest things on it - a button a finger cannot miss, the
+   label in 20px type and what it means under it - and the buttons that send,
+   read aloud and stop are along the bottom edge, where a thumb already is. */
+.sheet.question-sheet {
+  width: min(760px, calc(100vw - 32px));
+  max-width: none;
+  height: min(880px, calc(100vh - 48px));
+  /* As with .sheet: what the phone shows, with the vh line as the fallback. */
+  height: min(880px, calc(100dvh - 48px));
+  max-height: none;
+  padding: 0;
+  overflow: hidden;
+}
+.question-sheet[open] { display: flex; flex-direction: column; }
+.q-shell { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.q-top {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 60px;
+  /* The dialog is the whole screen on a phone, on its side as well: every
+     edge keeps clear of the notch and the rounded corners. */
+  padding: calc(8px + env(safe-area-inset-top, 0px))
+           calc(16px + env(safe-area-inset-right, 0px))
+           8px
+           calc(12px + env(safe-area-inset-left, 0px));
+  border-bottom: 1px solid var(--line);
+}
+.q-close { width: 44px; height: 44px; }
+.q-close svg { width: 20px; height: 20px; }
+.q-top-title { font-size: 16px; font-weight: 600; }
+.q-nav { display: flex; align-items: center; gap: 4px; }
+.q-nav-btn { width: 44px; height: 44px; border: 1px solid var(--line); }
+.q-nav-btn svg { width: 20px; height: 20px; }
+.q-counter {
+  min-width: 70px;
+  text-align: center;
+  font-size: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.q-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 18px calc(22px + env(safe-area-inset-right, 0px)) 24px calc(22px + env(safe-area-inset-left, 0px));
+}
+.q-session {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-bottom: 16px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+.q-mark { flex: none; display: inline-flex; }
+.q-session-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.q-session-title,
+.q-session-folder { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.q-session-title { font-size: 17px; font-weight: 600; letter-spacing: -.015em; }
+.q-session-folder { font-size: 13px; color: var(--text-soft); }
+.q-open { flex: none; height: 52px; padding: 0 22px; font-size: 16px; font-weight: 550; }
+.q-body { transition: opacity .16s var(--ease); }
+/* Being read again: the question as it was, dimmed, under the words that say
+   so - never a blank dialog, and never the old question drawn as current. */
+.q-body.pending { opacity: .45; }
+/* Not current: the stream is down, coming back or being checked. Said under
+   the top bar in Home's words (Home's own line is behind the dialog), and the
+   question and its options are dimmed - one answered at the machine meanwhile
+   must not look as live as one still waiting. */
+.q-conn {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+  font-size: 14px;
+  color: var(--text-soft);
+}
+.q-conn[hidden] { display: none; }
+.q-conn-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.q-conn[data-status="connecting"] .q-conn-dot { background: var(--amber); animation: pulse 1.6s ease-in-out infinite; }
+.q-conn-words { font-weight: 600; }
+.q-conn-detail:empty { display: none; }
+.q-shell.not-live .q-body { opacity: .55; }
+/* A question or step just drawn under the finger takes no tap for a moment
+   (question.js TAP_ARM): the next tap of a double tap reaches nothing. */
+.q-shell.q-arming .q-scroll button,
+.q-shell.q-arming .q-actions button,
+.q-shell.q-arming .q-open { pointer-events: none; }
+/* The question as it was answered, once the session has moved on from it. */
+.q-body.past { opacity: .6; }
+/* What the focus is put on after a redraw - the question, the dialog - is not
+   something to press, and is not ringed as if it were. */
+.q-shell:focus, .q-text:focus, .q-session-title:focus { outline: none; }
+.q-reading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  font-size: 16px;
+  color: var(--text-soft);
+}
+.q-problem {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border: 1px solid #f0d4d4;
+  border-radius: 14px;
+  background: #fdf3f3;
+  color: var(--red-strong);
+  font-size: 16px;
+}
+.q-problem p { margin: 0 0 12px; }
+.q-problem-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.q-note { margin: 0 0 12px; font-size: 15px; color: var(--amber-strong); }
+.q-context { margin: 0 0 16px; font-size: 16px; line-height: 1.5; color: var(--text-soft); }
+.q-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--text-soft);
+}
+.q-chip {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-soft);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 2px 7px;
+}
+.q-text {
+  margin: 0 0 10px;
+  font-size: 24px;
+  line-height: 1.3;
+  font-weight: 600;
+  letter-spacing: -.02em;
+  overflow-wrap: anywhere;
+}
+.q-detail { margin: 0 0 14px; font-size: 16px; line-height: 1.45; color: var(--text-soft); }
+.q-options { display: flex; flex-direction: column; gap: 10px; margin: 18px 0 4px; }
+.q-option {
+  appearance: none;
+  font: inherit;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  min-height: 72px;
+  padding: 14px 18px;
+  text-align: left;
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color .16s var(--ease), box-shadow .16s var(--ease), background .16s var(--ease);
+}
+.q-option:hover:not(:disabled) { background: var(--bg-hover); }
+.q-option:active:not(:disabled) { transform: scale(.995); }
+.q-option:disabled { cursor: default; opacity: .6; }
+.q-option[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1.5px var(--accent); }
+.q-option[aria-pressed="true"]:disabled { opacity: 1; }
+.q-option-key {
+  flex: none;
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  font-size: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-soft);
+}
+.q-option.multi .q-option-key { border-radius: 10px; }
+.q-option[aria-pressed="true"] .q-option-key { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.q-option.multi[aria-pressed="true"] .q-option-key::after {
+  content: "";
+  width: 13px;
+  height: 7px;
+  margin-top: -3px;
+  border-left: 2.5px solid currentColor;
+  border-bottom: 2.5px solid currentColor;
+  transform: rotate(-45deg);
+}
+.q-option-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.q-option-label { font-size: 20px; font-weight: 550; line-height: 1.25; overflow-wrap: anywhere; }
+.q-option-desc { font-size: 15px; line-height: 1.4; color: var(--text-soft); }
+.q-recommended {
+  display: inline-block;
+  margin-left: 10px;
+  vertical-align: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--green-strong);
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+.q-own { margin-top: 18px; }
+.q-own-label { display: block; margin-bottom: 6px; font-size: 13px; font-weight: 550; color: var(--text-soft); }
+.q-own .dictate { align-items: stretch; gap: 8px; }
+.q-own .textarea { min-height: 64px; font-size: 18px; line-height: 1.45; border-radius: 14px; padding: 14px 16px; }
+.q-own .mic-btn { width: 64px; height: auto; min-height: 64px; border-radius: 14px; }
+.q-own .mic-btn svg { width: 24px; height: 24px; }
+.q-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin-top: 18px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: var(--bg-sunken);
+  font-size: 17px;
+  font-weight: 550;
+}
+.q-status[data-kind="done"] { color: var(--green-strong); }
+.q-status[data-kind="error"] { background: #fdf3f3; color: var(--red-strong); }
+.q-status-detail { flex-basis: 100%; font-size: 14px; font-weight: 400; color: var(--text-soft); }
+.q-actions {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px
+           calc(16px + env(safe-area-inset-right, 0px))
+           calc(12px + env(safe-area-inset-bottom, 0px))
+           calc(16px + env(safe-area-inset-left, 0px));
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+.q-big {
+  min-height: 60px;
+  padding: 0 22px;
+  border-radius: 16px;
+  font-size: 18px;
+  font-weight: 600;
+}
+.q-send, .q-retry { flex: 1 1 140px; }
+.q-cancel, .q-back, .q-open-error { flex: 0 1 auto; }
+.q-read { flex: 0 1 auto; gap: 10px; }
+.q-read-icon { display: inline-flex; }
+.q-read-icon svg { width: 22px; height: 22px; display: block; }
+.q-read.speaking { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.q-finished {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 32px calc(24px + env(safe-area-inset-right, 0px)) 32px calc(24px + env(safe-area-inset-left, 0px));
+  text-align: center;
+}
+.q-finished-mark { color: var(--green); }
+.q-finished-mark svg { width: 56px; height: 56px; display: block; }
+.q-finished-title { margin: 0; font-size: 24px; font-weight: 600; letter-spacing: -.02em; }
+.q-finished .q-big { min-width: 200px; }
+/* The whole screen below a desk, and on any touch screen: a car's is wide,
+   but it is a finger at arm's length, and the dialog is all there is. */
+@media (max-width: 900px) {
+  .sheet.question-sheet {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    border-radius: 0;
+    padding-bottom: 0;
+  }
+}
+html.touch .sheet.question-sheet {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  border-radius: 0;
+  padding-bottom: 0;
+}
+/* The keyboard button's copy is laid over the top right corner. */
+html.touch .q-top { padding-right: calc(120px + env(safe-area-inset-right, 0px)); }
+html.touch .q-option { min-height: 84px; padding: 16px 20px; }
+html.touch .q-big { min-height: 68px; }
+@media (max-width: 560px) {
+  .q-scroll { padding: 16px calc(16px + env(safe-area-inset-right, 0px)) 20px calc(16px + env(safe-area-inset-left, 0px)); }
+  .q-session { flex-wrap: wrap; }
+  .q-open { width: 100%; }
+  .q-text { font-size: 22px; }
+  .q-actions {
+    padding-left: calc(12px + env(safe-area-inset-left, 0px));
+    padding-right: calc(12px + env(safe-area-inset-right, 0px));
+  }
+  .q-read .q-read-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .q-read { padding: 0 18px; }
+}
+/* A short screen - a phone on its side in a car mount - has room for the
+   question and its options or for the chrome around them, not both: the top
+   and the bottom bars shrink to the size of a finger, the session is one
+   line, and the context is two lines that open with a tap. */
+@media (max-height: 500px) {
+  .q-top, html.touch .q-top { min-height: 48px; padding-top: calc(2px + env(safe-area-inset-top, 0px)); padding-bottom: 2px; }
+  .q-close, .q-nav-btn { width: 44px; height: 44px; }
+  .q-scroll { padding-top: 10px; padding-bottom: 12px; }
+  .q-session { flex-wrap: nowrap; gap: 10px; padding-bottom: 8px; margin-bottom: 10px; }
+  .q-session-folder { display: none; }
+  .q-open, .q-session .q-open { width: auto; height: 44px; padding: 0 14px; font-size: 14px; }
+  .q-context {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    margin-bottom: 8px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .q-context.open { display: block; -webkit-line-clamp: none; }
+  .q-text { font-size: 19px; margin-bottom: 6px; }
+  .q-options { margin-top: 10px; gap: 8px; }
+  .q-option, html.touch .q-option { min-height: 60px; padding: 8px 16px; }
+  .q-actions { gap: 8px; padding-top: 6px; padding-bottom: calc(6px + env(safe-area-inset-bottom, 0px)); }
+  .q-big, html.touch .q-big { min-height: 52px; }
+  .q-read .q-read-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .q-read { padding: 0 16px; }
 }

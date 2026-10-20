@@ -41,7 +41,7 @@ func TestObjectNamesRoundTrip(t *testing.T) {
 }
 
 func TestLocalOnlyKeysStayLocal(t *testing.T) {
-	for _, key := range []string{"agents_catalog", "rev_high_water", "resume_note:abc", "mirror.instance", "mirror.bucket_id"} {
+	for _, key := range []string{"agents_catalog", "rev_high_water", "resume_note:abc", "mirror.instance", "mirror.bucket_id", "activity.since", "outcomes"} {
 		if MirroredKV(key) {
 			t.Errorf("%s would go to the bucket", key)
 		}

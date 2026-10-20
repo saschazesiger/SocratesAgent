@@ -25,6 +25,19 @@ const (
 	// times a session, on a phone that is waiting for it. Fast and cheap wins,
 	// and it is the family that already transcribes here.
 	DefaultStatusModel = "google/gemini-2.5-flash"
+
+	// DefaultHomeModel reads the screen of every coding session for Home: a
+	// one line summary, and the question a waiting session is asking. It
+	// runs on every turn of every session, so fast and cheap comes first, and
+	// what it reads out of a menu is checked by a person before anything is
+	// typed.
+	DefaultHomeModel = "google/gemini-3.5-flash"
+
+	// DefaultOperatorModel types a person's answer into a terminal. Knowing
+	// which key moves where in a TUI menu is the part a cheap model gets
+	// wrong, and a wrong key in somebody's coding session is the expensive
+	// mistake, so this one is capable on purpose.
+	DefaultOperatorModel = "anthropic/claude-sonnet-5.5"
 )
 
 // Settings is the full configuration document.
@@ -54,6 +67,19 @@ type OpenRouterSettings struct {
 	// text and a model that does not exist is only found out when OpenRouter
 	// refuses it.
 	StatusModel string `json:"status_model"`
+	// HomeModel writes the digests Home shows - what each session is doing
+	// and what it is asking - and OperatorModel is the one that types an
+	// answer to that question into the terminal. Both are new names on
+	// purpose: the model of the operator that was removed must not come back
+	// with whatever value an old document still carries for it.
+	HomeModel     string `json:"home_model"`
+	OperatorModel string `json:"operator_model"`
+	// Outcomes has the digest that a turn's end starts also judge how the
+	// turn left the work - complete, partly done, waiting on the person or
+	// blocked - with HomeModel. It is off until somebody turns it on: it
+	// sends more of a session than the screen (Claude's last instruction,
+	// answer and task list), and notifications wait for its answer.
+	Outcomes bool `json:"outcomes"`
 }
 
 // The languages Socrates speaks. There are two of them and there is no third
@@ -256,6 +282,8 @@ func Default() Settings {
 			TranscribeModel: DefaultTranscribeModel,
 			TitleModel:      DefaultTitleModel,
 			StatusModel:     DefaultStatusModel,
+			HomeModel:       DefaultHomeModel,
+			OperatorModel:   DefaultOperatorModel,
 		},
 		Voice: VoiceSettings{
 			Language:      DefaultLanguage,
@@ -309,6 +337,14 @@ func (s *Settings) Normalize() {
 	// nobody asked for.
 	if strings.TrimSpace(s.OpenRouter.StatusModel) == "" {
 		s.OpenRouter.StatusModel = d.OpenRouter.StatusModel
+	}
+	// The same for Home's digests and for the answer operator: both work
+	// wherever there is a key, so neither may need a model picked first.
+	if strings.TrimSpace(s.OpenRouter.HomeModel) == "" {
+		s.OpenRouter.HomeModel = d.OpenRouter.HomeModel
+	}
+	if strings.TrimSpace(s.OpenRouter.OperatorModel) == "" {
+		s.OpenRouter.OperatorModel = d.OpenRouter.OperatorModel
 	}
 	s.Voice.Language = NormalizeLanguage(s.Voice.Language)
 	if strings.TrimSpace(s.Voice.STTPrompt) == "" {

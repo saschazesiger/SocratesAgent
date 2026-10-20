@@ -4,8 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Admin · Socrates</title>
+<meta name="description" content="A web terminal for Claude Code, Codex, OpenCode and your shell.">
+<meta name="theme-color" content="#ffffff">
+<meta name="format-detection" content="telephone=no">
+<!-- The same install tags as index.html (see there): a page can be added to
+     the Home Screen from wherever it happens to be, and iOS reads them from
+     the page that is open at the time. -->
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Socrates">
 <link rel="icon" href="/favicon.png">
-<link rel="apple-touch-icon" href="/static/img/logo.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/static/img/apple-touch-icon.png">
+<link rel="manifest" href="/static/manifest.json">
 <link rel="stylesheet" href="/static/css/app.css">
 </head>
 <body>
@@ -159,7 +170,7 @@
       <div class="field">
         <label for="orKey">OpenRouter API key</label>
         <input class="input mono" type="password" id="orKey" placeholder="sk-or-v1-…" autocomplete="off">
-        <div class="hint">Create one at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a>. It transcribes what you dictate, and nothing else; the coding programs bring their own credentials.</div>
+        <div class="hint">Create one at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a>. It transcribes what you dictate, and it runs the models under <a href="#assistCard">Status &amp; naming</a>: the spoken status and the session names, Home's summaries and questions — which send the screen of every coding session to OpenRouter, and with the turn outcome switched on also Claude's last instruction, answer and task list — and the operator that types your answers into a session. The coding programs bring their own credentials.</div>
       </div>
       <div class="field">
         <label>Transcription model</label>
@@ -226,8 +237,9 @@
       </div>
     </section>
 
-    <!-- The two models that read a screen without typing into it: one says
-         what the session is doing, the other calls it something. -->
+    <!-- The models that read a screen: one says what the session is doing,
+         one calls it something, one writes Home's line and question for
+         it, and the last types the answer a person chose to that question. -->
     <section class="card" id="assistCard">
       <h2>Status &amp; naming</h2>
       <p class="card-sub">Status has a model read the screen of a session and say what it is doing, in one or two sentences, which the voice above reads out loud. The namer reads the first screen a session answers on and calls the session after it, once.</p>
@@ -241,6 +253,20 @@
         <label>Title model</label>
         <div id="orTitle"></div>
         <div class="hint">Asked for a handful of words once per session, so the cheapest thing that can read a screen will do — google/gemini-2.5-flash-lite is the default.</div>
+      </div>
+      <div class="field">
+        <label>Home summaries and questions</label>
+        <div id="orHome"></div>
+        <div class="hint">Reads the screen of every coding session for Home: a line about what it is doing, and the question it is asking with its choices. It runs on every turn, so a fast, cheap model is the right one — google/gemini-3.5-flash is the default.</div>
+      </div>
+      <div class="field">
+        <label class="switch"><input type="checkbox" id="orOutcomes"><span class="track"></span><span>Check each turn's outcome</span></label>
+        <div class="hint">When a turn ends, the same read also judges whether the task is complete, partly done with open todos, waiting on you, or blocked, and the session shows it. For Claude it is also sent the last instruction, the last answer and the task list. Notifications wait up to 45 seconds for the verdict.</div>
+      </div>
+      <div class="field">
+        <label>Answering questions</label>
+        <div id="orOperator"></div>
+        <div class="hint">Types the answer you chose on Home into the session, key by key, and only ever because you tapped it. Reading a terminal menu is where a cheap model goes wrong, so this one is capable on purpose — anthropic/claude-sonnet-5.5 is the default.</div>
       </div>
     </section>
 

@@ -59,13 +59,21 @@ const journalDownloadMax = 16 << 20
 //
 // handleListSessions answers the session list: every session, whatever its
 // status, because the list files them itself.
+//
+// The revision is read before the rows, as the event stream's list reads it:
+// rows are never older than the rev they come with. A write that lands in
+// between is in them under the rev before it, and the list of its own rev,
+// which the page draws over them, follows; read the other way round, older
+// rows would carry the write's rev, and the page would take them for the
+// list of it.
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	rev := s.store.Rev()
 	sessions, err := s.store.ListSessions()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"sessions": s.views(sessions), "rev": s.store.Rev()})
+	writeJSONCompressed(w, r, http.StatusOK, map[string]any{"sessions": s.views(sessions), "rev": rev})
 }
 
 // sessionView is a session as the API hands it over: the stored row, plus
@@ -222,6 +230,9 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &body) {
 		return
 	}
+	// Whatever this ends in - a session, a failed one, or nothing - every
+	// other open page hears about it as soon as it has.
+	defer s.events.poke()
 	// The idempotency check comes before everything else, including whether
 	// sessions can be created at all: a repeat of a request that worked must
 	// answer with the session it made, whatever the machine looks like now.
@@ -604,16 +615,29 @@ func (s *Server) ensure(w http.ResponseWriter, r *http.Request, restart bool) {
 	if !ok {
 		return
 	}
+	// A relaunch moves the row whether it worked or not.
+	defer s.events.poke()
 	if err := s.manager.Available(); err != nil {
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), createTimeout)
 	defer cancel()
+	// A relaunch is a new program under the same tmux name, and a key of an
+	// answer run that was on its way to the old one would be typed into it
+	// as input nobody gave. So the run is stopped - and waited for - before
+	// the relaunch, not after it: for a restart once the manager has taken it
+	// on (a restart of a live pane is refused, and the answer being typed into
+	// that pane goes on), and for an ensure when the old terminal is gone,
+	// which is the only time an ensure starts one.
+	stop := func() { s.answers.stop(row.ID, "the session was restarted") }
+	if !restart && s.answers.terminalGone(row.ID) {
+		stop()
+	}
 	var next *store.Session
 	var err error
 	if restart {
-		next, err = s.manager.Restart(ctx, row.ID)
+		next, err = s.manager.RestartAfter(ctx, row.ID, stop)
 	} else {
 		next, err = s.manager.Ensure(ctx, row.ID)
 	}
@@ -686,8 +710,11 @@ func (s *Server) handleJournal(w http.ResponseWriter, r *http.Request) {
 }
 
 // answerWithSession reloads a row after a write, so that the browser is
-// answered with what was stored rather than with what it sent.
+// answered with what was stored rather than with what it sent. Every caller
+// has just changed the row, so every other open page is told now rather than
+// at the event stream's next look.
 func (s *Server) answerWithSession(w http.ResponseWriter, id string) {
+	s.events.poke()
 	row, err := s.store.GetSession(id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

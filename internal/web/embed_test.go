@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -30,7 +31,7 @@ func TestPagesAskForStampedAssets(t *testing.T) {
 		rec := httptest.NewRecorder()
 		ServePage(rec, httptest.NewRequest(http.MethodGet, "/", nil), page)
 		body := rec.Body.String()
-		for _, ref := range regexp.MustCompile(`["'](/static/[^"']*|/favicon\.png[^"']*)["']`).FindAllStringSubmatch(body, -1) {
+		for _, ref := range regexp.MustCompile(`["'](/static/[^"']*|/favicon\.png[^"']*|/apple-touch-icon[^"']*)["']`).FindAllStringSubmatch(body, -1) {
 			if !strings.Contains(ref[1], "?v="+version) {
 				t.Errorf("%s asks for %s without the build stamp", page, ref[1])
 			}
@@ -238,4 +239,23 @@ func get(t *testing.T, path string) string {
 		t.Fatalf("GET %s: %d", path, rec.Code)
 	}
 	return rec.Body.String()
+}
+
+// iOS asks the root for the home screen icon on its own, and it gets the very
+// bytes the pages link to, as a PNG, under both of the names it asks by.
+func TestAppleTouchIconAtTheRoot(t *testing.T) {
+	want := asset("img/apple-touch-icon.png")
+	if want == nil {
+		t.Skip("the home screen icon is not in the build")
+	}
+	for _, path := range []string{"/apple-touch-icon.png", "/apple-touch-icon-precomposed.png"} {
+		rec := httptest.NewRecorder()
+		AppleTouchIcon(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "image/png" {
+			t.Fatalf("%s = %d %q", path, rec.Code, rec.Header().Get("Content-Type"))
+		}
+		if !bytes.Equal(rec.Body.Bytes(), want) {
+			t.Fatalf("%s is not the icon the pages link to", path)
+		}
+	}
 }

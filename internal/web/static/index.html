@@ -4,8 +4,20 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Socrates</title>
+<meta name="description" content="A web terminal for Claude Code, Codex, OpenCode and your shell.">
+<meta name="theme-color" content="#ffffff">
+<meta name="format-detection" content="telephone=no">
+<!-- Added to the Home Screen, Socrates opens as an app of its own: no browser
+     bar, a white status bar over the white page, and the short name under the
+     icon. iOS reads these rather than the manifest for all of that, and also
+     takes its icon from apple-touch-icon - an opaque one, because iOS fills a
+     transparent corner with black. -->
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Socrates">
 <link rel="icon" href="/favicon.png">
-<link rel="apple-touch-icon" href="/static/img/logo.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/static/img/apple-touch-icon.png">
 <link rel="manifest" href="/static/manifest.json">
 <link rel="stylesheet" href="/static/css/app.css">
 <link rel="stylesheet" href="/static/vendor/xterm.css">
@@ -14,14 +26,24 @@
 <div class="app">
   <aside class="sidebar" id="sidebar">
     <div class="side-head">
-      <!-- The name of the thing, and the one control that takes the column
-           down to a rail. On a phone the sidebar is already a drawer, so the
-           control is not there at all. -->
+      <!-- The name of the thing, the way back to Home, and the one control
+           that takes the column down to a rail. On a phone the sidebar is
+           already a drawer, so the rail control is not there at all - and
+           Home is, which is why it is not a .side-toggle. -->
       <div class="brand-row">
         <div class="brand">
           <img class="mark" src="/static/img/logo.png" alt="" width="24" height="24">
           <span class="brand-name">Socrates</span>
         </div>
+        <!-- An editor with no folder open, in a tab of its own. Its mark is
+             put in by session.js, which draws every agent's mark. -->
+        <button class="icon-btn blank-ide-btn" id="blankIDE" type="button" hidden
+                title="Open an empty VS Code in a new tab"
+                aria-label="Open an empty VS Code in a new tab"></button>
+        <button class="icon-btn home-btn" id="homeBtn" type="button"
+                title="Home" aria-label="Home" aria-pressed="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 10.5L12 3.5l8.5 7"/><path d="M5.5 9v10.5a1 1 0 0 0 1 1h3.5v-6h4v6h3.5a1 1 0 0 0 1-1V9"/></svg>
+        </button>
         <button class="icon-btn side-toggle" id="sideCollapse" type="button"
                 title="Collapse the sidebar" aria-label="Collapse the sidebar"
                 aria-expanded="true" aria-controls="sidebar">
@@ -75,6 +97,9 @@
       <!-- Where the person filed this session. In progress, what every session
            starts as, says nothing. -->
       <span class="tag status" id="sessionStatus" hidden></span>
+      <!-- How the last turn left the work, when the dashboard checks it:
+           "Checking…" while it is read, then its word. A tap says why. -->
+      <button class="tag outcome" id="sessionOutcome" type="button" hidden></button>
       <!-- Account limits and this conversation's estimated API-equivalent
            cost, and how long until each limit renews. A tap opens the whole
            reading - what each window is, when exactly it renews - because a
@@ -153,13 +178,15 @@
             <div class="ticker-window" id="tickerWindow" role="status" aria-live="polite"></div>
           </div>
         </div>
-        <!-- Before the first session exists there is nothing to attach to. -->
-        <div class="term-empty" id="termEmpty" hidden></div>
       </div>
       <!-- A prepared session (PreStart) has no terminal yet. Its panel takes
            the pane's place: its settings, its first prompt and its Start
            button. prestart.js draws it. -->
       <section class="prestart" id="prestart" aria-label="Prepared session" hidden></section>
+      <!-- Home: what every session is doing, as numbers and as a list, live.
+           It is the landing page and what the stage shows when no session is
+           open. home.js draws it. -->
+      <section class="home" id="home" aria-label="Home" hidden></section>
     </div>
 
     <!-- The keys a phone keyboard does not have. keybar.js fills them in; the

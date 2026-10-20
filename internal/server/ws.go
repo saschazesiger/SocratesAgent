@@ -453,6 +453,12 @@ func (s *Server) allowHandshake(ip string, known bool) bool {
 	if known {
 		return true
 	}
+	return s.allowRate(ip, handshakeBurst)
+}
+
+// allowRate counts one attempt against a key's ceiling of burst per
+// handshakeWindow, and says whether it is still under it.
+func (s *Server) allowRate(key string, burst int) bool {
 	s.loginMu.Lock()
 	defer s.loginMu.Unlock()
 	now := time.Now()
@@ -464,13 +470,13 @@ func (s *Server) allowHandshake(ip string, known bool) bool {
 			delete(s.wsRate, addr)
 		}
 	}
-	a := s.wsRate[ip]
+	a := s.wsRate[key]
 	if a == nil {
-		s.wsRate[ip] = &attempt{count: 1, until: now.Add(handshakeWindow)}
+		s.wsRate[key] = &attempt{count: 1, until: now.Add(handshakeWindow)}
 		return true
 	}
 	a.count++
-	return a.count <= handshakeBurst
+	return a.count <= burst
 }
 
 // remembers reports whether the hub already holds this tab's viewer, which is
@@ -1578,15 +1584,31 @@ func (s *Server) broadcastAll(frame func(*termViewer) any) {
 // same reason OnExit is: the pane is the substrate's business and the frame is
 // the transport's.
 func (s *Server) onSessionActivity(sessionID string, a termux.Activity) {
+	// A turn's end whose outcome is to be read is said to be before the
+	// change itself, on the same sockets: a page hears that the verdict is
+	// coming before its notifier hears that the turn ended (outcome.go).
+	s.digests.outcomeEdge(sessionID, a)
 	frame := map[string]any{
 		"t":        "activity",
 		"sessions": map[string]termux.Activity{sessionID: a},
 	}
 	s.broadcastAll(func(*termViewer) any { return frame })
+	// And to every page with no terminal open: Home and the sidebar of a
+	// page that is not attached to anything.
+	s.events.publish(frame)
+	// A turn that ended is what reaches a phone nobody is looking at; a
+	// question asked or a turn ended is what Home reads the screen for, and
+	// a question the session is no longer asking is cleared before anyone
+	// can answer it.
+	//
+	// The push goes first: the digest a turn's end starts can find a question
+	// in prose, and replaces the "Finished" this change sends with it - and a
+	// prompt's question is put on the wait for its words before the digest
+	// that reads them is asked for, so that the read cannot finish first.
+	s.push.observe(sessionID, a)
+	s.digests.observe(sessionID, a)
 	// The first prompt being taken up is what gives a session its name.
 	s.titles.observe(sessionID, a)
-	// And a turn that ended is what reaches a phone nobody is looking at.
-	s.push.observe(sessionID, a)
 }
 
 // emitTitle tells every open socket where the automatic naming of a session
@@ -1594,11 +1616,11 @@ func (s *Server) onSessionActivity(sessionID string, a termux.Activity) {
 // by hand got there first) or failed (with the reason, which the browser shows
 // in a dialog).
 //
-// It goes to every socket rather than to the session's own viewers because
-// the name is in the sidebar of every browser, and the session being named is
-// not necessarily the one being looked at.
+// It goes to every socket and every event stream rather than to the session's
+// own viewers because the name is in the sidebar of every browser, and the
+// session being named is not necessarily the one being looked at.
 func (s *Server) emitTitle(sessionID, phase, title, text string) {
-	frame := map[string]any{"t": "title", "id": sessionID, "phase": phase}
+	frame := map[string]any{"t": "title", "id": sessionID, "phase": phase, "seq": s.nextTitleSeq()}
 	if title != "" {
 		frame["title"] = title
 	}
@@ -1606,6 +1628,22 @@ func (s *Server) emitTitle(sessionID, phase, title, text string) {
 		frame["text"] = text
 	}
 	s.broadcastAll(func(*termViewer) any { return frame })
+	s.events.publish(frame)
+}
+
+// nextTitleSeq is the number of the next title frame. It starts from the
+// clock in microseconds rather than from one, so that a page that heard the
+// frames of a server before its restart never takes a new frame for one it
+// has already had - and it stays below 2^53, the largest whole number a
+// browser reads exactly.
+func (s *Server) nextTitleSeq() int64 {
+	for {
+		prev := s.titleSeq.Load()
+		next := max(prev+1, time.Now().UnixMicro())
+		if s.titleSeq.CompareAndSwap(prev, next) {
+			return next
+		}
+	}
 }
 
 // emitStatus carries one phase of a spoken status to the viewers of its

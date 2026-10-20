@@ -106,15 +106,19 @@ func ParseObject(name string) (ObjectKind, string, error) {
 //
 // It is a deny-list on purpose. The rows that must stay on this machine are a
 // cache (the harness catalogue), the revision reservation (which is about this
-// database file and nothing else), the resume notices (which describe a tmux
-// session on this machine) and the mirror's own bookkeeping. Everything else -
+// database file and nothing else), the resume notices and the moments the
+// sessions entered their states (which describe tmux sessions on this
+// machine; the second changes on every committed state), the verdicts on the
+// sessions' last turns (written at every turn's end, and about panes on this
+// machine as much as the moments are) and the mirror's own bookkeeping.
+// Everything else -
 // settings, the password hash, profiles, push keys, the unread marks - is
 // state a restore has to bring back, and a key added next year is far more
 // likely to be that than a cache, so a new key persists unless somebody says
 // otherwise.
 func MirroredKV(key string) bool {
 	switch {
-	case key == "agents_catalog", key == revKey:
+	case key == "agents_catalog", key == revKey, key == "activity.since", key == "outcomes":
 		return false
 	case strings.HasPrefix(key, "resume_note:"), strings.HasPrefix(key, "mirror."):
 		return false

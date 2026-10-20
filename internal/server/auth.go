@@ -339,6 +339,9 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		_ = s.store.DeleteLogin(c.Value)
+		// Every open event stream of this login stops now, not when its
+		// socket happens to drop.
+		s.events.revoke()
 	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -374,7 +377,12 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := s.store.DeleteAllLogins(); err != nil && !errors.Is(err, store.ErrNotFound) {
+	err = s.store.DeleteAllLogins()
+	// Whatever the delete answered, the streams of the logins it removed are
+	// closed: a phone left on Home must stop hearing every question the moment
+	// its owner signs everybody out.
+	s.events.revoke()
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

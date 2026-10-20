@@ -83,13 +83,18 @@ func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	activity := s.manager.ActivityOf(row.ID)
 	language := config.NormalizeLanguage(settings.Voice.Language)
+	// The verdict on the turn the session is resting after, if there is one.
+	verdict := ""
+	if o, ok := s.digests.outcomeOf(row.ID); ok && activity.State == termux.StateIdle && o.Since == activity.Since {
+		verdict = outcomeWords(o)
+	}
 
 	temperature := 0.2
 	client := openrouter.New(settings.OpenRouter.BaseURL, settings.OpenRouter.APIKey)
 	s.emitStatus(row.ID, statusPhaseAsking, "Asking "+model)
 	res, err := client.Chat(ctx, openrouter.ChatRequest{
 		Model:       model,
-		Messages:    []openrouter.Message{{Role: "user", Content: statusPrompt(row.Harness, activity.State, language, screen)}},
+		Messages:    []openrouter.Message{{Role: "user", Content: statusPrompt(row.Harness, activity.State, language, verdict, screen)}},
 		Temperature: &temperature,
 		MaxTokens:   300,
 	}, nil)
@@ -124,13 +129,21 @@ func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
 // screen: the voice of that setting is what reads, so a German sentence in
 // the English voice would be worse than an English sentence. One setting,
 // three sides of the conversation.
-func statusPrompt(harness string, state termux.State, language, screen string) string {
-	return "You are told what a terminal running " + harnessLabel(harness) +
+//
+// verdict is the outcome of the turn the session is resting after, in words
+// (outcomeWords), or "" for none: the person asking how a session is doing
+// is told how its last turn left the work, as Home shows it.
+func statusPrompt(harness string, state termux.State, language, verdict, screen string) string {
+	prompt := "You are told what a terminal running " + harnessLabel(harness) +
 		" currently shows. It is " + stateWords(state) + ". In one to three short sentences, say " +
 		"what a person needs to know: if it is working, what it is working on; if it has finished, " +
 		"what the answer is; if it is waiting, what it is asking and what the choices are. Speak " +
 		"plainly - this is read out loud, so no markdown, no code, no file paths unless they are " +
-		"the point. Answer in " + config.LanguageName(language) + ".\nScreen:\n" + screen
+		"the point. Answer in " + config.LanguageName(language) + "."
+	if verdict != "" {
+		prompt += "\nA check of the turn that just ended says: " + verdict + ". Mention it."
+	}
+	return prompt + "\nScreen:\n" + screen
 }
 
 // stateWords is the committed state as a sentence fragment.

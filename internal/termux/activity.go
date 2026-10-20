@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -65,6 +66,17 @@ type Activity struct {
 	Since  int64  `json:"since"`          // unix ms of the last committed change
 	Source string `json:"source"`         // "exact"|"screen"|"quiet"|"pane" - hover-only detail
 	Note   string `json:"note,omitempty"` // e.g. "permission prompt" - hover-only
+	// Seq orders every picture of every session's activity: it moves on each
+	// time a change is published, whether that is a new state, a note or the
+	// unread mark. A browser hears the same session from several places at
+	// once - the event stream, a terminal socket, a list read over HTTP - and
+	// since, which only moves with the state, cannot tell which of two
+	// pictures of the same commit is the later one. It starts from the clock
+	// (microseconds when the process started), so a seq from before a restart
+	// is never above one after it, and stays below 2^53, the largest whole
+	// number a browser reads exactly. Zero, and left out, for a session the
+	// detector has published nothing about.
+	Seq int64 `json:"seq,omitempty"`
 	// Asked is whether anybody had typed at the session when this change was
 	// committed (track.asked). It is for the server's own subscribers - the
 	// first busy that was asked for is the first prompt being taken up - and
@@ -117,6 +129,19 @@ const (
 // map of session id to the moment it was marked, so that a row that no longer
 // exists can be dropped on the way in.
 const unreadKey = "activity.unread"
+
+// sinceKey is where the moment each session entered its committed state
+// lives, so that a restart of the server does not restart every clock: a
+// question that has been waiting for an hour is not "just now", and the
+// oldest question is still the oldest. It describes a pane on this machine,
+// and changes on every commit, so it never goes to the bucket.
+const sinceKey = "activity.since"
+
+// sinceMark is one session's entry under sinceKey.
+type sinceMark struct {
+	State State `json:"state"`
+	Since int64 `json:"since"`
+}
 
 // ActivityChange is one committed change, for the callers that would otherwise
 // have to poll: the operator loop waiting for a turn to end, and anything else
@@ -255,6 +280,11 @@ type track struct {
 	// answered, and those two timestamps are how that is known.
 	waitingAt time.Time
 	inputAt   time.Time
+
+	// committedOnce is whether this process has committed a state for the
+	// track. The first commit of a session that was in the same state
+	// before the restart keeps the moment it entered it (sinceKey).
+	committedOnce bool
 }
 
 // asked reports whether anybody has typed at this session since it was
@@ -277,6 +307,7 @@ type activity struct {
 	mu       sync.Mutex
 	tracks   map[string]*track
 	unread   map[string]int64
+	since    map[string]sinceMark
 	sources  map[harnesses.Kind]source
 	subs     map[int]chan ActivityChange
 	nextSub  int
@@ -296,6 +327,9 @@ type activity struct {
 	capture func(ctx context.Context, sessionID string, lines int) (string, error)
 	visible func(ctx context.Context, sessionID string) (string, error)
 	now     func() time.Time
+
+	// seq is the last Activity.Seq handed out, under mu.
+	seq int64
 }
 
 func newActivity(m *Manager) *activity {
@@ -303,10 +337,12 @@ func newActivity(m *Manager) *activity {
 		m:       m,
 		tracks:  map[string]*track{},
 		unread:  map[string]int64{},
+		since:   map[string]sinceMark{},
 		subs:    map[int]chan ActivityChange{},
 		capture: m.CapturePane,
 		visible: m.visiblePane,
 		now:     time.Now,
+		seq:     time.Now().UnixMicro(),
 	}
 	a.sources = map[harnesses.Kind]source{
 		harnesses.KindShell:    shellSource{},
@@ -436,6 +472,11 @@ func (m *Manager) ResetActivity(id string) {
 	a.tracks[id] = &track{
 		committed: Activity{State: StateUnknown, Unread: unread, Since: a.now().UnixMilli()},
 		running:   tr != nil && tr.running,
+	}
+	// A new process has entered no state yet, whatever the old one was in.
+	if _, ok := a.since[id]; ok {
+		delete(a.since, id)
+		a.saveSince()
 	}
 	if !fresh {
 		a.publish(id, a.tracks[id])
@@ -807,8 +848,21 @@ func (a *activity) commit(id string, tr *track, obs observation, from string, no
 		return
 	}
 	tr.pending, tr.pendingCount = "", 0
+	since := now.UnixMilli()
+	// A session found in the state it was in when the last process stopped
+	// has been in it since then, not since this tick: the restarted
+	// detector is catching up, the session did nothing.
+	if mark, ok := a.since[id]; ok && !tr.committedOnce && prev.State == StateUnknown &&
+		mark.State == next && mark.Since > 0 && mark.Since <= since {
+		since = mark.Since
+	}
+	tr.committedOnce = true
 	tr.committed = Activity{
-		State: next, Unread: prev.Unread, Since: now.UnixMilli(), Source: from, Note: obs.note,
+		State: next, Unread: prev.Unread, Since: since, Source: from, Note: obs.note,
+	}
+	if next != StateUnknown {
+		a.since[id] = sinceMark{State: next, Since: since}
+		a.saveSince()
 	}
 	if next == StateWaiting {
 		tr.waitingAt = now
@@ -928,7 +982,14 @@ func (a *activity) trackOf(id string) *track {
 // publish records a committed change for the callback and the subscribers. It
 // only queues: the callback runs outside the lock, because it ends in a
 // WebSocket write and nothing that writes a socket may hold this.
+//
+// Every published picture gets the next seq, and so does the committed state
+// that ActivityOf and Activities hand out from then on: a snapshot carries the
+// seq of the last frame about it, and a frame published after the snapshot
+// was taken carries a higher one.
 func (a *activity) publish(id string, tr *track) {
+	a.seq++
+	tr.committed.Seq = a.seq
 	change := ActivityChange{SessionID: id, Activity: tr.committed}
 	change.Activity.Asked = tr.asked()
 	a.pending = append(a.pending, change)
@@ -981,10 +1042,6 @@ func (a *activity) load() {
 		return
 	}
 	a.loaded = true
-	marks := map[string]int64{}
-	if err := a.m.st.GetJSON(unreadKey, &marks); err != nil {
-		return
-	}
 	rows, err := a.m.st.ListSessions()
 	if err != nil {
 		return
@@ -993,22 +1050,45 @@ func (a *activity) load() {
 	for i := range rows {
 		known[rows[i].ID] = true
 	}
-	changed := false
-	for id, at := range marks {
-		if known[id] {
-			a.unread[id] = at
-			continue
+	marks := map[string]int64{}
+	if err := a.m.st.GetJSON(unreadKey, &marks); err == nil {
+		changed := false
+		for id, at := range marks {
+			if known[id] {
+				a.unread[id] = at
+				continue
+			}
+			changed = true
 		}
-		changed = true
+		if changed {
+			a.saveUnread()
+		}
 	}
-	if changed {
-		a.saveUnread()
+	since := map[string]sinceMark{}
+	if err := a.m.st.GetJSON(sinceKey, &since); err == nil {
+		changed := false
+		for id, mark := range since {
+			if known[id] {
+				a.since[id] = mark
+				continue
+			}
+			changed = true
+		}
+		if changed {
+			a.saveSince()
+		}
 	}
 }
 
 func (a *activity) saveUnread() {
 	if err := a.m.st.SetJSON(unreadKey, a.unread); err != nil {
 		a.m.logf("could not record the unread sessions: %v", err)
+	}
+}
+
+func (a *activity) saveSince() {
+	if err := a.m.st.SetJSON(sinceKey, a.since); err != nil {
+		a.m.logf("could not record when the sessions entered their states: %v", err)
 	}
 }
 
@@ -1020,6 +1100,10 @@ func (a *activity) forget(id string) {
 	delete(a.unread, id)
 	if had {
 		a.saveUnread()
+	}
+	if _, ok := a.since[id]; ok {
+		delete(a.since, id)
+		a.saveSince()
 	}
 	a.forgetSources(id)
 	a.mu.Unlock()
@@ -1568,6 +1652,24 @@ func scrapes(kind harnesses.Kind) bool { return kind != harnesses.KindShell }
 var (
 	claudeBusy    = regexp.MustCompile(`esc to interrupt`)
 	claudeWaiting = regexp.MustCompile(`Do you want to proceed\?`)
+	// The other two prompts Claude asks with, for a session whose status file
+	// is not there to say so: the AskUserQuestion menu, by the hint under it
+	// (one question, or several on tabs) or the review of its tabs, and the
+	// plan approval. Without them a menu that is open reads as nothing, and
+	// quiescence calls it idle. Each is matched as the prompt Claude has open
+	// and not as words (claudePrompt): the hint is on every select menu and
+	// stays in the history above the answer, and "Would you like to
+	// proceed?" is a sentence anybody writes.
+	claudeAsking = regexp.MustCompile(`^\s*Enter to select · (?:↑/↓|Tab/Arrow keys) to navigate · Esc to cancel\s*$`)
+	claudeReview = regexp.MustCompile(`Ready to submit your answers\?\s*$`)
+	claudePlan   = regexp.MustCompile(`Would you like to proceed\?\s*$`)
+	// The rows those prompts draw under their question: any option, the
+	// cursor on one (Claude's "❯", on a numbered row or on the unnumbered
+	// Submit of a multi-select), the plan's first option, and the review's.
+	claudeOptionRow = regexp.MustCompile(`^\s*(?:❯\s*)?[1-9][0-9]?\.\s+\S`)
+	claudeCursorRow = regexp.MustCompile(`^\s*❯\s*(?:[1-9][0-9]?\.\s+\S|Submit\b)`)
+	claudeYesRow    = regexp.MustCompile(`^\s*(?:❯\s*)?1\.\s+Yes\b`)
+	claudeSubmitRow = regexp.MustCompile(`^\s*(?:❯\s*)?1\.\s+Submit answers\b`)
 	// The empty prompt line is only empty until Claude puts a placeholder in
 	// it (`❯ Try "fix typecheck errors"`), and `⏵⏵` is the auto mode bar - in
 	// `--permission-mode default` the bottom bar reads `⏸ manual mode on · ?
@@ -1650,15 +1752,82 @@ func scrapeBackground(kind harnesses.Kind, screen string) bool {
 	return false
 }
 
+// claudePromptWithin is how many of the screen's last non-blank lines a
+// prompt Claude has open is drawn in, its question line and its rows: a
+// permission prompt is its question, three or four options and a hint, and
+// the plan approval the same. The capture reaches 40 rows into the history
+// (scroll-on-clear keeps a cleared screen there), and a prompt answered up
+// there is no prompt.
+const claudePromptWithin = 14
+
+// claudePrompt is the prompt Claude has open at the foot of a screen, as the
+// note the screen layer gives it, or "". A prompt is its own furniture where
+// it is drawn - its question line with its rows under it, the menu's hint as
+// the screen's last line - and never the words alone: an answered menu leaves
+// its hint above "● User answered Claude's questions", and "Would you like to
+// proceed?" is as likely in an answer as on the plan approval. A question or
+// a plan with a busy line under it is history: the turn went on after it.
+func claudePrompt(screen string) string {
+	lines := tailLines(screen, claudePromptWithin)
+	switch {
+	case promptOpen(lines, claudeWaiting, claudeOptionRow, nil, false):
+		return "permission prompt"
+	case len(lines) > 0 && claudeAsking.MatchString(lines[len(lines)-1]) &&
+		slices.ContainsFunc(tailLines(screen, 40), claudeCursorRow.MatchString),
+		promptOpen(lines, claudeReview, claudeSubmitRow, claudeCursorRow, true):
+		return "question"
+	case promptOpen(lines, claudePlan, claudeYesRow, claudeCursorRow, true):
+		return "plan approval"
+	}
+	return ""
+}
+
+// promptOpen is whether lines hold a prompt's question line with the rows it
+// draws under it: first is the first numbered row under the question, and a
+// cursor row is among them where cursor is given. unbusy is a prompt that no
+// busy line may follow.
+func promptOpen(lines []string, question, first, cursor *regexp.Regexp, unbusy bool) bool {
+	for i := len(lines) - 1; i >= 0; i-- {
+		if !question.MatchString(lines[i]) {
+			continue
+		}
+		below := lines[i+1:]
+		at := slices.IndexFunc(below, claudeOptionRow.MatchString)
+		switch {
+		case at < 0 || !first.MatchString(below[at]),
+			cursor != nil && !slices.ContainsFunc(below, cursor.MatchString),
+			unbusy && slices.ContainsFunc(below, claudeBusy.MatchString):
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+// tailLines is a screen's last n non-blank lines, top to bottom.
+func tailLines(screen string, n int) []string {
+	var out []string
+	lines := strings.Split(screen, "\n")
+	for i := len(lines) - 1; i >= 0 && len(out) < n; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
+			out = append(out, strings.TrimRight(lines[i], " \r"))
+		}
+	}
+	slices.Reverse(out)
+	return out
+}
+
 // scrapeScreen is the third layer: what the harness has painted, read the way
 // a person reads it. Waiting is looked for first, because an approval dialog
-// can sit on a screen whose bottom bar still carries a busy hint.
+// can sit on a screen whose bottom bar still carries a busy hint; a prompt is
+// waiting only where it is drawn open (claudePrompt).
 func scrapeScreen(kind harnesses.Kind, screen string) observation {
 	switch kind {
 	case harnesses.KindClaude:
+		if note := claudePrompt(screen); note != "" {
+			return seen(StateWaiting, note)
+		}
 		switch {
-		case claudeWaiting.MatchString(screen):
-			return seen(StateWaiting, "permission prompt")
 		case claudeBusy.MatchString(screen):
 			return seen(StateBusy, "")
 		case claudeIdle.MatchString(screen):
@@ -1796,6 +1965,15 @@ type openCodeWatcher struct {
 	ok      bool
 	busy    map[string]bool
 	waiting map[string]openCodePrompt
+	// questions are the open requests of OpenCode's question tool, kept apart
+	// from the permission prompts: GET /permission does not list them, so a
+	// reconcile of that set must not take them out of it. A session asking
+	// one reports busy, exactly like one holding a permission prompt, and
+	// the same idle rule retires it.
+	questions map[string]openCodePrompt
+	// noQuestions is set once GET /question has answered 404/405: a server
+	// without the question tool, which is then asked no more.
+	noQuestions bool
 	// parents is what is known of each session's parent: "" for a session of
 	// its own, the parent's id for a sub-agent. A busy sub-agent under an idle
 	// parent is a background task (StateTasks), and a session whose parentage
@@ -1846,7 +2024,8 @@ func newOpenCodeWatcher(access harnesses.ServerAccess, workdir string, every tim
 	return &openCodeWatcher{
 		access: access, workdir: workdir, reconcileEvery: every, logf: logf,
 		busy: map[string]bool{}, waiting: map[string]openCodePrompt{},
-		parents: map[string]string{}, asking: map[string]bool{},
+		questions: map[string]openCodePrompt{},
+		parents:   map[string]string{}, asking: map[string]bool{},
 	}
 }
 
@@ -1886,6 +2065,9 @@ func (w *openCodeWatcher) answer() observation {
 	}
 	if len(w.waiting) > 0 {
 		return seen(StateWaiting, "permission prompt")
+	}
+	if len(w.questions) > 0 {
+		return seen(StateWaiting, "input needed")
 	}
 	if len(w.busy) > 0 {
 		for id := range w.busy {
@@ -2013,6 +2195,15 @@ func (w *openCodeWatcher) poll(ctx context.Context) {
 		waiting, outcome = w.pendingPermissions(permCtx)
 		permCancel()
 	}
+	// And the questions, for the same reason: one asked while the stream was
+	// down would otherwise read as work in progress until it was answered.
+	var questions map[string]openCodePrompt
+	asked := openCodePermissionAbsent
+	if w.questionsSupported() {
+		askCtx, askCancel := context.WithTimeout(ctx, openCodePermissionTimeout)
+		questions, asked = w.pendingRequests(askCtx, "/question")
+		askCancel()
+	}
 	// A watcher that was stopped mid-request did not learn anything: the
 	// cancellation is not the endpoint failing.
 	if ctx.Err() != nil {
@@ -2020,6 +2211,14 @@ func (w *openCodeWatcher) poll(ctx context.Context) {
 	}
 	w.mu.Lock()
 	w.busy, w.ok = busy, true
+	// A question is held by a session that reports busy, like a prompt; one
+	// on a session that does not is gone, whatever /question said.
+	for id, question := range w.questions {
+		if question.session != "" && !busy[question.session] {
+			delete(w.questions, id)
+		}
+	}
+	w.applyQuestionsLocked(questions, asked, start)
 	if outcome != openCodePermissionOK {
 		// The status map is the second witness, and it is one only because
 		// the fetch above succeeded. A session holding a prompt always
@@ -2136,13 +2335,49 @@ func (w *openCodeWatcher) applyPermissionsLocked(waiting map[string]openCodeProm
 	}
 }
 
+// questionsSupported is false once GET /question has answered 404/405.
+func (w *openCodeWatcher) questionsSupported() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return !w.noQuestions
+}
+
+// applyQuestionsLocked folds one GET /question answer into the open questions,
+// where `start` is when the request was sent. A usable answer replaces them,
+// except for a question asked while it was in flight; an endpoint this server
+// does not have is never asked again; a failure changes nothing - the reply
+// events and the idle rule still retire what is answered.
+func (w *openCodeWatcher) applyQuestionsLocked(questions map[string]openCodePrompt,
+	outcome openCodePermissionOutcome, start time.Time) {
+	switch outcome {
+	case openCodePermissionAbsent:
+		w.noQuestions = true
+	case openCodePermissionOK:
+		if questions == nil {
+			questions = map[string]openCodePrompt{}
+		}
+		for id, question := range w.questions {
+			if _, listed := questions[id]; !listed && !question.seen.Before(start) {
+				questions[id] = question
+			}
+		}
+		w.questions = questions
+	}
+}
+
 // pendingPermissions asks GET /permission for the prompts that are open right
 // now. A server that does not answer it is not an error worth failing the poll
 // over: the second result says what the answer is worth — a usable list, an
 // endpoint this server does not have, or a read that failed.
 func (w *openCodeWatcher) pendingPermissions(ctx context.Context) (map[string]openCodePrompt, openCodePermissionOutcome) {
-	url := fmt.Sprintf("http://127.0.0.1:%d/permission?directory=%s",
-		w.access.Port, neturl.QueryEscape(w.workdir))
+	return w.pendingRequests(ctx, "/permission")
+}
+
+// pendingRequests is GET /permission or GET /question: both answer a list of
+// open requests, each with its id and the session holding it.
+func (w *openCodeWatcher) pendingRequests(ctx context.Context, path string) (map[string]openCodePrompt, openCodePermissionOutcome) {
+	url := fmt.Sprintf("http://127.0.0.1:%d%s?directory=%s",
+		w.access.Port, path, neturl.QueryEscape(w.workdir))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, openCodePermissionFailed
@@ -2352,6 +2587,11 @@ func (w *openCodeWatcher) event(payload string) {
 					delete(w.waiting, id)
 				}
 			}
+			for id, question := range w.questions {
+				if question.session == status.SessionID {
+					delete(w.questions, id)
+				}
+			}
 		default:
 			// A type this build does not know (`busy`, `retry` and `idle` are
 			// the ones OpenCode emits) is not busy, so it leaves the busy set
@@ -2413,6 +2653,46 @@ func (w *openCodeWatcher) event(payload string) {
 			w.waiting = map[string]openCodePrompt{}
 		} else {
 			delete(w.waiting, id)
+		}
+		w.ok = true
+		w.mu.Unlock()
+	// The question tool (OpenCode 1.x): a card with options and a row for an
+	// answer of one's own, asked with `question.asked` and settled with
+	// `question.replied` or `question.rejected`, all keyed by the request's
+	// id. It waits for the person exactly as a permission prompt does.
+	case "question.asked":
+		var question openCodePermission
+		if err := json.Unmarshal(body, &question); err != nil {
+			return
+		}
+		id := question.ID
+		if id == "" {
+			id = question.RequestID
+		}
+		if id == "" {
+			return
+		}
+		w.mu.Lock()
+		if w.questions == nil {
+			w.questions = map[string]openCodePrompt{}
+		}
+		w.questions[id] = openCodePrompt{session: question.SessionID, seen: time.Now()}
+		w.ok = true
+		w.mu.Unlock()
+	case "question.replied", "question.rejected":
+		var question openCodePermission
+		if err := json.Unmarshal(body, &question); err != nil {
+			return
+		}
+		id := question.RequestID
+		if id == "" {
+			id = question.ID
+		}
+		w.mu.Lock()
+		if id == "" {
+			w.questions = map[string]openCodePrompt{}
+		} else {
+			delete(w.questions, id)
 		}
 		w.ok = true
 		w.mu.Unlock()

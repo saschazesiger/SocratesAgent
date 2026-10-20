@@ -4,8 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Sign in · Socrates</title>
+<meta name="description" content="A web terminal for Claude Code, Codex, OpenCode and your shell.">
+<meta name="theme-color" content="#ffffff">
+<meta name="format-detection" content="telephone=no">
+<!-- The same install tags as index.html (see there): a page can be added to
+     the Home Screen from wherever it happens to be, and iOS reads them from
+     the page that is open at the time. -->
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Socrates">
 <link rel="icon" href="/favicon.png">
-<link rel="apple-touch-icon" href="/static/img/logo.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/static/img/apple-touch-icon.png">
+<link rel="manifest" href="/static/manifest.json">
 <link rel="stylesheet" href="/static/css/app.css">
 </head>
 <body>
@@ -36,7 +47,13 @@ form.addEventListener('submit', async (e) => {
   submit.textContent = 'Signing in…';
   try {
     await api('/api/login', { method: 'POST', body: { password: document.getElementById('password').value } });
-    location.href = '/';
+    // A notification tapped while signed out opened /#q=<id> or /#open=<id>,
+    // the app's "Questions" shortcut /#questions, and the redirect here kept
+    // it: it is where the person was going. Any address the app has is
+    // passed on - session.js routeOf reads what it knows and lands on Home
+    // for anything else - and it only ever goes after '/' on this origin.
+    const route = /^#[^#\s]{1,200}$/.test(location.hash) ? location.hash : '';
+    location.href = '/' + route;
   } catch (err) {
     notice.className = 'notice error';
     notice.textContent = err.message;

@@ -35,9 +35,10 @@ var version = ""
 // request: nothing in an embedded file changes while the process runs.
 var assets = map[string][]byte{}
 
-// stampedRef matches the address of an asset in a document: href="/static/..."
-// or src="/favicon.png". The query is added inside the quotes.
-var stampedRef = regexp.MustCompile(`((?:href|src)=")(/static/[^"?#]+|/favicon\.png)"`)
+// stampedRef matches the address of an asset in a document: href="/static/...",
+// src="/favicon.png" or the home screen icon at the root. The query is added
+// inside the quotes.
+var stampedRef = regexp.MustCompile(`((?:href|src)=")(/static/[^"?#]+|/favicon\.png|/apple-touch-icon(?:-precomposed)?\.png)"`)
 
 // stampedImport matches a module something pulls in - a script importing
 // './x.js', or the inline module of a page importing '/static/js/x.js'. A
@@ -182,7 +183,22 @@ func ServePage(w http.ResponseWriter, r *http.Request, name string) {
 // Favicon serves the app icon from the root, where a browser looks for it
 // on its own even when a page never says where it is.
 func Favicon(w http.ResponseWriter, r *http.Request) {
-	data := asset("img/favicon.png")
+	rootImage(w, r, "img/favicon.png")
+}
+
+// AppleTouchIcon serves the home screen icon from the root, for
+// /apple-touch-icon.png and /apple-touch-icon-precomposed.png: iOS asks there
+// on its own in some flows - adding a page to the Home Screen from a share
+// sheet that never read the page's head, a bookmark - and an icon it cannot
+// find there is a screenshot of the page on the Home Screen. The bytes are the
+// ones the pages link to, so the two can never disagree.
+func AppleTouchIcon(w http.ResponseWriter, r *http.Request) {
+	rootImage(w, r, "img/apple-touch-icon.png")
+}
+
+// rootImage writes one embedded PNG at an address outside /static/.
+func rootImage(w http.ResponseWriter, r *http.Request, name string) {
+	data := asset(name)
 	if data == nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return

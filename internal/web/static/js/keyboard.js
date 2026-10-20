@@ -527,8 +527,11 @@ const MIC = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-w
  * It wears the same ring every other control in this app wears while it is
  * working - around the mark rather than on it - so a field waiting for its
  * words looks like the sidebar looks while a session is working.
+ *
+ * `onError`, when given, is told why a recording failed instead of a toast
+ * (see record).
  */
-export function micButton(onText, label = 'Dictate') {
+export function micButton(onText, label = 'Dictate', { onError } = {}) {
   const button = el('button', {
     class: 'icon-btn mic-btn', type: 'button', title: label, 'aria-label': label,
     html: MIC,
@@ -543,7 +546,7 @@ export function micButton(onText, label = 'Dictate') {
     button.disabled = true;
     setClass(button, 'working', true);
     try {
-      const text = await record();
+      const text = await record({ onError });
       if (text) onText(text);
     } finally {
       button.disabled = false;
@@ -565,7 +568,7 @@ export function micButton(onText, label = 'Dictate') {
  * It is idempotent: a sheet that is opened twice builds its fields twice, and
  * a second row around the first would be a second microphone beside it.
  */
-export function dictated(control, input, onText) {
+export function dictated(control, input, onText, { onError } = {}) {
   guard(input);
   const already = control.parentElement;
   if (already && already.classList.contains('dictate')) return already;
@@ -573,7 +576,7 @@ export function dictated(control, input, onText) {
     if (onText) { onText(text); return; }
     input.value = text;
     input.dispatchEvent(new Event('input', { bubbles: true }));
-  });
+  }, undefined, { onError });
   const row = el('div', { class: 'dictate' });
   if (control.parentNode) control.replaceWith(row);
   row.append(control, mic);

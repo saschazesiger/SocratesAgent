@@ -211,8 +211,12 @@ export function mountRecSheet() {
  * a caller with nothing to put anywhere does nothing either way. A second
  * caller while one is running is answered with the empty string and no
  * microphone is opened at all.
+ *
+ * `onError` takes the sentence over from the toast, for a caller that lives
+ * in a modal dialog: a toast is drawn under the top layer such a dialog is
+ * in, and would be a sentence nobody sees.
  */
-export async function record() {
+export async function record({ onError } = {}) {
   if (phase !== 'idle') return '';
   mountRecSheet();
   setPhase('opening');
@@ -234,7 +238,8 @@ export async function record() {
     // no keystroke, no request, and nothing said about it.
     return oneLine(text);
   } catch (err) {
-    toast((err && err.userMessage) || errorMessage(err), 'error');
+    const sentence = (err && err.userMessage) || errorMessage(err);
+    if (onError) onError(sentence); else toast(sentence, 'error');
     return '';
   } finally {
     dictation = null;
