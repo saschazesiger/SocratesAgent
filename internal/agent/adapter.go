@@ -85,6 +85,9 @@ type StartSpec struct {
 	// adapter's own beside the journal.
 	Workdir  string
 	StateDir string
+	// DataDir is the Socrates data folder, for an adapter whose CLI keeps
+	// state shared between chats under it (<data>/agents/<harness>).
+	DataDir string
 	// Env is the CLI's whole environment, built for the chat's account. It is
 	// never the host's own environment passed through.
 	Env     []string
@@ -97,6 +100,12 @@ type StartSpec struct {
 	// a path, or a name looked up on the PATH of Env. Empty is the CLI's
 	// usual name on that PATH.
 	Binary string
+	// Rebuild says the journal does not have ResumeID's history (it was lost,
+	// or the chat was made from a conversation the CLI already had): Start
+	// emits that history, read from the CLI's own transcript, followed by
+	// notice{rebuilt} - or notice{history_unavailable} when it cannot be
+	// read, and goes on. Every turn in it is closed.
+	Rebuild bool
 	// First is a message to deliver as part of starting, for a CLI that takes
 	// its opening prompt at start. An adapter that has no use for that sends
 	// it right after starting.
@@ -127,14 +136,6 @@ type Emitter interface {
 	// Exited reports that the CLI ended on its own: it crashed or quit. It is
 	// not called for an exit Park or Stop caused.
 	Exited(err error)
-}
-
-// Rebuilder is an adapter that can read a chat's history back from its CLI's
-// own record of the conversation spec.ResumeID (REBUILD.md §2.2), for a
-// chat whose journal is gone. The events come without seq and time; the host
-// journals them before anything else.
-type Rebuilder interface {
-	Rebuild(spec StartSpec) ([]Event, error)
 }
 
 // ErrAskGone is Answer's "there is no call waiting for this any more".

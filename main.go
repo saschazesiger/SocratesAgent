@@ -22,6 +22,8 @@ import (
 	_ "github.com/saschazesiger/SocratesAgent/internal/agent/claude"
 	_ "github.com/saschazesiger/SocratesAgent/internal/agent/codex"
 	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
+	// The OpenCode chat adapter registers itself with the agent host.
+	_ "github.com/saschazesiger/SocratesAgent/internal/agent/opencode"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/sdnotify"
 	"github.com/saschazesiger/SocratesAgent/internal/server"

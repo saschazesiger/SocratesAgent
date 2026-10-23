@@ -276,10 +276,12 @@ func TestRealParkResumeAndRebuild(t *testing.T) {
 	}
 	park(t, b)
 
-	// The journal is gone; the adapter's state still names the thread, and
-	// the history comes back from codex.
+	// The journal is gone; the server still knows the thread, and the
+	// history comes back from codex.
 	r3 := newRecorder()
-	lab.start(lab.spec(home, state, ""), r3)
+	rspec := lab.spec(home, state, thread)
+	rspec.Rebuild = true
+	lab.start(rspec, r3)
 	r3.waitFor(t, 0, "conversation", isType(agent.TypeConversation), 10*time.Second)
 	p := r3.projection()
 	var turns, interrupted int

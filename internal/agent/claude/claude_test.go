@@ -784,6 +784,49 @@ func TestRebuildFromTheTranscript(t *testing.T) {
 	}
 }
 
+// A host whose journal lost the conversation starts with Rebuild: the
+// history is written first, then the conversation goes on.
+func TestStartRebuildsALostJournal(t *testing.T) {
+	e := newEnv(t)
+	a, r := start(t, e, "")
+	send(t, a, "m1", "hello")
+	r.turnsEnded(t, 1)
+	var conv string
+	r.view(func(p *agent.Projection) { conv = p.ConversationID })
+	if err := a.Park(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	b := New(Options{})
+	r2 := newRec()
+	spec := e.spec(conv)
+	spec.Rebuild = true
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := b.Start(ctx, spec, r2); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Stop() })
+	var users []string
+	var rebuilt bool
+	r2.view(func(p *agent.Projection) {
+		for _, m := range p.Messages {
+			if m.Role == agent.RoleUser {
+				users = append(users, m.Text)
+			}
+		}
+	})
+	r2.mu.Lock()
+	for _, ev := range r2.events {
+		rebuilt = rebuilt || (ev.Type == agent.TypeNotice && ev.Code == agent.NoticeRebuilt)
+	}
+	r2.mu.Unlock()
+	if strings.Join(users, "|") != "hello" || !rebuilt {
+		t.Fatalf("rebuilt users %v, notice %v", users, rebuilt)
+	}
+	send(t, b, "m2", "again")
+	r2.turnsEnded(t, 2)
+}
+
 func TestLimitsRetriesImagesAndCommands(t *testing.T) {
 	e := newEnv(t)
 	a, r := start(t, e, "")

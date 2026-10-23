@@ -88,7 +88,7 @@ func (a *adapter) rebuild(ctx context.Context, thread string) error {
 		a.out.Emit(historyEvents(ht, items)...)
 	}
 	if len(turns) > 0 {
-		a.out.Emit(agent.Event{Type: agent.TypeNotice, Code: "history_rebuilt",
+		a.out.Emit(agent.Event{Type: agent.TypeNotice, Code: agent.NoticeRebuilt,
 			Text: fmt.Sprintf("The history of this chat was read back from Codex (%d turns).", len(turns))})
 	}
 	return nil

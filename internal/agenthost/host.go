@@ -165,9 +165,6 @@ func Run(opts Options) error {
 	if h.parkAfter <= 0 {
 		h.parkAfter = DefaultParkAfter
 	}
-	if len(events) == 0 && spec.Conversation != "" {
-		h.rebuild()
-	}
 	if err := h.recover(); err != nil {
 		h.rec.Close()
 		return err
@@ -216,35 +213,6 @@ func scrubEnv() {
 			key == "LISTEN_FDS", key == "LISTEN_PID", key == "LISTEN_FDNAMES", strings.HasPrefix(key, "WATCHDOG_"):
 			os.Unsetenv(key)
 		}
-	}
-}
-
-// rebuild fills an empty journal from the CLI's own transcript of the chat's
-// conversation: the journal was lost or damaged beyond reading, and the
-// history is still on disk where the CLI keeps it.
-func (h *host) rebuild() {
-	factory, ok := agent.Lookup(h.spec.Harness)
-	if !ok {
-		return
-	}
-	rb, ok := factory().(agent.Rebuilder)
-	if !ok {
-		return
-	}
-	env := h.spec.Env
-	if len(env) == 0 {
-		env = os.Environ()
-	}
-	events, err := rb.Rebuild(agent.StartSpec{ChatID: h.opts.ChatID, Workdir: h.spec.Workdir,
-		StateDir: filepath.Join(h.dir, stateDir), Env: env, Account: h.spec.Account, ResumeID: h.spec.Conversation})
-	if err != nil {
-		log.Printf("the history could not be rebuilt from conversation %s: %v", h.spec.Conversation, err)
-		return
-	}
-	events = append(events, agent.Event{Type: agent.TypeNotice, Code: agent.NoticeRebuilt,
-		Text: "The chat history was rebuilt from the agent's own transcript."})
-	if _, err := h.rec.EmitDurable(events...); err != nil {
-		log.Printf("journal: %v", err)
 	}
 }
 
@@ -383,8 +351,9 @@ func (h *host) boot() {
 	var resume string
 	var pending []agent.Outgoing
 	var unsent []agent.Ask
+	empty := false
 	h.rec.View(func(p *agent.Projection) {
-		resume = p.ConversationID
+		resume, empty = p.ConversationID, len(p.Messages) == 0
 		for _, m := range p.Undelivered() {
 			pending = append(pending, outgoing(m))
 		}
@@ -392,14 +361,22 @@ func (h *host) boot() {
 			unsent = append(unsent, *a)
 		}
 	})
+	// A journal that names no conversation while the server knows one was
+	// lost (or the chat was made from an existing conversation, a fork): the
+	// conversation is resumed, and an empty journal gets its history back
+	// from the CLI's own transcript (REBUILD.md §2.2).
+	rebuild := false
+	if resume == "" && h.spec.Conversation != "" {
+		resume, rebuild = h.spec.Conversation, empty
+	}
 	env := h.spec.Env
 	if len(env) == 0 {
 		env = os.Environ()
 	}
 	spec := agent.StartSpec{
 		ChatID: h.opts.ChatID, Workdir: h.spec.Workdir, StateDir: filepath.Join(h.dir, stateDir),
-		Env: env, Account: h.spec.Account, Model: h.spec.Model, Effort: h.spec.Effort,
-		ResumeID: resume, Spawn: h.spawn, Binary: h.spec.Binary,
+		DataDir: h.opts.DataDir, Env: env, Account: h.spec.Account, Model: h.spec.Model, Effort: h.spec.Effort,
+		ResumeID: resume, Rebuild: rebuild, Spawn: h.spawn, Binary: h.spec.Binary,
 	}
 	if resume == "" && len(pending) > 0 {
 		spec.First, pending = &pending[0], pending[1:]
@@ -417,7 +394,7 @@ func (h *host) boot() {
 		h.record(agent.Event{Type: agent.TypeNotice, Code: agent.NoticeConversationLost,
 			Text: "The agent no longer has this conversation, so a new one was started. " +
 				"The messages above stay here, but the agent does not remember them."})
-		spec.ResumeID = ""
+		spec.ResumeID, spec.Rebuild = "", false
 		if spec.First == nil && len(pending) > 0 {
 			spec.First, pending = &pending[0], pending[1:]
 		}

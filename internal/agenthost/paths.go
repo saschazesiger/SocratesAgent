@@ -81,8 +81,8 @@ type Spec struct {
 	// setting), empty for the one on the PATH.
 	Binary string `json:"binary,omitempty"`
 	// Conversation is the CLI conversation the server knows for the chat. A
-	// host that finds the journal missing rebuilds the history from it
-	// (REBUILD.md §2.2), when its adapter can (agent.Rebuilder).
+	// host whose journal names none resumes it, and an empty journal gets
+	// the history back from it (StartSpec.Rebuild, REBUILD.md §2.2).
 	Conversation string `json:"conversation,omitempty"`
 	// ParkAfterMS is how long the host may be idle before it parks.
 	ParkAfterMS int64 `json:"park_after_ms"`

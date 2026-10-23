@@ -34,7 +34,6 @@ var Version = "dev"
 
 func init() {
 	agent.Register(Harness, func() agent.Adapter { return newAdapter() })
-	agent.RegisterCommands(Harness, Commands)
 }
 
 // The adapter's clock.
@@ -248,36 +247,19 @@ func (a *adapter) handshake(ctx context.Context) error {
 	if err := a.rpc.notify("initialized", map[string]any{}); err != nil {
 		return err
 	}
-	resume := a.spec.ResumeID
-	fromState := false
-	if resume == "" {
-		// The journal knows no conversation, but this chat had one: the
-		// journal was lost, and the thread is where the model's context and
-		// the history still are. A thread codex no longer has is not one to
-		// insist on: that start is the host's fresh one.
-		if st, err := a.loadState(); err == nil && st.ThreadID != "" {
-			resume, fromState = st.ThreadID, true
-		}
-	}
-	switch err := a.resumeOrStart(ctx, resume); {
-	case fromState && errors.Is(err, agent.ErrConversationNotFound):
-		fromState = false
-		if err := a.startThread(ctx, ""); err != nil {
-			return err
-		}
-	case err != nil:
+	if err := a.resumeOrStart(ctx, a.spec.ResumeID); err != nil {
 		return err
 	}
-	// The history goes back into the journal only when the journal holds no
-	// message at all; a message waiting to be delivered (First) may be the
-	// one codex took up just before the journal lost the conversation.
-	rebuild := fromState && a.spec.First == nil
-	if rebuild {
-		if err := a.rebuild(ctx, resume); err != nil {
-			a.out.Emit(agent.Event{Type: agent.TypeNotice, Code: "history_unavailable",
+	// The journal lost this conversation (AGENT-HOST.md §6): its history goes
+	// back in from the thread before anything new happens.
+	if a.spec.Rebuild {
+		if err := a.rebuild(ctx, a.spec.ResumeID); err != nil {
+			a.out.Emit(agent.Event{Type: agent.TypeNotice, Code: agent.NoticeHistoryUnavailable,
 				Text: "The earlier history of this chat could not be read back from Codex: " + err.Error()})
 		}
 	}
+	info, _ := json.Marshal(agent.AgentInfo{Agent: Harness, Commands: Commands})
+	a.out.Emit(agent.Event{Type: agent.TypeAgentInfo, Content: info})
 	a.mu.Lock()
 	thread := a.thread
 	a.mu.Unlock()
@@ -375,49 +357,7 @@ func (a *adapter) setThread(res threadResult) error {
 		a.threadModel = res.Model
 	}
 	a.mu.Unlock()
-	return a.saveState(state{ThreadID: res.Thread.ID})
-}
-
-// state is what the adapter keeps in its StateDir: the thread, so that a chat
-// whose journal is gone can still be rebuilt from it.
-type state struct {
-	ThreadID string `json:"thread_id"`
-}
-
-func (a *adapter) statePath() string {
-	if a.spec.StateDir == "" {
-		return ""
-	}
-	return filepath.Join(a.spec.StateDir, "codex", "thread.json")
-}
-
-func (a *adapter) loadState() (state, error) {
-	var st state
-	path := a.statePath()
-	if path == "" {
-		return st, os.ErrNotExist
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return st, err
-	}
-	return st, json.Unmarshal(raw, &st)
-}
-
-func (a *adapter) saveState(st state) error {
-	path := a.statePath()
-	if path == "" {
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	raw, _ := json.Marshal(st)
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return nil
 }
 
 // read consumes the process's stdout until it ends, then reaps it.

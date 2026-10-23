@@ -137,6 +137,17 @@ func (a *Adapter) Start(ctx context.Context, spec agent.StartSpec, out agent.Emi
 			return fmt.Errorf("%w: no Claude Code conversation %s under %s", agent.ErrConversationNotFound, spec.ResumeID, configDir)
 		}
 		st.conv = spec.ResumeID
+		if spec.Rebuild {
+			// The journal lost this conversation: its history goes back in
+			// from the transcript before anything new happens.
+			if events, err := RebuildTranscript(path, spec.ResumeID); err != nil {
+				out.Emit(agent.Event{Type: agent.TypeNotice, Code: agent.NoticeHistoryUnavailable,
+					Text: "The earlier history of this chat could not be read back from Claude Code: " + err.Error()})
+			} else {
+				out.Emit(append(events, agent.Event{Type: agent.TypeNotice, Code: agent.NoticeRebuilt,
+					Text: "The chat history was rebuilt from the agent's own transcript."})...)
+			}
+		}
 		out.Emit(agent.Event{Type: agent.TypeConversation, ConversationID: spec.ResumeID})
 		st.delivered, st.lastCost = transcriptState(path)
 		st.todos = loadTasks(configDir, spec.ResumeID)

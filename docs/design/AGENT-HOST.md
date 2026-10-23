@@ -28,7 +28,7 @@ rows; the terminal-only routes (`…/ws`, `…/journal`, `…/resume`, `…/rest
 | Path | Written by | What |
 |---|---|---|
 | `<data>/chats/<id>/events.jsonl` | host | the journal (§3); the chat history Socrates renders and backs up |
-| `<data>/chats/<id>/host.json` | server, before every launch | launch spec: harness, workdir, model, effort, account, env, `binary` (the harness's binary setting, `StartSpec.Binary`), `conversation` (the row's `cli_session_id`, for a rebuild), `park_after_ms` |
+| `<data>/chats/<id>/host.json` | server, before every launch | launch spec: harness, workdir, model, effort, account, env, `binary` (the harness's binary setting, `StartSpec.Binary`), `conversation` (the row's `cli_session_id`: resumed, and rebuilt into an empty journal, when the journal names none), `park_after_ms` |
 | `<data>/chats/<id>/host.lock` | host | `flock`ed for the host's whole life: **the** evidence a host is alive |
 | `<data>/chats/<id>/host.log` | host (and `systemd-run`) | the host's stdout/stderr; a file, never a pipe |
 | `<data>/chats/<id>/agent/` | adapter | the adapter's own state (the fake keeps its conversations here) |
@@ -61,9 +61,9 @@ is one `agent.Event`: a flat JSON object, all fields optional except `seq`, `at`
 | `process` | `state` (`starting`\|`ready`\|`parked`\|`exited`\|`failed`), `detail`, `pid`, `version` | host/CLI life. `starting` carries the host pid, `ready` the CLI pid |
 | `conversation` | `conversation_id` | the CLI's own id, needed to resume |
 | `tasks` | `count` | background tasks still running |
-| `agent.info` | `content` (the adapter's shape; Claude's in §5.1) | what the CLI says about itself: version, account, slash commands, models, permission mode. The newest wins (`Projection.Agent`) |
+| `agent.info` | `content`: an `agent.AgentInfo` `{agent, version?, commands: [{name, args?, description?}]}` plus the adapter's own fields (Claude's in §5.1) | what the CLI says about itself; `commands` is **the** composer palette (`Projection.Palette()`), each name what `Adapter.Command` takes. The newest wins (`Projection.Agent`) |
 | `command` | `op` (`interrupt`\|`set_model`\|`command`\|`park`\|`stop`), `client_id`, `model`/`effort`, `text` (command name), `args` | a command the host accepted; recorded so its `client_id` is acted on once |
-| `notice` | `code`, `text`, `ask_id`? | a line of its own. Host codes: `resumed`, `answer_as_message`, `conversation_lost` |
+| `notice` | `code`, `text`, `ask_id`? | a line of its own. Host codes: `resumed`, `answer_as_message`, `conversation_lost`; every adapter's rebuild: `rebuilt`, `history_unavailable` |
 | `error` | `code`, `text`, `message_id`? | a failure that is not a turn's end (e.g. `send_failed`, `rate_limit`) |
 
 **Nesting.** A part with `parent_part_id` belongs inside that part: the parts a subagent or a
@@ -217,15 +217,19 @@ Rules every adapter keeps:
 |---|---|---|---|
 | text / reasoning | `stream_event` `text_delta` / `thinking_delta` → `part.delta`; `assistant` block → `part` done | `item/agentMessage/delta`, `item/reasoning/*Delta` → `part.delta`; `item/completed` → `part` | `message.part.delta` → `part.delta`; `message.part.updated` → `part` |
 | tool | `tool_use` → `part{tool, running}`; `tool_result` + `tool_use_result` → `part{done}` | `commandExecution` / `fileChange` / `mcpToolCall` items; `outputDelta` → `part.delta` | `tool` part state pending→running→completed\|error |
-| diff / plan / todo | Edit `structuredPatch` → `diff`; `ExitPlanMode` → `plan`; Task* → `todo` | `turn/diff/updated` → `diff`; `plan` item | `edit` metadata diff; `todo.updated` |
-| turn end | `result` (`is_error`, `terminal_reason`) | `turn/completed` status | `session.idle` / `session.error` |
-| limits | `rate_limit_event` → `rate_limit` | `account/rateLimits/updated` | assistant `info.error` / headers |
-| usage | `result.usage`, `total_cost_usd` delta | `thread/tokenUsage/updated` | `step-finish` tokens/cost |
+| diff / plan / todo | Edit `structuredPatch` → `diff`; `ExitPlanMode` → `plan`; Task* → `todo` | `turn/diff/updated` → `diff`; `plan` item | edit/apply_patch/write metadata → `diff`; `todowrite` → `todo` |
+| turn end | `result` (`is_error`, `terminal_reason`) | `turn/completed` status | `session.idle` (outcome from `session.error` / `info.error` / the limit) |
+| limits | `rate_limit_event` → `rate_limit` | `account/rateLimits/updated` | `session.status retry` with `action.reason`, or a 429 error |
+| usage | `result.usage`, `total_cost_usd` delta | `thread/tokenUsage/updated` | `step-finish` → `usage`; assistant `info.tokens`/`cost` summed per turn |
 
-An adapter that can read a chat's history back from its CLI implements `agent.Rebuilder`
-(`Rebuild(spec) ([]Event, error)`, `spec.ResumeID` = the conversation). A host that opens an empty
-journal while `host.json` names a `conversation` journals the rebuilt events first, then
-`notice{rebuilt}` (REBUILD §2.2).
+**Rebuild** (REBUILD §2.2). `Start` with `StartSpec.Rebuild` resumes `ResumeID` and, before
+returning, emits the conversation's history read from the CLI's own transcript — user messages,
+turns (every one closed), assistant messages and their final parts — then `notice{rebuilt}`. A
+history that cannot be read is `notice{history_unavailable}`, and the start goes on; an unknown
+conversation is `ErrConversationNotFound` as for any resume.
+
+**Command palette.** Every adapter emits `agent.info` at start with `commands`: what its CLI reported
+(custom commands and skills included) and the commands the adapter itself implements.
 
 ### 5.1 Claude Code (`internal/agent/claude`)
 
@@ -298,10 +302,10 @@ text, except the terminal-only commands (`doctor`, `color`, `focus`, `heapdump` 
 `apply_flag_settings{effortLevel}`.
 
 **agent.info content:** `{agent: "claude", version, account: {email, organization, plan,
-api_provider, token_source}, commands: [{name, description, argument_hint}], models: [{id, label,
+api_provider, token_source}, commands: [{name, args, description}], models: [{id, label,
 description, efforts}], tools, permission_mode}` (from `initialize`, kept current from every init).
 
-**Rebuild** (`Adapter.Rebuild`, `claude.RebuildTranscript`): the main transcript in file order (a
+**Rebuild** (`Start` with `Rebuild`, via `Adapter.Rebuild` / `claude.RebuildTranscript`): the main transcript in file order (a
 compaction restarts the parentUuid chain); each user text opens a turn; `<command-name>` wrappers
 become the command as the user's text; `<task-notification>` opens a turn of the CLI's own;
 `<local-command-stdout>` becomes a notice part; the compaction summary is dropped and its boundary
@@ -311,9 +315,6 @@ subagent's calls come from `subagents/agent-<id>.jsonl`, a workflow's agents fro
 
 **fakeclaude** (`e2e/fakebin/fakeclaude`): the stand-in for tests and e2e; its script is in its
 package comment.
-**Command palette.** An adapter registers its palette next to itself with
-`agent.RegisterCommands(harness, []agent.CommandInfo{name, args, description})`; `agent.Commands(harness)`
-is what the composer offers after "/" (WP8). Each name is what `Adapter.Command` is called with.
 
 ### 5.2 Codex (`internal/agent/codex`)
 
@@ -330,7 +331,7 @@ other accounts' keys). `initialize` with
 `capabilities.experimentalApi`, then `thread/resume {excludeTurns: true}` or `thread/start`, both with
 `approvalPolicy: "never"`, `sandbox: "danger-full-access"`, `cwd`; `thread/start` also carries
 `model`, `config.model_reasoning_effort`, the registered dynamic tools and (handoff only)
-`developerInstructions`. The thread id is kept in `<StateDir>/codex/thread.json`. Park closes
+`developerInstructions`. Park closes
 stdin (the app-server exits at once; the thread is on disk); Stop kills the process group.
 
 **Messages.** No turn running: `turn/start` with `clientUserMessageId = message_id`, `model` and
@@ -395,12 +396,10 @@ for code mode) and `Notice`.
 <sha> | instructions]` → `review/start`; `plan [off]` → Plan collaboration mode for the turns that
 follow (`notice{plan_mode}`); `shell <command>` → `thread/shellCommand`.
 
-**Lost journal.** With no conversation in the journal, the adapter resumes the thread its state
-names (a thread codex no longer has is dropped for a new one). When no message is waiting either,
-the history is written back first from `thread/turns/list` + `thread/items/list` (paginated): per
+**Lost journal** (`Start` with `Rebuild`, §5): the history is written back first from `thread/turns/list` + `thread/items/list` (paginated): per
 turn the user messages (`delivered`, the codex `clientId` as `message_id`), `turn.started`, the
 assistant message with its items as parts, `turn.ended` (a turn codex died in is `interrupted`),
-then `notice{history_rebuilt}`. Subagent threads are not replayed.
+then `notice{rebuilt}`. Subagent threads are not replayed. `agent.info` carries `codex.Commands`.
 
 **Accounts** (mechanics; WP7 drives them). `codex.PrepareHome(home, <data>/agents/codex)` makes an
 account's `CODEX_HOME` with `sessions/` and `archived_sessions/` as relative symlinks into the
@@ -420,6 +419,75 @@ every method, field, item type and error code the adapter uses against it, and
 `TestInstalledCodexSchema` (`SOCRATES_REAL_CODEX=1`) against the installed codex
 (`SOCRATES_UPDATE_CODEX_SCHEMA=1` rewrites the pin).
 
+### 5.3 OpenCode (`internal/agent/opencode`)
+
+Registered as `opencode` (imported by `main.go`). Research: research/05
+(API), research/06 (layout, spike S3).
+
+**Process.** One `opencode serve --hostname 127.0.0.1 --port 0` per host, started through Spawn in
+the workdir; the URL is read from its `listening on` line (`--port 0` tries 4096 first). The binary
+is `SOCRATES_OPENCODE_BIN` from `StartSpec.Env`, else `opencode` on that environment's `PATH`. Its
+environment is `StartSpec.Env` without `OPENCODE_*`/`XDG_*` (except `OPENCODE_AUTH_CONTENT`), plus
+the layout, `OPENCODE_SERVER_USERNAME/PASSWORD` (32 random bytes per process),
+`OPENCODE_CONFIG_CONTENT` (share disabled, autoupdate off, `permission`: `external_directory`,
+`doom_loop`, `read` allow and `question` deny over OpenCode's own `"*": allow` — no `"*"` of ours,
+which would also lift plan mode's edit deny — plus the `mcp` servers of the `MCPServers` hook),
+`OPENCODE_DISABLE_AUTOUPDATE`, `OPENCODE_DISABLE_MODELS_FETCH`, `OPENCODE_DISABLE_EXTERNAL_SKILLS`.
+Park and Stop: abort if a turn runs, SIGTERM to the process group, SIGKILL after 5 s.
+
+**Layout** (`opencode.Layout`, `NewLayout(dataDir)`): `<data>/agents/opencode/opencode.db`
+(`OPENCODE_DB` of every process), shared `snapshot/ storage/ tool-output/ plans/ worktree/ repos/
+config/ cache/`, and per account `accounts/<acct>/` as `XDG_DATA_HOME` (its `opencode/auth.json`,
+the shared folders linked in by relative symlinks) with `state/` as `XDG_STATE_HOME`.
+`PrepareAccount(acct)` makes it (idempotent; every start calls it, WP7 calls it on creating an
+account). `Migrate` runs `opencode db "select 1"` once per binary build (stamp `migrated`, under
+`migrate.lock`) before any serve. `StartSpec.Account` empty is `default`.
+
+**Session.** New: `POST /session`. Resume: `GET /session/{id}`; 404 (or a malformed id) wraps
+`ErrConversationNotFound`. On resume, an assistant message that never completed (a dead process)
+has its streaming/running parts written as `interrupted`. `Rebuild` reads the whole history
+from `GET /session/{id}/message` (and the task children's).
+
+**Turns.** A message is posted with `prompt_async` and a message id of OpenCode's own form chosen by
+the adapter (`msg_` + 48-bit ms×4096+counter + 14 base-62), kept in `agent/opencode.json` (journal
+id → OpenCode id) so that revert/fork can name it and a message the previous host already handed
+over is recognised (`delivered` without a second turn). `delivered` + `turn.started` when the post
+is accepted; one turn per user message; every step is an assistant `message`. **While a turn runs,
+messages wait in the adapter (`queued`) and go one by one after `session.idle`** (DEVIATIONS).
+A `!line` is `POST /shell`. Turn outcome: `limited` (a `retry` status with `action.reason`, which is
+then aborted, or a 429), else `interrupted` (`MessageAbortedError`), else `failed` (any other error;
+`error{code: auth}` for 401/ProviderAuthError with "sign in again"), else `completed`. Other
+retries: `notice{retry}` per attempt. `permission.asked` → replied `always` + `notice{permission_allowed}`.
+`question.asked` → the `QuestionHandler` hook (WP6), else rejected + `notice{question_rejected}`.
+`Answer` returns `ErrAskGone` until WP6. After `/event` drops, it is reopened and caught up from
+`GET …/message` and `/session/status`.
+
+**Parts and content** (exported types in `convert.go`):
+
+| OpenCode part | kind | text | content |
+|---|---|---|---|
+| `text`, `reasoning` (not synthetic) | `text`, `reasoning` | the text (deltas) | – |
+| `tool` | `tool` | output (bash streams `metadata.output`), or the error | `ToolContent{tool, call_id, title, input, error, started_at, ended_at, duration_ms, exit, session_id, agent}` |
+| `tool` todowrite | `todo` | – | `TodoContent{todos:[{content, status, priority}]}` |
+| completed edit / apply_patch / write of a new file | `diff`, id `<tool part>-diff` | – | `DiffContent{tool_part, files:[{path, patch, additions, deletions, status}]}` |
+| `file` | `image` / `file` | – | `FileContent{mime, filename, url (file:// only)}` |
+| a task child session's parts | as above | | with `parent_part_id` = the task part |
+
+**Commands** (`Command(name, args)`): `compact` (`/summarize`, a turn), `shell <cmd>`, `agent
+build|plan` (for every following prompt, kept across hosts; `notice{agent}`), `revert <message>`
+(`notice{reverted, message_id}`), `unrevert` (`notice{unreverted}`), `fork [<message>]`
+(`notice{forked, conversation_id}` — a new chat made with it as its `cli_session_id` resumes it,
+its history rebuilt), and any name from `GET /command` (a turn whose user message is `/name args`). `agent.info`
+(`{agent, version, commands}`) lists `compact`, `shell`, `agent` and OpenCode's commands (`hints`
+as `args`) at start. `SetModel`: `provider/model`
+and the effort as `variant`, both sent with every prompt.
+
+**Account switch** (mechanics for WP7): `(*opencode.Adapter).SwitchAccount(ctx, account, env)`
+interrupts a running turn and waits for it, stops the process, and starts one for the other
+account's data home and `env` on the same session; the caller journals `account.switched`. API-key
+accounts may pass `OPENCODE_AUTH_CONTENT` in `env`; OAuth accounts keep `auth.json` in their data
+home (research/06 §3.2).
+
 ## 6. Lifecycle
 
 **Launch** (server, `agenthost.Launcher.Launch`): writes `host.json`, then starts
@@ -432,16 +500,18 @@ is refused). `Reap`/`Stop` stop exactly `<unit>.scope` and `<unit>-<digits>.scop
 prefix match that could be another chat's. The launcher returns once the socket accepts, or fails with the tail of `host.log`.
 
 **Host start:** take `host.lock` (wait ≤ 1 s, else exit 0: another host runs) → read the spec →
-open the journal (empty with a `conversation` in the spec: rebuild, §5) → **recover**: every part
+open the journal → **recover**: every part
 still `running`/`streaming` (a turn's, or a subagent or workflow group that outlived its turn) gets
 a `part{interrupted}`, a turn still open in the journal is closed with `turn.ended{interrupted}`,
 and `notice{resumed}` says so → listen → boot (holding the command lock, so nothing
 new reaches the agent first): `process{starting}`, `Adapter.Start` with `ResumeID =` the
-journal's conversation id (`First` = the first undelivered message when there is no conversation
-yet), `process{ready}`, re-send undelivered messages, deliver unsent answers as messages. A start
+journal's conversation id — or, when the journal names none, the spec's `conversation` (the journal
+was lost, or the chat was made from an existing conversation such as a fork), with
+`StartSpec.Rebuild` set when the journal has no message at all (§5) — (`First` = the first
+undelivered message when there is no conversation yet), `StartSpec.DataDir` = the data folder, `process{ready}`, re-send undelivered messages, deliver unsent answers as messages. A start
 that fails journals `process{failed, detail}` and the host exits 2 s later. A start that fails
 with an error wrapping `agent.ErrConversationNotFound` (the CLI does not know the conversation to
-resume) is retried once as a new conversation with `notice{conversation_lost}`: the history stays in
+resume) is retried once as a new conversation (no rebuild) with `notice{conversation_lost}`: the history stays in
 the journal, the model's context starts over.
 
 **Idle and parking:** idle = adapter up, no turn, no open ask, `Background() == 0`, and no user
@@ -514,8 +584,9 @@ Opening the stream of a chat whose host died with a turn running starts the reco
 
 `harness: "fake"`, registered only when `SOCRATES_FAKE_AGENT=1` is in the environment of the
 server (and therefore its hosts). Its "CLI" is a real `sleep` child started through Spawn. It keeps
-its conversations in `agent/fake/<id>.json` and resumes them; an unknown id fails like a real CLI.
-Script, by message text:
+its conversations in `agent/fake/<id>.json` (with each turn's text, its "transcript") and resumes
+them; an unknown id fails like a real CLI, and `Rebuild` writes the turns back. Its `agent.info`
+palette is `compact`. Script, by message text:
 
 | text | turn |
 |---|---|

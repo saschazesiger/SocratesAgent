@@ -437,7 +437,7 @@ func (s *state) init(f *frame) {
 	}
 	for _, name := range f.SlashCommands {
 		if !known[name] && !s.terminalOnly[name] {
-			s.info.Commands = append(s.info.Commands, command{Name: name})
+			s.info.Commands = append(s.info.Commands, agent.CommandInfo{Name: name})
 			changed = true
 		}
 	}
@@ -798,13 +798,13 @@ func (s *state) planDecided(askID string, approve bool, note string) {
 // agentInfo is the content of the agent.info event: what the composer, the
 // model picker and the account divider need to know about the CLI.
 type agentInfo struct {
-	Agent    string    `json:"agent"`
-	Version  string    `json:"version,omitempty"`
-	Account  *account  `json:"account,omitempty"`
-	Commands []command `json:"commands,omitempty"`
-	Models   []model   `json:"models,omitempty"`
-	Tools    []string  `json:"tools,omitempty"`
-	Mode     string    `json:"permission_mode,omitempty"`
+	Agent    string              `json:"agent"`
+	Version  string              `json:"version,omitempty"`
+	Account  *account            `json:"account,omitempty"`
+	Commands []agent.CommandInfo `json:"commands,omitempty"`
+	Models   []model             `json:"models,omitempty"`
+	Tools    []string            `json:"tools,omitempty"`
+	Mode     string              `json:"permission_mode,omitempty"`
 }
 
 type account struct {
@@ -813,12 +813,6 @@ type account struct {
 	Plan         string `json:"plan,omitempty"`
 	APIProvider  string `json:"api_provider,omitempty"`
 	TokenSource  string `json:"token_source,omitempty"`
-}
-
-type command struct {
-	Name         string `json:"name"`
-	Description  string `json:"description,omitempty"`
-	ArgumentHint string `json:"argument_hint,omitempty"`
 }
 
 type model struct {
@@ -857,7 +851,7 @@ func (s *state) readInfo(raw json.RawMessage) {
 	s.mode = r.Mode
 	for _, c := range r.Commands {
 		if !s.terminalOnly[c.Name] {
-			s.info.Commands = append(s.info.Commands, command{Name: c.Name, Description: c.Description, ArgumentHint: c.ArgumentHint})
+			s.info.Commands = append(s.info.Commands, agent.CommandInfo{Name: c.Name, Description: c.Description, Args: c.ArgumentHint})
 		}
 	}
 	for _, m := range r.Models {

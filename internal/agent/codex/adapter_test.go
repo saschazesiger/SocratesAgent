@@ -510,9 +510,11 @@ func TestParkResumeRebuildAndBackground(t *testing.T) {
 		t.Fatal("a park was reported as an exit")
 	}
 
-	// The journal is gone; the state names the thread.
+	// The journal is gone; the server still knows the thread.
 	r3 := newRecorder()
-	lab.start(lab.spec("a", ""), r3)
+	rspec := lab.spec("a", thread)
+	rspec.Rebuild = true
+	lab.start(rspec, r3)
 	r3.waitFor(t, 0, "conversation", isType(agent.TypeConversation), wait)
 	var outcomes, users []string
 	for _, ev := range r3.all() {
@@ -527,7 +529,7 @@ func TestParkResumeRebuildAndBackground(t *testing.T) {
 		strings.Join(outcomes, ",") != "completed,completed,interrupted,completed" {
 		t.Fatalf("rebuilt %q %q\n%s", users, outcomes, dump(r3.all()))
 	}
-	r3.waitFor(t, 0, "the rebuilt notice", isNotice("history_rebuilt"), time.Second)
+	r3.waitFor(t, 0, "the rebuilt notice", isNotice(agent.NoticeRebuilt), time.Second)
 	if lastTurnText(r3.projection()) != "you said: two" {
 		t.Fatalf("rebuilt answer %q", lastTurnText(r3.projection()))
 	}
@@ -538,21 +540,6 @@ func TestParkResumeRebuildAndBackground(t *testing.T) {
 		t.Fatalf("unknown thread: %v", err)
 	}
 	t.Cleanup(func() { _ = c.Stop() })
-
-	// The host's fresh start after that: the state still names the lost
-	// thread, which is not insisted on.
-	spec := lab.spec("a", "")
-	if err := os.WriteFile(filepath.Join(spec.StateDir, "codex", "thread.json"), []byte(`{"thread_id":"`+newThreadID()+`"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	r4 := newRecorder()
-	fresh := lab.start(spec, r4)
-	conv := r4.waitFor(t, 0, "conversation", isType(agent.TypeConversation), wait).ConversationID
-	_, n = send(t, fresh, r4, "anew")
-	r4.turnEnd(t, n, wait)
-	if conv == thread || lastTurnText(r4.projection()) != "you said: anew" {
-		t.Fatalf("fresh start\n%s", dump(r4.all()))
-	}
 }
 
 func TestAccountSwitchChain(t *testing.T) {
@@ -678,7 +665,7 @@ func TestAttachmentsBecomeInput(t *testing.T) {
 
 func TestCommandsArePaletted(t *testing.T) {
 	names := map[string]bool{}
-	for _, c := range agent.Commands(Harness) {
+	for _, c := range Commands {
 		names[c.Name] = true
 	}
 	for _, want := range []string{"compact", "review", "plan", "shell"} {

@@ -121,7 +121,8 @@ func taskNumber(path string) int {
 }
 
 // Rebuild is a chat's history from the CLI's transcript, for a chat whose
-// journal is gone (REBUILD.md §2.2). It is agent.Rebuilder.
+// journal is gone (REBUILD.md §2.2); Start writes it when StartSpec.Rebuild
+// says so.
 func (a *Adapter) Rebuild(spec agent.StartSpec) ([]agent.Event, error) {
 	path := findTranscript(configDirOf(cliEnv(spec.Env)), spec.ResumeID)
 	if path == "" {
