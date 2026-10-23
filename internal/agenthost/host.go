@@ -165,6 +165,9 @@ func Run(opts Options) error {
 	if h.parkAfter <= 0 {
 		h.parkAfter = DefaultParkAfter
 	}
+	if len(events) == 0 && spec.Conversation != "" {
+		h.rebuild()
+	}
 	if err := h.recover(); err != nil {
 		h.rec.Close()
 		return err
@@ -213,6 +216,35 @@ func scrubEnv() {
 			key == "LISTEN_FDS", key == "LISTEN_PID", key == "LISTEN_FDNAMES", strings.HasPrefix(key, "WATCHDOG_"):
 			os.Unsetenv(key)
 		}
+	}
+}
+
+// rebuild fills an empty journal from the CLI's own transcript of the chat's
+// conversation: the journal was lost or damaged beyond reading, and the
+// history is still on disk where the CLI keeps it.
+func (h *host) rebuild() {
+	factory, ok := agent.Lookup(h.spec.Harness)
+	if !ok {
+		return
+	}
+	rb, ok := factory().(agent.Rebuilder)
+	if !ok {
+		return
+	}
+	env := h.spec.Env
+	if len(env) == 0 {
+		env = os.Environ()
+	}
+	events, err := rb.Rebuild(agent.StartSpec{ChatID: h.opts.ChatID, Workdir: h.spec.Workdir,
+		StateDir: filepath.Join(h.dir, stateDir), Env: env, Account: h.spec.Account, ResumeID: h.spec.Conversation})
+	if err != nil {
+		log.Printf("the history could not be rebuilt from conversation %s: %v", h.spec.Conversation, err)
+		return
+	}
+	events = append(events, agent.Event{Type: agent.TypeNotice, Code: agent.NoticeRebuilt,
+		Text: "The chat history was rebuilt from the agent's own transcript."})
+	if _, err := h.rec.EmitDurable(events...); err != nil {
+		log.Printf("journal: %v", err)
 	}
 }
 

@@ -206,7 +206,7 @@ func (a *Adapter) Start(ctx context.Context, spec agent.StartSpec, out agent.Emi
 		return fmt.Errorf("claude did not start: %w%s", err, stderr.suffix())
 	}
 	a.mu.Lock()
-	st.info(raw)
+	st.readInfo(raw)
 	a.mu.Unlock()
 	// Thinking arrives without its text unless the display asks for a
 	// summary; a refusal leaves the session as it was.
@@ -411,6 +411,9 @@ func (a *Adapter) read(stdout io.Reader) {
 	a.mu.Lock()
 	ending := a.ending
 	a.st.stopTails()
+	if !ending {
+		a.st.closeLive()
+	}
 	close(a.exited)
 	out := a.out
 	tail := a.stderr.suffix()

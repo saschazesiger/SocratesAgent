@@ -77,6 +77,10 @@ type Spec struct {
 	// for it (WP7). Env empty is the host's own environment, scrubbed.
 	Account string   `json:"account,omitempty"`
 	Env     []string `json:"env,omitempty"`
+	// Conversation is the CLI conversation the server knows for the chat. A
+	// host that finds the journal missing rebuilds the history from it
+	// (REBUILD.md §2.2), when its adapter can (agent.Rebuilder).
+	Conversation string `json:"conversation,omitempty"`
 	// ParkAfterMS is how long the host may be idle before it parks.
 	ParkAfterMS int64 `json:"park_after_ms"`
 }

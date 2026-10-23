@@ -97,6 +97,38 @@ type part struct {
 	group bool
 }
 
+// live is a group whose agent, workflow or background shell still runs: it
+// outlives the turn and is closed by its task's notification.
+func (p *part) live() bool {
+	if !p.group {
+		return false
+	}
+	return p.state == agent.PartRunning || (p.tool != nil && p.tool.Task != nil && p.tool.Task.Status == "running")
+}
+
+// closeLive ends every group still running when the CLI is gone: what it was
+// doing died with it.
+func (s *state) closeLive() {
+	for id, p := range s.parts {
+		if !p.live() {
+			continue
+		}
+		p.state = agent.PartInterrupted
+		if c := p.tool; c != nil {
+			switch {
+			case c.Agent != nil:
+				c.Agent.Status = "killed"
+			case c.Workflow != nil:
+				c.Workflow.Status = "killed"
+			case c.Task != nil:
+				c.Task.Status = "killed"
+			}
+		}
+		s.emitPart(p)
+		delete(s.parts, id)
+	}
+}
+
 type planAsk struct {
 	reqID  string
 	input  json.RawMessage
@@ -259,7 +291,7 @@ func (s *state) endTurn(outcome string, usage *agent.Usage, cost float64, why st
 	sort.Slice(ids, func(i, j int) bool { return s.parts[ids[i]].started.Before(s.parts[ids[j]].started) })
 	for _, id := range ids {
 		p := s.parts[id]
-		if p.group && p.state == agent.PartRunning && outcome == agent.OutcomeCompleted {
+		if p.live() {
 			continue
 		}
 		if p.state == agent.PartStreaming || p.state == agent.PartRunning {
@@ -269,9 +301,7 @@ func (s *state) endTurn(outcome string, usage *agent.Usage, cost float64, why st
 			}
 			s.emitPart(p)
 		}
-		if !p.group || p.state != agent.PartRunning {
-			delete(s.parts, id)
-		}
+		delete(s.parts, id)
 	}
 	state := agent.MessageDone
 	if outcome != agent.OutcomeCompleted {
@@ -753,8 +783,8 @@ type model struct {
 	Efforts     []string `json:"efforts,omitempty"`
 }
 
-// info reads the initialize answer.
-func (s *state) info(raw json.RawMessage) {
+// readInfo reads the initialize answer.
+func (s *state) readInfo(raw json.RawMessage) {
 	var r struct {
 		Commands []struct {
 			Name         string `json:"name"`

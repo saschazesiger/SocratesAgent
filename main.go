@@ -18,6 +18,8 @@ import (
 	"syscall"
 	"time"
 
+	// The chat adapters register themselves for the server and the hosts.
+	_ "github.com/saschazesiger/SocratesAgent/internal/agent/claude"
 	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/sdnotify"
