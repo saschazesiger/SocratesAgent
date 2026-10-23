@@ -552,14 +552,23 @@ func (s *Store) importSession(id string, data []byte) error {
 		set = append(set, c+" = excluded."+c)
 	}
 	_, err := s.db.Exec(`INSERT INTO sessions(`+sessionCols+`)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET `+strings.Join(set, ", "),
 		row.ID, row.ClientID, row.Title, row.TitleSource, row.Harness, row.Model, row.Effort,
 		row.Workdir, row.WorkdirMode, options, rec.TmuxName, rec.CLISessionID,
 		cliState, row.State, row.ExitStatus, row.FailReason, resumed,
 		row.ResumeCount, row.Cols, row.Rows, row.CreatedAt, row.UpdatedAt, row.LastAttached, row.ActiveAt,
-		row.Status, row.StatusAt, row.StartAt)
+		row.Status, row.StatusAt, row.StartAt, sessionKind(row.Kind))
 	return err
+}
+
+// sessionKind is a mirrored row's kind; a record from before chats existed
+// is a terminal.
+func sessionKind(kind string) string {
+	if kind == "" {
+		return KindTerminal
+	}
+	return kind
 }
 
 func (s *Store) importDraft(id string, data []byte) error {

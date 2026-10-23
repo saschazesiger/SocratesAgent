@@ -116,6 +116,9 @@ type Server struct {
 
 	// costs keeps the cost ledger current (costs.go).
 	costs *costLedger
+
+	// chats is every agent chat and the host it runs in (chats.go).
+	chats *chatHub
 }
 
 type attempt struct {
@@ -173,6 +176,7 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	s.answers = newOperatorDriver(s)
 	s.sched = newScheduler(s)
 	s.costs = newCostLedger(s)
+	s.chats = newChatHub(s)
 	manager, err := termux.New(st, cfg)
 	if err != nil {
 		return nil, err
@@ -214,6 +218,9 @@ func managerConfig(dataDir string, settings config.Settings) termux.Config {
 // gone. A failure here is reported and not fatal: a Socrates that cannot start
 // sessions still has to serve the dashboard that says why.
 func (s *Server) StartSessions(ctx context.Context) error {
+	// Chats need no tmux: their hosts are reattached whatever the terminal
+	// engine says below.
+	s.chats.start()
 	// What every conversation cost is read from the CLIs' files, not from
 	// tmux, so a machine whose terminals cannot start still keeps its ledger.
 	s.costs.start(ctx)
@@ -239,6 +246,8 @@ func (s *Server) StartSessions(ctx context.Context) error {
 // StopSessions lets go of everything Socrates owns and nothing tmux owns: the
 // sessions themselves keep running, which is the whole point of them.
 func (s *Server) StopSessions() {
+	// The hosts keep running, like the tmux server; only the connections go.
+	s.chats.close()
 	s.push.stop()
 	if err := s.manager.Close(); err != nil {
 		log.Printf("terminal sessions: %v", err)
@@ -383,8 +392,8 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/sessions/{id}/title", s.auth(s.handleRetitleSession))
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.auth(s.endingViewers(s.handleDeleteSession)))
 	mux.HandleFunc("POST /api/sessions/{id}/file", s.auth(s.handleSetStatus))
-	mux.HandleFunc("POST /api/sessions/{id}/resume", s.auth(s.started(s.handleResumeSession)))
-	mux.HandleFunc("POST /api/sessions/{id}/restart", s.auth(s.started(s.handleRestartSession)))
+	mux.HandleFunc("POST /api/sessions/{id}/resume", s.auth(s.terminal(s.started(s.handleResumeSession))))
+	mux.HandleFunc("POST /api/sessions/{id}/restart", s.auth(s.terminal(s.started(s.handleRestartSession))))
 	// Prepared sessions: their settings, their draft, and the start.
 	mux.HandleFunc("PATCH /api/sessions/{id}/prestart", s.auth(s.handlePatchPrestart))
 	mux.HandleFunc("GET /api/sessions/{id}/draft", s.auth(s.handleGetDraft))
@@ -405,9 +414,17 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/sessions/{id}/answer", s.auth(s.handleAnswer))
 	mux.HandleFunc("GET /api/sessions/{id}/answer", s.auth(s.handleAnswerRun))
 	mux.HandleFunc("POST /api/sessions/{id}/answer/cancel", s.auth(s.handleAnswerCancel))
-	mux.HandleFunc("GET /api/sessions/{id}/journal", s.auth(s.started(s.handleJournal)))
+	mux.HandleFunc("GET /api/sessions/{id}/journal", s.auth(s.terminal(s.started(s.handleJournal))))
 	mux.HandleFunc("POST /api/sessions/{id}/upload", s.auth(s.started(s.handleUpload)))
-	mux.HandleFunc("GET /api/sessions/{id}/ws", s.auth(s.started(s.handleSessionWS)))
+	mux.HandleFunc("GET /api/sessions/{id}/ws", s.auth(s.terminal(s.started(s.handleSessionWS))))
+
+	// Chats: agents driven through their protocols, by a host per chat.
+	mux.HandleFunc("POST /api/chats", s.auth(s.handleCreateChat))
+	mux.HandleFunc("GET /api/chats/{id}", s.auth(s.handleGetChat))
+	mux.HandleFunc("POST /api/chats/{id}/messages", s.auth(s.handleChatMessage))
+	mux.HandleFunc("POST /api/chats/{id}/interrupt", s.auth(s.handleChatInterrupt))
+	mux.HandleFunc("POST /api/chats/{id}/asks/{ask}/answer", s.auth(s.handleChatAnswer))
+	mux.HandleFunc("GET /api/chats/{id}/stream", s.auth(s.handleChatStream))
 
 	// The harness catalogue: what can be started, and where.
 	mux.HandleFunc("GET /api/harnesses", s.auth(s.handleHarnesses))

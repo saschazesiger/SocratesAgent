@@ -491,6 +491,38 @@ func (m *Manager) ResetActivity(id string) {
 	a.fire(changes)
 }
 
+// ReportActivity commits a state the caller knows exactly, with no
+// debounce: a chat's journal says when a turn starts and ends and when a
+// question is open, so there is no screen to second-guess. asked is whether
+// anybody has sent the chat anything, which the unread mark and the filing
+// wait for as they do for a terminal (track.asked). Everything after the
+// observation - the unread rule, the row moving, the filing back into
+// progress, the frames - is the terminals' own.
+func (m *Manager) ReportActivity(id string, state State, note string, asked bool) {
+	row, err := m.st.GetSession(id)
+	if err != nil {
+		return
+	}
+	a := m.act
+	a.mu.Lock()
+	now := a.now()
+	tr := a.trackOf(id)
+	tr.running = true
+	tr.status = row.Status
+	if asked && tr.inputAt.IsZero() {
+		tr.inputAt = now
+	}
+	obs := seen(state, note)
+	if state == tr.committed.State {
+		a.commit(id, tr, obs, sourceExact, now)
+	} else {
+		a.settle(id, tr, obs, sourceExact, now)
+	}
+	changes := a.take()
+	a.mu.Unlock()
+	a.fire(changes)
+}
+
 // SubscribeActivity hands out a channel of committed changes and the function
 // that closes it. It is how the operator loop waits for a turn to end without
 // polling, and the only caller that has to keep reading: a subscriber that
@@ -576,6 +608,12 @@ func (a *activity) apply(ctx context.Context, rows []store.Session, panes map[st
 	seenRows := map[string]bool{}
 	for i := range rows {
 		row := rows[i]
+		if row.IsChat() {
+			// A chat has no pane. Its activity is reported by the chat's
+			// journal (ReportActivity); the tick only has to keep its track.
+			seenRows[row.ID] = true
+			continue
+		}
 		if row.State == store.StatePrestart {
 			// A prepared session has no pane and does no work. It is not
 			// even filed by the detector: it is where the person put it.
@@ -847,6 +885,15 @@ func (a *activity) commit(id string, tr *track, obs observation, from string, no
 	if tr.pendingCount < need {
 		return
 	}
+	a.settle(id, tr, obs, from, now)
+}
+
+// settle commits a state change that needs no more evidence: the debounce of
+// commit has passed, or the source is exact by construction, as a chat's
+// journal is.
+func (a *activity) settle(id string, tr *track, obs observation, from string, now time.Time) {
+	next := obs.state
+	prev := tr.committed
 	tr.pending, tr.pendingCount = "", 0
 	since := now.UnixMilli()
 	// A session found in the state it was in when the last process stopped

@@ -341,6 +341,10 @@ func (d *titleDriver) run(ctx context.Context, sessionID string) {
 	if row.Harness == config.HarnessShell {
 		return
 	}
+	// A chat has no screen; its name comes from its journal (WP9).
+	if row.IsChat() {
+		return
+	}
 	namer, ok := d.srv.titleNamer()
 	if !ok {
 		// Not configured is not a fault: automatic names are simply off, and

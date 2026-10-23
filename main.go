@@ -13,10 +13,12 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/sdnotify"
 	"github.com/saschazesiger/SocratesAgent/internal/server"
@@ -33,6 +35,16 @@ var version = "dev"
 // slow, it is stuck, and the watchdog restarting it is the way out.
 const startupGrace = 3 * connectTimeout
 
+// init pins the main goroutine to the main thread in an agent host. The host
+// forks its CLI with a parent-death signal, which the kernel ties to the
+// forking thread rather than the process, so the fork has to come from the
+// one thread that lives exactly as long as the host (spike S4 §7).
+func init() {
+	if len(os.Args) > 1 && os.Args[1] == "agent-host" {
+		runtime.LockOSThread()
+	}
+}
+
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime)
 
@@ -47,6 +59,8 @@ func main() {
 		case "tmux-hook":
 			tmuxHook(args[1:])
 			return
+		case "agent-host":
+			os.Exit(agenthost.Main(args[1:], version))
 		}
 	}
 

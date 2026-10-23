@@ -46,6 +46,15 @@ const (
 	CLILost     = "lost"
 )
 
+// What a session row is. A terminal is a tmux pane (Shell, VS Code, and the
+// agent TUIs until WP10 removes them); a chat is an agent driven through its
+// protocol by an agent host, with no pane at all. Every loop that watches
+// panes leaves chats alone.
+const (
+	KindTerminal = "terminal"
+	KindChat     = "chat"
+)
+
 // How the working directory was chosen.
 const (
 	WorkdirDynamic = "dynamic"
@@ -131,7 +140,13 @@ type Session struct {
 	// row is StatePrestart; the transition that starts it clears it, so a
 	// start that fails is never tried again on its own.
 	StartAt int64 `json:"start_at"`
+	// Kind is KindTerminal or KindChat. For a chat, CLISessionID is the
+	// agent's own conversation id, as the host reported it.
+	Kind string `json:"kind"`
 }
+
+// IsChat reports whether the row is a chat rather than a terminal.
+func (s *Session) IsChat() bool { return s.Kind == KindChat }
 
 // Where the work in a session stands. A done session has had its terminal
 // closed and is deleted once its retention runs out. A background session is
@@ -171,7 +186,7 @@ const (
 const sessionCols = `id, client_id, title, title_source, harness, model, effort, workdir, workdir_mode,
                      options, tmux_name, cli_session_id, cli_session_state, state, exit_status,
                      fail_reason, resumed, resume_count, cols, rows,
-                     created_at, updated_at, last_attached, active_at, status, status_at, start_at`
+                     created_at, updated_at, last_attached, active_at, status, status_at, start_at, kind`
 
 func scanSession(row interface{ Scan(...any) error }) (*Session, error) {
 	s := &Session{}
@@ -180,7 +195,7 @@ func scanSession(row interface{ Scan(...any) error }) (*Session, error) {
 	err := row.Scan(&s.ID, &s.ClientID, &s.Title, &s.TitleSource, &s.Harness, &s.Model, &s.Effort,
 		&s.Workdir, &s.WorkdirMode, &options, &s.TmuxName, &s.CLISessionID, &s.CLISessionState,
 		&s.State, &s.ExitStatus, &s.FailReason, &resumed, &s.ResumeCount, &s.Cols, &s.Rows,
-		&s.CreatedAt, &s.UpdatedAt, &s.LastAttached, &s.ActiveAt, &s.Status, &s.StatusAt, &s.StartAt)
+		&s.CreatedAt, &s.UpdatedAt, &s.LastAttached, &s.ActiveAt, &s.Status, &s.StatusAt, &s.StartAt, &s.Kind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -222,6 +237,9 @@ func (s *Store) CreateSession(sess *Session) error {
 	if sess.CLISessionState == "" {
 		sess.CLISessionState = CLINone
 	}
+	if sess.Kind == "" {
+		sess.Kind = KindTerminal
+	}
 	if sess.Cols <= 0 {
 		sess.Cols = DefaultCols
 	}
@@ -241,12 +259,12 @@ func (s *Store) CreateSession(sess *Session) error {
 		sess.StartAt = 0
 	}
 	_, err := s.db.Exec(`INSERT INTO sessions(`+sessionCols+`)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sess.ID, sess.ClientID, sess.Title, sess.TitleSource, sess.Harness, sess.Model, sess.Effort,
 		sess.Workdir, sess.WorkdirMode, options, sess.TmuxName, sess.CLISessionID,
 		sess.CLISessionState, sess.State, sess.ExitStatus, sess.FailReason, 0,
 		sess.ResumeCount, sess.Cols, sess.Rows, sess.CreatedAt, sess.UpdatedAt, 0, sess.ActiveAt,
-		sess.Status, sess.StatusAt, sess.StartAt)
+		sess.Status, sess.StatusAt, sess.StartAt, sess.Kind)
 	if err != nil && sess.ClientID != "" && isUniqueViolation(err) {
 		existing, lookupErr := s.sessionByClientID(sess.ClientID)
 		if lookupErr != nil {
