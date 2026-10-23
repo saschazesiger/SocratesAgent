@@ -97,7 +97,14 @@ func (a *Adapter) isRoot(gen int, session string) bool {
 func (a *Adapter) handleMessage(gen int, m ocMessage) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.gen != gen || m.SessionID != a.session || m.ID == "" {
+	if a.gen != gen || m.ID == "" {
+		return
+	}
+	if m.SessionID != a.session {
+		if _, child := a.children[m.SessionID]; child && m.Role == "user" {
+			// The task's prompt to the subagent: the task part shows it.
+			a.childPrompts[m.ID] = true
+		}
 		return
 	}
 	switch m.Role {
@@ -192,7 +199,7 @@ func (a *Adapter) handlePart(gen int, p ocPart) {
 		}
 	default:
 		c, ok := a.children[p.SessionID]
-		if !ok {
+		if !ok || a.childPrompts[p.MessageID] {
 			return
 		}
 		msg, parent = c.msg, c.parent

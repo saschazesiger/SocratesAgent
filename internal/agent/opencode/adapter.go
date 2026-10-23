@@ -101,17 +101,19 @@ type Adapter struct {
 	assistants map[string]*asstMsg
 	parts      map[string]*seenPart
 	children   map[string]childSession
-	windows    map[string]int64
-	lastModel  string
-	retries    int
-	commands   []Command
+	// childPrompts are the user messages of subagent sessions.
+	childPrompts map[string]bool
+	windows      map[string]int64
+	lastModel    string
+	retries      int
+	commands     []Command
 }
 
 // New is an adapter, unstarted.
 func New() *Adapter {
 	return &Adapter{
 		users: map[string]*userMsg{}, assistants: map[string]*asstMsg{}, parts: map[string]*seenPart{},
-		children: map[string]childSession{}, windows: map[string]int64{},
+		children: map[string]childSession{}, childPrompts: map[string]bool{}, windows: map[string]int64{},
 	}
 }
 
@@ -517,22 +519,19 @@ func (a *Adapter) follow(ctx context.Context, gen int, cl *client, connected cha
 	for ctx.Err() == nil {
 		body, err := cl.events(ctx)
 		if err == nil {
-			ready := make(chan struct{})
+			// The first stream is the one Start waits for; every later one
+			// catches up with what was missed while none was open.
+			catchUp := !first
 			var once sync.Once
 			signal := func() {
 				once.Do(func() {
-					close(ready)
-					if first {
+					if catchUp {
+						go a.reconcile(ctx, gen, cl)
+					} else {
 						close(connected)
 					}
 				})
 			}
-			go func() {
-				<-ready
-				if !first {
-					a.reconcile(ctx, gen, cl)
-				}
-			}()
 			_ = readSSE(body, func(data []byte) {
 				var ev ocEvent
 				if json.Unmarshal(data, &ev) != nil {
@@ -545,8 +544,11 @@ func (a *Adapter) follow(ctx context.Context, gen int, cl *client, connected cha
 				a.handle(gen, ev)
 			})
 			body.Close()
-			once.Do(func() {})
-			first = false
+			select {
+			case <-connected:
+				first = false
+			default:
+			}
 			pause = 100 * time.Millisecond
 		}
 		select {

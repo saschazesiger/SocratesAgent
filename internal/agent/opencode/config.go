@@ -4,6 +4,7 @@ package opencode
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,23 +73,26 @@ const BinaryEnv = "SOCRATES_OPENCODE_BIN"
 const serverUser = "opencode"
 
 // findBinary is the opencode executable: BinaryEnv, else PATH as the chat's
-// environment has it, else this process's PATH.
+// environment has it (this process's PATH only when the environment has
+// none).
 func findBinary(env []string) (string, error) {
 	if bin := envValue(env, BinaryEnv); bin != "" {
 		return bin, nil
 	}
-	if path := envValue(env, "PATH"); path != "" {
-		for _, dir := range filepath.SplitList(path) {
-			if dir == "" {
-				continue
-			}
-			candidate := filepath.Join(dir, "opencode")
-			if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
-				return candidate, nil
-			}
+	path, ok := lookupEnv(env, "PATH")
+	if !ok {
+		return lookPath("opencode")
+	}
+	for _, dir := range filepath.SplitList(path) {
+		if dir == "" {
+			continue
+		}
+		candidate := filepath.Join(dir, "opencode")
+		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
+			return candidate, nil
 		}
 	}
-	return lookPath("opencode")
+	return "", errors.New("opencode is not on the chat's PATH")
 }
 
 // processEnv is the serve process's whole environment: the chat's (built for
@@ -131,12 +135,17 @@ func processEnv(base []string, layout Layout, account, password string, config [
 }
 
 func envValue(env []string, key string) string {
+	v, _ := lookupEnv(env, key)
+	return v
+}
+
+func lookupEnv(env []string, key string) (string, bool) {
 	for i := len(env) - 1; i >= 0; i-- {
 		if k, v, ok := strings.Cut(env[i], "="); ok && k == key {
-			return v
+			return v, true
 		}
 	}
-	return ""
+	return "", false
 }
 
 // splitModel is "provider/model" as OpenCode's prompt body wants it. The
