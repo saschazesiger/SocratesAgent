@@ -336,11 +336,8 @@ func TestFirstSnapshotRestoresByteIdentical(t *testing.T) {
 
 	dest := restoreInto(t, b, "latest")
 	sameTree(t, src, dest)
-	db := openDB(t, filepath.Join(dest, "agents/opencode/opencode.db"), true)
-	var n int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM msg`).Scan(&n); err != nil || n != 2 {
-		t.Fatalf("the restored database: %d rows, %v", n, err)
-	}
+	// Looked for before the restored database is opened, which makes a
+	// write-ahead log of its own.
 	for _, left := range []string{"restore.pending", "agents/opencode/opencode.db-wal"} {
 		if _, err := os.Lstat(filepath.Join(dest, left)); err == nil {
 			t.Errorf("%s is left in the restored directory", left)
@@ -348,6 +345,11 @@ func TestFirstSnapshotRestoresByteIdentical(t *testing.T) {
 	}
 	if entries, _ := filepath.Glob(filepath.Join(dest, ".restore-*")); len(entries) != 0 {
 		t.Errorf("staging left behind: %v", entries)
+	}
+	db := openDB(t, filepath.Join(dest, "agents/opencode/opencode.db"), true)
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM msg`).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("the restored database: %d rows, %v", n, err)
 	}
 }
 
@@ -652,6 +654,67 @@ func TestSQLiteWrittenDuringTheBackupCopiesConsistently(t *testing.T) {
 		if rows == 0 || rows%2 != 0 || sum != 0 {
 			t.Fatalf("%s holds half a transaction: %d rows summing to %d", id, rows, sum)
 		}
+	}
+}
+
+// A database that grew in its first table goes up as the chunks its new and
+// changed pages lie in: the copy keeps the database's page order, so the
+// pages of the table after it - and their chunks - are the ones the bucket
+// already holds.
+func TestADatabaseThatGrewUploadsOnlyItsChangedChunks(t *testing.T) {
+	clk := newClock()
+	b := newBucket(t, clk)
+	src := t.TempDir()
+	path := filepath.Join(src, "agents/opencode/opencode.db")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	db := openDB(t, path, false)
+	// Half a MiB of messages, then 16 MiB of parts after them: the second
+	// of the three chunks holds parts only.
+	if _, err := db.Exec(`CREATE TABLE message(id INTEGER PRIMARY KEY, body BLOB);
+		CREATE TABLE part(id INTEGER PRIMARY KEY, body BLOB);
+		WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 120)
+		INSERT INTO message(body) SELECT randomblob(4000) FROM n;
+		WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 4100)
+		INSERT INTO part(body) SELECT randomblob(4000) FROM n;
+		PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		t.Fatal(err)
+	}
+	e := engine(t, src, b, clk, "host-a")
+	first, err := e.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 30)
+		INSERT INTO message(body) SELECT randomblob(4000) FROM n`); err != nil {
+		t.Fatal(err)
+	}
+	clk.Add(10 * time.Minute)
+	second, err := e.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunksOf := func(id string) []string {
+		m := cachedManifest(src, id)
+		if m == nil {
+			t.Fatalf("no manifest %s", id)
+		}
+		for _, entry := range m.Entries {
+			if entry.Path == "agents/opencode/opencode.db" {
+				return entry.Chunks
+			}
+		}
+		t.Fatalf("%s holds no opencode.db", id)
+		return nil
+	}
+	before, after := chunksOf(first.ID), chunksOf(second.ID)
+	if len(before) != 3 || len(after) != 3 {
+		t.Fatalf("the database is %d chunks, then %d", len(before), len(after))
+	}
+	if after[1] != before[1] || second.Chunks != 2 {
+		t.Fatalf("after 30 rows in the first table the middle chunk changed (%v) and %d chunks went up",
+			after[1] != before[1], second.Chunks)
 	}
 }
 

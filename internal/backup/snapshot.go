@@ -20,7 +20,8 @@ import (
 
 	"github.com/saschazesiger/SocratesAgent/internal/paths"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // ChunkSize is the length of every chunk of a file but its last. A file that
@@ -442,10 +443,14 @@ func walStat(p string) (int64, int64) {
 }
 
 // copySQLite makes a consistent copy of a database that may be written to
-// while it is read: VACUUM INTO over a read-only connection, which reads one
-// transaction's view of the database, write-ahead log included, and writes it
-// out whole. A raw copy of the file could pair half of one write with half of
-// another.
+// while it is read, with SQLite's online-backup API (REBUILD §6.2). One step
+// copies every page under one read transaction, write-ahead log included, so
+// the copy never pairs half of one write with half of another the way a raw
+// copy of the file could. It also keeps the database's own page order: a
+// database that changed in a few pages changes only the chunks those pages
+// lie in. VACUUM INTO, which packs the database anew, would move every page
+// after a table that grew, and nearly every chunk of a busy database would
+// go up again at every run.
 func copySQLite(ctx context.Context, src, dst string) error {
 	dsn := (&url.URL{Scheme: "file", Path: src, RawQuery: "mode=ro&_pragma=busy_timeout(30000)"}).String()
 	db, err := sql.Open("sqlite", dsn)
@@ -453,12 +458,61 @@ func copySQLite(ctx context.Context, src, dst string) error {
 		return err
 	}
 	defer db.Close()
-	db.SetMaxOpenConns(1)
 	if err := os.Remove(dst); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	_, err = db.ExecContext(ctx, `VACUUM INTO ?`, dst)
-	return err
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	return conn.Raw(func(driverConn any) error {
+		source, ok := driverConn.(interface {
+			NewBackup(string) (*sqlite.Backup, error)
+		})
+		if !ok {
+			return errors.New("the SQLite driver has no online backup")
+		}
+		bk, err := source.NewBackup((&url.URL{Scheme: "file", Path: dst}).String())
+		if err != nil {
+			return err
+		}
+		deadline := time.Now().Add(copyBusyWait)
+		for {
+			more, err := bk.Step(-1)
+			if err == nil && !more {
+				return bk.Finish()
+			}
+			// A writer that holds the database for a moment - a checkpoint,
+			// a rollback-journal commit - is waited out, as the busy
+			// timeout waits for a query.
+			if err != nil && (!sqliteBusy(err) || time.Now().After(deadline)) {
+				_ = bk.Finish()
+				return err
+			}
+			select {
+			case <-ctx.Done():
+				_ = bk.Finish()
+				return ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	})
+}
+
+// copyBusyWait is how long a copy waits for a database another process
+// holds locked before it gives up for this run.
+const copyBusyWait = 30 * time.Second
+
+// sqliteBusy reports whether err is SQLite saying the database is locked
+// for the moment.
+func sqliteBusy(err error) bool {
+	var se *sqlite.Error
+	if !errors.As(err, &se) {
+		return false
+	}
+	code := se.Code() & 0xff
+	return code == sqlite3.SQLITE_BUSY || code == sqlite3.SQLITE_LOCKED
 }
 
 // unixMode is the permission bits of a mode, with setuid, setgid and sticky
