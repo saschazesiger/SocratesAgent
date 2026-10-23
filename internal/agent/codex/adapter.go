@@ -333,6 +333,10 @@ func (a *adapter) startThread(ctx context.Context, instructions string) error {
 func (a *adapter) resume(ctx context.Context, id string) error {
 	var res threadResult
 	if err := a.rpc.call(ctx, "thread/resume", a.policy(map[string]any{"threadId": id, "excludeTurns": true}), &res); err != nil {
+		var rerr *rpcError
+		if errors.As(err, &rerr) && strings.Contains(rerr.Message, "no rollout found") {
+			return fmt.Errorf("%w: codex has no thread %s: %s", agent.ErrConversationNotFound, id, rerr.Message)
+		}
 		return a.startErr("codex could not resume the conversation "+id, err)
 	}
 	if res.Thread.ID == "" {

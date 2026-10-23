@@ -109,7 +109,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	t := &turn{w: w, n: n, account: account, req: req}
+	t := &turn{w: w, n: n, account: account, req: req, hangup: r.Context().Done()}
 	t.begin()
 	t.answer(text)
 	t.end()
@@ -197,6 +197,8 @@ type turn struct {
 	account string
 	req     request
 	index   int
+	// done is closed when codex hangs up, which ends a slow stream.
+	hangup <-chan struct{}
 }
 
 func (t *turn) sse(ev map[string]any) {
@@ -261,7 +263,11 @@ func (t *turn) answer(text string) {
 			d := fmt.Sprintf("tick%d ", i)
 			all.WriteString(d)
 			t.sse(map[string]any{"type": "response.output_text.delta", "delta": d, "item_id": id, "output_index": t.index, "content_index": 0})
-			time.Sleep(time.Duration(every) * time.Millisecond)
+			select {
+			case <-time.After(time.Duration(every) * time.Millisecond):
+			case <-t.hangup:
+				return
+			}
 		}
 		t.done(map[string]any{"type": "message", "id": id, "role": "assistant",
 			"content": []any{map[string]any{"type": "output_text", "text": all.String(), "annotations": []any{}}}})

@@ -53,9 +53,11 @@ type diffState struct {
 
 // part is one item as a part, with the text its deltas built.
 type part struct {
-	id      string
-	kind    string
-	parent  string
+	id     string
+	kind   string
+	parent string
+	// agent is the subagent thread the part came from, empty for the root.
+	agent   string
 	text    strings.Builder
 	content json.RawMessage
 	done    bool
@@ -184,7 +186,7 @@ func (a *adapter) closeTurnLocked(t *turn, outcome, why string) {
 		events = append(events, a.diffEvent(t, agent.PartDone))
 	}
 	for _, p := range t.order {
-		if p.done {
+		if p.done || a.agentRunningLocked(p.agent) {
 			continue
 		}
 		p.done = true
@@ -425,11 +427,12 @@ func (a *adapter) partFor(t *turn, ag *subagent, threadID, itemID, kind string) 
 	if p := t.parts[key]; p != nil {
 		return p
 	}
-	parent := ""
-	if ag != nil {
-		parent = ag.group
+	if ag == nil {
+		return t.newPart(key, kind, "")
 	}
-	return t.newPart(key, kind, parent)
+	p := t.newPart(key, kind, ag.group)
+	p.agent = ag.thread
+	return p
 }
 
 func (a *adapter) emitPart(t *turn, p *part, state string) {
@@ -513,14 +516,17 @@ func (a *adapter) subAgentActivity(t *turn, parent *subagent, it item) {
 
 func (a *adapter) newAgentLocked(thread, path, model, effort string, t *turn, parentGroup string) *subagent {
 	ag := &subagent{thread: thread, path: path, model: model, effort: effort, turn: t, parent: parentGroup, status: "started"}
-	ag.group = t.newPart("agent/"+thread, agent.PartTool, parentGroup).id
+	group := t.newPart("agent/"+thread, agent.PartTool, parentGroup)
+	group.agent = thread
+	ag.group = group.id
 	a.agents[thread] = ag
 	a.emitAgent(ag)
 	return ag
 }
 
 func (a *adapter) agentBusy(ag *subagent, busy bool) {
-	if ag.busy != busy {
+	changed := ag.busy != busy
+	if changed {
 		ag.busy = busy
 		if busy {
 			a.running++
@@ -530,10 +536,13 @@ func (a *adapter) agentBusy(ag *subagent, busy bool) {
 			if ag.status == "running" {
 				ag.status = "idle"
 			}
+			a.closeAgentPartsLocked(ag)
 		}
-		a.out.Emit(agent.Event{Type: agent.TypeTasks, Count: a.running})
 	}
 	a.emitAgent(ag)
+	if changed {
+		a.out.Emit(agent.Event{Type: agent.TypeTasks, Count: a.running})
+	}
 }
 
 func (a *adapter) emitAgent(ag *subagent) {
@@ -550,6 +559,24 @@ func (a *adapter) emitAgent(ag *subagent) {
 	p.done = false
 	a.out.Emit(partEvent(ag.turn.msgID, p, state))
 	p.done = state != agent.PartRunning
+}
+
+// agentRunningLocked is whether a subagent thread still works.
+func (a *adapter) agentRunningLocked(thread string) bool {
+	ag := a.agents[thread]
+	return ag != nil && ag.busy
+}
+
+// closeAgentPartsLocked ends what a subagent left open when it stopped: its
+// parts outlive the spawning turn while it runs.
+func (a *adapter) closeAgentPartsLocked(ag *subagent) {
+	t := ag.turn
+	for _, p := range t.order {
+		if p.done || p.agent != ag.thread || p.id == ag.group {
+			continue
+		}
+		a.emitPart(t, p, agent.PartDone)
+	}
 }
 
 // agentName is the last element of a task path: /root/helper → helper.
