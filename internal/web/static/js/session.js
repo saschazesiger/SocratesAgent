@@ -16,7 +16,7 @@
 // of it per session.
 
 import {
-  api, el, toast, infoTip, confirmDialog, alertDialog, errorMessage, isOffline, isBusyConflict,
+  api, el, toast, infoTip, confirmDialog, alertDialog, promptDialog, errorMessage, isOffline, isBusyConflict,
   setClass, onWake, clientKey, CONNECTION_GRACE, restoreFocus, setFocusFallback,
 } from './api.js';
 import { connectionSource } from './net.js';
@@ -1926,6 +1926,28 @@ function openWanted() {
 
 /* ---------------------------------------------------- the session actions */
 
+// pointFolder points a session whose folder is not on this machine - one a
+// restore brought back without its code (REBUILD §6.2) - at the folder its
+// code is in now. The session starts or resumes there from then on.
+async function pointFolder(session, opener) {
+  const dir = await promptDialog({
+    title: 'Point to folder',
+    body: 'This session\'s folder is not on this machine. Where is its code now? It works in that folder from now on.',
+    label: 'Folder',
+    value: session.workdir,
+    confirmLabel: 'Use this folder',
+    opener,
+  });
+  if (!dir) return;
+  try {
+    const data = await api('/api/sessions/' + encodeURIComponent(session.id) + '/workdir', { method: 'PUT', body: { workdir: dir } });
+    if (data.session) replaceSession(data.session);
+    toast('The session works in that folder now.', 'success');
+  } catch (err) {
+    toast(errorMessage(err), 'error');
+  }
+}
+
 async function renameSession(session, opener) {
   const title = await promptTitle(session.title, opener);
   if (title === null || title === session.title) return;
@@ -2101,6 +2123,7 @@ async function openRowMenu(anchor, id) {
   };
   add('info', 'Info', 'info', () => infoDialog(session, anchor));
   if (!editor) add('rename', 'Rename', 'pencil', () => renameSession(session, anchor));
+  if (!editor && session.workdir_missing) add('folder', 'Point to folder', 'folder', () => pointFolder(session, anchor));
   if (!editor && !prepared) {
     items.push(html`<div class="ds-menu__divider" role="separator"></div><p class="so-menu-heading" aria-hidden="true">Status</p>`);
     for (const one of STATUSES) {

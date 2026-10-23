@@ -566,10 +566,11 @@ key (the existing `Outbox` in `net.js`).
 | `POST /api/chats/{id}/interrupt` | `client_id` | as messages; 200 `{idle: true}` when nothing runs and no host is up |
 | `POST /api/chats/{id}/asks/{ask}/answer` | `client_id`, `answer` (any JSON), `device` | 200 / 202 as messages; **409 `{answered_elsewhere: true, by_device}`** when another device answered; 404 for an unknown ask |
 | `GET /api/chats/{id}/stream` | WebSocket | below |
+| `PUT /api/sessions/{id}/workdir` | `workdir` (a folder that exists) | 200 `{session}`; 400 for a folder that is not there or not allowed; 409 while a turn runs. A host that is up is stopped, so the next message starts the agent in the new folder (REBUILD §6.2: a restored chat whose folder is missing) |
 
 Sending a message clears the chat's unread mark (as typing at a terminal does). Chats appear in
 `GET /api/sessions` and the event stream like every session, with `kind: "chat"` and their
-`activity`.
+`activity`, and `workdir_missing` when their folder is not on this machine.
 
 **Stream** (`socrates.chat.v1`): the same per-login handshake ceiling as `/api/events`, origin
 check, compression. Client's first frame within 10 s: `{"t":"hello","since":<seq>}` (else closed

@@ -673,3 +673,58 @@ func TestChatStreamHelloAndRevoke(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// A chat restored onto a machine without its folder says so in the session
+// list, and is pointed to a folder that is there: the agent then runs in it.
+// A folder that is not there is refused, and so is a terminal that runs.
+func TestAChatWhoseFolderIsMissingIsPointedToAnother(t *testing.T) {
+	c := newChatEnv(t, time.Hour)
+	gone := filepath.Join(t.TempDir(), "old-project")
+	if err := os.MkdirAll(gone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	code, body := c.post(t, "/api/chats", map[string]any{"client_id": "create-" + t.Name(), "harness": "fake",
+		"workdir_mode": "custom", "workdir": gone})
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d %v", code, body)
+	}
+	id := body["session"].(map[string]any)["id"].(string)
+	c.send(t, id, "m1", "hello")
+	c.waitJournal(t, id, 10*time.Second, "the first reply", turnsEnded(1))
+	if err := os.RemoveAll(gone); err != nil {
+		t.Fatal(err)
+	}
+	_, got := c.do(t, c.client, "GET", "/api/sessions/"+id, "")
+	if got["session"].(map[string]any)["workdir_missing"] != true {
+		t.Fatalf("a chat without its folder: %v", got["session"])
+	}
+
+	put := func(dir string) (int, map[string]any) {
+		raw, _ := json.Marshal(map[string]string{"workdir": dir})
+		res, body := c.do(t, c.client, "PUT", "/api/sessions/"+id+"/workdir", string(raw))
+		return res.StatusCode, body
+	}
+	if code, body := put(filepath.Join(t.TempDir(), "nowhere")); code != http.StatusBadRequest {
+		t.Fatalf("a folder that is not there: %d %v", code, body)
+	}
+	here := t.TempDir()
+	code, body = put(here)
+	session, _ := body["session"].(map[string]any)
+	if code != http.StatusOK || session["workdir"] != here || session["workdir_missing"] == true || session["workdir_mode"] != "custom" {
+		t.Fatalf("pointed to %s: %d %v", here, code, body)
+	}
+	if alive, _ := c.srv.chats.launcher.Alive(id); alive {
+		t.Fatal("the host in the old folder is still up")
+	}
+	c.send(t, id, "m2", "again")
+	c.waitJournal(t, id, 10*time.Second, "the reply in the new folder", turnsEnded(2))
+
+	if err := c.store.CreateSession(&store.Session{ID: "term", Title: "Shell", Harness: "shell", Workdir: here,
+		WorkdirMode: "custom", TmuxName: "t-term", State: store.StateRunning}); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(map[string]string{"workdir": t.TempDir()})
+	if res, _ := c.do(t, c.client, "PUT", "/api/sessions/term/workdir", string(raw)); res.StatusCode != http.StatusConflict {
+		t.Fatalf("a running terminal pointed elsewhere: %d", res.StatusCode)
+	}
+}

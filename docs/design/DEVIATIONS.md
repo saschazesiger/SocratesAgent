@@ -2300,3 +2300,18 @@ backup leaves its `env` field out (`paths.Redacted`), and the host's `host.lock`
 and socket (`run/chats/`) entirely; the journal and the adapter's `agent/` state go in whole.
 The server writes the spec again before every launch, so a restored chat loses nothing. WP7:
 credentials should still live in the account folders or the store, not only in the spec.
+
+**WP1 / REBUILD.md §6.2 — "point to folder" is on the session's menu, not on the restore page.**
+§6.2 lists the missing working directories per chat after a restore. The restore page ends in a
+restart and the sign-in, so the list is where the sessions are: `GET /api/sessions` marks a row
+whose folder is not on the machine (`workdir_missing`), its ⋮ menu offers **Point to folder**, and
+`PUT /api/sessions/{id}/workdir` takes a folder that exists (a preset, or a typed-in one under the
+new-session rules) and stops a chat's host so its next message starts there. The chat view's
+dock says the same with the same action; it shows once WP8 mounts the view.
+
+**WP1 — a backup waits for an installation, and needs the database.** Not in §6.2: a data
+directory that holds no installation (no password, no sessions, nothing in its folders) or whose
+restore is staged is not backed up, and a `backup.json` found on one gets a host id of its own; a
+snapshot without `socrates.db` is not written, "latest" is the newest snapshot that holds it, and
+one without it cannot be restored. Otherwise a new machine, started before its restore, wrote an
+empty snapshot that "latest" restored and that retention counted as the old machine's newest.

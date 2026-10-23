@@ -97,7 +97,7 @@ let dialogSeq = 0;
 // the start of every way out - Escape, the backdrop, a [data-close] button,
 // an accept that calls close - so it is the one place the answer is given.
 // The dialog leaves the page once its exit has played.
-function openDialog({ title, body, lines, code, actions, alert, opener }) {
+function openDialog({ title, body, lines, code, field, actions, alert, opener }) {
   const id = 'dlg' + (++dialogSeq);
   const box = el('div', { class: 'ds-dialog__box' },
     el('h2', { class: 'ds-dialog__title', id: id + '-title', text: title }),
@@ -106,6 +106,7 @@ function openDialog({ title, body, lines, code, actions, alert, opener }) {
       ? el('ul', { class: 'ds-plain-list', id: body ? null : id + '-text' },
         lines.map((line) => el('li', {}, code ? el('code', { class: 'so-break', text: line }) : line)))
       : null,
+    field || null,
     el('div', { class: 'ds-dialog__actions' }, actions));
   const dialog = el('dialog', {
     class: 'ds-dialog',
@@ -176,6 +177,34 @@ export function alertDialog({ title, body = '', lines = [], code = false, confir
   const { dialog, shown } = openDialog({ title, body, lines, code, actions: [ok], opener });
   ok.addEventListener('click', () => dialog.answer(true));
   return shown;
+}
+
+// promptDialog is window.prompt in the app's own clothes: one field with its
+// label, and a button that says what is done with what was typed. It
+// resolves with the trimmed text, or null when the person cancelled.
+export function promptDialog({
+  title, body = '', label, value = '', placeholder = '', confirmLabel = 'OK', cancelLabel = 'Cancel', opener = null,
+} = {}) {
+  const fieldId = 'dlg-field' + (dialogSeq + 1);
+  const input = el('input', {
+    class: 'ds-input', type: 'text', id: fieldId, value, placeholder, spellcheck: 'false', autocomplete: 'off', autofocus: true,
+  });
+  const field = el('div', { class: 'ds-field' }, el('label', { class: 'ds-field__label', for: fieldId, text: label }), input);
+  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: cancelLabel });
+  const accept = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', text: confirmLabel });
+  const { dialog, shown } = openDialog({ title, body, field, actions: [cancel, accept], opener });
+  const done = () => {
+    dialog.answer(input.value.trim());
+    DS.overlay.close(dialog);
+  };
+  accept.addEventListener('click', done);
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !event.isComposing) {
+      event.preventDefault();
+      done();
+    }
+  });
+  return shown.then((answer) => (answer === false ? null : answer));
 }
 
 // A message that is on screen already is not shown again: an offline burst
