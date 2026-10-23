@@ -65,10 +65,11 @@ func init() {
 // Server is an in-process MCP server the CLI reaches over the control
 // protocol (sdkMcpServers in initialize, then mcp_message requests). Handle
 // gets one JSON-RPC message and returns the JSON-RPC response, nil for a
-// notification; it may block for as long as the call takes (an ask_user call
-// blocks until the person answers). Its context ends when the CLI withdraws
-// the request or exits. Every chat has ask_user (askServer) this way;
-// Options.Servers adds more.
+// notification and for a call the CLI withdrew (which is not answered); it
+// may block for as long as the call takes (an ask_user call blocks until the
+// person answers). Its context ends when the CLI withdraws the request or
+// exits. Every chat has ask_user (askServer) this way; Options.Servers adds
+// more.
 type Server interface {
 	Name() string
 	// Config is the server's sdkMcpServerConfigs entry, nil for none.
@@ -561,14 +562,12 @@ func (a *Adapter) controlRequest(id string, raw json.RawMessage) {
 		a.handle(id, func(ctx context.Context) {
 			resp, err := s.Handle(ctx, req.Message)
 			switch {
-			case ctx.Err() != nil:
-				// Withdrawn, or the CLI is gone: it waits for nothing.
+			case ctx.Err() != nil, err == nil && resp == nil:
+				// Withdrawn (control_cancel_request, notifications/cancelled),
+				// or the CLI is gone: it waits for nothing.
 			case err != nil:
 				a.refuse(id, err.Error())
 			default:
-				if resp == nil {
-					resp = json.RawMessage(`{"jsonrpc":"2.0","result":{}}`)
-				}
 				a.respond(id, map[string]any{"mcp_response": resp})
 			}
 		})
