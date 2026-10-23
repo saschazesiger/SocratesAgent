@@ -85,6 +85,10 @@ const (
 	MessageStreaming   = "streaming"
 	MessageDone        = "done"
 	MessageInterrupted = "interrupted"
+	// MessageCancelled is a user message the agent dropped before taking it
+	// up (Claude's command_lifecycle cancelled). It is not delivered and is
+	// not handed to the agent again.
+	MessageCancelled = "cancelled"
 )
 
 // Part kinds.

@@ -378,7 +378,7 @@ func (p *Projection) OpenAsks() []*Ask {
 func (p *Projection) Undelivered() []*Message {
 	var out []*Message
 	for _, m := range p.Messages {
-		if m.Role == RoleUser && m.State != MessageDelivered {
+		if m.Role == RoleUser && m.State != MessageDelivered && m.State != MessageCancelled {
 			out = append(out, m)
 		}
 	}

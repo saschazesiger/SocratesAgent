@@ -48,7 +48,7 @@ is one `agent.Event`: a flat JSON object, all fields optional except `seq`, `at`
 | `turn.started` | `turn_id`, `message_id`? | the agent took up a user message (or started on its own) |
 | `turn.ended` | `turn_id`, `outcome` (`completed`\|`interrupted`\|`failed`\|`limited`), `usage`, `cost_usd`, `text` (why) | end of the turn |
 | `message` | `message_id`, `role` (`user`\|`assistant`), `state`, `client_id`?, `text`?, `attachments`?, `answer_to`?, `turn_id`?, `model`? | creates a message. **User messages carry text and attachments inline**; assistant messages are containers for parts |
-| `message.state` | `message_id`, `state` | user: `pending` (journaled by the host) → `queued` (the agent holds it behind a running turn) → `delivered` (taken up). Assistant: `streaming` → `done`\|`interrupted` |
+| `message.state` | `message_id`, `state` | user: `pending` (journaled by the host) → `queued` (the agent holds it behind a running turn) → `delivered` (taken up), or `cancelled` (the agent dropped it unread; not handed to it again). Assistant: `streaming` → `done`\|`interrupted` |
 | `part` | `message_id`, `part_id`, `parent_part_id`?, `kind`, `state`, `text`, `content` | creates **or replaces whole** the part with that id (kind, state, text, content); `parent_part_id` nests it (below) |
 | `part.delta` | `message_id`, `part_id`, `offset`, `text` | appends `text` to the part's text; `offset` is where it starts, in **UTF-16 code units** |
 | `ask` | `ask_id`, `turn_id`, `payload` (WP6's `ask_user` schema, opaque here), `via`? | a question the agent waits for. `via: "message"`: the call already returned by design (Codex code mode, REBUILD §5.3) and the answer is to be sent as the next user message (§4.4) |
