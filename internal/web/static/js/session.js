@@ -44,7 +44,7 @@ import {
 } from './ui.js';
 import { mountBackupNotice } from './backup.js';
 import { mountChat } from './chatview.js';
-import { chatOutbox, queueCommand } from './chatoutbox.js';
+import { chatOutbox, queueCommand, settled } from './chatoutbox.js';
 import { openChatAsks, askDialogOpen, closeAskDialog } from './askdialog.js';
 
 /* ------------------------------------------------------------- transport */
@@ -2117,10 +2117,17 @@ function downloadJournal(session) {
 }
 
 // compactChat asks a chat's agent to compact its conversation: the palette's
-// /compact, sent once by its client_id like everything a chat is told.
+// /compact, sent once by its client_id like everything a chat is told. It
+// says what became of it, whether the chat is on screen or not: taken,
+// refused (the chat shows it as not run until it is dismissed there), or
+// kept for when the connection is back.
 function compactChat(session) {
-  queueCommand(session.id, 'compact', '', '/compact');
-  toast('Compacting the conversation.');
+  const clientId = queueCommand(session.id, 'compact', '', '/compact');
+  if (navigator.onLine === false) toast('Offline. Compact goes to the agent when the connection is back.');
+  settled(clientId).then(
+    () => toast('Compacting the conversation.'),
+    (err) => toast('The conversation could not be compacted: ' + errorMessage(err), 'error'),
+  );
 }
 
 // exportChat opens the whole conversation as the server holds it: every

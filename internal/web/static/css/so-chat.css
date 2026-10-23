@@ -40,9 +40,11 @@
  *                          decide, Other, a note, Ask back
  *
  * Hooks without rules of their own, for the scripts and the tests:
- * .so-composer__picker (the hidden file input), .so-model-menu (the model
- * and effort menu, a DS menu), .so-ask-back, .so-ask-note, .so-ask-other,
- * .so-q-back, .so-q-close, .so-q-own-field, .so-ask__open.
+ * .so-chat__composer (the composer's slot in the dock), .so-composer__picker
+ * (the hidden file input), .so-composer__attach, .so-model-menu (the model
+ * and effort menu, a DS menu), .so-ask-back, .so-ask-delegate, .so-ask-note,
+ * .so-ask-other, .so-q-back, .so-q-close, .so-q-own-field, .so-ask__open,
+ * .so-refused (a DS alert: the server would not take an answer).
  */
 
 /* ── The view ────────────────────────────────────────────────────────── */
@@ -322,7 +324,6 @@
 .so-diff__file > summary .ds-chevron,
 .so-ask-context > summary .ds-chevron {
   flex: none;
-  color: var(--ds-text-2);
 }
 
 /* The thinking: one quiet line until it is opened. */

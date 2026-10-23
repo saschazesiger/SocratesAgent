@@ -19,8 +19,11 @@
 //
 // What is being answered is kept in this browser while it is written, so
 // the card in the chat can say how far it is and a dialog that was closed
-// opens where it was left. It is live: a question answered on another
-// device says so, and the next one takes the dialog.
+// opens where it was left; it stays until the question is answered, so an
+// answer the server refused can be written again from it. It is live: a
+// question answered on another device says so, and the next one takes the
+// dialog. An answer still in the Outbox is shown as on its way, never as a
+// question to answer again.
 //
 // A plan (payload.kind "plan") is not a question: the plan card in the chat
 // answers it, and this dialog leaves it out.
@@ -30,7 +33,7 @@ import { html, raw, icon, morph, showOverlay, hideOverlay, M, faces } from './ui
 import { markdown } from './md.js';
 import { agentMarkHtml } from './logos.js';
 import { askQuestions } from './chatparts.js';
-import { queueAnswer, answeredHere, onOutbox } from './chatoutbox.js';
+import { queueAnswer, answeredHere, onOutbox, pendingAnswer, chatOutbox } from './chatoutbox.js';
 import { newChat, apply, openAsks } from './chatfold.js';
 import { ChatStream } from './chatstream.js';
 import { record, recPhase } from './dictate.js';
@@ -43,6 +46,13 @@ const MOVE_ON = 1200;
 
 const draftKey = (askId) => 'socrates.ask.' + askId;
 
+// Bumped by every write of a draft, so the chat view draws a card again only
+// when what it reads from the drafts may have changed.
+let draftsRev = 0;
+
+/** askDraftsRev is the revision of this tab's writes to the drafts. */
+export function askDraftsRev() { return draftsRev; }
+
 function readDraft(askId) {
   try {
     const parsed = JSON.parse(localStorage.getItem(draftKey(askId)) || 'null');
@@ -52,12 +62,17 @@ function readDraft(askId) {
 }
 
 function writeDraft(askId, draft) {
+  draftsRev += 1;
   try { localStorage.setItem(draftKey(askId), JSON.stringify(draft)); } catch { /* full or private */ }
 }
 
 function forgetDraft(askId) {
+  draftsRev += 1;
   try { localStorage.removeItem(draftKey(askId)); } catch { /* private */ }
 }
+
+/** forgetAskDraft lets the draft of an answered question go. */
+export function forgetAskDraft(askId) { forgetDraft(askId); }
 
 // An answer as the dialog keeps it: what is sent (selected, other, note,
 // delegated), whether its fields are open, and whether the person has had
@@ -150,9 +165,14 @@ export function problemOf(q, a, { final = false } = {}) {
     if (q.min !== undefined && value < Number(q.min)) return 'The smallest number it takes is ' + q.min + '.';
     if (q.max !== undefined && value > Number(q.max)) return 'The largest number it takes is ' + q.max + '.';
   }
-  if (kind === 'multi' && a.selected.length) {
+  // "Other" is one of the choices of a multi-select, for its least and its
+  // most alike.
+  const chosen = a.selected.length + (own ? 1 : 0);
+  if (kind === 'multi' && chosen) {
     const min = Number(q.min) || 0;
-    if (min && a.selected.length + (own ? 1 : 0) < min) return 'Choose at least ' + min + '.';
+    const max = Number(q.max) || 0;
+    if (min && chosen < min) return 'Choose at least ' + min + '.';
+    if (max && chosen > max) return 'Choose up to ' + max + ', your own words count as one.';
   }
   if (final && q.required === true && !answered(a)) return 'This question needs an answer, or “You decide”.';
   return '';
@@ -283,6 +303,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
   const st = {
     items: items.slice(), at: Math.max(0, Math.min(start, items.length - 1)), draft: null, phase: 'ask',
     details: new Set(), speaking: false, unwatch: null, timer: null, closed: false, problem: null,
+    refused: null,
   };
 
   function item() { return st.items[st.at] || null; }
@@ -299,6 +320,11 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
     st.problem = null;
     st.details.clear();
     st.phase = one.ask.answered ? settledPhase(one.ask) : 'ask';
+    // An answer from here is already on its way: the dialog says so. One
+    // the server refused is said above the questions, to be sent again.
+    const pending = one.ask.answered ? null : pendingAnswer(one.chatId, one.ask.id);
+    st.refused = pending && pending.state === 'failed' ? pending : null;
+    if (pending && !st.refused) st.phase = 'sent';
     st.unwatch = watch ? watch(one, (ask) => {
       if (st.closed || item() !== one) return;
       one.ask = ask;
@@ -338,6 +364,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
     clearTimeout(st.timer);
     if (st.unwatch) st.unwatch();
     unlisten();
+    unrefused();
     if (st.speaking) stopSpeaking();
     save();
     current = null;
@@ -353,6 +380,22 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
     if (news.type !== 'elsewhere' || !one || news.payload.ask !== one.ask.id || st.closed) return;
     st.phase = 'elsewhere';
     forgetDraft(one.ask.id);
+    draw();
+  });
+
+  // An answer on its way that the server refused for good gives the
+  // questions back, with the reason, to be sent again.
+  const unrefused = chatOutbox().onChange(() => {
+    const one = item();
+    if (st.closed || !one || st.phase !== 'sent') return;
+    const pending = pendingAnswer(one.chatId, one.ask.id);
+    if (!pending || pending.state !== 'failed') {
+      // "Saved" or "Sending" follows the connection.
+      draw();
+      return;
+    }
+    st.refused = pending;
+    st.phase = 'ask';
     draw();
   });
 
@@ -378,7 +421,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
       openChat ? html`<button class="ds-btn so-q-open" type="button" data-action="open-chat">Open chat</button>` : ''
     }</div>${settled ? doneHtml(ask) : html`<div class="so-q-body so-ask-body" data-ds-key="${'q:' + ask.id + ':' + step}"${st.phase === 'sent' ? html` data-state="pending"` : ''}>${
       step === 0 && (payload.title || payload.context) ? html`${payload.title ? html`<p class="so-ask-title">${payload.title}</p>` : ''}${payload.context ? contextHtml('ctx', payload.context, 'About these questions') : ''}` : ''
-    }${q ? questionHtml(q, questions.length, step) : ''}${
+    }${st.refused ? html`<div class="ds-alert ds-alert--error so-refused" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${'Your answer was not taken: ' + (st.refused.error || 'the server refused it.') + ' Send it again, or change it first.'}</span></div>` : ''}${q ? questionHtml(q, questions.length, step) : ''}${
       st.draft.asking ? followUpHtml() : ''
     }${last && !st.draft.asking ? generalHtml() : ''}</div>`}${
       st.phase === 'sent' ? html`<div class="ds-alert so-q-status" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text">${navigator.onLine === false ? 'Saved. Your answer goes out when the connection is back.' : 'Sending your answer…'}</span></div>` : ''
@@ -476,7 +519,10 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
     if (st.phase === 'answered' || st.phase === 'elsewhere') {
       return html`<button class="ds-btn ds-btn--primary so-q-big so-q-send" type="button" data-action="next">${st.at < st.items.length - 1 ? 'Next question' : 'Close'}</button>`;
     }
-    if (st.phase === 'sent') return html`${read}<button class="ds-btn so-q-big" type="button" data-action="close">Close</button>`;
+    if (st.phase === 'sent') {
+      const more = st.at < st.items.length - 1;
+      return html`${read}<button class="ds-btn so-q-big" type="button" data-action="${more ? 'next' : 'close'}">${more ? 'Next question' : 'Close'}</button>`;
+    }
     if (st.draft.asking) {
       return html`${read}<button class="ds-btn so-q-big so-q-back" type="button" data-action="ask-cancel">Back to the questions</button><button class="ds-btn ds-btn--primary so-q-big so-q-send" type="button" data-action="send">Send question</button>`;
     }
@@ -518,11 +564,14 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
 
   /* ---------------------------------------------------------- answering */
 
+  // submit puts the answer on its way. The draft stays until the question is
+  // answered: a refusal gives the questions back as they were.
   function submit(answer) {
     const one = item();
-    queueAnswer(one.chatId, one.ask.id, answer);
-    forgetDraft(one.ask.id);
+    save();
+    st.refused = null;
     st.phase = 'sent';
+    queueAnswer(one.chatId, one.ask.id, answer);
     draw();
   }
 
@@ -556,7 +605,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
     if (kindOf(q) === 'multi') {
       const at = a.selected.indexOf(optionId);
       if (at >= 0) a.selected.splice(at, 1);
-      else if (!(Number(q.max) && a.selected.length >= Number(q.max))) a.selected.push(optionId);
+      else if (!(Number(q.max) && a.selected.length + (String(a.other || '').trim() ? 1 : 0) >= Number(q.max))) a.selected.push(optionId);
       else toast('Choose up to ' + q.max + '.');
     } else {
       a.selected = [optionId];

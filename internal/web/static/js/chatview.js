@@ -26,17 +26,22 @@ import * as harnesses from './harnesses.js';
 import { newChat, apply, applyLive, busy, currentTodo, seenClient } from './chatfold.js';
 import { ChatStream } from './chatstream.js';
 import {
-  assistantMessage, userMessage, lineHtml, askCard, todoList, todoItems, renewsIn, seconds,
+  assistantMessage, userMessage, lineHtml, askCard, todoList, todoItems, renewsIn, seconds, outboxState,
 } from './chatparts.js';
 import { mountComposer } from './composer.js';
-import { chatOutbox, pendingFor, queueAnswer, answeredHere } from './chatoutbox.js';
-import { askProgress } from './askdialog.js';
+import { chatOutbox, pendingFor, pendingAnswer, failedItem, queueAnswer, answeredHere } from './chatoutbox.js';
+import { askProgress, askDraftsRev, forgetAskDraft } from './askdialog.js';
 
 // How many chats keep their fold in memory, so that going back to one does
 // not replay its whole journal.
 const KEEP = 8;
 // How close to the bottom counts as "at the end", where new content follows.
 const STICK = 64;
+
+// What the person said to the chat that it shows as theirs until the journal
+// has it: a message, and a slash command. A change of model shows in the
+// composer, an answer on its question's card.
+const SAID = new Set(['message', 'command']);
 
 // The names a usage window goes by, for the chat's "i".
 const WINDOW_WORDS = { five_hour: '5-hour limit', weekly: 'Weekly limit' };
@@ -73,7 +78,15 @@ export function mountChat(ctx) {
   // show yet: kept on screen as "Sent" so a message never blinks out between
   // its answer and its event. Keyed by client_id.
   const sent = new Map();
+  // The same for answers, by ask: the card says "Sending" until the journal
+  // says the question is answered, rather than asking again in between.
+  const sentAnswers = new Map();
   let outboxIds = new Map();
+  // Bumped by every change of the Outbox: what a card shows of this
+  // browser's own answers and commands is drawn again then, and only then.
+  let outboxRev = 0;
+  // The asks whose answer has been seen, whose draft has been let go.
+  const settledAsks = new Set();
 
   // "Latest" is the scroller's last child and sticks to its bottom edge, so
   // it is always just above the dock, however tall the dock is.
@@ -93,6 +106,8 @@ export function mountChat(ctx) {
     isOpen(key, fallback) { return open.has(key) ? open.get(key) : fallback; },
     askProgress,
     mine: (ask) => answeredHere(ask.clientId),
+    pendingAnswer: (ask) => pendingAnswer(session.id, ask.id) || sentAnswers.get(ask.id) || null,
+    failedItem: (clientId) => failedItem(clientId),
     modelLabel(model) {
       const found = session && harnesses.modelOf(session.harness, model);
       if (found) return found.label || found.id;
@@ -127,6 +142,9 @@ export function mountChat(ctx) {
   function entryMarkup(entry) {
     let rev;
     let make;
+    // Whether this browser is online is in what its own answers say ("Not
+    // sent yet" or "Sending").
+    const local = outboxRev + ':' + (navigator.onLine !== false);
     if (entry.type === 'message') {
       const message = chat.messages.get(entry.id);
       if (!message) return '';
@@ -137,21 +155,33 @@ export function mountChat(ctx) {
           state: message.state === 'delivered' ? '' : message.state, answerTo: message.answerTo,
         });
       } else {
-        // A plan part is drawn from the question it waits on.
+        // A plan part is drawn from the question it waits on, and from the
+        // answer this browser has on its way to it.
         rev = message.rev + ':' + chat.askRev;
+        if (message.parts.some((part) => part.kind === 'plan')) rev += ':' + local;
         make = () => assistantMessage(message, view);
       }
     } else if (entry.type === 'ask') {
       const ask = chat.asks.get(entry.id);
       if (!ask) return '';
+      // An answered question needs its draft no more, wherever it was
+      // answered.
+      if (ask.answered && !settledAsks.has(ask.id)) {
+        settledAsks.add(ask.id);
+        sentAnswers.delete(ask.id);
+        forgetAskDraft(ask.id);
+      }
       // "2 of 5 answered" is read from this browser's draft of the answer,
-      // which the dialog writes: the card is drawn afresh every time.
-      return String(askCard(ask, view));
+      // which the dialog writes.
+      rev = ask.rev + ':' + askDraftsRev() + ':' + local;
+      make = () => askCard(ask, view);
     } else if (entry.line && entry.line.kind === 'turn' && entry.line.outcome === 'limited') {
       // "Renews in" moves with the clock.
       return String(lineHtml(entry, view));
     } else {
       rev = entry.rev;
+      // A command line says when the agent refused what this browser sent.
+      if (entry.line && entry.line.kind === 'command') rev += ':' + outboxRev;
       make = () => lineHtml(entry, view);
     }
     const hit = renders.get(entry.key);
@@ -165,9 +195,11 @@ export function mountChat(ctx) {
   // went without failing reached the server, which has it once.
   function noteSent(items) {
     const now = new Map();
-    for (const item of items) if (item.payload && item.payload.kind !== 'answer') now.set(item.id, item);
+    for (const item of items) if (item.payload && (SAID.has(item.payload.kind) || item.payload.kind === 'answer')) now.set(item.id, item);
     for (const [id, item] of outboxIds) {
-      if (!now.has(id) && item.state !== 'failed') sent.set(item.payload.client_id, { payload: item.payload, at: Date.now() });
+      if (now.has(id) || item.state === 'failed') continue;
+      if (item.payload.kind === 'answer') sentAnswers.set(item.payload.ask, { ...item, attempts: 0, error: '' });
+      else sent.set(item.payload.client_id, { payload: item.payload, at: Date.now() });
     }
     outboxIds = now;
   }
@@ -179,11 +211,9 @@ export function mountChat(ctx) {
     for (const clientId of [...sent.keys()]) if (seenClient(chat, clientId)) sent.delete(clientId);
     const out = [];
     for (const item of pendingFor(session.id)) {
-      if (item.payload.kind === 'answer' || seenClient(chat, item.payload.client_id)) continue;
-      let state = 'sending';
-      if (item.state === 'failed') state = 'failed';
-      else if (navigator.onLine === false || (item.attempts > 0 && item.error)) state = 'local';
-      const failed = item.state === 'failed';
+      if (!SAID.has(item.payload.kind) || seenClient(chat, item.payload.client_id)) continue;
+      const state = outboxState(item);
+      const failed = state === 'failed';
       out.push({
         key: 'o:' + item.payload.client_id,
         markup: String(html`${userMessage({
@@ -399,7 +429,6 @@ export function mountChat(ctx) {
         break;
       case 'plan-approve':
         queueAnswer(session.id, target.dataset.ask, { decision: 'approve' });
-        markAnswering(target);
         break;
       case 'plan-note':
         open.set('note:' + target.dataset.part, true);
@@ -410,11 +439,19 @@ export function mountChat(ctx) {
       case 'plan-send': {
         const field = host.querySelector('[data-plan-note="' + CSS.escape(target.dataset.ask) + '"]');
         queueAnswer(session.id, target.dataset.ask, { decision: 'keep_planning', note: field ? field.value.trim() : '' });
-        markAnswering(target);
         break;
       }
       case 'outbox-retry':
         chatOutbox().retry(target.dataset.id);
+        break;
+      case 'outbox-drop':
+        chatOutbox().drop(target.dataset.id);
+        break;
+      case 'ask-again':
+        // The refused answer is let go; the dialog opens on the draft it
+        // was written from, which is kept until the question is answered.
+        chatOutbox().drop(target.dataset.id);
+        ctx.openAsk(session.id, target.dataset.ask);
         break;
       case 'outbox-edit': {
         const item = chatOutbox().items.find((one) => one.id === target.dataset.id);
@@ -431,15 +468,6 @@ export function mountChat(ctx) {
         break;
     }
   });
-
-  // markAnswering holds a plan card's buttons while its answer is on its way:
-  // a second tap would be a second answer, and the stream says when it landed.
-  function markAnswering(button) {
-    const actions = button.closest('.so-plan__answer');
-    if (!actions) return;
-    for (const one of actions.querySelectorAll('button')) one.disabled = true;
-    button.setAttribute('aria-busy', 'true');
-  }
 
   scroller.addEventListener('scroll', () => {
     stuck = atEnd();
@@ -465,6 +493,7 @@ export function mountChat(ctx) {
 
   chatOutbox().onChange((items) => {
     noteSent(items);
+    outboxRev += 1;
     if (session) schedule();
   });
   window.addEventListener('online', () => schedule());
@@ -502,7 +531,7 @@ export function mountChat(ctx) {
         session: () => session,
         chat: () => chat,
         busy: () => busy(chat),
-        live: () => !!stream && stream.live(),
+        stale: () => stale(),
         usage: () => usageFacts(),
         sent: () => { stuck = true; schedule(); },
         changed: () => schedule(),

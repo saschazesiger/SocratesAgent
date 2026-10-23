@@ -18,7 +18,7 @@ import { api, toast, errorMessage, clientKey, onWake, alertDialog } from './api.
 import { html, raw, icon, morph, faces, showOverlay, hideOverlay } from './ui.js';
 import * as harnesses from './harnesses.js';
 import { guard, touchScreen, micButton } from './keyboard.js';
-import { queueMessage, queueCommand } from './chatoutbox.js';
+import { queueMessage, queueCommand, queueModel, pendingModel, settled, chatOutbox, failedItem } from './chatoutbox.js';
 
 const DRAFT_DEBOUNCE = 600;
 const RETRY_MIN = 2000;
@@ -247,7 +247,8 @@ export function paletteOf(info) {
  *   session()     the chat's row
  *   chat()        the chat's fold (chatfold.js)
  *   busy()        whether a turn is running
- *   live()        whether the chat stream is live
+ *   stale()       whether the chat may be behind: its stream has not been
+ *                 live for longer than a blink
  *   usage()       the chat's usage and cost, as lines for its "i"
  *   sent()        a message or command was put on its way
  *   changed()     something the dock shows changed size
@@ -263,7 +264,7 @@ export function mountComposer(host, ctx) {
     <div class="so-composer__conflict" hidden></div>
     <ul class="so-composer__palette" role="listbox" aria-label="Commands" hidden></ul>
     <ul class="so-composer__files" hidden></ul>
-    <div class="so-composer__field">
+    <div>
       <label class="ds-sr" for="${'composer-' + id}">Message</label>
       <textarea class="ds-input so-composer__input" id="${'composer-' + id}" rows="1" spellcheck="true"
         placeholder="Message" aria-describedby="${'composer-hint-' + id}"></textarea>
@@ -460,7 +461,11 @@ export function mountComposer(host, ctx) {
     return listed ? (listed.label || listed.id) : model;
   }
 
+  // current is the model the next message goes to: a change still on its
+  // way in the Outbox, else what the journal says, else the session's own.
   function current() {
+    const asked = pendingModel(id);
+    if (asked) return { model: asked.model, effort: asked.effort || '' };
     const chat = ctx.chat();
     const session = ctx.session();
     return { model: (chat && chat.model) || session.model || '', effort: (chat && chat.model ? chat.effort : session.effort) || '' };
@@ -504,20 +509,20 @@ export function mountComposer(host, ctx) {
     showOverlay(menu, modelBtn);
   }
 
-  async function setModel(next) {
+  // setModel goes through the Outbox like a message: chosen offline, it is
+  // the model of what is written after it, in that order. The button shows
+  // the choice at once; a refusal says so and leaves the queue.
+  function setModel(next) {
     const now = current();
+    if (menu && !menu.hidden) hideOverlay(menu);
     if (next.model === now.model && next.effort === now.effort) return;
-    modelBtn.setAttribute('aria-busy', 'true');
-    try {
-      await api('/api/chats/' + encodeURIComponent(id) + '/model', {
-        method: 'POST', body: { client_id: clientKey(), model: next.model, effort: next.effort },
-      });
-    } catch (err) {
+    const clientId = queueModel(id, next.model, next.effort);
+    paint();
+    settled(clientId).catch((err) => {
+      const refused = failedItem(clientId);
+      if (refused) chatOutbox().drop(refused.id);
       toast('The model could not be changed: ' + errorMessage(err), 'error');
-    } finally {
-      modelBtn.removeAttribute('aria-busy');
-      if (menu && !menu.hidden) hideOverlay(menu);
-    }
+    });
   }
 
   /* --------------------------------------------------------- the account */
@@ -648,7 +653,7 @@ export function mountComposer(host, ctx) {
     let said = '';
     if (draft.conflict()) said = 'Changed on another device';
     else if (busy && !empty) said = 'Sent now, it waits until the agent is done';
-    else if (!ctx.live()) said = 'Offline: what you send goes out when the connection is back';
+    else if (ctx.stale()) said = 'Offline: what you send goes out when the connection is back';
     if (hint.textContent !== said) hint.textContent = said;
     drawAccount();
     drawUsage();
