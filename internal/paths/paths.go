@@ -50,6 +50,10 @@ const (
 	// before the backup. It is read once, to carry its bucket over into
 	// BackupConfig, and left where it is for a build that is rolled back.
 	LegacyS3Config = "s3.json"
+	// BackupMigrated marks a data directory whose mirror configuration has
+	// been carried over, or found missing, so that it is never carried over
+	// again (internal/backup).
+	BackupMigrated = "backup.migrated"
 	// Bin is where Socrates downloads programs of its own (cloudflared).
 	Bin = "bin"
 	// TmuxSocket, TmuxConf and HookSocket are the private tmux server's.
@@ -112,6 +116,7 @@ var NotBackedUp = []string{
 	UpdatesStatus,
 	UpdatesLog,
 	BackupConfig,
+	BackupMigrated,
 	LegacyS3Config,
 	TmuxSocket,
 	TmuxConf,

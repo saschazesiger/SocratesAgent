@@ -240,8 +240,8 @@ func NewHostID() string {
 // validHostID is what a host id read from the bucket must look like.
 var validHostID = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
-// The mirror of earlier builds was configured by <data>/s3.json or by these
-// variables; MigrateConfig carries either over once.
+// The mirror of earlier builds was configured by these variables or by
+// <data>/s3.json; MigrateConfig carries either over once.
 const (
 	envEndpoint   = "SOCRATES_S3_ENDPOINT"
 	envRegion     = "SOCRATES_S3_REGION"
@@ -253,17 +253,35 @@ const (
 	envPassphrase = "SOCRATES_S3_PASSPHRASE"
 )
 
-// MigrateConfig makes a backup.json for a data directory that has none but
-// was configured for the bucket mirror of earlier builds: from s3.json, or
-// from the SOCRATES_S3_* environment that configured that mirror. The
-// backup goes into the same bucket with the same credentials and
-// passphrase, under DefaultPrefix inside the mirror's prefix, so that the
-// mirror's objects are left as they are and the two never meet. It reports
-// whether it wrote anything; s3.json itself is left in place.
+// MigrateConfig carries the bucket mirror of earlier builds over into
+// backup.json, once per data directory: from the SOCRATES_S3_* environment
+// when SOCRATES_S3_BUCKET is set, else from s3.json - the mirror's own
+// precedence, under which a stale s3.json lost to the environment. The
+// backup goes into the same bucket with the same credentials and passphrase,
+// under DefaultPrefix inside the mirror's prefix, so that the mirror's
+// objects are left as they are and the two never meet. It reports whether it
+// wrote anything; s3.json itself is left in place.
+//
+// Whatever it finds - a mirror to carry over, a backup.json already there,
+// or nothing - it leaves paths.BackupMigrated behind, and with that marker it
+// does nothing: a backup turned off by removing backup.json stays off, and
+// an environment set later configures nothing, as the Backup card owns the
+// configuration from then on. It is for a data directory that holds an
+// installation; on a new machine it would carry the old machine's bucket
+// over before it was set up or restored.
 func MigrateConfig(dataDir string, getenv func(string) string) (bool, error) {
 	layout := paths.New(dataDir)
-	if _, err := os.Stat(layout.BackupConfig()); err == nil {
+	marker := layout.Path(paths.BackupMigrated)
+	if _, err := os.Stat(marker); err == nil {
 		return false, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	done := func() error {
+		return writeFileAtomic(marker, []byte("The bucket mirror's configuration has been carried over into backup.json.\n"), 0o600)
+	}
+	if _, err := os.Stat(layout.BackupConfig()); err == nil {
+		return false, done()
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, err
 	}
@@ -277,13 +295,7 @@ func MigrateConfig(dataDir string, getenv func(string) string) (bool, error) {
 		PathStyle       bool   `json:"path_style"`
 		Passphrase      string `json:"passphrase"`
 	}
-	raw, err := os.ReadFile(layout.Path(paths.LegacyS3Config))
-	switch {
-	case err == nil:
-		if err := json.Unmarshal(raw, &old); err != nil {
-			return false, fmt.Errorf("%s is not valid JSON: %w", paths.LegacyS3Config, err)
-		}
-	case errors.Is(err, os.ErrNotExist) && strings.TrimSpace(getenv(envBucket)) != "":
+	if strings.TrimSpace(getenv(envBucket)) != "" {
 		old.Endpoint, old.Region, old.Bucket = getenv(envEndpoint), getenv(envRegion), getenv(envBucket)
 		old.Prefix, old.AccessKeyID, old.SecretAccessKey = getenv(envPrefix), getenv(envAccessKey), getenv(envSecretKey)
 		old.Passphrase = getenv(envPassphrase)
@@ -293,13 +305,20 @@ func MigrateConfig(dataDir string, getenv func(string) string) (bool, error) {
 				old.PathStyle = b
 			}
 		}
-	case errors.Is(err, os.ErrNotExist):
-		return false, nil
-	default:
-		return false, err
+	} else {
+		raw, err := os.ReadFile(layout.Path(paths.LegacyS3Config))
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			return false, done()
+		case err != nil:
+			return false, err
+		}
+		if err := json.Unmarshal(raw, &old); err != nil {
+			return false, fmt.Errorf("%s is not valid JSON: %w", paths.LegacyS3Config, err)
+		}
 	}
 	if strings.TrimSpace(old.Bucket) == "" {
-		return false, nil
+		return false, done()
 	}
 	inside := strings.Trim(strings.TrimSpace(old.Prefix), "/")
 	if inside != "" {
@@ -314,5 +333,5 @@ func MigrateConfig(dataDir string, getenv func(string) string) (bool, error) {
 	if err := SaveConfig(dataDir, cfg); err != nil {
 		return false, err
 	}
-	return true, nil
+	return true, done()
 }

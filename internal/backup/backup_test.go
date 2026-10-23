@@ -1109,12 +1109,17 @@ func TestARunCutShortLeavesNoManifestWithMissingChunks(t *testing.T) {
 }
 
 // The mirror's s3.json becomes backup.json, in the same bucket under a
-// prefix of its own, and so does a SOCRATES_S3_* environment.
+// prefix of its own, and so does a SOCRATES_S3_* environment, which wins over
+// an s3.json as it did for the mirror. It happens once: a backup.json
+// removed to turn backups off is not made again, and nothing happens on a
+// machine that is not set up yet.
 func TestTheMirrorsConfigurationIsCarriedOver(t *testing.T) {
+	noEnv := func(string) string { return "" }
+	legacy := []byte(`{"endpoint":"https://hel1.example.com","region":"hel1",
+		"bucket":"b1","prefix":"socrates/","access_key_id":"AK","secret_access_key":"SK","path_style":true,"passphrase":"pp"}`)
 	dir := t.TempDir()
-	write(t, filepath.Join(dir, paths.LegacyS3Config), []byte(`{"endpoint":"https://hel1.example.com","region":"hel1",
-		"bucket":"b1","prefix":"socrates/","access_key_id":"AK","secret_access_key":"SK","path_style":true,"passphrase":"pp"}`), 0o600)
-	migrated, err := MigrateConfig(dir, func(string) string { return "" })
+	write(t, filepath.Join(dir, paths.LegacyS3Config), legacy, 0o600)
+	migrated, err := MigrateConfig(dir, noEnv)
 	if err != nil || !migrated {
 		t.Fatalf("migrate: %v %v", migrated, err)
 	}
@@ -1129,22 +1134,54 @@ func TestTheMirrorsConfigurationIsCarriedOver(t *testing.T) {
 	if info, err := os.Stat(filepath.Join(dir, paths.BackupConfig)); err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("backup.json: %v %v", info, err)
 	}
-	if again, err := MigrateConfig(dir, func(string) string { return "" }); err != nil || again {
+	if again, err := MigrateConfig(dir, noEnv); err != nil || again {
 		t.Fatalf("a second migration: %v %v", again, err)
+	}
+	if err := os.Remove(filepath.Join(dir, paths.BackupConfig)); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := MigrateConfig(dir, noEnv); err != nil || again {
+		t.Fatalf("a migration after backup.json was removed: %v %v", again, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, paths.BackupConfig)); err == nil {
+		t.Fatal("backups turned off by removing backup.json came back")
 	}
 
 	env := map[string]string{"SOCRATES_S3_BUCKET": "b2", "SOCRATES_S3_ACCESS_KEY_ID": "AK2",
 		"SOCRATES_S3_SECRET_ACCESS_KEY": "SK2", "SOCRATES_S3_PASSPHRASE": "pp2"}
+	getenv := func(k string) string { return env[k] }
 	dir2 := t.TempDir()
-	if migrated, err := MigrateConfig(dir2, func(k string) string { return env[k] }); err != nil || !migrated {
+	write(t, filepath.Join(dir2, paths.LegacyS3Config), legacy, 0o600)
+	if migrated, err := MigrateConfig(dir2, getenv); err != nil || !migrated {
 		t.Fatalf("migrate from the environment: %v %v", migrated, err)
 	}
 	cfg, _ = LoadConfig(dir2)
 	if cfg.Bucket != "b2" || cfg.Prefix != DefaultPrefix || cfg.Passphrase != "pp2" {
-		t.Fatalf("from the environment: %+v", cfg)
+		t.Fatalf("from the environment, over a stale s3.json: %+v", cfg)
 	}
-	if migrated, _ := MigrateConfig(t.TempDir(), func(string) string { return "" }); migrated {
+
+	nothing := t.TempDir()
+	if migrated, _ := MigrateConfig(nothing, noEnv); migrated {
 		t.Fatal("a directory with nothing to carry over got a backup.json")
+	}
+	if migrated, _ := MigrateConfig(nothing, getenv); migrated {
+		t.Fatal("an environment set after the upgrade was carried over")
+	}
+
+	// The engine carries over only on a machine that holds an installation:
+	// a new one with the old /etc/socrates.env waits to be set up or
+	// restored.
+	fresh := t.TempDir()
+	if _, err := New(Options{DataDir: fresh, Getenv: getenv}); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, _ := LoadConfig(fresh); cfg != nil {
+		t.Fatalf("a machine with nothing installed carried the environment over: %+v", cfg)
+	}
+	install(t, fresh)
+	e, err := New(Options{DataDir: fresh, Getenv: getenv})
+	if err != nil || e.Config() == nil || e.Config().Bucket != "b2" {
+		t.Fatalf("once installed: %+v %v", e.Config(), err)
 	}
 }
 

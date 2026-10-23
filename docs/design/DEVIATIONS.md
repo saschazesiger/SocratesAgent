@@ -2253,9 +2253,13 @@ backs up whatever is in the data directory; `profiles/` and `sessions/` stay whe
 **WP1 / REBUILD.md §6.1 — `backup.json` holds the interval too, and `SOCRATES_S3_*` is read
 once.** The interval is a field of `backup.json` rather than of the settings document, so the
 Backup card is one form with one save. The `SOCRATES_S3_*` environment no longer configures
-anything at runtime: like `s3.json`, it is carried over into `backup.json` once (the bucket and
-the passphrase, under the prefix `backup/v1/` inside the old one) and the card owns it from
-then on. `s3.json` is left in place for a build that is rolled back.
+anything at runtime: it, or `s3.json` when `SOCRATES_S3_BUCKET` is unset (the mirror's own
+precedence), is carried over into `backup.json` once (the bucket and the passphrase, under the
+prefix `backup/v1/` inside the old one) and the card owns it from then on. "Once" is the marker
+`backup.migrated`, written at the first start on a data directory that holds an installation
+whatever the carry-over found, so a backup turned off stays off; a new machine that is not set
+up or restored yet carries nothing over. `s3.json` is left in place for a build that is rolled
+back.
 
 **WP1 — the snapshot list reads every manifest once.** A listing of the bucket gives a
 snapshot's host and time; its size and number of files are in its sealed manifest. Manifests

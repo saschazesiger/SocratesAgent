@@ -109,14 +109,20 @@ type Engine struct {
 }
 
 // New loads the configuration - carrying the bucket mirror's over first, for
-// a data directory that has one - and the state of the last runs. It does
-// not touch the network.
+// an installation that had one (MigrateConfig) - and the state of the last
+// runs. It does not touch the network.
 func New(opts Options) (*Engine, error) {
 	opts.defaults()
-	if migrated, err := MigrateConfig(opts.DataDir, opts.Getenv); err != nil {
-		log.Printf("backup: could not carry the bucket mirror's configuration over: %v", err)
-	} else if migrated {
-		log.Printf("backup: the bucket the mirror used is now the backup's, under the prefix %s", DefaultPrefix)
+	if ok, err := installed(opts.DataDir); err == nil && ok {
+		if migrated, err := MigrateConfig(opts.DataDir, opts.Getenv); err != nil {
+			log.Printf("backup: could not carry the bucket mirror's configuration over: %v", err)
+		} else if migrated {
+			prefix := DefaultPrefix
+			if cfg, err := LoadConfig(opts.DataDir); err == nil && cfg != nil {
+				prefix = cfg.Prefix
+			}
+			log.Printf("backup: the bucket the mirror used is now the backup's, under the prefix %s", prefix)
+		}
 	}
 	e := &Engine{
 		opts:    opts,
