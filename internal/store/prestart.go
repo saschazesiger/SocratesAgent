@@ -61,15 +61,17 @@ func (s *Store) GetDraft(id string) (Draft, error) {
 	return d, err
 }
 
-// SaveDraft stores the text of a prepared session's prompt if baseRev is the
-// revision it was edited from, and returns what was stored.
+// SaveDraft stores the text of a prepared session's prompt, or of a chat's
+// composer, if baseRev is the revision it was edited from, and returns what
+// was stored.
 //
 // A save from an older revision is refused with ErrConflict and the current
 // draft, rather than merged or silently overwritten: two devices typing into
 // one prompt is rare, and when it happens the person is the only one who knows
-// which text they meant. A session that has been started refuses with
-// ErrNotPrestart - its prompt was sent, and editing it afterwards would be
-// editing history.
+// which text they meant. A terminal session that has been started refuses
+// with ErrNotPrestart - its prompt was sent, and editing it afterwards would
+// be editing history. A chat keeps a draft for its whole life: the next
+// message being written.
 //
 // The revision of the store moves too, which is how other devices learn from
 // the session list that the draft changed.
@@ -81,8 +83,8 @@ func (s *Store) SaveDraft(id, text string, baseRev int64) (Draft, error) {
 		return Draft{}, err
 	}
 	defer tx.Rollback()
-	var state string
-	err = tx.QueryRow(`SELECT state FROM sessions WHERE id = ?`, id).Scan(&state)
+	var state, kind string
+	err = tx.QueryRow(`SELECT state, kind FROM sessions WHERE id = ?`, id).Scan(&state, &kind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Draft{}, ErrNotFound
 	}
@@ -95,7 +97,9 @@ func (s *Store) SaveDraft(id, text string, baseRev int64) (Draft, error) {
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return Draft{}, err
 	}
-	if state != StatePrestart {
+	// A prepared session's draft is its first prompt; a chat's is what its
+	// composer holds. A started terminal has none.
+	if state != StatePrestart && kind != KindChat {
 		return current, ErrNotPrestart
 	}
 	if baseRev != current.Rev {
