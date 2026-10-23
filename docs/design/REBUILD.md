@@ -134,6 +134,12 @@ fixed (HARNESS-POLICY.md, minus everything TUI-related).
   (verified: blocks 20 min without timeout; wall clock limit ~27.8 h).
 - Commands: `interrupt`, `set_model`, `set_permission_mode` (plan mode), slash commands as user
   text (`/compact`, custom commands verified headless).
+- Subagents and workflows: headless 2.1.309 offers `Task` (subagents; `task_*` events in the
+  stream), `Workflow` (dynamic multi-agent workflows), background agents, `Monitor` and
+  `ScheduleWakeup` (verified in `system/init` 2026-10-23). They must work exactly as in the TUI:
+  the adapter maps subagent and workflow progress to nested parts (one group per agent with its
+  own tool rows and status), a background task that finishes may start a turn by itself, and the
+  session option "Ultracode" stays. WP3 captures the exact event shapes of a real workflow run.
 - Plan mode: `ExitPlanMode` arrives as a permission request carrying the plan → rendered as a plan
   card with Approve / Keep planning (the one approval that stays, because it is a question, not a
   permission).
@@ -384,7 +390,8 @@ Full inventory: research `02-feature-inventory.md`. Summary:
 - Assistant text as Markdown (vendored renderer + sanitizer, pinned and checksummed like DS).
 - Reasoning collapsed by default; tool calls as compact rows (icon, one-line summary, duration)
   that expand to input/output; file edits as a diff viewer; commands with their output; todo list
-  pinned above the composer while a turn runs; subagents as nested collapsible groups; plan card;
+  pinned above the composer while a turn runs; subagents and workflow agents as nested collapsible
+  groups (a workflow shows its phases and every agent's live status, like `/workflows`); plan card;
   ask card.
 - Header: agent mark, title, model + effort picker, account picker with usage, Status (spoken),
   ⋮ (rename, file to shelf, export transcript, compact, delete).
