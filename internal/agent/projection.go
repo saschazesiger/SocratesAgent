@@ -37,6 +37,8 @@ type Projection struct {
 	Usage      Usage                `json:"usage"`
 	CostUSD    float64              `json:"cost_usd,omitempty"`
 	RateLimits map[string]RateLimit `json:"rate_limits,omitempty"`
+	// Commands is the agent's last reported slash command list (TypeCommands).
+	Commands json.RawMessage `json:"commands,omitempty"`
 
 	messages map[string]*Message
 	parts    map[string]*Part
@@ -203,6 +205,8 @@ func (p *Projection) Apply(ev Event) {
 		p.ConversationID = ev.ConversationID
 	case TypeTasks:
 		p.Tasks = ev.Count
+	case TypeCommands:
+		p.Commands = ev.Content
 	}
 }
 

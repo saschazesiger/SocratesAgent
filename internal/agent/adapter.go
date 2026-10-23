@@ -80,6 +80,9 @@ type StartSpec struct {
 	// adapter's own beside the journal.
 	Workdir  string
 	StateDir string
+	// DataDir is the Socrates data folder, for an adapter whose CLI keeps
+	// state shared between chats under it (<data>/agents/<harness>).
+	DataDir string
 	// Env is the CLI's whole environment, built for the chat's account. It is
 	// never the host's own environment passed through.
 	Env     []string
@@ -88,6 +91,11 @@ type StartSpec struct {
 	Effort  string
 	// ResumeID is the CLI conversation to continue, empty for a new one.
 	ResumeID string
+	// Rebuild says the journal does not have ResumeID's history (it was lost,
+	// or the chat was made from a conversation the CLI already had): the
+	// adapter emits that history, read from the CLI's own transcript, before
+	// anything else.
+	Rebuild bool
 	// First is a message to deliver as part of starting, for a CLI that takes
 	// its opening prompt at start. An adapter that has no use for that sends
 	// it right after starting.

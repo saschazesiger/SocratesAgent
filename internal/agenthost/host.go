@@ -309,14 +309,18 @@ func (h *host) boot() {
 			unsent = append(unsent, *a)
 		}
 	})
+	rebuild := false
+	if resume == "" && h.spec.ResumeID != "" {
+		resume, rebuild = h.spec.ResumeID, true
+	}
 	env := h.spec.Env
 	if len(env) == 0 {
 		env = os.Environ()
 	}
 	spec := agent.StartSpec{
 		ChatID: h.opts.ChatID, Workdir: h.spec.Workdir, StateDir: filepath.Join(h.dir, stateDir),
-		Env: env, Account: h.spec.Account, Model: h.spec.Model, Effort: h.spec.Effort,
-		ResumeID: resume, Spawn: h.spawn,
+		DataDir: h.opts.DataDir, Env: env, Account: h.spec.Account, Model: h.spec.Model, Effort: h.spec.Effort,
+		ResumeID: resume, Rebuild: rebuild, Spawn: h.spawn,
 	}
 	if resume == "" && len(pending) > 0 {
 		spec.First, pending = &pending[0], pending[1:]

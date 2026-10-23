@@ -61,6 +61,10 @@ const (
 	TypeNotice = "notice"
 	// TypeError is a failure worth showing that is not a turn's end.
 	TypeError = "error"
+	// TypeCommands is the agent's slash commands, for the composer's palette:
+	// Content is a JSON array of {name, description, source, hints}. A later
+	// one replaces the list.
+	TypeCommands = "commands"
 )
 
 // Message roles.

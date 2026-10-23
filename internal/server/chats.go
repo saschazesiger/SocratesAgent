@@ -373,6 +373,10 @@ func (p *chatPeer) launch(ctx context.Context) error {
 	}
 	p.mu.Lock()
 	busy := p.proj.Turn != nil
+	resume := ""
+	if p.proj.ConversationID == "" && row.CLISessionState == store.CLIKnown {
+		resume = row.CLISessionID
+	}
 	model, effort := row.Model, row.Effort
 	if p.proj.Model != "" {
 		model, effort = p.proj.Model, p.proj.Effort
@@ -386,7 +390,7 @@ func (p *chatPeer) launch(ctx context.Context) error {
 	defer cancel()
 	return p.hub.launcher.Launch(lctx, agenthost.Spec{
 		ChatID: p.id, Harness: row.Harness, Workdir: row.Workdir, Model: model, Effort: effort,
-		ParkAfterMS: p.hub.parkAfterFor().Milliseconds(),
+		ResumeID: resume, ParkAfterMS: p.hub.parkAfterFor().Milliseconds(),
 	})
 }
 
