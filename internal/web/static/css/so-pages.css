@@ -1,1 +1,354 @@
-/* so-pages.css: project components of login, setup and costs (owner WP8). Tokens only; see MIGRATION.md §3.4. */
+/*
+ * so-pages.css: the project components of login, setup and costs (WP8). They
+ * read tokens only (--ds-* and the --so-* of theme.css), are unlayered, and
+ * never restyle a .ds-* component.
+ *
+ *   .so-auth           the sign-in and setup page: one card centred on the
+ *                      backdrop, the connection alert above it
+ *   .so-auth__card     that card, --so-auth-width wide
+ *   .so-auth__submit   the card's one main action, the width of the card
+ *   .so-steps          where setup is: one segment per step, the current one
+ *                      aria-current="step", a finished one data-state="done"
+ *   .so-optional       the quiet "optional" after a field's label
+ *   .so-choice         a question the connect form asks before it goes on:
+ *                      its buttons in a column
+ *   .so-status         the waiting view of a configured bucket: its status
+ *                      chip, the reason and what can be done, as rows
+ *   .so-status__row    a chip or button and what goes beside it
+ *   .so-costs-*        the costs page: its head actions, the filters, the
+ *                      chart and its tip, the share bar of a table row
+ */
+
+/* ── Sign-in and setup ───────────────────────────────────────────────── */
+
+.so-auth {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: var(--ds-space-6) var(--ds-space-4);
+  padding-top: max(var(--ds-space-6), env(safe-area-inset-top));
+  padding-bottom: max(var(--ds-space-6), env(safe-area-inset-bottom));
+  box-sizing: border-box;
+}
+
+/* The connection alert reaches across the page above the card. */
+.so-auth > .so-conn {
+  margin: calc(-1 * var(--ds-space-6)) calc(-1 * var(--ds-space-4)) var(--ds-space-4);
+}
+
+.so-auth__card {
+  display: grid;
+  gap: var(--ds-space-5);
+  inline-size: 100%;
+  max-inline-size: var(--so-auth-width);
+  margin: auto;
+  box-sizing: border-box;
+  box-shadow: var(--ds-elev-1);
+}
+
+/* The card spaces its children itself, through the grid's gap. */
+.so-auth__card > * + * {
+  margin-top: 0;
+}
+
+.so-auth__card > .ds-page-head {
+  margin-bottom: 0;
+}
+
+.so-auth__card section {
+  display: grid;
+  gap: var(--ds-space-5);
+}
+
+.so-auth__submit {
+  inline-size: 100%;
+}
+
+.so-optional {
+  color: var(--ds-text-3);
+  font-weight: var(--ds-weight-regular);
+}
+
+.so-choice {
+  display: grid;
+  gap: var(--ds-space-3);
+}
+
+.so-choice > p {
+  margin: 0;
+}
+
+.so-status {
+  display: grid;
+  gap: var(--ds-space-4);
+}
+
+.so-status__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-2) var(--ds-space-3);
+}
+
+.so-status__row > p {
+  margin: 0;
+}
+
+/* The steps of setup: a bar per step with its name under it. */
+.so-steps {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: var(--ds-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.so-steps > li {
+  display: grid;
+  gap: var(--ds-space-2);
+  color: var(--ds-text-3);
+  font: var(--ds-font-caption);
+}
+
+.so-steps > li::before {
+  content: "";
+  block-size: var(--ds-space-1);
+  border-radius: var(--ds-radius-action);
+  background: var(--ds-line);
+  transition: background-color var(--ds-dur-medium) var(--ds-ease);
+}
+
+.so-steps > li[aria-current="step"],
+.so-steps > li[data-state="done"] {
+  color: var(--ds-text-2);
+}
+
+.so-steps > li[aria-current="step"] {
+  color: var(--ds-primary);
+  font-weight: var(--ds-weight-label);
+}
+
+.so-steps > li[aria-current="step"]::before,
+.so-steps > li[data-state="done"]::before {
+  background: var(--ds-primary);
+}
+
+@media (forced-colors: active) {
+  .so-steps > li::before {
+    background: GrayText;
+  }
+
+  .so-steps > li[aria-current="step"]::before,
+  .so-steps > li[data-state="done"]::before {
+    background: Highlight;
+  }
+}
+
+/* ── Costs ───────────────────────────────────────────────────────────── */
+
+/* A block of the page that holds cards: the page's own rhythm inside it. */
+.so-costs {
+  display: grid;
+  gap: var(--ds-space-5);
+  min-width: 0;
+}
+
+.so-costs-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-2) var(--ds-space-3);
+}
+
+.so-costs-actions > p {
+  margin: 0;
+}
+
+.so-costs-note {
+  max-width: var(--ds-measure);
+  margin: 0;
+}
+
+/* The legend of the chart: a swatch and a model per series. */
+.so-costs-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-space-1) var(--ds-space-4);
+  color: var(--ds-text-2);
+  font: var(--ds-font-meta);
+}
+
+.so-costs-legend:empty {
+  display: none;
+}
+
+.so-costs-key {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  min-width: 0;
+}
+
+.so-swatch {
+  display: inline-block;
+  flex: none;
+  inline-size: var(--so-swatch-size);
+  block-size: var(--so-swatch-size);
+  border-radius: var(--ds-radius-xs);
+  background: var(--so-series, var(--so-series-other));
+}
+
+[data-series="1"] { --so-series: var(--so-series-1); }
+[data-series="2"] { --so-series: var(--so-series-2); }
+[data-series="3"] { --so-series: var(--so-series-3); }
+[data-series="4"] { --so-series: var(--so-series-4); }
+[data-series="other"] { --so-series: var(--so-series-other); }
+
+/* The stacked bar chart (costs.js draws it as SVG). */
+.so-chart {
+  inline-size: 100%;
+  min-block-size: var(--so-chart-height);
+  touch-action: pan-y;
+}
+
+.so-chart svg {
+  display: block;
+  overflow: visible;
+}
+
+.so-chart__grid {
+  stroke: var(--ds-line);
+  stroke-width: 1;
+}
+
+.so-chart__base {
+  stroke: var(--ds-line-2);
+  stroke-width: 1;
+}
+
+.so-chart__axis {
+  fill: var(--ds-text-3);
+  font: var(--ds-font-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.so-chart__bar {
+  fill: var(--so-series, var(--so-series-other));
+}
+
+.so-chart__hover {
+  fill: var(--ds-text);
+  opacity: var(--ds-state-hover);
+}
+
+.so-chart__hit {
+  fill: transparent;
+}
+
+/* The reading of one column, beside it while it is pointed at or tapped. */
+.so-chart-tip {
+  position: fixed;
+  z-index: var(--ds-z-popover);
+  box-sizing: border-box;
+  inline-size: max-content;
+  min-inline-size: var(--so-chart-tip-min);
+  max-inline-size: min(var(--so-chart-tip-max), calc(100vw - 2 * var(--ds-space-2)));
+  padding: var(--ds-space-3) var(--ds-space-4);
+  border-radius: var(--ds-radius-md);
+  background: var(--ds-surface);
+  box-shadow: var(--ds-elev-popover);
+  color: var(--ds-text);
+  font: var(--ds-font-meta);
+  pointer-events: none;
+}
+
+.so-chart-tip > p {
+  margin: 0;
+}
+
+.so-chart-tip__title {
+  color: var(--ds-text-2);
+}
+
+.so-chart-tip > .so-chart-tip__total {
+  margin-block-end: var(--ds-space-2);
+  font: var(--ds-font-subtitle);
+  font-variant-numeric: tabular-nums;
+}
+
+.so-chart-tip__row {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+}
+
+.so-chart-tip__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ds-text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.so-chart-tip__value {
+  font-variant-numeric: tabular-nums;
+}
+
+.so-chart-tip > .so-chart-tip__more {
+  margin-block-start: var(--ds-space-1);
+  color: var(--ds-text-3);
+}
+
+/* The name cell of a breakdown row: the name, what it is, and its share of
+   the biggest row as a bar under it. */
+.so-costs-name {
+  min-width: 0;
+}
+
+.so-costs-name svg {
+  vertical-align: -3px;
+  margin-inline-end: var(--ds-space-1);
+}
+
+.so-costs-sub {
+  display: block;
+  color: var(--ds-text-3);
+  font: var(--ds-font-meta);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.so-costs-bar {
+  display: block;
+  block-size: var(--ds-space-1);
+  margin-block-start: var(--ds-space-1);
+  border-radius: var(--ds-radius-action);
+  background: var(--ds-surface-high);
+  overflow: hidden;
+}
+
+.so-costs-bar > span {
+  display: block;
+  block-size: 100%;
+  background: var(--so-series-1);
+  transform: scaleX(var(--so-share, 0));
+  transform-origin: left;
+  transition: transform var(--ds-dur-glide) var(--ds-ease-value);
+}
+
+[dir="rtl"] .so-costs-bar > span {
+  transform-origin: right;
+}
+
+@media (forced-colors: active) {
+  .so-chart__bar,
+  .so-swatch,
+  .so-costs-bar > span {
+    fill: CanvasText;
+    background: CanvasText;
+  }
+}

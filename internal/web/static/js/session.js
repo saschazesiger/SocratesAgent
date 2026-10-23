@@ -20,7 +20,7 @@ import {
   setClass, onWake, clientKey, CONNECTION_GRACE, restoreFocus, setFocusFallback,
 } from './api.js';
 import { connectionSource } from './net.js';
-import { agentMark } from './logos.js';
+import { agentMark, agentMarkHtml } from './logos.js';
 import {
   MORE_KEY, SHELVES, PREPARED, IDE, foldersOf, folderKeyOf, ideOf, isPrepared, momentOf, movesRow,
 } from './folders.js';
@@ -39,7 +39,10 @@ import { openQuestions, updateQuestions, questionsOpen, closeQuestions } from '.
 import {
   OUTCOME_WORDS, CHECKING_WORDS, outcomeCurrent, outcomeMark, outcomeLine, outcomeIconHtml,
 } from './outcome.js';
-import { icon } from './ui.js';
+import {
+  icon, html, raw, morph, flipMorph, showOverlay, hideOverlay, overlayOpen, M,
+  faces, iconEl,
+} from './ui.js';
 
 /* ------------------------------------------------------------- transport */
 
@@ -640,17 +643,6 @@ const state = {
   // older than what the stream has already drawn is dropped rather than
   // drawn over it: see applyList.
   listRev: null,
-  // The menu a row, the options button or the usage strip last opened, so a
-  // second one replaces it rather than stacking on it, and the button it
-  // hangs from.
-  menu: null,
-  menuAnchor: null,
-  // What the open menu draws itself from, for a menu that stays open while
-  // its switches are pressed and is drawn again around their new positions,
-  // and what puts it back under its button after that.
-  menuBuild: null,
-  menuPosition: null,
-  menuCleanup: null,
   // The session whose relaunch this tab has asked for and not yet been
   // answered about. It is what keeps the pressed Restart pressed across a list
   // refresh, and what stops a second press starting a second relaunch.
@@ -742,6 +734,10 @@ const ids = ['sidebar', 'navScrim', 'menuBtn', 'blankIDE', 'homeBtn', 'sideColla
   'recSheet', 'recMeter', 'recTime', 'recSend', 'recCancel',
   'keybar', 'logout', 'prestart', 'home'];
 for (const id of ids) dom[id] = document.getElementById(id);
+// The frame's own parts: the app, the bar's contents, the line the usage
+// strip takes on a phone, the row menu and the two dialogs of the bar.
+for (const id of ['app', 'topbar', 'sessionTitleText', 'usageLine', 'sessionMenu', 'optionsDialog', 'usageDialog',
+  'usageReading']) dom[id] = document.getElementById(id);
 
 const STATE_WORDS = {
   running: 'Running', starting: 'Starting', resuming: 'Resuming',
@@ -813,19 +809,6 @@ const STATUSES = [
 ];
 const STATUS_WORDS = Object.fromEntries(STATUSES.map((s) => [s.id, s.label]));
 
-// One small drawing per status that has a mark: an eye for a review, a clock
-// for pending, stacked layers for background, a tick for done.
-const STATUS_SVG = {
-  review: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-    + '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
-  pending: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-    + '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
-  background: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-    + '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg>',
-  done: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-    + '<path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
-};
-
 // A session a row upgraded from flags and an archive may still be unsorted for
 // its first seconds; until the server files it, it reads as in progress.
 function statusOf(session) {
@@ -875,9 +858,10 @@ function drawOutcomeTag() {
   if (tag.dataset.key === key) return;
   tag.dataset.key = key;
   tag.dataset.kind = pending ? 'checking' : kind;
-  tag.innerHTML = pending ? TASKS_SVG : outcomeIconHtml(kind, 16);
-  tag.append(el('span', { text: pending ? 'Checking…' : (kind === 'error' ? 'Not checked' : OUTCOME_WORDS[kind]) }));
-  tag.title = outcomeLine(outcome);
+  morph(tag, html`${raw(pending ? TASKS_SVG : outcomeIconHtml(kind, 16))}<span>${
+    pending ? 'Checking…' : (kind === 'error' ? 'Not checked' : OUTCOME_WORDS[kind])
+  }</span>`);
+  tag.setAttribute('data-tip', outcomeLine(outcome));
 }
 
 // showOutcome is a tap on the tag: the verdict in full.
@@ -905,100 +889,43 @@ function drawList() {
   const host = dom.sessionList;
   const wanted = state.sessions;
   if (!wanted.length) {
-    host.innerHTML = '';
     let empty = 'No sessions yet.';
     if (state.loading) empty = 'Loading…';
     else if (!state.reachable) empty = 'Can’t reach Socrates.';
-    host.append(el('div', { class: 'list-empty', text: empty }));
+    morph(host, html`<p class="so-list-empty" data-ds-key="empty">${empty}</p>`);
     return;
   }
-  // Which project each session belongs to, and in what order. The server
-  // hands the list over newest first, and a frame that changes a status
-  // between two fetches bumps the moment locally, so the order inside a
-  // folder - and the order of the folders themselves - is worked out here,
-  // from the same moment the server sorted by.
-  // Background and done sessions are not the work in progress, but they are
-  // still their project's: each folder keeps them on a shelf of its own at
-  // its bottom, shut until it is opened - the services first, then what is
-  // finished, most recently filed first, until the server deletes it. A
-  // folder's VS Code is not a row at all: it is drawn on the folder's head.
-  // Prepared sessions are their folder's as well - it is where they will
-  // work - on a shelf of their own above its sessions, open: what is waiting
-  // to be started comes before what is running.
-  const folders = foldersOf(wanted);
-  // The list is patched rather than rebuilt: taking a connected node out of
-  // the page and putting it back restarts its animations, and a row that
-  // fades in again every few seconds is a page that looks broken. The folders
-  // are patched the same way and for the same reason - and because a row
-  // whose session finishes a turn, and so moves to the top of its folder, has
-  // to keep the element it already had while it moves.
-  const seenFolders = new Set();
-  const seenShelves = new Set();
-  const seenRows = new Set();
-  // placer walks one parent: it puts a node where the walk has got to, and
-  // only if it is not there already. The list is two walks - the folders, and
-  // the rows inside each - so it is a maker of walkers rather than one walk.
-  const placer = (into) => {
-    let previous = null;
-    return (node) => {
-      if (previous ? previous.nextElementSibling !== node : into.firstElementChild !== node) {
-        if (previous) previous.after(node); else into.prepend(node);
-      }
-      previous = node;
-    };
-  };
-  const placeFolder = placer(host);
-  for (const folder of folders) {
-    seenFolders.add(folder.key);
-    const section = host.querySelector('.folder[data-folder="' + cssId(folder.key) + '"]')
-      || buildFolder(folder);
-    placeFolder(section);
-    const placeRow = placer(section.querySelector(':scope > .folder-rows'));
-    const placeShelf = (status, label, filed) => {
-      if (!filed.length) return;
-      const shelf = { key: shelfKey(folder.key, status), status, label, path: '', sessions: filed };
-      const node = section.querySelector(':scope > .folder-rows > .shelf[data-shelf="' + status + '"]')
-        || buildFolder(shelf);
-      seenShelves.add(node);
-      placeRow(node);
-      placeRows(host, placer(node.querySelector(':scope > .folder-rows')), filed, seenRows);
-      updateFolder(node, shelf);
-    };
-    placeShelf(PREPARED, 'PreStart', folder.prepared);
-    placeRows(host, placeRow, folder.sessions, seenRows);
-    // The other shelves come after the rows, inside the same folder, so
-    // shutting the folder puts them away with everything else in it.
-    for (const status of SHELVES) placeShelf(status, STATUS_WORDS[status], folder.shelves[status]);
-    updateFolder(section, folder);
-  }
-  // What is left over: a session that was deleted, and a folder or a shelf
-  // whose last session went with it. The rows are swept after every folder
-  // has been walked rather than folder by folder, because a row that moved
-  // to a folder further down the list has not been drawn yet while the one
-  // it left is being tidied, and sweeping it there would throw away the
-  // element it is about to be put back into.
-  for (const row of [...host.querySelectorAll('.chat-item')]) {
-    if (!seenRows.has(row.dataset.id)) row.remove();
-  }
-  for (const shelf of [...host.querySelectorAll('.shelf')]) {
-    if (!seenShelves.has(shelf)) shelf.remove();
-  }
-  for (const node of [...host.children]) {
-    if (!node.classList.contains('folder') || !seenFolders.has(node.dataset.folder)) node.remove();
-  }
+  // Which project each session belongs to, and in what order, is
+  // folders.js's answer: the server hands the list over newest first, and a
+  // frame that changes a status between two fetches bumps the moment locally,
+  // so the order inside a folder - and of the folders - is worked out there.
+  // Background and done sessions are still their project's: each folder keeps
+  // them on a shelf of its own at its bottom, shut until it is opened.
+  // Prepared sessions are on a shelf above its sessions, open: what is waiting
+  // to be started comes before what is running. A folder's VS Code is not a
+  // row at all: it is drawn on the folder's head.
+  //
+  // The list is morphed, never rebuilt: a kept row keeps its element, so its
+  // turning ring does not restart every time the list is drawn, and a row that
+  // moves to the top of its folder glides there. It is live data, so while
+  // the pointer is over the list a reorder waits for it to leave: a row never
+  // jumps out from under a finger that is about to tap it.
+  const markup = foldersOf(wanted).map((folder) => folderHtml(folder));
+  flipMorph(host, html`${markup}`, { items: '.so-row, .so-folder__bar', live: true });
 }
 
-// placeRows draws one run of rows where `place` has got to. A row is looked
-// for in the whole list rather than under this folder: whichever folder it
-// was drawn in last time, it is the same session, and it keeps the element -
-// and the animation - it already had.
-function placeRows(host, place, sessions, seen) {
-  for (const session of sessions) {
-    seen.add(session.id);
-    const found = host.querySelector('.chat-item[data-id="' + cssId(session.id) + '"]');
-    if (found) updateRow(found, session);
-    place(found || buildRow(session));
-  }
+// folderHtml is one project: its prepared shelf, its rows, then the shelves
+// of background and done sessions, inside the same folder so that shutting it
+// puts them away with everything else.
+function folderHtml(folder) {
+  const shelf = (status, label, filed) => (filed.length
+    ? groupHtml({ key: shelfKey(folder.key, status), status, label, path: '', sessions: filed }, filed.map(rowHtml))
+    : '');
+  return groupHtml(folder, [
+    shelf(PREPARED, 'PreStart', folder.prepared),
+    folder.sessions.map(rowHtml),
+    SHELVES.map((status) => shelf(status, STATUS_WORDS[status], folder.shelves[status])),
+  ]);
 }
 
 // An id or a directory, as an attribute selector can carry it. Both come from
@@ -1017,8 +944,8 @@ function cssId(id) { return String(id).replace(/\\/g, '\\\\').replace(/"/g, '\\"
 // so a project that appears while the browser was closed - the first session
 // in a new directory - is open when it arrives, which is what a folder that
 // has just been made should be. It is a fact about this screen rather than
-// about the account, for the same reason the rail is: a column tidied on a
-// desk is not a column tidied on a phone.
+// about the account, for the same reason the hidden list is: a column tidied
+// on a desk is not a column tidied on a phone.
 const FOLDERS_KEY = 'socrates.folders';
 const closedFolders = new Set();
 
@@ -1045,8 +972,21 @@ function shutByDefault(key) { return SHELVES.includes(shelfOf(key)); }
 function folderOpen(key) {
   return shutByDefault(key) ? closedFolders.has(key) : !closedFolders.has(key);
 }
-// aria-controls needs something to point at, and a path is not an id.
-let folderSeq = 0;
+
+// aria-controls needs something to point at, and a path is not an id. The id
+// is handed out once per key, so it is the same in every drawing of the list.
+// The head names its folder by that id too: a shelf's key holds a NUL, which
+// an attribute cannot carry (the parser turns it into U+FFFD).
+const rowsIds = new Map();
+const keysOfRows = new Map();
+function rowsIdOf(key) {
+  if (!rowsIds.has(key)) {
+    const id = 'folder-rows-' + (rowsIds.size + 1);
+    rowsIds.set(key, id);
+    keysOfRows.set(id, key);
+  }
+  return rowsIds.get(key);
+}
 
 function restoreFolders() {
   let raw = '';
@@ -1095,60 +1035,21 @@ function openFolder(session) {
   renderList();
 }
 
-const CARET_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"'
-  + ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
-
-// A folder is its head and its rows; a shelf is the same shape one level
-// down, inside its folder's rows. A project folder's head carries one more
-// control beside the name: the mark of VS Code, which opens the folder's
-// editor. It is a button beside the head rather than inside it, because a
-// button cannot hold another.
-function buildFolder(folder) {
-  folderSeq += 1;
-  const id = 'folder-rows-' + folderSeq;
-  const head = el('button', {
-    class: 'folder-head',
-    type: 'button',
-    'aria-expanded': 'true',
-    'aria-controls': id,
-    onclick: () => toggleFolder(folder.key),
-  },
-  el('span', { class: 'caret', html: CARET_SVG }),
-  // The prepared sessions' shelf wears the mark their panel wears, so it
-  // reads as a different kind of thing from the sessions under it.
-  folder.status === PREPARED ? el('span', { class: 'folder-icon', html: icon('prestart', 16) }) : null,
-  el('span', { class: 'folder-name' }),
-  el('span', { class: 'folder-dot', 'aria-hidden': 'true' }),
-  el('span', { class: 'folder-count' }));
-  const ide = folder.status || folder.key === MORE_KEY ? null : el('button', {
-    class: 'ds-btn ds-btn--quiet ds-btn--icon folder-ide',
-    type: 'button',
-    onclick: () => openFolderIDE(folder.key),
-  }, agentMark(IDE, 15));
-  const attrs = folder.status
-    ? { class: 'folder shelf', 'data-shelf': folder.status }
-    : { class: 'folder', 'data-folder': folder.key };
-  return el('section', attrs,
-    el('div', { class: 'folder-bar' }, head, ide),
-    el('div', { class: 'folder-rows', id }));
-}
-
-function updateFolder(section, folder) {
+/**
+ * groupHtml is a folder, or a shelf - the same shape one level down, inside
+ * its folder's rows: a head that shuts it, and the rows. A project folder's
+ * head carries one more control beside the name: the mark of VS Code, which
+ * opens the folder's editor. It is a button beside the head rather than
+ * inside it, because a button cannot hold another.
+ */
+function groupHtml(folder, children) {
   const open = folderOpen(folder.key);
-  const head = section.querySelector(':scope > .folder-bar > .folder-head');
-  const rows = section.querySelector(':scope > .folder-rows');
-  setClass(section, 'closed', !open);
-  head.setAttribute('aria-expanded', open ? 'true' : 'false');
-  rows.hidden = !open;
-  head.querySelector('.folder-name').textContent = folder.label;
-  // The whole path is technical detail, so it is where every technical string
-  // on this page is: on hover, and nowhere in the words. "More Chats" and the
-  // shelves have no path, so their tooltip says what they hold instead.
-  head.title = SHELF_TITLES[folder.status] || folder.path || 'Sessions in a directory of their own';
+  const shelf = !!folder.status;
+  const id = rowsIdOf(folder.key);
   // Shut, a folder has to say what is behind it: the two things this page
   // exists to make noticeable - an agent that needs an answer, and one that
   // finished something nobody has seen - would otherwise be hidden by the
-  // person's own tidying. So it carries a count, the amber of a session
+  // person's own tidying. So it carries a count, the ring colour of a session
   // waiting, and the weight of one nobody has read. Open, the rows say all
   // three themselves and the head says none of them.
   let waiting = false;
@@ -1166,32 +1067,31 @@ function updateFolder(section, folder) {
     // in there, and the closed folder says so the same quiet way.
     if (act.state === 'busy' || act.state === 'tasks' || checking(session)) busy = true;
   }
-  setClass(head, 'waiting', waiting);
-  setClass(head, 'busy', busy && !waiting);
-  setClass(head, 'unread', unread);
   let count = folder.sessions.length + (folder.prepared ? folder.prepared.length : 0);
   if (folder.shelves) for (const status of SHELVES) count += folder.shelves[status].length;
-  head.querySelector('.folder-count').textContent = String(count);
-  const ide = section.querySelector(':scope > .folder-bar > .folder-ide');
-  if (ide) updateIDEButton(ide, folder);
+  const attention = waiting ? 'waiting' : busy ? 'busy' : '';
+  // The whole path is technical detail, so it is where every technical string
+  // on this page is: in a tooltip, and nowhere in the words. "More Chats" and
+  // the shelves have no path, so their tooltip says what they hold instead.
+  const tip = SHELF_TITLES[folder.status] || folder.path || 'Sessions in a directory of their own';
+  const ide = shelf || folder.key === MORE_KEY ? '' : ideButtonHtml(folder);
+  const kind = shelf ? html`data-shelf="${folder.status}"` : html`data-folder="${folder.key}"`;
+  return html`<section class="${shelf ? 'so-folder so-folder--shelf' : 'so-folder'}" data-ds-key="${(shelf ? 'shelf:' : 'folder:') + folder.key}" ${kind}${open ? html` data-open` : ''}><div class="so-folder__bar"><button class="so-folder__head" type="button" aria-expanded="${open ? 'true' : 'false'}" aria-controls="${id}" data-toggle="${id}" data-tip="${tip}"${attention ? html` data-attention="${attention}"` : ''}${unread ? html` data-unread` : ''}>${raw(icon('chevronDown', 16, 'ds-chevron'))}${
+    folder.status === PREPARED ? raw(icon('prestart', 16)) : ''
+  }<span class="so-folder__name">${folder.label}</span><span class="so-folder__dot" aria-hidden="true"></span><span class="so-folder__count">${count}</span></button>${ide}</div><div class="so-folder__rows" id="${id}"${open ? '' : html` hidden`}>${children}</div></section>`;
 }
 
-// updateIDEButton draws the VS Code mark of a folder: coloured while the
-// folder's editor is running, grey while there is none or it is stopped, and
+// ideButtonHtml is the VS Code mark of a folder: in its colours while the
+// folder's editor is running, quiet while there is none or it is stopped, and
 // pressed while it is the one on screen. Where VS Code is switched off and
 // the folder has no editor to return to, the mark is not there.
-function updateIDEButton(button, folder) {
+function ideButtonHtml(folder) {
   const ide = folder.ide;
   const usable = harnesses.ideAvailable();
-  button.hidden = !ide && !usable;
   const running = !!ide && (ide.state === 'running' || ide.state === 'starting');
   const shown = !!ide && !!state.current && state.current.id === ide.id;
-  setClass(button, 'running', running);
-  setClass(button, 'active', shown);
-  button.setAttribute('aria-pressed', shown ? 'true' : 'false');
   const words = (running ? 'VS Code is open in ' : 'Open VS Code in ') + folder.label;
-  button.title = words;
-  button.setAttribute('aria-label', words);
+  return html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-folder__ide" type="button" data-ide="${folder.key}" aria-pressed="${shown ? 'true' : 'false'}" aria-label="${words}" data-tip="${words}"${running ? html` data-running` : ''}${!ide && !usable ? html` hidden` : ''}>${raw(agentMarkHtml(IDE, 16))}</button>`;
 }
 
 // The folders a VS Code is being asked for right now, so that a second tap
@@ -1226,7 +1126,7 @@ async function openFolderIDE(key) {
 let openingBlankIDE = false;
 
 /**
- * openBlankIDE is the VS Code mark at the top of the sidebar: an editor with
+ * openBlankIDE is the VS Code mark at the top of the drawer: an editor with
  * no folder open, in a new tab. There is one, shared by every tab it is
  * opened in; it is listed under "More Chats", where it can be stopped.
  */
@@ -1260,36 +1160,73 @@ async function openBlankIDE() {
   }
 }
 
-function buildRow(session) {
-  const row = el('div', {
-    class: 'chat-item',
-    'data-id': session.id,
-    role: 'button',
-    tabindex: '0',
-  },
-  el('span', { class: 'row-mark' }, agentMark(session.harness, 18),
-    el('span', { class: 'row-tasks', html: TASKS_SVG }),
-    el('span', { class: 'row-outcome' })),
-  // The name, and under it - for a prepared session only - the first line
-  // of its prompt, which is what tells two prepared sessions apart before
-  // either has a name of its own.
-  el('span', { class: 'row-text' },
-    el('span', { class: 'label' }),
-    el('span', { class: 'row-preview' })),
-  // When a prepared session starts by itself: a small clock and the time.
-  el('span', { class: 'row-when' }),
-  el('span', { class: 'row-status' }),
-  el('button', {
-    class: 'ds-btn ds-btn--quiet ds-btn--icon act', type: 'button', 'aria-label': 'Session actions',
-    html: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>',
-    onclick: (event) => { event.stopPropagation(); openRowMenu(event.currentTarget, session.id); },
-  }));
-  row.addEventListener('click', () => selectSession(session.id));
-  row.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectSession(session.id); }
-  });
-  updateRow(row, session);
-  return row;
+// The glyph of each status that has a mark: a flag for a review, a clock for
+// pending, a server for background, a tick for done. In progress has none: it
+// is what a session is unless somebody said otherwise.
+const STATUS_GLYPH = { review: 'review', pending: 'clock', background: 'background', done: 'check' };
+
+/**
+ * rowHtml is one session in the list: its agent's mark, its name, and the ⋮
+ * of what can be done to it. The row is a link to the session, so a middle
+ * click opens it in a tab of its own; a plain click is the page's (wire).
+ *
+ * The activity of a row is two marks and no words: the agent's own mark wears
+ * a ring that turns while the harness is working and stands still in the
+ * warning colour while it is waiting for an answer, and a name that has
+ * finished something nobody has seen is set in the label weight. The session
+ * being looked at is never unread - it is open. A turn that is over while
+ * something it started still runs has no ring - nothing is being worked on -
+ * and a small hourglass on the mark's corner instead; the verdict on a turn
+ * takes the same corner (outcome.js).
+ */
+function rowHtml(session) {
+  const id = session.id;
+  const attached = !!(state.current && state.current.id === id);
+  // A row is the same element before and after its session starts, so what
+  // only a prepared session shows is taken away again by the next drawing.
+  const prepared = isPrepared(session);
+  const preview = prepared ? String(session.draft_preview || '') : '';
+  const startAt = prepared ? Number(session.start_at) || 0 : 0;
+  // The same time can read differently tomorrow ("Tue 09:00" becomes
+  // "09:00"), so the words are drawn from the time every time.
+  const startWords = startAt ? 'Starts by itself ' + new Date(startAt).toLocaleString() : '';
+  const status = statusOf(session);
+  const said = status === 'done'
+    ? [STATUS_WORDS.done, deleteWords(session)].filter(Boolean).join(' · ')
+    : STATUS_WORDS[status];
+
+  const act = activityOf(session);
+  const live = session.state === 'running' || session.state === 'starting' || session.state === 'resuming';
+  const busy = live && !!act && act.state === 'busy';
+  const waiting = live && !!act && act.state === 'waiting';
+  const tasks = live && !!act && act.state === 'tasks';
+  const outcome = live ? outcomeOf(session) : null;
+  const judging = !!outcome && outcome.phase === 'pending';
+  const kind = outcomeMark(outcome);
+  let word = STATE_WORDS[session.state] || session.state;
+  if (busy) word = ACTIVITY_WORDS.busy;
+  if (waiting) word = ACTIVITY_WORDS.waiting;
+  if (tasks) word = ACTIVITY_WORDS.tasks;
+  if (judging) word = CHECKING_WORDS;
+  else if (kind) word = outcomeLine(outcome);
+  const ring = busy ? 'busy' : waiting ? 'waiting' : '';
+  // The corner: the verdict once it is in, else the hourglass of background
+  // work or of a verdict being read.
+  const badge = kind || (judging ? 'checking' : tasks ? 'tasks' : '');
+  const badgeIcon = kind ? outcomeIconHtml(kind, 16) : badge ? TASKS_SVG : '';
+  const unread = !!act && !!act.unread && !attached;
+
+  return html`<div class="so-row" data-ds-key="${'row:' + id}" data-id="${id}" data-status="${status}"${prepared ? html` data-prepared` : ''}${unread ? html` data-unread` : ''}><a class="ds-drawer__item so-row__open" href="${'#' + id}"${attached ? html` aria-current="page"` : ''}><span class="so-mark" data-tip="${word}"${ring ? html` data-ring="${ring}"` : ''}>${raw(agentMarkHtml(session.harness, 20))}${
+    badge ? html`<span class="so-mark__badge" data-kind="${badge}" aria-hidden="true">${raw(badgeIcon)}</span>` : ''
+  }</span><span class="so-row__text"><span class="so-row__label"${state.titling.has(id) ? html` data-titling` : ''}>${session.title}</span>${
+    // The first line of a prepared session's prompt, which is what tells two
+    // of them apart before either has a name of its own.
+    preview ? html`<span class="so-row__preview">${preview}</span>` : ''
+  }</span>${
+    startAt ? html`<span class="so-row__when" aria-label="${startWords}" data-tip="${startWords}">${raw(icon('clock', 16))}<span class="so-row__time">${whenShort(startAt)}</span></span>` : ''
+  }${
+    STATUS_GLYPH[status] ? html`<span class="so-row__status" data-status="${status}" role="img" aria-label="${said}" data-tip="${said}">${raw(icon(STATUS_GLYPH[status], 16))}</span>` : ''
+  }</a><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-row__more" type="button" aria-label="Session actions" data-tip="Session actions" aria-haspopup="menu" aria-expanded="false" aria-controls="sessionMenu">${raw(icon('moreVertical', 20))}</button></div>`;
 }
 
 // The technical detail of a session - what it runs, where it works, what it
@@ -1343,98 +1280,6 @@ function clockOf(at) {
   return String(when.getHours()).padStart(2, '0') + ':'
     + String(when.getMinutes()).padStart(2, '0') + ':'
     + String(when.getSeconds()).padStart(2, '0');
-}
-
-function updateRow(row, session) {
-  const label = row.querySelector('.label');
-  label.textContent = session.title;
-  setClass(label, 'titling', state.titling.has(session.id));
-  // Collapsed, a row is one mark and no words, so the name moves into the
-  // tooltip - the only place left where it can be read. Expanded it is written
-  // on the row, and a tooltip repeating it would be noise.
-  row.title = sidebarCollapsed() ? session.title : '';
-  const attached = !!(state.current && state.current.id === session.id);
-  setClass(row, 'active', attached);
-  // A row is the same element before and after its session starts, so what
-  // only a prepared session shows is taken away again here.
-  const prepared = isPrepared(session);
-  setClass(row, 'prepared', prepared);
-  const preview = row.querySelector('.row-preview');
-  const previewText = prepared ? String(session.draft_preview || '') : '';
-  if (preview.textContent !== previewText) preview.textContent = previewText;
-  const when = row.querySelector('.row-when');
-  const startAt = prepared ? Number(session.start_at) || 0 : 0;
-  const whenText = startAt ? whenShort(startAt) : '';
-  if (when.dataset.at !== String(startAt)) {
-    when.dataset.at = String(startAt);
-    when.innerHTML = startAt ? icon('clock', 16) : '';
-    if (startAt) when.append(el('span', { class: 'row-when-time', text: whenText }));
-  } else if (startAt) {
-    // The same time can read differently tomorrow ("Tue 09:00" becomes
-    // "09:00"), so the words are drawn again even when the time is not.
-    const time = when.querySelector('.row-when-time');
-    if (time && time.textContent !== whenText) time.textContent = whenText;
-  }
-  if (startAt) {
-    const words = 'Starts by itself ' + new Date(startAt).toLocaleString();
-    when.title = words;
-    when.setAttribute('aria-label', words);
-  } else {
-    when.removeAttribute('title');
-    when.removeAttribute('aria-label');
-  }
-  // The status is a mark after the name, and in progress has none: it is
-  // what a session is unless somebody said otherwise.
-  const status = statusOf(session);
-  setClass(row, 'done', status === 'done');
-  const statusMark = row.querySelector('.row-status');
-  if (statusMark.dataset.status !== status) {
-    statusMark.dataset.status = status;
-    statusMark.innerHTML = STATUS_SVG[status] || '';
-  }
-  const said = status === 'done'
-    ? [STATUS_WORDS.done, deleteWords(session)].filter(Boolean).join(' · ')
-    : STATUS_WORDS[status];
-  statusMark.title = status === 'in_progress' ? '' : said;
-  if (status === 'in_progress') statusMark.removeAttribute('aria-label'); else statusMark.setAttribute('aria-label', said);
-
-  // The activity of a row is two marks and no words: the agent's own mark
-  // turns into a ring that spins while the harness is working and stands
-  // still, in amber, while it is waiting for an answer, and a name that has
-  // finished something nobody has seen is bold. The session being looked at
-  // is never bold - it is not unread, it is open. A turn that is over while
-  // something it started still runs has no ring - nothing is being worked on
-  // - and a small hourglass on the mark's corner instead.
-  const act = activityOf(session);
-  const mark = row.querySelector('.row-mark');
-  const live = session.state === 'running' || session.state === 'starting' || session.state === 'resuming';
-  const busy = live && !!act && act.state === 'busy';
-  const waiting = live && !!act && act.state === 'waiting';
-  setClass(mark, 'busy', busy);
-  const tasks = live && !!act && act.state === 'tasks';
-  setClass(mark, 'waiting', waiting);
-  setClass(mark, 'tasks', tasks);
-  // The verdict on the turn: the hourglass while it is being read - the turn
-  // is over and something about it is still going on - and its own mark on
-  // the same corner once it is in.
-  const outcome = live ? outcomeOf(session) : null;
-  const judging = !!outcome && outcome.phase === 'pending';
-  setClass(mark, 'checking', judging);
-  const kind = outcomeMark(outcome);
-  const badge = row.querySelector('.row-outcome');
-  if (badge.dataset.kind !== kind) {
-    badge.dataset.kind = kind;
-    badge.innerHTML = outcomeIconHtml(kind, 16);
-  }
-  setClass(mark, 'judged', !!kind);
-  let word = STATE_WORDS[session.state] || session.state;
-  if (busy) word = ACTIVITY_WORDS.busy;
-  if (waiting) word = ACTIVITY_WORDS.waiting;
-  if (tasks) word = ACTIVITY_WORDS.tasks;
-  if (judging) word = CHECKING_WORDS;
-  else if (kind) word = outcomeLine(outcome);
-  mark.title = word;
-  setClass(row, 'unread', !!act && !!act.unread && !attached);
 }
 
 // The chime and the notification, mounted once in boot(). It is not on
@@ -2081,8 +1926,8 @@ function openWanted() {
 
 /* ---------------------------------------------------- the session actions */
 
-async function renameSession(session) {
-  const title = await promptTitle(session.title);
+async function renameSession(session, opener) {
+  const title = await promptTitle(session.title, opener);
   if (title === null || title === session.title) return;
   try {
     const data = await api('/api/sessions/' + encodeURIComponent(session.id), {
@@ -2094,74 +1939,64 @@ async function renameSession(session) {
 
 // promptTitle is a one field dialog, built the way confirmDialog is: the app's
 // own shape rather than window.prompt, which a phone renders as a system alert
-// and which blocks the page while it is open.
-function promptTitle(current) {
+// and which blocks the page while it is open. It resolves with the new name,
+// or null when it was put away.
+function promptTitle(current, opener) {
   return new Promise((resolve) => {
-    const dialog = el('dialog', { class: 'modal' });
-    const input = el('input', { class: 'ds-input', type: 'text', value: current });
-    const cancel = el('button', { class: 'ds-btn ds-btn--sm', type: 'button', text: 'Cancel' });
-    const accept = el('button', { class: 'ds-btn ds-btn--sm ds-btn--primary', type: 'button', text: 'Rename' });
-    dialog.append(
-      el('h2', { class: 'modal-title', text: 'Rename this session' }),
-      // A name is a sentence somebody says about a session, so it is one of
-      // the fields that can be spoken instead of typed - and with the
-      // keyboard put away it is the only way this dialog can be answered.
-      el('div', { class: 'ds-field' }, dictated(input, input)),
-      el('div', { class: 'modal-actions' }, cancel, accept),
-    );
-    let settled = false;
-    const was = document.activeElement;
-    // The dialog is taken out of the page and the focus is put back where it
-    // came from here, in the call that ends it, rather than in the `close`
-    // listener alone: a dialog that is closed but left in the document keeps
-    // the focus on its own button, and a page whose focus is on a button
-    // nobody can see swallows every key that is typed at it. That is one of
-    // the two ways this app could stop taking input without anything looking
-    // wrong.
-    const dismiss = () => {
-      dialog.remove();
-      restoreFocus(was);
-    };
-    const finish = (value) => {
-      if (settled) return;
-      settled = true;
-      resolve(value);
-      dialog.close();
-      dismiss();
-    };
-    accept.addEventListener('click', () => finish(input.value.trim() || current));
-    cancel.addEventListener('click', () => finish(null));
-    input.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') { event.preventDefault(); finish(input.value.trim() || current); }
+    const input = el('input', {
+      class: 'ds-input', type: 'text', id: 'renameInput', value: current, autofocus: true,
+      'aria-labelledby': 'renameTitle',
     });
-    dialog.addEventListener('cancel', (event) => { event.preventDefault(); finish(null); });
-    dialog.addEventListener('close', () => { finish(null); dismiss(); });
-    document.body.append(dialog);
-    dialog.showModal();
-    input.focus();
-    input.select();
+    const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
+    const accept = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', text: 'Rename' });
+    const dialog = el('dialog', { class: 'ds-dialog so-rename', 'aria-labelledby': 'renameTitle' },
+      el('div', { class: 'ds-dialog__backdrop', 'data-close': true }),
+      el('div', { class: 'ds-dialog__box' },
+        el('h2', { class: 'ds-dialog__title', id: 'renameTitle', text: 'Rename this session' }),
+        // A name is a sentence somebody says about a session, so it is one of
+        // the fields that can be spoken instead of typed - and with the
+        // keyboard put away it is the only way this dialog can be answered.
+        el('div', { class: 'ds-field' }, dictated(input, input)),
+        el('div', { class: 'ds-dialog__actions' }, cancel, accept)));
+    let answer = null;
+    const was = opener && opener.isConnected ? opener : document.activeElement;
+    const accepted = () => {
+      answer = input.value.trim() || current;
+      hideOverlay(dialog);
+    };
+    accept.addEventListener('click', accepted);
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); accepted(); }
+    });
+    // The native close comes at the start of every way out - Escape, the
+    // backdrop, Cancel, Rename - so it is the one place the answer is given.
+    // The dialog leaves the page once its exit has played, and the focus is
+    // put back where it came from: a page whose focus is on a button nobody
+    // can see swallows every key that is typed at it.
+    dialog.addEventListener('close', () => {
+      resolve(answer);
+      hideOverlay(dialog, { remove: true }).then(() => { restoreFocus(was); paneAfter(was); });
+    }, { once: true });
+    showOverlay(dialog, was).then(() => input.select());
   });
 }
 
 // infoDialog is the "Info" item of the row menu: everything the machine knows
-// about one session, in one place and in one shape. It is built the way
-// confirmDialog and promptTitle are, and it is the only place these facts are
-// drawn - a row is a mark and a name, and nothing else.
-function infoDialog(session) {
-  const dialog = el('dialog', { class: 'modal' });
-  const close = el('button', { class: 'ds-btn ds-btn--sm ds-btn--primary', type: 'button', text: 'Close' });
-  dialog.append(
-    el('h2', { class: 'modal-title', text: session.title }),
-    el('div', { class: 'facts mono' },
-      ...rowFacts(session).map((line) => el('div', { class: 'fact', text: line }))),
-    el('div', { class: 'modal-actions' }, close),
-  );
-  close.addEventListener('click', () => dialog.close());
-  dialog.addEventListener('click', (event) => { if (event.target === dialog) dialog.close(); });
-  dialog.addEventListener('close', () => dialog.remove());
-  document.body.append(dialog);
-  dialog.showModal();
-  close.focus();
+// about one session, in one place and in one shape. It is the only place these
+// facts are drawn - a row is a mark and a name, and nothing else.
+function infoDialog(session, opener) {
+  const close = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, autofocus: true, text: 'Close' });
+  const dialog = el('dialog', { class: 'ds-dialog so-info-dialog', 'aria-labelledby': 'infoTitle' },
+    el('div', { class: 'ds-dialog__backdrop', 'data-close': true }),
+    el('div', { class: 'ds-dialog__box' },
+      el('h2', { class: 'ds-dialog__title so-break', id: 'infoTitle', text: session.title }),
+      el('ul', { class: 'ds-plain-list so-facts' },
+        ...rowFacts(session).map((line) => el('li', { class: 'so-fact so-break', text: line }))),
+      el('div', { class: 'ds-dialog__actions' }, close)));
+  dialog.addEventListener('close', () => {
+    hideOverlay(dialog, { remove: true }).then(() => paneAfter(document.activeElement));
+  }, { once: true });
+  showOverlay(dialog, opener && opener.isConnected ? opener : document.activeElement);
 }
 
 // setStatus files a session. Done closes its terminal on the server, so a
@@ -2225,224 +2060,110 @@ function replaceSession(next) {
   renderList();
 }
 
-// The row's "…": everything that can be done to one session. What belongs to
+// The row's ⋮: everything that can be done to one session. What belongs to
 // this device rather than to a session - the key bar, touch mode, sound and
-// notifications - is in the options menu of the top bar instead.
-function openRowMenu(anchor, id) {
+// notifications - is in the options dialog of the top bar instead.
+//
+// There is one menu element (#sessionMenu), drawn again for the row that
+// opens it; what each of its items does is kept here, by data-action, and run
+// by one listener (wire). DS.overlay closes the menu once that ran.
+const menuActions = new Map();
+
+// menuItemHtml is one item of the menu: its glyph and its words. A status is
+// one of a set, so it is a radio item whose check shows where it stands.
+function menuItemHtml(action, label, glyph, checked) {
+  if (checked !== undefined) {
+    return html`<button class="ds-menu__item" role="menuitemradio" type="button" data-action="${action}" aria-checked="${checked ? 'true' : 'false'}">${raw(icon('check', 20, 'ds-menu__check'))}<span class="ds-menu__label">${label}</span></button>`;
+  }
+  return html`<button class="ds-menu__item" role="menuitem" type="button" data-action="${action}">${raw(icon(glyph, 20))}<span class="ds-menu__label">${label}</span></button>`;
+}
+
+async function openRowMenu(anchor, id) {
   const session = sessionOf(id);
-  if (!session) return;
-  if (toggleMenuOf(anchor)) return;
+  const menu = dom.sessionMenu;
+  if (!session || !menu) return;
+  // A second press of the ⋮ a menu hangs from puts the menu away.
+  if (anchor.getAttribute('aria-expanded') === 'true') { hideOverlay(menu); return; }
+  // Open from another row: that one goes first, so the menu is never drawn
+  // for one session while it hangs from another.
+  if (!menu.hidden) await hideOverlay(menu);
   // A folder's editor is not work that is filed: it is open or it is not, and
   // closing it keeps everything it remembers, which is kept per folder.
   const editor = session.harness === IDE;
   // A prepared session has no terminal, so no keys, no scrollback and no
   // status to file it under yet: it can be looked at, named and deleted.
   const prepared = isPrepared(session);
-  const item = (text, run, kind) => menuItem(text, run, kind);
-  showMenu(anchor, () => [
-    item('Info', () => infoDialog(session)),
-    editor ? null : item('Rename', () => renameSession(session)),
-    editor || prepared ? null : el('div', { class: 'menu-label', text: 'Status' }),
-    ...(editor || prepared ? [] : STATUSES.map((one) => item(one.label, () => setStatus(session, one.id),
-      statusOf(session) === one.id ? 'checked' : ''))),
-    el('div', { class: 'menu-sep' }),
-    editor && state.current?.id === session.id ? item('Reload editor', () => attach(session)) : null,
-    prepared ? null : item(editor ? 'Download server log' : 'Download scrollback', () => downloadJournal(session)),
-    item(editor ? 'Close VS Code' : 'Delete', () => deleteSession(session), 'danger'),
-  ]);
-}
-
-/**
- * openOptionsMenu is the top bar's "⋮": the choices that belong to this
- * device and not to any session, each a switch that shows where it is. It
- * stays open while they are pressed, so several can be set in one go; a tap
- * anywhere else, Escape or the button again closes it.
- */
-function openOptionsMenu(anchor) {
-  if (toggleMenuOf(anchor)) return;
-  showMenu(anchor, () => {
-    const keys = keyBarWanted();
-    const touch = touchScreen();
-    const notifyAvailable = !!notifier && notifier.notifyAvailable();
-    return [
-      el('div', { class: 'menu-label', text: 'This device' }),
-      menuSwitch('Key bar', 'Esc, Tab, Ctrl, arrows', keys, () => {
-        setKeyBarWanted(!keys);
-        applyKeyBar();
-      }, 'keybar'),
-      menuSwitch('Touch mode', 'Keyboard button in the top bar', touch, () => {
-        setTouchMode(!touch);
-        // The key bar follows the touch screen until it has been asked for
-        // or put away on its own, so a device that has only ever been told
-        // about touch mode gets the bar that goes with it.
-        applyKeyBar();
-      }, 'touch'),
-      el('div', { class: 'menu-sep' }),
-      menuSwitch('Sound', 'A chime when a session finishes', !!notifier && notifier.soundOn(), () => {
-        if (notifier) notifier.setSound(!notifier.soundOn());
-      }, 'sound'),
-      menuSwitch('Notifications',
-        notifier ? notifier.notifyHint() : 'Not available in this browser',
-        !!notifier && notifier.notifyOn(), () => {
-          if (notifier) notifier.setNotify(!notifier.notifyOn());
-        }, 'notify', !notifyAvailable),
-    ];
-  });
-}
-
-// menuItem is one action of a menu: it closes the menu and does its thing.
-function menuItem(text, run, kind) {
-  return el('button', {
-    class: 'menu-item ' + (kind || ''), type: 'button', role: 'menuitem', text,
-    onclick: () => { closeMenu(); run(); },
-  });
-}
-
-// menuSwitch is one on/off choice of a menu that stays open: the words, what
-// they are about, and a switch that shows the answer. The menu is drawn
-// again after each press, from the state itself rather than from the press,
-// so a choice the browser refused - a notification permission - shows as
-// the "off" it really is.
-function menuSwitch(text, hint, on, toggle, name, disabled) {
-  return el('button', {
-    class: 'menu-item menu-switch', type: 'button', role: 'menuitemcheckbox',
-    'aria-checked': on ? 'true' : 'false', 'data-option': name, disabled: !!disabled,
-    onclick: () => {
-      toggle();
-      redrawMenu();
-    },
-  },
-  el('span', { class: 'menu-switch-text' },
-    el('span', { class: 'menu-switch-name', text }),
-    hint ? el('span', { class: 'menu-switch-hint', text: hint }) : null),
-  el('span', { class: 'menu-switch-track', 'aria-hidden': 'true' }));
-}
-
-// toggleMenuOf closes the menu `anchor` opened, and says so: a second press
-// of the button a menu hangs from puts the menu away instead of opening it
-// again.
-function toggleMenuOf(anchor) {
-  if (state.menu && state.menuAnchor === anchor) {
-    closeMenu();
-    return true;
+  menuActions.clear();
+  const items = [];
+  const add = (action, label, glyph, run, checked) => {
+    menuActions.set(action, run);
+    items.push(menuItemHtml(action, label, glyph, checked));
+  };
+  add('info', 'Info', 'info', () => infoDialog(session, anchor));
+  if (!editor) add('rename', 'Rename', 'pencil', () => renameSession(session, anchor));
+  if (!editor && !prepared) {
+    items.push(html`<div class="ds-menu__divider" role="separator"></div><p class="so-menu-heading" aria-hidden="true">Status</p>`);
+    for (const one of STATUSES) {
+      add('status:' + one.id, one.label, '', () => setStatus(session, one.id), statusOf(session) === one.id);
+    }
   }
-  closeMenu();
-  return false;
+  items.push(html`<div class="ds-menu__divider" role="separator"></div>`);
+  if (editor && state.current?.id === session.id) add('reload', 'Reload editor', 'sync', () => attach(session));
+  if (!prepared) add('journal', editor ? 'Download server log' : 'Download scrollback', 'download', () => downloadJournal(session));
+  add('delete', editor ? 'Close VS Code' : 'Delete', editor ? 'close' : 'trash', () => deleteSession(session));
+  morph(menu, html`${items}`);
+  showOverlay(menu, anchor);
 }
 
-// redrawMenu draws the open menu again from what it is built from, in place.
-function redrawMenu() {
-  if (!state.menu || !state.menuBuild) return;
-  const focused = document.activeElement && state.menu.contains(document.activeElement)
-    ? document.activeElement.dataset.option : '';
-  state.menu.replaceChildren(...state.menuBuild().filter(Boolean));
-  if (focused) {
-    const again = state.menu.querySelector('[data-option="' + cssId(focused) + '"]');
-    if (again) again.focus({ preventScroll: true });
-  }
-  state.menuPosition?.();
+/* ------------------------------------------------------ the options dialog */
+
+// The top bar's ⋮: the choices that belong to this device and not to any
+// session, each a switch that applies at once, so several can be set in one
+// go. The dialog is in the page; syncOptions puts every switch where its
+// setting is, from the setting itself rather than from the press, so a choice
+// the browser refused - a notification permission - shows as the "off" it
+// really is.
+function syncOptions() {
+  const host = dom.optionsDialog;
+  if (!host) return;
+  const put = (name, on, disabled = false) => {
+    const input = host.querySelector('[data-option="' + name + '"]');
+    if (!input) return;
+    if (input.checked !== on) input.checked = on;
+    input.disabled = disabled;
+  };
+  put('keybar', keyBarWanted());
+  put('touch', touchScreen());
+  put('sound', !!notifier && notifier.soundOn());
+  put('notify', !!notifier && notifier.notifyOn(), !(notifier && notifier.notifyAvailable()));
+  const hint = document.getElementById('optNotifyHint');
+  const words = notifier ? notifier.notifyHint() : 'Not available in this browser';
+  if (hint && hint.textContent !== words) hint.textContent = words;
 }
 
-/**
- * showMenu hangs a menu from `anchor`, inside what can be seen of the
- * viewport, and keeps it there while the page scrolls or a phone's keyboard
- * moves things. `build` draws its contents, and draws them again when a
- * switch in it is pressed (redrawMenu).
- */
-function showMenu(anchor, build, { className = '', role = 'menu' } = {}) {
-  closeMenu();
-  const menu = el('div', { class: 'menu ' + className, role });
-  menu.append(...build().filter(Boolean));
-  document.body.append(menu);
-  const position = (event) => {
-    if (event?.target === menu) return;
-    if (!anchor.isConnected) { closeMenu(); return; }
-    const box = anchor.getBoundingClientRect();
-    const viewport = window.visualViewport;
-    const left = (viewport?.offsetLeft || 0) + 10;
-    const top = (viewport?.offsetTop || 0) + 10;
-    const right = left + (viewport?.width || window.innerWidth) - 20;
-    const bottom = top + (viewport?.height || window.innerHeight) - 20;
-    menu.style.minWidth = Math.min(190, right - left) + 'px';
-    menu.style.maxWidth = Math.max(0, right - left) + 'px';
-    menu.style.maxHeight = 'none';
-    const below = Math.max(0, bottom - box.bottom - 6);
-    const above = Math.max(0, box.top - 6 - top);
-    const upwards = menu.offsetHeight > below && above > below;
-    menu.style.maxHeight = Math.max(0, Math.min(bottom - top, upwards ? above : below)) + 'px';
-    const y = upwards ? box.top - 6 - menu.offsetHeight : box.bottom + 6;
-    menu.style.top = Math.max(top, Math.min(y, bottom - menu.offsetHeight)) + 'px';
-    // Hung from its button's left edge, unless that would run it off the
-    // right of the screen - which, for a button at the end of the top bar,
-    // it always would, so there it ends where the button ends.
-    menu.style.left = Math.max(left, Math.min(box.left, right - menu.offsetWidth)) + 'px';
-  };
-  position();
-  // A press anywhere else closes it. It is listened for from the next tick,
-  // so the press that opened the menu is not taken for one that closes it,
-  // and before anything else hears it, so a control that keeps its clicks to
-  // itself still closes it.
-  //
-  // A press inside the menu is the menu's own: an item closes it itself, and
-  // a switch leaves it open. A press on the button it hangs from is the
-  // button's, which closes it (toggleMenuOf) - closed here first, the button
-  // would only open it again.
-  const outside = (event) => {
-    if (menu.contains(event.target) || anchor.contains(event.target)) return;
-    closeMenu();
-  };
-  // Escape is for the menu while one is open, and not for the pane under it.
-  const escape = (event) => {
-    if (event.key !== 'Escape') return;
-    event.preventDefault();
-    event.stopPropagation();
-    closeMenu();
-  };
-  const armed = setTimeout(() => document.addEventListener('click', outside, true), 0);
-  document.addEventListener('keydown', escape, true);
-  window.addEventListener('resize', position);
-  document.addEventListener('scroll', position, true);
-  window.visualViewport?.addEventListener('resize', position);
-  window.visualViewport?.addEventListener('scroll', position);
-  state.menuCleanup = () => {
-    clearTimeout(armed);
-    document.removeEventListener('click', outside, true);
-    document.removeEventListener('keydown', escape, true);
-    window.removeEventListener('resize', position);
-    document.removeEventListener('scroll', position, true);
-    window.visualViewport?.removeEventListener('resize', position);
-    window.visualViewport?.removeEventListener('scroll', position);
-  };
-  state.menu = menu;
-  state.menuBuild = build;
-  state.menuPosition = position;
-  // The button that opened the menu keeps the focus while it is open, and a
-  // button with the focus answers Enter and space - so it is handed back when
-  // the menu goes, or the next thing typed re-opens the menu instead of
-  // reaching the pane.
-  state.menuAnchor = anchor;
+function openOptions(anchor) {
+  syncOptions();
   anchor.setAttribute('aria-expanded', 'true');
-  return menu;
+  showOverlay(dom.optionsDialog, anchor);
 }
 
-function closeMenu() {
-  if (!state.menu) return;
-  state.menuCleanup?.();
-  state.menuCleanup = null;
-  const menu = state.menu;
-  state.menu = null;
-  state.menuBuild = null;
-  state.menuPosition = null;
-  // The focus may be on one of the menu's own switches, and an element that
-  // is removed while it has the focus takes it nowhere.
-  const inside = menu.contains(document.activeElement);
-  menu.remove();
-  const anchor = state.menuAnchor;
-  state.menuAnchor = null;
-  if (anchor) anchor.setAttribute('aria-expanded', 'false');
-  if (anchor && (inside || document.activeElement === anchor)) anchor.blur();
-  // The menu took the focus out of the pane, so the menu gives it back.
-  keepTypingAlive();
+// setOption is one switch of the options dialog, pressed.
+function setOption(name, on) {
+  if (name === 'keybar') {
+    setKeyBarWanted(on);
+    applyKeyBar();
+  } else if (name === 'touch') {
+    setTouchMode(on);
+    // The key bar follows the touch screen until it has been asked for or
+    // put away on its own, so a device that has only ever been told about
+    // touch mode gets the bar that goes with it.
+    applyKeyBar();
+  } else if (name === 'sound') {
+    if (notifier) notifier.setSound(on);
+  } else if (name === 'notify') {
+    if (notifier) notifier.setNotify(on);
+  }
+  syncOptions();
 }
 
 /**
@@ -2462,7 +2183,7 @@ function closeMenu() {
  */
 function keepTypingAlive() {
   if (!state.term || homeShown()) return;
-  if (state.menu || document.querySelector('dialog[open]')) return;
+  if (overlayOpen()) return;
   const active = document.activeElement;
   if (active && active.isConnected
     && active !== document.body && active !== document.documentElement) return;
@@ -2489,14 +2210,14 @@ function showHome({ replace = false } = {}) {
   state.wanted = '';
   dom.keybar.hidden = true;
   dom.termWrap.hidden = true;
-  dom.sessionTitle.textContent = 'Home';
+  setTitleText('Home');
   dom.titleRegen.hidden = true;
   stopUsage();
   if (state.assist) state.assist.attached();
   if (state.transfer) state.transfer.attached();
   dom.sessionStatus.hidden = true;
   dom.sessionOutcome.hidden = true;
-  dom.termOverlay.hidden = true;
+  closeCover();
   clearNotice();
   // A move the person made is a step Back can undo; the page putting its
   // own address in order - a link it was opened at, a session that went - is
@@ -2507,7 +2228,7 @@ function showHome({ replace = false } = {}) {
     else location.hash = '#home';
   }
   closeNav();
-  dom.homeBtn.setAttribute('aria-pressed', 'true');
+  dom.homeBtn.setAttribute('aria-current', 'page');
   if (state.home) state.home.show();
   if (state.events) state.events.refresh();
   // No row is the one on screen any more.
@@ -2516,7 +2237,7 @@ function showHome({ replace = false } = {}) {
 
 // hideHome takes Home off the stage, for a session that is being put there.
 function hideHome() {
-  dom.homeBtn.setAttribute('aria-pressed', 'false');
+  dom.homeBtn.removeAttribute('aria-current');
   if (!homeShown()) return;
   state.home.hide();
   if (state.events) state.events.refresh();
@@ -2540,17 +2261,14 @@ function applySession(session) {
   // again from there either.
   if (isPrepared(session) && !(state.prestart && state.prestart.shownId() === session.id)
     && state.current && state.current.id === session.id
-    && (state.socket || state.term || document.body.classList.contains('ide-open'))) {
+    && (state.socket || state.term || dom.stage.hasAttribute('data-ide'))) {
     attach(session);
     return;
   }
   state.current = session;
-  dom.sessionTitle.textContent = session.title;
+  setTitleText(session.title);
   drawTitling(session.id);
-  const status = statusOf(session);
-  dom.sessionStatus.hidden = status === 'in_progress';
-  dom.sessionStatus.textContent = STATUS_WORDS[status];
-  dom.sessionStatus.dataset.status = status;
+  drawStatusChip(statusOf(session));
   drawOutcomeTag();
 
   // What it runs and on which model is in the list's mark and in "Info" in
@@ -2586,11 +2304,11 @@ function stopUsage() {
   state.usageFor = '';
   state.usageRefresh = null;
   state.usage = null;
-  if (state.menuAnchor === dom.sessionUsage) closeMenu();
+  if (dom.usageDialog && dom.usageDialog.open) hideOverlay(dom.usageDialog);
   dom.sessionUsage.hidden = true;
-  dom.sessionUsage.innerHTML = '';
-  dom.sessionUsage.title = '';
-  dom.sessionUsage.closest('.topbar').classList.remove('has-usage');
+  morph(dom.sessionUsage, '');
+  dom.sessionUsage.removeAttribute('data-tip');
+  placeUsage();
 }
 
 function startUsage(session) {
@@ -2607,6 +2325,7 @@ function startUsage(session) {
   stopUsage();
   if (!session || session.harness === 'vscode') return;
   state.usageFor = session.id;
+  placeUsage();
   const generation = state.usageGeneration;
   const refresh = async () => {
     try {
@@ -2649,48 +2368,73 @@ function drawUsage(usage) {
   for (const window of limitWindows(usage)) {
     // How long until the window renews is shown, not only hovered: whether
     // 80% is a problem depends on whether it is gone in ten minutes.
-    parts.push(el('span', { class: 'usage-part', 'data-window': window.label },
-      el('span', { class: 'usage-label', text: window.label }),
-      el('span', { class: 'usage-used', text: window.used + '%' }),
-      window.left ? el('span', { class: 'usage-reset' }, '(' + window.left,
-        el('span', { class: 'usage-left', text: ' left' }), ')') : null));
+    parts.push(html`<span class="so-usage__part" data-window="${window.label}"><span class="so-usage__label">${window.label}</span> <span class="so-usage__used">${window.used + '%'}</span>${
+      window.left ? html` <span class="so-usage__reset">(${window.left}<span class="so-usage__left"> left</span>)</span>` : ''
+    }</span>`);
     details.push(window.label + ': ' + window.used + '% used'
       + (window.left ? ' · resets in ' + window.left + ' (' + renewalTime(window.at) + ')' : ''));
   }
   if (Number.isFinite(usage && usage.cost_usd)) {
     const value = Number(usage.cost_usd);
     const shown = value > 0 && value < .01 ? '<$0.01' : '$' + value.toFixed(2);
-    parts.push(el('span', { class: 'usage-part usage-cost', text: '~' + shown }));
+    parts.push(html`<span class="so-usage__part so-usage__cost">${'~' + shown}</span>`);
     details.push('Estimated session API-equivalent cost: $' + value.toFixed(4));
   }
-  dom.sessionUsage.innerHTML = '';
-  dom.sessionUsage.append(...parts);
-  dom.sessionUsage.title = details.join('\n');
+  // One line inside the button: the button lays out its children with a gap
+  // of its own, which is not the spacing of the parts.
+  morph(dom.sessionUsage, parts.length ? html`<span class="so-usage__line">${parts}</span>` : '');
+  dom.sessionUsage.setAttribute('data-tip', details.join('\n'));
   dom.sessionUsage.setAttribute('aria-label', details.join('. ') || 'Usage');
   dom.sessionUsage.hidden = parts.length === 0;
-  dom.sessionUsage.closest('.topbar').classList.toggle('has-usage', parts.length > 0);
+  placeUsage();
   fitUsage();
-  if (parts.length === 0 && state.menuAnchor === dom.sessionUsage) closeMenu();
-  // The reading that is open says what the strip now says.
-  if (state.menuAnchor === dom.sessionUsage) redrawMenu();
+  // The reading that is open says what the strip now says, and goes with it.
+  if (dom.usageDialog && dom.usageDialog.open) {
+    if (parts.length === 0) hideOverlay(dom.usageDialog);
+    else drawUsageReading();
+  }
 }
 
 /**
  * fitUsage keeps the strip on its one line where its width is given to it -
- * a phone's, where it is the bar's second line. Three windows and a cost are
+ * a phone's, where it is the line under the bar. Three windows and a cost are
  * more than 360px say in full, so it gives up, in order, its spacing, the
- * cost (which the reading behind a tap still has) and a point of type size
- * before anything about a limit. What is still too wide can be swiped along: nothing is cut off where
- * it cannot be reached.
+ * cost (which the reading behind a tap still has) and a step of type size
+ * before anything about a limit. What is still too wide can be swiped along:
+ * nothing is cut off where it cannot be reached.
  */
 function fitUsage() {
   const strip = dom.sessionUsage;
-  strip.classList.remove('fit-1', 'fit-2', 'fit-3');
+  strip.removeAttribute('data-fit');
   if (strip.hidden) return;
-  for (const level of ['fit-1', 'fit-2', 'fit-3']) {
+  for (const level of ['1', '2', '3']) {
     if (strip.scrollWidth <= strip.clientWidth + 1) return;
-    strip.classList.add(level);
+    strip.setAttribute('data-fit', level);
   }
+}
+
+// The narrow layout, where the bar has no room for the strip: there it is a
+// line of its own at the top of the column, under the bar.
+const usageNarrow = window.matchMedia('(max-width: 700px)');
+
+/**
+ * placeUsage puts the strip where the window has room for it: in the bar,
+ * before its actions, or on the line under the bar on a phone. It is the same
+ * button either way, so its listeners and its open reading come along.
+ */
+function placeUsage() {
+  const strip = dom.sessionUsage;
+  const line = dom.usageLine;
+  if (!strip || !line) return;
+  if (usageNarrow.matches) {
+    if (strip.parentElement !== line) line.append(strip);
+  } else if (strip.parentElement !== dom.topbar) {
+    dom.topbar.insertBefore(strip, dom.topbar.querySelector('.so-topbar__actions'));
+  }
+  // The line is there for as long as a session's usage is being read, before
+  // the first reading is in: a line that came with the reading would shrink
+  // the stage under a terminal that has just been fitted to it.
+  line.hidden = !usageNarrow.matches || (strip.hidden && !state.usageFor);
 }
 
 /**
@@ -2714,59 +2458,100 @@ function renewalTime(at, now = new Date()) {
  * a touch screen that has no tooltips.
  */
 function openUsage(anchor) {
-  if (!state.usage || toggleMenuOf(anchor)) return;
-  showMenu(anchor, () => {
-    const usage = state.usage || {};
-    const rows = limitWindows(usage).map((window) => el('div', { class: 'usage-row', 'data-window': window.label },
-      el('div', { class: 'usage-row-head' },
-        el('span', { class: 'usage-row-name', text: WINDOW_NAMES[window.label] || window.label }),
-        el('span', { class: 'usage-row-used', text: window.used + '% used' })),
-      el('div', { class: 'usage-meter', 'aria-hidden': 'true' },
-        el('span', { style: 'width:' + window.used + '%' })),
-      el('div', { class: 'usage-row-reset',
-        text: window.left ? 'Resets in ' + window.left + ' · ' + renewalTime(window.at)
-          : window.renewed ? 'Renewed · waiting for the next reading'
-            : 'No renewal time reported' })));
-    if (Number.isFinite(usage.cost_usd)) {
-      rows.push(el('div', { class: 'usage-row usage-row-cost' },
-        el('div', { class: 'usage-row-head' },
-          el('span', { class: 'usage-row-name', text: 'This session' }),
-          el('span', { class: 'usage-row-used', text: '~$' + Number(usage.cost_usd).toFixed(2) })),
-        el('div', { class: 'usage-row-reset', text: 'Estimated API-equivalent cost' })));
-    }
-    return rows;
-  }, { className: 'usage-pop', role: 'dialog' });
+  if (!state.usage) return;
+  drawUsageReading();
+  anchor.setAttribute('aria-expanded', 'true');
+  showOverlay(dom.usageDialog, anchor);
+}
+
+// drawUsageReading fills the usage dialog from the reading on screen.
+function drawUsageReading() {
+  const usage = state.usage || {};
+  const rows = limitWindows(usage).map((window) => html`<div class="so-usage-row" data-window="${window.label}"><div class="so-usage-row__head"><span class="so-usage-row__name">${WINDOW_NAMES[window.label] || window.label}</span><span class="so-usage-row__used">${window.used + '% used'}</span></div><div class="ds-progress ds-progress--flat so-usage-row__meter" style="${'--ds-progress: ' + window.used / 100}"><div class="ds-progress__track" role="progressbar" aria-label="${(WINDOW_NAMES[window.label] || window.label) + ' used'}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${window.used}"><div class="ds-progress__bar"></div></div></div><div class="so-usage-row__reset">${
+    window.left ? 'Resets in ' + window.left + ' · ' + renewalTime(window.at)
+      : window.renewed ? 'Renewed · waiting for the next reading'
+        : 'No renewal time reported'
+  }</div></div>`);
+  if (Number.isFinite(usage.cost_usd)) {
+    rows.push(html`<div class="so-usage-row so-usage-row--cost"><div class="so-usage-row__head"><span class="so-usage-row__name">This session</span><span class="so-usage-row__used">${'~$' + Number(usage.cost_usd).toFixed(2)}</span></div><div class="so-usage-row__reset">Estimated API-equivalent cost</div></div>`);
+  }
+  morph(dom.usageReading, html`${rows}`);
 }
 
 // drawOverlay is §E.7's table. Everything it can say is a state the session is
 // actually in, and each one names the way out of it.
+//
+// The cover is a ds-dialog--contained over the pane (#termOverlay), opened and
+// closed through DS.overlay, so it traps the focus inside the pane only and
+// the drawer and the bar stay usable. It is drawn often - every list refresh
+// redraws it - so the box is patched in place with morph() and a pressed,
+// busy button keeps its face; the buttons carry what they do in data-cover
+// and one listener answers them for whichever session is under the cover.
+let coverSession = null;
+let coverWired = false;
+
 function drawOverlay(session) {
+  wireCover();
+  const markup = coverMarkup(session);
+  if (!markup) {
+    closeCover();
+    return;
+  }
+  coverSession = session;
   const host = dom.termOverlay;
-  const show = (...nodes) => {
-    host.innerHTML = '';
-    host.append(el('div', { class: 'overlay-card' }, ...nodes));
-    host.hidden = false;
-  };
+  morph(host.querySelector('.ds-dialog__box'), markup);
+  // Opened once; a redraw of an open cover only patches it, and one that is
+  // on its way out is taken back.
+  if (host.hidden || host.getAttribute('data-state') !== 'open') showOverlay(host);
+}
+
+// closeCover takes the cover off the pane, if it is on it.
+function closeCover() {
+  coverSession = null;
+  const host = dom.termOverlay;
+  if (!host.hidden && host.getAttribute('data-state') !== 'closed') hideOverlay(host);
+}
+
+function wireCover() {
+  if (coverWired) return;
+  coverWired = true;
+  const host = dom.termOverlay;
+  host.querySelector('.ds-dialog__box').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-cover]');
+    const session = coverSession;
+    if (!button || !session || button.getAttribute('aria-busy') === 'true') return;
+    const action = button.getAttribute('data-cover');
+    if (action === 'restart') restart(session);
+    else if (action === 'delete') deleteSession(session);
+    else if (action === 'pickup') setStatus(session, 'in_progress');
+    else if (action === 'open' && !state.resuming) attach(session);
+  });
+  // The cover is a state of the session, not a question to wave away: Escape
+  // inside the pane leaves it where it is (DS.overlay honours a prevented key).
+  host.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') event.preventDefault();
+  });
+}
+
+// coverMarkup is what the cover says for a session, or null when the pane is
+// free.
+function coverMarkup(session) {
+  const title = (words) => html`<h2 class="ds-dialog__title" id="termOverlayTitle">${words}</h2>`;
+  const actions = (...buttons) => html`<div class="ds-dialog__actions">${buttons}</div>`;
+  // The way out is where the focus lands when the cover comes up.
+  const button = (action, label, primary = false) => html`<button class="ds-btn${primary ? ' ds-btn--primary' : ''}" type="button" data-cover="${action}"${primary ? raw(' autofocus') : ''}>${label}</button>`;
+  // A done session's terminal was closed on purpose, and that is the whole of
+  // what there is to say about it, whatever state the row is in.
+  if (isDone(session)) {
+    return html`${title('This session is done.')}
+      <p class="ds-dialog__text" id="termOverlayText">${'Its terminal was closed. ' + (deleteWords(session) || 'It is deleted soon') + '.'}</p>
+      ${actions(button('delete', 'Delete now'), button('pickup', 'Pick it up again', true))}`;
+  }
   // `resuming` is the one state the store does not have: it is the window
   // between this tab asking for a session that is not running and the server
   // answering with what it became. The row still says needs_resume for all of
   // it, and a list refresh in the middle must not redraw the button that has
   // already been pressed.
-  // A done session's terminal was closed on purpose, and that is the whole of
-  // what there is to say about it, whatever state the row is in.
-  if (isDone(session)) {
-    show(
-      el('p', { class: 'overlay-title', text: 'This session is done.' }),
-      el('p', { class: 'overlay-detail', text: 'Its terminal was closed. ' + (deleteWords(session) || 'It is deleted soon') + '.' }),
-      el('div', { class: 'overlay-actions' },
-        el('button', {
-          class: 'ds-btn ds-btn--primary', type: 'button', text: 'Pick it up again',
-          onclick: () => setStatus(session, 'in_progress'),
-        }),
-        el('button', { class: 'ds-btn', type: 'button', text: 'Delete now', onclick: () => deleteSession(session) })),
-    );
-    return;
-  }
   let drawn = session.state;
   if (state.resuming) {
     if (drawn === 'needs_resume' || drawn === 'starting') drawn = 'resuming';
@@ -2774,54 +2559,32 @@ function drawOverlay(session) {
   }
   switch (drawn) {
     case 'exited':
-      show(
-        el('p', { class: 'overlay-title', text: 'The session ended.' }),
-        el('p', { class: 'overlay-detail mono', text: 'Exit status ' + session.exit_status }),
-        el('div', { class: 'overlay-actions' },
-          actionButton(session, 'Restart', 'Restarting…'),
-          el('button', { class: 'ds-btn', type: 'button', text: 'Delete', onclick: () => deleteSession(session) })),
-      );
-      break;
+      // Why a pane ended is the one fact the cover is raised for, so it is a
+      // plain line under the sentence rather than behind an "i".
+      return html`${title('The session ended.')}
+        <p class="so-pane__detail" id="termOverlayText">${'Exit status ' + session.exit_status}</p>
+        ${actions(button('delete', 'Delete'), actionButton(session, 'Restart', 'Restarting'))}`;
     case 'failed':
-      show(
-        el('p', { class: 'overlay-title', text: 'The session could not start.' }),
-        session.fail_reason
-          ? el('p', { class: 'overlay-detail mono', text: session.fail_reason })
-          : null,
-        el('div', { class: 'overlay-actions' },
-          actionButton(session, 'Try again', 'Trying again…')),
-      );
-      break;
+      return html`${title('The session could not start.')}
+        ${session.fail_reason ? html`<p class="so-pane__detail" id="termOverlayText">${session.fail_reason}</p>` : ''}
+        ${actions(actionButton(session, 'Try again', 'Trying again'))}`;
     case 'resuming':
-      show(el('div', { class: 'spinner' }), el('p', { class: 'overlay-title', text: 'Resuming after a restart…' }));
-      break;
+      return html`<div class="so-pane__wait" role="status"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span>${title('Resuming after a restart…')}</div>`;
     case 'needs_resume':
-      show(
-        el('p', { class: 'overlay-title', text: 'This session is not running.' }),
-        el('div', { class: 'overlay-actions' },
-          el('button', {
-            class: 'ds-btn ds-btn--primary', type: 'button', text: 'Open',
-            onclick: () => { if (!state.resuming) attach(session); },
-          })),
-      );
-      break;
+      return html`${title('This session is not running.')}
+        ${actions(button('open', 'Open', true))}`;
     default:
-      host.hidden = true;
-      host.innerHTML = '';
+      return null;
   }
 }
 
-// actionButton is the overlay's own button, drawn from `state.restarting` so
-// that a redraw in the middle of a relaunch keeps saying what is happening
-// instead of offering to start it again.
+// actionButton is the cover's own button, drawn from `state.restarting` so
+// that a redraw in the middle of a relaunch keeps its busy face instead of
+// offering to start it again.
 function actionButton(session, label, busyLabel) {
   const busy = state.restarting === session.id;
-  return el('button', {
-    class: 'ds-btn ds-btn--primary', type: 'button', id: 'termRestart',
-    text: busy ? busyLabel : label,
-    disabled: busy,
-    onclick: () => restart(session),
-  });
+  return html`<button class="ds-btn ds-btn--primary" type="button" id="termRestart" data-cover="restart" autofocus${
+    busy ? raw(' aria-busy="true"') : ''}>${faces(label, busyLabel)}</button>`;
 }
 
 // How long a line above the pane stays before it puts itself away. Long enough
@@ -2831,32 +2594,27 @@ function actionButton(session, label, busyLabel) {
 // the person still has to press is never taken away on a timer; see `extra`
 // below.
 const NOTICE_LINGER = 6000;
-// How long the leaving line is given to fade. It is the CSS transition on
-// `.term-notice.leaving` plus a frame, and under reduced motion the CSS makes
-// the fade instant while this stays the same.
-const NOTICE_FADE = 180;
-
-// The timers of the line that is up: the one that decides when it goes, and
-// the one that takes it off the page once it has faded. There is only ever one
-// notice, so there is only ever one of each.
+// The timer of the line that is up, which decides when it goes. There is only
+// ever one notice, so there is only ever one of it.
 let noticeTimer = null;
-let noticeFade = null;
+
+// The mark each kind of notice leads with; anything else is information.
+const NOTICE_ICON = { status: 'summarize', desync: 'sync', resized: 'monitor', resumed: 'history' };
 
 // clearNotice takes the line away with no ceremony and cancels whatever it had
 // running. It is the path for "there is nothing to say any more" - a session
 // being detached - rather than for "this has been read".
 function clearNotice() {
   if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null; }
-  if (noticeFade) { clearTimeout(noticeFade); noticeFade = null; }
-  dom.termNotice.classList.remove('leaving');
+  M.cancel(dom.termNotice);
   dom.termNotice.hidden = true;
 }
 
-// notice draws the thin line at the top of the pane. It never blocks, it is
-// always dismissible, and it puts itself away once it has been read;
-// `onDismiss` is what a notice does when it goes, however it goes - the close
-// button and the timer are the same decision, so the resume flag is cleared
-// either way.
+// notice draws the thin line at the top of the pane (a ds-alert). It never
+// blocks, it is always dismissible, and it puts itself away once it has been
+// read; `onDismiss` is what a notice does when it goes, however it goes - the
+// close button and the timer are the same decision, so the resume flag is
+// cleared either way.
 //
 // `facts` is the technical half of what the notice knows - the conversation a
 // resume came from, and anything else that is an identifier rather than a
@@ -2867,36 +2625,37 @@ function notice(kind, text, onDismiss, facts, extra) {
   // A new line replaces the one that is up, so the space is free for the next
   // one and no timer from the old line reaches the new one.
   if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null; }
-  if (noticeFade) { clearTimeout(noticeFade); noticeFade = null; }
-  host.classList.remove('leaving');
-  host.innerHTML = '';
+  const wasUp = !host.hidden && !host.hasAttribute('data-ds-leaving');
+  M.cancel(host);
   host.dataset.kind = kind;
+  let gone = false;
   const dismiss = () => {
-    if (host.hidden) return;
+    if (gone) return;
+    gone = true;
     if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null; }
-    host.classList.add('leaving');
-    noticeFade = setTimeout(() => {
-      noticeFade = null;
-      host.hidden = true;
-      host.classList.remove('leaving');
-    }, NOTICE_FADE);
+    // It leaves the way it came, and the space is free for the next one.
+    M.leave(host, '', { then: 'hide' });
     if (onDismiss) onDismiss();
   };
   const close = el('button', {
-    class: 'ds-btn ds-btn--quiet ds-btn--icon notice-close', type: 'button', 'aria-label': 'Dismiss',
-    html: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
-    onclick: dismiss,
-  });
-  // `host` is a plain element, and `ParentNode.append` writes a null argument
-  // into the line as the word "null" - only `el()` filters. So the tip is
-  // appended when there is one, and not otherwise.
-  host.append(el('span', { class: 'notice-text', text }));
-  if (facts && facts.length) host.append(infoTip(facts, { label: 'Details', bubbleClass: 'mono' }));
-  // `extra` is the one control a notice may carry beside its "i" - the Cancel
-  // of a run in progress. Everything else a notice can say, it says in words.
-  if (extra) host.append(extra);
-  host.append(close);
-  host.hidden = false;
+    class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm', type: 'button',
+    'aria-label': 'Dismiss', 'data-tip': 'Dismiss', onclick: dismiss,
+  }, iconEl('close', 18));
+  // `replaceChildren` writes a null argument as the word "null", so the parts
+  // a notice may lack are filtered out first.
+  host.replaceChildren(...[
+    iconEl(NOTICE_ICON[kind] || 'info', 20),
+    el('span', { class: 'ds-alert__text', text }),
+    facts && facts.length ? infoTip(facts, { label: 'Details', code: true }) : null,
+    // `extra` is the one control a notice may carry beside its "i" - the
+    // Cancel of a run in progress. Everything else a notice can say, it says
+    // in words.
+    extra || null,
+    close,
+  ].filter(Boolean));
+  // A line that replaces one already up changes in place; a new one comes in.
+  if (wasUp) host.hidden = false;
+  else M.enter(host);
   // News goes when it has been read. A line with a control on it is not news:
   // a Cancel belongs to a run that is still running, and it stays until the
   // run does not need it any more.
@@ -2951,14 +2710,14 @@ let ideGeneration = 0;
 
 function detach() {
   ideGeneration += 1;
-  document.body.classList.remove('ide-open');
+  dom.stage.removeAttribute('data-ide');
   if (state.assist) state.assist.attached();
   if (state.keybar) { state.keybar.dispose(); state.keybar = null; }
   dom.keybar.hidden = true;
   if (state.socket) { state.socket.stop(); state.socket = null; }
   if (state.term) { state.term.dispose(); state.term = null; }
-  dom.term.innerHTML = '';
-  setClass(dom.termWrap, 'stale', false);
+  dom.term.replaceChildren();
+  dom.termWrap.removeAttribute('data-stale');
   state.live = false;
   state.resuming = false;
   if (state.transfer) state.transfer.attached();
@@ -2998,7 +2757,8 @@ function attach(session) {
   // A session that was just opened is still settling: see notify.hush.
   if (notifier) notifier.hush(session.id);
   if (session.harness === 'vscode') {
-    document.body.classList.add('ide-open');
+    // The stage holds an editor: no lines over it, no inset around it.
+    dom.stage.setAttribute('data-ide', '');
     openIDE(session, ideGeneration);
     return;
   }
@@ -3103,18 +2863,18 @@ function ideQuery(session) {
 async function openIDE(session, generation) {
   if (['failed', 'exited'].includes(session.state)) return;
   const current = () => generation === ideGeneration;
-  // What stands on the stage until there is an editor on it: a turning mark
-  // and a line of words, the same shape the pane's own overlay uses for a
+  // What stands on the stage until there is an editor on it: the shape loader
+  // and a line of words, the same shape the pane's own cover uses for a
   // session that is coming back.
   const words = el('p', { text: 'Opening VS Code…' });
-  const spinner = el('div', { class: 'spinner' });
-  const loading = el('div', { class: 'ide-loading' }, spinner, words);
+  const spinner = el('span', { class: 'ds-loader', 'aria-hidden': 'true' });
+  const loading = el('div', { class: 'so-ide__loading', role: 'status' }, spinner, words);
   dom.term.replaceChildren(loading);
   try {
     const base = await readyIDE(session, current);
     if (!base) return;
     const frame = el('iframe', {
-      class: 'ide-frame', title: 'VS Code',
+      class: 'so-ide__frame', title: 'VS Code',
       src: base + ideQuery(session),
       allow: 'clipboard-read; clipboard-write',
     });
@@ -3134,7 +2894,7 @@ async function openIDE(session, generation) {
     // nothing is.
     spinner.remove();
     words.textContent = errorMessage(err);
-    loading.append(el('button', { class: 'ds-btn', text: 'Retry', onclick: () => attach(sessionOf(session.id) || session) }));
+    loading.append(el('button', { class: 'ds-btn', type: 'button', text: 'Retry', onclick: () => attach(sessionOf(session.id) || session) }));
   }
 }
 
@@ -3142,8 +2902,6 @@ async function openIDE(session, generation) {
 // frame is uncovered whatever is in it: a page that is going to be white is
 // better white than behind a mark that turns for ever.
 const IDE_REVEAL_CEILING = 30000;
-// The fade in app.css, plus a frame to start it in.
-const IDE_FADE = 400;
 
 /**
  * revealIDE takes the loading card away once there is an editor behind it.
@@ -3157,10 +2915,11 @@ const IDE_FADE = 400;
  */
 function revealIDE(frame, loading, current) {
   const started = Date.now();
+  // Faded out rather than removed at once, so the workbench arrives instead
+  // of replacing something.
   const uncover = () => {
     if (!loading.isConnected) return;
-    loading.classList.add('done');
-    setTimeout(() => loading.remove(), IDE_FADE);
+    M.leave(loading);
   };
   const look = () => {
     // A session that was stepped off takes its card with it.
@@ -3214,7 +2973,7 @@ function renameRow(id, title) {
   session.title = title;
   if (state.current && state.current.id === id) {
     state.current.title = title;
-    dom.sessionTitle.textContent = title;
+    setTitleText(title);
   }
   renderList();
 }
@@ -3224,9 +2983,12 @@ function renameRow(id, title) {
 // after its folder, so it has no arrow.
 function drawTitling(id) {
   const titling = state.titling.has(id);
-  setClass(dom.sessionTitle, 'titling', titling);
+  dom.sessionTitle.toggleAttribute('data-titling', titling);
   dom.titleRegen.hidden = !state.current || state.current.harness === IDE;
-  dom.titleRegen.disabled = titling;
+  // While a name is being thought of, the sparkles turn into a spinner and a
+  // second press does nothing (wire).
+  if (titling) dom.titleRegen.setAttribute('aria-busy', 'true');
+  else dom.titleRegen.removeAttribute('aria-busy');
 }
 
 // retitleSession asks for a new name for the session on screen, from what it
@@ -3450,8 +3212,8 @@ function updateStale() {
   if (state.assist) state.assist.live();
   const stale = !state.live
     && (navigator.onLine === false || Date.now() - (state.lostAt || Date.now()) >= CONNECTION_GRACE);
-  setClass(document.body, 'stale', stale);
-  setClass(dom.termWrap, 'stale', stale);
+  document.body.toggleAttribute('data-stale', stale);
+  dom.termWrap.toggleAttribute('data-stale', stale);
 }
 
 /* --------------------------------------------------------------- routing */
@@ -3467,7 +3229,7 @@ function selectSession(id) {
   // than its panel, which a click is the way back from.
   const panelShown = state.prestart && state.prestart.shownId() === id;
   if (state.current && state.current.id === id && (panelShown
-    || (!isPrepared(session) && (state.socket || document.body.classList.contains('ide-open'))))) return;
+    || (!isPrepared(session) && (state.socket || dom.stage.hasAttribute('data-ide'))))) return;
   markRead(id);
   state.wanted = id;
   location.hash = '#' + id;
@@ -3620,55 +3382,150 @@ async function newSession() {
   }
 }
 
-function openNav() { document.body.classList.add('nav-open'); }
-function closeNav() { document.body.classList.remove('nav-open'); }
+// The drawer is modal at 900px and below: DS.overlay opens and closes it,
+// with its scrim, its focus trap and Escape. On a wider window it is docked
+// and these do nothing.
+function drawerModal() { return window.matchMedia('(max-width: 900px)').matches; }
+function openNav() {
+  if (drawerModal() && !dom.app.hasAttribute('data-drawer-open')) showOverlay(dom.sidebar, dom.menuBtn);
+}
+function closeNav() {
+  if (dom.app.hasAttribute('data-drawer-open')) hideOverlay(dom.sidebar);
+}
 
-/* ------------------------------------------------- the sidebar as a rail */
+// wireList is the session list's and the row menu's listeners, bound once:
+// the rows are drawn again all the time, and a kept node keeps nothing a
+// listener of its own would need.
+function wireList() {
+  dom.sessionList.addEventListener('click', (event) => {
+    const more = event.target.closest('.so-row__more');
+    if (more) {
+      event.preventDefault();
+      openRowMenu(more, more.closest('.so-row').dataset.id);
+      return;
+    }
+    const ide = event.target.closest('.so-folder__ide');
+    if (ide) { openFolderIDE(ide.dataset.ide); return; }
+    const head = event.target.closest('.so-folder__head');
+    if (head) {
+      const key = keysOfRows.get(head.dataset.toggle);
+      if (key !== undefined) toggleFolder(key);
+      return;
+    }
+    const open = event.target.closest('.so-row__open');
+    // A row is a link, so a middle or modified click opens the session in a
+    // tab of its own; a plain one is the page's.
+    if (!open || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    selectSession(open.closest('.so-row').dataset.id);
+  });
+  // ArrowDown on a ⋮ opens its menu on the first item, ArrowUp on the last.
+  dom.sessionList.addEventListener('keydown', (event) => {
+    const more = event.target.closest('.so-row__more');
+    if (!more || (event.key !== 'ArrowDown' && event.key !== 'ArrowUp')) return;
+    if (more.getAttribute('aria-expanded') === 'true') return;
+    event.preventDefault();
+    openRowMenu(more, more.closest('.so-row').dataset.id);
+  });
+  // The row menu has no close event: its hidden attribute is the news.
+  new MutationObserver(() => {
+    if (!dom.sessionMenu.hidden) return;
+    requestAnimationFrame(() => paneAfter(document.activeElement));
+  }).observe(dom.sessionMenu, { attributes: true, attributeFilter: ['hidden'] });
+  dom.sessionMenu.addEventListener('click', (event) => {
+    const item = event.target.closest('[data-action]');
+    if (!item || item.getAttribute('aria-disabled') === 'true') return;
+    const run = menuActions.get(item.dataset.action);
+    if (run) run();
+  });
+}
 
-// Whether this device keeps the sidebar as a rail. It is a fact about this
-// screen and not about the account: the same person wants the column on a
-// desk and the width on a laptop, and a preference that travelled between them
-// would be wrong on one of them every time.
+/**
+ * paneAfter hands the focus back to the pane once a dialog or the row menu
+ * has gone. DS puts it back on the button that opened it, and with a session
+ * open a button with the focus swallows the keys meant for the pane - the
+ * menus did the same before they were DS's.
+ */
+function paneAfter(button) {
+  const settle = () => {
+    if (!state.term || homeShown() || overlayOpen()) return;
+    const now = document.activeElement;
+    if (now && now !== document.body && now !== button) return;
+    if (button && now === button) {
+      if (!button.matches('.so-row__more, #sessionTitle, #optionsBtn, #sessionUsage')) return;
+      button.blur();
+    }
+    keepTypingAlive();
+  };
+  // Once now, and once DS has had its frame to put the focus back.
+  settle();
+  requestAnimationFrame(settle);
+}
+
+// setTitleText writes the name in the bar. The button holds the name in a
+// span of its own, so writing the button's text would throw the span away.
+function setTitleText(text) {
+  const host = dom.sessionTitleText || dom.sessionTitle;
+  if (host.textContent !== text) host.textContent = text;
+}
+
+// The status chip beside the name: where the person filed the session, as an
+// icon and a word. In progress says nothing, so it has no chip.
+const STATUS_CHIP = { review: '', pending: 'ds-status--warning', background: '', done: 'ds-status--ok' };
+function drawStatusChip(status) {
+  const chip = dom.sessionStatus;
+  chip.hidden = status === 'in_progress';
+  chip.dataset.status = status;
+  if (chip.hidden) return;
+  chip.className = ('ds-status ' + (STATUS_CHIP[status] || '')).trim();
+  morph(chip, html`${raw(icon(STATUS_GLYPH[status], 16))}<span>${STATUS_WORDS[status]}</span>`);
+}
+
+/* ------------------------------------------- the session list put away */
+
+// Whether this device keeps the session list put away at a desk. It is a fact
+// about this screen and not about the account: the same person wants the
+// column on a desk and the width on a laptop, and a preference that travelled
+// between them would be wrong on one of them every time.
 const SIDE_KEY = 'socrates.sidebar';
-// The width transition in app.css, plus a frame. The pane is measured in
-// characters, so it has to be re-measured once the stage has stopped moving -
-// too early and it fits to a width the sidebar is still in the middle of
-// leaving.
-const SIDE_MS = 200;
 
-// The drawer breakpoint from app.css. Below it the sidebar is a drawer, the
-// collapse control is not on the page, and the rail must never be entered:
-// a drawer that is also a rail is a drawer with nothing in it to read.
+// Below the drawer breakpoint the list is a modal drawer, the toggle is not
+// on the page, and the list is never put away: a drawer that is hidden is a
+// menu button that opens nothing.
 const railAllowed = () => window.matchMedia('(min-width: 901px)').matches;
 
-function sidebarCollapsed() { return document.body.classList.contains('side-collapsed'); }
+function sidebarCollapsed() { return dom.app.hasAttribute('data-drawer-hidden'); }
 
 function showSidebar(collapsed, remember = true) {
   const want = collapsed && railAllowed();
-  setClass(document.body, 'side-collapsed', want);
+  const was = sidebarCollapsed();
+  if (want !== was) {
+    dom.app.toggleAttribute('data-drawer-hidden', want);
+    // Coming back, the drawer slides in from the left (DS App frame).
+    if (!want) M.enter(dom.sidebar);
+  }
   if (dom.sideCollapse) {
     dom.sideCollapse.setAttribute('aria-expanded', want ? 'false' : 'true');
-    const words = want ? 'Expand the sidebar' : 'Collapse the sidebar';
-    dom.sideCollapse.title = words;
+    const words = want ? 'Show the session list' : 'Hide the session list';
+    dom.sideCollapse.setAttribute('data-tip', words);
     dom.sideCollapse.setAttribute('aria-label', words);
   }
-  // What a row shows depends on which shape it is in, so the list is drawn
-  // again rather than patched from the outside.
-  renderList();
   if (remember) {
     try { localStorage.setItem(SIDE_KEY, want ? 'rail' : 'wide'); } catch { /* private window */ }
   }
-  setTimeout(() => { if (state.term) state.term.refit(); }, SIDE_MS);
+  // The pane is measured in characters, so it is fitted again once the
+  // panel has its new width; the terminal follows its own size from there.
+  if (want !== was) requestAnimationFrame(() => { if (state.term) state.term.refit(); });
 }
 
 function restoreSidebar() {
   let saved = '';
   try { saved = localStorage.getItem(SIDE_KEY) || ''; } catch { /* private window */ }
   // The state is applied without writing it back: a phone that is too narrow
-  // for the rail must not overwrite what the desk it syncs nothing with chose.
+  // for it must not overwrite what the desk it syncs nothing with chose.
   showSidebar(saved === 'rail', false);
-  // A window that crosses the drawer breakpoint leaves the rail behind, and
-  // takes it up again on the way back if that is what this device asked for.
+  // A window that crosses the drawer breakpoint brings the list back, and
+  // puts it away again on the way back if that is what this device asked for.
   window.matchMedia('(min-width: 901px)').addEventListener('change', () => {
     let want = '';
     try { want = localStorage.getItem(SIDE_KEY) || ''; } catch { /* private window */ }
@@ -3683,22 +3540,47 @@ function wire() {
   dom.blankIDE.append(agentMark(IDE, 18));
   dom.blankIDE.addEventListener('click', openBlankIDE);
   dom.menuBtn.addEventListener('click', () => {
-    if (document.body.classList.contains('nav-open')) closeNav(); else openNav();
+    if (dom.app.hasAttribute('data-drawer-open')) closeNav(); else openNav();
   });
-  dom.navScrim.addEventListener('click', closeNav);
   if (dom.sideCollapse) {
     dom.sideCollapse.addEventListener('click', () => showSidebar(!sidebarCollapsed()));
   }
-  dom.optionsBtn.addEventListener('click', (event) => openOptionsMenu(event.currentTarget));
+  dom.optionsBtn.addEventListener('click', (event) => openOptions(event.currentTarget));
+  // The two buttons say whether their dialog is open: DS.overlay keeps
+  // aria-expanded for menus, and a dialog's opener says it here.
+  // Once one has gone, DS has put the focus back on its button - and a
+  // button with the focus swallows the keys meant for the pane, so with a
+  // session open the pane takes it back, as it does after a menu.
+  const backToPane = (dialog, button) => dialog.addEventListener('close', () => {
+    button.setAttribute('aria-expanded', 'false');
+    // At once, not after the exit has played: what is typed meanwhile is
+    // for the pane too.
+    paneAfter(button);
+    hideOverlay(dialog).then(() => paneAfter(button));
+  });
+  backToPane(dom.optionsDialog, dom.optionsBtn);
+  backToPane(dom.usageDialog, dom.sessionUsage);
+  dom.optionsDialog.addEventListener('change', (event) => {
+    const input = event.target.closest('[data-option]');
+    if (input) setOption(input.dataset.option, input.checked);
+  });
+  wireList();
   dom.sessionUsage.addEventListener('click', (event) => openUsage(event.currentTarget));
-  // The strip is fitted to the width it has, and that changes with the bar.
-  if (window.ResizeObserver) new ResizeObserver(() => fitUsage()).observe(dom.sessionUsage.closest('.topbar'));
-  else window.addEventListener('resize', fitUsage);
+  // The strip is fitted to the width it has, and that changes with the bar
+  // and with the line it takes on a phone.
+  if (window.ResizeObserver) {
+    const fit = new ResizeObserver(() => fitUsage());
+    fit.observe(dom.topbar);
+    fit.observe(dom.usageLine);
+  } else window.addEventListener('resize', fitUsage);
+  usageNarrow.addEventListener('change', () => { placeUsage(); fitUsage(); });
   // The name is edited where it is read.
   dom.sessionTitle.addEventListener('click', () => {
-    if (state.current) renameSession(state.current);
+    if (state.current) renameSession(state.current, dom.sessionTitle);
   });
-  dom.titleRegen.addEventListener('click', () => retitleSession(state.current));
+  dom.titleRegen.addEventListener('click', () => {
+    if (dom.titleRegen.getAttribute('aria-busy') !== 'true') retitleSession(state.current);
+  });
   dom.sessionOutcome.addEventListener('click', () => showOutcome());
   // The on-screen keyboard, which on a touch screen this button raises and
   // puts away and nothing else does. With no field focused, it is raised for
@@ -3713,7 +3595,11 @@ function wire() {
     try { await api('/api/logout', { method: 'POST' }); } catch { /* going anyway */ }
     location.href = '/login';
   });
-  dom.homeBtn.addEventListener('click', () => {
+  // Home is a link, so a middle click opens it in a tab of its own; a plain
+  // click is the page's.
+  dom.homeBtn.addEventListener('click', (event) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
     if (homeShown()) closeNav(); else showHome();
   });
   window.addEventListener('hashchange', () => {
@@ -3760,7 +3646,7 @@ function wire() {
   dom.termWrap.addEventListener('pointerup', () => {
     if (!state.term) return;
     const active = document.activeElement;
-    if (active && active.closest && active.closest('input, textarea, button, dialog, .menu')
+    if (active && active.closest && active.closest('input, textarea, button, dialog, .ds-menu')
       && !active.classList.contains('xterm-helper-textarea')) return;
     state.term.focus();
   });
@@ -3844,7 +3730,7 @@ async function boot() {
       return (digest && digest.question) || null;
     },
     // A permission the browser answers late lands in a menu still open.
-    changed: () => redrawMenu(),
+    changed: () => syncOptions(),
     // A push wrote the icon and the tray from the set it was counted with;
     // this page may know a newer one.
     pushed: () => badgeWrittenElsewhere(),

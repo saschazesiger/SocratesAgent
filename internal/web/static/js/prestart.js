@@ -26,10 +26,10 @@
 // The settings are saved the same way but without the ceremony: they are a
 // handful of choices, the last one made wins, and a refused one says so.
 
-import { el, toast, infoTip, setClass, onWake } from './api.js';
+import { el, toast, infoTip, onWake } from './api.js';
 import * as harnesses from './harnesses.js';
 import { dictated } from './keyboard.js';
-import { icon } from './ui.js';
+import { iconEl, faces, setFaceLabel, morph } from './ui.js';
 
 // How long a pause in typing is before the text is sent, and before a change
 // of settings is. A setting is one tap; a prompt is a run of keystrokes.
@@ -102,11 +102,12 @@ async function call(method, path, body, timeout = 15000) {
       signal: AbortSignal.timeout(timeout),
     });
   } catch {
-    return { status: 0, data: null };
+    return { status: 0, data: {} };
   }
   if (res.status === 401) {
     location.href = '/login';
-    return { status: 401, data: null };
+    // An empty answer rather than none: the callers read data.error.
+    return { status: 401, data: {} };
   }
   let data = null;
   try { data = await res.json(); } catch { /* an empty or non-JSON body */ }
@@ -272,8 +273,12 @@ function openPanel(ctx, first) {
 
   /* ----------------------------------------------------------- markup */
 
+  // The page: a head that says what this is, the failure of the last start
+  // when there was one, and the two columns - the prompt and Start in the
+  // main one, the time and the settings at the side (under the prompt on a
+  // phone, where the prompt is what the screen is for).
   const textarea = el('textarea', {
-    class: 'ds-input prestart-text', id: 'psPrompt', rows: '14', spellcheck: 'true',
+    class: 'ds-input so-prestart__text', id: 'psPrompt', rows: '14', spellcheck: 'true',
     placeholder: 'What should it do? This is sent as the first prompt the moment the session starts.',
     'aria-describedby': 'psSave',
   });
@@ -285,49 +290,79 @@ function openPanel(ctx, first) {
   // Dictation lands where the cursor is, rather than replacing the prompt
   // with one sentence of it.
   const promptRow = dictated(textarea, textarea, (text) => insertText(text));
-  promptRow.classList.add('prestart-dictate');
-  const saveLine = el('div', { class: 'prestart-save', id: 'psSave', role: 'status', 'aria-live': 'polite' });
-  const conflictBox = el('div', { class: 'prestart-conflict', id: 'psConflict', hidden: true });
-  const failedBox = el('div', { class: 'prestart-failed', id: 'psFailed', hidden: true });
+  promptRow.classList.add('so-prestart__prompt-row');
+  const saveLine = el('p', { class: 'so-prestart__status', id: 'psSave', role: 'status', 'aria-live': 'polite' });
+  const conflictBox = el('div', { class: 'so-prestart__conflict', id: 'psConflict', hidden: true });
+  const failedBox = el('div', { class: 'ds-alert ds-alert--error', id: 'psFailed', role: 'alert', hidden: true });
   const startButton = el('button', {
-    class: 'ds-btn ds-btn--primary prestart-start', type: 'button', id: 'psStart', text: 'Start',
+    class: 'ds-btn ds-btn--primary so-prestart__start', type: 'button', id: 'psStart',
     onclick: () => start(),
   });
-  const keyHint = el('span', { class: 'prestart-key', text: (/Mac|iPhone|iPad/.test(navigator.platform || '') ? '⌘' : 'Ctrl') + '+Enter' });
+  morph(startButton, faces('Start', 'Starting'));
+  const keyHint = el('span', {
+    class: 'ds-meta so-prestart__key',
+    text: (/Mac|iPhone|iPad/.test(navigator.platform || '') ? '⌘' : 'Ctrl') + '+Enter',
+  });
+  const chip = el('span', { class: 'ds-status', id: 'psState' });
 
-  const settingsHost = el('div', { class: 'prestart-settings-form' }, el('div', { class: 'hint', text: 'Loading…' }));
-  const settingsLine = el('div', { class: 'prestart-settings-status hint', id: 'psSettingsStatus', role: 'status' });
+  const settingsHost = el('div', { class: 'so-prestart__settings' }, el('p', { class: 'ds-muted', text: 'Loading…' }));
+  const settingsLine = el('p', { class: 'so-prestart__status', id: 'psSettingsStatus', role: 'status' });
 
   const startAt = el('input', {
     class: 'ds-input', type: 'datetime-local', id: 'psStartAt', 'aria-describedby': 'psStartAtHint',
   });
   const clearAt = el('button', {
-    class: 'ds-btn ds-btn--sm', type: 'button', id: 'psStartAtClear', text: 'Clear', onclick: () => schedule(0),
+    class: 'ds-btn', type: 'button', id: 'psStartAtClear', text: 'Clear', onclick: () => schedule(0),
   });
-  const atHint = el('div', { class: 'hint', id: 'psStartAtHint' });
+  const atHint = el('small', { class: 'ds-field__hint', id: 'psStartAtHint' });
 
-  host.replaceChildren(el('div', { class: 'prestart-scroll' },
-    el('div', { class: 'prestart-inner' },
-      el('div', { class: 'prestart-head' },
-        el('span', { class: 'prestart-badge', html: icon('prestart', 16) + '<span>PreStart</span>' }),
-        el('span', { class: 'prestart-lede', text: 'Nothing runs yet. It starts with these settings and this prompt.' })),
-      el('div', { class: 'prestart-grid' },
-        el('div', { class: 'prestart-main' },
-          el('label', { class: 'prestart-label', for: 'psPrompt', text: 'First prompt' }),
-          promptRow,
-          saveLine,
+  host.replaceChildren(el('div', { class: 'ds-content' },
+    el('div', { class: 'ds-page' },
+      el('div', { class: 'so-page-head' },
+        el('header', { class: 'ds-page-head' },
+          el('h2', { class: 'ds-page-head__title', text: 'PreStart' }),
+          el('p', { class: 'ds-page-head__lead', text: 'Nothing runs yet. It starts with these settings and this prompt.' })),
+        chip),
+      failedBox,
+      el('div', { class: 'so-prestart__grid' },
+        el('section', { class: 'ds-card ds-form so-prestart__main', 'aria-label': 'First prompt' },
+          el('div', { class: 'ds-field' },
+            el('label', { class: 'ds-field__label', for: 'psPrompt', text: 'First prompt' }),
+            promptRow,
+            saveLine),
           conflictBox,
-          failedBox,
-          el('div', { class: 'prestart-actions' }, startButton, keyHint)),
-        el('div', { class: 'prestart-side' },
-          el('div', { class: 'ds-field prestart-schedule', id: 'psScheduleField' },
-            el('label', { for: 'psStartAt', text: 'Start automatically' }),
-            el('div', { class: 'prestart-when' }, startAt, clearAt),
-            atHint),
-          el('h3', { class: 'prestart-side-title', text: 'Settings' }),
-          settingsHost,
-          settingsLine)))));
+          el('div', { class: 'ds-form-actions' }, startButton, keyHint)),
+        el('div', { class: 'so-prestart__side' },
+          el('section', { class: 'ds-card ds-form', 'aria-labelledby': 'psScheduleTitle' },
+            el('h3', { class: 'ds-card__title', id: 'psScheduleTitle', text: 'Start automatically' }),
+            el('div', { class: 'ds-field', id: 'psScheduleField' },
+              el('label', { class: 'ds-field__label', for: 'psStartAt', text: 'Date and time' }),
+              el('div', { class: 'so-field-row' }, startAt, clearAt),
+              atHint)),
+          el('section', { class: 'ds-card so-prestart__settings-card', 'aria-labelledby': 'psSettingsTitle' },
+            el('h3', { class: 'ds-card__title', id: 'psSettingsTitle', text: 'Settings' }),
+            settingsHost,
+            settingsLine))))));
   host.hidden = false;
+
+  // setAtHint is the line under the time: what is set, or why it is not.
+  // An error wears the icon DS gives a field's error, and marks the field.
+  function setAtHint(text, error = false) {
+    atHint.classList.toggle('ds-field__hint--error', error);
+    if (error) startAt.setAttribute('aria-invalid', 'true');
+    else startAt.removeAttribute('aria-invalid');
+    atHint.replaceChildren(...(error ? [iconEl('alertCircle', 16)] : []), text);
+  }
+
+  // drawLine writes one of the two status lines (the prompt's, the
+  // settings'): the words and, for anything but "on its way", an icon, so
+  // that the state is never told by colour alone.
+  function drawLine(line, text, kind, extra) {
+    const glyph = { ok: 'checkCircle', offline: 'wifiOff', error: 'alertCircle', conflict: 'alert' }[kind];
+    line.dataset.kind = kind;
+    line.replaceChildren(...(glyph && text ? [iconEl(glyph, 16)] : []), ...(text ? [el('span', { text })] : []),
+      ...(extra ? [extra] : []));
+  }
 
   /* ------------------------------------------------------------- form */
 
@@ -368,8 +403,7 @@ function openPanel(ctx, first) {
     if (!startAt.value) { schedule(0); return; }
     const at = new Date(startAt.value).getTime();
     if (!Number.isFinite(at) || at <= Date.now() + 5000) {
-      atHint.textContent = 'Pick a time in the future.';
-      setClass(atHint, 'error', true);
+      setAtHint('Pick a time in the future.', true);
       return;
     }
     schedule(at);
@@ -633,17 +667,22 @@ function openPanel(ctx, first) {
     st.conflict = theirs;
     const preview = theirs.text.length > 400 ? theirs.text.slice(0, 400) + '…' : theirs.text;
     conflictBox.replaceChildren(
-      el('p', { class: 'prestart-conflict-title', text: 'This prompt was changed on another device while this one was editing it.' }),
-      el('div', { class: 'prestart-conflict-label', text: 'The other device’s text:' }),
-      el('pre', { class: 'prestart-conflict-text', text: preview || '(empty)' }),
-      el('div', { class: 'prestart-conflict-actions' },
+      el('div', { class: 'ds-alert ds-alert--warning', role: 'alert' },
+        iconEl('alert', 20),
+        el('span', { class: 'ds-alert__text', text: 'This prompt was changed on another device while this one was editing it. Choose which text to keep.' })),
+      el('div', { class: 'so-prestart__theirs' },
+        el('p', { class: 'so-prestart__theirs-label', id: 'psTheirsLabel', text: 'The other device’s text' }),
+        el('pre', { class: 'so-prestart__theirs-text', 'aria-labelledby': 'psTheirsLabel', tabindex: '0', text: preview || '(empty)' })),
+      // Tonal, not filled: Start stays the one filled button of the card,
+      // even while it waits for this choice.
+      el('div', { class: 'ds-form-actions' },
         el('button', {
-          class: 'ds-btn ds-btn--sm', type: 'button', id: 'psUseTheirs', text: 'Use the other device’s text',
-          onclick: () => resolveConflict(false),
+          class: 'ds-btn ds-btn--tonal', type: 'button', id: 'psKeepMine', text: 'Keep mine',
+          onclick: () => resolveConflict(true),
         }),
         el('button', {
-          class: 'ds-btn ds-btn--sm ds-btn--primary', type: 'button', id: 'psKeepMine', text: 'Keep mine',
-          onclick: () => resolveConflict(true),
+          class: 'ds-btn', type: 'button', id: 'psUseTheirs', text: 'Use the other device’s text',
+          onclick: () => resolveConflict(false),
         })));
     conflictBox.hidden = false;
     drawStatus();
@@ -695,13 +734,10 @@ function openPanel(ctx, first) {
       text = 'Saved';
       kind = 'ok';
     }
-    saveLine.textContent = text;
-    saveLine.dataset.kind = kind;
     // The server's own sentence is a fact about the machine, and it goes
     // behind an "i" like every other.
-    if (st.loaded && dirty() && st.error && !st.offline) {
-      saveLine.append(' ', infoTip([st.error], { label: 'Why it was not saved' }));
-    }
+    drawLine(saveLine, text, kind, st.loaded && dirty() && st.error && !st.offline
+      ? infoTip([st.error], { label: 'Why it was not saved' }) : null);
     drawStart();
   }
 
@@ -733,7 +769,7 @@ function openPanel(ctx, first) {
   function schedule(at) {
     st.patch.start_at = at;
     if (!at) startAt.value = '';
-    setClass(atHint, 'error', false);
+    setAtHint(atHint.textContent);
     drawSettingsLine();
     clearTimeout(st.patchTimer);
     st.patchTimer = setTimeout(() => sendPatch(), at ? SETTINGS_DEBOUNCE : 0);
@@ -766,8 +802,7 @@ function openPanel(ctx, first) {
         // saying what is really set.
         if (!st.closed) {
           drawSchedule(true);
-          atHint.textContent = 'Not saved: ' + (res.data.error || 'HTTP ' + res.status);
-          setClass(atHint, 'error', true);
+          setAtHint('Not saved: ' + (res.data.error || 'HTTP ' + res.status), true);
         }
       } else {
         st.patchError = res.data.error || 'HTTP ' + res.status;
@@ -786,8 +821,7 @@ function openPanel(ctx, first) {
     if (st.patchError) { text = 'Not saved: ' + st.patchError; kind = 'error'; }
     else if (st.patchOffline) { text = 'Offline – the settings are saved when the connection is back.'; kind = 'offline'; }
     else if (Object.keys(st.patch).length || st.patching) text = 'Saving…';
-    settingsLine.textContent = text;
-    settingsLine.dataset.kind = kind;
+    drawLine(settingsLine, text, kind);
   }
 
   /* ---------------------------------------------------------- schedule */
@@ -800,13 +834,13 @@ function openPanel(ctx, first) {
     // before it anyway.
     startAt.min = localInput(Date.now());
     clearAt.hidden = !at && !startAt.value;
-    setClass(atHint, 'error', false);
     const now = Date.now();
-    if (!at) atHint.textContent = 'Not scheduled. Pick a date and time and it starts by itself then.';
+    if (!at) setAtHint('Not scheduled. Pick a date and time and it starts by itself then.');
     else if (at > now) {
-      atHint.textContent = 'Starts by itself ' + inWords(at - now) + ' (' + new Date(at).toLocaleString(undefined,
-        { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) + ').';
-    } else atHint.textContent = 'Due now – starting…';
+      setAtHint('Starts by itself ' + inWords(at - now) + ' (' + new Date(at).toLocaleString(undefined,
+        { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) + ').');
+    } else setAtHint('Due now – starting…');
+    drawChip();
     watchDue(at);
   }
 
@@ -835,14 +869,33 @@ function openPanel(ctx, first) {
     failedBox.hidden = !reason;
     if (!reason) { failedBox.replaceChildren(); return; }
     failedBox.replaceChildren(
-      el('span', { text: 'The last start did not work. Nothing ran; the settings and the prompt are kept.' }),
-      infoTip([reason], { label: 'Why it did not start', bubbleClass: 'mono' }));
+      iconEl('alertCircle', 20),
+      el('span', { class: 'ds-alert__text', text: 'The last start did not work. Nothing ran; the settings and the prompt are kept.' }),
+      infoTip([reason], { label: 'Why it did not start', code: true }));
+    drawChip();
+  }
+
+  // drawChip is the status chip in the head: what kind of waiting this is.
+  // Icon and word, never colour alone.
+  function drawChip() {
+    const at = Number(session.start_at) || 0;
+    let kind = '';
+    let glyph = 'prestart';
+    let text = 'Not started';
+    if (session.fail_reason) { kind = 'error'; glyph = 'alertCircle'; text = 'Start failed'; }
+    else if (at) { glyph = 'clock'; text = 'Starts ' + whenShort(at); }
+    chip.className = kind ? 'ds-status ds-status--' + kind : 'ds-status';
+    chip.replaceChildren(iconEl(glyph, 16), el('span', { text }));
   }
 
   function drawStart() {
     startButton.disabled = st.starting || !st.loaded || !!st.conflict || st.tooLong;
-    startButton.textContent = st.starting ? 'Starting…' : (Number(session.start_at) ? 'Start now' : 'Start');
-    setClass(startButton, 'is-busy', st.starting);
+    setFaceLabel(startButton, Number(session.start_at) ? 'Start now' : 'Start');
+    // Busy shows the spinner face (after DS's loader delay, so a quick start
+    // shows nothing) and blocks the button; the outcome is said by a toast
+    // or by the terminal that takes the panel's place.
+    if (st.starting) startButton.setAttribute('aria-busy', 'true');
+    else startButton.removeAttribute('aria-busy');
   }
 
   async function start() {

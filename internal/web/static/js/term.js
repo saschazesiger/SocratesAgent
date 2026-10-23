@@ -31,6 +31,19 @@ export const LIGHT_THEME = {
   brightCyan: '#22a4ae', brightWhite: '#9b9ea6',
 };
 
+// themeFor is LIGHT_THEME on the ground the stylesheet gives the pane
+// (--so-term-bg), so the canvas and the white around it are one surface and
+// no seam shows where the last whole cell ends. xterm needs a resolved colour,
+// which the computed value of the custom property is.
+function themeFor(host) {
+  let ground = '';
+  try { ground = getComputedStyle(host).getPropertyValue('--so-term-bg').trim(); } catch { /* not in a page */ }
+  // xterm parses hex and rgb() only; anything else (a color-mix(), a
+  // light-dark()) keeps the palette's white rather than an unreadable ground.
+  if (!/^(#[0-9a-f]{3,8}|rgba?\()/i.test(ground)) return LIGHT_THEME;
+  return { ...LIGHT_THEME, background: ground, cursorAccent: ground };
+}
+
 // The stack the terminal is drawn in. xterm.js measures a character cell, so
 // it needs a resolved font list rather than a var() that means nothing to its
 // measuring canvas.
@@ -104,7 +117,7 @@ export function measurePane(host, opts = {}) {
     fontFamily: MONO,
     fontSize: opts.fontSize || 14,
     lineHeight: 1.15,
-    theme: LIGHT_THEME,
+    theme: themeFor(host),
   });
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
@@ -790,7 +803,7 @@ export function createTerm(host, opts = {}) {
     macOptionIsMeta: true,
     macOptionClickForcesSelection: true, // Alt-drag on a Mac is xterm's own selection, as Shift-drag is elsewhere
     windowOptions: { getWinSizeChars: true, getWinSizePixels: true },
-    theme: LIGHT_THEME,
+    theme: themeFor(host),
   });
 
   term.loadAddon(new Unicode11Addon.Unicode11Addon());

@@ -20,7 +20,8 @@
 // recording of a recording, so a second caller is answered with nothing
 // rather than with a second microphone.
 
-import { el, toast, setClass, errorMessage, fmtClock } from './api.js';
+import { el, toast, errorMessage, fmtClock } from './api.js';
+import { showOverlay, hideOverlay } from './ui.js';
 import { dictateOnce } from './voice.js';
 
 // How many bars the level meter has, and how far a frame may fall. The decay
@@ -51,15 +52,11 @@ function buildMeter() {
   if (!host) return;
   const plain = calm.matches;
   const count = plain ? 1 : METER_BARS;
-  setClass(host, 'plain', plain);
+  host.toggleAttribute('data-plain', plain);
   if (bars.length === count && host.childNodes.length === count) return;
-  host.innerHTML = '';
   bars = [];
-  for (let i = 0; i < count; i += 1) {
-    const bar = el('span', { class: 'rec-bar' });
-    bars.push(bar);
-    host.append(bar);
-  }
+  for (let i = 0; i < count; i += 1) bars.push(el('span', { class: 'so-meter__bar' }));
+  host.replaceChildren(...bars);
   levels = new Array(count).fill(0);
 }
 
@@ -159,7 +156,7 @@ function setPhase(next) {
 function closeSheet() {
   stopMeter();
   const sheet = node('recSheet');
-  if (sheet && sheet.open) sheet.close();
+  if (sheet && sheet.open) hideOverlay(sheet);
 }
 
 /**
@@ -183,21 +180,18 @@ export function mountRecSheet() {
       setPhase('transcribing');
       stopMeter();
       ends.stop();
-      if (sheet && sheet.open) sheet.close();
+      if (sheet && sheet.open) hideOverlay(sheet);
     });
   }
   if (cancel) cancel.addEventListener('click', () => { if (dictation) dictation.cancel(); });
   if (sheet) {
-    // Escape and a tap on the backdrop are the same answer as Cancel: a sheet
-    // that closed while the microphone stayed open would be a recording
-    // nobody could see and nobody could stop.
-    sheet.addEventListener('cancel', () => { if (dictation) dictation.cancel(); });
+    // Escape and a tap on the backdrop close the dialog (DS.overlay), and a
+    // close is the same answer as Cancel: a sheet that closed while the
+    // microphone stayed open would be a recording nobody could see and nobody
+    // could stop. Send has already let go of the recording when it closes.
     sheet.addEventListener('close', () => {
       stopMeter();
       if (dictation) dictation.cancel();
-    });
-    sheet.addEventListener('click', (event) => {
-      if (event.target === sheet && dictation) dictation.cancel();
     });
   }
   buildMeter();
@@ -229,7 +223,7 @@ export async function record({ onError } = {}) {
       onReady: (ends) => {
         dictation = ends;
         const sheet = node('recSheet');
-        if (sheet && !sheet.open) sheet.showModal();
+        if (sheet && !sheet.open) showOverlay(sheet);
         startMeter(ends.analyser);
         setPhase('recording');
       },
@@ -288,16 +282,20 @@ export function mountDictation(ctx) {
     const btn = dom.micBtn;
     if (!btn) return;
     const session = ctx.current();
-    btn.hidden = !session;
+    // An editor is typed into with its own keys; there is no pane to speak
+    // into.
+    btn.hidden = !session || session.harness === 'vscode';
     // The pill is shut while a recording is being opened, is running, or is
     // being turned into words: all three are one recording, and a second tap
     // in any of them would start a second microphone. It is shut with no
     // connection too, because transcribing is a request to the server.
-    btn.disabled = !session || !ctx.live() || phase !== 'idle';
-    const words = phase === 'transcribing' ? 'Transcribing…' : 'Speak';
-    if (dom.micText) dom.micText.textContent = words;
-    btn.title = words;
-    btn.setAttribute('aria-label', words);
+    // Transcribing is the button's busy face instead (the spinner and the
+    // word), which blocks the pointer as well; a disabled button would grey
+    // the spinner out. The resting face keeps saying Speak.
+    btn.disabled = !session || !ctx.live() || (phase !== 'idle' && phase !== 'transcribing');
+    if (phase === 'transcribing') btn.setAttribute('aria-busy', 'true');
+    else btn.removeAttribute('aria-busy');
+    btn.setAttribute('aria-label', phase === 'transcribing' ? 'Transcribing…' : 'Speak');
   }
 
   if (dom.micBtn) dom.micBtn.addEventListener('click', () => dictate());

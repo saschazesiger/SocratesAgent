@@ -1,1 +1,435 @@
-/* so-stage.css: project components of the stage: terminal pane, notice, ticker, key bar, recording and copy dialogs, IDE pane (owner WP2). Tokens only; see MIGRATION.md §3.4. */
+/*
+ * so-stage.css: the stage of the session page, with the prefix so-. Tokens
+ * only (--ds-* and the --so-* of theme.css), unlayered, and no .ds-* component
+ * is restyled: where one needs to differ, its hooks are set.
+ *
+ *   .so-stage          the area under the top bar: the pane, or PreStart, or
+ *                      Home; [data-ide] while it holds an editor
+ *   .so-pane           the terminal pane; [data-stale] while the screen is old,
+ *                      [data-dropping] while a file is held over it
+ *   .so-pane__host     where xterm (or the IDE frame) is mounted
+ *   .so-pane__cover    the ds-dialog--contained that blocks a pane that ended,
+ *                      failed or is coming back
+ *   .so-pane__detail   the one plain fact under the cover's sentence
+ *   .so-pane__wait     the cover's loader and sentence while a pane comes back
+ *   .so-pane__lines    the notice and the ticker, over the top of the pane
+ *   .so-notice         the dismissible one-line notice (a ds-alert)
+ *   .so-ticker         one line of what is happening now (a ds-alert)
+ *   .so-ticker__line   its slot, which DS.motion.roll() turns over
+ *   .so-keybar         the keys a phone keyboard does not have
+ *   .so-key            one of them; aria-pressed while a modifier is armed,
+ *                      data-lock (and a lock glyph) while it is locked
+ *   .so-transfer       copy, paste and upload in the top bar
+ *   .so-kb-copy        the keyboard switch's copy over the dialog on top
+ *   .so-kb-proxy       the field the switch raises the keyboard through
+ *   .so-mic            a field's own microphone (keyboard.js micButton)
+ *   .so-rec            the recording dialog, .so-meter its level meter,
+ *                      .so-rec__action its two big endings
+ *   .so-copy           the copy dialog, .so-copy__text the pane's text
+ *   .so-ide__frame     the VS Code frame, and .so-ide__loading the card that
+ *                      covers it until the workbench is drawn
+ */
+
+/* ── The stage and the pane ──────────────────────────────────────────── */
+
+/* The stage takes all the room the column leaves under the bar. */
+.so-stage {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* The pane is white like the panel around it, so the part of a cell that a
+   fit leaves over at the right and the bottom is no gap anybody can see. It
+   is the positioned container its cover dialog covers. */
+.so-pane {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  padding: var(--so-pane-pad-y) var(--so-pane-pad-x);
+  overflow: hidden;
+  background: var(--so-term-bg);
+  transition: opacity var(--ds-dur-medium) var(--ds-ease-in-out);
+}
+
+/* The connection is down and what is on screen is old. The pane is not made
+   read only - what is typed is queued and delivered on reconnect - but nobody
+   should mistake an old screen for a live one. */
+.so-pane[data-stale] {
+  opacity: var(--ds-state-stale);
+}
+
+.so-pane[data-stale] .xterm {
+  cursor: not-allowed;
+}
+
+/* A file held over the pane, about to be uploaded into the session. */
+.so-pane[data-dropping] {
+  outline: var(--ds-focus-width) dashed var(--ds-primary);
+  outline-offset: calc(-1 * var(--ds-space-2));
+}
+
+/* A finger dragged over the pane is a scroll of the terminal, so the browser is
+   told not to take the vertical axis for a pan of the page - term.js turns the
+   drag into the wheel xterm understands. Pinch stays where somebody needs it.
+   A long press selects in the pane, through term.js; the browser's own callout
+   and text selection would sit on top of it. */
+.so-pane__host {
+  width: 100%;
+  height: 100%;
+  touch-action: pan-x pinch-zoom;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.so-pane__host .xterm {
+  height: 100%;
+}
+
+/* xterm paints its ground from the theme term.js reads off --so-term-bg; the
+   screen behind the canvas says the same, so a frame drawn late shows no
+   seam. */
+.so-pane__host .xterm-screen,
+.so-pane__host .xterm-viewport {
+  background-color: var(--so-term-bg);
+}
+
+/* ── The cover ───────────────────────────────────────────────────────── */
+
+/* A veil of the pane's own white rather than the window's scrim: what is
+   behind it is the session's last screen, and it should still be readable. */
+.so-pane__cover {
+  --ds-dialog-scrim: var(--so-pane-veil);
+  --ds-dialog-width: var(--so-cover-width);
+}
+
+/* Why a pane ended, as the one fact the cover is raised for. */
+.so-pane__detail {
+  margin: 0;
+  color: var(--ds-text-2);
+  font: var(--so-font-code);
+  overflow-wrap: anywhere;
+}
+
+/* The pane coming back after a restart: the shape loader and its sentence. */
+.so-pane__wait {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-4);
+}
+
+/* ── The notice and the ticker ───────────────────────────────────────── */
+
+/* The stack of lines over the top of the pane. It does not take the taps that
+   fall between them - the terminal is still under there and still has to be
+   clickable. */
+.so-pane__lines {
+  position: absolute;
+  top: var(--so-pane-pad-y);
+  inset-inline: var(--so-pane-pad-x);
+  z-index: var(--ds-z-raised);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+  pointer-events: none;
+}
+
+.so-pane__lines > * {
+  pointer-events: auto;
+}
+
+/* The notice's sentence takes the room; its "i", a Cancel and the close
+   button keep their size at the end of the line. */
+.so-notice > .ds-btn {
+  flex: none;
+}
+
+/* One line, always: a long status is cut, never wrapped into a log. */
+.so-ticker__line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+
+.so-ticker__line > * {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── The key bar ─────────────────────────────────────────────────────── */
+
+/* A phone that raises its keyboard shrinks only the visual viewport, so the
+   bottom of a frame sized to the window - the key bar - would sit under the
+   keyboard. keybar.js followViewport() writes what can be seen into
+   --so-app-h; without it the frame keeps DS's own height. */
+.ds-app.so-app {
+  height: var(--so-app-h, 100dvh);
+}
+
+/* One row, scrolled sideways with a thumb. The bar is the bottom of the page,
+   so it is what keeps its keys clear of the home bar and a rounded corner. */
+.so-keybar {
+  flex: none;
+  display: flex;
+  gap: var(--ds-space-2);
+  padding:
+    var(--ds-space-2)
+    max(var(--ds-space-4), env(safe-area-inset-right))
+    max(var(--ds-space-2), env(safe-area-inset-bottom))
+    max(var(--ds-space-4), env(safe-area-inset-left));
+  overflow-x: auto;
+  border-top: 1px solid var(--ds-line);
+  background: var(--ds-surface);
+  scrollbar-width: none;
+}
+
+.so-keybar::-webkit-scrollbar {
+  display: none;
+}
+
+.so-key {
+  --ds-btn-height: var(--so-key-height);
+  --ds-btn-padding-x: var(--ds-space-3);
+  flex: none;
+  min-inline-size: var(--so-key-min-width);
+}
+
+/* Touch mode: a key a thumb finds without looking. */
+.ds-theme.so-touch .so-key {
+  --ds-btn-height: var(--so-key-height-touch);
+}
+
+/* ── Speak and Keyboard ──────────────────────────────────────────────── */
+
+/* The two text buttons of the bar: as tall as a thumb wants (48px in touch
+   mode), and on a phone in their short form - "Keys", and a Transcribing face
+   that is only its spinner - so the session's name keeps its room. */
+.so-talk {
+  --ds-btn-height: var(--so-talk-height);
+}
+
+.ds-theme.so-touch .so-talk {
+  --ds-btn-height: var(--so-talk-height-touch);
+}
+
+.so-talk__short {
+  display: none;
+}
+
+@media (max-width: 600px) {
+  .so-talk {
+    --ds-btn-padding-x: var(--ds-space-2);
+    min-inline-size: var(--so-talk-height);
+  }
+
+  .ds-theme.so-touch .so-talk {
+    min-inline-size: var(--so-talk-height-touch);
+  }
+
+  .so-talk .so-talk__long {
+    display: none;
+  }
+
+  .so-talk .so-talk__short {
+    display: inline;
+  }
+}
+
+/* ── Copy, paste and upload ──────────────────────────────────────────── */
+
+.so-transfer {
+  display: flex;
+  flex: none;
+  align-items: center;
+}
+
+/* A phone's bar is full, so the three float over the top corner of the pane:
+   one tap away, and over the oldest lines rather than the prompt. The notice
+   and the ticker start under them, so a close button is never beneath them. */
+@media (max-width: 600px) {
+  .so-transfer {
+    position: absolute;
+    top: calc(100% + var(--ds-space-2));
+    inset-inline-end: max(var(--ds-space-4), env(safe-area-inset-right));
+    z-index: var(--ds-z-raised);
+    padding: var(--ds-space-1);
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius-action);
+    background: var(--ds-surface);
+    box-shadow: var(--ds-elev-2);
+  }
+
+  /* Under the usage line when it is there, so neither covers the other; the
+     pane starts below that line too, so the notice's room is the same. */
+  .ds-app:has(.so-usage-line:not([hidden])) .so-transfer {
+    top: calc(100% + var(--so-usage-line-height) + var(--ds-space-2));
+  }
+
+  .ds-app:has(.so-transfer:not([hidden])) .so-pane__lines {
+    top: var(--so-transfer-float-room);
+  }
+
+  .ds-theme.so-touch .ds-app:has(.so-transfer:not([hidden])) .so-pane__lines {
+    top: var(--so-transfer-float-room-touch);
+  }
+}
+
+/* ── The keyboard switch ─────────────────────────────────────────────── */
+
+/* Its copy in whichever dialog is on top: laid over the bar's own button by
+   keyboard.js, and in the corner when the bar has none on screen. It stands
+   on the scrim, so it carries a ground of its own. */
+.so-kb-copy {
+  --ds-btn-bg: var(--ds-surface);
+  position: fixed;
+  top: max(var(--ds-space-3), env(safe-area-inset-top));
+  right: max(var(--ds-space-3), env(safe-area-inset-right));
+  z-index: var(--ds-z-raised);
+  margin: 0;
+}
+
+/* The field the switch raises the keyboard through on its way to the real one.
+   Focusable, so neither hidden nor display: none; out of sight, and at the
+   16px field size so a phone does not zoom the page for it. */
+.so-kb-proxy {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  font: var(--ds-font-input);
+  pointer-events: none;
+}
+
+/* A field's microphone keeps its size beside the field it fills. */
+.so-mic {
+  flex: none;
+}
+
+/* ── The recording ───────────────────────────────────────────────────── */
+
+.so-rec {
+  --ds-dialog-width: var(--so-rec-width);
+}
+
+/* Both endings are large enough to be hit without looking, because that is
+   when they are hit. */
+.so-rec__actions {
+  display: flex;
+  gap: var(--ds-space-3);
+}
+
+.so-rec__action {
+  --ds-btn-height: var(--so-rec-action-height);
+  flex: 1 1 0;
+}
+
+/* The level meter: the newest reading in the middle, the older ones walking
+   out to both edges (dictate.js sets each bar's scale every frame, from the
+   recording's own analyser, so no transition of its own). */
+.so-meter {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--so-meter-gap);
+  height: var(--so-meter-height);
+}
+
+.so-meter__bar {
+  width: var(--so-meter-bar);
+  height: 100%;
+  border-radius: var(--ds-radius-action);
+  background: var(--ds-primary);
+  transform: scaleY(var(--so-meter-rest));
+}
+
+/* Where motion is not wanted the level is one bar that fills, refreshed a
+   few times a second rather than every frame. */
+.so-meter[data-plain] {
+  height: var(--so-meter-plain-height);
+}
+
+.so-meter[data-plain] .so-meter__bar {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  background: var(--ds-accent);
+  transform: none;
+}
+
+.so-meter[data-plain] .so-meter__bar::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--level, 0%);
+  border-radius: inherit;
+  background: var(--ds-primary);
+}
+
+/* ── The copy dialog ─────────────────────────────────────────────────── */
+
+/* Wider than an ordinary dialog because terminal lines are, and the lines
+   are kept as the pane has them. */
+.so-copy {
+  --ds-dialog-width: var(--so-copy-width);
+}
+
+.so-copy__text {
+  --ds-input-font: var(--so-font-code);
+  height: var(--so-copy-height);
+  resize: none;
+  white-space: pre;
+  overflow: auto;
+}
+
+/* ── The IDE ─────────────────────────────────────────────────────────── */
+
+/* An editor fills the pane to its edges and has no lines over it: it draws
+   its own notifications. */
+.so-stage[data-ide] .so-pane {
+  padding: 0;
+}
+
+.so-stage[data-ide] .so-pane__lines {
+  display: none;
+}
+
+.so-ide__frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--ds-surface);
+}
+
+/* code-server answers /healthz several seconds before the workbench has
+   painted anything, so the card stays on top of the frame until the workbench
+   is really there: a blank white rectangle is what reads as broken. */
+.so-ide__loading {
+  position: absolute;
+  inset: 0;
+  z-index: var(--ds-z-raised);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ds-space-4);
+  padding: var(--ds-space-6);
+  background: var(--ds-surface);
+  color: var(--ds-text-2);
+  font: var(--ds-font-body);
+  text-align: center;
+}
+
+.so-ide__loading > p {
+  margin: 0;
+}

@@ -26,167 +26,207 @@
 <script src="/static/vendor/dashboard-style/ds.js" defer></script>
 </head>
 <body>
-<main class="auth">
-  <div class="auth-card">
-    <img class="so-logo" src="/static/img/logo.png" alt="" width="42" height="42">
+<main class="so-auth">
+  <div class="ds-card so-auth__card">
+    <img class="so-logo" src="/static/img/logo.png" alt="" width="32" height="32">
+
+    <!-- Where setup is. The waiting view of a configured bucket is not a
+         step of anything, so it goes without. -->
+    <ol class="so-steps" id="steps" aria-label="Setup steps" hidden>
+      <li id="stepStorage">Storage</li>
+      <li id="stepPassword">Password</li>
+    </ol>
 
     <!-- Step 1: where the state is kept. Shown while the server is in
          connect mode: either nothing is configured yet (the form), or a
          configured bucket cannot be used right now (the status). -->
-    <section id="storageStep" hidden>
-      <div class="step" id="storageStepLabel">Step 1 of 2 · Storage</div>
-      <h1 id="storageTitle">Connect storage</h1>
-      <p class="sub" id="storageSub">Socrates keeps its settings, password, sign-ins and session list in an S3 bucket, encrypted on this machine before anything leaves it. A new machine pointed at the same bucket comes back exactly where you left off.</p>
+    <section id="storageStep" aria-labelledby="storageTitle" hidden>
+      <header class="ds-page-head">
+        <h1 class="ds-page-head__title" id="storageTitle">Connect storage</h1>
+        <p class="ds-page-head__lead" id="storageSub">Socrates keeps its settings, password, sign-ins and session list in an S3 bucket, encrypted on this machine before anything leaves it. A new machine pointed at the same bucket comes back exactly where you left off.</p>
+      </header>
 
-      <div id="storageStatus" hidden>
-        <div class="engine-status" id="storageState">
-          <span class="state-dot"></span>
-          <span class="state-label">Checking…</span>
+      <div class="so-status" id="storageStatus" hidden>
+        <div class="so-status__row">
+          <span id="storageState"><span class="ds-status ds-status--running"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>Checking</span></span></span>
+          <span id="storageWhere"></span>
         </div>
-        <div class="storage-where" id="storageWhere"></div>
-        <div class="notice" id="storageReason"></div>
-        <div id="takeoverBox" hidden>
-          <div class="divider"></div>
+        <div id="storageReason"></div>
+        <div class="ds-subsection" id="takeoverBox" hidden>
           <div class="ds-field">
-            <label for="takeoverPassword">Socrates password</label>
-            <input class="ds-input" type="password" id="takeoverPassword" autocomplete="current-password">
-            <div class="hint">Taking over stops the other Socrates from writing to the bucket. It keeps running, but nothing it does is saved any more. Use this when that machine is gone or you are moving away from it.</div>
+            <label class="ds-field__label" for="takeoverPassword">Socrates password</label>
+            <input class="ds-input" type="password" id="takeoverPassword" autocomplete="current-password" aria-describedby="takeoverPasswordError takeoverPasswordHint">
+            <small class="ds-field__hint ds-field__hint--error" id="takeoverPasswordError" hidden></small>
+            <small class="ds-field__hint" id="takeoverPasswordHint">Taking over stops the other Socrates from writing to the bucket. It keeps running, but nothing it does is saved any more. Use this when that machine is gone or you are moving away from it.</small>
           </div>
-          <button class="ds-btn ds-btn--primary" type="button" id="takeoverBtn">Take over this bucket</button>
+          <button class="ds-btn ds-btn--primary so-auth__submit" type="button" id="takeoverBtn">
+            <span class="ds-btn__faces">
+              <span class="ds-btn__face">Take over this bucket</span>
+              <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Taking over</span>
+            </span>
+          </button>
         </div>
-        <button class="ds-btn" type="button" id="retryBtn">Retry now</button>
-        <div class="hint" id="retryHint" style="margin-top:8px"></div>
+        <div class="so-status__row">
+          <button class="ds-btn" type="button" id="retryBtn" data-icon="sync" data-icon-size="16">
+            <span class="ds-btn__faces">
+              <span class="ds-btn__face">Retry now</span>
+              <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Retrying</span>
+            </span>
+          </button>
+          <p class="ds-meta" id="retryHint" aria-live="polite"></p>
+        </div>
       </div>
 
-      <form id="storageForm" hidden autocomplete="off">
+      <form class="ds-form" id="storageForm" hidden autocomplete="off" novalidate>
         <div class="ds-field">
-          <label for="s3Endpoint">Endpoint</label>
-          <input class="ds-input mono" type="text" id="s3Endpoint" spellcheck="false" placeholder="https://hel1.your-objectstorage.com">
-          <div class="hint">Any S3-compatible store: Hetzner Object Storage (https://&lt;location&gt;.your-objectstorage.com), Cloudflare R2 (https://&lt;account&gt;.r2.cloudflarestorage.com), MinIO, or leave it empty for AWS S3.</div>
+          <label class="ds-field__label" for="s3Endpoint">Endpoint</label>
+          <input class="ds-input" type="text" id="s3Endpoint" spellcheck="false" placeholder="https://hel1.your-objectstorage.com" aria-describedby="s3EndpointHint">
+          <small class="ds-field__hint" id="s3EndpointHint">Any S3-compatible store: Hetzner Object Storage (https://&lt;location&gt;.your-objectstorage.com), Cloudflare R2 (https://&lt;account&gt;.r2.cloudflarestorage.com), MinIO, or leave it empty for AWS S3.</small>
         </div>
         <div class="ds-form-grid ds-form-grid--2">
           <div class="ds-field">
-            <label for="s3Region">Region</label>
-            <input class="ds-input mono" type="text" id="s3Region" spellcheck="false" placeholder="us-east-1">
-            <div class="hint">hel1, eu-central-1, auto for R2.</div>
+            <label class="ds-field__label" for="s3Region">Region</label>
+            <input class="ds-input" type="text" id="s3Region" spellcheck="false" placeholder="us-east-1" aria-describedby="s3RegionHint">
+            <small class="ds-field__hint" id="s3RegionHint">hel1, eu-central-1, auto for R2.</small>
           </div>
           <div class="ds-field">
-            <label for="s3Bucket">Bucket</label>
-            <input class="ds-input mono" type="text" id="s3Bucket" spellcheck="false" required>
+            <label class="ds-field__label" for="s3Bucket">Bucket</label>
+            <input class="ds-input" type="text" id="s3Bucket" spellcheck="false" required aria-describedby="s3BucketError">
+            <small class="ds-field__hint ds-field__hint--error" id="s3BucketError" hidden></small>
           </div>
         </div>
         <div class="ds-field">
-          <label for="s3Prefix">Prefix <span style="font-weight:400;color:var(--text-faint)">· optional</span></label>
-          <input class="ds-input mono" type="text" id="s3Prefix" spellcheck="false" placeholder="socrates/">
-          <div class="hint">A folder inside the bucket, to share one bucket between installations. Empty uses the bucket root.</div>
+          <label class="ds-field__label" for="s3Prefix">Prefix <span class="so-optional">· optional</span></label>
+          <input class="ds-input" type="text" id="s3Prefix" spellcheck="false" placeholder="socrates/" aria-describedby="s3PrefixHint">
+          <small class="ds-field__hint" id="s3PrefixHint">A folder inside the bucket, to share one bucket between installations. Empty uses the bucket root.</small>
         </div>
         <div class="ds-field">
-          <label for="s3Key">Access key ID</label>
-          <input class="ds-input mono" type="text" id="s3Key" spellcheck="false" required>
+          <label class="ds-field__label" for="s3Key">Access key ID</label>
+          <input class="ds-input" type="text" id="s3Key" spellcheck="false" required aria-describedby="s3KeyError">
+          <small class="ds-field__hint ds-field__hint--error" id="s3KeyError" hidden></small>
         </div>
         <div class="ds-field">
-          <label for="s3Secret">Secret access key</label>
-          <input class="ds-input mono" type="password" id="s3Secret" autocomplete="off" required>
+          <label class="ds-field__label" for="s3Secret">Secret access key</label>
+          <input class="ds-input" type="password" id="s3Secret" autocomplete="off" required aria-describedby="s3SecretError">
+          <small class="ds-field__hint ds-field__hint--error" id="s3SecretError" hidden></small>
         </div>
         <div class="ds-field">
-          <div class="row"><label class="switch"><input type="checkbox" id="s3PathStyle" checked><span class="track"></span><span>Path-style addressing</span></label></div>
-          <div class="hint">On for Hetzner, MinIO and most self-hosted stores. AWS works either way.</div>
-        </div>
-        <div class="divider"></div>
-        <div class="ds-field">
-          <label for="s3Passphrase">Encryption passphrase</label>
-          <input class="ds-input" type="password" id="s3Passphrase" autocomplete="new-password" required>
-          <div class="hint">Everything in the bucket is encrypted with a key made from this passphrase. It stays on this machine; the bucket only ever sees ciphertext. <strong>Lose it and the bucket cannot be read by anyone</strong> — keep it somewhere safe. For an existing bucket, enter the passphrase it was set up with.</div>
+          <label class="ds-check"><input type="checkbox" id="s3PathStyle" checked aria-describedby="s3PathStyleHint"><span>Path-style addressing</span></label>
+          <small class="ds-field__hint" id="s3PathStyleHint">On for Hetzner, MinIO and most self-hosted stores. AWS works either way.</small>
         </div>
 
-        <div id="confirmBox" hidden>
+        <div class="ds-subsection">
           <div class="ds-field">
-            <label for="s3Confirm">Repeat the passphrase</label>
-            <input class="ds-input" type="password" id="s3Confirm" autocomplete="new-password">
-            <div class="hint">This bucket holds no Socrates state yet, so the passphrase is about to be used for the first time. It cannot be changed or recovered later.</div>
+            <label class="ds-field__label" for="s3Passphrase">Encryption passphrase</label>
+            <input class="ds-input" type="password" id="s3Passphrase" autocomplete="new-password" required aria-describedby="s3PassphraseError s3PassphraseHint">
+            <small class="ds-field__hint ds-field__hint--error" id="s3PassphraseError" hidden></small>
+            <small class="ds-field__hint" id="s3PassphraseHint">Everything in the bucket is encrypted with a key made from this passphrase. It stays on this machine; the bucket only ever sees ciphertext. <strong>Lose it and the bucket cannot be read by anyone</strong> — keep it somewhere safe. For an existing bucket, enter the passphrase it was set up with.</small>
+          </div>
+
+          <div class="ds-field" id="confirmBox" hidden>
+            <label class="ds-field__label" for="s3Confirm">Repeat the passphrase</label>
+            <input class="ds-input" type="password" id="s3Confirm" autocomplete="new-password" aria-describedby="s3ConfirmError s3ConfirmHint">
+            <small class="ds-field__hint ds-field__hint--error" id="s3ConfirmError" hidden></small>
+            <small class="ds-field__hint" id="s3ConfirmHint">This bucket holds no Socrates state yet, so the passphrase is about to be used for the first time. It cannot be changed or recovered later.</small>
+          </div>
+
+          <div class="ds-field" id="localPasswordBox" hidden>
+            <label class="ds-field__label" for="s3LocalPassword">Socrates password of this machine</label>
+            <input class="ds-input" type="password" id="s3LocalPassword" autocomplete="current-password" aria-describedby="s3LocalPasswordError s3LocalPasswordHint">
+            <small class="ds-field__hint ds-field__hint--error" id="s3LocalPasswordError" hidden></small>
+            <small class="ds-field__hint" id="s3LocalPasswordHint">This machine already has a Socrates installation with a password. Connecting it to a bucket uploads it there, or replaces it with what the bucket holds, so it takes that password.</small>
           </div>
         </div>
 
-        <div id="localPasswordBox" hidden>
-          <div class="ds-field">
-            <label for="s3LocalPassword">Socrates password of this machine</label>
-            <input class="ds-input" type="password" id="s3LocalPassword" autocomplete="current-password">
-            <div class="hint">This machine already has a Socrates installation with a password. Connecting it to a bucket uploads it there, or replaces it with what the bucket holds, so it takes that password.</div>
-          </div>
-        </div>
-
-        <div class="choice" id="conflictBox" hidden>
+        <div class="ds-card ds-card--filled so-choice" id="conflictBox" hidden>
           <p id="conflictText"></p>
-          <button class="ds-btn" type="button" id="useBucket">Use the bucket (discard this machine's state)</button>
-          <button class="ds-btn" type="button" id="overwriteBucket">Overwrite the bucket with this installation</button>
+          <button class="ds-btn" type="button" id="useBucket">Keep the bucket's installation</button>
+          <button class="ds-btn" type="button" id="overwriteBucket">Overwrite the bucket</button>
         </div>
 
-        <div class="choice" id="leaseBox" hidden>
+        <div class="ds-card ds-card--filled so-choice" id="leaseBox" hidden>
           <p id="leaseText"></p>
-          <div class="ds-field" style="margin-bottom:0">
-            <label for="s3TakeoverPassword">Socrates password</label>
-            <input class="ds-input" type="password" id="s3TakeoverPassword" autocomplete="current-password">
-            <div class="hint">The password of the installation in the bucket. Taking over stops the other Socrates from writing to it.</div>
+          <div class="ds-field">
+            <label class="ds-field__label" for="s3TakeoverPassword">Socrates password</label>
+            <input class="ds-input" type="password" id="s3TakeoverPassword" autocomplete="current-password" aria-describedby="s3TakeoverPasswordError s3TakeoverPasswordHint">
+            <small class="ds-field__hint ds-field__hint--error" id="s3TakeoverPasswordError" hidden></small>
+            <small class="ds-field__hint" id="s3TakeoverPasswordHint">The password of the installation in the bucket. Taking over stops the other Socrates from writing to it.</small>
           </div>
         </div>
 
-        <button class="ds-btn ds-btn--primary" type="submit" id="connectBtn">Connect</button>
+        <div id="storageNotice"></div>
+        <button class="ds-btn ds-btn--primary so-auth__submit" type="submit" id="connectBtn">
+          <span class="ds-btn__faces">
+            <span class="ds-btn__face">Connect</span>
+            <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Connecting</span>
+          </span>
+        </button>
       </form>
-      <div class="notice" id="storageNotice"></div>
+      <div id="restartNotice"></div>
     </section>
 
     <!-- Step 2: the password. Shown by a server that has its storage and no
          password yet - a new bucket. -->
-    <section id="passwordStep" hidden>
-      <div class="step">Step 2 of 2 · Password</div>
-      <h1>Set up Socrates</h1>
-      <p class="sub">Choose the password you will use to sign in. You can change everything else later in the admin dashboard.</p>
-      <form id="form">
+    <section id="passwordStep" aria-labelledby="passwordTitle" hidden>
+      <header class="ds-page-head">
+        <h1 class="ds-page-head__title" id="passwordTitle">Set up Socrates</h1>
+        <p class="ds-page-head__lead">Choose the password you will use to sign in. You can change everything else later in the admin dashboard.</p>
+      </header>
+      <form class="ds-form" id="form" novalidate>
         <div class="ds-field">
-          <label for="password">Password</label>
-          <input class="ds-input" type="password" id="password" autocomplete="new-password" minlength="6" required>
-          <div class="hint">At least 6 characters. This is the only account.</div>
+          <label class="ds-field__label" for="password">Password</label>
+          <input class="ds-input" type="password" id="password" autocomplete="new-password" minlength="6" required aria-describedby="passwordError passwordHint">
+          <small class="ds-field__hint ds-field__hint--error" id="passwordError" hidden></small>
+          <small class="ds-field__hint" id="passwordHint">At least 6 characters. This is the only account.</small>
         </div>
         <div class="ds-field">
-          <label for="repeat">Repeat password</label>
-          <input class="ds-input" type="password" id="repeat" autocomplete="new-password" minlength="6" required>
+          <label class="ds-field__label" for="repeat">Repeat password</label>
+          <input class="ds-input" type="password" id="repeat" autocomplete="new-password" minlength="6" required aria-describedby="repeatError">
+          <small class="ds-field__hint ds-field__hint--error" id="repeatError" hidden></small>
         </div>
-        <div class="divider"></div>
-        <div class="ds-field">
-          <label for="key">OpenRouter API key <span style="font-weight:400;color:var(--text-faint)">· optional</span></label>
-          <input class="ds-input mono" type="password" id="key" placeholder="sk-or-v1-…" autocomplete="off">
-          <div class="hint">It transcribes what you dictate, and it runs the spoken status, the session names, Home's summaries and questions — which send the screen of every coding session to OpenRouter — and the operator that types your answers into a session. The coding programs bring their own credentials, and the voice that reads answers out loud has a key of its own in Admin → Voice. Get one at openrouter.ai/keys — you can also add it later.</div>
-        </div>
-        <div class="divider"></div>
-        <div class="ds-field">
-          <label for="tunnelMode">Reach it from outside <span style="font-weight:400;color:var(--text-faint)">· optional</span></label>
-          <select class="ds-input" id="tunnelMode">
-            <option value="off" id="localOnly">Local only — http://localhost:8080</option>
-            <option value="quick">Cloudflare quick tunnel — instant public URL</option>
-            <option value="token">Cloudflare named tunnel — your own hostname</option>
-          </select>
-          <div class="hint" id="tunnelHint">Socrates always keeps serving locally, so you can change this later in the admin dashboard.</div>
-        </div>
-        <div id="tunnelNamed" hidden>
+        <div class="ds-subsection">
           <div class="ds-field">
-            <label for="tunnelToken">Tunnel token</label>
-            <input class="ds-input mono" type="password" id="tunnelToken" autocomplete="off" placeholder="eyJhIjoi…">
-            <div class="hint">Cloudflare Zero Trust → Networks → Tunnels → Create a tunnel → Cloudflared. Name it and save; the token is in the install command Cloudflare shows next. Point the tunnel's public hostname at <code class="local-url">http://localhost:8080</code>.</div>
-          </div>
-          <div class="ds-field">
-            <label for="tunnelHostname">Public hostname</label>
-            <input class="ds-input mono" type="text" id="tunnelHostname" placeholder="socrates.example.com" spellcheck="false">
+            <label class="ds-field__label" for="key">OpenRouter API key <span class="so-optional">· optional</span></label>
+            <input class="ds-input" type="password" id="key" placeholder="sk-or-v1-…" autocomplete="off" aria-describedby="keyHint">
+            <small class="ds-field__hint" id="keyHint">It transcribes what you dictate, and it runs the spoken status, the session names, Home's summaries and questions — which send the screen of every coding session to OpenRouter — and the operator that types your answers into a session. The coding programs bring their own credentials, and the voice that reads answers out loud has a key of its own in Admin → Voice. Get one at openrouter.ai/keys — you can also add it later.</small>
           </div>
         </div>
-        <button class="ds-btn ds-btn--primary" type="submit" id="submit">Create workspace</button>
+        <div class="ds-subsection">
+          <div class="ds-field">
+            <label class="ds-field__label" for="tunnelMode">Reach it from outside <span class="so-optional">· optional</span></label>
+            <select class="ds-input" id="tunnelMode" aria-describedby="tunnelHint">
+              <option value="off" id="localOnly">Local only — http://localhost:8080</option>
+              <option value="quick">Cloudflare quick tunnel — instant public URL</option>
+              <option value="token">Cloudflare named tunnel — your own hostname</option>
+            </select>
+            <small class="ds-field__hint" id="tunnelHint">Socrates always keeps serving locally, so you can change this later in the admin dashboard.</small>
+          </div>
+          <div class="ds-field" id="tunnelNamed" hidden>
+            <label class="ds-field__label" for="tunnelToken">Tunnel token</label>
+            <input class="ds-input" type="password" id="tunnelToken" autocomplete="off" placeholder="eyJhIjoi…" aria-describedby="tunnelTokenError tunnelTokenHint">
+            <small class="ds-field__hint ds-field__hint--error" id="tunnelTokenError" hidden></small>
+            <small class="ds-field__hint" id="tunnelTokenHint">Cloudflare Zero Trust → Networks → Tunnels → Create a tunnel → Cloudflared. Name it and save; the token is in the install command Cloudflare shows next. Point the tunnel's public hostname at <code data-local-url>http://localhost:8080</code>.</small>
+          </div>
+          <div class="ds-field" id="tunnelHost" hidden>
+            <label class="ds-field__label" for="tunnelHostname">Public hostname</label>
+            <input class="ds-input" type="text" id="tunnelHostname" placeholder="socrates.example.com" spellcheck="false">
+          </div>
+        </div>
+        <div id="notice"></div>
+        <button class="ds-btn ds-btn--primary so-auth__submit" type="submit" id="submit">
+          <span class="ds-btn__faces">
+            <span class="ds-btn__face">Create workspace</span>
+            <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Setting up</span>
+          </span>
+        </button>
       </form>
-      <div class="notice" id="notice"></div>
     </section>
   </div>
 </main>
 <div class="ds-toasts" id="toasts"></div>
 <script type="module">
-import { api } from '/static/js/api.js';
+import { api, errorMessage, infoTip, confirmDialog } from '/static/js/api.js';
+import { M, icon, html, raw, morph, setFaceLabel } from '/static/js/ui.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -219,9 +259,79 @@ async function post(path, body) {
   return { ok: res.ok, status: res.status, data: data || {} };
 }
 
+// notice puts one alert into a slot, or empties it: 'error' for what went
+// wrong, 'ok' for what worked, 'info' for how things stand.
+const ALERTS = {
+  error: ['ds-alert ds-alert--error', 'alert', 'alertCircle'],
+  ok: ['ds-alert ds-alert--success', 'status', 'checkCircle'],
+  info: ['ds-alert', 'status', 'info'],
+};
+const noticed = new WeakMap();
 function notice(node, text, kind = 'error') {
-  node.className = text ? 'notice ' + kind : 'notice';
-  node.textContent = text || '';
+  const [words, detail] = !text ? ['', ''] : Array.isArray(text) ? text : kind === 'error' ? explain(text) : [text, ''];
+  // The status view says the same thing every poll: only a change is drawn.
+  const key = words ? kind + '\n' + words + '\n' + detail : '';
+  if (noticed.get(node) === key) return;
+  noticed.set(node, key);
+  if (!words) { morph(node, ''); return; }
+  const [cls, role, glyph] = ALERTS[kind] || ALERTS.error;
+  morph(node, html`<div class="${cls}" role="${role}">${raw(icon(glyph, 20))}<span class="ds-alert__text">${words}</span></div>`);
+  if (detail) node.firstElementChild.append(infoTip(detail, { label: 'What the bucket said', code: true }));
+}
+
+// explain splits a server's "could not reach the bucket: s3: GET ..." into
+// the sentence a person reads and the technical rest, which goes behind
+// the "i".
+function explain(text) {
+  const at = text.indexOf(': ');
+  const head = at > 0 && at < 80 ? text.slice(0, at) : text;
+  const rest = head === text ? '' : text.slice(at + 2);
+  const sentence = head.charAt(0).toUpperCase() + head.slice(1);
+  return [/[.!?…]$/.test(sentence) ? sentence : sentence + '.', rest];
+}
+
+// fieldError says what is wrong under the field it is about (DS Form):
+// aria-invalid on the field, and its error hint filled. No text clears it.
+function fieldError(id, text) {
+  const input = $(id);
+  const slot = $(id + 'Error');
+  if (!text) {
+    input.removeAttribute('aria-invalid');
+    slot.hidden = true;
+    slot.textContent = '';
+    return;
+  }
+  input.setAttribute('aria-invalid', 'true');
+  morph(slot, html`${raw(icon('alertCircle', 16))}${text}`);
+  slot.hidden = false;
+  input.focus();
+}
+
+// Typing into a field takes its complaint away.
+document.querySelectorAll('.ds-field__hint--error').forEach((slot) => {
+  const input = $(slot.id.replace(/Error$/, ''));
+  if (input) input.addEventListener('input', () => fieldError(input.id, ''));
+});
+
+// busyFace changes what a busy button says while it works.
+function busyFace(button, text) {
+  const face = button.querySelector('.ds-btn__face--busy');
+  for (const node of [...face.childNodes]) if (node.nodeType === 3) node.remove();
+  face.append(text);
+}
+
+// steps shows where setup is; null hides the indicator.
+function steps(current) {
+  $('steps').hidden = !current;
+  const order = ['storage', 'password'];
+  for (const [i, name] of order.entries()) {
+    const li = $('step' + name[0].toUpperCase() + name.slice(1));
+    const at = order.indexOf(current);
+    if (name === current) li.setAttribute('aria-current', 'step');
+    else li.removeAttribute('aria-current');
+    if (current && i < at) li.dataset.state = 'done';
+    else delete li.dataset.state;
+  }
 }
 
 function ago(ms) {
@@ -261,14 +371,15 @@ function showStorage(connect) {
   $('passwordStep').hidden = true;
   $('storageStep').hidden = false;
   if (connect.configured) {
+    steps(null);
     $('storageForm').hidden = true;
     $('storageStatus').hidden = false;
     $('storageTitle').textContent = 'Waiting for storage';
-    $('storageStepLabel').textContent = 'Storage';
     $('storageSub').textContent = 'This Socrates has a bucket configured but cannot use it right now. It keeps trying on its own; nothing else is served until it can.';
     renderStatus(connect);
     pollStatus();
   } else {
+    steps('storage');
     $('storageStatus').hidden = true;
     $('storageForm').hidden = false;
     $('localPasswordBox').hidden = !connect.password_required;
@@ -276,41 +387,57 @@ function showStorage(connect) {
   }
 }
 
+// What a reason looks like: the status chip's kind, its glyph and its words.
 const REASONS = {
-  unreachable: ['failed', 'The bucket cannot be reached'],
-  leased: ['starting', 'The bucket is in use by another Socrates'],
-  wrong_passphrase: ['failed', 'The passphrase does not open this bucket'],
-  config: ['failed', 'The storage configuration cannot be read'],
-  error: ['failed', 'The bucket refused this Socrates'],
+  unreachable: ['error', 'wifiOff', 'The bucket cannot be reached'],
+  leased: ['warning', 'lock', 'In use by another Socrates'],
+  wrong_passphrase: ['error', 'key', 'The passphrase does not open this bucket'],
+  config: ['error', 'alertCircle', 'The storage configuration cannot be read'],
+  error: ['error', 'alertCircle', 'The bucket refused this Socrates'],
 };
+
+// chip is a status chip: always an icon or the spinner, and the words.
+function chip(kind, glyph, label) {
+  if (kind === 'running') {
+    return html`<span class="ds-status ds-status--running"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>${label}</span></span>`;
+  }
+  return html`<span class="ds-status ds-status--${kind}">${raw(icon(glyph, 16))}<span>${label}</span></span>`;
+}
+
+let whereShown = null;
 
 function renderStatus(c) {
   if (c.restarting) {
-    $('storageState').querySelector('.state-dot').className = 'state-dot starting';
-    $('storageState').querySelector('.state-label').textContent = 'Socrates is restarting…';
+    morph($('storageState'), chip('running', '', 'Socrates is restarting'));
     $('takeoverBox').hidden = true;
     return;
   }
-  const [dotClass, label] = c.retrying ? ['starting', 'Trying the bucket…'] : (REASONS[c.reason] || ['failed', c.reason || 'Waiting']);
-  const dot = $('storageState').querySelector('.state-dot');
-  dot.className = 'state-dot ' + dotClass;
-  $('storageState').querySelector('.state-label').textContent = label;
+  const [kind, glyph, label] = c.retrying ? ['running', '', 'Trying the bucket'] : (REASONS[c.reason] || ['error', 'alertCircle', c.reason || 'Waiting']);
+  morph($('storageState'), chip(kind, glyph, label));
+
+  // Where the bucket is, and where that was read from, is detail for the "i".
   const s = c.storage || {};
   const where = s.bucket
-    ? (s.endpoint || 'AWS S3') + ' · ' + s.bucket + (s.prefix ? '/' + s.prefix.replace(/\/$/, '') : '')
-    : '';
-  $('storageWhere').textContent = where + (c.source === 'env' ? ' · from SOCRATES_S3_* environment' : (where ? ' · from s3.json' : ''));
+    ? [(s.endpoint || 'AWS S3'), 'Bucket ' + s.bucket + (s.prefix ? '/' + s.prefix.replace(/\/$/, '') : ''),
+        c.source === 'env' ? 'From the SOCRATES_S3_* environment' : 'From s3.json']
+    : [];
+  const key = where.join('\n');
+  if (key !== whereShown) {
+    whereShown = key;
+    $('storageWhere').replaceChildren(...(where.length ? [infoTip(where, { label: 'Where the bucket is' })] : []));
+  }
 
-  let reason = c.error || '';
+  let reason = c.error ? explain(c.error) : '';
   if (c.reason === 'leased' && c.lease) {
     reason = 'This bucket is in use by ' + (c.lease.host || 'another Socrates') + ' (last seen ' + ago(c.lease.heartbeat_at) + '). '
       + 'It becomes free by itself when that Socrates stops or has not been seen for 90 seconds.';
   } else if (c.reason === 'wrong_passphrase') {
-    reason += c.source === 'env'
+    const [words, detail] = reason || ['', ''];
+    reason = [(words + (c.source === 'env'
       ? ' Set SOCRATES_S3_PASSPHRASE to the passphrase this bucket was set up with in /etc/socrates.env and restart Socrates.'
-      : ' Put the right passphrase into s3.json in the data directory; it is read again on the next attempt.';
+      : ' Put the right passphrase into s3.json in the data directory; it is read again on the next attempt.')).trim(), detail];
   }
-  notice($('storageReason'), reason, c.reason === 'leased' ? 'ok' : 'error');
+  notice($('storageReason'), reason, c.reason === 'leased' ? 'info' : 'error');
   $('takeoverBox').hidden = c.reason !== 'leased';
   if (c.retrying) $('retryHint').textContent = 'Trying now…';
   else if (c.next_retry_at) $('retryHint').textContent = 'Next attempt in ' + Math.max(0, Math.round((c.next_retry_at - Date.now()) / 1000)) + ' s.';
@@ -333,27 +460,23 @@ function pollStatus() {
 
 $('retryBtn').addEventListener('click', async () => {
   const button = $('retryBtn');
-  button.disabled = true;
-  try {
-    const r = await post('/api/storage/retry');
-    if (r.data && r.data.connect) renderStatus(r.data.connect);
-  } finally {
-    setTimeout(() => { button.disabled = false; }, 1500);
-  }
+  const r = await M.busy(button, () => post('/api/storage/retry').catch(() => null), { done: false });
+  if (r && r.data && r.data.connect) renderStatus(r.data.connect);
 });
 
 $('takeoverBtn').addEventListener('click', async () => {
   const button = $('takeoverBtn');
   const password = $('takeoverPassword').value;
-  if (!password) { notice($('storageNotice'), 'Enter the Socrates password of the installation in the bucket.'); return; }
-  button.disabled = true;
-  button.textContent = 'Taking over… (about 15 s)';
-  notice($('storageNotice'), '');
-  const r = await post('/api/storage/takeover', { password }).catch(() => ({ ok: false, data: { error: 'Could not reach Socrates.' } }));
+  if (!password) { fieldError('takeoverPassword', 'Enter the Socrates password of the installation in the bucket.'); return; }
+  fieldError('takeoverPassword', '');
+  notice($('storageReason'), 'Taking the bucket over takes about 15 seconds.', 'info');
+  const r = await M.busy(button,
+    () => post('/api/storage/takeover', { password }).catch(() => ({ ok: false, data: { error: 'Could not reach Socrates.' } })),
+    { done: false });
   if (r.ok && r.data.restarting) { restarting('Took the bucket over. Socrates is restarting…'); return; }
-  notice($('storageNotice'), (r.data && r.data.error) || 'The takeover failed.');
-  button.disabled = false;
-  button.textContent = 'Take over this bucket';
+  const why = (r.data && r.data.error) || 'The takeover failed.';
+  if (r.status === 401 || r.status === 403) fieldError('takeoverPassword', why);
+  else notice($('storageReason'), why);
 });
 
 // What the last answer asked for, and what the next submit therefore sends.
@@ -366,7 +489,7 @@ function resetPending() {
   $('confirmBox').hidden = true;
   $('conflictBox').hidden = true;
   $('leaseBox').hidden = true;
-  $('connectBtn').textContent = 'Connect';
+  setFaceLabel($('connectBtn'), 'Connect');
 }
 
 // Changing where the bucket is undoes whatever the last answer was about.
@@ -397,40 +520,50 @@ $('storageForm').addEventListener('submit', (event) => {
   connect();
 });
 $('useBucket').addEventListener('click', () => { pending.resolve = 'bucket'; connect(); });
-$('overwriteBucket').addEventListener('click', () => {
-  if (!confirm('Replace everything in the bucket with this installation? The bucket\'s sessions and settings are deleted.')) return;
+$('overwriteBucket').addEventListener('click', async () => {
+  const yes = await confirmDialog({
+    title: 'Overwrite the bucket?',
+    body: 'Everything in the bucket is replaced with this installation. The bucket\'s sessions and settings are deleted.',
+    confirmLabel: 'Overwrite the bucket',
+    danger: true,
+    opener: $('overwriteBucket'),
+  });
+  if (!yes) return;
   pending.resolve = 'overwrite';
   connect();
 });
 
+// missing names the first required field of the form that is empty.
+function missing() {
+  const required = [['s3Bucket', 'Enter the name of the bucket.'], ['s3Key', 'Enter the access key ID.'],
+    ['s3Secret', 'Enter the secret access key.'], ['s3Passphrase', 'Choose the encryption passphrase.']];
+  for (const [id, text] of required) {
+    if (!$(id).value.trim()) { fieldError(id, text); return true; }
+  }
+  return false;
+}
+
 async function connect() {
   const button = $('connectBtn');
   const status = $('storageNotice');
+  if (missing()) return;
   if (pending.confirm && $('s3Confirm').value !== $('s3Passphrase').value) {
-    notice(status, 'The two passphrases do not match.');
+    fieldError('s3Confirm', 'The two passphrases do not match.');
     return;
   }
   if (pending.takeover && !$('s3TakeoverPassword').value) {
-    notice(status, 'Enter the Socrates password to take the bucket over.');
+    fieldError('s3TakeoverPassword', 'Enter the Socrates password to take the bucket over.');
     return;
   }
   if (!$('localPasswordBox').hidden && !$('s3LocalPassword').value) {
-    notice(status, 'Enter the Socrates password of this machine.');
-    $('s3LocalPassword').focus();
+    fieldError('s3LocalPassword', 'Enter the Socrates password of this machine.');
     return;
   }
-  const label = button.textContent;
-  button.disabled = true;
-  button.textContent = pending.takeover ? 'Taking over… (about 15 s)' : 'Connecting…';
+  busyFace(button, pending.takeover ? 'Taking over' : 'Connecting');
+  notice(status, pending.takeover ? 'Taking the bucket over takes about 15 seconds.' : '', 'info');
+  const r = await M.busy(button, () => post('/api/storage/connect', storageBody())
+    .catch(() => ({ ok: false, status: 0, data: { error: 'Could not reach Socrates.' } })), { done: false });
   notice(status, '');
-  let r;
-  try {
-    r = await post('/api/storage/connect', storageBody());
-  } catch {
-    r = { ok: false, status: 0, data: { error: 'Could not reach Socrates.' } };
-  }
-  button.disabled = false;
-  button.textContent = label;
   const data = r.data || {};
 
   if (r.ok && data.restarting) {
@@ -442,17 +575,20 @@ async function connect() {
   if (r.ok && data.new_bucket) {
     pending.confirm = true;
     $('confirmBox').hidden = false;
-    $('connectBtn').textContent = 'Create and connect';
+    setFaceLabel(button, 'Create and connect');
     $('s3Confirm').focus();
-    notice(status, 'This bucket holds no Socrates state yet. Repeat the passphrase to set it up.', 'ok');
+    notice(status, 'This bucket holds no Socrates state yet. Repeat the passphrase to set it up.', 'info');
     return;
   }
   if ((r.status === 401 || r.status === 403) && data.password_required) {
     // This machine already holds an installation: connecting it takes its
     // own password (a page that loaded before it had one does not know).
     $('localPasswordBox').hidden = false;
-    $('s3LocalPassword').focus();
-    notice(status, data.error || 'Enter the Socrates password of this machine.');
+    fieldError('s3LocalPassword', data.error || 'Enter the Socrates password of this machine.');
+    return;
+  }
+  if ((r.status === 401 || r.status === 403) && pending.takeover) {
+    fieldError('s3TakeoverPassword', data.error || 'Wrong password.');
     return;
   }
   if (r.status === 409 && data.meta_missing) {
@@ -478,7 +614,7 @@ async function connect() {
     const lease = data.lease || {};
     $('leaseText').textContent = 'This bucket is in use by ' + (lease.host || 'another Socrates')
       + ' (last seen ' + ago(lease.heartbeat_at) + '). You can take it over with its Socrates password.';
-    $('connectBtn').textContent = 'Take over and connect';
+    setFaceLabel(button, 'Take over and connect');
     $('s3TakeoverPassword').focus();
     return;
   }
@@ -490,7 +626,8 @@ async function connect() {
 // for a restored one.
 async function restarting(message) {
   clearTimeout(statusTimer);
-  notice($('storageNotice'), message, 'ok');
+  const slot = $('restartNotice');
+  notice(slot, message, 'ok');
   $('storageForm').hidden = true;
   $('storageStatus').hidden = true;
   await sleep(1200);
@@ -498,6 +635,7 @@ async function restarting(message) {
     try {
       const state = await readState();
       if (state.mode !== 'connect') {
+        notice(slot, '');
         if (state.setup_required) { showPassword(state); return; }
         location.href = '/login';
         return;
@@ -508,23 +646,21 @@ async function restarting(message) {
       // what the status view offers, rather than wait here for nothing.
       const c = state.connect || {};
       if (c.configured && !c.restarting) {
-        notice($('storageNotice'), '');
+        notice(slot, '');
         showStorage(c);
         return;
       }
     } catch { /* not back yet */ }
     await sleep(1500);
   }
-  notice($('storageNotice'), 'Socrates has not come back. Look at its log, and reload this page.');
+  notice(slot, 'Socrates has not come back. Look at its log, and reload this page.');
 }
 
 /* ------------------------------------------------------ step 2: password */
 
 const form = $('form');
-const passwordNotice = $('notice');
 const submit = $('submit');
 const mode = $('tunnelMode');
-const named = $('tunnelNamed');
 const hint = $('tunnelHint');
 const localOnly = $('localOnly');
 
@@ -533,6 +669,7 @@ let localURL = 'http://localhost:8080';
 
 function showPassword(state) {
   clearTimeout(statusTimer);
+  steps('password');
   $('storageStep').hidden = true;
   $('passwordStep').hidden = false;
   cloudflared = (state && state.cloudflared) || cloudflared;
@@ -545,66 +682,61 @@ function showPassword(state) {
 // The address this instance really serves on: -addr can move it off 8080,
 // and a setup page that names the wrong port sends the first visit nowhere.
 function showLocalURL() {
-  document.querySelectorAll('.local-url').forEach((node) => { node.textContent = localURL; });
+  document.querySelectorAll('[data-local-url]').forEach((node) => { node.textContent = localURL; });
   localOnly.textContent = 'Local only — ' + localURL;
 }
 
 mode.addEventListener('change', renderTunnel);
 
 function renderTunnel() {
-  named.hidden = mode.value !== 'token';
+  $('tunnelNamed').hidden = mode.value !== 'token';
+  $('tunnelHost').hidden = mode.value !== 'token';
   if (mode.value === 'off') {
-    hint.textContent = 'Socrates always keeps serving locally, so you can turn this on later in the admin dashboard.';
+    morph(hint, html`Socrates always keeps serving locally, so you can turn this on later in the admin dashboard.`);
     return;
   }
   if (!cloudflared.installed) {
-    hint.innerHTML = cloudflared.can_install === false
-      ? 'This needs the <code>cloudflared</code> binary and there is no published build for this platform. ' +
-        'Install it yourself and set the path in the admin dashboard.'
-      : 'Socrates downloads <code>cloudflared</code> for you when you finish setup, about 35 MB. ' +
-        'Nothing to install by hand.';
+    morph(hint, cloudflared.can_install === false
+      ? html`This needs the <code>cloudflared</code> binary and there is no published build for this platform. Install it yourself and set the path in the admin dashboard.`
+      : html`Socrates downloads <code>cloudflared</code> for you when you finish setup, about 35 MB. Nothing to install by hand.`);
     return;
   }
-  hint.textContent = mode.value === 'quick'
-    ? 'A random trycloudflare.com address is created at startup. Handy for a quick test, but anyone with the link reaches your login page.'
-    : 'Your own hostname through your Cloudflare account. Point the tunnel at ' + localURL + '.';
+  morph(hint, mode.value === 'quick'
+    ? html`A random trycloudflare.com address is created at startup. Handy for a quick test, but anyone with the link reaches your login page.`
+    : html`Your own hostname through your Cloudflare account. Point the tunnel at ${localURL}.`);
 }
+
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
-  passwordNotice.className = 'notice';
+  notice($('notice'), '');
   const password = $('password').value;
-  if (password !== $('repeat').value) {
-    passwordNotice.className = 'notice error';
-    passwordNotice.textContent = 'The two passwords do not match.';
+  if (password.length < 6) { fieldError('password', 'At least 6 characters.'); return; }
+  if (password !== $('repeat').value) { fieldError('repeat', 'The two passwords do not match.'); return; }
+  const body = { password, openrouter_key: $('key').value.trim() };
+  if (mode.value !== 'off') {
+    body.tunnel = {
+      enabled: true,
+      mode: mode.value,
+      token: $('tunnelToken').value.trim(),
+      hostname: $('tunnelHostname').value.trim(),
+      command: 'cloudflared',
+    };
+    if (mode.value === 'token' && !body.tunnel.token) {
+      fieldError('tunnelToken', 'A named tunnel needs its tunnel token.');
+      return;
+    }
+  }
+  let result;
+  try {
+    result = await M.busy(submit, () => api('/api/setup', { method: 'POST', body }), { done: false });
+  } catch (err) {
+    notice($('notice'), errorMessage(err));
     return;
   }
-  submit.disabled = true;
-  submit.textContent = 'Setting up…';
-  try {
-    const body = { password, openrouter_key: $('key').value.trim() };
-    if (mode.value !== 'off') {
-      body.tunnel = {
-        enabled: true,
-        mode: mode.value,
-        token: $('tunnelToken').value.trim(),
-        hostname: $('tunnelHostname').value.trim(),
-        command: 'cloudflared',
-      };
-      if (mode.value === 'token' && !body.tunnel.token) {
-        throw new Error('A named tunnel needs its tunnel token.');
-      }
-    }
-    const result = await api('/api/setup', { method: 'POST', body });
-    if (result && result.tunnel_error) {
-      sessionStorage.setItem('socrates.tunnel_error', result.tunnel_error);
-    }
-    location.href = '/admin?welcome=1';
-  } catch (err) {
-    passwordNotice.className = 'notice error';
-    passwordNotice.textContent = err.message;
-    submit.disabled = false;
-    submit.textContent = 'Create workspace';
+  if (result && result.tunnel_error) {
+    sessionStorage.setItem('socrates.tunnel_error', result.tunnel_error);
   }
+  location.href = '/admin?welcome=1';
 });
 </script>
 </body>

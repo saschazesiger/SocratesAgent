@@ -9,7 +9,8 @@
 // There is exactly one ticker line, and this is the only thing that writes it.
 // A second indicator would be a second thing to read at a traffic light.
 
-import { api, toast, setClass, errorMessage, isOffline, el } from './api.js';
+import { api, toast, errorMessage, isOffline } from './api.js';
+import { M } from './ui.js';
 import { speak, stopSpeaking, onSpeechError } from './voice.js';
 import { mountDictation } from './dictate.js';
 
@@ -18,10 +19,6 @@ import { mountDictation } from './dictate.js';
 // on purpose: the notice and the ticker are two lines stacked over the same
 // pane, and one rhythm is easier to live with than two.
 const TICKER_LINGER = 6000;
-
-// How long a leaving line is given to leave. It is the CSS transition plus a
-// frame, and it only decides when a detached element is removed.
-const TICKER_SWAP = 320;
 
 const path = (id, suffix) => '/api/sessions/' + encodeURIComponent(id) + suffix;
 
@@ -55,33 +52,23 @@ export function mountAssist(ctx) {
 
   /* ------------------------------------------------------------ the ticker */
 
-  // One line at a time, the newest rising into the window and the old one
-  // leaving upwards. Under reduced motion the CSS turns this into a plain
-  // swap; the JavaScript is the same either way.
+  // One line at a time, the newest rolling up into the window and the old
+  // one leaving upwards (DS.motion.roll), the way a departure board turns
+  // over, because on a phone in a car the movement is what says something
+  // changed. A line that is already up is not rolled again.
   const ticker = (() => {
-    let current = null;
     let shown = '';
     return {
       show(text) {
         if (!text || text === shown) return;
         shown = text;
         dom.termTicker.hidden = false;
-        const line = el('span', { class: 'ticker-line enter', text });
-        dom.tickerWindow.append(line);
-        const previous = current;
-        current = line;
-        requestAnimationFrame(() => {
-          line.classList.remove('enter');
-          if (!previous) return;
-          previous.classList.add('leave');
-          setTimeout(() => previous.remove(), TICKER_SWAP);
-        });
+        M.roll(dom.tickerWindow, text);
       },
       hide() {
         if (dom.termTicker.hidden) return;
         dom.termTicker.hidden = true;
-        dom.tickerWindow.innerHTML = '';
-        current = null;
+        dom.tickerWindow.replaceChildren();
         shown = '';
       },
     };
@@ -112,17 +99,24 @@ export function mountAssist(ctx) {
     // reading is silence, and a second control for it is a second thing to
     // find on a screen nobody is looking at.
     if (dom.statusBtn) {
-      setClass(dom.statusBtn, 'speaking', speaking);
-      // The spinner is the answer to "did that tap land?", and it is on the
-      // button that was tapped rather than somewhere else on the page.
-      setClass(dom.statusBtn, 'working', busyStatus);
+      const btn = dom.statusBtn;
+      // Reading out loud is the button pressed: its mark turns into the stop
+      // (the icon swap follows aria-pressed).
+      btn.setAttribute('aria-pressed', speaking ? 'true' : 'false');
+      // The spinner is the answer to "did that tap land?", and it is the busy
+      // face of the button that was tapped rather than somewhere else on the
+      // page. The busy face blocks the pointer, so the button is not also
+      // disabled for it: a disabled button would grey the spinner out.
+      if (busyStatus) btn.setAttribute('aria-busy', 'true');
+      else btn.removeAttribute('aria-busy');
       const label = speaking ? 'Stop reading' : 'Summarize this session';
-      dom.statusBtn.title = label;
-      dom.statusBtn.setAttribute('aria-label', label);
-      dom.statusBtn.hidden = !session;
+      btn.setAttribute('aria-label', label);
+      btn.setAttribute('data-tip', label);
+      // An editor has no screen to summarise.
+      btn.hidden = !session || session.harness === 'vscode';
       // Stopping is always available, even with the socket down: the sound is
       // already on this device and turning it off asks the server nothing.
-      dom.statusBtn.disabled = speaking ? false : (!usable || busyStatus);
+      btn.disabled = speaking ? false : (!usable && !busyStatus);
     }
     dictation.live();
     paintTicker();

@@ -24,55 +24,117 @@
 <script src="/static/vendor/dashboard-style/ds.js" defer></script>
 </head>
 <body>
-<div class="admin-page costs-page">
-  <header class="admin-top">
-    <a class="ds-btn ds-btn--sm" href="/">
-      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-      Sessions
-    </a>
-    <div class="title">Costs</div>
-    <span class="costs-state" id="costsState"></span>
-    <button class="ds-btn ds-btn--sm" id="costsCsv" type="button" disabled>CSV</button>
-  </header>
+<div class="ds-app" id="app">
+  <a class="ds-skip" href="#main">Skip to content</a>
 
-  <div class="admin-wrap costs-wrap">
-    <div class="notice" id="notice"></div>
+  <div class="ds-topbar">
+    <a class="ds-btn ds-btn--quiet ds-btn--icon" href="/" aria-label="Back to the sessions" data-tip="Back to the sessions" data-icon="arrowLeft"></a>
+    <a class="ds-brand" href="/"><img class="so-logo" src="/static/img/logo.png" alt="" width="32" height="32"><span class="ds-brand__name">Socrates</span></a>
+  </div>
 
-    <!-- Every filter in one row above everything it filters: the period, then
-         the four things a cost belongs to. -->
-    <div class="costs-filters">
-      <div class="seg-row costs-range" id="costsRange" role="group" aria-label="Period"></div>
-      <div class="costs-selects">
-        <label class="costs-select"><span>Program</span><select class="ds-input" id="fHarness"></select></label>
-        <label class="costs-select"><span>Profile</span><select class="ds-input" id="fProfile"></select></label>
-        <label class="costs-select"><span>Project</span><select class="ds-input" id="fProject"></select></label>
-        <label class="costs-select"><span>Model</span><select class="ds-input" id="fModel"></select></label>
-        <button class="ds-btn ds-btn--sm ds-btn--text" id="fClear" type="button" hidden>Clear filters</button>
+  <div class="ds-panel">
+    <main class="ds-view" id="main" tabindex="-1">
+      <div class="ds-content">
+        <div class="ds-page">
+          <div class="so-page-head">
+            <header class="ds-page-head">
+              <h1 class="ds-page-head__title" tabindex="-1">Costs</h1>
+              <p class="ds-page-head__lead">What every conversation on this machine would cost at the published API prices.</p>
+            </header>
+            <div class="so-costs-actions">
+              <p class="ds-meta" id="costsState" aria-live="polite"></p>
+              <button class="ds-btn" id="costsCsv" type="button" disabled data-icon="download" data-icon-size="16">CSV</button>
+            </div>
+          </div>
+
+          <div id="notice"></div>
+
+          <div class="ds-loading" role="status" id="costsLoading"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span>Reading the ledger</div>
+
+          <!-- Nothing at all yet: a new machine, or one whose programs have
+               not had a conversation. -->
+          <div class="ds-card" id="costsNone" hidden>
+            <div class="ds-empty">
+              <span class="ds-empty__disc" aria-hidden="true" data-icon="barChart" data-icon-size="24"></span>
+              <p class="ds-empty__title">No costs yet</p>
+              <p class="ds-empty__text" id="costsNoneText">They show up here once Claude Code, Codex or OpenCode has had a conversation on this machine.</p>
+            </div>
+          </div>
+
+          <div class="so-costs" id="costsBody" hidden>
+            <!-- Every filter in one place above everything it filters: the
+                 period, then the four things a cost belongs to. -->
+            <div class="ds-toolbar">
+              <fieldset class="ds-chips" id="costsRange">
+                <legend class="ds-sr">Period</legend>
+              </fieldset>
+              <div class="ds-filters">
+                <div class="ds-field">
+                  <label class="ds-field__label" for="fHarness">Program</label>
+                  <select class="ds-input ds-input--filled" id="fHarness"></select>
+                </div>
+                <div class="ds-field">
+                  <label class="ds-field__label" for="fProfile">Profile</label>
+                  <select class="ds-input ds-input--filled" id="fProfile"></select>
+                </div>
+                <div class="ds-field">
+                  <label class="ds-field__label" for="fProject">Project</label>
+                  <select class="ds-input ds-input--filled" id="fProject"></select>
+                </div>
+                <div class="ds-field">
+                  <label class="ds-field__label" for="fModel">Model</label>
+                  <select class="ds-input ds-input--filled" id="fModel"></select>
+                </div>
+                <button class="ds-btn ds-btn--text" id="fClear" type="button" hidden>Clear filters</button>
+              </div>
+            </div>
+
+            <div class="ds-tiles" id="costsTiles" aria-live="polite">
+              <div class="ds-tile"><p class="ds-tile__label"><span id="tRangeLabel">30 days</span></p><p class="ds-tile__value" id="tRange">$0.00</p><p class="ds-tile__note" id="tRangeNote"></p></div>
+              <div class="ds-tile"><p class="ds-tile__label"><span>Per day</span></p><p class="ds-tile__value" id="tPerDay">$0.00</p><p class="ds-tile__note" id="tPerDayNote"></p></div>
+              <div class="ds-tile"><p class="ds-tile__label"><span>Today</span></p><p class="ds-tile__value" id="tToday">$0.00</p><p class="ds-tile__note" id="tTodayNote"></p></div>
+              <div class="ds-tile"><p class="ds-tile__label"><span>This month</span></p><p class="ds-tile__value" id="tMonth">$0.00</p><p class="ds-tile__note" id="tMonthNote"></p></div>
+            </div>
+
+            <!-- The period with nothing in it (with these filters). -->
+            <div class="ds-card" id="costsEmpty" hidden>
+              <div class="ds-empty">
+                <span class="ds-empty__disc" aria-hidden="true" data-icon="filter" data-icon-size="24"></span>
+                <p class="ds-empty__title">Nothing was spent in this period</p>
+                <p class="ds-empty__text">Choose a longer period, or clear the filters.</p>
+              </div>
+            </div>
+
+            <div class="so-costs" id="costsData">
+              <section class="ds-card" aria-labelledby="chartTitle">
+                <h2 class="ds-card__title" id="chartTitle">Cost per day</h2>
+                <p class="ds-muted" id="chartSub"></p>
+                <div class="so-costs-legend" id="chartLegend"></div>
+                <div class="so-chart" id="chart"></div>
+              </section>
+
+              <section class="ds-card" aria-labelledby="hProject"><h2 class="ds-card__title" id="hProject">By project</h2><div id="tProject"></div></section>
+              <section class="ds-card" aria-labelledby="hModel"><h2 class="ds-card__title" id="hModel">By model</h2><div id="tModel"></div></section>
+              <section class="ds-card" aria-labelledby="hConv"><h2 class="ds-card__title" id="hConv">Most expensive conversations</h2><div id="tConv"></div></section>
+              <div class="ds-grid-2">
+                <section class="ds-card" aria-labelledby="hHarness"><h2 class="ds-card__title" id="hHarness">By program</h2><div id="tHarness"></div></section>
+                <section class="ds-card" aria-labelledby="hProfile"><h2 class="ds-card__title" id="hProfile">By profile</h2><div id="tProfile"></div></section>
+              </div>
+              <div class="ds-grid-2">
+                <section class="ds-card" aria-labelledby="hMonthT"><h2 class="ds-card__title" id="hMonthT">By month</h2><div id="tMonthly"></div></section>
+                <section class="ds-card" aria-labelledby="hDay"><h2 class="ds-card__title" id="hDay">By day</h2><div id="tDay"></div></section>
+              </div>
+            </div>
+          </div>
+
+          <p class="ds-meta so-costs-note" id="costsNote"></p>
+        </div>
       </div>
-    </div>
-
-    <section class="costs-hero" id="costsTiles" aria-live="polite"></section>
-
-    <section class="ds-card costs-chart-card">
-      <h2 id="chartTitle">Cost per day</h2>
-      <p class="ds-muted" id="chartSub"></p>
-      <div class="costs-legend" id="chartLegend"></div>
-      <div class="costs-chart" id="chart"></div>
-    </section>
-
-    <section class="ds-card"><h2>By project</h2><div class="costs-table" id="tProject"></div></section>
-    <section class="ds-card"><h2>By model</h2><div class="costs-table" id="tModel"></div></section>
-    <section class="ds-card"><h2>By month</h2><div class="costs-table" id="tMonth"></div></section>
-    <section class="ds-card"><h2>By day</h2><div class="costs-table" id="tDay"></div></section>
-    <section class="ds-card"><h2>By program</h2><div class="costs-table" id="tHarness"></div></section>
-    <section class="ds-card"><h2>By profile</h2><div class="costs-table" id="tProfile"></div></section>
-    <section class="ds-card"><h2>Most expensive conversations</h2><div class="costs-table" id="tConv"></div></section>
-
-    <p class="hint costs-note" id="costsNote"></p>
+    </main>
   </div>
 </div>
-<div class="costs-tip" id="chartTip" role="tooltip" hidden></div>
 <div class="ds-toasts" id="toasts"></div>
+<div class="so-chart-tip ds-presence" id="chartTip" role="tooltip" hidden></div>
 <script type="module" src="/static/js/costs.js"></script>
 </body>
 </html>

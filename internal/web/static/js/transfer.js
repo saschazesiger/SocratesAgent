@@ -13,7 +13,8 @@
 // file. A button, a file dropped on the pane and an image pasted into it all
 // take the same road.
 
-import { el, toast, setClass, errorMessage } from './api.js';
+import { el, toast, errorMessage } from './api.js';
+import { M, showOverlay, hideOverlay } from './ui.js';
 import { copyText, pasteClipboard } from './term.js';
 
 // The server's own ceiling on one upload (internal/server/upload.go), checked
@@ -66,46 +67,43 @@ export function mountTransfer(ctx) {
 
   /* ---------------------------------------------------------------- copy */
 
+  // The sheet is the page's #copySheet (index.html), opened and closed through
+  // DS.overlay like every dialog; it is wired once, and filled each time.
+  const sheet = document.getElementById('copySheet');
+  const area = document.getElementById('copyArea');
+  const copyAll = document.getElementById('copyAll');
+  const selected = () => area.value.slice(area.selectionStart, area.selectionEnd);
+  const paintCopy = () => { copyAll.textContent = selected() ? 'Copy selection' : 'Copy all'; };
+  if (sheet && area && copyAll) {
+    area.addEventListener('select', paintCopy);
+    document.addEventListener('selectionchange', () => { if (sheet.open) paintCopy(); });
+    copyAll.addEventListener('click', () => {
+      const part = selected();
+      if (copyText(part || area.value)) {
+        toast(part ? 'Copied the selection.' : 'Copied everything.');
+        hideOverlay(sheet);
+      }
+    });
+    // However it closes - Copy, Close, Escape, the scrim - the keys go back
+    // to the pane, and a thousand lines are not kept in a closed dialog.
+    sheet.addEventListener('close', () => {
+      area.value = '';
+      ctx.focus();
+    });
+  }
+
   function copySheet(term) {
     const text = paneText(term, SHEET_LINES);
     if (!text) {
       toast('There is nothing on the screen to copy.');
       return;
     }
-    const area = el('textarea', {
-      class: 'ds-input mono copy-text', readonly: true, spellcheck: 'false',
-      'aria-label': 'Terminal text', value: text,
-    });
-    const copy = el('button', { class: 'ds-btn ds-btn--sm ds-btn--primary', type: 'button', text: 'Copy all' });
-    const close = el('button', { class: 'ds-btn ds-btn--sm', type: 'button', text: 'Close' });
-    const dialog = el('dialog', { class: 'modal copy-sheet' },
-      el('h2', { class: 'modal-title', text: 'Copy from the terminal' }),
-      el('p', { class: 'hint', text: 'Select a part to copy just that, or copy everything.' }),
-      area,
-      el('div', { class: 'modal-actions' }, close, copy));
-    const selected = () => area.value.slice(area.selectionStart, area.selectionEnd);
-    const paint = () => { copy.textContent = selected() ? 'Copy selection' : 'Copy all'; };
-    document.addEventListener('selectionchange', paint);
-    area.addEventListener('select', paint);
-    copy.addEventListener('click', () => {
-      const part = selected();
-      if (copyText(part || area.value)) {
-        toast(part ? 'Copied the selection.' : 'Copied everything.');
-        dialog.close();
-      }
-    });
-    close.addEventListener('click', () => dialog.close());
-    dialog.addEventListener('click', (event) => { if (event.target === dialog) dialog.close(); });
-    dialog.addEventListener('close', () => {
-      document.removeEventListener('selectionchange', paint);
-      dialog.remove();
-      ctx.focus();
-    });
-    document.body.append(dialog);
-    dialog.showModal();
+    if (!sheet) return;
+    area.value = text;
+    paintCopy();
+    showOverlay(sheet, dom.copyBtn);
     // The newest line is the one somebody came to copy.
     area.scrollTop = area.scrollHeight;
-    copy.focus();
   }
 
   function copy() {
@@ -148,37 +146,42 @@ export function mountTransfer(ctx) {
       toast('That is more than 64 MB, which is the most one upload can be.', 'error');
       return;
     }
-    const form = new FormData();
-    for (const file of list) form.append('file', file, file.name || 'pasted.png');
     uploading = true;
-    paint();
     try {
-      const res = await fetch('/api/sessions/' + encodeURIComponent(session.id) + '/upload', {
-        method: 'POST', body: form, credentials: 'same-origin',
-      });
-      let data = null;
-      try { data = await res.json(); } catch { /* answered below */ }
-      if (!res.ok) throw new Error((data && data.error) || 'The upload failed (' + res.status + ').');
-      // The session may have changed while the file was on its way; the path
-      // belongs on the prompt of the one it was uploaded to, or nowhere.
-      const now = ctx.current();
-      if (!now || now.id !== session.id || !ctx.term()) {
-        toast('Uploaded to “' + session.title + '”.');
-        return;
-      }
-      const paths = data.files.map((f) => quotePath(f.path)).join(' ');
-      const term = ctx.term();
-      // Pasted rather than typed, so that a program that asked to be told
-      // about pastes - Claude Code does - sees a dropped file.
-      const bracketed = !!(term.modes && term.modes.bracketedPasteMode);
-      ctx.send(bracketed ? '\x1b[200~' + paths + ' \x1b[201~' : paths + ' ');
-      ctx.focus();
+      // The button's busy face while the file travels, and its check once it
+      // has landed; a failure throws past the check to the toast below.
+      await M.busy(dom.uploadBtn, () => send(session, list));
     } catch (err) {
       toast(err instanceof TypeError ? 'The upload did not reach Socrates.' : errorMessage(err), 'error');
     } finally {
       uploading = false;
-      paint();
     }
+  }
+
+  // send is one upload, and the path it hands back put on the prompt.
+  async function send(session, list) {
+    const form = new FormData();
+    for (const file of list) form.append('file', file, file.name || 'pasted.png');
+    const res = await fetch('/api/sessions/' + encodeURIComponent(session.id) + '/upload', {
+      method: 'POST', body: form, credentials: 'same-origin',
+    });
+    let data = null;
+    try { data = await res.json(); } catch { /* answered below */ }
+    if (!res.ok) throw new Error((data && data.error) || 'The upload failed (' + res.status + ').');
+    // The session may have changed while the file was on its way; the path
+    // belongs on the prompt of the one it was uploaded to, or nowhere.
+    const now = ctx.current();
+    if (!now || now.id !== session.id || !ctx.term()) {
+      toast('Uploaded to “' + session.title + '”.');
+      return;
+    }
+    const paths = data.files.map((f) => quotePath(f.path)).join(' ');
+    const term = ctx.term();
+    // Pasted rather than typed, so that a program that asked to be told
+    // about pastes - Claude Code does - sees a dropped file.
+    const bracketed = !!(term.modes && term.modes.bracketedPasteMode);
+    ctx.send(bracketed ? '\x1b[200~' + paths + ' \x1b[201~' : paths + ' ');
+    ctx.focus();
   }
 
   const picker = el('input', { type: 'file', multiple: true, hidden: true, 'aria-hidden': 'true' });
@@ -197,13 +200,13 @@ export function mountTransfer(ctx) {
     if (!carriesFiles(event) || !ctx.term()) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = 'copy';
-    setClass(dom.termWrap, 'dropping', true);
+    dom.termWrap.toggleAttribute('data-dropping', true);
   });
   dom.termWrap.addEventListener('dragleave', (event) => {
-    if (!dom.termWrap.contains(event.relatedTarget)) setClass(dom.termWrap, 'dropping', false);
+    if (!dom.termWrap.contains(event.relatedTarget)) dom.termWrap.removeAttribute('data-dropping');
   });
   dom.termWrap.addEventListener('drop', (event) => {
-    setClass(dom.termWrap, 'dropping', false);
+    dom.termWrap.removeAttribute('data-dropping');
     if (!carriesFiles(event) || !ctx.term()) return;
     event.preventDefault();
     upload(event.dataTransfer.files);
@@ -227,12 +230,7 @@ export function mountTransfer(ctx) {
   /* ------------------------------------------------------------- painting */
 
   function paint() {
-    const on = !!ctx.term();
-    if (dom.transfer) dom.transfer.hidden = !on;
-    if (dom.uploadBtn) {
-      setClass(dom.uploadBtn, 'working', uploading);
-      dom.uploadBtn.disabled = uploading;
-    }
+    if (dom.transfer) dom.transfer.hidden = !ctx.term();
   }
 
   // Each keeps the focus where it was: a button that took it from the pane

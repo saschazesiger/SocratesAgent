@@ -11,7 +11,8 @@
 // phone with no Escape and no arrows in sight is the case the bar exists for,
 // and having to go looking for it there was the worse of the two mistakes.
 
-import { el, toast, setClass } from './api.js';
+import { el } from './api.js';
+import { iconEl } from './ui.js';
 import { pasteClipboard } from './term.js';
 import { touchScreen } from './keyboard.js';
 
@@ -72,17 +73,22 @@ export function setKeyBarWanted(on) {
  * phone can send Ctrl-C to a program at all.
  */
 export function mountKeyBar(host, term, socket) {
-  host.innerHTML = '';
+  host.replaceChildren();
   // 'ctrl' | 'alt' -> 'on' (next key only) | 'lock' (until tapped again)
   const armed = new Map();
   const buttons = new Map();
 
+  // An armed modifier is pressed (the tint), and a locked one also wears the
+  // lock glyph, because "held for the next key" and "held until I say
+  // otherwise" are different promises and colour alone cannot tell them apart.
   const paint = () => {
     for (const [mod, button] of buttons) {
       const state = armed.get(mod) || '';
-      setClass(button, 'on', state === 'on' || state === 'lock');
-      setClass(button, 'lock', state === 'lock');
       button.setAttribute('aria-pressed', state ? 'true' : 'false');
+      button.toggleAttribute('data-lock', state === 'lock');
+      const glyph = button.querySelector('svg');
+      if (state === 'lock' && !glyph) button.prepend(iconEl('lock', 16));
+      else if (state !== 'lock' && glyph) glyph.remove();
     }
   };
 
@@ -139,7 +145,7 @@ export function mountKeyBar(host, term, socket) {
 
   for (const key of KEYS) {
     const button = el('button', {
-      class: 'key', type: 'button', 'data-key': key.name,
+      class: 'ds-btn so-key', type: 'button', 'data-key': key.name,
       'aria-label': key.name, text: key.label,
     });
     if (key.send) button.dataset.send = key.send;
@@ -165,7 +171,7 @@ export function mountKeyBar(host, term, socket) {
     clear() { if (armed.size) { armed.clear(); paint(); } },
     /** armedNow is what the scenarios and the bar itself read back. */
     armedNow: () => [...armed.entries()].map(([mod, state]) => mod + ':' + state).join(','),
-    dispose() { host.innerHTML = ''; armed.clear(); buttons.clear(); },
+    dispose() { host.replaceChildren(); armed.clear(); buttons.clear(); },
   };
 }
 
@@ -186,7 +192,7 @@ export function followViewport() {
   const vv = window.visualViewport;
   if (!vv) return () => {};
   const apply = () => {
-    document.documentElement.style.setProperty('--app-h', Math.round(vv.height) + 'px');
+    document.documentElement.style.setProperty('--so-app-h', Math.round(vv.height) + 'px');
     if (vv.offsetTop > 0) window.scrollTo(0, 0);
   };
   vv.addEventListener('resize', apply);
@@ -195,6 +201,6 @@ export function followViewport() {
   return () => {
     vv.removeEventListener('resize', apply);
     vv.removeEventListener('scroll', apply);
-    document.documentElement.style.removeProperty('--app-h');
+    document.documentElement.style.removeProperty('--so-app-h');
   };
 }

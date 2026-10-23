@@ -16,6 +16,9 @@
   /* Brand: the Socrates logo and the agents' marks (brand colours are allowed only in logos). */
   --so-logo-size: 32px;
   --so-agent-size: 20px;
+  /* The verdict or hourglass on a mark's corner: small enough to leave the mark readable. */
+  --so-badge-size: 14px;
+  --so-badge-pad: 1px;
   /* Below this width a page head and its actions stack (the reference app's ex-page-head). */
   --so-page-head-basis: 320px;
   --so-brand-claude: #D97757;
@@ -25,11 +28,52 @@
   --so-brand-tile-ink: #ffffff;
   --so-brand-opencode-inner: #8a8686;
 
-  /* Stage */
+  /* Frame: the session list's rows and folder heads (a step denser than a
+     drawer item), the usage strip at its tightest, and the bar's dialogs. */
+  --so-row-height: 40px;
+  --so-folder-head-height: 36px;
+  --so-shelf-head-height: 32px;
+  --so-usage-gap-tight: 2px;
+  --so-usage-font-tight: var(--ds-weight-regular) 11px/16px var(--ds-font);
+  --so-usage-reading-width: 340px;
+  --so-rename-width: 400px;
+  --so-title-min: 96px;
+  --so-usage-line-height: 40px;
+
+  /* Stage: the pane's inset, its cover, the key bar, the room the floating
+     transfer buttons take on a phone, and the recording and copy dialogs. */
+  --so-font-code: var(--ds-weight-regular) 13px/20px var(--so-font-mono);
+  --so-pane-pad-y: var(--ds-space-3);
+  --so-pane-pad-x: var(--ds-space-4);
+  --so-cover-width: 420px;
+  --so-key-height: 36px;
+  --so-key-height-touch: 48px;
+  --so-key-min-width: 44px;
+  --so-talk-height: 44px;
+  --so-talk-height-touch: 48px;
+  --so-transfer-float-room: 64px;
+  --so-transfer-float-room-touch: 72px;
+  --so-rec-width: 440px;
   --so-meter-height: 64px;
+  --so-meter-plain-height: 12px;
+  --so-meter-bar: 5px;
+  --so-meter-gap: 3px;
+  --so-meter-rest: .07;
   --so-rec-action-height: 56px;
   --so-copy-width: 760px;
   --so-copy-height: min(60vh, 520px);
+
+  /* Home: the Questions card beside the tiles, the column basis of the
+     session cards, and how tall a finger's target is in touch mode. */
+  --so-home-questions-min: 240px;
+  --so-home-card-basis: 340px;
+  --so-home-touch-tile: 104px;
+  --so-home-touch-card: 88px;
+
+  /* Sheet: the program cards' narrowest width, and the profile list's usage meters. */
+  --so-settings-card-min: 140px;
+  --so-limits-bar-min: 64px;
+  --so-limits-reset-width: 72px;
 
   /* PreStart */
   --so-prestart-side: 380px;
@@ -49,11 +93,15 @@
   /* Admin */
   --so-log-max-height: 280px;
   --so-col-status: 136px;
+  --so-name-field-width: 320px;
 
   /* Login, setup, costs */
   --so-auth-width: 400px;
   --so-chart-height: 240px;
   --so-chart-gap: 2px;
+  --so-chart-tip-min: 180px;
+  --so-chart-tip-max: 280px;
+  --so-swatch-size: 10px;
   --so-series-1: #2a78d6;
   --so-series-2: #eb6834;
   --so-series-3: #1baf7a;
@@ -67,15 +115,33 @@
   --ds-btn-icon-size: 48px;
   --ds-chip-height: 48px;
   --ds-input-font: var(--ds-font-input);   /* 16px field text at any width: no iOS focus zoom on an iPad/car screen */
+  --so-row-height: 48px;
+  --so-folder-head-height: 48px;
+  --so-shelf-head-height: 48px;
+  --so-usage-line-height: 48px;
   --so-option-min-height: 84px;
   --so-question-action-height: 64px;
   --so-question-width: 100%;
+}
+
+/* Stage: on a phone every column of the pane counts. */
+@media (max-width: 600px) {
+  .ds-theme { --so-pane-pad-x: var(--ds-space-2); }
 }
 
 @media (max-width: 900px) {
   .ds-theme { --so-question-width: 100%; }
 }
 
+/* Frame: in the modal drawer a folder head is tapped, so it is a thumb's
+   target, as tall as a drawer item. */
+@media (max-width: 900px) {
+  .ds-theme { --so-folder-head-height: 48px; --so-row-height: 48px; }
+}
+
+/* A short screen (a phone on its side in a car mount) keeps the question and
+   its first option above the buttons, in touch mode too. */
 @media (max-height: 500px) {
-  .ds-theme { --so-option-min-height: 60px; --so-question-action-height: 48px; }
+  .ds-theme,
+  .ds-theme.so-touch { --so-option-min-height: 60px; --so-question-action-height: 48px; }
 }

@@ -1,1 +1,640 @@
-/* so-frame.css: project components of the session page frame: top bar, drawer, session list, folders, banners, options and usage dialogs (owner WP1). Tokens only; see MIGRATION.md §3.4. */
+/*
+ * so-frame.css: the session page's frame (owner WP1). Project components with
+ * the prefix so-: they read tokens only (--ds-* and the --so-* of theme.css,
+ * "Frame"), are unlayered, and never restyle a .ds-* component - where one
+ * needs to look different, its documented hooks are set instead.
+ *
+ *   .so-view, .so-main  the page as a column: the stage takes the height the
+ *                    bar, the banners and the key bar leave
+ *   .so-topbar       the bar's contents after the brand: the name, its marks,
+ *                    the usage strip and .so-topbar__actions
+ *   .so-title        the session's name, a text button that renames it
+ *   .so-outcome      the verdict on the last turn, beside the name
+ *   .so-usage        the usage strip (in the bar, or on .so-usage-line)
+ *   .so-drawer-toggle  puts the session list away at a desk
+ *   .so-drawer-actions, .so-drawer-foot  the drawer's first and last rows
+ *   .so-session-list the folders and their rows (session.js)
+ *   .so-folder       a project, or a shelf of one (.so-folder--shelf)
+ *   .so-row          one session: a drawer item and its ⋮
+ *   .so-list-empty   what the list says when it has no rows
+ *   .so-menu-heading a group's name inside the row menu
+ *   .so-banner       the storage banner (storage.js)
+ *   .so-options      the switches of the options dialog
+ *   .so-usage-reading, .so-usage-row  the usage dialog
+ *   .so-rename, .so-info-dialog, .so-facts  the row menu's dialogs
+ */
+
+/* ── The page as a column ─────────────────────────────────────────────── */
+
+/* The view does not scroll on this page: the terminal is as tall as the
+   panel, and Home and PreStart scroll inside the stage themselves. No
+   gutter is reserved for a scrollbar that never comes. */
+.so-view {
+  --ds-view-scrollbar-gutter: auto;
+  overflow: hidden;
+}
+
+.so-main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.so-main > .so-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.so-main > .so-keybar {
+  flex: none;
+}
+
+/* ── Top bar ──────────────────────────────────────────────────────────── */
+
+/* At a desk the list can be put away; on a narrow window the drawer is
+   modal, and the menu button is the way to it. */
+@media (max-width: 900px) {
+  .so-drawer-toggle {
+    display: none;
+  }
+}
+
+.so-topbar {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-1);
+  margin-left: var(--ds-space-3);
+}
+
+.so-title {
+  flex: 0 1 auto;
+  min-width: min(var(--so-title-min), 100%);
+  display: flex;
+  margin: 0;
+  font: inherit;
+}
+
+/* The name reads as a name, not as a link: the text button in the text
+   colour and the subtitle type, still a pill to press. */
+.so-title__button {
+  --ds-btn-color: var(--ds-text);
+  --ds-btn-font: var(--ds-font-subtitle);
+  max-width: 100%;
+  min-width: 0;
+}
+
+/* While a name is being thought of, the old one steps back. */
+.so-title__button[data-titling] {
+  --ds-btn-color: var(--ds-text-3);
+}
+
+.so-title__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.so-outcome[data-kind="complete"] { --so-outcome: var(--ds-success); }
+.so-outcome[data-kind="partial"] { --so-outcome: var(--ds-primary); }
+.so-outcome[data-kind="needs_input"] { --so-outcome: var(--ds-warning); }
+.so-outcome[data-kind="blocked"] { --so-outcome: var(--ds-error); }
+
+.so-outcome svg {
+  color: var(--so-outcome, currentColor);
+}
+
+/* "Checking…" is news, not a control. */
+.so-outcome[data-kind="checking"] {
+  cursor: default;
+}
+
+.so-topbar__actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-1);
+  margin-left: auto;
+}
+
+/* ── Usage strip ──────────────────────────────────────────────────────── */
+
+.so-usage {
+  --ds-btn-font: var(--ds-font-meta);
+  --ds-btn-padding-x: var(--ds-space-3);
+  flex: 0 1 auto;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.so-usage__line {
+  min-width: 0;
+}
+
+.so-usage__part + .so-usage__part::before {
+  content: "·";
+  margin-inline: var(--ds-space-1);
+  color: var(--ds-text-2);
+}
+
+.so-usage__used,
+.so-usage__cost {
+  color: var(--ds-text);
+}
+
+.so-usage__label,
+.so-usage__reset {
+  color: var(--ds-text-2);
+}
+
+/* Tighter, in the order fitUsage() asks for it: the spacing, then the cost,
+   then a step of type. The limits and their countdowns stay. */
+.so-usage[data-fit] .so-usage__part + .so-usage__part::before {
+  margin-inline: var(--so-usage-gap-tight);
+}
+
+.so-usage:is([data-fit="2"], [data-fit="3"]) .so-usage__cost {
+  display: none;
+}
+
+.so-usage[data-fit="3"] {
+  --ds-btn-font: var(--so-usage-font-tight);
+}
+
+/* A phone: the strip is the column's first line, under the bar. "(2h 36m)"
+   says enough there; the word is for the desk. What still does not fit is
+   swiped along rather than cut off. */
+.so-usage-line {
+  flex: none;
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+  /* As tall as the strip before the first reading is in, so the stage
+     never shrinks under a terminal that was just fitted to it. */
+  min-height: var(--so-usage-line-height);
+  padding: var(--ds-space-1) var(--ds-space-2) 0;
+}
+
+.so-usage-line[hidden] {
+  display: none;
+}
+
+.so-usage-line > .so-usage {
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.so-usage-line .so-usage__left {
+  display: none;
+}
+
+/* ── Drawer ───────────────────────────────────────────────────────────── */
+
+.so-drawer-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  padding: var(--ds-space-2) var(--ds-space-3) var(--ds-space-3);
+}
+
+.so-btn-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.so-drawer-foot {
+  flex: none;
+  display: grid;
+  padding: var(--ds-space-2) var(--ds-space-3) calc(var(--ds-space-3) + env(safe-area-inset-bottom));
+}
+
+/* A session list is longer than a list of destinations: its rows are a
+   step denser than a drawer item, and a finger's size in touch mode. */
+.so-session-list {
+  --ds-drawer-item-height: var(--so-row-height);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  margin-top: var(--ds-space-2);
+}
+
+.so-list-empty {
+  margin: 0;
+  padding: var(--ds-space-3) var(--ds-space-4);
+  font: var(--ds-font-meta);
+  color: var(--ds-text-2);
+}
+
+/* ── Folders ──────────────────────────────────────────────────────────── */
+
+.so-folder {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+
+.so-folder + .so-folder {
+  margin-top: var(--ds-space-2);
+}
+
+.so-folder__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-1);
+  min-width: 0;
+}
+
+/* The project's name, which shuts and opens it: the drawer heading's type,
+   pressable like a drawer item. */
+.so-folder__head {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  min-height: var(--so-folder-head-height);
+  margin: 0;
+  padding: 0 var(--ds-space-3) 0 var(--ds-space-4);
+  border: 0;
+  border-radius: var(--ds-radius-action);
+  background: transparent;
+  color: var(--ds-text-2);
+  font: var(--ds-font-label);
+  text-align: start;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  outline-offset: 0;
+  transition: outline-offset var(--ds-dur-fast) var(--ds-ease-out);
+}
+
+.so-folder__head::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: currentColor;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--ds-dur-fast) var(--ds-ease-in-out);
+}
+
+@media (hover: hover) {
+  .so-folder__head:hover::before {
+    opacity: var(--ds-state-hover-lg);
+  }
+}
+
+.so-folder__head:active::before {
+  opacity: var(--ds-state-pressed);
+  transition-duration: var(--ds-dur-micro);
+}
+
+.so-folder__head:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: calc(-1 * var(--ds-focus-width));
+}
+
+.so-folder__head:focus-visible::before {
+  opacity: var(--ds-state-focus);
+}
+
+.so-folder__head > svg {
+  flex: none;
+}
+
+.so-folder__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Open, the rows say everything themselves; shut, the head says how many
+   are behind it, whether one is working or waiting, and whether one has
+   news nobody has read. */
+.so-folder__count,
+.so-folder__dot {
+  display: none;
+}
+
+.so-folder:not([data-open]) > .so-folder__bar .so-folder__count {
+  display: inline;
+  flex: none;
+  font: var(--ds-font-caption);
+  color: var(--ds-text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.so-folder:not([data-open]) > .so-folder__bar .so-folder__head[data-attention] .so-folder__dot {
+  display: inline-block;
+  flex: none;
+  inline-size: var(--ds-space-2);
+  block-size: var(--ds-space-2);
+  border-radius: var(--ds-radius-action);
+  background: var(--ds-text-3);
+}
+
+.so-folder:not([data-open]) > .so-folder__bar .so-folder__head[data-attention="waiting"] .so-folder__dot {
+  background: var(--ds-warning);
+}
+
+.so-folder:not([data-open]) > .so-folder__bar .so-folder__head[data-unread] {
+  color: var(--ds-text);
+}
+
+.so-folder:not([data-open]) > .so-folder__bar .so-folder__head[data-unread] .so-folder__count {
+  color: var(--ds-text);
+}
+
+.so-folder__rows {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+
+.so-folder__rows[hidden] {
+  display: none;
+}
+
+/* A shelf is a folder one level down: a quieter, shorter head, set in. */
+.so-folder--shelf {
+  margin-top: var(--ds-space-1);
+}
+
+.so-folder--shelf .so-folder__head {
+  min-height: var(--so-shelf-head-height);
+  padding-left: var(--ds-space-6);
+  font: var(--ds-font-caption);
+}
+
+.so-folder--shelf > .so-folder__rows {
+  padding-left: var(--ds-space-2);
+}
+
+/* The folder's VS Code: in its colours while it runs, quiet while it does
+   not, and pressed (the DS toggle) while it is on screen. */
+.so-folder__ide .so-agent {
+  opacity: var(--ds-state-disabled);
+  filter: grayscale(1);
+  transition: opacity var(--ds-dur-fast) var(--ds-ease-in-out);
+}
+
+.so-folder__ide[data-running] .so-agent {
+  opacity: 1;
+  filter: none;
+}
+
+/* ── Rows ─────────────────────────────────────────────────────────────── */
+
+.so-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+
+/* Room at the end for the ⋮, which lies over the item. */
+.so-row__open {
+  padding-right: calc(var(--ds-space-8) + var(--ds-space-2));
+}
+
+.so-row__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.so-row__label,
+.so-row__preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.so-row__label {
+  transition: color var(--ds-dur-medium) var(--ds-ease-in-out);
+}
+
+/* News nobody has seen: the label weight and the full ink. The open row is
+   never unread. */
+.so-row[data-unread] .so-row__label {
+  font: var(--ds-font-label);
+  color: var(--ds-text);
+}
+
+/* A name being thought of steps back until it is in. */
+.so-row__label[data-titling] {
+  color: var(--ds-text-3);
+}
+
+.so-row__preview {
+  font: var(--ds-font-meta);
+  color: var(--ds-text-2);
+}
+
+.so-row__open[aria-current="page"] .so-row__preview {
+  color: var(--ds-on-accent);
+}
+
+.so-row__when {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-space-1);
+  font: var(--ds-font-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.so-row__status {
+  flex: none;
+  display: inline-flex;
+}
+
+.so-row__status[data-status="review"] svg { color: var(--ds-primary); }
+.so-row__status[data-status="pending"] svg { color: var(--ds-warning); }
+.so-row__status[data-status="background"] svg { color: var(--ds-text-2); }
+.so-row__status[data-status="done"] svg { color: var(--ds-success); }
+
+/* Done is finished: the mark and the name step back. */
+.so-row[data-status="done"] .so-agent {
+  opacity: var(--ds-state-disabled);
+  filter: grayscale(1);
+}
+
+.so-row[data-status="done"] .so-row__open:not([aria-current]) .so-row__label {
+  color: var(--ds-text-3);
+}
+
+/* The corner badge sits on the row's own colour, so it reads over the
+   mark: the drawer's backdrop, or the tint of the open row. */
+.so-row .so-mark__badge {
+  background: var(--ds-backdrop);
+}
+
+.so-row__open[aria-current="page"] .so-mark__badge {
+  background: var(--ds-accent);
+}
+
+/* The ⋮ lies over the end of the item. With a pointer it shows on hover, on
+   focus and on the open row; a finger has no hover, so there it is always
+   there. */
+.so-row__more {
+  position: absolute;
+  top: 50%;
+  right: var(--ds-space-1);
+  translate: 0 -50%;
+  opacity: 0;
+  transition: opacity var(--ds-dur-fast) var(--ds-ease-in-out);
+}
+
+.so-row:hover .so-row__more,
+.so-row:focus-within .so-row__more,
+.so-row__more[aria-expanded="true"],
+.so-row__open[aria-current="page"] + .so-row__more {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .so-row__more {
+    opacity: 1;
+  }
+}
+
+.so-touch .so-row__more {
+  opacity: 1;
+}
+
+.so-menu-heading {
+  margin: 0;
+  padding: var(--ds-space-2) var(--ds-space-4) var(--ds-space-1);
+  font: var(--ds-font-caption);
+  color: var(--ds-text-2);
+}
+
+/* ── Banners ──────────────────────────────────────────────────────────── */
+
+.so-banner {
+  flex: none;
+  padding: var(--ds-space-3) var(--ds-space-3) 0;
+}
+
+.so-banner[hidden] {
+  display: none;
+}
+
+.so-banner__text {
+  min-width: 0;
+}
+
+/* ── Dialogs of the bar and the row menu ──────────────────────────────── */
+
+.so-options {
+  display: grid;
+  gap: var(--ds-space-4);
+}
+
+.so-usage-reading {
+  display: grid;
+  gap: var(--ds-space-5);
+  inline-size: min(var(--so-usage-reading-width), 100%);
+}
+
+.so-usage-row {
+  display: grid;
+  gap: var(--ds-space-2);
+}
+
+.so-usage-row__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--ds-space-3);
+}
+
+.so-usage-row__name {
+  font: var(--ds-font-label);
+  color: var(--ds-text);
+}
+
+.so-usage-row__used {
+  font: var(--ds-font-body);
+  color: var(--ds-text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.so-usage-row__reset {
+  font: var(--ds-font-meta);
+  color: var(--ds-text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.so-usage-row--cost {
+  padding-top: var(--ds-space-4);
+  border-top: 1px solid var(--ds-line);
+}
+
+.so-rename .ds-field {
+  inline-size: min(var(--so-rename-width), 100%);
+}
+
+.so-info-dialog .ds-dialog__title {
+  min-width: 0;
+}
+
+/* The machine's facts about a session: technical detail, in the code face. */
+.so-facts {
+  display: grid;
+  gap: var(--ds-space-2);
+}
+
+.so-fact {
+  font: var(--ds-font-code);
+  color: var(--ds-text-2);
+}
+
+/* ── Phones ───────────────────────────────────────────────────────────── */
+
+/* The brand keeps its mark on a phone; the bar's width is the session's. */
+@media (max-width: 600px) {
+  .so-app .ds-topbar .ds-brand__name {
+    display: none;
+  }
+
+  .so-topbar {
+    margin-left: var(--ds-space-1);
+  }
+}
+
+/* A phone in portrait: the bar holds the menu, the mark, the name and the
+   session's actions, and nothing that can wait. Naming the session again
+   is a nicety the name's own width is worth more than; the name gives up
+   its reserve before a control goes off the edge. */
+@media (max-width: 480px) {
+  .so-topbar > #titleRegen {
+    display: none;
+  }
+
+  /* Home is the drawer's first item, so the mark can go too. */
+  .so-app .ds-topbar > .ds-brand {
+    display: none;
+  }
+
+  .so-topbar__actions {
+    gap: 0;
+  }
+
+  .so-title {
+    min-width: 0;
+  }
+}

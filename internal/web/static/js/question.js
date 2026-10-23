@@ -21,7 +21,8 @@
 // modal dialog lives in, so a toast from here would be a sentence nobody
 // sees.
 
-import { el, setClass, restoreFocus } from './api.js';
+import { el, restoreFocus } from './api.js';
+import { iconEl, showOverlay, hideOverlay } from './ui.js';
 import { agentMark } from './logos.js';
 import { dictated } from './keyboard.js';
 import { speak, stopSpeaking } from './voice.js';
@@ -73,7 +74,7 @@ const CANCEL_CONFIRM_FOR = 4000;
 // a question nobody has read. A key (Enter, a digit) is never a stray tap,
 // and is taken at once.
 const TAP_ARM = 600;
-const ARMED = '.q-scroll button, .q-actions button, .q-open';
+const ARMED = '.so-q-scroll button, .so-q-actions button, .so-q-open';
 
 // How long the request that gives an answer can be on its way (call's
 // timeout, and a margin). A send this browser has on record that is younger
@@ -81,10 +82,14 @@ const ARMED = '.q-scroll button, .q-actions button, .q-open';
 // one lost its reply.
 const SEND_FLIGHT = 25000;
 
-const CLOSE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
-const PREV_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>';
-const NEXT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
-const SPEAKER_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6"/><path d="M18.3 6.5a7.5 7.5 0 0 1 0 11"/></svg>';
+// The tone of the progress line's alert, by its kind; working is the
+// neutral alert, with a spinner where its icon would be.
+const STATUS_TONE = { done: 'ds-alert--success', error: 'ds-alert--error' };
+
+// spinnerEl is the arc spinner in the place an alert's 20px icon has.
+function spinnerEl() {
+  return el('span', { class: 'so-q-spin', 'aria-hidden': 'true' }, el('span', { class: 'ds-spinner' }));
+}
 
 /**
  * call is one request whose refusal is an answer worth reading - the way
@@ -159,6 +164,9 @@ function sessionPath(id, tail) {
 // The one dialog there is. A second call while it is open does not open a
 // second one: it brings the session asked for to the front of the walk.
 let open = null;
+
+// Numbers the fields of one's own, so each label names its own field.
+let ownSeq = 0;
 
 // kept is a small map this browser keeps for every tab of it: in memory,
 // and in localStorage for as long as `ttl` says (storage that is off or full
@@ -306,12 +314,16 @@ export function openQuestions(ctx, startId = '') {
 }
 
 function mount(ctx, startId) {
-  const dialog = el('dialog', { class: 'sheet question-sheet', 'aria-label': 'Questions' });
-  // Everything is drawn inside this one element and never on the dialog
-  // itself: keyboard.js parks its copy of the keyboard button on the dialog,
-  // and redrawing the dialog's own children would take that away. It can
-  // hold the focus itself, for a redraw that took away what had it.
-  const shell = el('div', { class: 'q-shell', tabindex: '-1' });
+  // A Dashboard-Style dialog (so-question.css makes it the whole screen on a
+  // phone and in touch mode). Its backdrop does not close it: a stray tap
+  // beside the box, from a car's seat, is not a wish to leave the question.
+  const dialog = el('dialog', { class: 'ds-dialog so-question', 'aria-label': 'Questions' },
+    el('div', { class: 'ds-dialog__backdrop' }));
+  // Everything is drawn inside the box and never on the dialog itself:
+  // keyboard.js parks its copy of the keyboard button on the dialog, and
+  // redrawing the dialog's own children would take that away. It can hold
+  // the focus itself, for a redraw that took away what had it.
+  const shell = el('div', { class: 'ds-dialog__box so-q-shell', tabindex: '-1' });
   dialog.append(shell);
 
   // The walk: the sessions in the order they are shown, and where it is.
@@ -708,11 +720,12 @@ function mount(ctx, startId) {
     armedFor = '';
     stopRunWatch();
     stopConnTimer();
-    setClass(shell, 'not-live', false);
-    shell.replaceChildren(el('div', { class: 'q-finished' },
-      el('div', { class: 'q-finished-mark', 'aria-hidden': 'true', html: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>' }),
-      el('h2', { class: 'q-finished-title', text: answeredHere ? 'All questions answered' : 'No question is waiting' }),
-      el('button', { class: 'ds-btn q-big', type: 'button', text: 'Close', onclick: close })));
+    shell.removeAttribute('data-stale');
+    // The last word is DS's empty state: nothing is left to answer.
+    shell.replaceChildren(el('div', { class: 'ds-empty so-q-finished', role: 'status' },
+      el('span', { class: 'ds-empty__disc', 'aria-hidden': 'true' }, iconEl('check', 24)),
+      el('h2', { class: 'ds-empty__title so-q-finished-title', text: answeredHere ? 'All questions answered' : 'No question is waiting' }),
+      el('button', { class: 'ds-btn ds-btn--tonal so-q-big', type: 'button', text: 'Close', onclick: close })));
     closeTimer = setTimeout(close, MOVE_ON);
   }
 
@@ -1330,7 +1343,7 @@ function mount(ctx, startId) {
     } finally {
       if (mine === sayGen) {
         speaking = false;
-        paintReading(shell.querySelector('.q-read'));
+        paintReading(shell.querySelector('.so-q-read'));
       }
     }
   }
@@ -1339,17 +1352,14 @@ function mount(ctx, startId) {
     sayGen += 1;
     if (speaking) stopSpeaking();
     speaking = false;
-    paintReading(shell.querySelector('.q-read'));
+    paintReading(shell.querySelector('.so-q-read'));
   }
 
   function paintReading(button) {
     if (!button || !button.isConnected) return;
     const words = speaking ? 'Stop reading' : 'Read aloud';
-    setClass(button, 'speaking', speaking);
     button.setAttribute('aria-pressed', speaking ? 'true' : 'false');
-    button.setAttribute('aria-label', words);
-    button.title = words;
-    button.querySelector('.q-read-text').textContent = words;
+    if (button.textContent !== words) button.textContent = words;
   }
 
   // A failure that belongs to no step - the voice, the microphone - is said
@@ -1441,13 +1451,13 @@ function mount(ctx, startId) {
     const bodyKey = [shown ? shown.rev : '', shown ? shown.phase : '', shown === digest ? '' : 'past',
       digest ? digest.phase : '', st.item, st.phase, st.error, st.note, st.retry || '', st.after,
       st.phase === 'check' ? String(ctx.reachable ? ctx.reachable() : true) : ''].join('\u0000');
-    const same = !!drawn && drawn.id === id && !!shell.querySelector('.q-scroll');
+    const same = !!drawn && drawn.id === id && !!shell.querySelector('.so-q-scroll');
     if (!force && same && drawn.head === head && drawn.title === title && drawn.body === bodyKey) {
       paintProgress();
       return;
     }
     const memo = focusMemo(id, st);
-    if (same && drawn.head !== head) shell.querySelector('.q-top').replaceWith(top(id));
+    if (same && drawn.head !== head) shell.querySelector('.so-q-top').replaceWith(top(id));
     else if (!same) shell.replaceChildren(top(id));
     if (same && drawn.title !== title && drawn.body === bodyKey && !force) patchTitle(session);
     if (!same || force || drawn.body !== bodyKey) drawBody(id, session, shown, st);
@@ -1466,10 +1476,10 @@ function mount(ctx, startId) {
   function drawBody(id, session, digest, st) {
     const scroll = body(id, session, digest, st);
     const actions = footer(id, digest, st);
-    const oldScroll = shell.querySelector('.q-scroll');
-    const oldActions = shell.querySelector('.q-actions');
-    const keep = oldScroll && oldScroll.querySelector('.q-own');
-    const fresh = scroll.querySelector('.q-own');
+    const oldScroll = shell.querySelector('.so-q-scroll');
+    const oldActions = shell.querySelector('.so-q-actions');
+    const keep = oldScroll && oldScroll.querySelector('.so-q-own');
+    const fresh = scroll.querySelector('.so-q-own');
     if (keep && fresh && ownOf.get(keep) === st && keep.dataset.id === fresh.dataset.id
       && keep.dataset.at === fresh.dataset.at && keep.dataset.sig === fresh.dataset.sig) {
       graft(keep, fresh, oldScroll, scroll);
@@ -1501,16 +1511,19 @@ function mount(ctx, startId) {
       }
       o.before(...before);
       o.after(...after);
-      op.className = np.className;
+      for (const name of op.getAttributeNames()) if (!np.hasAttribute(name)) op.removeAttribute(name);
+      for (const name of np.getAttributeNames()) {
+        if (op.getAttribute(name) !== np.getAttribute(name)) op.setAttribute(name, np.getAttribute(name));
+      }
       o = op;
       n = np;
     }
   }
 
   function patchTitle(session) {
-    const title = shell.querySelector('.q-session-title');
+    const title = shell.querySelector('.so-q-session-title');
     if (title && session) title.textContent = session.title;
-    const folder = shell.querySelector('.q-session-folder');
+    const folder = shell.querySelector('.so-q-session-folder');
     if (folder && session) folder.textContent = ctx.folderOf(session);
   }
 
@@ -1522,16 +1535,16 @@ function mount(ctx, startId) {
     const active = document.activeElement;
     if (!active || !shell.contains(active) || active === shell) return null;
     const memo = { id, item: st.item, sig: st.signature, sel: '', start: null, end: null };
-    if (active.classList.contains('q-own-field')) {
-      memo.sel = '.q-own-field';
+    if (active.classList.contains('so-q-own-field')) {
+      memo.sel = '.so-q-own-field';
       memo.start = active.selectionStart;
       memo.end = active.selectionEnd;
-    } else if (active.classList.contains('q-option')) {
-      memo.sel = '.q-option[data-label="' + CSS.escape(active.dataset.label || '') + '"]';
-    } else if (active.classList.contains('q-nav-btn')) {
-      memo.sel = '.q-nav-btn[data-step="' + active.dataset.step + '"]';
+    } else if (active.classList.contains('so-q-option')) {
+      memo.sel = '.so-q-option[data-label="' + CSS.escape(active.dataset.label || '') + '"]';
+    } else if (active.classList.contains('so-q-nav-btn')) {
+      memo.sel = '.so-q-nav-btn[data-step="' + active.dataset.step + '"]';
     } else {
-      const known = ['q-close', 'q-read', 'q-send', 'q-back', 'q-cancel', 'q-retry', 'q-open-error', 'q-open'];
+      const known = ['so-q-close', 'so-q-read', 'so-q-send', 'so-q-back', 'so-q-cancel', 'so-q-retry', 'so-q-open-error', 'so-q-open'];
       const cls = known.find((one) => active.classList.contains(one));
       memo.sel = cls ? '.' + cls : '';
     }
@@ -1548,15 +1561,15 @@ function mount(ctx, startId) {
     if (memo && memo.sel) {
       // What answers a question is only given the focus back for that same
       // question: the first option of the next one is not what was focused.
-      const answers = memo.sel.startsWith('.q-option') || memo.sel === '.q-own-field';
+      const answers = memo.sel.startsWith('.so-q-option') || memo.sel === '.so-q-own-field';
       const sameQuestion = !!st && memo.id === id && memo.item === st.item && memo.sig === st.signature;
       if (!answers || sameQuestion) target = shell.querySelector(memo.sel);
       if (target && (target.disabled || target.hidden)) target = null;
     }
     if (!target && !force && !memo) return;
-    if (!target) target = shell.querySelector('.q-text') || shell.querySelector('.q-session-title') || shell;
+    if (!target) target = shell.querySelector('.so-q-text') || shell.querySelector('.so-q-session-title') || shell;
     target.focus({ preventScroll: true });
-    if (target.classList && target.classList.contains('q-own-field') && memo && memo.start !== null) {
+    if (target.classList && target.classList.contains('so-q-own-field') && memo && memo.start !== null) {
       try { target.setSelectionRange(memo.start, memo.end); } catch { /* a field that does not take one */ }
     }
   }
@@ -1566,41 +1579,42 @@ function mount(ctx, startId) {
     // Named for what they move between: the questions of other sessions.
     // The steps of one prompt are moved through by the big button below.
     const prev = el('button', {
-      class: 'ds-btn ds-btn--quiet ds-btn--icon q-nav-btn', type: 'button', html: PREV_SVG, title: 'Previous question',
+      class: 'ds-btn ds-btn--quiet ds-btn--icon so-q-nav-btn', type: 'button', 'data-tip': 'Previous question',
       'aria-label': 'Previous question', 'data-step': '-1', disabled: index === 0, onclick: () => go(-1),
-    });
+    }, iconEl('chevronLeft'));
     const next = el('button', {
-      class: 'ds-btn ds-btn--quiet ds-btn--icon q-nav-btn', type: 'button', html: NEXT_SVG, title: 'Next question',
+      class: 'ds-btn ds-btn--quiet ds-btn--icon so-q-nav-btn', type: 'button', 'data-tip': 'Next question',
       'aria-label': 'Next question', 'data-step': '1', disabled: index >= queue.length - 1, onclick: () => go(1),
-    });
+    }, iconEl('chevronRight'));
     // Close is on the left, where a sheet's way out is on a phone: the top
     // right corner is where the keyboard button lands in touch mode.
-    return el('div', { class: 'q-top' },
+    return el('div', { class: 'so-q-top' },
       el('button', {
-        class: 'ds-btn ds-btn--quiet ds-btn--icon q-close', type: 'button', html: CLOSE_SVG, title: 'Close', 'aria-label': 'Close',
+        class: 'ds-btn ds-btn--quiet ds-btn--icon so-q-close', type: 'button', 'data-tip': 'Close', 'aria-label': 'Close',
         onclick: close,
-      }),
+      }, iconEl('close')),
       queue.length < 2
-        ? el('span', { class: 'q-top-title', text: 'Question' })
-        : el('div', { class: 'q-nav' },
-          prev, el('span', { class: 'q-counter', text: counter, 'aria-live': 'polite' }), next));
+        ? el('span', { class: 'so-q-top-title', text: 'Question' })
+        : el('div', { class: 'so-q-nav' },
+          prev, el('span', { class: 'so-q-counter', text: counter, 'aria-live': 'polite' }), next));
   }
 
   function body(id, session, digest, st) {
-    const scroll = el('div', { class: 'q-scroll' });
+    const scroll = el('div', { class: 'so-q-scroll' });
     scroll.append(sessionHead(id, session));
-    const wrap = el('div', { class: 'q-body' });
+    const wrap = el('div', { class: 'so-q-body' });
     scroll.append(wrap);
     if (st.phase === 'check') {
       // Asked for by a link, and the page cannot yet tell whether it is
       // asking: it is looked for, or there is no signal to look with.
       const online = !ctx.reachable || ctx.reachable();
-      scroll.insertBefore(el('div', { class: 'q-reading', role: 'status' },
-        online ? el('span', { class: 'spinner', 'aria-hidden': 'true' }) : null,
+      scroll.insertBefore(el('div', { class: online ? 'ds-alert so-q-reading' : 'ds-alert ds-alert--warning so-q-reading', role: 'status' },
+        online ? spinnerEl() : iconEl('wifiOff'),
         el('span', {
+          class: 'ds-alert__text',
           text: online ? 'Looking for this question…' : 'No connection. The question shows up here as soon as there is signal.',
         })), wrap);
-      scroll.append(el('div', { class: 'q-status', role: 'status', 'aria-live': 'polite', hidden: true }));
+      scroll.append(el('div', { class: 'so-q-status', role: 'status', 'aria-live': 'polite', hidden: true }));
       return scroll;
     }
     const settling = st.phase === 'sending' || st.phase === 'run' || st.phase === 'done' || st.phase === 'gone'
@@ -1609,32 +1623,37 @@ function mount(ctx, startId) {
     // A session that no longer exists is not being read, whatever is left.
     const pending = !settling && !!ctx.sessionOf(id) && !readNow(id, digest);
     const question = digest && digest.question;
-    setClass(wrap, 'pending', pending && !!digest && !!(digest.context || question));
-    setClass(wrap, 'past', past);
+    // What is drawn but not to be answered yet is dimmed: a question being
+    // read again, or the one an answer is going in for (past).
+    if (past) wrap.dataset.state = 'past';
+    else if (pending && !!digest && !!(digest.context || question)) wrap.dataset.state = 'pending';
 
     if (pending) {
-      scroll.insertBefore(el('div', { class: 'q-reading', role: 'status' },
-        el('span', { class: 'spinner', 'aria-hidden': 'true' }),
-        el('span', { text: 'Reading the question…' })), wrap);
+      scroll.insertBefore(el('div', { class: 'ds-alert so-q-reading', role: 'status' },
+        spinnerEl(),
+        el('span', { class: 'ds-alert__text', text: 'Reading the question…' })), wrap);
     }
     const keyless = noKey(digest);
     if (digest && digest.phase === 'error' && st.phase === 'ask') {
       // Without a key, reading again fails the same way: the way out is the
       // settings, where the key is added, or the terminal itself.
+      // The one filled button of the dialog meanwhile: Send is not offered.
       const fix = keyless
-        ? el('a', { class: 'ds-btn q-big', href: '/admin#voiceCard', text: 'Add a key' })
-        : el('button', { class: 'ds-btn q-big', type: 'button', text: 'Try again', onclick: () => readAgain(id) });
-      scroll.insertBefore(el('div', { class: 'q-problem', role: 'alert' },
-        el('p', { text: digest.error || 'The question could not be read.' }),
-        el('div', { class: 'q-problem-actions' },
+        ? el('a', { class: 'ds-btn ds-btn--primary so-q-big', href: '/admin#voiceCard', text: 'Add a key' })
+        : el('button', { class: 'ds-btn ds-btn--primary so-q-big', type: 'button', text: 'Try again', onclick: () => readAgain(id) });
+      scroll.insertBefore(el('div', { class: 'so-q-problem', role: 'alert' },
+        el('div', { class: 'ds-alert ds-alert--error' },
+          iconEl('alertCircle'),
+          el('p', { class: 'ds-alert__text', text: digest.error || 'The question could not be read.' })),
+        el('div', { class: 'so-q-problem-actions' },
           fix,
-          el('button', { class: 'ds-btn q-big', type: 'button', text: 'Open session', onclick: () => openSession(id) }))), wrap);
+          el('button', { class: 'ds-btn so-q-big', type: 'button', text: 'Open session', onclick: () => openSession(id) }))), wrap);
     }
     if (digest && digest.context) {
       // On a short screen the context is two lines, and a tap opens the rest.
       wrap.append(el('p', {
-        class: 'q-context' + (st.contextOpen ? ' open' : ''), text: digest.context,
-        onclick: (event) => { st.contextOpen = !st.contextOpen; setClass(event.currentTarget, 'open', st.contextOpen); },
+        class: 'so-q-context', 'data-open': st.contextOpen, text: digest.context,
+        onclick: (event) => { st.contextOpen = !st.contextOpen; event.currentTarget.toggleAttribute('data-open', st.contextOpen); },
       }));
     }
 
@@ -1643,14 +1662,14 @@ function mount(ctx, startId) {
       const at = Math.min(st.item, items.length - 1);
       const item = items[at];
       if (items.length > 1) {
-        wrap.append(el('div', { class: 'q-step' },
+        wrap.append(el('div', { class: 'so-q-step' },
           el('span', { text: 'Question ' + (at + 1) + ' of ' + items.length }),
-          item.header ? el('span', { class: 'q-chip', text: item.header }) : null));
+          item.header ? el('span', { class: 'so-q-chip', text: item.header }) : null));
       } else if (item.header) {
-        wrap.append(el('div', { class: 'q-step' }, el('span', { class: 'q-chip', text: item.header })));
+        wrap.append(el('div', { class: 'so-q-step' }, el('span', { class: 'so-q-chip', text: item.header })));
       }
-      if (item.text) wrap.append(el('h2', { class: 'q-text', tabindex: '-1', text: item.text }));
-      if (at === 0 && question.detail) wrap.append(el('p', { class: 'q-detail', text: question.detail }));
+      if (item.text) wrap.append(el('h2', { class: 'so-q-text', tabindex: '-1', text: item.text }));
+      if (at === 0 && question.detail) wrap.append(el('p', { class: 'so-q-detail', text: question.detail }));
       wrap.append(options(id, item, at, st, question));
       if (item.free_text || question.kind === 'text' || !(item.options || []).length) {
         wrap.append(ownAnswer(id, st, at, 'Your own answer', signatureOf(digest)));
@@ -1662,28 +1681,31 @@ function mount(ctx, startId) {
       // terminal is asking. Only a session that is waiting gets the field: one
       // at its prompt with nothing asked would take the words as a new task.
       // Nor one with no key: the operator that would type them cannot run.
-      if (digest.summary) wrap.append(el('h2', { class: 'q-text', tabindex: '-1', text: digest.summary }));
-      wrap.append(el('p', { class: 'q-detail', text: 'Say what to answer, and it is given to whatever the terminal is asking.' }));
+      if (digest.summary) wrap.append(el('h2', { class: 'so-q-text', tabindex: '-1', text: digest.summary }));
+      wrap.append(el('p', { class: 'so-q-detail', text: 'Say what to answer, and it is given to whatever the terminal is asking.' }));
       wrap.append(ownAnswer(id, st, -1, 'Your answer', ''));
     } else if (digest && digest.summary && !digest.context) {
       // A question that is no longer there: what the session is doing, as a
       // line and not as a question with a field to answer it in.
-      wrap.append(el('p', { class: 'q-context', text: digest.summary }));
+      wrap.append(el('p', { class: 'so-q-context', text: digest.summary }));
     }
-    if (st.note && st.phase === 'ask') wrap.prepend(el('p', { class: 'q-note', text: st.note }));
-    scroll.append(el('div', { class: 'q-status', role: 'status', 'aria-live': 'polite', hidden: true }));
+    if (st.note && st.phase === 'ask') {
+      wrap.prepend(el('div', { class: 'ds-alert ds-alert--warning so-q-note' },
+        iconEl('info'), el('span', { class: 'ds-alert__text', text: st.note })));
+    }
+    scroll.append(el('div', { class: 'so-q-status', role: 'status', 'aria-live': 'polite', hidden: true }));
     return scroll;
   }
 
   function sessionHead(id, session) {
     const title = session ? session.title : 'This session';
     const folder = session ? ctx.folderOf(session) : '';
-    return el('div', { class: 'q-session' },
-      el('span', { class: 'q-mark' }, agentMark(session ? session.harness : '', 30)),
-      el('span', { class: 'q-session-text' },
-        el('span', { class: 'q-session-title', tabindex: '-1', text: title }),
-        el('span', { class: 'q-session-folder', text: folder, hidden: !folder })),
-      el('button', { class: 'ds-btn q-open', type: 'button', text: 'Open session', onclick: () => openSession(id) }));
+    return el('div', { class: 'so-q-session' },
+      agentMark(session ? session.harness : '', 32),
+      el('span', { class: 'so-q-session-text' },
+        el('span', { class: 'so-q-session-title so-ellipsis', tabindex: '-1', text: title }),
+        el('span', { class: 'so-q-session-folder so-ellipsis', text: folder, hidden: !folder })),
+      el('button', { class: 'ds-btn so-q-open', type: 'button', text: 'Open session', onclick: () => openSession(id) }));
   }
 
   // The options are buttons that say whether they are chosen (aria-pressed):
@@ -1691,23 +1713,32 @@ function mount(ctx, startId) {
   // second tap sends - rather than radio buttons, which arrows would move
   // between and a second press would not send.
   function options(id, item, at, st, question) {
-    const list = el('div', { class: 'q-options', role: 'group', 'aria-label': item.text || 'Options' });
+    const list = el('div', { class: 'so-q-options', role: 'group', 'aria-label': item.text || 'Options' });
     const locked = st.phase !== 'ask' && st.phase !== 'error';
     (item.options || []).forEach((option, n) => {
       const chosen = (st.choices.get(at) || []).includes(option.label) && !(st.texts.get(at) || '').trim();
+      // A DS interactive card as a toggle: its state layers, ripple and
+      // press morph, with the choice said by the key (a filled number, or a
+      // ticked box for a multi-select) and a ring (so-question.css).
       const button = el('button', {
-        class: 'q-option' + (option.recommended ? ' recommended' : '') + (item.multi ? ' multi' : ''),
+        class: 'ds-card ds-card--interactive so-q-option',
         type: 'button',
         'aria-pressed': chosen ? 'true' : 'false',
         'data-label': option.label,
+        'data-multi': !!item.multi,
         disabled: locked,
         onclick: () => choose(id, at, item, option.label, question),
       },
-      el('span', { class: 'q-option-key', 'aria-hidden': 'true', text: item.multi ? '' : String(n + 1) }),
-      el('span', { class: 'q-option-text' },
-        el('span', { class: 'q-option-label' }, option.label,
-          option.recommended ? el('span', { class: 'q-recommended', text: 'Recommended' }) : null),
-        option.description ? el('span', { class: 'q-option-desc', text: option.description }) : null));
+      el('span', { class: 'so-q-option-row' },
+        el('span', { class: 'so-q-option-ring', 'aria-hidden': 'true' }),
+        el('span', { class: 'so-q-option-key', 'aria-hidden': 'true' },
+          item.multi ? iconEl('check', 20) : String(n + 1)),
+        el('span', { class: 'so-q-option-text' },
+          el('span', { class: 'so-q-option-label', text: option.label }),
+          option.description ? el('span', { class: 'so-q-option-desc', text: option.description }) : null,
+          option.recommended
+            ? el('span', { class: 'ds-status ds-status--ok so-q-recommended' }, iconEl('thumbUp', 16), el('span', { text: 'Recommended' }))
+            : null)));
       list.append(button);
     });
     return list;
@@ -1724,7 +1755,7 @@ function mount(ctx, startId) {
     // An option tapped after typing an answer of one's own is the answer now.
     if (typed) {
       st.texts.set(at, '');
-      const field = shell.querySelector('.q-own textarea');
+      const field = shell.querySelector('.so-q-own textarea');
       if (field) field.value = '';
     }
     if (item.multi) {
@@ -1738,7 +1769,7 @@ function mount(ctx, startId) {
 
   function paintChoices(st, at) {
     const chosen = (st.texts.get(at) || '').trim() ? [] : (st.choices.get(at) || []);
-    for (const button of shell.querySelectorAll('.q-option')) {
+    for (const button of shell.querySelectorAll('.so-q-option')) {
       button.setAttribute('aria-pressed', chosen.includes(button.dataset.label) ? 'true' : 'false');
     }
     paintSend();
@@ -1794,9 +1825,9 @@ function mount(ctx, startId) {
   // ownAnswer is the field for an answer the options do not have. `at` is
   // the item it answers, or -1 for the answer to a screen with no question.
   function ownAnswer(id, st, at, label, sig) {
+    const fieldId = 'so-q-own-' + (++ownSeq);
     const field = el('textarea', {
-      class: 'ds-input q-own-field', rows: '2', placeholder: 'Type or dictate an answer…',
-      'aria-label': label,
+      class: 'ds-input so-q-own-field', id: fieldId, rows: '2', placeholder: 'Type or dictate an answer…',
       value: at < 0 ? st.own : (st.texts.get(at) || ''),
       disabled: st.phase !== 'ask' && st.phase !== 'error',
     });
@@ -1818,8 +1849,8 @@ function mount(ctx, startId) {
       const digest = ctx.digestOf(id);
       advance(id, digest && digest.question);
     });
-    const own = el('div', { class: 'q-own', 'data-id': id, 'data-at': String(at), 'data-sig': sig },
-      el('label', { class: 'q-own-label', text: label }),
+    const own = el('div', { class: 'ds-field so-q-own', 'data-id': id, 'data-at': String(at), 'data-sig': sig },
+      el('label', { class: 'ds-field__label', for: fieldId, text: label }),
       dictated(field, field, (text) => {
         field.value = field.value.trim() ? field.value.trimEnd() + ' ' + text : text;
         field.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1833,31 +1864,31 @@ function mount(ctx, startId) {
     const items = (question && question.items) || [];
     const at = Math.min(st.item, Math.max(0, items.length - 1));
     const item = items[at] || null;
+    // A toggle (aria-pressed), and a text button: DS has no speaker glyph
+    // (GLYPH in ui.js).
     const read = el('button', {
-      class: 'ds-btn q-big q-read', type: 'button', 'aria-pressed': speaking ? 'true' : 'false',
-      'aria-label': speaking ? 'Stop reading' : 'Read aloud', title: speaking ? 'Stop reading' : 'Read aloud',
+      class: 'ds-btn so-q-big so-q-read', type: 'button', 'aria-pressed': speaking ? 'true' : 'false',
+      text: speaking ? 'Stop reading' : 'Read aloud',
       onclick: (event) => toggleReading(sayable(digest, item), event.currentTarget),
       disabled: !digest,
-    }, el('span', { class: 'q-read-icon', html: SPEAKER_SVG }),
-    el('span', { class: 'q-read-text', text: speaking ? 'Stop reading' : 'Read aloud' }));
-    setClass(read, 'speaking', speaking);
+    });
     const back = items.length > 1 && st.item > 0 && (st.phase === 'ask' || st.phase === 'error')
-      ? el('button', { class: 'ds-btn q-big q-back', type: 'button', text: 'Back', onclick: () => { st.item -= 1; draw(true); } })
+      ? el('button', { class: 'ds-btn so-q-big so-q-back', type: 'button', text: 'Back', onclick: () => { st.item -= 1; draw(true); } })
       : null;
     const last = !question || st.item >= items.length - 1;
     // "Continue", not "Next question": the arrows at the top are the next
     // question - another session's - and this is the next step of this one.
     const sendBtn = el('button', {
-      class: 'ds-btn ds-btn--primary q-big q-send', type: 'button', text: last ? 'Send' : 'Continue',
+      class: 'ds-btn ds-btn--primary so-q-big so-q-send', type: 'button', text: last ? 'Send' : 'Continue',
       'aria-label': last ? 'Send' : 'Continue to question ' + (at + 2) + ' of ' + items.length,
       onclick: () => advance(id, question),
     });
     const cancel = el('button', {
-      class: 'ds-btn q-big q-cancel', type: 'button', text: 'Cancel', hidden: true,
+      class: 'ds-btn so-q-big so-q-cancel', type: 'button', text: 'Cancel', hidden: true,
       onclick: (event) => pressCancel(id, event.currentTarget),
     });
     const retry = el('button', {
-      class: 'ds-btn ds-btn--primary q-big q-retry', type: 'button', text: 'Try again', hidden: true,
+      class: 'ds-btn ds-btn--primary so-q-big so-q-retry', type: 'button', text: 'Try again', hidden: true,
       onclick: () => {
         if (st.retry === 'digest') { readAgain(id); return; }
         const again = st.phase === 'error' ? againRev(st, ctx.digestOf(id)) : -1;
@@ -1870,16 +1901,16 @@ function mount(ctx, startId) {
       },
     });
     const openIt = el('button', {
-      class: 'ds-btn q-big q-open-error', type: 'button', text: 'Open session', hidden: true,
+      class: 'ds-btn so-q-big so-q-open-error', type: 'button', text: 'Open session', hidden: true,
       onclick: () => openSession(id),
     });
-    return el('div', { class: 'q-actions' }, read, back, cancel, openIt, retry, sendBtn);
+    return el('div', { class: 'so-q-actions' }, read, back, cancel, openIt, retry, sendBtn);
   }
 
   // paintSend keeps Send honest: it can only be pressed for an item that has
   // an answer, and only while nothing is being sent.
   function paintSend() {
-    const sendBtn = shell.querySelector('.q-send');
+    const sendBtn = shell.querySelector('.so-q-send');
     if (!sendBtn) return;
     const id = currentId();
     const st = stateOf(id);
@@ -1897,11 +1928,11 @@ function mount(ctx, startId) {
     if (!id || finished || closed) return;
     const st = stateOf(id);
     paintConnection(st);
-    const line = shell.querySelector('.q-status');
-    const sendBtn = shell.querySelector('.q-send');
-    const cancel = shell.querySelector('.q-cancel');
-    const retry = shell.querySelector('.q-retry');
-    const openIt = shell.querySelector('.q-open-error');
+    const line = shell.querySelector('.so-q-status');
+    const sendBtn = shell.querySelector('.so-q-send');
+    const cancel = shell.querySelector('.so-q-cancel');
+    const retry = shell.querySelector('.so-q-retry');
+    const openIt = shell.querySelector('.so-q-open-error');
     if (!line || !sendBtn) return;
     if (st.phase === 'run' || st.phase === 'done') ownedNow(id, st);
     const run = ctx.answerOf(id);
@@ -1961,11 +1992,22 @@ function mount(ctx, startId) {
     }
     // The voice's own failure, when nothing about the answer is being said.
     if (!words && voiceError && st.phase !== 'check') { kind = 'error'; words = voiceError; }
-    line.dataset.kind = kind;
-    line.replaceChildren();
-    if (kind === 'working') line.append(el('span', { class: 'spinner', 'aria-hidden': 'true' }));
-    if (words) line.append(el('span', { class: 'q-status-words', text: words }));
-    if (detail) line.append(el('span', { class: 'q-status-detail', text: detail }));
+    // A DS alert in the tone of the stage, drawn again only when what it
+    // says has changed: a run moving on repaints this several times a
+    // second, and a spinner made again each time would never turn.
+    const said = [kind, words, detail].join('\u0000');
+    if (line.dataset.said !== said) {
+      line.dataset.said = said;
+      line.dataset.kind = kind;
+      line.className = 'ds-alert so-q-status' + (STATUS_TONE[kind] ? ' ' + STATUS_TONE[kind] : '');
+      line.replaceChildren();
+      if (words) {
+        line.append(kind === 'working' ? spinnerEl() : iconEl(kind === 'done' ? 'checkCircle' : kind === 'error' ? 'alertCircle' : 'info'),
+          el('span', { class: 'ds-alert__text' },
+            el('span', { class: 'so-q-status-words', text: words }),
+            detail ? el('span', { class: 'so-q-status-detail', text: detail }) : null));
+      }
+    }
     line.hidden = !words;
     const busy = st.phase === 'sending' || st.phase === 'run';
     const over = st.phase === 'done' || st.phase === 'gone' || st.phase === 'check' || st.phase === 'stopped';
@@ -1981,16 +2023,16 @@ function mount(ctx, startId) {
     if (!showCancel) st.cancelAt = 0;
     else if (!st.cancelAt || st.cancelWords !== cancelWords) st.cancelAt = Date.now();
     st.cancelWords = showCancel ? cancelWords : '';
+    // Stop is said in words, never in red: there are no red buttons.
     if (cancel.textContent !== cancelWords) cancel.textContent = cancelWords;
-    setClass(cancel, 'danger', confirming);
     cancel.hidden = !showCancel;
     retry.hidden = !failed || !st.retry;
     openIt.hidden = !failed || !ctx.sessionOf(id) || filedDone(id);
     // With no key nothing can be sent at all: the problem box says so, and
     // offers the way to the key instead.
     sendBtn.hidden = busy || over || st.phase === 'error' || !retry.hidden || noKey(ctx.digestOf(id));
-    for (const option of shell.querySelectorAll('.q-option')) option.disabled = busy || over;
-    const field = shell.querySelector('.q-own-field');
+    for (const option of shell.querySelectorAll('.so-q-option')) option.disabled = busy || over;
+    const field = shell.querySelector('.so-q-own-field');
     if (field) field.disabled = busy || over;
     if (!sendBtn.hidden) paintSend();
     if (kind) line.scrollIntoView({ block: 'nearest' });
@@ -2007,28 +2049,33 @@ function mount(ctx, startId) {
   function paintConnection(st) {
     const conn = ctx.connection ? ctx.connection() : { kind: 'live', words: '' };
     const old = (conn.kind === 'connecting' || conn.kind === 'offline') && st.phase !== 'check';
-    let line = shell.querySelector('.q-conn');
+    let line = shell.querySelector('.so-q-conn');
     if (old && !line) {
-      const head = shell.querySelector('.q-top');
+      const head = shell.querySelector('.so-q-top');
       if (head) {
-        line = el('div', { class: 'q-conn', role: 'status' },
-          el('span', { class: 'q-conn-dot', 'aria-hidden': 'true' }),
-          el('span', { class: 'q-conn-words' }),
-          el('span', { class: 'q-conn-detail' }));
+        // Home's connection line as net.js draws the page's own: a DS alert,
+        // built once, whose words change.
+        line = el('div', { class: 'ds-alert ds-alert--warning so-q-conn', role: 'status' },
+          iconEl('wifiOff'),
+          el('span', { class: 'ds-alert__text' },
+            el('span', { class: 'so-q-conn-words' }),
+            el('span', { class: 'so-q-conn-detail' })));
         head.after(line);
       }
     }
     if (line) {
       line.hidden = !old;
       line.dataset.status = conn.kind;
-      const words = line.querySelector('.q-conn-words');
+      line.classList.toggle('ds-alert--warning', conn.kind !== 'offline');
+      line.classList.toggle('ds-alert--error', conn.kind === 'offline');
+      const words = line.querySelector('.so-q-conn-words');
       if (words.textContent !== conn.words) words.textContent = conn.words;
       const detail = st.phase === 'ask' || st.phase === 'error'
         ? 'This question may already have been answered.' : '';
-      const said = line.querySelector('.q-conn-detail');
+      const said = line.querySelector('.so-q-conn-detail');
       if (said.textContent !== detail) said.textContent = detail;
     }
-    setClass(shell, 'not-live', old);
+    shell.toggleAttribute('data-stale', old);
     if (old && !connTimer) connTimer = setInterval(sayConnection, CONN_EVERY);
     else if (!old) stopConnTimer();
   }
@@ -2061,8 +2108,8 @@ function mount(ctx, startId) {
     if (key === armedFor) return;
     armedFor = key;
     if (armTimer) clearTimeout(armTimer);
-    setClass(shell, 'q-arming', true);
-    armTimer = setTimeout(() => { armTimer = null; setClass(shell, 'q-arming', false); }, TAP_ARM);
+    shell.setAttribute('data-arming', '');
+    armTimer = setTimeout(() => { armTimer = null; shell.removeAttribute('data-arming'); }, TAP_ARM);
   }
 
   function openSession(id) {
@@ -2082,9 +2129,13 @@ function mount(ctx, startId) {
     stopConnTimer();
     stopReading();
     clearVoiceError();
-    if (dialog.open) dialog.close();
-    dialog.remove();
-    restoreFocus(was);
+    // DS plays the exit and gives the focus back to the opener at once; the
+    // dialog leaves the page once the exit has played. An opener that is
+    // gone by now - rebuilt meanwhile - leaves the focus nowhere, and the
+    // page is asked where it should go.
+    hideOverlay(dialog, { remove: true });
+    const now = document.activeElement;
+    if (!now || now === document.body || dialog.contains(now)) restoreFocus(was);
   }
 
   // The digits answer a single choice from a keyboard, the way the terminal
@@ -2092,7 +2143,7 @@ function mount(ctx, startId) {
   dialog.addEventListener('keydown', (event) => {
     if (event.target && event.target.closest && event.target.closest('textarea, input')) return;
     if (event.altKey || event.ctrlKey || event.metaKey || !/^[1-9]$/.test(event.key)) return;
-    const option = shell.querySelectorAll('.q-option')[Number(event.key) - 1];
+    const option = shell.querySelectorAll('.so-q-option')[Number(event.key) - 1];
     if (!option || option.disabled) return;
     event.preventDefault();
     option.click();
@@ -2100,18 +2151,23 @@ function mount(ctx, startId) {
   // A click with a pointer behind it (detail > 0: a key's click has none)
   // on a button that is still arming is a stray tap, and goes nowhere.
   shell.addEventListener('click', (event) => {
-    if (!event.detail || !shell.classList.contains('q-arming')) return;
+    if (!event.detail || !shell.hasAttribute('data-arming')) return;
     if (!event.target || !event.target.closest || !event.target.closest(ARMED)) return;
     event.preventDefault();
     event.stopPropagation();
   }, true);
-  dialog.addEventListener('cancel', (event) => { event.preventDefault(); close(); });
-  dialog.addEventListener('close', () => { if (open) close(); });
+  // Escape, or the dialog closed natively: DS starts the exit, and this
+  // closes the walk with it.
+  dialog.addEventListener('close', () => { if (!closed) close(); });
 
-  document.body.append(dialog);
-  dialog.showModal();
   start();
   if (!queue.length) finish(); else draw(true);
+  // The first focus is the question itself, as placeFocus would give it,
+  // and not the first button DS would otherwise pick (Close).
+  const first = shell.querySelector('.so-q-text') || shell.querySelector('.so-q-session-title');
+  if (first) first.setAttribute('autofocus', '');
+  const opener = was && was !== document.body && was.isConnected ? was : null;
+  showOverlay(dialog, opener);
 
   return { sync, focus, close };
 }

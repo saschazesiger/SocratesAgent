@@ -49,8 +49,8 @@ async function newSession(page, harness) {
   await ensureNav(page);
   await page.click('#newSession');
   await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-  await page.waitForSelector('#newSessionSheet .seg[data-value="' + harness + '"]', { timeout: 10000 });
-  await page.click('#newSessionSheet .seg[data-value="' + harness + '"]');
+  await page.waitForSelector('#newSessionSheet .so-settings__program[data-value="' + harness + '"]', { timeout: 10000 });
+  await page.click('#newSessionSheet .so-settings__program[data-value="' + harness + '"]');
   await page.click('#nsStart');
   await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
   await page.waitForFunction((before) => location.hash.length > 1 && location.hash.slice(1) !== before,
@@ -78,7 +78,7 @@ async function rename(s, id, title) {
   await s.context.request.patch(s.url + '/api/sessions/' + id, { data: { title } });
   await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
   await s.page.waitForFunction((want) =>
-    [...document.querySelectorAll('#sessionList .chat-item .label')].some((n) => n.textContent === want)
+    [...document.querySelectorAll('#sessionList .so-row__label')].some((n) => n.textContent === want)
     || (document.getElementById('sessionTitle') || {}).textContent === want,
   title, { timeout: 20000 }).catch(() => {});
   // The header carries the name of the session that is open, and it is redrawn
@@ -96,7 +96,7 @@ async function sessionShot() {
     await setup(s.page, s.url);
     await domRenderer(s);
     await s.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('#newSession', { timeout: 15000 });
+    await s.page.waitForSelector('#newSession', { state: 'attached', timeout: 15000 });
 
     const shell = await newSession(s.page, 'shell');
     await rename(s, shell, 'socrates · make check');
@@ -125,7 +125,7 @@ async function phoneShot() {
     await setup(s.page, s.url);
     await domRenderer(s);
     await s.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('#newSession', { timeout: 15000 });
+    await s.page.waitForSelector('#newSession', { state: 'attached', timeout: 15000 });
 
     const id = await newSession(s.page, 'claude');
     await rename(s, id, 'Claude Code · on the train');
@@ -135,11 +135,12 @@ async function phoneShot() {
     // is of. It may already be up on a touch screen; the switch is pressed
     // only when it is not.
     await s.page.click('#optionsBtn');
-    await s.page.waitForSelector('.menu [data-option="keybar"]', { timeout: 10000 });
-    if (await s.page.$eval('.menu [data-option="keybar"]', (n) => n.getAttribute('aria-checked') !== 'true')) {
-      await s.page.click('.menu [data-option="keybar"]');
+    await s.page.waitForSelector('#optionsDialog[open] [data-option="keybar"]', { state: 'attached', timeout: 10000 });
+    if (!(await s.page.$eval('#optionsDialog [data-option="keybar"]', (n) => n.checked))) {
+      await s.page.click('#optionsDialog .ds-switch:has([data-option="keybar"])');
     }
-    await s.page.keyboard.press('Escape');
+    await s.page.click('#optionsDialog [data-close].ds-btn');
+    await s.page.waitForSelector('#optionsDialog[open]', { state: 'detached', timeout: 10000 }).catch(() => {});
     await s.page.waitForSelector('#keybar:not([hidden])', { timeout: 10000 }).catch(() => {});
     await wait(600);
 
@@ -156,27 +157,25 @@ async function adminShot() {
   try {
     await setup(s.page, s.url);
     await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('.harness-card', { timeout: 20000 });
+    await s.page.waitForSelector('.so-program', { timeout: 20000 });
     // Long enough for the cards to have been rendered and re-rendered by the
     // dashboard's own polls; scrolling before that would be undone by them.
     await wait(4000);
 
-    // Put the Programs heading just below the sticky top bar: those cards are
-    // what the picture is of, and they are not the first thing on the page.
+    // Put the Programs heading at the top of the view: those cards are what
+    // the picture is of, and they are not the first thing on the page. The
+    // view is the page's scroller, and the cards keep a margin to its top.
     await s.page.evaluate(() => {
       if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-      // The cards replace the placeholder that carried the "Programs"
-      // heading, so the anchor is the container they are rendered into.
       const cards = document.getElementById('harnessCards');
-      if (!cards) return;
-      cards.scrollIntoView({ block: 'start' });
-      const bar = document.querySelector('header, .topbar, .top-bar');
-      scrollBy(0, -((bar ? bar.getBoundingClientRect().height : 56) + 16));
+      if (cards) cards.scrollIntoView({ block: 'start' });
     });
     // The pointer is left wherever the last click put it, and a hovered
     // control in a documentation picture reads as a state rather than a button.
     await s.page.mouse.move(4, 4);
-    await wait(200);
+    // The scroll moves the drawer's pill to Programs; it glides there on the
+    // spring, and a picture taken mid-glide shows it across two items.
+    await wait(1500);
 
     mkdirSync(DOCS, { recursive: true });
     await s.page.screenshot({ path: join(DOCS, 'screenshot-admin.png') });

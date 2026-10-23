@@ -14,7 +14,8 @@
 // The full status, and the buttons to test and sync, are on the admin page's
 // Storage card, which the banner links to.
 
-import { api, el, onWake } from './api.js';
+import { api, onWake, infoTip } from './api.js';
+import { html, raw, icon, morph } from './ui.js';
 
 // How often the state is read while everything is fine, and while it is not.
 // A problem is checked more often so the banner leaves soon after it is over.
@@ -63,15 +64,18 @@ export function bannerText(storage) {
   return null;
 }
 
-/** mountStorageBanner fills `host` and keeps it current. */
+/**
+ * mountStorageBanner fills `host` and keeps it current. The banner is a DS
+ * alert: a warning while the bucket cannot be reached - everything still
+ * works and is kept here - and an error once another Socrates has taken it
+ * over, because then what is done here is no longer backed up at all. The
+ * reason the bucket gave is technical detail, behind the "i".
+ */
 export function mountStorageBanner(host) {
   if (!host) return;
-  const text = el('span', { class: 'storage-banner-text' });
-  const link = el('a', { class: 'storage-banner-link', href: '/admin#storageCard', text: 'Details' });
-  host.replaceChildren(el('span', { class: 'storage-banner-dot', 'aria-hidden': 'true' }), text, link);
-
-  let timer = null;
-  let trouble = false;
+  // The "i" is built once per reason and kept through every redraw.
+  let tip = null;
+  let tipFor = '';
 
   const draw = (storage) => {
     const said = bannerText(storage);
@@ -79,9 +83,23 @@ export function mountStorageBanner(host) {
     host.hidden = !said;
     if (!said) return;
     host.dataset.kind = said.kind;
-    if (text.textContent !== said.text) text.textContent = said.text;
-    host.title = said.title || '';
+    const fenced = said.kind === 'fenced';
+    morph(host, html`<div class="${fenced ? 'ds-alert ds-alert--error' : 'ds-alert ds-alert--warning'}">${
+      raw(icon(fenced ? 'alertCircle' : 'alert', 20))
+    }<span class="ds-alert__text so-banner__text">${said.text}</span><a class="ds-btn ds-btn--text ds-btn--sm" href="/admin#storageCard">Details</a></div>`);
+    const alert = host.firstElementChild;
+    const reason = said.title || '';
+    if (reason !== tipFor) {
+      if (tip) tip.remove();
+      tip = reason ? infoTip([reason], { label: 'Why the storage cannot be reached', code: true }) : null;
+      if (tip) tip.setAttribute('data-ds-keep', '');
+      tipFor = reason;
+    }
+    if (tip && tip.parentElement !== alert) alert.insertBefore(tip, alert.querySelector('.ds-btn--text'));
   };
+
+  let timer = null;
+  let trouble = false;
 
   const read = async () => {
     clearTimeout(timer);

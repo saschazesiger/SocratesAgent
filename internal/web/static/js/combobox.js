@@ -1,4 +1,5 @@
-// A searchable list for picking a model or a working directory.
+// A searchable list for picking a model or a working directory, and a closed
+// one for picking a profile (dropdown).
 //
 // The model catalogue has several hundred entries, so a plain <select> is
 // unusable and a datalist gives no control over what is shown. This is the
@@ -239,7 +240,9 @@ export function combobox(options = {}) {
 
   // One listener for every option, ever: the list is patched in place, and an
   // option kept by the patch keeps the listeners it had.
-  list.addEventListener('pointerdown', (event) => event.preventDefault());
+  // The chevron too: a press on it that took the focus would close the list
+  // on blur only for the click to open it again.
+  for (const part of [list, toggle]) part.addEventListener('pointerdown', (event) => event.preventDefault());
   list.addEventListener('click', (event) => {
     const option = event.target.closest('.ds-combo__option');
     if (!option) return;
@@ -274,54 +277,66 @@ export function combobox(options = {}) {
   };
 }
 
+
 /**
- * dropdown builds a closed choice that is not typed into: a field that shows
- * what is chosen, and a list under it whose entries can be as rich as they
- * need to be. It is for a short list whose entries say more than a name - a
- * profile and how much of its account is left - where a row of buttons runs
- * out of width after three and a search box has nothing to search.
+ * dropdown builds a closed choice that is not typed into: the DS combobox
+ * with a button for its field, so the list is opened, placed and closed like
+ * every other one (DS.overlay), and entries that say more than a name. It is
+ * for a short list whose entries carry what the choice is made by - a profile
+ * and how much of its account is left - where a row of buttons runs out of
+ * width after three and a search box has nothing to search.
  *
  * options.value        current value
  * options.onChange     called with the new value when one is picked
  * options.items        () => [{value, ...}]
- * options.renderItem   (item, chosen) => Node, an entry in the open list
- * options.renderValue  (item) => Node, what the closed field shows; the
- *                      entry itself when left out
+ * options.renderItem   (item, chosen) => html`` markup, the inside of an
+ *                      entry in the open list (.ds-combo__name and
+ *                      .ds-combo__meta, and whatever else it needs)
+ * options.renderValue  (item) => html`` markup, what the closed field shows;
+ *                      the entry's label when left out
  * options.label        the field's accessible name
+ * options.id           the field's id, for a <label for>
  *
- * It goes once the profile is chosen from radio cards; until then its list
- * opens in place under the field rather than being pinned over the page.
+ * Returns { node, button, setValue(value, notify), value(), refresh(), isOpen(), focus() }.
  */
 export function dropdown(options = {}) {
   const {
     value = '',
     onChange = () => {},
     items = () => [],
-    renderItem = (item) => el('span', { class: 'combo-label', text: item.label || item.value }),
-    renderValue = null,
+    renderItem = (item) => html`<span class="ds-combo__name">${item.label || item.value}</span>`,
+    renderValue = (item) => html`${item.label || item.value}`,
     label = '',
+    id: fieldId = '',
   } = options;
 
   const id = 'combo' + (++comboCount);
   let current = value ?? '';
   let all = [];
   let active = -1;
-  let isOpen = false;
 
-  const face = el('span', { class: 'drop-face' });
+  const face = el('span', { class: 'so-drop__face' });
   const button = el('button', {
-    class: 'ds-input drop-button', type: 'button',
-    'aria-haspopup': 'listbox', 'aria-expanded': 'false', 'aria-controls': id + '-list',
+    class: 'ds-input ds-combo__input so-drop__field', type: 'button', id: fieldId || null,
+    role: 'combobox', 'aria-haspopup': 'listbox', 'aria-expanded': 'false', 'aria-controls': id + '-list',
     'aria-label': label || null,
-  }, face, el('span', { class: 'combo-caret' }));
-  const list = el('div', { class: 'combo-list drop-list', id: id + '-list', role: 'listbox', hidden: true });
-  const root = el('div', { class: 'combo drop' }, button, list);
-  function chosenItem() { return (items() || []).find((item) => item.value === current) || null; }
+  }, face);
+  const toggle = el('button', {
+    class: 'ds-combo__toggle', type: 'button', tabindex: '-1', 'aria-label': 'Show all',
+  }, iconEl('chevronDown', 20));
+  const list = el('ul', { class: 'ds-combo__list', id: id + '-list', role: 'listbox', 'aria-label': label || null });
+  const popup = el('div', { class: 'ds-combo__popup', hidden: true }, list);
+  const node = el('div', { class: 'ds-combo so-drop' }, button, toggle, popup);
+
+  const isOpen = () => button.getAttribute('aria-expanded') === 'true';
+  const chosenItem = () => (items() || []).find((item) => item.value === current) || null;
+  // An option's id is its place in the list, which is drawn whole on every
+  // opening.
+  const optionId = (index) => id + '-opt-' + index;
 
   function drawFace() {
-    face.replaceChildren();
     const item = chosenItem();
-    if (item) face.append(renderValue ? renderValue(item) : renderItem(item, true));
+    morph(face, item ? renderValue(item) : '');
   }
 
   function setValue(next, notify = true) {
@@ -331,32 +346,19 @@ export function dropdown(options = {}) {
   }
 
   function render() {
-    list.replaceChildren();
-    all.forEach((item, index) => {
+    morph(list, all.map((item, index) => {
       const chosen = item.value === current;
-      list.append(el('div', {
-        class: 'combo-option drop-option' + (index === active ? ' active' : '') + (chosen ? ' chosen' : ''),
-        role: 'option',
-        'data-value': item.value,
-        id: id + '-opt-' + index,
-        'aria-selected': chosen ? 'true' : 'false',
-        // mousedown, not click: the button must not lose focus first.
-        onmousedown: (event) => {
-          event.preventDefault();
-          choose(index);
-        },
-        onmouseenter: () => { setActive(index, false); },
-      }, renderItem(item, chosen)));
-    });
+      return html`<li class="ds-combo__option" id="${optionId(index)}" role="option" data-value="${item.value}" data-ds-key="${item.value}" aria-selected="${chosen ? 'true' : 'false'}"${index === active ? html` data-active` : ''}>${renderItem(item, chosen)}</li>`;
+    }).join(''));
+    markActive(true);
   }
 
-  function setActive(index, scroll = true) {
-    active = index;
-    const nodes = list.querySelectorAll('.combo-option');
-    nodes.forEach((node, i) => node.classList.toggle('active', i === index));
-    if (index >= 0 && index < nodes.length) {
-      button.setAttribute('aria-activedescendant', id + '-opt-' + index);
-      if (scroll) nodes[index].scrollIntoView({ block: 'nearest' });
+  function markActive(scroll) {
+    const nodes = list.querySelectorAll('.ds-combo__option');
+    nodes.forEach((option, i) => option.toggleAttribute('data-active', i === active));
+    if (active >= 0 && active < nodes.length) {
+      button.setAttribute('aria-activedescendant', nodes[active].id);
+      if (scroll) nodes[active].scrollIntoView({ block: 'nearest' });
     } else {
       button.removeAttribute('aria-activedescendant');
     }
@@ -365,19 +367,13 @@ export function dropdown(options = {}) {
   function open() {
     all = items() || [];
     active = all.findIndex((item) => item.value === current);
-    isOpen = true;
-    list.hidden = false;
-    button.setAttribute('aria-expanded', 'true');
     render();
-    if (active >= 0) setActive(active);
+    if (!isOpen()) DS.overlay.open(popup, { opener: button });
   }
 
   function close() {
-    if (!isOpen) return;
-    isOpen = false;
-    list.hidden = true;
-    button.setAttribute('aria-expanded', 'false');
     button.removeAttribute('aria-activedescendant');
+    if (isOpen()) DS.overlay.close(popup);
   }
 
   function choose(index) {
@@ -388,7 +384,7 @@ export function dropdown(options = {}) {
   }
 
   button.addEventListener('click', () => {
-    if (isOpen) close();
+    if (isOpen()) close();
     else open();
   });
 
@@ -397,29 +393,30 @@ export function dropdown(options = {}) {
       case 'ArrowDown':
       case 'ArrowUp': {
         event.preventDefault();
-        if (!isOpen) return open();
+        if (!isOpen()) return open();
         const step = event.key === 'ArrowDown' ? 1 : -1;
-        setActive(Math.max(0, Math.min(all.length - 1, active + step)));
+        active = Math.max(0, Math.min(all.length - 1, active + step));
+        markActive(true);
         break;
       }
       case 'Home':
       case 'End':
-        if (!isOpen) return;
+        if (!isOpen()) return;
         event.preventDefault();
-        setActive(event.key === 'Home' ? 0 : all.length - 1);
+        active = event.key === 'Home' ? 0 : all.length - 1;
+        markActive(true);
         break;
       case 'Enter':
       case ' ':
-        if (!isOpen) return;
+        if (!isOpen()) return;
         event.preventDefault();
         if (active >= 0) choose(active);
         else close();
         break;
       case 'Escape':
-        if (!isOpen) return;
-        // The sheet around it must not take the escape as a no.
+        if (!isOpen()) return;
+        // The Escape is the list's: the sheet around it stays open.
         event.preventDefault();
-        event.stopPropagation();
         close();
         break;
       case 'Tab':
@@ -428,10 +425,38 @@ export function dropdown(options = {}) {
     }
   });
 
-  button.addEventListener('blur', () => {
-    setTimeout(close, 0);
+  // The field keeps the focus through a press on the list or the chevron, so
+  // blur only ever means "somewhere else".
+  button.addEventListener('blur', () => close());
+  for (const part of [list, toggle]) part.addEventListener('pointerdown', (event) => event.preventDefault());
+  toggle.addEventListener('click', () => {
+    button.focus();
+    if (isOpen()) close();
+    else open();
+  });
+  list.addEventListener('click', (event) => {
+    const option = event.target.closest('.ds-combo__option');
+    if (!option) return;
+    choose(all.findIndex((item) => item.value === option.dataset.value));
+  });
+  list.addEventListener('pointermove', (event) => {
+    const option = event.target.closest('.ds-combo__option');
+    if (!option) return;
+    const index = all.findIndex((item) => item.value === option.dataset.value);
+    if (index !== active) {
+      active = index;
+      markActive(false);
+    }
   });
 
   drawFace();
-  return { node: root, setValue, refresh: drawFace };
+  return {
+    node,
+    button,
+    setValue,
+    value: () => current,
+    refresh: drawFace,
+    isOpen,
+    focus: () => button.focus(),
+  };
 }

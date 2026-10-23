@@ -37,7 +37,7 @@
 // for a tablet in a keyboard case that would rather have ordinary fields - and
 // the answer is remembered and wins over every sign from then on.
 
-import { el, setClass } from './api.js';
+import { el } from './api.js';
 import { M, faces, morph } from './ui.js';
 import { record, recPhase } from './dictate.js';
 
@@ -270,21 +270,24 @@ let proxy = null;
 function proxyField() {
   if (proxy && proxy.isConnected) return proxy;
   proxy = el('input', {
-    type: 'text', class: 'kb-proxy', 'aria-hidden': 'true', tabindex: '-1',
+    type: 'text', class: 'so-kb-proxy', 'aria-hidden': 'true', tabindex: '-1',
     autocomplete: 'off', autocorrect: 'off', autocapitalize: 'none', spellcheck: 'false',
   });
   document.body.append(proxy);
   return proxy;
 }
 
+// paint says on the button and its copy whether the switch is on. The button
+// is there only in touch mode: a device with keys of its own and no sign of a
+// finger has nothing for it to raise.
 function paint() {
   const words = open ? 'Hide the keyboard' : 'Show the keyboard';
+  if (button) button.hidden = !touch;
   for (const one of [button, copy]) {
     if (!one) continue;
-    setClass(one, 'on', open);
     one.setAttribute('aria-pressed', open ? 'true' : 'false');
-    one.title = words;
     one.setAttribute('aria-label', words);
+    one.setAttribute('data-tip', words);
   }
 }
 
@@ -490,7 +493,10 @@ export function guard(input) {
 export function initKeyboard(bar, pane) {
   button = bar;
   fallback = pane || (() => null);
-  copy = el('button', { class: 'ds-btn ds-btn--quiet ds-btn--icon kb-copy', type: 'button', html: bar.innerHTML });
+  // The copy wears the button's own words, long and short, so it reads the
+  // same over a dialog as the button does in the bar.
+  copy = el('button', { class: 'ds-btn so-talk so-kb-copy', type: 'button' },
+    [...bar.childNodes].map((node) => node.cloneNode(true)));
   for (const one of [button, copy]) {
     // The field keeps the focus: a tap that took it would put the keyboard
     // away before the button could say whether that was wanted.

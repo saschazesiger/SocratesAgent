@@ -1,1 +1,139 @@
-/* so-sheet.css: project components of the new-session sheet and the settings form (owner WP6). Tokens only; see MIGRATION.md §3.4. */
+/*
+ * so-sheet.css: the new-session sheet (#newSessionSheet) and the settings form
+ * it shares with the PreStart panel (harnesses.js settingsForm), plus the
+ * closed dropdown of combobox.js. Tokens only (--ds-*, and the --so-* of the
+ * "Sheet" section of theme.css); unlayered; no .ds-* component is restyled.
+ *
+ *   .so-ns                     the sheet itself (a hook for tests and callers)
+ *   .so-settings               the form's column of fields
+ *     __groups                 the agents' and the tools' groups, one under the other
+ *     __programs               a group of program cards (.ds-radios) laid out as a grid
+ *     __program                one program card (.ds-radio): its mark above its name
+ *   .so-drop                   the dropdown: a .ds-combo whose field is a button
+ *   .so-limits                 a profile's limit windows in the dropdown's list, each
+ *                              a flat .ds-progress with its figures
+ */
+
+.so-settings {
+  display: grid;
+  gap: var(--ds-space-4);
+  min-width: 0;
+}
+
+/* ── Program cards ───────────────────────────────────────────────────── */
+
+/* The agents share a row, and the shell sits under them at the same width,
+   so the two groups read as one question in two kinds. */
+.so-settings__programs {
+  grid-template-columns: repeat(auto-fill, minmax(var(--so-settings-card-min), 1fr));
+}
+
+.so-settings__groups {
+  display: grid;
+  gap: var(--ds-space-2);
+  min-width: 0;
+}
+
+/* A phone has room for two cards a row: there the groups share one grid, so
+   four programs are two rows rather than three. */
+@media (max-width: 600px) {
+  .so-settings__groups {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .so-settings__groups > .so-settings__programs {
+    display: contents;
+  }
+}
+
+.so-settings__program {
+  min-width: 0;
+}
+
+/* The mark over the name, so "Claude Code" fits beside the radio in a third
+   of the sheet. */
+.so-settings__program-body {
+  display: grid;
+  justify-items: start;
+  gap: var(--ds-space-1);
+  min-width: 0;
+}
+
+.so-settings__program-body > strong {
+  overflow-wrap: anywhere;
+}
+
+/* A program that is not installed shows its mark without its colour: the
+   note under the name says why in words. */
+.so-settings__program:has(input:disabled) .so-agent {
+  opacity: var(--ds-state-disabled);
+  filter: grayscale(1);
+}
+
+/* ── Dropdown ────────────────────────────────────────────────────────── */
+
+/* The field and its chevron: as narrow as the row it stands in allows. */
+.so-drop {
+  min-width: 0;
+}
+
+/* The field is a button: it reads as a field, its text at the start. */
+.so-drop__field {
+  display: flex;
+  align-items: center;
+  text-align: start;
+  cursor: pointer;
+}
+
+.so-drop__face {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ds-space-2);
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.so-drop__value {
+  flex: none;
+}
+
+.so-drop__meta {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ds-text-2);
+  text-overflow: ellipsis;
+}
+
+/* ── Usage meters ────────────────────────────────────────────────────── */
+
+.so-limits {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(var(--so-limits-bar-min), 1fr) auto auto;
+  align-items: center;
+  gap: var(--ds-space-1) var(--ds-space-3);
+  margin-top: var(--ds-space-1);
+  color: var(--ds-text-2);
+  font: var(--ds-font-meta);
+}
+
+.so-limits__row {
+  display: contents;
+}
+
+.so-limits__value {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.so-limits__reset {
+  min-width: var(--so-limits-reset-width);
+}
+
+/* On the chosen entry's tint: the figures in its ink, and the remaining
+   track in the surface so the bar still has something to stand on. */
+.ds-combo__option[aria-selected="true"] .so-limits {
+  --ds-progress-track: var(--ds-surface);
+  color: var(--ds-on-accent);
+}

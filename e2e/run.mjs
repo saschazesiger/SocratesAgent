@@ -53,7 +53,8 @@ async function useDomRenderer(s) {
 // open lands on the session page with everything it needs loaded.
 async function open(s) {
   await s.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
-  await s.page.waitForSelector('#newSession', { timeout: 15000 });
+  // Attached: on a phone it is in the modal drawer, hidden until opened.
+  await s.page.waitForSelector('#newSession', { state: 'attached', timeout: 15000 });
 }
 
 // reloadBack reloads the tab and goes back to the session it was on.
@@ -67,7 +68,7 @@ async function reloadBack(page, id) {
   const want = id || await page.evaluate(() => location.hash.slice(1));
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#home:not([hidden])', { timeout: 20000 });
-  await page.waitForSelector('#sessionList .chat-item[data-id="' + want + '"]', { state: 'attached', timeout: 20000 });
+  await page.waitForSelector('#sessionList .so-row[data-id="' + want + '"]', { state: 'attached', timeout: 20000 });
   await page.evaluate((target) => { location.hash = '#' + target; }, want);
 }
 
@@ -82,8 +83,8 @@ async function startSession(page, harness) {
   await ensureNav(page);
   await page.click('#newSession');
   await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-  await page.waitForSelector('#newSessionSheet .seg[data-value="' + harness + '"]', { timeout: 10000 });
-  await page.click('#newSessionSheet .seg[data-value="' + harness + '"]');
+  await page.waitForSelector('#newSessionSheet .so-settings__program[data-value="' + harness + '"]', { timeout: 10000 });
+  await page.click('#newSessionSheet .so-settings__program[data-value="' + harness + '"]');
   await pickModelIfNeeded(page);
   await page.click('#nsStart');
   await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
@@ -103,9 +104,9 @@ async function pickModelIfNeeded(page) {
     return !!start && start.disabled && !!field && !field.hidden;
   });
   if (!stuck) return;
-  await page.click('#nsModel .combo-input');
-  await page.waitForSelector('#nsModel .combo-option', { timeout: 5000 });
-  await page.click('#nsModel .combo-option');
+  await page.click('#nsModel .ds-combo__input');
+  await page.waitForSelector('#nsModel .ds-combo__option', { timeout: 5000 });
+  await page.click('#nsModel .ds-combo__option');
   await page.waitForFunction(() => !document.getElementById('nsStart').disabled, null, { timeout: 5000 });
 }
 
@@ -171,48 +172,52 @@ async function focusTerm(page, timeout = 5000) {
 
 const oneLine = (text) => text.replace(/\s+/g, ' ').trim().slice(0, 200);
 
-// The top bar's ⋮ is this device's options: switches, in a menu that stays
+// The top bar's ⋮ is this device's options: switches in a dialog, which stays
 // open while they are pressed. openOptions opens it when it is not open.
+const OPTIONS = '#optionsDialog[data-state="open"]';
 async function openOptions(page) {
-  if (await page.$('.menu [data-option]')) return;
+  if (await page.$(OPTIONS + ' [data-option]')) return;
   await page.click('#optionsBtn');
-  await page.waitForSelector('.menu [data-option]', { timeout: 5000 });
+  await page.waitForSelector(OPTIONS + ' [data-option]', { timeout: 5000 });
 }
 
-// option presses one switch of the options menu and answers where it now is.
-// A switch that waits on the browser - notifications - is waited for by the
-// caller.
+// option presses one switch of the options dialog and answers where it now
+// is. A switch that waits on the browser - notifications - is waited for by
+// the caller.
 async function option(page, name) {
   await openOptions(page);
-  await page.click('.menu [data-option="' + name + '"]');
-  return page.$eval('.menu [data-option="' + name + '"]', (n) => n.getAttribute('aria-checked') === 'true');
+  await page.click(OPTIONS + ' .ds-switch:has([data-option="' + name + '"])');
+  return page.$eval(OPTIONS + ' [data-option="' + name + '"]', (n) => n.checked);
 }
 
-// options is every switch of the menu as it is drawn: on or off, and whether
-// it can be pressed.
+// options is every switch of the dialog as it is drawn: on or off, whether it
+// can be pressed, and the words of its field.
 async function options(page) {
   await openOptions(page);
-  return page.$$eval('.menu [data-option]', (nodes) => Object.fromEntries(nodes.map((n) => [n.dataset.option, {
-    on: n.getAttribute('aria-checked') === 'true',
+  return page.$$eval(OPTIONS + ' [data-option]', (nodes) => Object.fromEntries(nodes.map((n) => [n.dataset.option, {
+    on: n.checked,
     disabled: n.disabled,
-    text: n.textContent.trim(),
+    text: (n.closest('.ds-field') || n).textContent.replace(/\s+/g, ' ').trim(),
   }])));
 }
 
-// closeOptions puts the menu away the way a key does.
+// closeOptions puts the dialog away the way a key does.
 async function closeOptions(page) {
-  if (!(await page.$('.menu'))) return;
+  if (!(await page.$('#optionsDialog[open]'))) return;
   await page.keyboard.press('Escape');
-  await page.waitForSelector('.menu', { state: 'detached', timeout: 5000 });
+  await page.waitForSelector('#optionsDialog[open]', { state: 'detached', timeout: 5000 });
 }
 
-// rowMenu opens the "…" of the session on screen, in the list - where what
-// can be done to a session is, now that the top bar's ⋮ is this device's.
+// The row menu: one DS menu, drawn for the row that opened it.
+const MENU = '#sessionMenu:not([hidden])';
+
+// rowMenu opens the ⋮ of the session on screen, in the list - where what can
+// be done to a session is, now that the top bar's ⋮ is this device's.
 async function rowMenu(page) {
   await ensureNav(page);
   const id = await page.evaluate(() => location.hash.slice(1));
-  await page.click('#sessionList .chat-item[data-id="' + id + '"] .act');
-  await page.waitForSelector('.menu .menu-item', { timeout: 5000 });
+  await page.click('#sessionList .so-row[data-id="' + id + '"] .so-row__more', { force: true });
+  await page.waitForSelector(MENU + ' .ds-menu__item', { timeout: 5000 });
 }
 
 // contrastOf is the WCAG ratio between two colours as the browser reports
@@ -265,22 +270,22 @@ async function createshell() {
     const echoed = await awaitScreen(s.page, marker);
     ok(echoed, 'a command typed in the browser was run by the shell', oneLine(await screen(s.page)));
 
-    // §E.10 rule 1: every surface is the same white, the terminal included.
+    // §E.10 rule 1 in DS's terms: the work sits on one white panel, the
+    // terminal included (the frame around it is DS's tinted backdrop).
     const colours = await s.page.evaluate(() => {
       const bg = (sel) => {
         const node = document.querySelector(sel);
         return node ? getComputedStyle(node).backgroundColor : 'missing';
       };
       return {
-        body: bg('body'),
-        sidebar: bg('.sidebar'),
-        wrap: bg('.term-wrap'),
+        panel: bg('.ds-panel'),
+        wrap: bg('.so-pane'),
         viewport: bg('#term .xterm-viewport'),
         screen: bg('#term .xterm-screen'),
       };
     });
-    ok(Object.values(colours).every((c) => c === WHITE),
-      'the page and the terminal are the same white', JSON.stringify(colours));
+    ok(colours.panel === WHITE && Object.values(colours).every((c) => c === WHITE || c === 'rgba(0, 0, 0, 0)'),
+      'the panel and the terminal are the same white', JSON.stringify(colours));
 
     // Readability is checked by measurement, not by eye - and on what was
     // actually drawn rather than on the table it was drawn from. ANSI "white"
@@ -324,7 +329,7 @@ async function createshell() {
 
     // The header is the session's name: what it runs is the list row's mark.
     const header = await s.page.evaluate(() => ({
-      mark: !!document.querySelector('.topbar .agent-mark'),
+      mark: !!document.querySelector('.ds-topbar .so-agent'),
       title: (document.getElementById('sessionTitle') || {}).textContent,
       size: !!document.getElementById('termSize'),
     }));
@@ -404,7 +409,7 @@ async function reloadkeepsscreen() {
     await s.page.waitForSelector('#home:not([hidden])', { timeout: 20000 });
     const landed = await s.page.evaluate(() => location.hash);
     ok(landed === '#home', 'the reload lands on Home', landed);
-    await s.page.waitForSelector('#sessionList .chat-item[data-id="' + id + '"]', { state: 'attached', timeout: 20000 });
+    await s.page.waitForSelector('#sessionList .so-row[data-id="' + id + '"]', { state: 'attached', timeout: 20000 });
     await s.page.evaluate((target) => { location.hash = '#' + target; }, id);
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
     const after = await s.page.evaluate(() => sessionStorage.getItem('socrates.viewer'));
@@ -464,25 +469,29 @@ async function pages() {
         await shot(s.page, 'pages-' + (path === '/' ? 'session' : path.slice(1)) + '-' + tag);
       }
 
-      // The sheet is a bottom sheet on a phone and a centred dialog on a desk.
+      // The sheet is DS's side sheet: docked to the right edge at full height
+      // on a desk, risen from the bottom at full width on a phone (600px and
+      // below). The <dialog> always covers the window, so the panel is what
+      // is measured, once its slide has settled.
       await open(s);
       await ensureNav(s.page);
       await s.page.click('#newSession');
       await s.page.waitForSelector('#newSessionSheet[open]');
-      await wait(300);
-      const rect = await s.page.$eval('#newSessionSheet', (n) => n.getBoundingClientRect().toJSON());
-      if (viewport.width >= 1000) {
-        const centred = Math.abs((rect.left + rect.right) / 2 - viewport.width / 2) < 2;
-        ok(rect.left > 200 && rect.top > 8 && centred,
-          `the sheet is a centred dialog at ${tag}`, JSON.stringify(rect));
+      await wait(900);
+      const rect = await s.page.$eval('#newSessionSheet .ds-sheet__panel', (n) => n.getBoundingClientRect().toJSON());
+      if (viewport.width > 600) {
+        ok(Math.abs(rect.right - viewport.width) <= 1 && rect.left > viewport.width / 3
+          && Math.abs(rect.height - viewport.height) <= 2,
+          `the sheet is a side sheet at the right edge at ${tag}`, JSON.stringify(rect));
       } else {
-        ok(rect.left <= 1 && Math.round(rect.width) >= viewport.width - 2,
+        ok(rect.left <= 1 && Math.round(rect.width) >= viewport.width - 2
+          && Math.abs(rect.bottom - viewport.height) <= 2,
           `the sheet is a full-width bottom sheet at ${tag}`, JSON.stringify(rect));
       }
       // Every harness with its own mark: §E.10 rule 2. The agents come first
       // and the shell, which is not one, is the row beneath them. VS Code is
       // not on the sheet: a folder's editor is opened from the folder.
-      const marks = await s.page.$$eval('#nsHarness .seg .agent-mark, #nsTools .seg .agent-mark',
+      const marks = await s.page.$$eval('#nsHarness .so-settings__program .so-agent, #nsTools .so-settings__program .so-agent',
         (nodes) => nodes.map((n) => n.dataset.agent));
       ok(marks.join(',') === 'claude,codex,opencode,shell',
         `the sheet offers the agents and then the tools, each with its mark at ${tag}`,
@@ -504,11 +513,11 @@ async function pages() {
       // the sheet, and the field says which place is chosen.
       const dir = await s.page.evaluate(() => {
         const host = document.getElementById('nsDir');
-        const input = host.querySelector('.combo-input');
+        const input = host.querySelector('.ds-combo__input');
         const box = host.getBoundingClientRect();
         return {
-          combo: !!host.querySelector('.combo'),
-          segs: host.querySelectorAll('.seg').length,
+          combo: !!host.querySelector('.ds-combo'),
+          segs: host.querySelectorAll('.so-settings__program, .ds-chip').length,
           value: input ? input.value : '',
           width: Math.round(box.width),
           sheet: Math.round(document.getElementById('newSessionSheet').getBoundingClientRect().width),
@@ -590,11 +599,11 @@ async function harnesses() {
 
     // Four rows, each with the mark of what it runs: §E.10 rule 2 again, in
     // the list this time.
-    const rows = await s.page.$$eval('#sessionList .chat-item', (nodes) => nodes.map((n) => ({
-      mark: (n.querySelector('.agent-mark') || { dataset: {} }).dataset.agent,
+    const rows = await s.page.$$eval('#sessionList .so-row', (nodes) => nodes.map((n) => ({
+      mark: (n.querySelector('.so-agent') || { dataset: {} }).dataset.agent,
       dots: n.querySelectorAll('.dot').length,
-      tips: n.querySelectorAll('.tip').length,
-      words: n.querySelector('.label').textContent,
+      tips: n.querySelectorAll('.so-info').length,
+      words: n.querySelector('.so-row__label').textContent,
     })));
     ok(rows.length === 4, 'all four sessions are in the list', rows.length + ' rows');
     ok(rows.every((r) => r.mark), 'every row carries the mark of what it runs',
@@ -610,17 +619,17 @@ async function harnesses() {
 
     // Info is where the facts of a session are: one dialog, opened from the
     // row's own menu.
-    await s.page.click('#sessionList .chat-item .act');
-    await s.page.click('.menu-item:has-text("Info")');
-    await s.page.waitForSelector('dialog.modal .facts', { timeout: 5000 });
-    const detail = await s.page.$eval('dialog.modal', (n) => ({
-      title: n.querySelector('.modal-title').textContent,
-      facts: [...n.querySelectorAll('.fact')].map((f) => f.textContent),
+    await s.page.click('#sessionList .so-row .so-row__more');
+    await s.page.click('#sessionMenu [data-action="info"]');
+    await s.page.waitForSelector('dialog.so-info-dialog .so-facts', { timeout: 5000 });
+    const detail = await s.page.$eval('dialog.so-info-dialog', (n) => ({
+      title: n.querySelector('.ds-dialog__title').textContent,
+      facts: [...n.querySelectorAll('.so-fact')].map((f) => f.textContent),
     }));
     ok(detail.facts.some((f) => f.includes('/')),
       'the working directory is in the Info dialog', JSON.stringify(detail));
-    await s.page.click('dialog.modal .modal-actions .btn');
-    await s.page.waitForSelector('dialog.modal', { state: 'detached', timeout: 5000 });
+    await s.page.click('dialog.so-info-dialog .ds-dialog__actions .ds-btn');
+    await s.page.waitForSelector('dialog.so-info-dialog', { state: 'detached', timeout: 5000 });
 
     await shot(s.page, 'harnesses');
     ok(unexpected(s.errors).length === 0, 'no console errors',
@@ -643,38 +652,50 @@ async function browserlayout() {
     await open(s);
     const id = await startSession(s.page, 'shell');
     await s.page.waitForSelector('#term .xterm');
-    const row = '#sessionList .chat-item[data-id="' + id + '"]';
+    const row = '#sessionList .so-row[data-id="' + id + '"]';
     const geometry = () => s.page.evaluate((sel) => {
-      const box = document.querySelector(sel + ' .act').getBoundingClientRect();
-      const menu = document.querySelector('.menu');
+      const box = document.querySelector(sel + ' .so-row__more').getBoundingClientRect();
+      const menu = document.getElementById('sessionMenu');
       const rect = menu.getBoundingClientRect();
       return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right,
         anchorTop: box.top, anchorBottom: box.bottom, height: innerHeight, width: innerWidth,
         scrollable: menu.scrollHeight > menu.clientHeight };
     }, row);
-    await s.page.click(row + ' .act');
+    await s.page.click(row + ' .so-row__more');
     await wait(180);
     let g = await geometry();
-    ok(g.top >= g.anchorBottom && g.bottom <= g.height - 9,
+    ok(g.top >= g.anchorBottom && g.bottom <= g.height,
       'an upper row opens downwards inside the viewport', JSON.stringify(g));
     await s.page.mouse.click(750, 75);
-    await s.page.$eval(row, (node) => {
-      node.style.marginTop = (document.querySelector('#sessionList').clientHeight - node.offsetHeight - 40) + 'px';
-    });
-    await s.page.click(row + ' .act');
-    await wait(180);
+    await wait(300);
+    // A row near the bottom of the window: the window is made short enough
+    // that the room below the row is smaller than the room above it. (The
+    // list is morphed, so a style written on a row does not last.)
+    const anchor = await s.page.$eval(row + ' .so-row__more', (n) => n.getBoundingClientRect().bottom);
+    await s.page.setViewportSize({ width: 1280, height: Math.round(anchor) + 60 });
+    await wait(300);
+    await s.page.click(row + ' .so-row__more');
+    await wait(300);
     g = await geometry();
-    ok(g.bottom <= g.anchorTop && g.top >= 10,
-      'a lower row opens upwards inside the viewport', JSON.stringify(g));
-    await s.page.setViewportSize({ width: 800, height: 240 });
-    await s.page.$eval(row, (node) => { node.style.marginTop = '0px'; });
-    await wait(200);
+    // DS's placement: below unless it does not fit there and there is more
+    // room above; either way inside the window and never over its button.
+    const above = g.anchorTop, below = g.height - g.anchorBottom;
+    ok(g.top >= 0 && g.bottom <= g.height
+      && (above > below ? g.bottom <= g.anchorTop : g.top >= g.anchorBottom),
+      'a lower row opens on the side with more room, inside the viewport', JSON.stringify(g));
+    await s.page.mouse.click(750, 75);
+    await wait(300);
+    // Wider than the drawer breakpoint, so the row is in the docked drawer.
+    await s.page.setViewportSize({ width: 1000, height: 240 });
+    await wait(300);
+    await s.page.click(row + ' .so-row__more');
+    await wait(300);
     g = await geometry();
-    ok(g.top >= 9 && g.bottom <= g.height - 9 && g.left >= 9 && g.right <= g.width - 9 && g.scrollable,
+    ok(g.top >= 0 && g.bottom <= g.height && g.left >= 0 && g.right <= g.width && g.scrollable,
       'an open menu stays visible and scrollable in a short viewport', JSON.stringify(g));
-    await s.page.$eval('.menu', (node) => { node.scrollTop = node.scrollHeight; });
+    await s.page.$eval('#sessionMenu', (node) => { node.scrollTop = node.scrollHeight; });
     await wait(100);
-    const scrolled = await s.page.$eval('.menu', (node) => node.scrollTop > 0
+    const scrolled = await s.page.$eval('#sessionMenu', (node) => node.scrollTop > 0
       && node.lastElementChild.getBoundingClientRect().bottom <= node.getBoundingClientRect().bottom);
     ok(scrolled, 'the last menu action remains reachable by scrolling', String(scrolled));
     await s.page.mouse.click(750, 75);
@@ -686,10 +707,12 @@ async function browserlayout() {
       for (const registration of await navigator.serviceWorker.getRegistrations()) await registration.unregister();
     });
     let fontResponses = 0;
+    // Only the terminal's own faces are counted: the page's DS fonts are
+    // woff2 files too, and they do not decide a cell.
     await s.page.route('**/*.woff2*', async (route) => {
       await wait(400);
       await route.continue();
-      fontResponses++;
+      if (/SourceCodePro/.test(route.request().url())) fontResponses++;
     });
     await reloadBack(s.page);
     await s.page.waitForSelector('#term .xterm');
@@ -733,21 +756,21 @@ async function sessionlist() {
     const id = await startSession(s.page, 'shell');
     await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
 
-    const rowSelector = '#sessionList .chat-item[data-id="' + id + '"]';
+    const rowSelector = '#sessionList .so-row[data-id="' + id + '"]';
     const menu = async (label) => {
-      await s.page.click(rowSelector + ' .act');
-      await s.page.waitForSelector('.menu', { timeout: 5000 });
-      await s.page.click('.menu .menu-item:text-is("' + label + '")');
+      await s.page.click(rowSelector + ' .so-row__more');
+      await s.page.waitForSelector('#sessionMenu:not([hidden])', { timeout: 5000 });
+      await s.page.click('#sessionMenu .ds-menu__item:has(.ds-menu__label:text-is("' + label + '"))');
     };
 
     // Rename.
     await menu('Rename');
-    await s.page.waitForSelector('.modal[open] .input', { timeout: 5000 });
-    await s.page.fill('.modal[open] .input', 'Renamed by the suite');
-    await s.page.click('.modal[open] .btn.primary');
+    await s.page.waitForSelector('dialog.so-rename[open] .ds-input', { timeout: 5000 });
+    await s.page.fill('dialog.so-rename[open] .ds-input', 'Renamed by the suite');
+    await s.page.click('dialog.so-rename[open] .ds-btn--primary');
     await s.page.waitForFunction((sel) => {
       const row = document.querySelector(sel);
-      return row && row.querySelector('.label').textContent === 'Renamed by the suite';
+      return row && row.querySelector('.so-row__label').textContent === 'Renamed by the suite';
     }, rowSelector, { timeout: 8000 });
     const named = await s.page.$eval('#sessionTitle', (n) => n.textContent);
     ok(named === 'Renamed by the suite', 'the new name is in the row and in the header', named);
@@ -758,9 +781,9 @@ async function sessionlist() {
     // shut: the shelf is opened first, the way a person would find the row.
     const headMenu = async (label) => {
       const shelf = await s.page.$eval(rowSelector, (row) => (row.checkVisibility()
-        ? '' : (row.closest('.shelf') || { dataset: {} }).dataset.shelf || ''));
+        ? '' : (row.closest('.so-folder--shelf') || { dataset: {} }).dataset.shelf || ''));
       if (shelf) {
-        await s.page.click('.shelf[data-shelf="' + shelf + '"] > .folder-bar > .folder-head');
+        await s.page.click('.so-folder--shelf[data-shelf="' + shelf + '"] > .so-folder__bar > .so-folder__head');
         await s.page.waitForFunction((sel) => document.querySelector(sel)?.checkVisibility(),
           rowSelector, { timeout: 5000 });
       }
@@ -769,13 +792,13 @@ async function sessionlist() {
     const statusShown = (sel) => s.page.evaluate((sel) => {
       const row = document.querySelector(sel);
       const shown = (node) => !!node && !node.hidden && getComputedStyle(node).display !== 'none';
-      const mark = row && row.querySelector('.row-status');
+      const mark = row && row.querySelector('.so-row__status');
       const head = document.getElementById('sessionStatus');
       return {
         row: shown(mark) ? mark.dataset.status : '',
-        head: shown(head) ? head.textContent : '',
-        folder: row ? row.closest('.folder').dataset.folder || '' : '',
-        shelf: row ? (row.closest('.shelf') || { dataset: {} }).dataset.shelf || '' : '',
+        head: shown(head) ? head.textContent.trim() : '',
+        folder: row ? row.closest('.so-folder:not(.so-folder--shelf)').dataset.folder || '' : '',
+        shelf: row ? (row.closest('.so-folder--shelf') || { dataset: {} }).dataset.shelf || '' : '',
         folderOpen: !!row && row.checkVisibility(),
       };
     }, sel);
@@ -787,7 +810,7 @@ async function sessionlist() {
 
     // Review pending: a mark after the name and a word in the header.
     await menu('Review pending');
-    await s.page.waitForFunction((sel) => document.querySelector(sel + ' .row-status')?.dataset.status === 'review',
+    await s.page.waitForFunction((sel) => document.querySelector(sel + ' .so-row__status')?.dataset.status === 'review',
       rowSelector, { timeout: 8000 });
     const review = await statusShown(rowSelector);
     ok(review.row === 'review' && review.head === 'Review pending',
@@ -799,7 +822,7 @@ async function sessionlist() {
     // Background: out of the way on a shelf at the bottom of its own folder
     // that starts shut, and still running.
     await headMenu('Background');
-    await s.page.waitForFunction((sel) => document.querySelector(sel)?.closest('.shelf')?.dataset.shelf === 'background',
+    await s.page.waitForFunction((sel) => document.querySelector(sel)?.closest('.so-folder--shelf')?.dataset.shelf === 'background',
       rowSelector, { timeout: 8000 });
     const background = await statusShown(rowSelector);
     ok(background.shelf === 'background' && !background.folderOpen,
@@ -820,7 +843,7 @@ async function sessionlist() {
     await shot(s.page, 'sessionlist-done');
 
     // Picked up again, it resumes on the same row.
-    await s.page.click('#termOverlay .btn.primary');
+    await s.page.click('#termOverlay .ds-btn--primary');
     await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
     const back = await current();
     ok(back.status === 'in_progress', 'picking a done session up puts it back in progress', back.status);
@@ -828,10 +851,10 @@ async function sessionlist() {
     // Delete: the row goes, the tmux session goes, the directory stays.
     const workdir = back.workdir;
     await menu('Delete');
-    await s.page.waitForSelector('.modal[open] .btn.danger', { timeout: 5000 });
-    const body = await s.page.$eval('.modal[open] .modal-body', (n) => n.textContent);
+    await s.page.waitForSelector('dialog.ds-dialog[open] .ds-btn--primary', { timeout: 5000 });
+    const body = await s.page.$eval('dialog.ds-dialog[open] .ds-dialog__text', (n) => n.textContent);
     ok(/working directory/i.test(body), 'the dialog says the working directory is kept', oneLine(body));
-    await s.page.click('.modal[open] .btn.danger');
+    await s.page.click('dialog.ds-dialog[open] .ds-btn--primary');
     await s.page.waitForFunction((sel) => !document.querySelector(sel), rowSelector, { timeout: 10000 });
     const left = await (await s.context.request.get(s.url + '/api/sessions')).json();
     ok((left.sessions || []).length === 0, 'the session is gone', (left.sessions || []).length + ' left');
@@ -866,25 +889,28 @@ async function exitoverlay() {
       oneLine(await journalOf(s, id)));
 
     await typeLine(s.page, '/exit 7');
-    await s.page.waitForSelector('#termOverlay .overlay-card', { timeout: 20000 });
+    await s.page.waitForSelector('#termOverlay[data-state="open"] .ds-dialog__title', { timeout: 20000 });
     const overlay = await s.page.evaluate(() => {
-      const card = document.querySelector('#termOverlay .overlay-card');
+      const card = document.querySelector('#termOverlay .ds-dialog__box');
       return {
-        words: card.querySelector('.overlay-title').textContent,
-        detail: (card.querySelector('.overlay-detail') || {}).textContent || '',
-        tips: card.querySelectorAll('.tip').length,
-        buttons: [...card.querySelectorAll('.overlay-actions .btn')].map((b) => b.textContent),
+        words: card.querySelector('.ds-dialog__title').textContent,
+        detail: (card.querySelector('.so-pane__detail') || {}).textContent || '',
+        tips: card.querySelectorAll('.so-info').length,
+        // A button with faces holds its busy words too; its label is the
+        // resting face.
+        buttons: [...card.querySelectorAll('.ds-dialog__actions .ds-btn')]
+          .map((b) => (b.querySelector('.ds-btn__face') || b).textContent.trim()).sort(),
       };
     });
     ok(/The session ended/.test(overlay.words), 'the overlay says the session ended', oneLine(overlay.words));
     ok(/Exit status 7/.test(overlay.detail) && overlay.tips === 0,
       'the exit status is a plain line under it, and there is no "i" left',
       JSON.stringify(overlay));
-    ok(overlay.buttons.join(',') === 'Restart,Delete', 'the overlay offers Restart and Delete',
+    ok(overlay.buttons.join(',') === 'Delete,Restart', 'the overlay offers Restart and Delete',
       overlay.buttons.join(','));
     await shot(s.page, 'exitoverlay');
 
-    const said = await s.page.$eval('#sessionList .chat-item .row-mark', (n) => n.title);
+    const said = await s.page.$eval('#sessionList .so-row .so-mark', (n) => n.getAttribute('data-tip'));
     ok(said === 'Ended', 'the row says the session ended', said);
 
     await s.page.click('#termRestart');
@@ -1159,7 +1185,7 @@ async function adminoptions() {
 
     // The preset row, typed the way a person types it.
     await s.page.click('#presetAdd');
-    const row = '#presetDirs .preset-row:last-child';
+    const row = '#presetDirs .so-preset:last-child';
     await s.page.fill(row + ' input:nth-child(1)', 'Projects');
     await s.page.fill(row + ' input:nth-child(2)', preset);
     await s.page.selectOption('#windowSize', 'largest');
@@ -1178,7 +1204,7 @@ async function adminoptions() {
       withdrawn.join(', ') || 'none of the 15 withdrawn controls is on the page');
 
     await s.page.click('#saveTop');
-    await s.page.waitForSelector('.toast', { timeout: 15000 });
+    await s.page.waitForSelector('.ds-toast', { timeout: 15000 });
     await wait(400);
     await shot(s.page, 'admin-options');
 
@@ -1202,7 +1228,7 @@ async function adminoptions() {
     const terminal = await s.page.evaluate(() => ({
       windowSize: document.getElementById('windowSize').value,
       history: document.getElementById('historyLimit').value,
-      preset: document.querySelector('#presetDirs .preset-row input:nth-child(2)')?.value || '',
+      preset: document.querySelector('#presetDirs .so-preset input:nth-child(2)')?.value || '',
     }));
     ok(terminal.windowSize === 'largest' && terminal.history === '31000',
       'the terminal card round-trips too', JSON.stringify(terminal));
@@ -1211,11 +1237,11 @@ async function adminoptions() {
     // §E.10 rule 3, in the setup check: the row says a verdict, the path and
     // the version are behind its "i".
     await s.page.click('#runChecks');
-    await s.page.waitForSelector('#checks .check', { timeout: 60000 });
-    const rows = await s.page.$$eval('#checks .check', (nodes) => nodes.map((node) => ({
-      name: node.querySelector('.nm').textContent.trim(),
-      visible: node.querySelector('.dt').textContent.trim(),
-      tip: !!node.querySelector('.tip'),
+    await s.page.waitForSelector('#checks .so-check', { timeout: 60000 });
+    const rows = await s.page.$$eval('#checks .so-check', (nodes) => nodes.map((node) => ({
+      name: node.querySelector('.so-check__label').textContent.trim(),
+      visible: node.querySelector('.so-check__summary').textContent.trim(),
+      tip: !!node.querySelector('.so-info'),
     })));
     const leaking = rows.filter((row) => row.visible.includes('/'));
     ok(rows.length > 0 && leaking.length === 0,
@@ -1233,19 +1259,19 @@ async function adminoptions() {
     // The directory is picked out of the dropdown: open it, and take the entry
     // whose value is this preset. Its own label is the directory's name and
     // the full path is the sub-text under it.
-    await s.page.click('#nsDir .combo-input');
-    const cell = '#nsDir .combo-option[data-value="preset:' + preset + '"]';
+    await s.page.click('#nsDir .ds-combo__input');
+    const cell = '#nsDir .ds-combo__option[data-value="preset:' + preset + '"]';
     await s.page.waitForSelector(cell, { timeout: 5000 }).catch(() => {});
     const offered = await s.page.$(cell);
     ok(!!offered, 'the new-session sheet offers the preset directory', cell);
     if (offered) {
-      const hint = await s.page.$eval(cell, (n) => (n.querySelector('.combo-hint') || {}).textContent || '');
+      const hint = await s.page.$eval(cell, (n) => (n.querySelector('.ds-combo__meta') || {}).textContent || '');
       ok(hint === preset, 'and its full path is the sub-text under its name', hint);
       await s.page.click(cell);
       await s.page.waitForFunction(() =>
         document.getElementById('nsDirHint').textContent.length > 0, null, { timeout: 5000 });
     }
-    await s.page.click('#newSessionSheet .seg[data-value="claude"]');
+    await s.page.click('#newSessionSheet .so-settings__program[data-value="claude"]');
     await s.page.click('#nsStart');
     await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
     await s.page.waitForFunction(() => location.hash.length > 1 && location.hash !== '#home', null, { timeout: 30000 });
@@ -1307,20 +1333,21 @@ async function tmuxcard() {
   try {
     await setup(s.page, s.url);
     await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('#tmuxCard .state-label', { timeout: 20000 });
+    await s.page.waitForSelector('#tmuxCard .ds-status', { timeout: 20000 });
     await s.page.waitForFunction(
-      () => !/Loading/.test(document.querySelector('#tmuxStatus .state-label').textContent),
+      () => !/Loading/.test(document.querySelector('#tmuxStatus .ds-status').textContent),
       null, { timeout: 15000 });
 
     const card = await s.page.evaluate(() => ({
-      dot: document.querySelector('#tmuxStatus .state-dot').className,
-      label: document.querySelector('#tmuxStatus .state-label').textContent,
+      chip: document.querySelector('#tmuxStatus .ds-status').className
+        + ' ' + document.querySelector('#tmuxStatus .ds-status').dataset.state,
+      label: document.querySelector('#tmuxStatus .ds-status').textContent,
       detail: document.querySelector('#tmuxStatus').textContent,
       reason: document.getElementById('tmuxReason').textContent,
     }));
     // The checklist item: 3.2a is amber and "too old", never green and "ok".
-    ok(/\bold\b/.test(card.dot) && /too old/.test(card.label),
-      'tmux 3.2a is reported as too old, not as ok', card.dot + ' \u00b7 ' + card.label);
+    ok(/\bold\b/.test(card.chip) && /ds-status--warning/.test(card.chip) && /too old/i.test(card.label),
+      'tmux 3.2a is reported as too old, not as ok', card.chip + ' \u00b7 ' + card.label);
     ok(card.detail.includes('3.2a') && card.detail.includes('3.3'),
       'the card shows the version it found and the one it needs', oneLine(card.detail));
     ok(/too old/.test(card.reason),
@@ -1459,7 +1486,7 @@ async function keybar() {
     await s.page.waitForSelector('#keybar:not([hidden])', { timeout: 10000 });
     await closeOptions(s.page);
 
-    const keys = await s.page.$$eval('#keybar .key', (nodes) => nodes.map((n) => n.dataset.key));
+    const keys = await s.page.$$eval('#keybar .so-key', (nodes) => nodes.map((n) => n.dataset.key));
     ok(keys.join(',') === 'Escape,Tab,Control,Alt,Left,Down,Up,Right,Enter,Ctrl-C,Ctrl-D,Ctrl-Z,Paste',
       'the key bar carries every key of §E.6, in order', keys.join(','));
     const placed = await s.page.evaluate(() => ({
@@ -1475,7 +1502,7 @@ async function keybar() {
     // a window size report, a device attribute - on the same path.
     const press = async (name) => {
       const before = (await sentBytes(s.page)).length;
-      await s.page.click('#keybar .key[data-key="' + name + '"]');
+      await s.page.click('#keybar .so-key[data-key="' + name + '"]');
       await wait(150);
       return (await sentBytes(s.page)).slice(before);
     };
@@ -1493,15 +1520,15 @@ async function keybar() {
     // device's own keyboard. This is the only way a phone can send Ctrl-C to
     // a program at all, so it is the one that matters most.
     await s.page.click('#term .xterm-screen');
-    await s.page.click('#keybar .key[data-key="Control"]');
-    const armed = await s.page.$eval('#keybar .key[data-key="Control"]', (n) => n.className);
+    await s.page.click('#keybar .so-key[data-key="Control"]');
+    const armed = await s.page.$eval('#keybar .so-key[data-key="Control"]', (n) => (n.getAttribute('aria-pressed') === 'true' ? 'on' : 'off') + (n.hasAttribute('data-lock') ? ' lock' : ''));
     ok(/\bon\b/.test(armed) && !/\block\b/.test(armed), 'one tap arms Ctrl', armed);
     const beforeCtrl = (await sentBytes(s.page)).length;
     await s.page.keyboard.type('c');
     await wait(200);
     const afterCtrl = (await sentBytes(s.page)).slice(beforeCtrl);
     ok(afterCtrl.includes('03'), 'the next letter typed is sent as Ctrl-C', afterCtrl.join(',') || 'nothing');
-    const disarmed = await s.page.$eval('#keybar .key[data-key="Control"]', (n) => n.className);
+    const disarmed = await s.page.$eval('#keybar .so-key[data-key="Control"]', (n) => (n.getAttribute('aria-pressed') === 'true' ? 'on' : 'off') + (n.hasAttribute('data-lock') ? ' lock' : ''));
     ok(!/\bon\b/.test(disarmed), 'and the modifier disarmed itself', disarmed);
 
     // A physical key was just pressed, and that is not a decision about the
@@ -1510,17 +1537,17 @@ async function keybar() {
       'a keystroke on a real keyboard does not take the bar away', 'still on screen');
 
     // A second tap locks it, and a locked modifier keeps transforming.
-    await s.page.click('#keybar .key[data-key="Control"]');
-    await s.page.click('#keybar .key[data-key="Control"]');
-    const locked = await s.page.$eval('#keybar .key[data-key="Control"]', (n) => n.className);
+    await s.page.click('#keybar .so-key[data-key="Control"]');
+    await s.page.click('#keybar .so-key[data-key="Control"]');
+    const locked = await s.page.$eval('#keybar .so-key[data-key="Control"]', (n) => (n.getAttribute('aria-pressed') === 'true' ? 'on' : 'off') + (n.hasAttribute('data-lock') ? ' lock' : ''));
     ok(/\block\b/.test(locked), 'a second tap locks Ctrl', locked);
     const beforeLock = (await sentBytes(s.page)).length;
     await s.page.keyboard.type('ab');
     await wait(200);
     const two = (await sentBytes(s.page)).slice(beforeLock).filter((hex) => hex.length === 2);
     ok(two.join(',') === '01,02', 'a locked Ctrl transforms every key after it', two.join(',') || 'nothing');
-    await s.page.click('#keybar .key[data-key="Control"]');
-    ok(!/\b(on|lock)\b/.test(await s.page.$eval('#keybar .key[data-key="Control"]', (n) => n.className)),
+    await s.page.click('#keybar .so-key[data-key="Control"]');
+    ok(!/\b(on|lock)\b/.test(await s.page.$eval('#keybar .so-key[data-key="Control"]', (n) => (n.getAttribute('aria-pressed') === 'true' ? 'on' : 'off') + (n.hasAttribute('data-lock') ? ' lock' : ''))),
       'a third tap puts it away', 'off');
 
     // A modifier is for the next key the person presses, and the terminal's
@@ -1529,14 +1556,15 @@ async function keybar() {
     // - and coming back to it through the top bar's keyboard button, both
     // make xterm send a focus report on the same channel, and neither may
     // spend an armed Ctrl.
-    await s.page.click('#optionsBtn');
-    await s.page.waitForSelector('.menu [data-option]', { timeout: 5000 });
-    await s.page.click('#keybar .key[data-key="Control"]');
-    await s.page.waitForSelector('.menu', { state: 'detached', timeout: 5000 });
+    // The options are a modal dialog: it is put away first, and the Ctrl
+    // armed after it.
+    await openOptions(s.page);
+    await closeOptions(s.page);
+    await s.page.click('#keybar .so-key[data-key="Control"]');
     const beforeKeyboard = (await sentBytes(s.page)).length;
     await s.page.click('#kbBtn');
     await wait(200);
-    const stillArmed = await s.page.$eval('#keybar .key[data-key="Control"]', (n) => n.className);
+    const stillArmed = await s.page.$eval('#keybar .so-key[data-key="Control"]', (n) => (n.getAttribute('aria-pressed') === 'true' ? 'on' : 'off') + (n.hasAttribute('data-lock') ? ' lock' : ''));
     ok(/\bon\b/.test(stillArmed), 'raising the keyboard does not spend the armed Ctrl', stillArmed);
     await s.page.keyboard.type('c');
     await wait(250);
@@ -1547,13 +1575,12 @@ async function keybar() {
     // A locked Alt must not put an ESC in front of what the terminal answers.
     await s.page.click('#term .xterm-screen');
     await focusTerm(s.page);
-    await s.page.click('#keybar .key[data-key="Alt"]');
-    await s.page.click('#keybar .key[data-key="Alt"]');
+    await s.page.click('#keybar .so-key[data-key="Alt"]');
+    await s.page.click('#keybar .so-key[data-key="Alt"]');
     const beforeBlur = (await sentBytes(s.page)).length;
     // Out of the pane to the options menu and back to it with Escape, which
     // is the menu's and not the pane's.
-    await s.page.click('#optionsBtn');
-    await s.page.waitForSelector('.menu [data-option]', { timeout: 5000 });
+    await openOptions(s.page);
     await closeOptions(s.page);
     await wait(250);
     const reports = (await sentBytes(s.page)).slice(beforeBlur);
@@ -1571,7 +1598,7 @@ async function keybar() {
     await wait(200);
     const hidden = await s.page.evaluate(() => ({
       bar: document.getElementById('keybar').hidden,
-      armed: [...document.querySelectorAll('#keybar .key.on, #keybar .key.lock')].length,
+      armed: [...document.querySelectorAll('#keybar .so-key[aria-pressed="true"], #keybar .so-key[data-lock]')].length,
       stored: localStorage.getItem('socrates.term.keybar'),
     }));
     ok(hidden.bar && hidden.armed === 0, 'hiding the key bar disarms it', JSON.stringify(hidden));
@@ -1628,17 +1655,17 @@ async function offlineonce() {
 
     // The connection is down and the page says so, rather than showing an old
     // screen as if it were current.
-    await s.page.waitForFunction(() => document.body.classList.contains('conn-lost'),
+    await s.page.waitForFunction(() => document.body.hasAttribute('data-conn-lost'),
       null, { timeout: 20000 });
-    await s.page.waitForFunction(() => document.body.classList.contains('stale'),
+    await s.page.waitForFunction(() => document.body.hasAttribute('data-stale'),
       null, { timeout: 20000 });
     // The pane fades over 200ms, so the measurement waits for it rather than
     // catching it half way.
     await wait(400);
     const lost = await s.page.evaluate(() => ({
-      bar: !!document.querySelector('.conn-bar'),
-      barText: (document.querySelector('.conn-bar') || {}).textContent || '',
-      stale: document.getElementById('termWrap').classList.contains('stale'),
+      bar: !!document.querySelector('#connSlot:not([hidden]) .ds-alert'),
+      barText: (document.querySelector('#connSlot:not([hidden]) .ds-alert') || {}).textContent || '',
+      stale: document.getElementById('termWrap').hasAttribute('data-stale'),
       opacity: getComputedStyle(document.getElementById('termWrap')).opacity,
     }));
     ok(lost.bar && lost.stale && Number(lost.opacity) < 1,
@@ -1660,7 +1687,7 @@ async function offlineonce() {
 
     await s.context.setOffline(false);
     await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
-    await s.page.waitForFunction(() => !document.body.classList.contains('conn-lost'),
+    await s.page.waitForFunction(() => !document.body.hasAttribute('data-conn-lost'),
       null, { timeout: 45000 });
     ok(true, 'the connection came back', 'conn-lost cleared');
 
@@ -1703,12 +1730,13 @@ async function offlineonce() {
     await s.context.setOffline(true);
     await s.page.evaluate(() => window.dispatchEvent(new Event('offline')));
     await s.page.reload({ waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('#newSession', { timeout: 20000 });
+    // On a phone the button is in the closed drawer: there, not shown.
+    await s.page.waitForSelector('#newSession', { state: 'attached', timeout: 20000 });
     await wait(1500);
     const offlineShell = await s.page.evaluate(() => ({
       terminal: typeof window.Terminal === 'function',
       hash: location.hash.slice(1),
-      list: (document.querySelector('.list-empty') || {}).textContent || 'rows',
+      list: (document.querySelector('.so-list-empty') || {}).textContent || 'rows',
       empty: (document.querySelector('.empty-title') || {}).textContent || '',
     }));
     ok(offlineShell.terminal, 'the app shell opened with no network at all', JSON.stringify(offlineShell));
@@ -1721,7 +1749,7 @@ async function offlineonce() {
 
     await s.context.setOffline(false);
     await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
-    const listed = await s.page.waitForSelector('#sessionList .chat-item[data-id="' + id + '"]', { state: 'attached', timeout: 30000 })
+    const listed = await s.page.waitForSelector('#sessionList .so-row[data-id="' + id + '"]', { state: 'attached', timeout: 30000 })
       .then(() => true).catch(() => false);
     ok(listed, 'the signal back, the list has the session again by itself',
       listed ? 'the row is back' : 'still empty');
@@ -1759,7 +1787,7 @@ async function sigtermreattach() {
 
     // No reload: the page is the one that was open, and its socket is the one
     // that has to come back.
-    await s.page.waitForFunction(() => !document.body.classList.contains('conn-lost'),
+    await s.page.waitForFunction(() => !document.body.hasAttribute('data-conn-lost'),
       null, { timeout: 40000 });
     ok(await awaitScreen(s.page, marker, 30000), 'the pane still holds what was typed',
       oneLine(await screen(s.page)));
@@ -1865,7 +1893,7 @@ async function offlinerestart() {
 
     await s.context.setOffline(true);
     await s.page.evaluate(() => window.dispatchEvent(new Event('offline')));
-    await s.page.waitForFunction(() => document.body.classList.contains('conn-lost'),
+    await s.page.waitForFunction(() => document.body.hasAttribute('data-conn-lost'),
       null, { timeout: 20000 });
 
     // Both commands write to a file, because the pane cannot be counted on:
@@ -1894,7 +1922,7 @@ async function offlinerestart() {
       document.dispatchEvent(new Event('visibilitychange'));
     });
 
-    const live = await s.page.waitForFunction(() => !document.body.classList.contains('conn-lost'),
+    const live = await s.page.waitForFunction(() => !document.body.hasAttribute('data-conn-lost'),
       null, { timeout: 20000 }).then(() => true).catch(() => false);
     ok(live, 'the page reconnected after the wake storm', live ? 'conn-lost cleared' : 'still reconnecting');
 
@@ -1985,7 +2013,7 @@ async function latehello() {
     await s.page.keyboard.type('echo k >> ' + tag + '.txt', { delay: 10 });
     await s.page.keyboard.press('Enter');
 
-    await s.page.waitForFunction(() => !document.body.classList.contains('conn-lost'),
+    await s.page.waitForFunction(() => !document.body.hasAttribute('data-conn-lost'),
       null, { timeout: 30000 }).catch(() => {});
     await wait(3000);
 
@@ -2085,19 +2113,19 @@ async function startWithModel(page, harness, modelLabel) {
   await ensureNav(page);
   await page.click('#newSession');
   await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-  await page.waitForSelector('#newSessionSheet .seg[data-value="' + harness + '"]', { timeout: 10000 });
-  await page.click('#newSessionSheet .seg[data-value="' + harness + '"]');
+  await page.waitForSelector('#newSessionSheet .so-settings__program[data-value="' + harness + '"]', { timeout: 10000 });
+  await page.click('#newSessionSheet .so-settings__program[data-value="' + harness + '"]');
   // The model step is hidden for Shell and pre-filled for a harness that names
   // a default. Where it is neither - OpenCode reports models and no default -
   // the sheet waits for a choice, which is what a person would make.
   const wantsModel = await page.$eval('#nsModelField', (n) => !n.hidden);
-  const chosen = await page.$eval('#nsModel .combo-input', (n) => n.value.trim());
+  const chosen = await page.$eval('#nsModel .ds-combo__input', (n) => n.value.trim());
   if (wantsModel && (modelLabel || !chosen)) {
-    await page.click('#nsModel .combo-input');
-    await page.waitForSelector('#nsModel .combo-option', { timeout: 5000 });
+    await page.click('#nsModel .ds-combo__input');
+    await page.waitForSelector('#nsModel .ds-combo__option', { timeout: 5000 });
     await page.click(modelLabel
-      ? '#nsModel .combo-option:has(.combo-label:text-is("' + modelLabel + '"))'
-      : '#nsModel .combo-option');
+      ? '#nsModel .ds-combo__option:has(.ds-combo__name:text-is("' + modelLabel + '"))'
+      : '#nsModel .ds-combo__option');
   }
   await page.click('#nsStart');
   await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
@@ -2158,8 +2186,8 @@ async function waitForAck(s, id, timeout = 10000) {
 async function endAndRestart(s, name, code) {
   const before = launchesOf(s, name).length;
   await typeLine(s.page, '/exit ' + code);
-  await s.page.waitForSelector('#termOverlay .overlay-card', { timeout: 25000 });
-  const words = await s.page.$eval('#termOverlay .overlay-title', (n) => n.textContent);
+  await s.page.waitForSelector('#termOverlay[data-state="open"] .ds-dialog__title', { timeout: 25000 });
+  const words = await s.page.$eval('#termOverlay .ds-dialog__title', (n) => n.textContent);
   ok(/The session ended/.test(words), name + ': the overlay says the session ended', oneLine(words));
   await s.page.click('#termRestart');
   await s.page.waitForFunction(() => {
@@ -2195,14 +2223,14 @@ async function createclaude() {
     await ensureNav(s.page);
     await s.page.click('#newSession');
     await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-    await s.page.click('#newSessionSheet .seg[data-value="claude"]');
-    await s.page.click('#nsModel .combo-input');
-    await s.page.waitForSelector('#nsModel .combo-option', { timeout: 5000 });
-    const shown = await s.page.$$eval('#nsModel .combo-option .combo-label', (nodes) => nodes.map((n) => n.textContent));
+    await s.page.click('#newSessionSheet .so-settings__program[data-value="claude"]');
+    await s.page.click('#nsModel .ds-combo__input');
+    await s.page.waitForSelector('#nsModel .ds-combo__option', { timeout: 5000 });
+    const shown = await s.page.$$eval('#nsModel .ds-combo__option .ds-combo__name', (nodes) => nodes.map((n) => n.textContent));
     ok(shown.length > 0 && shown.join(',') === offered.join(','),
       'the sheet offers exactly the models /api/harnesses reported for Claude Code',
       shown.join(',') + ' vs ' + offered.join(','));
-    await s.page.click('#nsModel .combo-option:has(.combo-label:text-is("Haiku"))');
+    await s.page.click('#nsModel .ds-combo__option:has(.ds-combo__name:text-is("Haiku"))');
     await s.page.click('#nsStart');
     await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
     await s.page.waitForFunction(() => location.hash.length > 1 && location.hash !== '#home', null, { timeout: 30000 });
@@ -2236,22 +2264,22 @@ async function createclaude() {
     // §E.10 rule 2 and 3: the header is the name and nothing else - neither
     // the mark nor the model; those and the path are in Info.
     const badge = await s.page.evaluate(() => {
-      const bar = document.querySelector('.topbar');
+      const bar = document.querySelector('.ds-topbar');
       return {
-        mark: !!bar.querySelector('.agent-mark'),
+        mark: !!bar.querySelector('.so-agent'),
         model: /haiku/i.test(bar.textContent),
       };
     });
     ok(!badge.mark && !badge.model, 'the header names neither the harness nor the model',
       JSON.stringify(badge));
     await rowMenu(s.page);
-    await s.page.click('.menu-item:has-text("Info")');
-    await s.page.waitForSelector('dialog.modal .facts', { timeout: 5000 });
-    const facts = await s.page.$$eval('dialog.modal .fact', (nodes) => nodes.map((n) => n.textContent));
+    await s.page.click('#sessionMenu [data-action="info"]');
+    await s.page.waitForSelector('dialog.so-info-dialog .so-facts', { timeout: 5000 });
+    const facts = await s.page.$$eval('dialog.so-info-dialog .so-fact', (nodes) => nodes.map((n) => n.textContent));
     ok(facts.some((f) => f === row.workdir),
       'and the working directory is one line of Info', oneLine(facts.join(' · ')));
-    await s.page.click('dialog.modal .modal-actions .btn');
-    await s.page.waitForSelector('dialog.modal', { state: 'detached', timeout: 5000 });
+    await s.page.click('dialog.so-info-dialog .ds-dialog__actions .ds-btn');
+    await s.page.waitForSelector('dialog.so-info-dialog', { state: 'detached', timeout: 5000 });
     await shot(s.page, 'createclaude');
 
     // The program ends and is started again from the browser. A restart is a
@@ -2269,20 +2297,20 @@ async function createclaude() {
       await route.continue();
     });
     await typeLine(s.page, '/exit 3');
-    await s.page.waitForSelector('#termOverlay .overlay-card', { timeout: 25000 });
-    const ended = await s.page.$eval('#termOverlay .overlay-title', (n) => n.textContent);
+    await s.page.waitForSelector('#termOverlay[data-state="open"] .ds-dialog__title', { timeout: 25000 });
+    const ended = await s.page.$eval('#termOverlay .ds-dialog__title', (n) => n.textContent);
     ok(/The session ended/.test(ended), 'the overlay says the session ended', oneLine(ended));
     await s.page.click('#termRestart');
     await s.page.waitForFunction(() => {
       const button = document.getElementById('termRestart');
-      return !!button && button.disabled;
+      return !!button && button.getAttribute('aria-busy') === 'true';
     }, null, { timeout: 8000 });
     // A wake is what a phone does when it comes back, and it refreshes the
     // list - with the row still saying `exited`, because the POST is in flight.
     await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
     await wait(1200);
     const pressed = await s.page.$eval('#termRestart',
-      (n) => ({ disabled: n.disabled, text: n.textContent.trim() }));
+      (n) => ({ disabled: n.getAttribute('aria-busy') === 'true', text: n.textContent.trim() }));
     ok(pressed.disabled && /Restarting/.test(pressed.text),
       'a list refresh in the middle does not un-press Restart', JSON.stringify(pressed));
     await s.page.waitForFunction(() => {
@@ -2325,10 +2353,10 @@ async function profiles() {
     await setup(s.page, s.url);
     await useDomRenderer(s);
     await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('#profileList .profile-row', { timeout: 20000 });
+    await s.page.waitForSelector('#profileList .so-profile', { timeout: 20000 });
     await s.page.fill('#profileName', 'Business');
     await s.page.click('#profileAdd');
-    await s.page.waitForFunction(() => document.querySelectorAll('#profileList .profile-row').length === 2,
+    await s.page.waitForFunction(() => document.querySelectorAll('#profileList .so-profile').length === 2,
       null, { timeout: 10000 });
     const listed = await (await s.context.request.get(s.url + '/api/profiles')).json();
     const business = (listed.profiles || []).find((p) => p.name === 'Business');
@@ -2340,28 +2368,28 @@ async function profiles() {
     await ensureNav(s.page);
     await s.page.click('#newSession');
     await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-    await s.page.click('#newSessionSheet .seg[data-value="claude"]');
-    await s.page.waitForSelector('#nsProfileField:not([hidden]) #nsProfile .drop-button', { timeout: 10000 });
-    await s.page.click('#nsProfile .drop-button');
-    const choice = '#nsProfile .drop-option[data-value="' + business.id + '"]';
+    await s.page.click('#newSessionSheet .so-settings__program[data-value="claude"]');
+    await s.page.waitForSelector('#nsProfileField:not([hidden]) #nsProfile .so-drop__field', { timeout: 10000 });
+    await s.page.click('#nsProfile .so-drop__field');
+    const choice = '#nsProfile .ds-combo__option[data-value="' + business.id + '"]';
     await s.page.waitForSelector(choice, { timeout: 5000 });
-    const offered = await s.page.$$eval('#nsProfile .drop-option .profile-entry-name', (nodes) => nodes.map((n) => n.textContent));
+    const offered = await s.page.$$eval('#nsProfile .ds-combo__option .ds-combo__name', (nodes) => nodes.map((n) => n.textContent));
     ok(offered.join(',') === 'Default,Business', 'the sheet offers the default profile and the new one',
       offered.join(','));
     await s.page.click(choice);
-    const face = await s.page.$eval('#nsProfile .drop-face .profile-entry-name', (n) => n.textContent);
+    const face = await s.page.$eval('#nsProfile .so-drop__value', (n) => n.textContent);
     ok(face === 'Business', 'the dropdown shows the profile chosen', face);
     const hint = await s.page.$eval('#nsProfileHint', (n) => n.textContent);
     ok(/not signed in/.test(hint), 'and says that Claude Code still has to sign in there', hint);
-    await s.page.click('#nsModel .combo-input');
-    await s.page.waitForSelector('#nsModel .combo-option', { timeout: 5000 });
-    await s.page.click('#nsModel .combo-option:has(.combo-label:text-is("Haiku"))');
+    await s.page.click('#nsModel .ds-combo__input');
+    await s.page.waitForSelector('#nsModel .ds-combo__option', { timeout: 5000 });
+    await s.page.click('#nsModel .ds-combo__option:has(.ds-combo__name:text-is("Haiku"))');
     // Ultracode is Claude Code's alone, and off until it is switched on.
     const ultra = await s.page.$eval('#nsUltracodeField', (n) => ({
-      hidden: n.hidden, off: n.querySelector('.seg[data-value="off"]').getAttribute('aria-pressed'),
+      hidden: n.hidden, off: String(!n.querySelector('#nsUltracode').checked),
     }));
     ok(!ultra.hidden && ultra.off === 'true', 'the sheet offers Ultracode for Claude Code, off', JSON.stringify(ultra));
-    await s.page.click('#nsUltracode .seg[data-value="on"]');
+    await s.page.click('#nsUltracode');
     await shot(s.page, 'profiles-sheet');
     await s.page.click('#nsStart');
     await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
@@ -2384,36 +2412,36 @@ async function profiles() {
       'and Claude Code was started with Ultracode on', JSON.stringify({ options: row.options, ultracode }));
 
     await rowMenu(s.page);
-    await s.page.click('.menu-item:has-text("Info")');
-    await s.page.waitForSelector('dialog.modal .facts', { timeout: 5000 });
-    const facts = await s.page.$$eval('dialog.modal .fact', (nodes) => nodes.map((n) => n.textContent));
+    await s.page.click('#sessionMenu [data-action="info"]');
+    await s.page.waitForSelector('dialog.so-info-dialog .so-facts', { timeout: 5000 });
+    const facts = await s.page.$$eval('dialog.so-info-dialog .so-fact', (nodes) => nodes.map((n) => n.textContent));
     ok(facts.includes('Profile: Business') && facts.includes('Ultracode on'),
       'Info names the profile and Ultracode', oneLine(facts.join(' · ')));
-    await s.page.click('dialog.modal .modal-actions .btn');
-    await s.page.waitForSelector('dialog.modal', { state: 'detached', timeout: 5000 });
+    await s.page.click('dialog.so-info-dialog .ds-dialog__actions .ds-btn');
+    await s.page.waitForSelector('dialog.so-info-dialog', { state: 'detached', timeout: 5000 });
 
     const refused = await s.context.request.delete(s.url + '/api/profiles/' + business.id);
     ok(refused.status() === 409, 'a profile a session runs in cannot be deleted', String(refused.status()));
 
     // A session keeps the profile it was started in: its menu offers none.
     await rowMenu(s.page);
-    const menuItems = await s.page.$$eval('.menu .menu-item', (nodes) => nodes.map((n) => n.textContent));
+    const menuItems = await s.page.$$eval('#sessionMenu:not([hidden]) .ds-menu__item', (nodes) => nodes.map((n) => n.textContent));
     ok(!menuItems.includes('Default') && !menuItems.includes('Business'),
       'the session menu offers no profile to move to', menuItems.join(','));
     await s.page.click('#term', { position: { x: 40, y: 40 } });
-    await s.page.waitForSelector('.menu', { state: 'detached', timeout: 10000 });
+    await s.page.waitForSelector('#sessionMenu', { state: 'hidden', timeout: 10000 });
 
     // The next sheet starts on the profile the last session was started in.
     await ensureNav(s.page);
     await s.page.click('#newSession');
     await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-    await s.page.click('#newSessionSheet .seg[data-value="claude"]');
-    await s.page.waitForSelector('#nsProfileField:not([hidden]) #nsProfile .drop-face', { timeout: 10000 });
-    const next = await s.page.$eval('#nsProfile .drop-face .profile-entry-name', (n) => n.textContent);
+    await s.page.click('#newSessionSheet .so-settings__program[data-value="claude"]');
+    await s.page.waitForSelector('#nsProfileField:not([hidden]) #nsProfile .so-drop__value', { timeout: 10000 });
+    const next = await s.page.$eval('#nsProfile .so-drop__value', (n) => n.textContent);
     ok(next === 'Business', 'the next sheet starts on the same profile', next);
-    const ultraAgain = await s.page.$eval('#nsUltracode .seg[data-value="off"]', (n) => n.getAttribute('aria-pressed'));
+    const ultraAgain = await s.page.$eval('#nsUltracode', (n) => String(!n.checked));
     ok(ultraAgain === 'true', 'but with Ultracode off again', ultraAgain);
-    await s.page.click('#newSessionSheet .seg[data-value="codex"]');
+    await s.page.click('#newSessionSheet .so-settings__program[data-value="codex"]');
     const ultraCodex = await s.page.$eval('#nsUltracodeField', (n) => n.hidden);
     ok(ultraCodex, 'and Codex is not offered it', String(ultraCodex));
     await s.page.click('#nsCancel');
@@ -2436,22 +2464,22 @@ async function profiles() {
       await ensureNav(s.page);
       await s.page.click('#newSession');
       await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-      await s.page.click('#newSessionSheet .seg[data-value="claude"]');
-      await s.page.click('#nsDir .combo-input');
-      await s.page.waitForSelector('#nsDir .combo-option[data-value="custom"]', { timeout: 5000 });
-      await s.page.click('#nsDir .combo-option[data-value="custom"]');
+      await s.page.click('#newSessionSheet .so-settings__program[data-value="claude"]');
+      await s.page.click('#nsDir .ds-combo__input');
+      await s.page.waitForSelector('#nsDir .ds-combo__option[data-value="custom"]', { timeout: 5000 });
+      await s.page.click('#nsDir .ds-combo__option[data-value="custom"]');
       await s.page.fill('#nsDirPath', workdir);
-      await s.page.waitForSelector('#nsProfileField:not([hidden]) #nsProfile .drop-face', { timeout: 10000 });
-      await s.page.click('#nsProfile .drop-button');
-      await s.page.waitForSelector('#nsProfile .drop-option', { timeout: 5000 });
+      await s.page.waitForSelector('#nsProfileField:not([hidden]) #nsProfile .so-drop__value', { timeout: 10000 });
+      await s.page.click('#nsProfile .so-drop__field');
+      await s.page.waitForSelector('#nsProfile .ds-combo__option', { timeout: 5000 });
       const seen = await s.page.evaluate(() => ({
-        face: document.querySelector('#nsProfile .drop-face .profile-entry-name').textContent,
-        here: [...document.querySelectorAll('#nsProfile .drop-option')]
-          .filter((n) => n.querySelector('.profile-entry-tag.here'))
-          .map((n) => n.querySelector('.profile-entry-name').textContent + ': ' + n.querySelector('.profile-entry-tag.here').textContent),
+        face: document.querySelector('#nsProfile .so-drop__value').textContent,
+        here: [...document.querySelectorAll('#nsProfile .ds-combo__option')]
+          .filter((n) => n.querySelector('[data-tag="here"]'))
+          .map((n) => n.querySelector('.ds-combo__name').textContent + ': ' + n.querySelector('[data-tag="here"]').textContent),
         hint: document.getElementById('nsProfileHint').textContent,
       }));
-      await s.page.click('#nsProfile .drop-button');
+      await s.page.click('#nsProfile .so-drop__field');
       return seen;
     };
     const joined = await sheetIn(project + '/');
@@ -2475,25 +2503,25 @@ async function profiles() {
     const order = async () => ((await (await s.context.request.get(s.url + '/api/profiles')).json()).profiles || [])
       .map((p) => p.name).join(',');
     await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
-    await s.page.waitForFunction(() => document.querySelectorAll('#profileList .profile-row').length === 2,
+    await s.page.waitForFunction(() => document.querySelectorAll('#profileList .so-profile').length === 2,
       null, { timeout: 20000 });
-    await s.page.focus('#profileList .profile-row[data-id="' + business.id + '"] .profile-grip');
+    await s.page.focus('#profileList .so-profile[data-id="' + business.id + '"] .so-grip');
     await s.page.keyboard.press('ArrowUp');
     let moved = '';
     for (let i = 0; i < 40 && moved !== 'Business,Default'; i++) { await s.page.waitForTimeout(100); moved = await order(); }
     ok(moved === 'Business,Default', 'the arrow keys move a profile up the list', moved);
-    const grip = await s.page.$eval('#profileList .profile-row[data-id="' + business.id + '"] .profile-grip', (n) => {
+    const grip = await s.page.$eval('#profileList .so-profile[data-id="' + business.id + '"] .so-grip', (n) => {
       const box = n.getBoundingClientRect();
       return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
     });
-    const last = await s.page.$eval('#profileList .profile-row:last-child', (n) => n.getBoundingClientRect().bottom);
+    const last = await s.page.$eval('#profileList .so-profile:last-child', (n) => n.getBoundingClientRect().bottom);
     await s.page.mouse.move(grip.x, grip.y);
     await s.page.mouse.down();
     await s.page.mouse.move(grip.x, last - 4, { steps: 8 });
     await s.page.mouse.up();
     for (let i = 0; i < 40 && moved !== 'Default,Business'; i++) { await s.page.waitForTimeout(100); moved = await order(); }
     ok(moved === 'Default,Business', 'and dragging puts it back', moved);
-    const rows = await s.page.$$eval('#profileList .profile-row', (nodes) => nodes.map((n) => n.dataset.id));
+    const rows = await s.page.$$eval('#profileList .so-profile', (nodes) => nodes.map((n) => n.dataset.id));
     ok(rows.join(',') === ',' + business.id, 'where the list shows it', rows.join(','));
 
     ok(unexpected(s.errors).length === 0, 'no unexpected console errors', unexpected(s.errors).join(' | ') || '0');
@@ -2608,21 +2636,19 @@ async function createopencode() {
     await s.page.setViewportSize({ width: 390, height: 844 });
     await wait(300);
     const mobileHeader = await s.page.evaluate(() => {
-      const bar = document.querySelector('.topbar');
-      const speak = document.getElementById('micBtn');
-      const status = document.getElementById('statusBtn');
+      const bar = document.querySelector('.ds-topbar');
+      const strip = document.getElementById('sessionUsage');
       return {
-        height: Math.round(bar.getBoundingClientRect().height),
-        usage: document.getElementById('sessionUsage').innerText.trim(),
-        speakBorder: getComputedStyle(speak).borderTopWidth,
-        separator: getComputedStyle(status, '::before').width,
+        under: strip.getBoundingClientRect().top >= bar.getBoundingClientRect().bottom - 1,
+        usage: strip.innerText.trim(),
+        shown: strip.checkVisibility(),
         overflow: document.documentElement.scrollWidth - innerWidth,
       };
     });
-    ok(mobileHeader.usage.includes('~$1.25') && mobileHeader.height === 82,
-      'the borderless usage line stays visible in the narrow header', JSON.stringify(mobileHeader));
-    ok(mobileHeader.speakBorder === '0px' && mobileHeader.separator === '1px' && mobileHeader.overflow <= 0,
-      'header actions use separators without overflowing', JSON.stringify(mobileHeader));
+    // A phone's bar has no room for the strip: it is the line under the bar.
+    ok(mobileHeader.shown && mobileHeader.under && mobileHeader.usage.includes('~$1.25'),
+      'the usage line stays visible under the narrow header', JSON.stringify(mobileHeader));
+    ok(mobileHeader.overflow <= 0, 'and the header does not overflow', JSON.stringify(mobileHeader));
     await shot(s.page, 'createopencode-phone');
     await s.page.setViewportSize({ width: 1280, height: 720 });
 
@@ -2643,7 +2669,7 @@ async function createopencode() {
     await reloadBack(s.page);
     await s.page.waitForFunction(() => /5h\s*42%/.test(document.getElementById('sessionUsage')?.innerText || ''),
       null, { timeout: 20000 });
-    const limit = await s.page.$eval('#sessionUsage', (node) => ({ text: node.innerText.trim(), title: node.title }));
+    const limit = await s.page.$eval('#sessionUsage', (node) => ({ text: node.innerText.trim(), title: node.getAttribute('data-tip') || '' }));
     ok(/\(2h 3[67]m left\)/.test(limit.text) && /resets in 2h 3[67]m/.test(limit.title),
       'the header says how long the limit has until it renews', JSON.stringify(limit));
     await s.page.unroute('**/api/sessions/*/usage');
@@ -2723,13 +2749,16 @@ async function rebootresume() {
     await s.page.waitForSelector('#termNotice:not([hidden])', { timeout: 20000 });
     const banner = await s.page.evaluate(() => {
       const host = document.getElementById('termNotice');
-      const bubble = host.querySelector('.tip-bubble');
+      // The "i" carries its lines in data-tip; the tooltip shows them only
+      // for a pointer that rests on it or the keyboard.
+      const info = host.querySelector('.so-info');
+      const tip = document.querySelector('.ds-tooltip');
       return {
         kind: host.dataset.kind,
-        words: host.querySelector('.notice-text').textContent,
+        words: host.querySelector('.ds-alert__text').textContent,
         whole: host.innerText.trim(),
-        bubble: bubble ? bubble.textContent : '',
-        bubbleShown: bubble ? getComputedStyle(bubble).visibility : 'none',
+        bubble: info ? info.getAttribute('data-tip') || '' : '',
+        bubbleShown: info ? (tip && !tip.hidden ? 'visible' : 'hidden') : 'none',
       };
     });
     ok(banner.kind === 'resumed' && /Resumed after a restart/.test(banner.words),
@@ -3060,17 +3089,17 @@ async function deletekeepsdir() {
     ok(/attachment/.test(journal.headers()['content-disposition'] || ''),
       'as an attachment', journal.headers()['content-disposition'] || 'no disposition');
 
-    await s.page.click('#sessionList .chat-item[data-id="' + id + '"] .act');
-    await s.page.waitForSelector('.menu', { timeout: 5000 });
-    const items = await s.page.$$eval('.menu .menu-item', (nodes) =>
+    await s.page.click('#sessionList .so-row[data-id="' + id + '"] .so-row__more');
+    await s.page.waitForSelector('#sessionMenu:not([hidden])', { timeout: 5000 });
+    const items = await s.page.$$eval('#sessionMenu:not([hidden]) .ds-menu__item', (nodes) =>
       nodes.map((n) => n.textContent.trim()));
     ok(items.includes('Download scrollback'), 'and the row is where it is offered',
       items.join(' | '));
-    await s.page.click('.menu .menu-item:text-is("Delete")');
-    await s.page.waitForSelector('.modal[open] .btn.danger', { timeout: 5000 });
-    await s.page.click('.modal[open] .btn.danger');
+    await s.page.click('#sessionMenu .ds-menu__item:has(.ds-menu__label:text-is("Delete"))');
+    await s.page.waitForSelector('dialog.ds-dialog[open] .ds-btn--primary', { timeout: 5000 });
+    await s.page.click('dialog.ds-dialog[open] .ds-btn--primary');
     await s.page.waitForFunction((sel) => !document.querySelector(sel),
-      '#sessionList .chat-item[data-id="' + id + '"]', { timeout: 10000 });
+      '#sessionList .so-row[data-id="' + id + '"]', { timeout: 10000 });
 
     const left = await (await s.context.request.get(s.url + '/api/sessions')).json();
     ok((left.sessions || []).length === 0, 'the row is gone', (left.sessions || []).length + ' left');
@@ -3121,7 +3150,7 @@ async function recoveredsession() {
 
     await s.restart();
     await open(s);
-    await s.page.waitForFunction((want) => [...document.querySelectorAll('#sessionList .chat-item')]
+    await s.page.waitForFunction((want) => [...document.querySelectorAll('#sessionList .so-row')]
       .some((n) => n.dataset.id === want), stray, { timeout: 20000 }).catch(() => {});
 
     const listed = await (await s.context.request.get(s.url + '/api/sessions')).json();
@@ -3139,10 +3168,10 @@ async function recoveredsession() {
     ok(s.log.join('').includes('took in the tmux session'),
       'the start-up log says what happened', oneLine(s.log.join('')).slice(-140));
 
-    const label = await s.page.$eval('#sessionList .chat-item[data-id="' + stray + '"] .label',
+    const label = await s.page.$eval('#sessionList .so-row[data-id="' + stray + '"] .so-row__label',
       (n) => n.textContent).catch(() => 'no row on screen');
     ok(label === 'Recovered session', 'the browser shows it in the list', label);
-    ok(await s.page.$('#sessionList .chat-item[data-id="' + id + '"]') !== null,
+    ok(await s.page.$('#sessionList .so-row[data-id="' + id + '"]') !== null,
       'beside the session that was there all along', id);
 
     await shot(s.page, 'recoveredsession');
@@ -3273,32 +3302,36 @@ async function design() {
     await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
     const row = await sessionRow(s, id);
 
-    // Rule 1 - every surface is the same white.
+    // Rule 1 - Dashboard-Style's look: the frame (the bar and the drawer) on
+    // one tinted backdrop, the work on one white panel.
     const surfaces = await s.page.evaluate(() => {
       const bg = (sel) => {
         const node = document.querySelector(sel);
         return node ? getComputedStyle(node).backgroundColor : 'missing';
       };
       return {
-        body: bg('body'), sidebar: bg('.sidebar'), topbar: bg('.topbar'),
-        list: bg('#sessionList'), wrap: bg('.term-wrap'),
-        viewport: bg('#term .xterm-viewport'), screen: bg('#term .xterm-screen'),
+        frame: { app: bg('.ds-app'), drawer: bg('#sidebar'), list: bg('#sessionList'), topbar: bg('.ds-topbar') },
+        work: { panel: bg('.ds-panel'), wrap: bg('.so-pane'),
+          viewport: bg('#term .xterm-viewport'), screen: bg('#term .xterm-screen') },
       };
     });
-    // A transparent element is the white underneath it; what a design rule
+    // A transparent element is the colour underneath it; what a design rule
     // forbids is a fill of its own.
-    const white = (colour) => colour === WHITE || colour === 'rgba(0, 0, 0, 0)';
-    ok(Object.values(surfaces).every(white),
-      'every surface on the session page is the same white', JSON.stringify(surfaces));
+    const clear = 'rgba(0, 0, 0, 0)';
+    const white = (colour) => colour === WHITE || colour === clear;
+    const backdrop = surfaces.frame.app;
+    ok(backdrop !== WHITE && Object.values(surfaces.frame).every((c) => c === backdrop || c === clear)
+      && Object.values(surfaces.work).every(white),
+      'the frame is one tinted backdrop and the work one white panel', JSON.stringify(surfaces));
 
     // Rule 2 - a mark wherever a harness is named. The sheet names them all,
     // and the row in the list names this session's.
     await s.page.click('#newSession');
     await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-    const sheetMarks = await s.page.$$eval('#nsHarness .seg, #nsTools .seg', (nodes) =>
+    const sheetMarks = await s.page.$$eval('#nsHarness .so-settings__program, #nsTools .so-settings__program', (nodes) =>
       nodes.map((n) => ({
         harness: n.dataset.value,
-        mark: (n.querySelector('.agent-mark') || { dataset: {} }).dataset.agent || 'none',
+        mark: (n.querySelector('.so-agent') || { dataset: {} }).dataset.agent || 'none',
       })));
     // VS Code is opened from a folder's head in the list, not from the sheet
     // (`pages` pins the same four), so the sheet names four programs.
@@ -3309,15 +3342,15 @@ async function design() {
     // Where a session works is a dropdown, and it opens on a list of places
     // with the full path as the sub-text - never a row of cells three
     // characters wide.
-    await s.page.click('#nsDir .combo-input');
-    await s.page.waitForSelector('#nsDir .combo-option', { timeout: 5000 });
+    await s.page.click('#nsDir .ds-combo__input');
+    await s.page.waitForSelector('#nsDir .ds-combo__option', { timeout: 5000 });
     const dir = await s.page.evaluate(() => {
       const host = document.getElementById('nsDir');
       return {
-        combo: !!host.querySelector('.combo'),
-        segs: host.querySelectorAll('.seg').length,
-        options: [...host.querySelectorAll('.combo-option')].map((n) => n.dataset.value),
-        value: host.querySelector('.combo-input').value,
+        combo: !!host.querySelector('.ds-combo'),
+        segs: host.querySelectorAll('.so-settings__program, .ds-chip').length,
+        options: [...host.querySelectorAll('.ds-combo__option')].map((n) => n.dataset.value),
+        value: host.querySelector('.ds-combo__input').value,
       };
     });
     ok(dir.combo && dir.segs === 0 && dir.options.includes('dynamic') && dir.value === 'Dynamic',
@@ -3329,7 +3362,7 @@ async function design() {
       .catch(() => {});
 
     const marks = await s.page.evaluate((sessionId) => ({
-      row: (document.querySelector('#sessionList .chat-item[data-id="' + sessionId + '"] .agent-mark')
+      row: (document.querySelector('#sessionList .so-row[data-id="' + sessionId + '"] .so-agent')
         || { dataset: {} }).dataset.agent,
     }), id);
     ok(marks.row === 'shell', 'and so does the row in the list', JSON.stringify(marks));
@@ -3342,7 +3375,7 @@ async function design() {
       const parts = [];
       for (let node = walker.nextNode(); node; node = walker.nextNode()) {
         const host = node.parentElement;
-        if (!host || host.closest('.tip-bubble')) continue;
+        if (!host || host.closest('.ds-tooltip')) continue;
         if (host.closest('#term')) continue;          // the pane is the program's, not the page's
         if (!host.checkVisibility || !host.checkVisibility()) continue;
         parts.push(node.textContent);
@@ -3359,21 +3392,23 @@ async function design() {
       JSON.stringify(hidden));
     // The facts are in one place, and that place is the Info item of the
     // row's own menu.
-    await s.page.click(rowSel(id) + ' .act');
-    await s.page.click('.menu-item:has-text("Info")');
-    await s.page.waitForSelector('dialog.modal .facts', { timeout: 5000 });
-    const inInfo = await s.page.$$eval('dialog.modal .fact', (nodes) =>
+    await s.page.click(rowSel(id) + ' .so-row__more');
+    await s.page.click('#sessionMenu [data-action="info"]');
+    await s.page.waitForSelector('dialog.so-info-dialog .so-facts', { timeout: 5000 });
+    const inInfo = await s.page.$$eval('dialog.so-info-dialog .so-fact', (nodes) =>
       nodes.map((n) => n.textContent).join(' '));
     ok(inInfo.includes(row.workdir), 'and Info is where the workdir actually is',
       oneLine(inInfo));
-    await s.page.click('dialog.modal .modal-actions .btn');
-    await s.page.waitForSelector('dialog.modal', { state: 'detached', timeout: 5000 });
+    await s.page.click('dialog.so-info-dialog .ds-dialog__actions .ds-btn');
+    await s.page.waitForSelector('dialog.so-info-dialog', { state: 'detached', timeout: 5000 });
 
     // Rule 4 - motion is subtle, and it does not restart. A list that
     // re-renders must update the row it already has rather than build a new
     // one, or every mark on it starts again on every poll.
+    // A property, not an attribute: the list is morphed, and a morph syncs
+    // every attribute to what was drawn.
     await s.page.evaluate((sel) => {
-      document.querySelector(sel).dataset.stamp = 'before';
+      document.querySelector(sel).wp1Stamp = 'before';
     }, rowSel(id));
 
     const renamed = row.title + ' renamed';
@@ -3384,21 +3419,20 @@ async function design() {
     // application again, which really would rebuild the list.
     await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
     await s.page.waitForFunction((want) =>
-      [...document.querySelectorAll('#sessionList .chat-item .label')].some((n) => n.textContent === want),
+      [...document.querySelectorAll('#sessionList .so-row .so-row__label')].some((n) => n.textContent === want),
     renamed, { timeout: 20000 });
     const after = await s.page.evaluate((sel) => {
       const node = document.querySelector(sel);
-      return { sameRow: !!node && node.dataset.stamp === 'before' };
+      return { sameRow: !!node && node.wp1Stamp === 'before' };
     }, rowSel(id));
     ok(after.sameRow, 'and a rename is drawn into the row that is already there',
       after.sameRow ? 'the same row' : 'a new row');
 
     // Rule 4 again, on the mark that says a session is working. It is the
-    // agent's own mark with a hairline ring around it, one arc in the page's
-    // own ink, and it turns once every 900 ms - the same beat as the resume
-    // spinner. The arc is the ink and not a grey, because the whole of the
-    // motion is that one arc: drawn in the faintest text colour on a ring in
-    // the faintest line, it turned and nobody could see it turning, which is
+    // agent's own mark with a ring around it, one arc in the primary colour
+    // on the outline colour, and it turns on DS's spinner beat
+    // (--ds-loop-spin). The arc has to stand out from the ring, because the
+    // whole of the motion is that one arc: an arc nobody can see turning is
     // the same thing as not turning at all.
     //
     // It takes an agent session: a shell and an editor are the two programs
@@ -3416,14 +3450,26 @@ async function design() {
     const spinning = await awaitRow(s.page, working, (r) => r.busy, 10000);
     ok(spinning.ok, 'a session that is working turns its own mark into a ring', took(spinning));
     const ring = spinning.seen ? spinning.seen.ring : null;
-    ok(!!ring && ring.colour === 'rgb(23, 24, 27)' && ring.rest === 'rgb(220, 221, 225)',
-      'the arc that moves is the page\u2019s ink, on a ring a shade under it',
-      ring ? ring.colour + ' on ' + ring.rest : 'no ring');
+    const tone = await s.page.evaluate(() => {
+      const probe = document.createElement('span');
+      document.getElementById('sessionList').append(probe);
+      probe.style.color = 'var(--ds-primary)';
+      probe.style.backgroundColor = 'var(--ds-line-2)';
+      probe.style.animationDuration = 'var(--ds-loop-spin)';
+      const css = getComputedStyle(probe);
+      const out = { arc: css.color, rest: css.backgroundColor, beat: css.animationDuration };
+      probe.remove();
+      return out;
+    });
+    ok(!!ring && ring.colour === tone.arc && ring.rest === tone.rest,
+      'the arc that moves is the primary colour, on a ring in the outline colour',
+      ring ? ring.colour + ' on ' + ring.rest + ' (want ' + tone.arc + ' on ' + tone.rest + ')' : 'no ring');
     ok(!!ring && contrastOf(ring.colour, ring.rest) >= 3,
       'so the arc is legible against the ring it turns on',
       ring ? contrastOf(ring.colour, ring.rest).toFixed(1) + ':1' : 'no ring');
-    const beat = ring ? Math.round(parseFloat(ring.motion) * 1000) : 0;
-    ok(beat >= 120 && beat <= 900, 'and it turns at the app\u2019s own pace', beat + ' ms');
+    const beat = ring ? Math.round(parseFloat(ring.motion) * (/ms$/.test(ring.motion) ? 1 : 1000)) : 0;
+    const want = Math.round(parseFloat(tone.beat) * (/ms$/.test(tone.beat) ? 1 : 1000));
+    ok(beat > 0 && beat === want, 'and it turns at the pace of every DS spinner', beat + ' ms (--ds-loop-spin ' + tone.beat + ')');
 
     // And it keeps turning through a re-render: the ring is drawn on the mark
     // the row already has, so a list refresh does not start it again.
@@ -3432,7 +3478,7 @@ async function design() {
     // rename now arrives on the event stream within a frame or two, so the
     // second reading waits for one more frame to have been drawn.
     const spinOf = (sel) => s.page.evaluate((one) => {
-      const mark = document.querySelector(one + ' .row-mark');
+      const mark = document.querySelector(one + ' .so-mark');
       const anim = mark ? mark.getAnimations({ subtree: true })[0] : null;
       return anim ? { at: Number(anim.currentTime), start: Number(anim.startTime) } : { at: -1, start: NaN };
     }, sel);
@@ -3441,7 +3487,7 @@ async function design() {
     await s.context.request.patch(s.url + '/api/sessions/' + working, { data: { title: spinnerName } });
     await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
     await s.page.waitForFunction((want) =>
-      [...document.querySelectorAll('#sessionList .chat-item .label')].some((n) => n.textContent === want),
+      [...document.querySelectorAll('#sessionList .so-row .so-row__label')].some((n) => n.textContent === want),
     spinnerName, { timeout: 20000 });
     await s.page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const spunAfter = await spinOf(rowSel(working));
@@ -3458,11 +3504,11 @@ async function design() {
     await s.page.emulateMedia({ reducedMotion: 'reduce' });
     await wait(200);
     const still = await rowActivity(s.page, working);
-    ok(!!still.ring && still.ring.name === 'spin' && still.ring.motion === '0.9s',
+    ok(!!still.ring && still.ring.name === 'ds-spin' && still.ring.motion === ring.motion,
       'with reduced motion the ring turns at the pace it always turns at',
       still.ring ? still.ring.name + ' ' + still.ring.motion : 'no ring');
     const slow = await s.page.evaluate((sel) => {
-      const mark = document.querySelector(sel + ' .row-mark');
+      const mark = document.querySelector(sel + ' .so-mark');
       const anim = mark ? mark.getAnimations({ subtree: true })[0] : null;
       if (!anim) return -1;
       const was = Number(anim.currentTime);
@@ -3480,22 +3526,24 @@ async function design() {
       const read = (id) => {
         const node = document.getElementById(id);
         return {
-          text: (node.textContent || '').trim(),
+          // The resting face: a busy face (a spinner and its word) waits
+          // beside it, unseen.
+          text: ((node.querySelector('.ds-btn__face:not(.ds-btn__face--busy)') || node).textContent || '').trim(),
           label: node.getAttribute('aria-label'),
-          title: node.title,
+          title: node.getAttribute('data-tip'),
           svg: node.querySelectorAll('svg').length,
           height: Math.round(node.getBoundingClientRect().height),
         };
       };
       return { status: read('statusBtn'), mic: read('micBtn') };
     });
-    ok(header.status.text === '' && header.status.svg === 1
+    ok(header.status.text === '' && header.status.svg >= 1
       && header.status.label === header.status.title,
       'Status is a mark, with its words in the label', JSON.stringify(header.status));
     ok(header.status.label === 'Summarize this session' && header.mic.label === 'Speak',
       'and the words say what pressing them does',
       header.status.label + ' / ' + header.mic.label);
-    ok(header.mic.text === 'Speak' && header.mic.height >= 44,
+    ok(header.mic.text === 'Speak' && header.mic.height >= 40,
       'the microphone is the one that carries its word, at a size a thumb can hit',
       JSON.stringify(header.mic));
     const gone = await s.page.evaluate(() => ({
@@ -3512,7 +3560,7 @@ async function design() {
       const parts = [];
       for (let node = walker.nextNode(); node; node = walker.nextNode()) {
         const host = node.parentElement;
-        if (!host || host.closest('.tip-bubble') || host.closest('.sr-only')) continue;
+        if (!host || host.closest('.ds-tooltip') || host.closest('.ds-sr')) continue;
         if (host.closest('#term')) continue;
         if (!host.checkVisibility || !host.checkVisibility()) continue;
         parts.push(node.textContent);
@@ -3524,40 +3572,31 @@ async function design() {
       'nothing the detector knows is written on the page in words',
       oneLine((/\b(exact|quiet|unknown|run_id|phase)\b/.exec(spoken) || ['none'])[0]));
 
-    /* --------------------------------------------- the sidebar as a rail */
+    /* ------------------------------------- the session list put away */
 
     // A column of names is what a desk wants and a laptop cannot spare. The
-    // control beside the brand takes it down to a rail of marks, this device
-    // remembers the answer, and the pane is re-measured for the width it has
-    // actually been given.
+    // control beside the brand puts the list away and gives its width to the
+    // panel (DS's data-drawer-hidden), this device remembers the answer, and
+    // the pane is re-measured for the width it has actually been given.
     const wide = await s.page.evaluate(() =>
       Math.round(document.getElementById('sidebar').getBoundingClientRect().width));
+    const panelWide = await s.page.evaluate(() =>
+      Math.round(document.querySelector('.ds-panel').getBoundingClientRect().width));
     await s.page.click('#sideCollapse');
     await wait(400);
-    const rail = await s.page.evaluate(() => {
-      const bar = document.getElementById('sidebar');
-      const seen = (sel) => {
-        const node = document.querySelector(sel);
-        return !!node && node.checkVisibility();
-      };
-      const row = document.querySelector('#sessionList .chat-item');
-      return {
-        width: Math.round(bar.getBoundingClientRect().width),
-        brand: seen('.brand-name'),
-        label: seen('#sessionList .chat-item .label'),
-        newWords: seen('#newSession .btn-label'),
-        foot: seen('#logout .btn-label'),
-        mark: !!row && !!row.querySelector('.agent-mark'),
-        named: row ? row.title : '',
-        fill: getComputedStyle(bar).backgroundColor,
-      };
-    });
-    ok(wide > 200 && rail.width <= 72 && rail.width < wide,
-      'the collapse control takes the sidebar down to a rail', wide + ' -> ' + rail.width + ' px');
-    ok(!rail.brand && !rail.label && !rail.newWords && !rail.foot
-      && rail.mark && rail.named.length > 0,
-    'the rail is marks and no words, and a row is named in its tooltip', JSON.stringify(rail));
-    ok(white(rail.fill), 'and the rail is the same white as everything else', rail.fill);
+    const away = await s.page.evaluate(() => ({
+      hidden: document.getElementById('app').hasAttribute('data-drawer-hidden'),
+      drawer: document.getElementById('sidebar').checkVisibility(),
+      panel: Math.round(document.querySelector('.ds-panel').getBoundingClientRect().width),
+      toggle: document.getElementById('sideCollapse').checkVisibility(),
+      expanded: document.getElementById('sideCollapse').getAttribute('aria-expanded'),
+      said: document.getElementById('sideCollapse').getAttribute('aria-label'),
+    }));
+    ok(wide > 200 && away.hidden && !away.drawer && away.panel > panelWide,
+      'the toggle puts the session list away and gives its width to the panel',
+      JSON.stringify({ wide, panelWide, ...away }));
+    ok(away.toggle && away.expanded === 'false' && /Show/.test(away.said || ''),
+      'and stays in the bar, saying it brings the list back', JSON.stringify(away));
     await shot(s.page, 'design-rail');
 
     // Per device, and it survives the reload it is there to be useful across.
@@ -3565,16 +3604,15 @@ async function design() {
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
     await wait(500);
     const kept = await s.page.evaluate(() => ({
-      collapsed: document.body.classList.contains('side-collapsed'),
-      width: Math.round(document.getElementById('sidebar').getBoundingClientRect().width),
+      collapsed: document.getElementById('app').hasAttribute('data-drawer-hidden'),
+      drawer: document.getElementById('sidebar').checkVisibility(),
     }));
-    ok(kept.collapsed && kept.width <= 72, 'and a reload comes back to the rail',
+    ok(kept.collapsed && !kept.drawer, 'and a reload comes back to it put away',
       JSON.stringify(kept));
 
-    // The rail gives its width to the pane, which is measured in characters
-    // and so has to be measured again: expanding the sidebar takes those
-    // columns back. The drawn screen is whole columns wide, so its width is
-    // the column count in pixels.
+    // The pane is measured in characters and so has to be measured again:
+    // bringing the list back takes those columns back. The drawn screen is
+    // whole columns wide, so its width is the column count in pixels.
     const screenWidth = () => s.page.$eval('#term .xterm-screen',
       (n) => Math.round(n.getBoundingClientRect().width));
     const railCols = await screenWidth();
@@ -3583,7 +3621,7 @@ async function design() {
     const wideCols = await screenWidth();
     ok(railCols > wideCols,
       'and the pane is re-measured when the stage changes width',
-      railCols + ' px (rail) -> ' + wideCols + ' px (column)');
+      railCols + ' px (put away) -> ' + wideCols + ' px (column)');
 
     /* ----------------------------------- a line that puts itself away */
 
@@ -3614,15 +3652,15 @@ async function design() {
 
     // Rule 1 again, on the other page, and rule 2 on the admin cards.
     await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('.harness-card', { timeout: 20000 });
+    await s.page.waitForSelector('.so-program', { timeout: 20000 });
     const admin = await s.page.evaluate(() => {
-      const cards = [...document.querySelectorAll('.card')];
+      const cards = [...document.querySelectorAll('.ds-card')];
       const fills = new Set(cards.map((c) => getComputedStyle(c).backgroundColor));
       return {
         fills: [...fills],
-        body: getComputedStyle(document.body).backgroundColor,
-        marks: [...document.querySelectorAll('.harness-card')].map((c) =>
-          (c.querySelector('.agent-mark') || { dataset: {} }).dataset.agent || 'none'),
+        body: getComputedStyle(document.querySelector('.ds-panel')).backgroundColor,
+        marks: [...document.querySelectorAll('.so-program')].map((c) =>
+          (c.querySelector('.so-agent') || { dataset: {} }).dataset.agent || 'none'),
       };
     });
     ok(admin.body === WHITE && admin.fills.every(white),
@@ -3638,7 +3676,7 @@ async function design() {
       const parts = [];
       for (let node = walker.nextNode(); node; node = walker.nextNode()) {
         const host = node.parentElement;
-        if (!host || host.closest('.tip-bubble')) continue;
+        if (!host || host.closest('.ds-tooltip')) continue;
         if (!host.checkVisibility || !host.checkVisibility()) continue;
         parts.push(node.textContent);
       }
@@ -3661,30 +3699,33 @@ async function design() {
 // assertion here waits for a fact rather than for a fixed number of
 // milliseconds, and reports how long it actually took.
 
-const rowSel = (id) => '#sessionList .chat-item[data-id="' + id + '"]';
+const rowSel = (id) => '#sessionList .so-row[data-id="' + id + '"]';
 
 // rowActivity is everything the sidebar says about one session, read out of
-// the drawn row rather than out of the API: the classes are the feature.
+// the drawn row rather than out of the API: the state attributes are the
+// feature.
 const rowActivity = (page, id) => page.evaluate((sel) => {
   const row = document.querySelector(sel);
   if (!row) return null;
-  const mark = row.querySelector('.row-mark');
-  const label = row.querySelector('.label');
-  const glass = row.querySelector('.row-tasks');
+  const mark = row.querySelector('.so-mark');
+  const label = row.querySelector('.so-row__label');
+  // The hourglass is the corner badge of background work or of a verdict
+  // being read.
+  const glass = row.querySelector('.so-mark__badge[data-kind="tasks"], .so-mark__badge[data-kind="checking"]');
   const glassBox = glass ? glass.getBoundingClientRect() : null;
   const ring = mark ? getComputedStyle(mark, '::after') : null;
   return {
-    busy: !!mark && mark.classList.contains('busy'),
-    waiting: !!mark && mark.classList.contains('waiting'),
-    tasks: !!mark && mark.classList.contains('tasks'),
+    busy: !!mark && mark.getAttribute('data-ring') === 'busy',
+    waiting: !!mark && mark.getAttribute('data-ring') === 'waiting',
+    tasks: !!row.querySelector('.so-mark__badge[data-kind="tasks"]'),
     // The hourglass, as drawn: shown at all, and how big.
     glass: glass && getComputedStyle(glass).display !== 'none' && glassBox.width > 0
       ? { w: Math.round(glassBox.width), h: Math.round(glassBox.height) }
       : null,
-    unread: row.classList.contains('unread'),
-    active: row.classList.contains('active'),
+    unread: row.hasAttribute('data-unread'),
+    active: !!row.querySelector('.so-row__open[aria-current="page"]'),
     dots: row.querySelectorAll('.dot').length,
-    said: mark ? mark.title : '',
+    said: mark ? mark.getAttribute('data-tip') || '' : '',
     weight: label ? getComputedStyle(label).fontWeight : '',
     ring: ring
       ? {
@@ -3724,9 +3765,9 @@ async function clickRow(page, id) {
   await ensureNav(page);
   // The name, not the row: a row also carries an "i" and a "…", and neither of
   // them is what a person aiming at a session hits.
-  await page.click(rowSel(id) + ' .label');
+  await page.click(rowSel(id) + ' .so-row__label');
   await page.waitForFunction((want) => location.hash.slice(1) === want, id, { timeout: 15000 });
-  await page.waitForSelector(rowSel(id) + '.active', { timeout: 15000 });
+  await page.waitForSelector(rowSel(id) + ' .so-row__open[aria-current="page"]', { timeout: 15000 });
   await page.waitForSelector('#term .xterm', { timeout: 15000 });
 }
 
@@ -3781,7 +3822,7 @@ async function activityFor(harness) {
     await keepBusy(s.page, 8000);
     const spun = await awaitRow(s.page, id, (r) => r.busy, 8000);
     ok(spun.ok, 'the row spins while ' + harness + ' is working', took(spun));
-    ok(!spun.seen || spun.seen.ring === null || spun.seen.ring.name === 'spin',
+    ok(!spun.seen || spun.seen.ring === null || spun.seen.ring.name === 'ds-spin',
       'and the ring is what turns, not a glyph of its own',
       spun.seen && spun.seen.ring ? spun.seen.ring.name + ' ' + spun.seen.ring.motion : 'no ring');
 
@@ -3790,7 +3831,7 @@ async function activityFor(harness) {
     await clickRow(s.page, other);
     const done = await awaitRow(s.page, id, (r) => !r.busy && r.unread, 30000);
     ok(done.ok, 'it stops spinning and its name goes bold when the turn ends', took(done));
-    ok(!done.seen || Number(done.seen.weight) >= 600, 'the bold is real weight, not a colour',
+    ok(!done.seen || Number(done.seen.weight) >= 500, 'the bold is real weight (DS\u2019s label weight), not a colour',
       done.seen ? done.seen.weight : 'no row');
 
     await shot(s.page, 'activity-' + harness);
@@ -3876,9 +3917,19 @@ async function activitywaiting() {
 
     const asked = await awaitRow(s.page, id, (r) => r.waiting, 20000);
     ok(asked.ok, 'a permission prompt draws a ring that does not turn', took(asked));
+    // The amber is DS's warning role, read from the page rather than written
+    // here, so a new copy of Dashboard-Style does not fail this for a shade.
+    const amber = await s.page.evaluate(() => {
+      const probe = document.createElement('span');
+      probe.style.color = 'var(--ds-warning)';
+      document.body.append(probe);
+      const colour = getComputedStyle(probe).color;
+      probe.remove();
+      return colour;
+    });
     // The amber that used to be a dot beside the name is the ring itself: the
     // one colour a row carries, on the mark it belongs to.
-    ok(!asked.seen || (asked.seen.ring && asked.seen.ring.colour === 'rgb(184, 129, 26)'),
+    ok(!asked.seen || (asked.seen.ring && asked.seen.ring.colour === amber),
       'and the ring, not a dot, is what goes amber',
       asked.seen && asked.seen.ring ? asked.seen.ring.colour : 'no ring');
     ok(!asked.seen || (asked.seen.dots === 0 && asked.seen.said === 'Needs an answer'),
@@ -3895,7 +3946,7 @@ async function activitywaiting() {
     // rule exists for, so it is measured rather than reasoned about.
     await wait(34000);
     const still = await rowActivity(s.page, id);
-    ok(!!still && still.waiting && still.ring && still.ring.colour === 'rgb(184, 129, 26)',
+    ok(!!still && still.waiting && still.ring && still.ring.colour === amber,
       'and thirty-four silent seconds later it is still waiting', JSON.stringify(still));
 
     ok(unexpected(s.errors).length === 0, 'no console errors',
@@ -3954,7 +4005,7 @@ async function unread() {
     await typeLine(working, '/busy 2500');
     const bold = await awaitRow(s.page, id, (r) => r.unread, 30000);
     ok(bold.ok, 'a turn that ends where nobody is looking makes its name bold', took(bold));
-    ok(!bold.seen || Number(bold.seen.weight) >= 600, 'the bold is real weight, not a colour',
+    ok(!bold.seen || Number(bold.seen.weight) >= 500, 'the bold is real weight (DS\u2019s label weight), not a colour',
       bold.seen ? bold.seen.weight : 'no row');
 
     await clickRow(s.page, id);
@@ -4094,8 +4145,8 @@ const toggles = async (page) => {
 // awaitNotify waits for the notification switch to settle where the browser's
 // answer put it - the permission is asked for asynchronously.
 const awaitNotify = (page, on) => page.waitForFunction((want) => {
-  const node = document.querySelector('.menu [data-option="notify"]');
-  return !!node && node.getAttribute('aria-checked') === want;
+  const node = document.querySelector('#optionsDialog [data-option="notify"]');
+  return !!node && String(node.checked) === want;
 }, on ? 'true' : 'false', { timeout: 5000 });
 
 const rang = (page) => page.evaluate(() => ({
@@ -4184,7 +4235,7 @@ async function notify() {
       'and starting one says nothing at all, with both switches on',
       (started.beeps - opened.beeps) + ' chime(s), '
       + (started.notes.length - opened.notes.length) + ' note(s)');
-    const title = await s.page.$eval(rowSel(id) + ' .label', (n) => n.textContent);
+    const title = await s.page.$eval(rowSel(id) + ' .so-row__label', (n) => n.textContent);
 
     // A phone's top bar has to fit every control with a session attached.
     // The bar gives up its spacing rather than spilling off the edge, and
@@ -4357,7 +4408,7 @@ async function stubSpeech(context, { seconds = 0, delay = 0 } = {}) {
 const noticeText = (page) => page.evaluate(() => {
   const host = document.getElementById('termNotice');
   if (!host || host.hidden) return '';
-  const line = host.querySelector('.notice-text');
+  const line = host.querySelector('.ds-alert__text');
   return line ? line.textContent : '';
 });
 
@@ -4382,7 +4433,7 @@ async function sessiontitle() {
     const id = await startSession(s.page, 'claude');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
 
-    const before = await s.page.$eval(rowSel(id) + ' .label', (n) => n.textContent.trim());
+    const before = await s.page.$eval(rowSel(id) + ' .so-row__label', (n) => n.textContent.trim());
     ok(before.startsWith('Claude Code'), 'it starts life under the placeholder name', before);
 
     // The harness starting up is busy and then idle before anybody has typed.
@@ -4398,15 +4449,15 @@ async function sessiontitle() {
     await keepBusy(s.page, 3000);
     const spun = await awaitRow(s.page, id, (r) => r.busy, 10000);
     ok(spun.ok, 'it goes to work on the first thing it is asked', took(spun));
-    await s.page.waitForSelector(rowSel(id) + ' .label.titling', { timeout: 10000 });
+    await s.page.waitForSelector(rowSel(id) + ' .so-row__label[data-titling]', { timeout: 10000 });
     ok(true, 'the row pulses while the name is being thought of', 'label.titling');
-    const pulsing = await s.page.$eval('#sessionTitle', (n) => n.classList.contains('titling'));
+    const pulsing = await s.page.$eval('#sessionTitle', (n) => n.hasAttribute('data-titling'));
     ok(pulsing, 'and so does the header of the session being watched', String(pulsing));
 
     await s.page.waitForFunction((arg) => {
       const node = document.querySelector(arg.sel);
-      return !!node && node.textContent.trim() === arg.want && !node.classList.contains('titling');
-    }, { sel: rowSel(id) + ' .label', want }, { timeout: 30000 });
+      return !!node && node.textContent.trim() === arg.want && !node.hasAttribute('data-titling');
+    }, { sel: rowSel(id) + ' .so-row__label', want }, { timeout: 30000 });
     ok(true, 'the row renames itself and stops pulsing, with no reload', want);
 
     const header = await s.page.$eval('#sessionTitle', (n) => n.textContent.trim());
@@ -4420,7 +4471,7 @@ async function sessiontitle() {
     await awaitRow(s.page, id, (r) => !r.busy, 20000);
     await wait(2500);
     ok(asks === 1 && asked() === 1, 'the naming happened exactly once', asks + ' then ' + asked());
-    const still = await s.page.$eval(rowSel(id) + ' .label', (n) => n.textContent.trim());
+    const still = await s.page.$eval(rowSel(id) + ' .so-row__label', (n) => n.textContent.trim());
     ok(still === want, 'and the name it was given stayed', still);
     await shot(s.page, 'session-title');
 
@@ -4451,9 +4502,9 @@ async function sessiontitle() {
       const label = document.querySelector(arg.sel);
       return !!label && label.textContent.trim() === arg.want
         && document.getElementById('sessionTitle').textContent.trim() === arg.want;
-    }, { sel: rowSel(prepared) + ' .label', want: planned }, { timeout: 15000 }).then(() => true, () => false);
+    }, { sel: rowSel(prepared) + ' .so-row__label', want: planned }, { timeout: 15000 }).then(() => true, () => false);
     ok(named, 'leaving its prompt field names a prepared session after the prompt',
-      await s.page.$eval(rowSel(prepared) + ' .label', (n) => n.textContent.trim()));
+      await s.page.$eval(rowSel(prepared) + ' .so-row__label', (n) => n.textContent.trim()));
     await shot(s.page, 'session-title-prestart');
     await s.page.focus('#psPrompt');
     await s.page.type('#psPrompt', ' and keep the page');
@@ -4471,13 +4522,13 @@ async function sessiontitle() {
     const quiet = await awaitRow(s.page, failing, (r) => !r.busy, 20000);
     ok(quiet.ok, 'a second session settles', took(quiet));
     await keepBusy(s.page, 1500);
-    await s.page.waitForSelector('dialog.modal[open]', { timeout: 15000 });
-    const said = await s.page.$eval('dialog.modal[open]', (n) => n.textContent);
+    await s.page.waitForSelector('dialog.ds-dialog[open]', { timeout: 15000 });
+    const said = await s.page.$eval('dialog.ds-dialog[open]', (n) => n.textContent);
     ok(/Could not name the session/.test(said) && /API key/.test(said),
       'a failed naming opens a dialog that says why', said.trim().slice(0, 160));
-    const stillPulsing = await s.page.$$eval(rowSel(failing) + ' .label.titling', (n) => n.length);
+    const stillPulsing = await s.page.$$eval(rowSel(failing) + ' .so-row__label[data-titling]', (n) => n.length);
     ok(stillPulsing === 0, 'and the row stops pulsing', String(stillPulsing));
-    await s.page.click('dialog.modal[open] .btn.primary');
+    await s.page.click('dialog.ds-dialog[open] .ds-dialog__actions .ds-btn');
 
     ok(unexpected(s.errors).length === 0, 'no console errors',
       unexpected(s.errors).join(' | ') || '0');
@@ -4545,59 +4596,41 @@ async function statusspeak() {
     // The tap has to land visibly before the answer does: the button spins and
     // the one line under the top bar says what is being done.
     const spinning = await s.page.waitForFunction(
-      () => document.getElementById('statusBtn').classList.contains('working'),
+      () => document.getElementById('statusBtn').getAttribute('aria-busy') === 'true',
       null, { timeout: 5000 }).then(() => true).catch(() => false);
     ok(spinning, 'the button says the tap landed before the answer arrives',
       spinning ? 'the spinner is on it' : 'nothing happened');
 
-    // And what it spins is a ring around the mark, never the mark itself. The
+    // And what turns is the busy face's spinner, never the mark itself. The
     // drawing is a screen being read out; a screen that is turning is a
-    // drawing of nothing, and it was read as one. It is the same ring, the
-    // same hairline, the same arc in the page's own ink and the same 900 ms as
-    // the one a working session wears in the sidebar, because it means the
-    // same thing in both places.
+    // drawing of nothing, and it was read as one.
     const ring = await s.page.evaluate(() => {
       const btn = document.getElementById('statusBtn');
-      const after = getComputedStyle(btn, '::after');
-      const mark = getComputedStyle(btn.querySelector('svg'));
+      const spinner = btn.querySelector('.ds-btn__face--busy .ds-spinner');
+      const mark = btn.querySelector('.ds-btn__face:not(.ds-btn__face--busy) svg');
       return {
-        name: after.animationName,
-        beat: after.animationDuration,
-        size: Math.round(parseFloat(after.width) || 0),
-        arc: after.borderTopColor,
-        rest: after.borderRightColor,
-        onTheMark: mark.animationName,
-        glyph: Math.round(parseFloat(mark.width) || 0),
+        spinner: !!spinner,
+        turning: spinner ? spinner.getAnimations({ subtree: true }).length > 0
+          || getComputedStyle(spinner).animationName !== 'none'
+          || getComputedStyle(spinner, '::before').animationName !== 'none' : false,
+        onTheMark: mark ? getComputedStyle(mark).animationName : 'none',
       };
     });
-    ok(ring.name === 'spin' && ring.onTheMark === 'none',
-      'and it is a ring that turns, not the drawing',
-      'ring: ' + ring.name + ', mark: ' + ring.onTheMark);
-    ok(ring.size > ring.glyph,
-      'drawn outside the mark, the way a working session is drawn in the sidebar',
-      ring.size + 'px around a ' + ring.glyph + 'px mark');
-    ok(ring.beat === '0.9s' && ring.arc === 'rgb(23, 24, 27)' && ring.rest === 'rgb(220, 221, 225)',
-      'in the page\u2019s own ink, on a ring a shade under it, at the app\u2019s own pace',
-      ring.beat + ' ' + ring.arc + ' on ' + ring.rest);
-    ok(contrastOf(ring.arc, ring.rest) >= 3,
-      'so the arc is legible against the ring it turns on',
-      contrastOf(ring.arc, ring.rest).toFixed(1) + ':1');
+    ok(ring.spinner && ring.turning && ring.onTheMark === 'none',
+      'and it is a spinner that turns, not the drawing', JSON.stringify(ring));
 
     // Turning decoration off must not turn off the one thing that says the
-    // answer is still being made, so the ring keeps its own pace here as the
-    // sidebar's does. Squashed to .01ms it is not a slower ring, it is a still
-    // one - and a still ring says the opposite of what it is there to say.
+    // answer is still being made: DS loaders run at their token speed under
+    // reduced motion too.
     await s.page.emulateMedia({ reducedMotion: 'reduce' });
     await wait(120);
     const calm = await s.page.evaluate(() => {
-      const after = getComputedStyle(document.getElementById('statusBtn'), '::after');
       const node = document.getElementById('statusBtn');
-      const anim = node.getAnimations({ subtree: true })[0] || null;
-      return { name: after.animationName, beat: after.animationDuration, running: !!anim };
+      const spinner = node.querySelector('.ds-btn__face--busy .ds-spinner');
+      return { busy: node.getAttribute('aria-busy'), running: !!spinner && spinner.getAnimations({ subtree: true }).length > 0 };
     });
-    ok(calm.name === 'spin' && calm.beat === '0.9s' && calm.running,
-      'with reduced motion it turns at the pace it always turns at, rather than standing still',
-      calm.name + ' ' + calm.beat + (calm.running ? ', running' : ', not running'));
+    ok(calm.busy !== 'true' || calm.running,
+      'with reduced motion it still turns, rather than standing still', JSON.stringify(calm));
     await s.page.emulateMedia({ reducedMotion: null });
 
     await s.page.waitForFunction(() => {
@@ -4608,7 +4641,7 @@ async function statusspeak() {
     ok(shown.includes('finished') && shown === stub.text,
       'what the model said is on screen, in words', oneLine(shown));
     // The line is on a timer, so everything about it is read while it is up.
-    const tip = await s.page.$eval('#termNotice .tip-bubble', (n) => n.textContent).catch(() => '');
+    const tip = await s.page.$eval('#termNotice .so-info', (n) => n.getAttribute('data-tip')).catch(() => '');
     await shot(s.page, 'status-speak');
 
     for (let i = 0; i < 60 && said.length === 0; i += 1) await wait(200);
@@ -4622,7 +4655,7 @@ async function statusspeak() {
     ok(tip.length > 0, 'and the details are under the "i" beside it', oneLine(tip));
 
     const cleared = await s.page.waitForFunction(
-      () => !document.getElementById('statusBtn').classList.contains('working'),
+      () => document.getElementById('statusBtn').getAttribute('aria-busy') !== 'true',
       null, { timeout: 10000 }).then(() => true).catch(() => false);
     ok(cleared, 'and the spinner stops when there is nothing left to wait for',
       cleared ? 'stopped' : 'still turning');
@@ -4692,7 +4725,8 @@ async function statusticker() {
     });
     ok(!window.hidden && window.height <= 24, 'it is one line high and no more',
       JSON.stringify(window));
-    ok(window.fill === WHITE, 'on the same white as everything else', window.fill);
+    ok(window.fill !== 'rgba(0, 0, 0, 0)' && window.fill !== 'transparent',
+      'on a ground of its own, so it reads over the terminal', window.fill);
 
     // And it gives the window back: outside auto mode, with nothing happening,
     // there is nothing to say.
@@ -4727,7 +4761,7 @@ const micRow = (page) => page.evaluate(() => {
   const clock = node('recTime');
   const pill = node('micBtn');
   return {
-    pillInBar: !!pill && !!pill.closest('.topbar'),
+    pillInBar: !!pill && !!pill.closest('.ds-topbar'),
     pillText: pill ? pill.textContent.trim() : '',
     pillBox: box('micBtn'),
     pillDisabled: !!pill && pill.disabled,
@@ -4736,7 +4770,7 @@ const micRow = (page) => page.evaluate(() => {
     keep: box('recSend'),
     drop: box('recCancel'),
     labels: ['recSend', 'recCancel'].map((id) => (node(id) || {}).textContent || '').join(','),
-    bars: document.querySelectorAll('#recMeter .rec-bar').length,
+    bars: document.querySelectorAll('#recMeter .so-meter__bar').length,
     clock: clock ? clock.textContent.trim() : '',
   };
 });
@@ -4796,8 +4830,8 @@ async function dictate() {
     await s.page.setViewportSize({ width: 320, height: 844 });
     await wait(400);
     const tight = await s.page.evaluate(() => {
-      const bar = document.querySelector('.topbar').getBoundingClientRect();
-      const parts = [...document.querySelectorAll('.topbar > *')]
+      const bar = document.querySelector('.ds-topbar').getBoundingClientRect();
+      const parts = [...document.querySelectorAll('.ds-topbar > *')]
         .map((n) => n.getBoundingClientRect())
         .filter((box) => box.width > 0 && box.height > 0);
       const pill = document.getElementById('micBtn').getBoundingClientRect();
@@ -4810,8 +4844,11 @@ async function dictate() {
     });
     ok(tight.over === 0 && tight.doc <= 1,
       'at 320px every control is still inside the bar', JSON.stringify(tight));
-    ok(tight.pill.w === 44 && tight.pill.h >= 44 && tight.word === 'none',
-      'and the microphone gave up its word rather than its size', JSON.stringify(tight.pill));
+    // DS has no microphone glyph, so the pill keeps its one short word there
+    // and gives up padding instead; what makes it findable by a thumb is its
+    // height.
+    ok(tight.pill.w >= 44 && tight.pill.h >= 44 && tight.word !== 'none',
+      'and the microphone kept its word and its size', JSON.stringify(tight));
     await s.page.setViewportSize({ width: 390, height: 844 });
     await wait(400);
 
@@ -4833,15 +4870,15 @@ async function dictate() {
     ok(rec.pillDisabled, 'and the pill cannot start a second one', String(rec.pillDisabled));
     await shot(s.page, 'dictate-recording');
     const fits = await s.page.evaluate(() => {
-      const bar = document.querySelector('.topbar').getBoundingClientRect();
+      const bar = document.querySelector('.ds-topbar').getBoundingClientRect();
       const middle = (box) => (box.top + box.bottom) / 2;
       // Only what is actually on screen: a control the bar has hidden lays
       // out to nothing, and nothing is not misaligned. Copy, paste and upload
       // float under the bar on a phone, on purpose (transfer.js).
-      const parts = [...document.querySelectorAll('.topbar > :not(#transfer)')]
+      const parts = [...document.querySelectorAll('.ds-topbar > :not(#transfer)')]
         .map((n) => n.getBoundingClientRect())
         .filter((box) => box.width > 0 && box.height > 0);
-      const buttons = [...document.querySelectorAll('#recSheet .rec-big')]
+      const buttons = [...document.querySelectorAll('#recSheet .so-rec__action')]
         .map((n) => n.getBoundingClientRect());
       return {
         aligned: parts.every((box) => Math.abs(middle(box) - middle(bar)) <= 2),
@@ -5015,7 +5052,7 @@ async function typeafteroutage() {
     // (a) The radio goes, and comes back.
     await s.context.setOffline(true);
     await s.page.evaluate(() => window.dispatchEvent(new Event('offline')));
-    await s.page.waitForFunction(() => document.body.classList.contains('conn-lost'),
+    await s.page.waitForFunction(() => document.body.hasAttribute('data-conn-lost'),
       null, { timeout: 20000 });
 
     // (e) A burst typed while there is no socket, one character at a time,
@@ -5029,7 +5066,7 @@ async function typeafteroutage() {
 
     await s.context.setOffline(false);
     await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
-    const back = await s.page.waitForFunction(() => !document.body.classList.contains('conn-lost'),
+    const back = await s.page.waitForFunction(() => !document.body.hasAttribute('data-conn-lost'),
       null, { timeout: 25000 }).then(() => true).catch(() => false);
     ok(back, 'the socket came back on its own', back ? 'conn-lost cleared' : 'still lost');
 
@@ -5093,23 +5130,27 @@ async function typekeepsfocus() {
     // pane afterwards: the keys go straight to wherever the page left the
     // focus, which is exactly what a person does.
     await s.page.click('#sessionTitle');
-    await s.page.waitForSelector('dialog.modal[open]', { timeout: 10000 });
-    await s.page.click('dialog.modal .btn.sm:not(.primary)');
-    await s.page.waitForSelector('dialog.modal[open]', { state: 'detached', timeout: 10000 });
+    await s.page.waitForSelector('dialog.so-rename[open]', { timeout: 10000 });
+    await s.page.click('dialog.so-rename .ds-dialog__actions .ds-btn--text');
+    await s.page.waitForSelector('dialog.so-rename', { state: 'detached', timeout: 10000 });
     const dialogMark = 'dialog-' + mark;
     await s.page.keyboard.type('echo ' + dialogMark);
     await s.page.keyboard.press('Enter');
     ok(await awaitScreen(s.page, dialogMark, 15000), 'typing works after a dialog was opened and closed',
       oneLine(await screen(s.page)));
 
-    // And the ⋮ menu: two of its switches pressed - the focus is on the
-    // switch now, inside a menu that stays open - and then dismissed the way
-    // a stray tap dismisses it. Both presses are the key bar's, so the
-    // device ends where it started.
+    // And the ⋮ options: two of its switches pressed - the focus is on the
+    // switch now, inside a dialog that stays open - and then dismissed the
+    // way a stray tap dismisses it, on the pane beside it. Both presses are
+    // the key bar's, so the device ends where it started.
     await option(s.page, 'keybar');
     await option(s.page, 'keybar');
-    await s.page.click('#term .xterm-screen');
-    await s.page.waitForSelector('.menu', { state: 'detached', timeout: 10000 });
+    const beside = await s.page.$eval('#term .xterm-screen', (n) => {
+      const r = n.getBoundingClientRect();
+      return { x: r.left + 40, y: r.top + r.height - 40 };
+    });
+    await s.page.mouse.click(beside.x, beside.y);
+    await s.page.waitForSelector('#optionsDialog[open]', { state: 'detached', timeout: 10000 });
     const menuMark = 'menu-' + mark;
     await s.page.keyboard.type('echo ' + menuMark);
     await s.page.keyboard.press('Enter');
@@ -5123,7 +5164,7 @@ async function typekeepsfocus() {
     ok(await awaitScreen(s.page, 'two-' + mark, 20000), 'the second session takes a keystroke',
       oneLine(await screen(s.page)));
 
-    await s.page.click('.chat-item[data-id="' + one + '"]');
+    await s.page.click('.so-row[data-id="' + one + '"]');
     await s.page.waitForFunction((id) => location.hash.slice(1) === id, one, { timeout: 15000 });
     await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
     // The pane really is the other session's, which is what makes the
@@ -5135,7 +5176,7 @@ async function typekeepsfocus() {
     ok(await awaitScreen(s.page, backOne, 25000), 'and the first one still does after switching back',
       oneLine(await screen(s.page)));
 
-    await s.page.click('.chat-item[data-id="' + two + '"]');
+    await s.page.click('.so-row[data-id="' + two + '"]');
     await s.page.waitForFunction((id) => location.hash.slice(1) === id, two, { timeout: 15000 });
     await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
     ok(await awaitScreen(s.page, 'two-' + mark, 25000), 'and the second session\u2019s pane after switching again',
@@ -5183,21 +5224,21 @@ function backdate(s, moments) {
 const listing = (page) => page.evaluate(() => [...document.getElementById('sessionList').children]
   .map((node) => ({
     folder: node.dataset.folder || '',
-    name: (node.querySelector('.folder-name') || {}).textContent || '',
-    title: (node.querySelector('.folder-head') || {}).title || '',
-    open: (node.querySelector('.folder-head') || {}).getAttribute
-      ? node.querySelector('.folder-head').getAttribute('aria-expanded') : '',
-    count: (node.querySelector('.folder-count') || {}).textContent || '',
-    shown: !!node.querySelector('.folder-rows') && node.querySelector('.folder-rows').checkVisibility(),
-    stamp: node.dataset.stamp || '',
-    rows: [...node.querySelectorAll('.chat-item')].map((row) => ({
+    name: (node.querySelector('.so-folder__name') || {}).textContent || '',
+    title: node.querySelector('.so-folder__head')?.getAttribute('data-tip') || '',
+    open: (node.querySelector('.so-folder__head') || {}).getAttribute
+      ? node.querySelector('.so-folder__head').getAttribute('aria-expanded') : '',
+    count: (node.querySelector('.so-folder__count') || {}).textContent || '',
+    shown: !!node.querySelector('.so-folder__rows') && node.querySelector('.so-folder__rows').checkVisibility(),
+    stamp: node.wp1Stamp || '',
+    rows: [...node.querySelectorAll('.so-row')].map((row) => ({
       id: row.dataset.id,
-      row: row.querySelector('.label').textContent,
-      done: row.classList.contains('done'),
-      stamp: row.dataset.stamp || '',
+      row: row.querySelector('.so-row__label').textContent,
+      done: row.dataset.status === 'done',
+      stamp: row.wp1Stamp || '',
       seen: row.checkVisibility(),
     })),
-    other: node.classList.contains('folder') ? '' : node.className || node.tagName,
+    other: node.classList.contains('so-folder') ? '' : node.className || node.tagName,
   })));
 
 // under is which folder each row is in, by the name the row reads.
@@ -5208,11 +5249,13 @@ function under(shown) {
 }
 
 // stampAll marks every folder and row on screen, so the next render can be
-// asked whether it kept them or built new ones.
+// asked whether it kept them or built new ones. A property, not an
+// attribute: the list is morphed, and a morph syncs every attribute to what
+// was drawn.
 const stampAll = (page) => page.evaluate(() => {
   for (const folder of document.getElementById('sessionList').children) {
-    folder.dataset.stamp = folder.dataset.folder || 'other';
-    for (const row of folder.querySelectorAll('.chat-item')) row.dataset.stamp = row.dataset.id;
+    folder.wp1Stamp = folder.dataset.folder || 'other';
+    for (const row of folder.querySelectorAll('.so-row')) row.wp1Stamp = row.dataset.id;
   }
 });
 
@@ -5339,7 +5382,7 @@ async function folders() {
     backdate(s, { [ids.socrates]: now - 9 * day });
 
     await open(s);
-    await s.page.waitForFunction((n) => document.querySelectorAll('#sessionList .chat-item').length === n,
+    await s.page.waitForFunction((n) => document.querySelectorAll('#sessionList .so-row').length === n,
       6, { timeout: 20000 });
 
     const active = await listing(s.page);
@@ -5368,11 +5411,11 @@ async function folders() {
 
     // The Done shelf starts shut. Opening it shows the done session, and
     // everything that was on screen is still the element it was.
-    const doneShelf = '#sessionList .folder[data-folder="' + projects.socrates + '"] .shelf[data-shelf="done"] .folder-head';
+    const doneShelf = '#sessionList .so-folder[data-folder="' + projects.socrates + '"] .so-folder--shelf[data-shelf="done"] .so-folder__head';
     const shelfState = () => s.page.$eval(doneShelf, (head) => ({
       open: head.getAttribute('aria-expanded'),
-      shown: head.closest('.shelf').querySelector('.folder-rows').checkVisibility(),
-      count: head.querySelector('.folder-count').textContent,
+      shown: head.closest('.so-folder--shelf').querySelector('.so-folder__rows').checkVisibility(),
+      count: head.querySelector('.so-folder__count').textContent,
     }));
     const shutShelf = await shelfState();
     ok(shutShelf.open === 'false' && !shutShelf.shown && shutShelf.count === '1',
@@ -5395,17 +5438,17 @@ async function folders() {
 
     // Shutting a folder. The rows go, the count says how many went, and the
     // caret turns rather than the words changing.
-    const browserHead = '#sessionList .folder[data-folder="' + projects.browser + '"] .folder-head';
-    const caretBefore = await s.page.$eval(browserHead + ' .caret', (n) => getComputedStyle(n).transform);
+    const browserHead = '#sessionList .so-folder[data-folder="' + projects.browser + '"] .so-folder__head';
+    const caretBefore = await s.page.$eval(browserHead + ' .ds-chevron', (n) => getComputedStyle(n).transform + ' ' + getComputedStyle(n).rotate);
     await s.page.click(browserHead);
     await s.page.waitForFunction((sel) => document.querySelector(sel)
       .getAttribute('aria-expanded') === 'false', browserHead, { timeout: 5000 });
     const shut = await listing(s.page);
     // The caret turns rather than jumps, so it is waited for: what is asserted
     // is where it ends up, not where it was a frame after the click.
-    await s.page.waitForFunction((sel) => getComputedStyle(document.querySelector(sel + ' .caret'))
-      .transform === 'none', browserHead, { timeout: 5000 });
-    const caretAfter = await s.page.$eval(browserHead + ' .caret', (n) => getComputedStyle(n).transform);
+    await s.page.waitForFunction((sel) => getComputedStyle(document.querySelector(sel + ' .ds-chevron'))
+      .rotate === 'none', browserHead, { timeout: 5000 });
+    const caretAfter = await s.page.$eval(browserHead + ' .ds-chevron', (n) => getComputedStyle(n).transform + ' ' + getComputedStyle(n).rotate);
     ok(shut[0].open === 'false' && !shut[0].shown && shut[0].rows.every((r) => !r.seen),
       'a folder that is shut hides its sessions and says so to a reader that cannot see it',
       shut[0].open + ', rows shown: ' + shut[0].rows.filter((r) => r.seen).length);
@@ -5413,7 +5456,7 @@ async function folders() {
       'and says how many are behind it, with the caret turned', shut[0].count + ', ' + caretAfter);
     ok(shut.slice(1).every((f) => f.shown), 'the other folders are untouched',
       shut.filter((f) => f.shown).map((f) => f.name).join(' | '));
-    const visibleCount = await s.page.$$eval('#sessionList .folder-count',
+    const visibleCount = await s.page.$$eval('#sessionList .so-folder__count',
       (nodes) => nodes.filter((n) => n.checkVisibility()).length);
     ok(visibleCount === 1, 'an open folder counts nothing: the rows under it are the count', visibleCount);
     await shot(s.page, 'folders-shut');
@@ -5422,7 +5465,7 @@ async function folders() {
     // left - and the sessions in it are still there, not gone.
     await stampAll(s.page);
     await open(s);
-    await s.page.waitForFunction((n) => document.querySelectorAll('#sessionList .chat-item').length === n,
+    await s.page.waitForFunction((n) => document.querySelectorAll('#sessionList .so-row').length === n,
       6, { timeout: 20000 });
     const reloaded = await listing(s.page);
     ok(reloaded[0].name === 'projects/browser' && reloaded[0].open === 'false' && !reloaded[0].shown
@@ -5435,8 +5478,8 @@ async function folders() {
     await s.page.goto(s.url + '/#open=' + ids.browserNew, { waitUntil: 'domcontentloaded' });
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
     await s.page.waitForFunction((id) => {
-      const row = document.querySelector('.chat-item[data-id="' + id + '"]');
-      return !!row && row.classList.contains('active') && row.checkVisibility();
+      const row = document.querySelector('.so-row[data-id="' + id + '"]');
+      return !!row && !!row.querySelector('.so-row__open[aria-current="page"]') && row.checkVisibility();
     }, ids.browserNew, { timeout: 15000 });
     const opened = await listing(s.page);
     ok(opened[0].open === 'true' && opened[0].rows.every((r) => r.seen),
@@ -5457,7 +5500,7 @@ async function folders() {
     mkdirSync(fresh, { recursive: true });
     const freshId = await create('Brand new', fresh);
     await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
-    await s.page.waitForFunction((id) => !!document.querySelector('.chat-item[data-id="' + id + '"]'),
+    await s.page.waitForFunction((id) => !!document.querySelector('.so-row[data-id="' + id + '"]'),
       freshId, { timeout: 20000 });
     const made = await listing(s.page);
     ok(made[0].name === 'brandnew' && made[0].open === 'true' && made[0].rows.length === 1,
@@ -5475,7 +5518,7 @@ async function folders() {
     // nothing for a shut folder to roll up.
     const agent = await create('Browser agent', projects.browser, 'claude');
     await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
-    await s.page.waitForFunction((id) => !!document.querySelector('.chat-item[data-id="' + id + '"]'),
+    await s.page.waitForFunction((id) => !!document.querySelector('.so-row[data-id="' + id + '"]'),
       agent, { timeout: 20000 });
     await clickRow(s.page, agent);
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
@@ -5490,13 +5533,13 @@ async function folders() {
       .getAttribute('aria-expanded') === 'false', browserHead, { timeout: 5000 });
     const rollup = (page) => page.evaluate((sel) => {
       const head = document.querySelector(sel);
-      const dot = head.querySelector('.folder-dot');
+      const dot = head.querySelector('.so-folder__dot');
       return {
-        busy: head.classList.contains('busy'),
-        waiting: head.classList.contains('waiting'),
-        unread: head.classList.contains('unread'),
+        busy: head.getAttribute('data-attention') === 'busy',
+        waiting: head.getAttribute('data-attention') === 'waiting',
+        unread: head.hasAttribute('data-unread'),
         dot: dot.checkVisibility(),
-        count: head.querySelector('.folder-count').textContent,
+        count: head.querySelector('.so-folder__count').textContent,
       };
     }, browserHead);
     const working = await rollup(s.page);
@@ -5516,17 +5559,16 @@ async function folders() {
     await s.page.waitForFunction((sel) => document.querySelector(sel)
       .getAttribute('aria-expanded') === 'true', browserHead, { timeout: 5000 });
 
-    // The head is a label, not a band: the surface under it is the page's one
-    // white, and a hairline is what separates the folders.
-    const style = await s.page.evaluate(() => [...document.querySelectorAll('#sessionList > .folder > .folder-bar')]
+    // The head is a label, not a band: no fill of its own on the drawer's
+    // backdrop, and no lines - DS's drawer has none; the space between the
+    // folders is what separates them.
+    const style = await s.page.evaluate(() => [...document.querySelectorAll('#sessionList > .so-folder > .so-folder__bar')]
       .map((node) => {
-        const css = getComputedStyle(node.querySelector('.folder-head'));
+        const css = getComputedStyle(node.querySelector('.so-folder__head'));
         return { fill: css.backgroundColor, top: getComputedStyle(node).borderTopWidth, size: css.fontSize };
       }));
-    ok(style.length > 1 && style.every((one) => one.fill === 'rgba(0, 0, 0, 0)')
-      && style[0].top === '0px' && style.slice(1).every((one) => one.top === '1px'),
-      'a head is a quiet label on white, hairline-separated below the first',
-      JSON.stringify(style));
+    ok(style.length > 1 && style.every((one) => one.fill === 'rgba(0, 0, 0, 0)' && one.top === '0px'),
+      'a head is a quiet label with no fill and no line', JSON.stringify(style));
 
     await shot(s.page, 'folders');
 
@@ -5553,7 +5595,7 @@ async function folders() {
         inside: box.left >= 0 && box.right <= window.innerWidth,
       };
     }, browserHead);
-    ok(thumb.height >= 30 && thumb.width >= 200 && thumb.inside,
+    ok(thumb.height >= 44 && thumb.width >= 180 && thumb.inside,
       'on a phone a folder head is a target a thumb can hit', JSON.stringify(thumb));
     await s.page.click(browserHead);
     await s.page.waitForFunction((sel) => document.querySelector(sel)
@@ -5702,7 +5744,7 @@ async function clipboard() {
     await closeOptions(s.page);
     await s.page.waitForSelector('#keybar:not([hidden])', { timeout: 10000 });
     const beforeBar = await mark();
-    await s.page.click('#keybar .key[data-key="Paste"]');
+    await s.page.click('#keybar .so-key[data-key="Paste"]');
     await wait(400);
     const fromBar = await since(beforeBar);
     ok(has(fromBar, hexOf('from-the-bar')), 'the key bar’s Paste button pastes the same text',
@@ -5940,7 +5982,7 @@ async function touchcopy() {
     const word = await s.page.evaluate(() => navigator.clipboard.readText());
     ok(word === first, 'a finger held on the pane selects the word under it, and lifting it copies',
       JSON.stringify(oneLine(word)));
-    const toasted = await s.page.evaluate(() => [...document.querySelectorAll('.toast')].map((t) => t.textContent));
+    const toasted = await s.page.evaluate(() => [...document.querySelectorAll('.ds-toast')].map((t) => t.textContent));
     ok(toasted.some((t) => /Copied/.test(t)), 'and says so, because a phone shows nothing else',
       toasted.join(' | ') || 'no toast');
     const after = (await sentBytes(s.page)).slice(before);
@@ -5990,25 +6032,25 @@ const keyboardable = (page) => page.evaluate(() => {
   const btn = document.getElementById('kbBtn');
   const pane = document.querySelector('#term textarea');
   const active = document.activeElement;
-  const copies = [...document.querySelectorAll('.kb-copy')];
+  const copies = [...document.querySelectorAll('.so-kb-copy')];
   const copy = copies[0];
   const r = btn.getBoundingClientRect();
   const c = copy ? copy.getBoundingClientRect() : null;
   return {
     shown: !!btn.checkVisibility && btn.checkVisibility(),
     open: btn.getAttribute('aria-pressed'),
-    filled: btn.classList.contains('on'),
+    filled: btn.getAttribute('aria-pressed') === 'true',
     label: btn.getAttribute('aria-label'),
     pane: muted(pane),
     paneOpen: !!pane && !muted(pane),
     focus: active ? (active.closest('#term') ? 'pane' : active.closest('dialog') ? 'dialog' : active.localName) : null,
     focusMuted: !!active && muted(active),
-    fields: [...document.querySelectorAll('input.input')]
+    fields: [...document.querySelectorAll('input.ds-input')]
       .filter((n) => n.checkVisibility && n.checkVisibility())
       .map((n) => ({ id: n.id || n.className, muted: muted(n) })),
-    mics: [...document.querySelectorAll('.dictate')]
+    mics: [...document.querySelectorAll('.so-field-row')]
       .filter((n) => n.checkVisibility && n.checkVisibility())
-      .map((row) => ({ field: !!row.querySelector('input'), mic: !!row.querySelector('.mic-btn') })),
+      .map((row) => ({ field: !!row.querySelector('input'), mic: !!row.querySelector('.so-mic') })),
     copies: copies.length,
     copy: copy ? {
       inDialog: !!copy.closest('dialog[open]'),
@@ -6141,9 +6183,8 @@ async function keyboard() {
     const left = await keyboardable(s.page);
     ok(left.open === 'false' && left.pane,
       'the focus leaving every field puts the switch back', JSON.stringify({ open: left.open, pane: left.pane }));
-    // The same button again puts its menu away.
-    await s.page.click('#optionsBtn');
-    await s.page.waitForSelector('.menu', { state: 'detached', timeout: 5000 });
+    // Its dialog is modal; Escape puts it away.
+    await closeOptions(s.page);
 
     /* ------------------------------------------------------- in a dialog */
 
@@ -6160,14 +6201,14 @@ async function keyboard() {
       JSON.stringify(sheet.copy));
     await shot(s.page, 'keyboard-sheet');
 
-    await s.page.click('#newSessionSheet .kb-copy');
+    await s.page.click('#newSessionSheet .so-kb-copy');
     await wait(200);
     const typing = await keyboardable(s.page);
     ok(typing.open === 'true' && typing.copy && typing.copy.open === 'true'
       && typing.focus === 'dialog' && !typing.focusMuted,
       'pressed there, it raises the keyboard for the dialog\'s field',
       JSON.stringify({ open: typing.open, copy: typing.copy, focus: typing.focus, muted: typing.focusMuted }));
-    await s.page.click('#newSessionSheet .kb-copy');
+    await s.page.click('#newSessionSheet .so-kb-copy');
     await wait(200);
     const shut = await keyboardable(s.page);
     ok(shut.open === 'false' && shut.fields.every((f) => f.muted),
@@ -6176,16 +6217,16 @@ async function keyboard() {
     // A field is still filled by speaking to it. What comes back is what would
     // have been typed: it goes in the field and the field is told, so the list
     // filters exactly as it does under a finger.
-    await s.page.click('#nsDir .mic-btn');
+    await s.page.click('#nsDir .so-mic');
     await s.page.waitForSelector('#recSheet[open]', { timeout: 15000 });
     await wait(1200);
     await s.page.click('#recSend');
     const heard = await s.page.waitForFunction(
-      (want) => document.querySelector('#nsDir .combo-input').value === want,
+      (want) => document.querySelector('#nsDir .ds-combo__input').value === want,
       stub.text, { timeout: 60000 }).then(() => true).catch(() => false);
     ok(heard, 'a muted field is filled by speaking into it',
-      await s.page.$eval('#nsDir .combo-input', (n) => n.value));
-    await s.page.click('#newSessionSheet .sheet-title');
+      await s.page.$eval('#nsDir .ds-combo__input', (n) => n.value));
+    await s.page.click('#newSessionSheet .ds-sheet__title');
     await s.page.click('#nsCancel');
     await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 10000 })
       .catch(() => {});
@@ -6199,19 +6240,19 @@ async function keyboard() {
 
     // The dialog that asks for one line of text is a field like any other.
     await s.page.click('#sessionTitle');
-    await s.page.waitForSelector('dialog.modal', { timeout: 10000 });
+    await s.page.waitForSelector('dialog.so-rename[open]', { timeout: 10000 });
     await wait(400);
     const rename = await keyboardable(s.page);
     ok(rename.fields.length === 1 && rename.fields[0].muted && rename.mics.length === 1
       && rename.copy && rename.copy.shown && rename.copy.over,
       'so is the rename dialog: its field muted, with a microphone, and the button over it',
       JSON.stringify({ fields: rename.fields, mics: rename.mics, copy: rename.copy }));
-    await s.page.click('dialog.modal .kb-copy');
+    await s.page.click('dialog.so-rename .so-kb-copy');
     await wait(200);
     const renaming = await keyboardable(s.page);
     ok(renaming.open === 'true' && renaming.focus === 'dialog' && !renaming.focusMuted,
       'and the button raises the keyboard for it', JSON.stringify({ open: renaming.open, focus: renaming.focus }));
-    await s.page.click('dialog.modal .kb-copy');
+    await s.page.click('dialog.so-rename .so-kb-copy');
     await wait(200);
     // A tablet in its case types on keys of its own, and a muted field is
     // given back to them rather than swallowing the key.
@@ -6223,7 +6264,7 @@ async function keyboard() {
     ok(keyed.dialog && keyed.value.endsWith('xy') && !keyed.ro,
       'a key pressed on real keys lands in the muted field', JSON.stringify(keyed));
     await s.page.keyboard.press('Escape');
-    await s.page.waitForSelector('dialog.modal', { state: 'detached', timeout: 10000 }).catch(() => {});
+    await s.page.waitForSelector('dialog.so-rename', { state: 'detached', timeout: 10000 }).catch(() => {});
     await wait(300);
     const after = await keyboardable(s.page);
     ok(after.copies === 0 && after.open === 'false' && after.pane,
@@ -6300,7 +6341,7 @@ async function transfer() {
     await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
     await s.page.waitForSelector('#transfer:not([hidden])', { timeout: 10000 });
     const inBar = await s.page.evaluate(() => {
-      const bar = document.querySelector('.topbar').getBoundingClientRect();
+      const bar = document.querySelector('.ds-topbar').getBoundingClientRect();
       const box = document.getElementById('transfer').getBoundingClientRect();
       return { inside: box.top >= bar.top - 1 && box.bottom <= bar.bottom + 1, width: Math.round(box.width) };
     });
@@ -6349,11 +6390,11 @@ async function transfer() {
 
     // Copy with nothing selected: the pane's text in a sheet, and Copy all.
     await s.page.click('#copyBtn');
-    await s.page.waitForSelector('.copy-sheet[open]', { timeout: 5000 });
-    const shown = await s.page.$eval('.copy-sheet textarea', (n) => n.value);
+    await s.page.waitForSelector('#copySheet[open]', { timeout: 5000 });
+    const shown = await s.page.$eval('#copyArea', (n) => n.value);
     ok(shown.includes(line), 'with nothing selected, Copy opens the pane\'s text', shown.slice(-80));
-    await s.page.click('.copy-sheet .btn.primary');
-    await s.page.waitForSelector('.copy-sheet', { state: 'detached', timeout: 5000 });
+    await s.page.click('#copyAll');
+    await s.page.waitForSelector('#copySheet:not([open])', { state: 'attached', timeout: 5000 });
     const copied = await s.page.evaluate(() => navigator.clipboard.readText());
     ok(copied === shown, 'and Copy all puts all of it on the clipboard', copied.length + ' of ' + shown.length + ' chars');
 
@@ -6368,7 +6409,7 @@ async function transfer() {
     await phonePage.waitForSelector('#transfer:not([hidden])', { timeout: 20000 });
     await wait(600);
     const placed = await phonePage.evaluate(() => {
-      const bar = document.querySelector('.topbar');
+      const bar = document.querySelector('.ds-topbar');
       const box = document.getElementById('transfer').getBoundingClientRect();
       return {
         floats: getComputedStyle(document.getElementById('transfer')).position === 'absolute',
@@ -6439,15 +6480,15 @@ async function prestart() {
     await ensureNav(page);
     await page.click('#newSession');
     await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-    await page.waitForSelector('#newSessionSheet .seg[data-value="shell"]', { timeout: 10000 });
-    await page.click('#newSessionSheet .seg[data-value="shell"]');
+    await page.waitForSelector('#newSessionSheet .so-settings__program[data-value="shell"]', { timeout: 10000 });
+    await page.click('#newSessionSheet .so-settings__program[data-value="shell"]');
     const forShell = await page.$eval('#nsPrestartField', (n) => n.hidden);
-    await page.click('#newSessionSheet .seg[data-value="claude"]');
+    await page.click('#newSessionSheet .so-settings__program[data-value="claude"]');
     const forClaude = await page.$eval('#nsPrestartField', (n) => !n.hidden);
     ok(forShell && forClaude, 'the sheet offers PreStart for Claude Code and not for a shell',
       JSON.stringify({ shellHidden: forShell, claudeShown: forClaude }));
-    const offByDefault = await page.$eval('#nsPrestart .seg[data-value="off"]', (n) => n.getAttribute('aria-pressed'));
-    await page.click('#nsPrestart .seg[data-value="on"]');
+    const offByDefault = await page.$eval('#nsPrestart', (n) => String(!n.checked));
+    await page.click('#nsPrestart');
     const label = await page.$eval('#nsStart', (n) => n.textContent.trim());
     ok(offByDefault === 'true' && label === 'Prepare', 'it is off when the sheet opens, and on it makes the button Prepare',
       offByDefault + ' / ' + label);
@@ -6470,13 +6511,13 @@ async function prestart() {
       'and nothing was started for it: no tmux session, no launch',
       sessionsOn(s.data).length + ' tmux sessions, ' + launchesOf(s, 'claude').length + ' launches');
     const group = await page.evaluate((sid) => {
-      const row = document.querySelector('#sessionList .chat-item[data-id="' + sid + '"]');
-      const shelf = row && row.closest('.shelf');
+      const row = document.querySelector('#sessionList .so-row[data-id="' + sid + '"]');
+      const shelf = row && row.closest('.so-folder--shelf');
       return {
         shelf: shelf && shelf.dataset.shelf,
-        open: !!shelf && !shelf.classList.contains('closed'),
+        open: !!shelf && shelf.hasAttribute('data-open'),
         first: !!shelf && shelf.parentElement.firstElementChild === shelf,
-        folder: !!(shelf && shelf.parentElement.closest('.folder[data-folder]')),
+        folder: !!(shelf && shelf.parentElement.closest('.so-folder[data-folder]')),
       };
     }, id);
     ok(group.shelf === 'prestart' && group.open && group.first && group.folder,
@@ -6495,10 +6536,10 @@ async function prestart() {
       await page.$eval('#psSave', (n) => n.textContent.trim()));
 
     // A setting changed in the panel is saved on its own.
-    await page.waitForSelector('#psModel .combo-input', { timeout: 10000 });
-    await page.click('#psModel .combo-input');
-    await page.waitForSelector('#psModel .combo-option', { timeout: 5000 });
-    await page.click('#psModel .combo-option:has(.combo-label:text-is("Haiku"))');
+    await page.waitForSelector('#psModel .ds-combo__input', { timeout: 10000 });
+    await page.click('#psModel .ds-combo__input');
+    await page.waitForSelector('#psModel .ds-combo__option', { timeout: 5000 });
+    await page.click('#psModel .ds-combo__option:has(.ds-combo__name:text-is("Haiku"))');
     const until = Date.now() + 8000;
     while (Date.now() < until && (row = await sessionRow(s, id)) && row.model !== 'haiku') await wait(300);
     ok(row && row.model === 'haiku', 'a model picked in the panel is saved with the session', row && row.model);
@@ -6510,7 +6551,7 @@ async function prestart() {
       PREPARED_PROMPT, { timeout: 10000 }).then(() => true, () => false);
     ok(kept, 'after a reload the panel shows the same prompt',
       JSON.stringify(await page.$eval('#psPrompt', (n) => n.value)));
-    const shownModel = await page.$eval('#psModel .combo-input', (n) => n.value.trim()).catch(() => '');
+    const shownModel = await page.$eval('#psModel .ds-combo__input', (n) => n.value.trim()).catch(() => '');
     ok(/haiku/i.test(shownModel), 'and the model that was picked', shownModel);
 
     // Start: the same launch a new session takes, with the prompt as the
@@ -6531,8 +6572,8 @@ async function prestart() {
     const echoed = await awaitScreen(page, 'you said: after the prompt', 15000).then(() => true, () => false);
     ok(echoed, 'and the terminal takes keystrokes like any other');
     const moved = await page.evaluate((sid) => {
-      const row = document.querySelector('#sessionList .chat-item[data-id="' + sid + '"]');
-      return !!row && !row.closest('.shelf[data-shelf="prestart"]');
+      const row = document.querySelector('#sessionList .so-row[data-id="' + sid + '"]');
+      return !!row && !row.closest('.so-folder--shelf[data-shelf="prestart"]');
     }, id);
     ok(moved, 'its row left the PreStart shelf for its folder\'s sessions', String(moved));
     draft = await draftOf(s, id);
@@ -6550,7 +6591,7 @@ async function prestart() {
     // reads again when the window is looked at.
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
     await page.waitForSelector(rowSel(sid), { timeout: 20000 });
-    await page.click(rowSel(sid) + ' .label');
+    await page.click(rowSel(sid) + ' .so-row__label');
     await panelUp(page);
     await page.waitForFunction((want) => document.getElementById('psPrompt').value === want,
       'started by the clock\nsecond line', { timeout: 10000 }).catch(() => {});
@@ -6567,10 +6608,10 @@ async function prestart() {
       'a time picked in the panel is saved as that minute', srow && new Date(srow.start_at).toISOString());
     const hint = await page.$eval('#psStartAtHint', (n) => n.textContent.trim());
     ok(/in 2 h/.test(hint), 'the panel says how far away it is', hint);
-    const clock = await page.waitForSelector('#sessionList .chat-item[data-id="' + sid + '"] .row-when svg',
+    const clock = await page.waitForSelector('#sessionList .so-row[data-id="' + sid + '"] .so-row__when svg',
       { timeout: 20000 }).then(() => true, () => false);
     ok(clock, 'and its row wears a clock and the time',
-      await page.$eval('#sessionList .chat-item[data-id="' + sid + '"] .row-when', (n) => n.textContent).catch(() => 'no row'));
+      await page.$eval('#sessionList .so-row[data-id="' + sid + '"] .so-row__when', (n) => n.textContent).catch(() => 'no row'));
 
     // A field to the minute cannot say "five seconds from now", so the near
     // time goes through the same PATCH the panel uses.
@@ -6690,7 +6731,7 @@ async function s3restore() {
     // before the page has started is put back to #home; the row is opened the
     // way a person opens it, once Home and the list are up.
     await b.page.waitForSelector('#home:not([hidden])', { timeout: 20000 });
-    await b.page.waitForSelector('#sessionList .chat-item[data-id="' + ids.prepared + '"]', { state: 'attached', timeout: 20000 });
+    await b.page.waitForSelector('#sessionList .so-row[data-id="' + ids.prepared + '"]', { state: 'attached', timeout: 20000 });
     await b.page.evaluate((target) => { location.hash = '#' + target; }, ids.prepared);
     await panelUp(b.page);
     const shown = await b.page.waitForFunction((want) => document.getElementById('psPrompt').value === want,
@@ -6821,7 +6862,7 @@ async function optionsmenu() {
     const look = () => s.page.evaluate(() => {
       const area = document.querySelector('#term .xterm-helper-textarea');
       return {
-        touch: document.documentElement.classList.contains('touch'),
+        touch: document.documentElement.classList.contains('so-touch'),
         kb: !!document.getElementById('kbBtn')?.checkVisibility(),
         bar: document.getElementById('keybar').hidden ? 'hidden' : 'shown',
         pane: area ? { mode: area.getAttribute('inputmode') || '', ro: area.readOnly } : null,
@@ -6830,14 +6871,16 @@ async function optionsmenu() {
           keybar: localStorage.getItem('socrates.term.keybar'),
         },
         expanded: document.getElementById('optionsBtn').getAttribute('aria-expanded'),
-        menu: !!document.querySelector('.menu'),
+        menu: !!document.querySelector('#optionsDialog[open]'),
       };
     });
 
     // Before any session: the button is there and the menu holds the four.
     const empty = await s.page.evaluate(() => ({
       button: !!document.getElementById('optionsBtn')?.checkVisibility(),
-      gone: ['soundBtn', 'notifyBtn', 'sessionMenu'].filter((id) => document.getElementById(id)),
+      // The row menu is #sessionMenu now; the old top-bar session button was a
+      // button of that name.
+      gone: ['soundBtn', 'notifyBtn', 'sessionMenu'].filter((id) => document.getElementById(id)?.tagName === 'BUTTON'),
     }));
     ok(empty.button && empty.gone.length === 0,
       'the options button is in the bar before any session, and the old buttons are gone', JSON.stringify(empty));
@@ -6847,26 +6890,26 @@ async function optionsmenu() {
     ok(!first.keybar.on && !first.touch.on && first.sound.on && !first.notify.on,
       'each where a desk starts: no key bar, no touch mode, sound on, notifications off',
       JSON.stringify(Object.fromEntries(Object.entries(first).map(([k, v]) => [k, v.on]))));
-    const words = await s.page.$$eval('.menu .menu-item', (nodes) => nodes.map((n) => n.textContent));
+    const words = await s.page.$$eval('#optionsDialog .ds-switch__label', (nodes) => nodes.map((n) => n.textContent));
     ok(!words.some((w) => /Rename|Delete|Info|Download|Done|Background/.test(w)),
       'and nothing that is done to a session', oneLine(words.join(' | ')));
     const opened = await look();
     ok(opened.expanded === 'true' && !opened.touch && !opened.kb, 'the button says its menu is open',
       JSON.stringify(opened));
 
-    // Three ways to put it away: the button again, Escape, a press elsewhere.
-    await s.page.click('#optionsBtn');
-    const byButton = await s.page.waitForSelector('.menu', { state: 'detached', timeout: 3000 })
+    // Three ways to put it away: Done, Escape, a press beside it. The dialog
+    // is modal, so the button under it cannot be pressed meanwhile.
+    const gone = () => s.page.waitForSelector('#optionsDialog[open]', { state: 'detached', timeout: 3000 })
       .then(() => true).catch(() => false);
+    await s.page.click('#optionsDialog .ds-dialog__actions [data-close]');
+    const byButton = await gone();
     await openOptions(s.page);
     await s.page.keyboard.press('Escape');
-    const byEscape = await s.page.waitForSelector('.menu', { state: 'detached', timeout: 3000 })
-      .then(() => true).catch(() => false);
+    const byEscape = await gone();
     await openOptions(s.page);
-    await s.page.click('#home .home-title');
-    const byPress = await s.page.waitForSelector('.menu', { state: 'detached', timeout: 3000 })
-      .then(() => true).catch(() => false);
-    ok(byButton && byEscape && byPress, 'the button again, Escape and a press elsewhere each close it',
+    await s.page.mouse.click(5, 400);
+    const byPress = await gone();
+    ok(byButton && byEscape && byPress, 'Done, Escape and a press beside it each close it',
       JSON.stringify({ byButton, byEscape, byPress }));
     ok((await look()).expanded === 'false', 'and the button says so', (await look()).expanded);
 
@@ -6949,12 +6992,12 @@ async function optionsmenu() {
 
     // What is done to a session is in its row, and the key bar is not.
     await rowMenu(s.page);
-    const rowItems = await s.page.$$eval('.menu .menu-item', (nodes) => nodes.map((n) => n.textContent));
+    const rowItems = await s.page.$$eval('#sessionMenu:not([hidden]) .ds-menu__item', (nodes) => nodes.map((n) => n.textContent.trim()));
     ok(rowItems.includes('Info') && rowItems.includes('Rename') && rowItems.includes('Delete')
       && !rowItems.some((w) => /key bar/i.test(w)),
       'the row menu holds the session’s actions and no device option', rowItems.join(','));
     await s.page.keyboard.press('Escape');
-    await s.page.waitForSelector('.menu', { state: 'detached', timeout: 3000 });
+    await s.page.waitForSelector('#sessionMenu', { state: 'hidden', timeout: 3000 });
 
     /* ------------------------------------------------------- the limits */
 
@@ -6985,7 +7028,7 @@ async function optionsmenu() {
     await reloadBack(s.page);
     await s.page.waitForFunction(() => /5h\s*42%/.test(document.getElementById('sessionUsage')?.innerText || ''),
       null, { timeout: 20000 });
-    const strip = await s.page.$eval('#sessionUsage', (n) => ({ text: n.innerText.replace(/\s+/g, ' ').trim(), title: n.title }));
+    const strip = await s.page.$eval('#sessionUsage', (n) => ({ text: n.innerText.replace(/\s+/g, ' ').trim(), title: n.getAttribute('data-tip') || '' }));
     ok(/5h 42% \(2h 37m left\)/.test(strip.text) && /7d 30% \(3d 4h left\)/.test(strip.text)
       && /Fable 90% \(1m left\)/.test(strip.text) && /~\$1\.25/.test(strip.text),
       'the strip says how full each window is and how long until it renews', strip.text);
@@ -6995,13 +7038,13 @@ async function optionsmenu() {
 
     // The reading behind a tap.
     await s.page.click('#sessionUsage');
-    await s.page.waitForSelector('.usage-pop .usage-row', { timeout: 5000 });
+    await s.page.waitForSelector('#usageDialog[open] .so-usage-row', { timeout: 5000 });
     const pop = await s.page.evaluate((times) => ({
-      rows: [...document.querySelectorAll('.usage-pop .usage-row')].map((row) => ({
-        name: row.querySelector('.usage-row-name')?.textContent,
-        used: row.querySelector('.usage-row-used')?.textContent,
-        reset: row.querySelector('.usage-row-reset')?.textContent,
-        meter: row.querySelector('.usage-meter > span')?.style.width || '',
+      rows: [...document.querySelectorAll('#usageDialog .so-usage-row')].map((row) => ({
+        name: row.querySelector('.so-usage-row__name')?.textContent,
+        used: row.querySelector('.so-usage-row__used')?.textContent,
+        reset: row.querySelector('.so-usage-row__reset')?.textContent,
+        meter: (row.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow') || '') + (row.querySelector('[role="progressbar"]') ? '%' : ''),
       })),
       clocks: times.map((t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
       expanded: document.getElementById('sessionUsage').getAttribute('aria-expanded'),
@@ -7027,7 +7070,7 @@ async function optionsmenu() {
     }, null, { timeout: 30000 }).then(() => true).catch(() => false);
     const afterTick = await s.page.evaluate(() => ({
       strip: document.getElementById('sessionUsage').innerText.replace(/\s+/g, ' ').trim(),
-      fable: [...document.querySelectorAll('.usage-pop .usage-row')]
+      fable: [...document.querySelectorAll('#usageDialog[open] .so-usage-row')]
         .map((row) => row.textContent).find((t) => /Fable/.test(t)) || 'closed',
     }));
     ok(ticked, 'the countdown goes on with the network failing, and a renewed window reads 0%', afterTick.strip);
@@ -7036,35 +7079,35 @@ async function optionsmenu() {
     for (let i = 0; i < 40 && refused === 0; i += 1) await wait(500);
     ok(refused >= 1, 'it went on asking all the while, and was refused', refused + ' refused request(s)');
     await s.page.keyboard.press('Escape');
-    await s.page.waitForSelector('.usage-pop', { state: 'detached', timeout: 3000 });
+    await s.page.waitForSelector('#usageDialog[open]', { state: 'detached', timeout: 3000 });
 
-    // A phone: the strip is the bar's second line, every limit and its
+    // A phone: the strip is the line under the bar, every limit and its
     // countdown on it, nothing off the edge; the reading opens on screen.
     await s.page.setViewportSize({ width: 360, height: 740 });
     await wait(500);
     const phone = await s.page.evaluate(() => {
       const strip = document.getElementById('sessionUsage');
       const box = strip.getBoundingClientRect();
-      const parts = [...strip.querySelectorAll('.usage-part')]
+      const parts = [...strip.querySelectorAll('.so-usage__part')]
         .filter((p) => p.checkVisibility())
         .map((p) => { const r = p.getBoundingClientRect(); return { text: p.innerText.replace(/\s+/g, ' '), left: r.left, right: r.right }; });
       return {
         overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
         stripLeft: box.left, stripRight: box.right,
         fits: strip.scrollWidth <= strip.clientWidth + 1,
-        level: strip.className,
+        level: strip.getAttribute('data-fit') || '',
         parts,
-        height: Math.round(document.querySelector('.topbar').getBoundingClientRect().height),
+        under: strip.getBoundingClientRect().top >= document.querySelector('.ds-topbar').getBoundingClientRect().bottom - 1,
       };
     });
     const inside = phone.parts.every((p) => p.left >= phone.stripLeft - 1 && p.right <= phone.stripRight + 1);
-    ok(phone.overflow <= 1 && phone.fits && inside && phone.height === 82,
-      'on a phone every limit and its countdown fit on the second line', JSON.stringify(phone));
+    ok(phone.overflow <= 1 && phone.fits && inside && phone.under,
+      'on a phone every limit and its countdown fit on the line under the bar', JSON.stringify(phone));
     ok(phone.parts.filter((p) => /\(\d/.test(p.text)).length >= 2,
       'with the countdowns still there', phone.parts.map((p) => p.text).join(' · '));
     await s.page.click('#sessionUsage');
-    await s.page.waitForSelector('.usage-pop .usage-row', { timeout: 5000 });
-    const popBox = await s.page.$eval('.usage-pop', (n) => {
+    await s.page.waitForSelector('#usageDialog[open] .so-usage-row', { timeout: 5000 });
+    const popBox = await s.page.$eval('#usageDialog .ds-dialog__box', (n) => {
       const r = n.getBoundingClientRect();
       return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, w: innerWidth, h: innerHeight };
     });
@@ -7100,8 +7143,8 @@ async function optionsmenu() {
       const strip = document.getElementById('sessionUsage');
       return {
         fits: strip.scrollWidth <= strip.clientWidth + 1,
-        level: strip.className,
-        text: [...strip.querySelectorAll('.usage-part')].filter((p) => p.checkVisibility())
+        level: strip.getAttribute('data-fit') || '',
+        text: [...strip.querySelectorAll('.so-usage__part')].filter((p) => p.checkVisibility())
           .map((p) => p.innerText.replace(/\s+/g, ' ')).join(' · '),
         overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
       };
@@ -7112,12 +7155,12 @@ async function optionsmenu() {
 
     // The options menu on the phone, too.
     await openOptions(s.page);
-    const menuBox = await s.page.$eval('.menu', (n) => {
+    const menuBox = await s.page.$eval('#optionsDialog .ds-dialog__box', (n) => {
       const r = n.getBoundingClientRect();
       return { left: r.left, right: r.right, bottom: r.bottom, w: innerWidth, h: innerHeight, scroll: n.scrollHeight > n.clientHeight + 1 };
     });
     ok(menuBox.left >= 0 && menuBox.right <= menuBox.w && menuBox.bottom <= menuBox.h && !menuBox.scroll,
-      'the options menu opens whole inside a phone’s screen', JSON.stringify(menuBox));
+      'the options dialog opens whole inside a phone’s screen', JSON.stringify(menuBox));
     await wait(300);
     await shot(s.page, 'options-menu-phone');
     await closeOptions(s.page);
@@ -7644,29 +7687,35 @@ async function awaitAnswerLogged(s, count, timeout = 30000) {
 const homeLook = (page) => page.evaluate(() => {
   const home = document.getElementById('home');
   const counts = {};
-  for (const card of home.querySelectorAll('.home-card[data-card]')) {
-    counts[card.dataset.card] = Number(card.querySelector('.home-count').textContent);
+  // The figures count up to their value (DS.motion.countUp): the number
+  // itself is the card's data-value, never a figure caught mid-count.
+  for (const card of home.querySelectorAll('[data-card][data-value]')) {
+    counts[card.dataset.card] = Number(card.dataset.value);
   }
-  const conn = home.querySelector('.home-conn');
-  const pressed = home.querySelector('.home-card[aria-pressed="true"]');
+  const conn = home.querySelector('.so-home__conn');
+  const pressedNode = home.querySelector('[data-card][aria-pressed="true"], [data-card] [aria-pressed="true"]');
+  const pressed = pressedNode && pressedNode.closest('[data-card]');
   return {
     shown: !home.hidden,
     hash: location.hash,
     title: document.getElementById('sessionTitle').textContent,
-    homeBtn: document.getElementById('homeBtn').getAttribute('aria-pressed'),
+    // Home is a drawer item, current while it is on the stage.
+    homeBtn: document.getElementById('homeBtn').getAttribute('aria-current') === 'page' ? 'true' : 'false',
     counts,
-    asking: !!home.querySelector('.home-questions.asking'),
+    asking: !!home.querySelector('.so-home__questions[data-state="asking"]'),
     conn: conn ? conn.dataset.status : '',
     connText: conn ? conn.textContent.trim() : '',
     pressed: pressed ? pressed.dataset.card : '',
-    listTitle: (home.querySelector('.home-list-title') || {}).textContent || '',
-    rows: [...home.querySelectorAll('.home-row')].map((row) => ({
+    listTitle: (home.querySelector('.so-home__list-title') || {}).textContent || '',
+    // A card the list let go of fades out in place (DS.motion.flip) and is
+    // marked data-ds-leaving meanwhile: it is no longer in the list.
+    rows: [...home.querySelectorAll('.so-home__card:not([data-ds-leaving])')].map((row) => ({
       id: row.dataset.id,
-      title: row.querySelector('.home-row-title').textContent,
-      summary: row.querySelector('.home-row-summary').hidden ? '' : row.querySelector('.home-row-summary').textContent,
-      answer: !row.querySelector('.home-answer').hidden,
+      title: row.querySelector('.so-home__card-title').textContent,
+      summary: row.querySelector('.so-home__card-summary').hidden ? '' : row.querySelector('.so-home__card-summary').textContent,
+      answer: !row.querySelector('.so-home__answer').hidden,
     })),
-    empty: (home.querySelector('.home-empty:not([hidden])') || {}).textContent || '',
+    empty: (home.querySelector('.so-home__empty:not([hidden])') || {}).textContent || '',
     overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
   };
 });
@@ -7684,58 +7733,60 @@ async function awaitHome(page, test, timeout = 15000) {
 
 // sheetLook is the question dialog as it is drawn, or null when it is shut.
 const sheetLook = (page) => page.evaluate(() => {
-  const dialog = document.querySelector('dialog.question-sheet');
+  const dialog = document.querySelector('dialog.so-question');
   if (!dialog || !dialog.open) return null;
   const text = (sel) => ((dialog.querySelector(sel) || {}).textContent || '').trim();
   const shown = (sel) => { const node = dialog.querySelector(sel); return !!node && !node.hidden; };
-  const box = dialog.getBoundingClientRect();
-  const status = dialog.querySelector('.q-status');
-  const send = dialog.querySelector('.q-send');
-  const kb = dialog.querySelector('.kb-copy');
+  // The DS dialog is a full-window layer; what is seen is its box.
+  const frame = dialog.querySelector('.ds-dialog__box') || dialog;
+  const box = frame.getBoundingClientRect();
+  const status = dialog.querySelector('.so-q-status');
+  const send = dialog.querySelector('.so-q-send');
+  const kb = dialog.querySelector('.so-kb-copy');
   return {
-    session: text('.q-session-title'),
-    step: text('.q-step'),
-    context: text('.q-context'),
-    question: text('.q-text'),
-    counter: text('.q-counter'),
-    finished: text('.q-finished-title'),
-    options: [...dialog.querySelectorAll('.q-option')].map((option) => {
+    session: text('.so-q-session-title'),
+    step: text('.so-q-step'),
+    context: text('.so-q-context'),
+    question: text('.so-q-text'),
+    counter: text('.so-q-counter'),
+    finished: text('.so-q-finished-title'),
+    options: [...dialog.querySelectorAll('.so-q-option')].map((option) => {
       const r = option.getBoundingClientRect();
       return {
         label: option.dataset.label,
         pressed: option.getAttribute('aria-pressed'),
-        desc: ((option.querySelector('.q-option-desc') || {}).textContent || ''),
+        desc: ((option.querySelector('.so-q-option-desc') || {}).textContent || ''),
         h: Math.round(r.height),
         w: Math.round(r.width),
-        size: getComputedStyle(option.querySelector('.q-option-label')).fontSize,
+        size: getComputedStyle(option.querySelector('.so-q-option-label')).fontSize,
         disabled: option.disabled,
       };
     }),
-    retry: shown('.q-retry'),
-    cancel: shown('.q-cancel'),
-    openErr: shown('.q-open-error'),
-    note: text('.q-note'),
-    past: !!dialog.querySelector('.q-body.past'),
-    reading: ((dialog.querySelector('.q-reading') || {}).textContent || '').trim(),
-    problem: ((dialog.querySelector('.q-problem p') || {}).textContent || '').trim(),
+    retry: shown('.so-q-retry'),
+    cancel: shown('.so-q-cancel'),
+    openErr: shown('.so-q-open-error'),
+    note: text('.so-q-note'),
+    past: !!dialog.querySelector('.so-q-body[data-state="past"]'),
+    reading: ((dialog.querySelector('.so-q-reading') || {}).textContent || '').trim(),
+    problem: ((dialog.querySelector('.so-q-problem p') || {}).textContent || '').trim(),
     focus: (() => {
       const at = document.activeElement;
       if (!at || !dialog.contains(at)) return '';
-      return at.classList.contains('q-own-field') ? 'own'
-        : at.classList.contains('q-option') ? 'option:' + at.dataset.label : at.className || at.tagName;
+      return at.classList.contains('so-q-own-field') ? 'own'
+        : at.classList.contains('so-q-option') ? 'option:' + at.dataset.label : at.className || at.tagName;
     })(),
-    own: !!dialog.querySelector('.q-own-field'),
-    ownValue: (dialog.querySelector('.q-own-field') || {}).value || '',
-    ownDisabled: !!(dialog.querySelector('.q-own-field') || {}).disabled,
-    mic: !!dialog.querySelector('.q-own .mic-btn, .q-own button'),
-    read: !!dialog.querySelector('.q-read'),
-    open: !!dialog.querySelector('.q-open'),
+    own: !!dialog.querySelector('.so-q-own-field'),
+    ownValue: (dialog.querySelector('.so-q-own-field') || {}).value || '',
+    ownDisabled: !!(dialog.querySelector('.so-q-own-field') || {}).disabled,
+    mic: !!dialog.querySelector('.so-q-own .so-mic, .so-q-own button'),
+    read: !!dialog.querySelector('.so-q-read'),
+    open: !!dialog.querySelector('.so-q-open'),
     send: send ? { hidden: send.hidden, disabled: send.disabled } : null,
     status: status && !status.hidden ? { kind: status.dataset.kind, text: status.textContent.trim() } : null,
     kb: kb ? kb.checkVisibility() : false,
     box: { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) },
     viewport: { w: innerWidth, h: innerHeight },
-    overflow: dialog.scrollWidth - dialog.clientWidth,
+    overflow: frame.scrollWidth - frame.clientWidth,
   };
 });
 
@@ -7756,9 +7807,9 @@ async function watchSheet(page) {
   await page.evaluate(() => {
     window.__qsaid = [];
     new MutationObserver(() => {
-      const line = document.querySelector('dialog.question-sheet .q-status:not([hidden])');
+      const line = document.querySelector('dialog.so-question .so-q-status:not([hidden])');
       const said = line ? line.textContent.trim() : '';
-      const finished = document.querySelector('dialog.question-sheet .q-finished-title');
+      const finished = document.querySelector('dialog.so-question .so-q-finished-title');
       for (const one of [said, finished ? finished.textContent.trim() : '']) {
         if (one && window.__qsaid[window.__qsaid.length - 1] !== one) window.__qsaid.push(one);
       }
@@ -7770,12 +7821,12 @@ async function watchSheet(page) {
 // sheetSettled waits for the dialog's opening animation to end: it pops in
 // from a little smaller, and a box measured on the way is not its size.
 const sheetSettled = (page) => page.waitForFunction(() => {
-  const dialog = document.querySelector('dialog.question-sheet');
-  return !!dialog && dialog.getAnimations({ subtree: false }).every((a) => a.playState !== 'running');
+  const dialog = document.querySelector('dialog.so-question');
+  return !!dialog && dialog.open && dialog.getAnimations({ subtree: true }).every((a) => a.playState !== 'running');
 }, null, { timeout: 5000 }).catch(() => {});
 
 const sheetShut = (page, timeout = 15000) => page.waitForFunction(() => {
-  const dialog = document.querySelector('dialog.question-sheet');
+  const dialog = document.querySelector('dialog.so-question');
   return !dialog || !dialog.open;
 }, null, { timeout }).then(() => true, () => false);
 
@@ -7804,14 +7855,14 @@ async function homelanding() {
     const placed = await s.page.evaluate(() => {
       const button = document.getElementById('homeBtn');
       return {
+        first: button.parentElement.id === 'drawerList' && !button.previousElementSibling,
         before: button.nextElementSibling && button.nextElementSibling.id,
-        inBrand: !!button.closest('.brand-row'),
         visible: button.checkVisibility(),
         termHidden: document.getElementById('termWrap').hidden,
       };
     });
-    ok(placed.inBrand && placed.before === 'sideCollapse' && placed.visible && placed.termHidden,
-      'the Home button stands beside the collapse button, and no terminal is on the stage', JSON.stringify(placed));
+    ok(placed.first && placed.before === 'sessionList' && placed.visible && placed.termHidden,
+      'Home is the drawer\u2019s first item, above the sessions, and no terminal is on the stage', JSON.stringify(placed));
     await shot(s.page, 'home-landing-empty');
 
     const id = await startSession(s.page, 'shell');
@@ -7822,11 +7873,11 @@ async function homelanding() {
 
     await s.page.click('#homeBtn');
     const back = await awaitHome(s.page, (h) => h.shown, 5000);
-    const active = await s.page.$$eval('#sessionList .chat-item.active', (rows) => rows.length);
+    const active = await s.page.$$eval('#sessionList .so-row__open[aria-current]', (rows) => rows.length);
     ok(back.ok && back.seen.hash === '#home' && back.seen.homeBtn === 'true' && active === 0,
       'the button brings Home back, and no row is the one on screen',
       JSON.stringify({ hash: back.seen.hash, btn: back.seen.homeBtn, active }));
-    await s.page.click('.home-seg[data-filter="all"]');
+    await s.page.click('.so-home__seg[data-filter="all"]');
     const all = await awaitHome(s.page, (h) => h.rows.some((r) => r.id === id), 5000);
     ok(all.ok && Object.values(all.seen.counts).every((n) => n === 0),
       'a shell is in the list of all sessions and in none of the numbers', JSON.stringify(all.seen.counts));
@@ -7863,7 +7914,7 @@ async function homelanding() {
     ok(drawer.home && !drawer.collapse && drawer.w >= 32 && drawer.h >= 32,
       'on a phone the Home button is in the drawer, the collapse button is not', JSON.stringify(drawer));
     await shot(phone.page, 'home-landing-drawer');
-    await phone.page.click(rowSel(id) + ' .label');
+    await phone.page.click(rowSel(id) + ' .so-row__label');
     await phone.page.waitForSelector('#term .xterm', { timeout: 15000 });
     await ensureNav(phone.page);
     await phone.page.click('#homeBtn');
@@ -7936,21 +7987,23 @@ async function homelive() {
 
     // The list under the numbers: "Needs you" by default, a card filters it,
     // a second tap shows everything.
-    const needs = await homeLook(s.page);
+    // The list is live data: a reorder waits while the list is pointed at
+    // (DS.motion.flip), so it is awaited rather than read at once.
+    const needs = (await awaitHome(s.page, (h) => h.rows.length === 2, 4000)).seen;
     ok(needs.listTitle === 'Needs you' && needs.rows[0] && needs.rows[0].id === asking
       && needs.rows.some((r) => r.id === busy) && needs.rows.length === 2,
       'the list starts with what needs the person: the question first, then what finished',
       needs.rows.map((r) => r.title).join(', '));
-    await s.page.click('.home-card[data-card="finished"]');
+    await s.page.click('.so-home__tile[data-card="finished"]');
     const filtered = await awaitHome(s.page, (h) => h.pressed === 'finished', 3000);
     ok(filtered.ok && filtered.seen.listTitle === 'Finished' && filtered.seen.rows.length === 1
       && filtered.seen.rows[0].id === busy, 'a card filters the list to its sessions',
       filtered.seen.listTitle + ': ' + filtered.seen.rows.map((r) => r.title).join(', '));
-    await s.page.click('.home-card[data-card="finished"]');
+    await s.page.click('.so-home__tile[data-card="finished"]');
     const everything = await awaitHome(s.page, (h) => h.listTitle === 'All sessions', 3000);
     ok(everything.ok && everything.seen.rows.length === 4 && !everything.seen.pressed,
       'and a second tap shows every session', everything.seen.rows.length + ' rows');
-    await s.page.click('.home-seg[data-filter="needs"]');
+    await s.page.click('.so-home__seg[data-filter="needs"]');
     ok((await homeLook(s.page)).listTitle === 'Needs you', 'Needs you is a tap away again', (await homeLook(s.page)).listTitle);
 
     const sidebar = await rowActivity(s.page, asking);
@@ -8016,20 +8069,23 @@ async function outcome() {
     hold = { promise, release };
   };
   const verdictOf = (id) => s.page.evaluate((one) => {
-    const row = document.querySelector('#sessionList .chat-item[data-id="' + one + '"]');
-    const mark = row && row.querySelector('.row-mark');
-    const badge = row && row.querySelector('.row-outcome');
-    const glass = row && row.querySelector('.row-tasks');
-    const home = document.querySelector('#home .home-row[data-id="' + one + '"]');
-    const todos = home ? [...home.querySelectorAll('.home-row-todos li')].map((li) => li.textContent) : [];
+    const row = document.querySelector('#sessionList .so-row[data-id="' + one + '"]');
+    const mark = row && row.querySelector('.so-mark');
+    // The corner of the mark: the verdict once it is in, the hourglass while
+    // it is read (or while background work runs).
+    const corner = row && row.querySelector('.so-mark__badge');
+    const kind = corner ? corner.dataset.kind : '';
+    const glass = kind === 'checking' || kind === 'tasks';
+    const home = document.querySelector('#home .so-home__card[data-id="' + one + '"]');
+    const todos = home ? [...home.querySelectorAll('.so-home__todos li')].map((li) => li.textContent) : [];
     return {
-      checking: !!mark && mark.classList.contains('checking'),
-      glass: !!glass && getComputedStyle(glass).display !== 'none',
-      kind: badge && getComputedStyle(badge).display !== 'none' ? badge.dataset.kind : '',
-      said: mark ? mark.title : '',
-      homeBadge: home ? (home.querySelector('.home-badge:not([hidden])') || {}).dataset?.kind || '' : '',
-      homeMeta: home ? home.querySelector('.home-row-meta').textContent : '',
-      reason: home ? (home.querySelector('.home-row-reason') || {}).textContent || '' : '',
+      checking: kind === 'checking',
+      glass,
+      kind: glass ? '' : kind,
+      said: mark ? mark.getAttribute('data-tip') || '' : '',
+      homeBadge: home ? (home.querySelector('.so-mark__badge:not([hidden])') || {}).dataset?.kind || '' : '',
+      homeMeta: home ? home.querySelector('.so-home__card-status').textContent : '',
+      reason: home ? (home.querySelector('.so-home__reason') || {}).textContent || '' : '',
       todos,
     };
   }, id);
@@ -8067,7 +8123,7 @@ async function outcome() {
     // nobody is looking when it ends.
     // Every session in the list, so that a row is drawn wherever it is
     // counted.
-    await s.page.click('.home-seg[data-filter="all"]');
+    await s.page.click('.so-home__seg[data-filter="all"]');
     gate();
     const asker = await secondTab(s, id);
     await typeLine(asker, '/tasks 1');
@@ -8113,11 +8169,11 @@ async function outcome() {
     ok(kept.ok, 'a reload keeps the verdict', took(kept));
 
     // The header of the session says it, as a tag that says why.
-    await s.page.click('#sessionList .chat-item[data-id="' + id + '"]');
+    await s.page.click('#sessionList .so-row[data-id="' + id + '"]');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
     const tag = await s.page.evaluate(() => {
       const t = document.getElementById('sessionOutcome');
-      return { shown: !t.hidden, text: t.textContent, kind: t.dataset.kind, title: t.title };
+      return { shown: !t.hidden, text: t.textContent, kind: t.dataset.kind, title: t.getAttribute('data-tip') || '' };
     });
     ok(tag.shown && tag.text === 'Partly done' && tag.kind === 'partial' && /still open/.test(tag.title),
       'the header carries the verdict as a tag', JSON.stringify(tag));
@@ -8159,7 +8215,7 @@ async function homequestion() {
     ok(card.ok, 'the Questions card says one', JSON.stringify(card.seen.counts));
     const said = await watchSheet(s.page);
 
-    await s.page.click('.home-questions');
+    await s.page.click('.so-home__questions');
     const shown = await awaitSheet(s.page, (d) => !!d && d.question === HOME_QUESTION && d.options.length === 2, 10000);
     const look = shown.seen || {};
     ok(shown.ok, 'the card opens the dialog at the question', look.question);
@@ -8177,11 +8233,11 @@ async function homequestion() {
     await sheetSettled(s.page);
     await shot(s.page, 'home-question-desktop');
 
-    await s.page.click('.q-option[data-label="SQLite"]');
+    await s.page.click('.so-q-option[data-label="SQLite"]');
     const chosen = await sheetLook(s.page);
     ok(chosen.options.find((o) => o.label === 'SQLite').pressed === 'true' && !chosen.send.disabled,
       'a tap chooses SQLite and Send can be pressed', JSON.stringify(chosen.options.map((o) => o.label + '=' + o.pressed)));
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-send');
 
     const logged = await awaitAnswerLogged(s, 1);
     const answer = logged[0] || {};
@@ -8220,16 +8276,16 @@ async function homeownanswer() {
     ok(!!asked.digest, 'the question is read', asked.digest ? asked.digest.phase : 'no digest');
     const row = await awaitHome(s.page, (h) => h.rows.some((r) => r.id === id && r.answer), 10000);
     ok(row.ok, 'the row has its own Answer button', took(row));
-    await s.page.click('.home-row[data-id="' + id + '"] .home-answer');
+    await s.page.click('.so-home__card[data-id="' + id + '"] .so-home__answer');
     await awaitSheet(s.page, (d) => !!d && d.options.length === 2, 10000);
 
-    await s.page.click('.q-option[data-label="Postgres"]');
-    await s.page.fill('.q-own-field', 'MariaDB, please');
+    await s.page.click('.so-q-option[data-label="Postgres"]');
+    await s.page.fill('.so-q-own-field', 'MariaDB, please');
     const typed = await sheetLook(s.page);
     ok(typed.options.every((o) => o.pressed === 'false') && !typed.send.disabled,
       'typing an answer of one’s own takes the place of the chosen option',
       JSON.stringify(typed.options.map((o) => o.label + '=' + o.pressed)));
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-send');
 
     const logged = await awaitAnswerLogged(s, 1);
     const answer = (logged[0] && logged[0].answers && logged[0].answers[0]) || {};
@@ -8260,36 +8316,36 @@ async function homequeue() {
     const card = await awaitHome(s.page, (h) => h.counts.questions === 2, 10000);
     ok(card.ok, 'the card counts two', JSON.stringify(card.seen.counts));
 
-    await s.page.click('.home-questions');
+    await s.page.click('.so-home__questions');
     const opened = await awaitSheet(s.page, (d) => !!d && d.options.length === 2 && !!d.counter, 10000);
     ok(opened.ok && opened.seen.counter === '1 of 2' && opened.seen.session === 'First question',
       'the dialog walks them oldest first: "1 of 2"', JSON.stringify(opened.seen && { counter: opened.seen.counter, session: opened.seen.session }));
-    const named = await s.page.locator('dialog.question-sheet').ariaSnapshot();
+    const named = await s.page.locator('dialog.so-question').ariaSnapshot();
     const buttons = named.split('\n').filter((line) => /button/.test(line));
-    const toggles = await s.page.$$eval('dialog.question-sheet .q-option', (options) => options.map((o) => ({
+    const toggles = await s.page.$$eval('dialog.so-question .so-q-option', (options) => options.map((o) => ({
       tag: o.tagName, role: o.getAttribute('role'), pressed: o.getAttribute('aria-pressed'), checked: o.getAttribute('aria-checked'),
     })));
     ok(buttons.filter((line) => /"Next question"/.test(line)).length === 1 && !/\b(radio|checkbox)\b/.test(named)
       && toggles.length === 2 && toggles.every((o) => o.tag === 'BUTTON' && !o.role && o.pressed === 'false' && o.checked === null),
       'one button is called Next question, and the options are toggle buttons', buttons.map((l) => l.trim()).join(' | ') + ' ' + JSON.stringify(toggles));
-    await s.page.click('.q-nav-btn[aria-label="Next question"]');
+    await s.page.click('.so-q-nav-btn[aria-label="Next question"]');
     const next = await awaitSheet(s.page, (d) => !!d && d.counter === '2 of 2', 3000);
     ok(next.ok && next.seen.session === 'Second question', 'Next shows the second one', next.seen && next.seen.session);
-    await s.page.click('.q-nav-btn[aria-label="Previous question"]');
+    await s.page.click('.so-q-nav-btn[aria-label="Previous question"]');
     await awaitSheet(s.page, (d) => !!d && d.counter === '1 of 2', 3000);
 
     // A second tap on the chosen option is Send.
-    await s.page.click('.q-option[data-label="Postgres"]');
-    await s.page.click('.q-option[data-label="Postgres"]');
+    await s.page.click('.so-q-option[data-label="Postgres"]');
+    await s.page.click('.so-q-option[data-label="Postgres"]');
     const moved = await awaitSheet(s.page, (d) => !!d && d.session === 'Second question' && d.options.length === 2
       && d.options.every((o) => o.pressed === 'false'), 20000);
     ok(moved.ok, 'once the first is answered the second takes the dialog', JSON.stringify(moved.seen && { session: moved.seen.session, counter: moved.seen.counter }));
-    await s.page.click('.q-option[data-label="SQLite"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="SQLite"]');
+    await s.page.click('.so-q-send');
     // A link followed in the moment the last word is on screen - a
     // notification tapped just then - is shown, not dropped with the dialog.
     const lastWord = await s.page.waitForFunction(() => {
-      const title = document.querySelector('dialog.question-sheet .q-finished-title');
+      const title = document.querySelector('dialog.so-question .so-q-finished-title');
       return !!title && title.textContent === 'All questions answered';
     }, null, { timeout: 30000, polling: 50 }).then(() => true, () => false);
     await s.page.evaluate((target) => { location.hash = '#q=' + target; }, first);
@@ -8297,13 +8353,13 @@ async function homequeue() {
     ok(lastWord && linked.ok, 'a link followed while "All questions answered" is shown opens its session, rather than being dropped',
       JSON.stringify({ lastWord, seen: linked.seen && { session: linked.seen.session, finished: linked.seen.finished, status: linked.seen.status } }));
     ok(await sheetShut(s.page, 20000), 'and after the last one the dialog closes', 'shut');
-    await s.page.click('.home-seg[data-filter="all"]');
+    await s.page.click('.so-home__seg[data-filter="all"]');
     await awaitHome(s.page, (h) => h.rows.length === 2, 5000);
     const row = await s.page.evaluate(() => {
-      const one = document.querySelector('#home .home-row');
+      const one = document.querySelector('#home .so-home__card');
       return one && {
         role: one.getAttribute('role'),
-        title: one.querySelector('.home-row-title').tagName,
+        title: one.querySelector('.so-home__card-title').tagName,
         nested: !!one.querySelector('button button, [role=button] button'),
       };
     });
@@ -8332,7 +8388,7 @@ async function homeelsewhere() {
     ok(!!asked.digest, 'the question is read', asked.digest ? asked.digest.phase : 'no digest');
     await awaitHome(s.page, (h) => h.counts.questions === 1, 10000);
     const said = await watchSheet(s.page);
-    await s.page.click('.home-questions');
+    await s.page.click('.so-home__questions');
     const shown = await awaitSheet(s.page, (d) => !!d && d.question === HOME_QUESTION, 10000);
     ok(shown.ok, 'the dialog shows the question', shown.seen && shown.seen.question);
 
@@ -8368,10 +8424,10 @@ async function homeelsewhere() {
       return route.continue();
     });
     const raced = await sheetSaid(s.page);
-    await s.page.click('.home-questions');
+    await s.page.click('.so-home__questions');
     await awaitSheet(s.page, (d) => !!d && d.options.length === 2 && d.options.every((o) => !o.disabled), 10000);
-    await s.page.click('.q-option[data-label="Postgres"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="Postgres"]');
+    await s.page.click('.so-q-send');
     tmuxType(s, id, '2', false);
     const moved = await awaitDigest(s, id, (d) => d.phase === 'ready' && !d.question && d.rev > again.digest.rev, 20000);
     await wait(800);
@@ -8397,7 +8453,7 @@ async function homeelsewhere() {
     await askQuestion(s, dies);
     await awaitHome(s.page, (h) => h.rows.some((r) => r.id === dies && r.answer), 10000);
     const deathWords = await sheetSaid(s.page);
-    await s.page.click('.home-row[data-id="' + dies + '"] .home-answer');
+    await s.page.click('.so-home__card[data-id="' + dies + '"] .so-home__answer');
     await awaitSheet(s.page, (d) => !!d && d.options.length === 2, 10000);
     execFileSync('kill', ['-9', panePid(s, dies)]);
     const stopped = await awaitSheet(s.page, (d) => !!d && !!d.status && /stopped before the question was answered/.test(d.status.text), 20000);
@@ -8408,7 +8464,7 @@ async function homeelsewhere() {
       'a program that dies under its open question says it stopped before it was answered, offers Open session, and stays',
       JSON.stringify(stopped.seen && { status: stopped.seen.status, open: stopped.seen.openErr, stays: !!stays }));
     ok(!deathSaid.some((w) => /answered elsewhere|No question is waiting/.test(w)), 'and is never said to be answered elsewhere', deathSaid.join(' | '));
-    await s.page.click('.q-close').catch(() => {});
+    await s.page.click('.so-q-close').catch(() => {});
     ok(unexpected(s.errors, REFUSED_NOISE).length === 0, 'no unexpected console errors', unexpected(s.errors, REFUSED_NOISE).join(' | ') || '0');
   } finally {
     await s.stop();
@@ -8433,7 +8489,7 @@ async function homedeeplink() {
     const behind = await homeLook(tab);
     ok(shown.ok && behind.shown, '#q= opens the question dialog on boot, over Home',
       JSON.stringify({ question: shown.seen && shown.seen.question, home: behind.shown }));
-    await tab.click('.q-close');
+    await tab.click('.so-q-close');
     ok(await sheetShut(tab, 5000), 'and Close puts it away', 'shut');
     await tab.close();
 
@@ -8457,7 +8513,7 @@ async function homedeeplink() {
     await hist.goto('about:blank');
     await hist.goto(s.url + '/#q=' + id, { waitUntil: 'domcontentloaded' });
     await awaitSheet(hist, (d) => !!d && d.options.length === 2, 15000);
-    await hist.click('.q-close');
+    await hist.click('.so-q-close');
     await hist.goBack().catch(() => {});
     await wait(800);
     const afterQ = hist.url();
@@ -8561,7 +8617,7 @@ async function homereconnect() {
     await s.page.evaluate(() => {
       window.__sameHome = true;
       window.__conn = [];
-      const host = document.querySelector('#home .home-conn');
+      const host = document.querySelector('#home .so-home__conn');
       new MutationObserver(() => {
         const said = host.dataset.status + ':' + host.textContent.trim();
         if (window.__conn[window.__conn.length - 1] !== said) window.__conn.push(said);
@@ -8700,14 +8756,14 @@ async function hometouch() {
     const car = await deviceOf(s, { viewport: { width: 1280, height: 800 }, hasTouch: true, userAgent: TESLA_AGENT });
     await car.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
     const home = await awaitHome(car.page, (h) => h.shown && h.counts.questions === 1, 15000);
-    const touch = await car.page.evaluate(() => document.documentElement.classList.contains('touch'));
+    const touch = await car.page.evaluate(() => document.documentElement.classList.contains('so-touch'));
     ok(home.ok && touch, 'the car lands on Home in touch mode, with the question counted', JSON.stringify({ touch, counts: home.seen.counts }));
     await shot(car.page, 'home-tesla');
 
     // A double tap on the Questions card: the first opens the dialog, whose
     // first option is drawn right under the finger, and the second must not
     // choose it - nor a third send it - before the person has read anything.
-    const card = await car.page.locator('.home-questions').boundingBox();
+    const card = await car.page.locator('.so-home__questions').boundingBox();
     const centre = { x: card.x + card.width / 2, y: card.y + card.height / 2 };
     const tapCard = async (times) => {
       for (let i = 0; i < times; i += 1) {
@@ -8719,7 +8775,7 @@ async function hometouch() {
     await wait(500);
     const underFinger = await car.page.evaluate(({ x, y }) => {
       const node = document.elementFromPoint(x, y);
-      const option = node && node.closest('.q-option');
+      const option = node && node.closest('.so-q-option');
       return option ? 'option:' + option.dataset.label : (node ? node.className : '');
     }, centre);
     const doubled = await sheetLook(car.page);
@@ -8740,7 +8796,7 @@ async function hometouch() {
         options: tripled && tripled.options.map((o) => o.label + '=' + o.pressed) }));
     // A deliberate tap, once the dialog has been on screen a moment, is taken.
     await wait(400);
-    const optionBox = await car.page.locator('.q-option[data-label="SQLite"]').boundingBox();
+    const optionBox = await car.page.locator('.so-q-option[data-label="SQLite"]').boundingBox();
     await car.page.touchscreen.tap(optionBox.x + optionBox.width / 2, optionBox.y + optionBox.height / 2);
     const deliberate = await awaitSheet(car.page, (d) => !!d && d.options.some((o) => o.label === 'SQLite' && o.pressed === 'true'), 3000);
     ok(deliberate.ok, 'a tap once the dialog has been on screen a moment chooses the option under it',
@@ -8748,7 +8804,7 @@ async function hometouch() {
     await car.page.keyboard.press('Escape');
     await sheetShut(car.page, 5000);
 
-    await car.page.tap('.home-questions');
+    await car.page.tap('.so-home__questions');
     await awaitSheet(car.page, (d) => !!d && d.options.length === 2, 10000);
     await sheetSettled(car.page);
     const shown = await awaitSheet(car.page, (d) => !!d && d.options.length === 2, 1000);
@@ -8759,8 +8815,8 @@ async function hometouch() {
       'the options are at least 64 px high in 20 px type', JSON.stringify(look.options && look.options.map((o) => o.h + 'px/' + o.size)));
     ok(look.kb, 'the keyboard button’s copy is in the dialog', String(look.kb));
     await shot(car.page, 'home-question-tesla');
-    await car.page.tap('.q-option[data-label="Postgres"]');
-    await car.page.tap('.q-send');
+    await car.page.tap('.so-q-option[data-label="Postgres"]');
+    await car.page.tap('.so-q-send');
     const logged = await awaitAnswerLogged(s, 1);
     ok(logged[0] && logged[0].answers[0].choices.join(',') === 'Postgres', 'a tap in the car answers', JSON.stringify(logged[0] && logged[0].answers));
     ok(await sheetShut(car.page, 15000), 'and the dialog closes', 'shut');
@@ -8775,7 +8831,7 @@ async function hometouch() {
     const onPhone = await awaitHome(phone.page, (h) => h.shown && h.counts.questions === 1, 15000);
     ok(onPhone.ok && onPhone.seen.overflow <= 1, 'Home fits a phone without scrolling sideways', String(onPhone.seen.overflow));
     await shot(phone.page, 'home-phone');
-    await phone.page.tap('.home-questions');
+    await phone.page.tap('.so-home__questions');
     await awaitSheet(phone.page, (d) => !!d && d.options.length === 2, 10000);
     await sheetSettled(phone.page);
     const sheet = await awaitSheet(phone.page, (d) => !!d && d.options.length === 2, 1000);
@@ -8785,7 +8841,7 @@ async function hometouch() {
       'on a phone the dialog is the whole screen too, and nothing in it is wider than the phone',
       JSON.stringify({ box: small.box, overflow: small.overflow, options: small.options && small.options.map((o) => o.w + 'x' + o.h) }));
     await shot(phone.page, 'home-question-phone');
-    const portraitName = await phone.page.locator('dialog.question-sheet .q-read').ariaSnapshot();
+    const portraitName = await phone.page.locator('dialog.so-question .so-q-read').ariaSnapshot();
     ok(/Read aloud/.test(portraitName), 'on a phone Read aloud still has a name a screen reader says', portraitName);
 
     // A double tap on Send, on the left of it: Cancel takes the place Send
@@ -8794,8 +8850,8 @@ async function hometouch() {
     const tapSaid = await sheetSaid(phone.page);
     const cancels = [];
     phone.page.on('request', (req) => { if (req.method() === 'POST' && /\/answer\/cancel$/.test(req.url())) cancels.push(req.url()); });
-    await phone.page.tap('.q-option[data-label="SQLite"]');
-    const sendBox = await phone.page.locator('.q-send').boundingBox();
+    await phone.page.tap('.so-q-option[data-label="SQLite"]');
+    const sendBox = await phone.page.locator('.so-q-send').boundingBox();
     const finger = { x: sendBox.x + 40, y: sendBox.y + sendBox.height / 2 };
     await phone.page.touchscreen.tap(finger.x, finger.y);
     await wait(250);
@@ -8824,9 +8880,9 @@ async function hometouch() {
       await awaitSheet(side.page, (d) => !!d && d.options.length === 2, 15000);
       await sheetSettled(side.page);
       const fit = await side.page.evaluate(() => {
-        const dialog = document.querySelector('dialog.question-sheet');
-        const first = dialog.querySelector('.q-option').getBoundingClientRect();
-        const bar = dialog.querySelector('.q-actions').getBoundingClientRect();
+        const dialog = document.querySelector('dialog.so-question');
+        const first = dialog.querySelector('.so-q-option').getBoundingClientRect();
+        const bar = dialog.querySelector('.so-q-actions').getBoundingClientRect();
         return { top: Math.round(first.top), bottom: Math.round(first.bottom), bar: Math.round(bar.top), h: innerHeight };
       });
       ok(fit.top >= 0 && fit.bottom <= fit.bar && fit.bottom <= fit.h,
@@ -8874,8 +8930,8 @@ async function awaitRunEnd(s, id, timeout = 30000) {
 const focusOf = (page) => page.evaluate(() => {
   const at = document.activeElement;
   if (!at) return 'none';
-  if (at.classList.contains('q-own-field')) return 'own';
-  if (at.classList.contains('q-option')) return 'option:' + at.dataset.label;
+  if (at.classList.contains('so-q-own-field')) return 'own';
+  if (at.classList.contains('so-q-option')) return 'option:' + at.dataset.label;
   return at.className || at.tagName;
 });
 
@@ -8899,9 +8955,9 @@ async function homefocus() {
     await awaitHome(s.page, (h) => h.counts.questions === 2, 10000);
     const posts = answerPosts(s.page);
 
-    await s.page.click('.home-questions');
+    await s.page.click('.so-home__questions');
     await awaitSheet(s.page, (d) => !!d && d.session === 'Alpha asks' && d.options.length === 2, 10000);
-    await s.page.click('.q-own-field');
+    await s.page.click('.so-q-own-field');
     await s.page.keyboard.type('Use MariaDB, ');
     // A third question joins the walk: the counter changes, the body must not.
     tmuxType(s, gamma, '/question');
@@ -8940,7 +8996,7 @@ async function homefocus() {
     await s.page.route('**/api/voice/speak', (route) => route.fulfill({
       status: 400, contentType: 'application/json', body: JSON.stringify({ error: 'no voice key is configured here' }),
     }));
-    await s.page.click('.q-read');
+    await s.page.click('.so-q-read');
     const refused = await awaitSheet(s.page, (d) => !!d && !!d.status && /no voice key/.test(d.status.text), 8000);
     ok(refused.ok && refused.seen.status.kind === 'error', 'a Read aloud that fails says why, in the dialog',
       JSON.stringify(refused.seen && refused.seen.status));
@@ -8951,10 +9007,10 @@ async function homefocus() {
       JSON.stringify(kept && kept.status));
     // Dictation on a machine with no microphone.
     const micBefore = kept && kept.status ? kept.status.text : '';
-    await s.page.click('.q-own .mic-btn');
+    await s.page.click('.so-q-own .so-mic');
     const deaf = await awaitSheet(s.page, (d) => !!d && !!d.status && d.status.kind === 'error' && d.status.text !== micBefore, 8000);
     ok(deaf.ok, 'a dictation that cannot start is said in the dialog, not under it', JSON.stringify(deaf.seen && deaf.seen.status));
-    await s.page.click('.q-close');
+    await s.page.click('.so-q-close');
     ok(unexpected(s.errors, REFUSED_NOISE).length === 0, 'no unexpected console errors', unexpected(s.errors, REFUSED_NOISE).join(' | ') || '0');
   } finally {
     await s.stop();
@@ -8982,10 +9038,10 @@ async function homeretry() {
     ok(!!asked.digest, 'the question is read', asked.digest ? asked.digest.phase : 'no digest');
     await awaitHome(s.page, (h) => h.counts.questions === 1, 10000);
     const said = await watchSheet(s.page);
-    await s.page.click('.home-questions');
+    await s.page.click('.so-home__questions');
     await awaitSheet(s.page, (d) => !!d && d.options.length === 2, 10000);
-    await s.page.click('.q-option[data-label="SQLite"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="SQLite"]');
+    await s.page.click('.so-q-send');
     const failed = await awaitSheet(s.page, (d) => !!d && d.retry, 30000);
     ok(failed.ok && failed.seen.status && failed.seen.status.kind === 'error',
       'an operator that fails shows the error and Try again', JSON.stringify(failed.seen && failed.seen.status));
@@ -8993,7 +9049,7 @@ async function homeretry() {
     refuse = false;
     const errorsBefore = s.errors.filter((e) => e.startsWith('pageerror')).length;
     const posts = answerPosts(s.page);
-    await s.page.click('.q-retry');
+    await s.page.click('.so-q-retry');
     const logged = await awaitAnswerLogged(s, 1);
     ok(posts.length === 1 && logged.length === 1 && logged[0].answers[0].choices.join(',') === 'SQLite',
       'Try again sends the answer once, and it goes in', JSON.stringify({ posts: posts.length, answers: logged.map((l) => l.answers) }));
@@ -9006,10 +9062,10 @@ async function homeretry() {
     ok(!!again.digest, 'a second session asks', again.digest ? again.digest.phase : 'no digest');
     await awaitHome(s.page, (h) => h.counts.questions === 1, 10000);
     const story = await watchSheet(s.page);
-    await s.page.click('.home-questions');
+    await s.page.click('.so-home__questions');
     await awaitSheet(s.page, (d) => !!d && d.session === 'Deleted while answering' && d.options.length === 2, 10000);
-    await s.page.click('.q-option[data-label="SQLite"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="SQLite"]');
+    await s.page.click('.so-q-send');
     await awaitSheet(s.page, (d) => !!d && !!d.status && /^Choosing/.test(d.status.text), 8000);
     await s.context.request.delete(s.url + '/api/sessions/' + second);
     const ended = await awaitSheet(s.page, (d) => !d || (!!d.status && d.status.kind === 'error'), 15000);
@@ -9022,7 +9078,7 @@ async function homeretry() {
       JSON.stringify(last && { status: last.status, retry: last.retry, open: last.openErr, reading: last.reading }));
     ok(!words.some((w) => /elsewhere/.test(w)) && !words.includes('All questions answered'),
       'and is never said to be answered elsewhere', words.join(' | '));
-    await s.page.click('.q-close').catch(() => {});
+    await s.page.click('.so-q-close').catch(() => {});
 
     // The third is deleted while the answer is still on its way to the
     // server: the refusal is the news, and there is nothing to try again.
@@ -9036,10 +9092,10 @@ async function homeretry() {
       return route.continue();
     });
     const told = await watchSheet(s.page);
-    await s.page.click('.home-questions');
+    await s.page.click('.so-home__questions');
     await awaitSheet(s.page, (d) => !!d && d.session === 'Deleted while sending' && d.options.length === 2, 10000);
-    await s.page.click('.q-option[data-label="Postgres"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="Postgres"]');
+    await s.page.click('.so-q-send');
     await s.context.request.delete(s.url + '/api/sessions/' + third);
     await awaitHome(s.page, (h) => !h.rows.some((r) => r.id === third), 10000);
     held.release();
@@ -9052,7 +9108,7 @@ async function homeretry() {
       'an answer refused because its session was just deleted says so, with no Try again', JSON.stringify(after && { status: after.status, retry: after.retry, open: after.openErr, reading: after.reading }));
     ok(!toldWords.some((w) => /elsewhere/.test(w)), 'and is not said to be answered elsewhere', toldWords.join(' | '));
     await s.page.unroute('**/api/sessions/*/answer');
-    await s.page.click('.q-close').catch(() => {});
+    await s.page.click('.so-q-close').catch(() => {});
     ok(unexpected(s.errors, REFUSED_NOISE).length === 0, 'no unexpected console errors', unexpected(s.errors, REFUSED_NOISE).join(' | ') || '0');
   } finally {
     await s.stop();
@@ -9078,15 +9134,15 @@ async function homerunlost() {
     const asked = await askQuestion(s, id);
     ok(!!asked.digest, 'the question is read', asked.digest ? asked.digest.phase : 'no digest');
     await awaitHome(s.page, (h) => h.counts.questions === 1, 10000);
-    await s.page.click('.home-questions');
+    await s.page.click('.so-home__questions');
     await awaitSheet(s.page, (d) => !!d && d.options.length === 2, 10000);
-    await s.page.click('.q-option[data-label="SQLite"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="SQLite"]');
+    await s.page.click('.so-q-send');
     await awaitSheet(s.page, (d) => !!d && !!d.status && d.status.kind === 'working', 5000);
-    await s.page.click('.q-close');
+    await s.page.click('.so-q-close');
     await sheetShut(s.page, 5000);
     const said = await watchSheet(s.page);
-    await s.page.click('.home-row[data-id="' + id + '"] .home-answer');
+    await s.page.click('.so-home__card[data-id="' + id + '"] .so-home__answer');
     const reopened = await awaitSheet(s.page, (d) => !!d && d.options.length === 2, 5000);
     const look = reopened.seen || {};
     ok(reopened.ok && look.cancel && !!look.status && /^(Choosing SQLite|Answering)/.test(look.status.text)
@@ -9106,10 +9162,10 @@ async function homerunlost() {
     ok(!!twice.digest, 'the question is asked again', twice.digest ? twice.digest.phase : 'no digest');
     mode = 'hang';
     await awaitHome(s.page, (h) => h.counts.questions === 1, 10000);
-    await s.page.click('.home-questions');
+    await s.page.click('.so-home__questions');
     await awaitSheet(s.page, (d) => !!d && d.options.length === 2 && d.options.every((o) => !o.disabled), 10000);
-    await s.page.click('.q-option[data-label="Postgres"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="Postgres"]');
+    await s.page.click('.so-q-send');
     // The run has started - the server answered the Send - before the server
     // goes: "Sending your answer…" is still the request in flight, and a
     // restart that cuts that is a lost reply, not a lost run.
@@ -9124,7 +9180,7 @@ async function homerunlost() {
       JSON.stringify(lost.seen && { status: lost.seen.status, retry: lost.seen.retry }) + ' ' + (await story()).join(' | '));
     held.release();
     await awaitDigest(s, id, (d) => d.phase === 'ready' && !!d.question, 20000);
-    await s.page.click('.q-retry');
+    await s.page.click('.so-q-retry');
     const both = await awaitAnswerLogged(s, 2, 40000);
     ok(both.length === 2 && both[1].answers[0].choices.join(',') === 'Postgres', 'and Try again answers it',
       JSON.stringify(both.map((l) => l.answers)));
@@ -9142,10 +9198,10 @@ async function homerunlost() {
       return route.abort('connectionreset');
     });
     const lostSaid = await sheetSaid(s.page);
-    await s.page.click('.home-questions');
+    await s.page.click('.so-home__questions');
     await awaitSheet(s.page, (d) => !!d && d.options.length === 2 && d.options.every((o) => !o.disabled), 10000);
-    await s.page.click('.q-option[data-label="SQLite"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="SQLite"]');
+    await s.page.click('.so-q-send');
     const three = await awaitAnswerLogged(s, 3, 40000);
     await sheetShut(s.page, 20000);
     const lostWords = await lostSaid();
@@ -9168,19 +9224,19 @@ async function homerunlost() {
       await wait(800);
       return route.fulfill({ status: res.status(), headers: res.headers(), body }).catch(() => {});
     });
-    await s.page.click('.home-questions');
+    await s.page.click('.so-home__questions');
     await awaitSheet(s.page, (d) => !!d && d.options.length === 2 && d.options.every((o) => !o.disabled), 10000);
     mode = 'slow';
-    await s.page.click('.q-option[data-label="Postgres"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="Postgres"]');
+    await s.page.click('.so-q-send');
     await wait(100);
     await s.page.keyboard.press('Escape');
-    if (!await sheetShut(s.page, 2000)) await s.page.click('.q-close').catch(() => {});
+    if (!await sheetShut(s.page, 2000)) await s.page.click('.so-q-close').catch(() => {});
     const shutEarly = await sheetShut(s.page, 3000);
     await wait(1200);
     await s.page.unroute('**/api/sessions/*/answer');
     const ownSaid = await sheetSaid(s.page);
-    await s.page.click('.home-row[data-id="' + id + '"] .home-answer');
+    await s.page.click('.so-home__card[data-id="' + id + '"] .so-home__answer');
     const four = await awaitAnswerLogged(s, 4, 40000);
     await sheetShut(s.page, 20000);
     const ownWords = await ownSaid();
@@ -9229,19 +9285,19 @@ async function homereadagain() {
     ok(!!waiting && !!broken && !broken.question, 'a waiting session whose screen could not be read has no question',
       JSON.stringify({ waiting: waiting && waiting.state, digest: brokenNow && { phase: brokenNow.phase, error: brokenNow.error, question: !!brokenNow.question, summary: brokenNow.summary }, digests: stub.digests.filter((c) => calledAs(c.json.messages[c.json.messages.length - 1].content) === 'Garbled read').length }));
     await awaitHome(s.page, (h) => h.counts.questions === 1, 10000);
-    await s.page.click('.home-questions');
+    await s.page.click('.so-home__questions');
     const field = await awaitSheet(s.page, (d) => !!d && d.own, 10000);
     ok(field.ok, 'the dialog offers a field for an answer of one’s own', JSON.stringify(field.seen && { own: field.seen.own, problem: field.seen.problem }));
-    await s.page.fill('.q-own-field', 'Postgres, please');
+    await s.page.fill('.so-q-own-field', 'Postgres, please');
     const typed = await sheetLook(s.page);
     ok(!!typed.send && !typed.send.hidden && !typed.send.disabled, 'and Send can be pressed once something is typed',
       JSON.stringify(typed.send));
     const response = s.page.waitForResponse((r) => r.request().method() === 'POST' && /\/answer$/.test(r.url()), { timeout: 10000 });
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-send');
     const status = await response.then((r) => r.status(), () => 0);
     ok(status === 202, 'and the server takes it', String(status));
     await awaitRunEnd(s, garbled, 30000);
-    await s.page.click('.q-close').catch(() => {});
+    await s.page.click('.so-q-close').catch(() => {});
     await sheetShut(s.page, 5000);
     tmuxType(s, garbled, '1', false);
     await awaitActivity(s, garbled, (a) => a.state !== 'waiting', 10000);
@@ -9266,7 +9322,7 @@ async function homereadagain() {
       await route.fulfill({ status: res.status(), headers: res.headers(), body });
     });
     await awaitHome(s.page, (h) => h.rows.some((r) => r.id === again && r.answer), 10000);
-    await s.page.click('.home-row[data-id="' + again + '"] .home-answer');
+    await s.page.click('.so-home__card[data-id="' + again + '"] .so-home__answer');
     const problem = await awaitSheet(s.page, (d) => !!d && !!d.problem, 10000);
     ok(problem.ok, 'the dialog says the read failed, with Try again', problem.seen && problem.seen.problem);
     // The read that failed kept the question it had: the server refuses an
@@ -9274,7 +9330,7 @@ async function homereadagain() {
     // on an option sends nothing.
     const refusedPosts = answerPosts(s.page);
     const kept = await awaitDigest(s, again, () => true, 2000);
-    await s.page.click('.q-option[data-label="SQLite"]', { timeout: 5000 }).catch(() => {});
+    await s.page.click('.so-q-option[data-label="SQLite"]', { timeout: 5000 }).catch(() => {});
     await s.page.keyboard.press('Enter');
     await wait(500);
     const offered = await sheetLook(s.page);
@@ -9285,7 +9341,7 @@ async function homereadagain() {
         digest: kept && { phase: kept.phase, question: !!kept.question }, options: offered && offered.options.length,
         send: offered && offered.send, posts: refusedPosts.length,
       }));
-    await s.page.click('.q-problem .q-big');
+    await s.page.click('.so-q-problem .so-q-big');
     const back = await awaitSheet(s.page, (d) => !!d && d.options.length === 2 && !d.reading, 10000);
     await s.page.waitForFunction(() => true, null, { timeout: 100 });
     for (let i = 0; i < 40 && delayed === 0; i++) await wait(100);
@@ -9297,13 +9353,13 @@ async function homereadagain() {
     await s.page.unroute('**/api/sessions/*/digest');
 
     // A choice, then the question is read again, slowly; a second tap meanwhile.
-    await s.page.click('.q-option[data-label="Postgres"]');
+    await s.page.click('.so-q-option[data-label="Postgres"]');
     await wait(3500);
     hold = 3000;
     const posts = answerPosts(s.page);
     await s.context.request.post(s.url + '/api/sessions/' + again + '/digest', { data: {} });
     await awaitSheet(s.page, (d) => !!d && (d.reading || d.options.some((o) => o.disabled)), 2000);
-    await s.page.click('.q-option[data-label="Postgres"]', { force: true }).catch(() => {});
+    await s.page.click('.so-q-option[data-label="Postgres"]', { force: true }).catch(() => {});
     await s.page.keyboard.press('Enter');
     await wait(600);
     const pending = await sheetLook(s.page);
@@ -9314,14 +9370,14 @@ async function homereadagain() {
     const settled = await awaitSheet(s.page, (d) => !!d && d.options.length === 2 && d.options.every((o) => !o.disabled), 10000);
     ok(!!ready && settled.ok, 'the question is back once it is read', JSON.stringify(settled.seen && settled.seen.options));
     if (!settled.seen.options.some((o) => o.label === 'Postgres' && o.pressed === 'true')) {
-      await s.page.click('.q-option[data-label="Postgres"]');
+      await s.page.click('.so-q-option[data-label="Postgres"]');
     }
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-send');
     const logged = await awaitAnswerLogged(s, 2, 30000);
     const last = logged.filter((l) => l.answers && l.answers[0] && l.answers[0].question === HOME_QUESTION).pop();
     ok(!!last && last.answers[0].choices.join(',') === 'Postgres', 'and a Send then answers it',
       JSON.stringify(logged.map((l) => l.answers)));
-    await s.page.click('.q-close').catch(() => {});
+    await s.page.click('.so-q-close').catch(() => {});
     await sheetShut(s.page, 5000);
 
     // With no key, nothing can be read and nothing can be sent: the dialog
@@ -9332,10 +9388,10 @@ async function homereadagain() {
     tmuxType(s, garbled, '/question');
     const keyless = await awaitDigest(s, garbled, (d) => d.phase === 'error' && /no OpenRouter API key/.test(d.error || ''), 20000);
     await awaitHome(s.page, (h) => h.rows.some((r) => r.id === garbled && r.answer), 10000);
-    await s.page.click('.home-row[data-id="' + garbled + '"] .home-answer');
+    await s.page.click('.so-home__card[data-id="' + garbled + '"] .so-home__answer');
     const noKey = await awaitSheet(s.page, (d) => !!d && /no OpenRouter API key/i.test(d.problem), 10000);
     const toKey = await s.page.evaluate(() => {
-      const link = document.querySelector('dialog.question-sheet .q-problem a');
+      const link = document.querySelector('dialog.so-question .so-q-problem a');
       return link ? link.getAttribute('href') : '';
     });
     const nk = noKey.seen || {};
@@ -9347,7 +9403,7 @@ async function homereadagain() {
     // into the sessions. It never says "nothing else".
     const keyCard = await deviceOf(s, { viewport: { width: 1280, height: 800 } });
     await keyCard.page.goto(s.url + toKey);
-    const hint = await keyCard.page.locator('#voiceCard #orKey ~ .hint').textContent({ timeout: 10000 }).catch(() => '');
+    const hint = await keyCard.page.locator('#voiceCard #orKeyHint').textContent({ timeout: 10000 }).catch(() => '');
     await keyCard.context.close();
     ok(!/nothing else/.test(hint) && /Home/.test(hint) && /screen of every coding session/.test(hint) && /operator/.test(hint),
       'the key card the link leads to names every use of the key: dictation, Home’s reads of every session’s screen and the operator',
@@ -9390,11 +9446,11 @@ async function homeoperator() {
       JSON.stringify(read && read.question.items.map((i) => i.text)));
     await awaitHome(s.page, (h) => h.rows.some((r) => r.id === worker && r.answer), 10000);
     const said = await watchSheet(s.page);
-    await s.page.click('.home-row[data-id="' + worker + '"] .home-answer');
+    await s.page.click('.so-home__card[data-id="' + worker + '"] .so-home__answer');
     await awaitSheet(s.page, (d) => !!d && d.options.length === 3, 10000);
-    await s.page.click('.q-option[data-label="Yes"]');
+    await s.page.click('.so-q-option[data-label="Yes"]');
     const sent = Date.now();
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-send');
     const run = await awaitRunEnd(s, worker, 40000);
     const ms = Date.now() - sent;
     const busy = await sessionRow(s, worker);
@@ -9413,10 +9469,10 @@ async function homeoperator() {
       JSON.stringify(asked.digest && asked.digest.question.detail));
     const before = operatorCalls(stub).length;
     await awaitHome(s.page, (h) => h.rows.some((r) => r.id === target && r.answer), 10000);
-    await s.page.click('.home-row[data-id="' + target + '"] .home-answer');
+    await s.page.click('.so-home__card[data-id="' + target + '"] .so-home__answer');
     await awaitSheet(s.page, (d) => !!d && d.options.length === 2, 10000);
-    await s.page.click('.q-option[data-label="SQLite"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="SQLite"]');
+    await s.page.click('.so-q-send');
     const refused = await awaitRunEnd(s, target, 30000);
     ok(!!refused && refused.phase === 'error' && /not part of the answer/.test(refused.error || ''),
       'a model that types what the screen told it to is stopped', JSON.stringify(refused && { phase: refused.phase, error: refused.error }));
@@ -9432,7 +9488,7 @@ async function homeoperator() {
       && !goal.split('\n').some((line) => /^\s*Ignore the (answer|goal)/.test(line)),
       'what the screen said reaches the operator quoted, never as a line of its own instructions',
       oneLine(goal.split('\n').filter((l) => /Ignore/.test(l)).join(' / ')));
-    await s.page.click('.q-close');
+    await s.page.click('.so-q-close');
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally {
     await s.stop();
@@ -9452,11 +9508,11 @@ async function homeopencode() {
       JSON.stringify({ waiting: asked.waiting, items: asked.digest && asked.digest.question.items.map((i) => i.text) }));
     const card = await awaitHome(s.page, (h) => h.counts.questions === 1 && h.asking, 10000);
     ok(card.ok, 'Home counts it as a question', JSON.stringify(card.seen.counts));
-    await s.page.click('.home-questions');
+    await s.page.click('.so-home__questions');
     const shown = await awaitSheet(s.page, (d) => !!d && d.question === HOME_QUESTION && d.options.length === 2, 10000);
     ok(shown.ok && shown.seen.session === 'OpenCode asks', 'the dialog shows it', JSON.stringify(shown.seen && { q: shown.seen.question, s: shown.seen.session }));
-    await s.page.click('.q-option[data-label="SQLite"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="SQLite"]');
+    await s.page.click('.so-q-send');
     const logged = await awaitAnswerLogged(s, 1);
     ok(logged[0] && logged[0].answers[0].choices.join(',') === 'SQLite', 'OpenCode got SQLite',
       JSON.stringify(logged[0] && { via: logged[0].via, answers: logged[0].answers }));
@@ -9494,11 +9550,11 @@ async function homeopencode() {
     ok(!!card1.waiting && !!card1.digest, 'OpenCode’s permission card is seen as waiting, and read',
       JSON.stringify({ waiting: card1.waiting && card1.waiting.state, options: card1.digest && card1.digest.question.items[0].options.map((o) => o.label) }));
     await awaitHome(s.page, (h) => h.rows.some((r) => r.id === id && r.answer), 10000);
-    await s.page.click('.home-row[data-id="' + id + '"] .home-answer');
+    await s.page.click('.so-home__card[data-id="' + id + '"] .so-home__answer');
     const three = await awaitSheet(s.page, (d) => !!d && d.question === OC_PERMIT_QUESTION && d.options.length === 3, 10000);
     ok(three.ok, 'the dialog offers its three options', JSON.stringify(three.seen && three.seen.options.map((o) => o.label)));
-    await s.page.click('.q-option[data-label="Allow always"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="Allow always"]');
+    await s.page.click('.so-q-send');
     const always = await awaitRunEnd(s, id, 40000);
     const alwaysLogged = await awaitAnswerLogged(s, 3);
     ok(!!always && always.phase === 'done' && alwaysLogged[2] && alwaysLogged[2].kind === 'permit'
@@ -9565,11 +9621,11 @@ async function streamProxy(s) {
 }
 
 const connOf = (page) => page.evaluate(() => {
-  const conn = document.querySelector('#home .home-conn');
+  const conn = document.querySelector('#home .so-home__conn');
   return {
     status: conn ? conn.dataset.status : '',
     text: conn ? conn.textContent.trim() : '',
-    dim: document.getElementById('home').classList.contains('not-live'),
+    dim: document.getElementById('home').hasAttribute('data-stale'),
   };
 });
 
@@ -9604,7 +9660,7 @@ async function homestream() {
     await s.page.unroute(/\/api\/sessions$/);
     await wait(3000);
     const after = await homeLook(s.page);
-    const sidebar = await s.page.$$eval('#sessionList .chat-item[data-id]', (rows) => rows.map((r) => r.dataset.id));
+    const sidebar = await s.page.$$eval('#sessionList .so-row[data-id]', (rows) => rows.map((r) => r.dataset.id));
     ok(lists.length > 0 && moved.ok && !!settled, 'a list was asked for while the turn ran, and held back', lists.length + ' held');
     ok(!sidebar.includes(doomed) && !after.rows.some((r) => r.id === doomed) && after.counts.running === 0,
       'when it lands late, the deleted session stays gone and the finished turn is not running again',
@@ -9622,7 +9678,7 @@ async function homestream() {
     // Offline - never "Updated every 5 s" before a single read has worked.
     await page.evaluate(() => {
       window.__connSaid = [];
-      const host = document.querySelector('#home .home-conn');
+      const host = document.querySelector('#home .so-home__conn');
       const keep = () => {
         const said = host.dataset.status + ':' + host.textContent.trim();
         if (window.__connSaid[window.__connSaid.length - 1] !== said) window.__connSaid.push(said);
@@ -9709,7 +9765,7 @@ const shownAs = (page, state) => page.evaluate((hidden) => {
 async function connStory(page) {
   await page.evaluate(() => {
     window.__connStory = [];
-    const host = document.querySelector('#home .home-conn');
+    const host = document.querySelector('#home .so-home__conn');
     const keep = () => {
       const said = host.dataset.status + ':' + host.textContent.trim();
       if (window.__connStory[window.__connStory.length - 1] !== said) window.__connStory.push(said);
@@ -9763,10 +9819,10 @@ async function homequiet() {
       window.__watched = [];
       const home = document.getElementById('home');
       const keep = () => {
-        const conn = home.querySelector('.home-conn');
-        const card = home.querySelector('.home-card[data-card="questions"] .home-count');
-        const said = (conn ? conn.textContent.trim() : '') + (home.classList.contains('not-live') ? ' [dim]' : '')
-          + ' Q=' + (card ? card.textContent : '?');
+        const conn = home.querySelector('.so-home__conn');
+        const card = home.querySelector('.so-home__questions');
+        const said = (conn ? conn.textContent.trim() : '') + (home.hasAttribute('data-stale') ? ' [dim]' : '')
+          + ' Q=' + (card ? card.dataset.value : '?');
         const last = window.__watched[window.__watched.length - 1];
         if (!last || last.said !== said) window.__watched.push({ at: Date.now(), said });
       };
@@ -9831,7 +9887,7 @@ async function homequiet() {
     ok(!!reread && after.ok, 'after the restart the polls alone get the question in prose read again, and counted',
       JSON.stringify({ digest: reread && reread.phase, counts: after.seen.counts }));
     await awaitHome(polled, (h) => h.rows.some((r) => r.id === prose && r.answer), 15000);
-    await polled.click('.home-row[data-id="' + prose + '"] .home-answer');
+    await polled.click('.so-home__card[data-id="' + prose + '"] .so-home__answer');
     const answerable = await awaitSheet(polled, (d) => !!d && !d.reading && d.own, 15000);
     ok(answerable.ok, 'and its dialog can be answered, not "Reading the question…"',
       JSON.stringify(answerable.seen && { reading: answerable.seen.reading, own: answerable.seen.own }));
@@ -9846,7 +9902,7 @@ async function homequiet() {
     ctl.other = async () => { await wait(8000); return 'A fine name'; };
     const pulsing = () => s.page.evaluate((id) => {
       const row = document.querySelector('#sessionList [data-id="' + id + '"]');
-      return !!row && !!row.querySelector('.titling');
+      return !!row && !!row.querySelector('.so-row__label[data-titling]');
     }, named);
     const namedAt = Date.now();
     s.context.request.post(s.url + '/api/sessions/' + named + '/title', { data: {} }).catch(() => {});
@@ -9918,11 +9974,11 @@ async function sheetSaid(page) {
   await page.evaluate(() => {
     window.__sheetSaid = [];
     const look = () => {
-      const dialog = document.querySelector('dialog.question-sheet');
+      const dialog = document.querySelector('dialog.so-question');
       if (!dialog || !dialog.open) return ['closed'];
-      const line = dialog.querySelector('.q-status:not([hidden])');
-      const note = dialog.querySelector('.q-note');
-      const last = dialog.querySelector('.q-finished-title');
+      const line = dialog.querySelector('.so-q-status:not([hidden])');
+      const note = dialog.querySelector('.so-q-note');
+      const last = dialog.querySelector('.so-q-finished-title');
       return [line ? line.textContent.trim() : '', note ? 'note: ' + note.textContent.trim() : '',
         last ? last.textContent.trim() : ''].filter(Boolean);
     };
@@ -9980,13 +10036,13 @@ async function homekinds() {
     ok(!!multi && multi.question.source === 'menu' && multi.question.items.length === 1 && multi.question.items[0].multi,
       'a multi-select question is read as one menu - never, in the moment before its status says waiting, as a question in prose', JSON.stringify(multi && [multi.question.source, multi.state, ...multi.question.items.map((i) => i.text + '/' + i.multi)]));
     await awaitHome(s.page, (h) => h.rows.some((r) => r.id === several && r.answer), 10000);
-    await s.page.click('.home-row[data-id="' + several + '"] .home-answer');
+    await s.page.click('.so-home__card[data-id="' + several + '"] .so-home__answer');
     await awaitSheet(s.page, (d) => !!d && d.options.length === 3, 10000);
-    for (const label of ['Dark mode', 'Export', 'Search', 'Search']) await s.page.click('.q-option[data-label="' + label + '"]');
+    for (const label of ['Dark mode', 'Export', 'Search', 'Search']) await s.page.click('.so-q-option[data-label="' + label + '"]');
     const ticked = await sheetLook(s.page);
     ok(ticked.options.filter((o) => o.pressed === 'true').map((o) => o.label).join(',') === 'Dark mode,Export' && !ticked.send.disabled,
       'each tap toggles an option, and a second tap takes it off again', JSON.stringify(ticked.options.map((o) => o.label + '=' + o.pressed)));
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-send');
     const first = await awaitAnswerLogged(s, 1, 40000);
     ok(first[0] && first[0].answers[0].choices.join(',') === 'Dark mode,Export',
       'the fake got both, ticked and submitted through its menu', JSON.stringify(first[0] ? first[0].answers
@@ -10000,15 +10056,15 @@ async function homekinds() {
     ok(!!multiq && multiq.question.items.length === 2, 'a menu of two tabs is read as two questions',
       JSON.stringify(multiq && multiq.question.items.map((i) => i.header)));
     await awaitHome(s.page, (h) => h.rows.some((r) => r.id === tabs && r.answer), 10000);
-    await s.page.click('.home-row[data-id="' + tabs + '"] .home-answer');
+    await s.page.click('.so-home__card[data-id="' + tabs + '"] .so-home__answer');
     const one = await awaitSheet(s.page, (d) => !!d && d.question === COLOR_QUESTION, 10000);
     ok(one.ok && /Question 1 of 2/.test(one.seen.step), 'the dialog says "Question 1 of 2"', one.seen && one.seen.step);
-    await s.page.click('.q-option[data-label="Blue"]');
-    await s.page.click('.q-option[data-label="Blue"]');
+    await s.page.click('.so-q-option[data-label="Blue"]');
+    await s.page.click('.so-q-option[data-label="Blue"]');
     const two = await awaitSheet(s.page, (d) => !!d && d.question === FEATURES_QUESTION, 5000);
     ok(two.ok && /Question 2 of 2/.test(two.seen.step), 'a second tap goes on to "Question 2 of 2"', two.seen && two.seen.step);
-    await s.page.click('.q-option[data-label="Search"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="Search"]');
+    await s.page.click('.so-q-send');
     const second = await awaitAnswerLogged(s, 2, 40000);
     const both = (second[1] || {}).answers || [];
     ok(both.length === 2 && both[0].choices.join(',') === 'Blue' && both[1].choices.join(',') === 'Search' && !second[1].declined,
@@ -10021,20 +10077,20 @@ async function homekinds() {
     const plan = await awaitDigest(s, planner, (d) => d.phase === 'ready' && !!d.question, 20000);
     ok(!!plan && plan.question.kind === 'plan', 'a plan approval is read as one', JSON.stringify(plan && plan.question.kind));
     await awaitHome(s.page, (h) => h.rows.some((r) => r.id === planner && r.answer), 10000);
-    await s.page.click('.home-row[data-id="' + planner + '"] .home-answer');
+    await s.page.click('.so-home__card[data-id="' + planner + '"] .so-home__answer');
     await awaitSheet(s.page, (d) => !!d && d.question === PLAN_QUESTION && d.own, 10000);
     // Read aloud says the plan too, after the question, as the dialog
     // shows it.
     const spoken = await stubSpeech(s.context);
-    await s.page.click('.q-read');
+    await s.page.click('.so-q-read');
     for (let i = 0; i < 50 && !spoken.length; i += 1) await wait(100);
-    const shownDetail = await s.page.locator('dialog.question-sheet .q-detail').first().textContent().catch(() => '');
+    const shownDetail = await s.page.locator('dialog.so-question .so-q-detail').first().textContent().catch(() => '');
     ok(shownDetail.includes(PLAN_DETAIL) && !!spoken[0] && spoken[0].indexOf(PLAN_DETAIL) > spoken[0].indexOf(PLAN_QUESTION)
       && spoken[0].includes(PLAN_QUESTION),
       'Read aloud on a plan approval says the plan the dialog shows, after the question', JSON.stringify(spoken[0] || ''));
     await s.context.unroute('**/api/voice/speak');
-    await s.page.fill('.q-own-field', 'Make it smaller');
-    await s.page.click('.q-send');
+    await s.page.fill('.so-q-own-field', 'Make it smaller');
+    await s.page.click('.so-q-send');
     const sentBack = await awaitAnswerLogged(s, 3, 40000);
     const feedback = sentBack[2] || {};
     ok(feedback.kind === 'plan' && feedback.approved === false && feedback.answers && feedback.answers[0].text === 'Make it smaller',
@@ -10053,13 +10109,13 @@ async function homekinds() {
     const settledSheet = await awaitSheet(s.page, (d) => !d || planShown(d), 8000);
     if (!settledSheet.seen) {
       await awaitHome(s.page, (h) => h.rows.some((r) => r.id === planner && r.answer), 10000);
-      await s.page.click('.home-row[data-id="' + planner + '"] .home-answer');
+      await s.page.click('.so-home__card[data-id="' + planner + '"] .so-home__answer');
     }
     const again = await awaitSheet(s.page, (d) => !!d && d.question === PLAN_QUESTION
       && d.options.some((o) => o.label === 'Yes, and use auto mode' && !o.disabled), 15000);
     ok(again.ok, 'the dialog shows the revised plan', JSON.stringify(again.seen && { q: again.seen.question, status: again.seen.status }));
-    await s.page.click('.q-option[data-label="Yes, and use auto mode"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="Yes, and use auto mode"]');
+    await s.page.click('.so-q-send');
     const approved = await awaitAnswerLogged(s, 4, 40000);
     ok(approved[3] && approved[3].approved === true && approved[3].revision === 1 && approved[3].answers[0].choices[0] === 'Yes, and use auto mode',
       'and the person’s Yes approves it', JSON.stringify(approved[3] && { approved: approved[3].approved, revision: approved[3].revision }));
@@ -10079,8 +10135,8 @@ async function homekinds() {
     const stage = await homeLook(s.page);
     ok(tapped.ok && stage.title !== 'Asks in prose', 'a tap on its "Finished" notification opens the question, not the terminal',
       JSON.stringify({ q: tapped.seen && tapped.seen.question, title: stage.title }));
-    await s.page.fill('.q-own-field', 'Green, please');
-    await s.page.click('.q-send');
+    await s.page.fill('.so-q-own-field', 'Green, please');
+    await s.page.click('.so-q-send');
     const typed = await awaitAnswerLogged(s, 5, 40000);
     ok(typed[4] && typed[4].kind === 'text' && typed[4].answers[0].text === 'Green, please',
       'the answer is typed on its prompt', JSON.stringify(typed[4] && typed[4].answers));
@@ -10131,10 +10187,10 @@ async function homeguard() {
     ok(!!read && read.question.items[0].text === PERMISSION_QUESTION, 'a permission prompt is read', JSON.stringify(read && read.question.items[0].text));
     await awaitHome(s.page, (h) => h.rows.some((r) => r.id === early && r.answer), 10000);
     const said = await watchSheet(s.page);
-    await s.page.click('.home-row[data-id="' + early + '"] .home-answer');
+    await s.page.click('.so-home__card[data-id="' + early + '"] .so-home__answer');
     await awaitSheet(s.page, (d) => !!d && d.options.length === 3, 10000);
-    await s.page.click('.q-option[data-label="Yes"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="Yes"]');
+    await s.page.click('.so-q-send');
     const soon = await awaitRunEnd(s, early, 40000);
     const still = await sessionRow(s, early);
     ok(!!soon && soon.phase === 'error' && /did not show that it took/.test(soon.error || ''),
@@ -10146,7 +10202,7 @@ async function homeguard() {
     const words = await said();
     ok(failed.ok && !words.some((w) => /^Answered|All questions answered/.test(w)),
       'the dialog shows it failed, with Try again, and never says Answered', words.join(' | '));
-    await s.page.click('.q-close');
+    await s.page.click('.so-q-close');
 
     // The same prompt again the moment it is answered: the first is
     // answered, the second waits for the person.
@@ -10265,10 +10321,10 @@ async function homeheld() {
     await ask(esc, '/question');
     await awaitHome(s.page, (h) => h.rows.some((r) => r.id === esc && r.answer), 10000);
     const said = await sheetSaid(s.page);
-    await s.page.click('.home-row[data-id="' + esc + '"] .home-answer');
+    await s.page.click('.so-home__card[data-id="' + esc + '"] .so-home__answer');
     await awaitSheet(s.page, (d) => !!d && d.session === 'Dismisses it' && d.options.length === 2, 10000);
-    await s.page.click('.q-option[data-label="Postgres"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="Postgres"]');
+    await s.page.click('.so-q-send');
     const dismissed = await awaitRunEnd(s, esc, 30000);
     const failed = await awaitSheet(s.page, (d) => !!d && !!d.status && d.status.kind === 'error' && d.retry, 10000);
     const escWords = await said();
@@ -10276,7 +10332,7 @@ async function homeheld() {
       'an Escape that would dismiss the question is refused', JSON.stringify(dismissed && { phase: dismissed.phase, error: dismissed.error }));
     ok(failed.ok && !escWords.some((w) => /^Answered|All questions answered/.test(w)),
       'and the dialog says the answer did not go in, with Try again, never Answered', escWords.join(' | '));
-    await s.page.click('.q-close');
+    await s.page.click('.so-q-close');
     await sheetShut(s.page, 5000);
     await wait(2500);
     const settledAnyway = [down, esc].filter((id) => /User answered|declined/.test(paneOf(s, id)));
@@ -10292,10 +10348,10 @@ async function homeheld() {
       'a permission prompt whose last row takes words is read with a field for them', JSON.stringify(permit && permit.question.items[0]));
     await awaitHome(s.page, (h) => h.rows.some((r) => r.id === words && r.answer), 10000);
     const toldSaid = await sheetSaid(s.page);
-    await s.page.click('.home-row[data-id="' + words + '"] .home-answer');
+    await s.page.click('.so-home__card[data-id="' + words + '"] .so-home__answer');
     await awaitSheet(s.page, (d) => !!d && d.session === 'Tell it instead' && d.own, 10000);
-    await s.page.fill('.q-own-field', OWN);
-    await s.page.click('.q-send');
+    await s.page.fill('.so-q-own-field', OWN);
+    await s.page.click('.so-q-send');
     const told = await awaitRunEnd(s, words, 60000);
     const feedback = readFakeLog(s.data).filter((e) => e.event === 'answer' && e.feedback);
     ok(!!told && told.phase === 'done' && !told.error && feedback.length === 1 && feedback[0].answers[0].text === OWN,
@@ -10305,7 +10361,7 @@ async function homeheld() {
     const toldWords = await toldSaid();
     ok(toldWords.some((w) => /^Answered|All questions answered/.test(w)) && !toldWords.some((w) => /did not|error|cancel/i.test(w)),
       'and the dialog says it was answered', toldWords.join(' | '));
-    await s.page.click('.q-close').catch(() => {});
+    await s.page.click('.so-q-close').catch(() => {});
     await sheetShut(s.page, 5000);
 
     // The program takes the answer while the run looks again; a Cancel then
@@ -10351,16 +10407,16 @@ async function homeheld() {
     const ended = (run) => !!run && ['done', 'error', 'cancelled'].includes(run.phase);
     await ask(stopEarly, '/question');
     await awaitHome(s.page, (h) => h.rows.some((r) => r.id === stopEarly && r.answer), 10000);
-    await s.page.click('.home-row[data-id="' + stopEarly + '"] .home-answer');
+    await s.page.click('.so-home__card[data-id="' + stopEarly + '"] .so-home__answer');
     await awaitSheet(s.page, (d) => !!d && d.session === 'Stopped early' && d.options.length === 2, 10000);
-    await s.page.click('.q-option[data-label="SQLite"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="SQLite"]');
+    await s.page.click('.so-q-send');
     await awaitSheet(s.page, (d) => !!d && d.cancel, 5000);
-    await s.page.click('.q-cancel');
+    await s.page.click('.so-q-cancel');
     await wait(400);
     const hasty = await answerRunOf(s, stopEarly);
     await wait(800);
-    await s.page.click('.q-cancel');
+    await s.page.click('.so-q-cancel');
     const stoppedEarly = await awaitSheet(s.page, (d) => !!d && !!d.status && /cancel/i.test(d.status.text), 8000);
     const earlyRun = await awaitRunEnd(s, stopEarly, 10000);
     early.release();
@@ -10368,7 +10424,7 @@ async function homeheld() {
       && (await sessionRow(s, stopEarly)).activity.state === 'waiting',
       'a click on Cancel the moment it appears is not taken; one after it stops the run before any key, and the question still asks',
       JSON.stringify({ hasty: hasty && hasty.phase, run: earlyRun && [earlyRun.phase, earlyRun.error], said: stoppedEarly.seen && stoppedEarly.seen.status }));
-    await s.page.click('.q-close').catch(() => {});
+    await s.page.click('.so-q-close').catch(() => {});
     await sheetShut(s.page, 5000);
 
     // Once keys are in, stopping leaves the prompt half answered: Cancel
@@ -10377,36 +10433,36 @@ async function homeheld() {
     tmuxType(s, stopHalfway, '/question multiq');
     await awaitDigest(s, stopHalfway, (d) => d.phase === 'ready' && !!d.question && d.question.items.length === 2, 20000);
     await awaitHome(s.page, (h) => h.rows.some((r) => r.id === stopHalfway && r.answer), 10000);
-    await s.page.click('.home-row[data-id="' + stopHalfway + '"] .home-answer');
+    await s.page.click('.so-home__card[data-id="' + stopHalfway + '"] .so-home__answer');
     await awaitSheet(s.page, (d) => !!d && d.question === COLOR_QUESTION, 10000);
-    await s.page.click('.q-option[data-label="Red"]');
-    await s.page.click('.q-option[data-label="Red"]');
+    await s.page.click('.so-q-option[data-label="Red"]');
+    await s.page.click('.so-q-option[data-label="Red"]');
     await awaitSheet(s.page, (d) => !!d && d.question === FEATURES_QUESTION, 5000);
-    await s.page.click('.q-option[data-label="Search"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="Search"]');
+    await s.page.click('.so-q-send');
     for (let i = 0; i < 100 && stepsOf('Stopped halfway') < 2; i++) await wait(200);
     await awaitSheet(s.page, (d) => !!d && d.cancel, 5000);
     await wait(900);
-    await s.page.click('.q-cancel');
+    await s.page.click('.so-q-cancel');
     await wait(300);
     const asksAgain = await s.page.evaluate(() => ({
-      button: document.querySelector('dialog.question-sheet .q-cancel').textContent,
-      line: (document.querySelector('dialog.question-sheet .q-status') || {}).textContent || '',
+      button: document.querySelector('dialog.so-question .so-q-cancel').textContent,
+      line: (document.querySelector('dialog.so-question .so-q-status') || {}).textContent || '',
     }));
     const notYet = await answerRunOf(s, stopHalfway);
     ok(asksAgain.button === 'Stop' && /half answered/.test(asksAgain.line) && !ended(notYet),
       'once keys are in, Cancel becomes Stop and says the prompt would be left half answered', JSON.stringify({ ...asksAgain, run: notYet && notYet.phase }));
-    await s.page.click('.q-cancel');
+    await s.page.click('.so-q-cancel');
     await wait(300);
     const stillGoing = await answerRunOf(s, stopHalfway);
     await wait(800);
-    await s.page.click('.q-cancel');
+    await s.page.click('.so-q-cancel');
     const stoppedHalfway = await awaitRunEnd(s, stopHalfway, 10000);
     halfway.release();
     ok(!ended(stillGoing) && !!stoppedHalfway && stoppedHalfway.phase === 'error' && /cancel/.test(stoppedHalfway.error || ''),
       'a click on Stop the moment it appears is not taken either, and the one after it stops the run',
       JSON.stringify({ between: stillGoing && stillGoing.phase, run: stoppedHalfway && [stoppedHalfway.phase, stoppedHalfway.error] }));
-    await s.page.click('.q-close').catch(() => {});
+    await s.page.click('.so-q-close').catch(() => {});
     ok(unexpected(s.errors, REFUSED_NOISE).length === 0, 'no unexpected console errors', unexpected(s.errors, REFUSED_NOISE).join(' | ') || '0');
   } finally {
     kept.release();
@@ -10709,11 +10765,11 @@ async function homemovedon() {
     // A run that failed.
     await askQuestion(s, failed);
     await awaitHome(s.page, (h) => h.rows.some((r) => r.id === failed && r.answer), 10000);
-    await s.page.click('.home-row[data-id="' + failed + '"] .home-answer');
+    await s.page.click('.so-home__card[data-id="' + failed + '"] .so-home__answer');
     await awaitSheet(s.page, (d) => !!d && d.session === 'Failed, then asked again' && d.options.length === 2, 10000);
-    await s.page.click('.q-option[data-label="Postgres"]');
+    await s.page.click('.so-q-option[data-label="Postgres"]');
     refuse = true;
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-send');
     const err = await awaitSheet(s.page, (d) => !!d && !!d.status && d.status.kind === 'error', 30000);
     refuse = false;
     const next = await askAgain(failed);
@@ -10724,11 +10780,11 @@ async function homemovedon() {
       'after a failed answer, the new question is shown with nothing chosen and without the old error',
       JSON.stringify(now && { q: now.question, options: now.options.map((o) => o.label + ':' + o.pressed), status: now.status, retry: now.retry }));
     const sentBefore = posts.length;
-    await s.page.click('.q-option[data-label="Postgres"]');
+    await s.page.click('.so-q-option[data-label="Postgres"]');
     await wait(1500);
     ok(posts.length === sentBefore, 'one tap on an option of the new question chooses it and sends nothing',
       JSON.stringify(posts.slice(sentBefore)));
-    await s.page.click('.q-close');
+    await s.page.click('.so-q-close');
     await sheetShut(s.page, 5000);
     // The new question is answered at the machine, so that it stops asking.
     execFileSync('tmux', ['-S', tmuxSock(s.data), 'send-keys', '-t', 'soc_' + failed, '2']);
@@ -10737,17 +10793,17 @@ async function homemovedon() {
     // A run still thinking.
     await askQuestion(s, thinking);
     await awaitHome(s.page, (h) => h.rows.some((r) => r.id === thinking && r.answer), 10000);
-    await s.page.click('.home-row[data-id="' + thinking + '"] .home-answer');
+    await s.page.click('.so-home__card[data-id="' + thinking + '"] .so-home__answer');
     await awaitSheet(s.page, (d) => !!d && d.session === 'Thinking, then asked again' && d.options.length === 2, 10000);
-    await s.page.click('.q-option[data-label="Postgres"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="Postgres"]');
+    await s.page.click('.so-q-send');
     await wait(800);
     const asked = await askAgain(thinking);
     const ended = await awaitRunEnd(s, thinking, 30000);
     await wait(2500);
     const after = await sheetLook(s.page);
     const beforeRetry = posts.length;
-    if (after && after.retry) await s.page.click('.q-retry');
+    if (after && after.retry) await s.page.click('.so-q-retry');
     await wait(6000);
     const logged = fromPane(thinking);
     ok(!!asked && !!ended && ended.phase === 'error' && !pressed(after),
@@ -10756,7 +10812,7 @@ async function homemovedon() {
     ok(logged.length === 1 && logged[0].answers[0].choices.join(',') === 'SQLite' && (await sessionRow(s, thinking)).activity.state === 'waiting',
       'the old answer never reaches the new question: only the one typed at the machine went in, and it still asks',
       JSON.stringify({ logged: logged.map((e) => e.answers[0].choices), retried: posts.slice(beforeRetry) }));
-    await s.page.click('.q-close').catch(() => {});
+    await s.page.click('.so-q-close').catch(() => {});
     await sheetShut(s.page, 5000);
 
     // The same question read again off the same screen, worded differently
@@ -10783,9 +10839,9 @@ async function homemovedon() {
     };
     await askQuestion(s, reworded);
     await awaitHome(s.page, (h) => h.rows.some((r) => r.id === reworded && r.answer), 10000);
-    await s.page.click('.home-row[data-id="' + reworded + '"] .home-answer');
+    await s.page.click('.so-home__card[data-id="' + reworded + '"] .so-home__answer');
     await awaitSheet(s.page, (d) => !!d && d.session === 'Reworded on a re-read' && d.options.length === 2, 10000);
-    await s.page.click('.q-option[data-label="Postgres"]');
+    await s.page.click('.so-q-option[data-label="Postgres"]');
     const first = await readAgain(1);
     await wait(800);
     const kept = await sheetLook(s.page);
@@ -10793,7 +10849,7 @@ async function homemovedon() {
       'the same screen read again in other words keeps the option chosen',
       JSON.stringify(kept && { q: kept.question, options: kept.options.map((o) => o.label + ':' + o.pressed) }));
     const WORDS = 'Postgres, but the managed one on the other host';
-    await s.page.fill('.q-own-field', WORDS);
+    await s.page.fill('.so-q-own-field', WORDS);
     const second = await readAgain(2);
     await wait(800);
     const typed = await sheetLook(s.page);
@@ -10841,7 +10897,7 @@ async function homehonest() {
     await awaitHome(skewed.page, (h) => h.shown && h.conn === 'live', 20000);
     await askQuestion(s, asks);
     await awaitHome(skewed.page, (h) => h.rows.some((r) => r.id === asks && r.answer), 15000);
-    const meta = await skewed.page.$eval('.home-row[data-id="' + asks + '"] .home-row-meta', (n) => n.textContent);
+    const meta = await skewed.page.$eval('.so-home__card[data-id="' + asks + '"] .so-home__card-status', (n) => n.textContent);
     ok(/just now/.test(meta) && !/min ago/.test(meta), 'a question asked a moment ago says so on a device ten minutes fast', meta);
     await skewed.context.close();
     skewed = null;
@@ -10852,15 +10908,15 @@ async function homehonest() {
     await awaitHome(away.page, (h) => h.shown && h.conn === 'live', 20000);
     await askQuestion(s, offline);
     await awaitHome(away.page, (h) => h.rows.some((r) => r.id === offline && r.answer), 15000);
-    await away.page.click('.home-row[data-id="' + offline + '"] .home-answer');
+    await away.page.click('.so-home__card[data-id="' + offline + '"] .so-home__answer');
     await awaitSheet(away.page, (d) => !!d && d.session === 'Asks while offline' && d.options.length === 2, 10000);
     const connLine = () => away.page.evaluate(() => {
-      const line = document.querySelector('dialog.question-sheet .q-conn');
-      const shell = document.querySelector('dialog.question-sheet .q-shell');
+      const line = document.querySelector('dialog.so-question .so-q-conn');
+      const shell = document.querySelector('dialog.so-question .so-q-shell');
       return {
         shown: !!line && !line.hidden,
         text: line ? line.textContent.trim() : '',
-        dim: !!shell && shell.classList.contains('not-live'),
+        dim: !!shell && shell.hasAttribute('data-stale'),
       };
     });
     const liveLine = await connLine();
@@ -10966,26 +11022,26 @@ async function homerestart() {
     const before = await sinceOf();
     await wait(2500);
 
-    await s.page.click('.home-questions');
+    await s.page.click('.so-home__questions');
     const opened = await awaitSheet(s.page, (d) => !!d && d.options.length === 2 && d.counter === '1 of 3', 10000);
     ok(opened.ok && opened.seen.session === 'Pick a database', 'the dialog walks all three, oldest first', JSON.stringify(opened.seen && { c: opened.seen.counter, s: opened.seen.session }));
-    await s.page.click('.q-option[data-label="SQLite"]');
+    await s.page.click('.so-q-option[data-label="SQLite"]');
     await s.page.evaluate(() => {
       window.__line = [];
       const snap = () => {
         const home = document.getElementById('home');
-        const count = home.querySelector('.home-questions .home-count');
-        const conn = home.querySelector('.home-conn');
-        const dialog = document.querySelector('dialog.question-sheet');
-        const status = dialog && dialog.querySelector('.q-status:not([hidden])');
-        const note = dialog && dialog.querySelector('.q-note');
+        const count = home.querySelector('.so-home__questions');
+        const conn = home.querySelector('.so-home__conn');
+        const dialog = document.querySelector('dialog.so-question');
+        const status = dialog && dialog.querySelector('.so-q-status:not([hidden])');
+        const note = dialog && dialog.querySelector('.so-q-note');
         const line = JSON.stringify({
-          q: count ? Number(count.textContent) : -1,
+          q: count ? Number(count.dataset.value) : -1,
           conn: conn ? conn.dataset.status : '',
           open: !!dialog && dialog.open,
-          counter: dialog ? ((dialog.querySelector('.q-counter') || {}).textContent || '') : '',
+          counter: dialog ? ((dialog.querySelector('.so-q-counter') || {}).textContent || '') : '',
           said: [status ? status.textContent.trim() : '', note ? note.textContent.trim() : '',
-            ((dialog && dialog.querySelector('.q-finished-title')) || {}).textContent || ''].filter(Boolean).join(' / '),
+            ((dialog && dialog.querySelector('.so-q-finished-title')) || {}).textContent || ''].filter(Boolean).join(' / '),
         });
         if (window.__line[window.__line.length - 1] !== line) window.__line.push(line);
       };
@@ -11017,10 +11073,10 @@ async function homerestart() {
     const look = await awaitSheet(s.page, (d) => !!d && d.session === 'Pick a database' && d.send && !d.send.disabled, 10000);
     ok(look.ok && look.seen.options.find((o) => o.label === 'SQLite').pressed === 'true',
       'the choice made before the restart is still chosen', JSON.stringify(look.seen && look.seen.options.map((o) => o.label + '=' + o.pressed)));
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-send');
     const logged = await awaitAnswerLogged(s, 1, 40000);
     ok(logged[0] && logged[0].answers[0].choices.join(',') === 'SQLite', 'and Send gives it', JSON.stringify(logged[0] && logged[0].answers));
-    await s.page.click('.q-close').catch(() => {});
+    await s.page.click('.so-q-close').catch(() => {});
     await sheetShut(s.page, 5000);
 
     // A question in prose answered at the machine while the server is down,
@@ -11030,7 +11086,7 @@ async function homerestart() {
     const downAnswered = await makeAgent(s, 'Answered while down');
     // Every session listed, so that the row stays in the list once it no
     // longer asks.
-    await s.page.click('.home-seg[data-filter="all"]');
+    await s.page.click('.so-home__seg[data-filter="all"]');
     await askInProse(s, downAnswered);
     const offered = await awaitHome(s.page, (h) => h.rows.some((r) => r.id === downAnswered && r.answer && /^Asks/.test(r.summary)), 15000);
     let slowReads = false;
@@ -11045,7 +11101,7 @@ async function homerestart() {
     for (const until = Date.now() + 40000; Date.now() < until;) {
       const h = await homeLook(s.page);
       const row = h.rows.find((r) => r.id === downAnswered);
-      const meta = await s.page.$eval('.home-row[data-id="' + downAnswered + '"] .home-row-meta', (n) => n.textContent).catch(() => '');
+      const meta = await s.page.$eval('.so-home__card[data-id="' + downAnswered + '"] .so-home__card-status', (n) => n.textContent).catch(() => '');
       story.push({ conn: h.conn, answer: !!row && row.answer, summary: (row ? row.summary : '') + ' · ' + meta });
       if (h.conn === 'live' && row && !row.answer && !/Asks|Checking whether/.test(row.summary + meta)) { settled = h; break; }
       await wait(150);
@@ -11089,7 +11145,7 @@ async function homedevices() {
 
     const openOn = async (page, id) => {
       await awaitHome(page, (h) => h.rows.some((r) => r.id === id && r.answer), 15000);
-      await page.click('.home-row[data-id="' + id + '"] .home-answer');
+      await page.click('.so-home__card[data-id="' + id + '"] .so-home__answer');
       return awaitSheet(page, (d) => !!d && d.options.length === 2 && d.options.every((o) => !o.disabled), 10000);
     };
     await askQuestion(s, watched);
@@ -11098,8 +11154,8 @@ async function homedevices() {
     const saidA = await sheetSaid(s.page);
     const saidB = await sheetSaid(other.page);
     pause = gate();
-    await s.page.click('.q-option[data-label="Postgres"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="Postgres"]');
+    await s.page.click('.so-q-send');
     const following = await awaitSheet(other.page, (d) => !!d && !!d.status && /Another device is answering/.test(d.status.text), 10000);
     const b = following.seen || {};
     ok(following.ok && /Postgres/.test(b.status.text) && b.options.every((o) => o.disabled) && b.send && b.send.hidden,
@@ -11125,11 +11181,11 @@ async function homedevices() {
     await openOn(other.page, crossed);
     const toldB = await sheetSaid(other.page);
     deaf.on = true;
-    await s.page.click('.q-option[data-label="Postgres"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="Postgres"]');
+    await s.page.click('.so-q-send');
     await wait(1500);
-    await other.page.click('.q-option[data-label="SQLite"]');
-    await other.page.click('.q-send');
+    await other.page.click('.so-q-option[data-label="SQLite"]');
+    await other.page.click('.so-q-send');
     const clash = await awaitSheet(other.page, (d) => !!d && !!d.status && /Another device is already answering/.test(d.status.text), 10000);
     ok(clash.ok && /Postgres/.test(clash.seen.status.text), 'a Send that crossed it is told another device is already answering, and with what',
       JSON.stringify(clash.seen && clash.seen.status));
@@ -11153,8 +11209,8 @@ async function homedevices() {
     await openOn(s.page, watched);
     await openOn(tab, watched);
     const tabSaid = await sheetSaid(tab);
-    await s.page.click('.q-option[data-label="SQLite"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="SQLite"]');
+    await s.page.click('.so-q-send');
     const three = await awaitAnswerLogged(s, 3);
     await sheetShut(s.page, 15000);
     await sheetShut(tab, 15000);
@@ -11181,11 +11237,11 @@ async function homedevices() {
     const slowA = await sheetSaid(s.page);
     const slowB = await sheetSaid(other.page);
     uplink.slow = true;
-    await other.page.click('.q-option[data-label="SQLite"]');
-    await other.page.click('.q-send');
+    await other.page.click('.so-q-option[data-label="SQLite"]');
+    await other.page.click('.so-q-send');
     await wait(300);
-    await s.page.click('.q-option[data-label="Postgres"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="Postgres"]');
+    await s.page.click('.so-q-send');
     await wait(4000);
     pause.release();
     pause = null;
@@ -11282,7 +11338,7 @@ async function homemachine() {
         await sheetShut(s.page, 5000);
       }
       await awaitHome(s.page, (h) => h.rows.some((r) => r.id === id && r.answer), 15000);
-      await s.page.click('.home-row[data-id="' + id + '"] .home-answer');
+      await s.page.click('.so-home__card[data-id="' + id + '"] .so-home__answer');
       return awaitSheet(s.page, (d) => !!d && test(d), 15000);
     };
 
@@ -11300,8 +11356,8 @@ async function homemachine() {
     await wait(800);
     const cardSheet = await answerFromDialog(card, (d) => d.question === OC_PERMIT_QUESTION && d.options.length === 3 && !d.reading);
     const cardSaid = await watchSheet(s.page);
-    await s.page.click('.q-option[data-label="Allow once"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="Allow once"]');
+    await s.page.click('.so-q-send');
     const once = await awaitRunEnd(s, card, 40000);
     await wait(1500);
     const onceLogged = fromPaneOf(s, card);
@@ -11348,8 +11404,8 @@ async function homemachine() {
     const own = await multiAsked('1');
     const boxSheet = await answerFromDialog(boxes, (d) => d.options.length === 3 && !d.reading);
     const boxSaid = await watchSheet(s.page);
-    await s.page.click('.q-option[data-label="Dark mode"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="Dark mode"]');
+    await s.page.click('.so-q-send');
     const ownRun = await awaitRunEnd(s, boxes, 40000);
     await wait(1500);
     const ownLogged = fromPaneOf(s, boxes);
@@ -11402,8 +11458,8 @@ async function homemachine() {
     await wait(1000);
     const draftSheet = await answerFromDialog(draft, (d) => d.own && !d.reading);
     const draftSaid = await watchSheet(s.page);
-    await s.page.fill('.q-own-field', 'Blue');
-    await s.page.click('.q-send');
+    await s.page.fill('.so-q-own-field', 'Blue');
+    await s.page.click('.so-q-send');
     const draftRun = await awaitRunEnd(s, draft, 40000);
     await wait(1500);
     const draftLogged = fromPaneOf(s, draft);
@@ -11443,11 +11499,11 @@ async function homemachine() {
     const moved = await awaitDigest(s, tabs, (d) => d.phase === 'ready' && !!d.question && !!tabsRead && d.rev > tabsRead.rev, 30000);
     const tabSheet = await answerFromDialog(tabs, (d) => d.question === COLOR_QUESTION && !d.reading);
     const tabSaid = await watchSheet(s.page);
-    await s.page.click('.q-option[data-label="Blue"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="Blue"]');
+    await s.page.click('.so-q-send');
     await awaitSheet(s.page, (d) => !!d && d.question === FEATURES_QUESTION, 5000);
-    await s.page.click('.q-option[data-label="Search"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="Search"]');
+    await s.page.click('.so-q-send');
     const tabRun = await awaitRunEnd(s, tabs, 40000);
     const tabLook = await awaitSheet(s.page, (d) => !!d && !!d.status && d.status.kind === 'error', 10000);
     await wait(1000);
@@ -11497,11 +11553,11 @@ async function hometick() {
       if (/\/answer$/.test(r.url()) && r.request().method() === 'POST') replies.push(r.status());
     });
     await awaitHome(s.page, (h) => h.counts.questions === 1, 10000);
-    await s.page.click('.home-questions');
+    await s.page.click('.so-home__questions');
     await awaitSheet(s.page, (d) => !!d && d.options.length === 2 && !d.reading && d.send && !d.send.disabled, 15000);
     const said = await watchSheet(s.page);
-    await s.page.click('.q-option[data-label="SQLite"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="SQLite"]');
+    await s.page.click('.so-q-send');
     const run = await awaitRunEnd(s, id, 40000);
     await wait(1500);
     const logged = answersLogged(s);
@@ -11614,16 +11670,16 @@ async function homecomeback() {
     };
     await awaitHome(s.page, (h) => h.shown, 10000);
     // Every session listed, whatever it is doing.
-    await s.page.click('.home-seg[data-filter="all"]');
+    await s.page.click('.so-home__seg[data-filter="all"]');
 
     // Marked Done while the operator's step is out: the run is stopped at
     // once, and the dialog stops saying it is choosing.
     const asked = await askQuestion(s, parked);
     await awaitHome(s.page, (h) => h.rows.some((r) => r.id === parked && r.answer), 15000);
-    await s.page.click('.home-row[data-id="' + parked + '"] .home-answer');
+    await s.page.click('.so-home__card[data-id="' + parked + '"] .so-home__answer');
     await awaitSheet(s.page, (d) => !!d && d.options.length === 2 && !d.reading, 15000);
-    await s.page.click('.q-option[data-label="SQLite"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="SQLite"]');
+    await s.page.click('.so-q-send');
     const out = Date.now();
     while (steps < 1 && Date.now() - out < 20000) await wait(100);
     const choosing = await awaitSheet(s.page, (d) => !!d && d.cancel, 10000);
@@ -11710,7 +11766,7 @@ async function homecomeback() {
     await askQuestion(s, filedUnder);
     await askQuestion(s, after);
     await awaitHome(s.page, (h) => [filedUnder, after].every((id) => h.rows.some((r) => r.id === id && r.answer)), 15000);
-    await s.page.click('.home-row[data-id="' + filedUnder + '"] .home-answer');
+    await s.page.click('.so-home__card[data-id="' + filedUnder + '"] .so-home__answer');
     await awaitSheet(s.page, (d) => !!d && d.session === 'Filed under the dialog' && d.options.length === 2 && !d.reading, 15000);
     const filedSaid = await sheetSaid(s.page);
     const openShown = [];
@@ -11755,8 +11811,8 @@ async function homecomeback() {
     await s.restart({}, async () => { killTmux(s.data); await wait(500); });
     const back = await awaitHome(s.page, (h) => h.conn === 'live' && h.counts.stopped >= 4, 40000);
     const faint = await s.page.evaluate((id) => {
-      const row = document.querySelector('.home-row[data-id="' + id + '"] .home-row-summary');
-      return row ? row.classList.contains('pending') : null;
+      const row = document.querySelector('.so-home__card[data-id="' + id + '"] .so-home__card-summary');
+      return row ? row.dataset.state === 'pending' : null;
     }, rebooted);
     ok(!!beforeReboot && q1.ok && back.ok && back.seen.counts.questions === 0 && faint !== true,
       'after a reboot every session is stopped, none counted as a question, and none left faint as if being read',
@@ -11798,7 +11854,7 @@ async function homefollowup() {
     await awaitHome(s.page, (h) => h.shown, 10000);
     const asked = await askQuestion(s, id);
     await awaitHome(s.page, (h) => h.counts.questions === 1, 10000);
-    await s.page.click('.home-questions');
+    await s.page.click('.so-home__questions');
     await awaitSheet(s.page, (d) => !!d && d.options.length === 2 && !d.reading, 10000);
     // Every read from now on takes 2.5 s.
     ctl.digest = async () => { await wait(2500); return undefined; };
@@ -11813,8 +11869,8 @@ async function homefollowup() {
         await wait(100);
       }
     })();
-    await s.page.click('.q-option[data-label="SQLite"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="SQLite"]');
+    await s.page.click('.so-q-send');
     await awaitAnswerLogged(s, 1, 30000);
     await awaitActivity(s, id, (a) => a.state !== 'waiting', 10000);
     tmuxType(s, id, '/question');
@@ -11830,8 +11886,8 @@ async function homefollowup() {
     ok(sendWhileReading.length === 0, 'and Send stayed off while it was being read', JSON.stringify(sendWhileReading.slice(0, 3)));
     stop = true;
     await loop;
-    await s.page.click('.q-option[data-label="Postgres"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="Postgres"]');
+    await s.page.click('.so-q-send');
     const both = await awaitAnswerLogged(s, 2, 30000);
     await wait(2000);
     const all = answersLogged(s);
@@ -11935,10 +11991,10 @@ async function homeparts() {
     await ask(retried, '/question');
     await awaitHome(s.page, (h) => h.rows.some((r) => r.id === retried && r.answer), 10000);
     const retrySaid = await sheetSaid(s.page);
-    await s.page.click('.home-row[data-id="' + retried + '"] .home-answer');
+    await s.page.click('.so-home__card[data-id="' + retried + '"] .so-home__answer');
     await awaitSheet(s.page, (d) => !!d && d.session === 'Retried over its words' && d.own && !d.reading, 10000);
-    await s.page.fill('.q-own-field', 'Blue');
-    await s.page.click('.q-send');
+    await s.page.fill('.so-q-own-field', 'Blue');
+    await s.page.click('.so-q-send');
     const failed = await awaitSheet(s.page, (d) => !!d && d.retry, 30000);
     const draft = paneOf(s, retried);
     // tryAgain presses Try again - or Send, when the question was read again
@@ -11948,7 +12004,7 @@ async function homeparts() {
       for (let i = 0; i < 5 && (await runIdOf(retried)) === before; i += 1) {
         const can = await awaitSheet(s.page, (d) => !!d && (d.retry || (!!d.send && !d.send.hidden && !d.send.disabled)), 15000);
         if (!can.ok) break;
-        await s.page.click(can.seen.retry ? '.q-retry' : '.q-send');
+        await s.page.click(can.seen.retry ? '.so-q-retry' : '.so-q-send');
         await wait(1500);
       }
       return awaitRunEnd(s, retried, 30000);
@@ -11971,7 +12027,7 @@ async function homeparts() {
       && !retryLogged.some((e) => /Blue.+Blue/.test(JSON.stringify(e.answers))),
       'an Enter on the row that holds the words sends them once: "Blue", never "Blue3Blue"',
       JSON.stringify({ run: sentAgain && [sentAgain.phase, sentAgain.error], logged: retryEntries.map((e) => e.answers), said: retryWords }));
-    await s.page.click('.q-close').catch(() => {});
+    await s.page.click('.so-q-close').catch(() => {});
     await sheetShut(s.page, 5000);
 
     // Words owed after the row that closed the prompt, and a turn started at
@@ -12072,7 +12128,7 @@ async function homenext() {
       return awaitDigest(s, id, (d) => d.phase === 'ready' && !!d.question, 20000);
     };
     await awaitHome(s.page, (h) => h.shown, 10000);
-    await s.page.click('.home-seg[data-filter="all"]');
+    await s.page.click('.so-home__seg[data-filter="all"]');
 
     // Parallel permission prompts: the second asks for example1.com, the
     // first for example.com. The digit answers the first; the Enter after
@@ -12417,10 +12473,10 @@ async function homewords() {
     // key, from the dialog (which says why) and over the API.
     await askInProse(s, command);
     await awaitHome(s.page, (h) => h.rows.some((r) => r.id === command && r.answer), 15000);
-    await s.page.click('.home-row[data-id="' + command + '"] .home-answer');
+    await s.page.click('.so-home__card[data-id="' + command + '"] .so-home__answer');
     await awaitSheet(s.page, (d) => !!d && d.session === 'Words that are a command' && d.own && !d.reading, 15000);
-    await s.page.fill('.q-own-field', '/clear the cache first');
-    await s.page.click('.q-send');
+    await s.page.fill('.so-q-own-field', '/clear the cache first');
+    await s.page.click('.so-q-send');
     const refusedSheet = await awaitSheet(s.page, (d) => !!d && !!d.status && d.status.kind === 'error', 15000);
     const bang = await answerFresh(command, [{ item: 0, choices: [], text: '!! not on prod' }]);
     await wait(1500);
@@ -12429,7 +12485,7 @@ async function homewords() {
       && draftOn(commandPane) === '' && !/you said: [/!]/.test(commandPane) && kept(command).length === 0,
       'words beginning with "/" or "!" on the program’s prompt are refused before a key: the dialog says why, the API is 400',
       JSON.stringify({ sheet: refusedSheet.seen && refusedSheet.seen.status, api: [bang.status, bang.data] }));
-    await s.page.click('.q-close').catch(() => {});
+    await s.page.click('.so-q-close').catch(() => {});
     await sheetShut(s.page, 5000);
 
     // Words that are not ASCII, typed on the program's prompt: they go in as
@@ -12466,10 +12522,10 @@ async function homelatecard() {
     const card = await awaitDigest(s, id, (d) => d.phase === 'ready' && !!d.question && d.question.items[0].text === OC_PERMIT_QUESTION, 20000);
     ok(!!card, 'the late card is read', JSON.stringify(card && card.question.items[0].options.map((o) => o.label)));
     await awaitHome(s.page, (h) => h.rows.some((r) => r.id === id && r.answer), 10000);
-    await s.page.click('.home-row[data-id="' + id + '"] .home-answer');
+    await s.page.click('.so-home__card[data-id="' + id + '"] .so-home__answer');
     await awaitSheet(s.page, (d) => !!d && d.question === OC_PERMIT_QUESTION && d.options.length === 3 && !d.reading, 10000);
-    await s.page.click('.q-option[data-label="Allow always"]');
-    await s.page.click('.q-send');
+    await s.page.click('.so-q-option[data-label="Allow always"]');
+    await s.page.click('.so-q-send');
     const run = await awaitRunEnd(s, id, 60000);
     const logged = fromPaneOf(s, id).filter((e) => e.kind === 'permit');
     ok(!!run && run.phase === 'done' && logged.length === 1 && logged[0].answers[0].choices.join(',') === 'Allow always',

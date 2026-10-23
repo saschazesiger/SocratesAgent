@@ -1,1 +1,329 @@
-/* so-home.css: project components of Home (owner WP3). Tokens only; see MIGRATION.md §3.4. */
+/*
+ * so-home.css: Home (home.js), what every session is doing, live. Tokens
+ * only (--ds-* and the --so-home-* of theme.css), unlayered, and no .ds-*
+ * component restyled: the figures are DS tiles, the sessions DS interactive
+ * cards, every state a DS status chip. What is here is the layout around
+ * them and the few parts DS has no component for.
+ *
+ *   .so-home            the section on the stage; its own scroller, because
+ *                       the stage around it does not scroll
+ *   .so-home__conn      the slot of the connection chip under the title
+ *   .so-home__numbers   the Questions card beside the grid of tiles; dimmed
+ *                       with .ds-stale while the numbers are not live
+ *   .so-home__questions the Questions card (div form of an interactive card):
+ *                       its figure, words, the waiting chip and Answer
+ *   .so-home__tiles     the nine tiles, in a grid that keeps its shape: a
+ *                       tile with nothing in it says so, it never goes away,
+ *                       so a number changing never moves the others
+ *   .so-home__tile      a tile that filters the list; aria-pressed while it does
+ *   .so-home__sessions  the list under the numbers: its head, the cards, the
+ *                       empty state
+ *   .so-home__card      one session (div form of an interactive card)
+ *   .so-home__page, .so-home__q-status, .so-home__q-answer, .so-home__seg,
+ *   .so-home__chip, .so-home__empty
+ *                       hooks for home.js and the tests on DS parts that need
+ *                       no rule of their own
+ *
+ * Breakpoints are container queries on DS's "ds-content" container, so the
+ * drawer beside Home counts, as it does for DS's own grids.
+ */
+
+.so-home {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ds-line-2) transparent;
+  /* Clear of a landscape notch; DS's own panel padding does the rest. */
+  padding-inline: env(safe-area-inset-left, 0px) env(safe-area-inset-right, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  background: var(--ds-surface);
+}
+
+/* `hidden` wins over the display of Home's own parts (DS's own rule for it
+   is layered, and project CSS beats it). */
+.so-home [hidden] {
+  display: none;
+}
+
+.so-home__conn {
+  display: flex;
+  min-width: 0;
+}
+
+.so-home__new {
+  flex: none;
+}
+
+/* ── The numbers ─────────────────────────────────────────────────────── */
+
+.so-home__numbers {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--ds-space-3);
+}
+
+.so-home__tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--ds-space-3);
+}
+
+/* The figures of a row stand on one line, however many lines a label
+   takes. */
+.so-home__tile .ds-tile__label {
+  flex-grow: 1;
+  align-items: flex-start;
+}
+
+/* The tile whose sessions the list shows: a ring of the primary colour, and
+   the list's title says which it is. */
+.so-home__tile[aria-pressed="true"] {
+  box-shadow: inset 0 0 0 var(--ds-focus-width) var(--ds-primary);
+}
+
+.so-home__questions {
+  display: flex;
+  flex-direction: column;
+}
+
+.so-home__q {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--ds-space-3);
+  min-width: 0;
+}
+
+.so-home__q-figure {
+  color: var(--ds-text);
+  font: var(--ds-font-display);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* The one figure in colour, and the one that wants somebody; the chip beside
+   it says so in words. */
+.so-home__questions[data-state="asking"] .so-home__q-figure {
+  color: var(--ds-warning);
+}
+
+.so-home__q-words {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-1);
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* The card's action is a button that reads as the card's title. */
+.so-home__q-action,
+.so-home__card-title {
+  appearance: none;
+  display: block;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: var(--ds-font-subtitle);
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.so-home__q-note {
+  color: var(--ds-text-2);
+  font: var(--ds-font-body);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.so-home__q-end {
+  margin-top: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-3);
+  align-self: stretch;
+}
+
+/* ── The sessions ────────────────────────────────────────────────────── */
+
+.so-home__sessions {
+  display: grid;
+  gap: var(--ds-space-4);
+  min-width: 0;
+  margin-top: var(--ds-space-3);
+}
+
+.so-home__list-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-space-2) var(--ds-space-4);
+}
+
+.so-home__list-title {
+  margin: 0;
+  color: var(--ds-text);
+  font: var(--ds-font-title);
+}
+
+.so-home__segs {
+  display: flex;
+  gap: var(--ds-space-1);
+}
+
+.so-home__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--so-home-card-basis)), 1fr));
+  gap: var(--ds-space-3);
+  min-width: 0;
+}
+
+.so-home__card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--ds-space-4);
+  min-width: 0;
+}
+
+/* The ring around the mark needs its room inside the card's padding. */
+.so-home__card-head > .so-mark {
+  margin: var(--ds-space-1);
+}
+
+.so-home__card-text {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+  min-width: 0;
+}
+
+.so-home__card[data-state="done"] .so-home__card-title {
+  color: var(--ds-text-2);
+}
+
+.so-home__card-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-1) var(--ds-space-2);
+  min-width: 0;
+}
+
+.so-home__card-meta {
+  color: var(--ds-text-2);
+  min-width: 0;
+}
+
+.so-home__answer {
+  flex: none;
+}
+
+.so-home__card-summary {
+  color: var(--ds-text);
+  font: var(--ds-font-body);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.so-home__card-summary[data-state="pending"] {
+  color: var(--ds-text-3);
+}
+
+/* Why the turn was judged so, and what it left open. */
+.so-home__verdict {
+  display: grid;
+  gap: var(--ds-space-1);
+  color: var(--ds-text-2);
+  font: var(--ds-font-meta);
+}
+
+.so-home__reason {
+  margin: 0;
+}
+
+.so-home__todos {
+  margin: 0;
+  padding-inline-start: var(--ds-space-5);
+}
+
+.so-home__todos li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Widths ──────────────────────────────────────────────────────────── */
+
+/* A desk: the Questions card beside the tiles, as tall as their grid. */
+@container ds-content (min-width: 760px) {
+  .so-home__numbers {
+    grid-template-columns: minmax(var(--so-home-questions-min), 1fr) minmax(0, 2.4fr);
+  }
+}
+
+/* Narrower: the Questions card is a row above the tiles, its figure and
+   words at the start and Answer at the end. */
+@container ds-content (max-width: 759px) {
+  .so-home__q {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--ds-space-3) var(--ds-space-4);
+  }
+
+  .so-home__q-words {
+    flex: 1 1 0;
+  }
+
+  .so-home__q-end {
+    margin-top: 0;
+    align-self: center;
+  }
+}
+
+/* A phone: two tiles a row, each a word and a number, so the list under them
+   is still within a thumb's reach; what a tile is about is one tap away, in
+   that list. */
+@container ds-content (max-width: 560px) {
+  .so-home__tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--ds-space-2);
+  }
+
+  .so-home__tile .ds-tile__note {
+    display: none;
+  }
+
+  .so-home__q-end {
+    flex-basis: 100%;
+  }
+
+  .so-home__card-head {
+    gap: var(--ds-space-3);
+  }
+}
+
+/* ── Touch mode: a finger aims at all of it ──────────────────────────── */
+
+.so-touch .so-home__tile {
+  min-height: var(--so-home-touch-tile);
+}
+
+.so-touch .so-home__card {
+  min-height: var(--so-home-touch-card);
+}

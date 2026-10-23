@@ -15,6 +15,7 @@ import { api, el, toast } from './api.js';
 import { combobox, dropdown } from './combobox.js';
 import { dictated } from './keyboard.js';
 import { agentMark } from './logos.js';
+import { hideOverlay, html, icon, iconEl, morph, raw, showOverlay, watchScrolled } from './ui.js';
 
 const CACHE_KEY = 'socrates.harnesses';
 
@@ -303,17 +304,18 @@ export function needsModel(id) {
   return (found.models || []).length > 0 || !!found.default_model;
 }
 
-// segButton is the one control shape this sheet uses for a short, closed set
-// of choices: a row of buttons, one of them pressed.
-function segButton(text, value, sub, mark) {
-  return el('button', {
-    class: 'seg' + (mark ? ' with-mark' : ''),
-    type: 'button',
-    'data-value': value,
-    'aria-pressed': 'false',
-  }, mark || null, el('span', { class: 'seg-text' },
-    el('span', { class: 'seg-label', text }),
-    sub ? el('span', { class: 'seg-sub', text: sub }) : null));
+// harnessCard is one program as the form offers it: a radio card with the
+// program's own mark and name. A program that is not installed stays on the
+// form rather than disappearing from it - knowing it exists and is not here
+// is the answer to "why can I not pick Codex" - and says so in words.
+function harnessCard(entry, name) {
+  const usable = entry.enabled && entry.installed;
+  return el('label', { class: usable ? 'ds-radio so-settings__program' : 'ds-radio ds-radio--disabled so-settings__program', 'data-value': entry.id },
+    el('input', { type: 'radio', name, value: entry.id, disabled: !usable }),
+    el('span', { class: 'so-settings__program-body' },
+      agentMark(entry.id, 24),
+      el('strong', { text: entry.label }),
+      usable ? null : el('small', { class: 'ds-radio__note' }, iconEl('alert', 16), 'Not installed')));
 }
 
 // The programs a profile means something to. VS Code is not on the sheet, and
@@ -353,43 +355,43 @@ function signInHint(profile, harnessId) {
   return '';
 }
 
-// profileEntry is a profile as the dropdown shows it: its name, the account
-// this program is signed in as there, and a bar for each limit window - how
-// full each account is and how long until it renews, which is what choosing
-// between them comes down to. Two tags say why one would be picked: the
-// sessions of this program already active in it in this folder, and the most
-// usage left.
+// profileEntry is a profile as the dropdown's list shows it: its name, the
+// account this program is signed in as there, and a meter for each limit
+// window - how full each account is and how long until it renews, which is
+// what choosing between them comes down to. Two tags in the meta line say why
+// one would be picked: the sessions of this program already active in it in
+// this folder, and the most usage left.
 function profileEntry(profile, harnessId, recommended, here) {
-  const meters = limitWindows(profile, harnessId).map((w) => {
+  const meta = [];
+  const account = accountLabel(profile, harnessId);
+  if (account) meta.push(html`<span>${account}</span>`);
+  if (here) {
+    meta.push(html`<span data-tag="here" title="Sessions in one profile can reach each other">${(here > 1 ? here + ' ' : '') + 'running here'}</span>`);
+  }
+  if (recommended) meta.push(html`<span data-tag="recommended">most left</span>`);
+  return html`<span class="ds-combo__name">${profile.name}</span>${
+    meta.length ? html`<span class="ds-combo__meta">${meta.map((part, i) => (i ? html` · ${part}` : part))}</span>` : ''
+  }${usageMeters(profile, harnessId)}`;
+}
+
+// usageMeters is a profile's limit windows as flat DS progress bars, each
+// with its window, how much of it is used and how long until it renews. The
+// figure is always written out: the bar alone would say it by length only.
+function usageMeters(profile, harnessId) {
+  const windows = limitWindows(profile, harnessId);
+  if (!windows.length) return '';
+  return html`<div class="so-limits">${windows.map((w) => {
     const used = Math.max(0, Math.min(100, Math.round(Number(w.used_percent) || 0)));
     const left = untilReset(w);
     const title = w.label + ': ' + used + '% used' + (left ? ' · ' + resetDetail(w) : '');
-    const level = used >= 90 ? ' full' : used >= 70 ? ' high' : '';
-    return el('span', { class: 'profile-meter' + level, title },
-      el('span', { class: 'profile-meter-label', text: w.label }),
-      el('span', { class: 'profile-meter-bar' }, el('span', { style: 'width:' + used + '%' })),
-      el('span', { class: 'profile-meter-value', text: used + '%' }),
-      left ? el('span', { class: 'profile-meter-reset', text: left + ' left' }) : null);
-  });
-  return el('span', { class: 'profile-entry' },
-    el('span', { class: 'profile-entry-head' },
-      el('span', { class: 'profile-entry-name', text: profile.name }),
-      here ? el('span', {
-        class: 'profile-entry-tag here',
-        title: 'Sessions in one profile can reach each other',
-        text: (here > 1 ? here + ' ' : '') + 'running here',
-      }) : null,
-      recommended ? el('span', { class: 'profile-entry-tag', text: 'most left' }) : null),
-    el('span', { class: 'profile-entry-account', text: accountLabel(profile, harnessId) }),
-    meters.length ? el('span', { class: 'profile-usage' }, meters) : null);
+    return html`<div class="so-limits__row" title="${title}"><span>${w.label}</span><div class="ds-progress ds-progress--flat" style="--ds-progress: ${used / 100}"><div class="ds-progress__track" role="progressbar" aria-label="${w.label + ' used'}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${used}"><div class="ds-progress__bar"></div></div></div><span class="so-limits__value">${used + '%'}</span><span class="so-limits__reset">${left ? left + ' left' : ''}</span></div>`;
+  })}</div>`;
 }
 
-function pressed(row, value) {
-  for (const button of row.querySelectorAll('.seg')) {
-    const on = button.dataset.value === value;
-    button.classList.toggle('on', on);
-    button.setAttribute('aria-pressed', on ? 'true' : 'false');
-  }
+// profileFace is what the closed profile field shows: the name, and quieter
+// beside it the account it means for this program.
+function profileFace(name, account) {
+  return html`<span class="so-drop__value">${name}</span>${account ? html`<span class="so-drop__meta">${account}</span>` : ''}`;
 }
 
 // The value a directory option carries. A preset is a mode and a path, and one
@@ -484,49 +486,59 @@ export function settingsForm(options = {}) {
 
   /* ------------------------------------------------------------- markup */
 
-  const harnessRow = el('div', { class: 'seg-row agents', id: id('Harness'), role: 'group', 'aria-label': 'Agent' });
-  // The shell is not an agent: nothing is asked of it and nothing is reported
-  // back. It sits on a row of its own under the agents, so the choice reads
-  // as two kinds of thing. VS Code is not here at all: a folder has one
-  // editor, opened from its mark in the sidebar.
-  const toolsRow = el('div', { class: 'seg-row agents tools', id: id('Tools'), role: 'group', 'aria-label': 'Tool' });
+  // The program is one choice in two groups of radio cards: the agents, and
+  // under them the shell, which is not an agent - nothing is asked of it and
+  // nothing is reported back - so the choice reads as two kinds of thing. VS
+  // Code is not here at all: a folder has one editor, opened from its mark in
+  // the sidebar. One radio name across both groups makes them one choice for
+  // the keyboard as well.
+  const harnessName = id('HarnessChoice');
+  const harnessRow = el('div', { class: 'ds-radios so-settings__programs', id: id('Harness'), role: 'group', 'aria-label': 'Agent' });
+  const toolsRow = el('div', { class: 'ds-radios so-settings__programs', id: id('Tools'), role: 'group', 'aria-label': 'Tool' });
+  const harnessField = el('fieldset', { class: 'ds-field', id: id('HarnessField') },
+    el('legend', { class: 'ds-field__label', text: 'Program' }),
+    el('div', { class: 'so-settings__groups' }, harnessRow, toolsRow));
 
   // Which sign-ins the session runs on. Only there when the dashboard has
   // more profiles than the default one.
   const profileRow = el('div', { id: id('Profile') });
-  const profileHint = el('div', { class: 'hint', id: id('ProfileHint') });
+  const profileHint = el('small', { class: 'ds-field__hint', id: id('ProfileHint') });
   const profileField = el('div', { class: 'ds-field', id: id('ProfileField'), hidden: true },
-    el('label', { text: 'Profile' }), profileRow, profileHint);
+    el('label', { class: 'ds-field__label', for: id('ProfileInput'), text: 'Profile' }), profileRow, profileHint);
 
   const dirRow = el('div', { id: id('Dir') });
   const dirPath = el('input', {
-    class: 'ds-input mono', type: 'text', id: id('DirPath'), spellcheck: 'false',
+    class: 'ds-input', type: 'text', id: id('DirPath'), spellcheck: 'false', 'aria-label': 'Directory path',
     autocorrect: 'off', autocapitalize: 'none', placeholder: '/srv/projects/socrates',
+    'aria-describedby': id('DirHint'),
   });
-  const dirHint = el('div', { class: 'hint mono', id: id('DirHint') });
+  const dirHint = el('small', { class: 'ds-field__hint so-break', id: id('DirHint') });
   const dirField = el('div', { class: 'ds-field', id: id('DirField') },
-    el('label', { text: 'Working directory' }), dirRow, dirPath, dirHint);
+    el('label', { class: 'ds-field__label', for: id('DirInput'), text: 'Working directory' }), dirRow, dirPath, dirHint);
 
   const modelHost = el('div', { id: id('Model') });
-  const modelField = el('div', { class: 'ds-field', id: id('ModelField') }, el('label', { text: 'Model' }), modelHost);
+  const modelField = el('div', { class: 'ds-field', id: id('ModelField') },
+    el('label', { class: 'ds-field__label', for: id('ModelInput'), text: 'Model' }), modelHost);
 
-  const effortRow = el('div', { class: 'seg-row', id: id('Effort'), role: 'group', 'aria-label': 'Reasoning effort' });
-  const effortField = el('div', { class: 'ds-field', id: id('EffortField'), hidden: true },
-    el('label', { text: 'Effort' }), effortRow);
+  // The levels are a handful of words, so they are radio chips: every one in
+  // view and one tap away, which is what a phone in a car needs.
+  const effortName = id('EffortChoice');
+  const effortRow = el('div', { class: 'ds-chips', id: id('Effort') });
+  const effortField = el('fieldset', { class: 'ds-field', id: id('EffortField'), hidden: true },
+    el('legend', { class: 'ds-field__label', text: 'Effort' }), effortRow);
 
-  // Claude Code only. Off every time the sheet opens, and fixed for the
+  // Claude Code only. Off every time the form is drawn, and fixed for the
   // session's life once it is started.
-  const ultracodeRow = el('div', { class: 'seg-row', id: id('Ultracode'), role: 'group', 'aria-label': 'Ultracode' },
-    segButton('Off', 'off'), segButton('On', 'on'));
+  const ultracodeInput = el('input', { type: 'checkbox', id: id('Ultracode'), 'aria-describedby': id('UltracodeHint') });
   const ultracodeField = el('div', { class: 'ds-field', id: id('UltracodeField'), hidden: true },
-    el('label', { text: 'Ultracode' }), ultracodeRow,
-    el('div', {
-      class: 'hint',
+    el('label', { class: 'ds-check' }, ultracodeInput, el('span', { text: 'Ultracode' })),
+    el('small', {
+      class: 'ds-field__hint', id: id('UltracodeHint'),
       text: 'Dynamic workflows on every task: Claude Code orchestrates several agents for each request, '
         + 'which uses much more of the account’s limits.',
     }));
 
-  const node = el('div', { class: 'settings-form' }, harnessRow, toolsRow, profileField,
+  const node = el('div', { class: 'so-settings' }, harnessField, profileField,
     dirField, modelField, effortField, ultracodeField);
 
   /* -------------------------------------------------------------- state */
@@ -542,29 +554,33 @@ export function settingsForm(options = {}) {
 
   // Ultracode starts off on every opening: it costs a great deal more of the
   // account, so it is something asked for each time rather than remembered.
-  for (const button of ultracodeRow.querySelectorAll('.seg')) {
-    button.addEventListener('click', () => {
-      pick.ultracode = button.dataset.value === 'on';
-      pressed(ultracodeRow, pick.ultracode ? 'on' : 'off');
-      onChange('ultracode');
-    });
-  }
-  pressed(ultracodeRow, 'off');
+  ultracodeInput.checked = false;
+  ultracodeInput.addEventListener('change', () => {
+    pick.ultracode = ultracodeInput.checked;
+    onChange('ultracode');
+  });
 
   for (const entry of entries) {
-    const usable = entry.enabled && entry.installed;
-    const button = segButton(entry.label, entry.id, usable ? '' : 'not installed', agentMark(entry.id, 22));
-    button.disabled = !usable;
-    button.addEventListener('click', () => {
-      selectHarness(entry.id);
-      onChange('harness');
-    });
     // The mark and the name are what a person picks by. The build a CLI is and
     // where it was found are not part of that choice, and are not here.
-    // Which of the two rows it lands in is the one other thing the choice is:
-    // an agent to give work to, or a window onto the machine.
-    (isTool(entry.id) ? toolsRow : harnessRow).append(button);
+    // Which of the two groups it lands in is the one other thing the choice
+    // is: an agent to give work to, or a window onto the machine.
+    (isTool(entry.id) ? toolsRow : harnessRow).append(harnessCard(entry, harnessName));
   }
+  // A group with nothing in it would be an empty box on the form.
+  harnessRow.hidden = !harnessRow.childElementCount;
+  toolsRow.hidden = !toolsRow.childElementCount;
+  harnessField.addEventListener('change', (event) => {
+    if (event.target.name !== harnessName) return;
+    selectHarness(event.target.value);
+    onChange('harness');
+  });
+
+  effortRow.addEventListener('change', (event) => {
+    if (event.target.name !== effortName) return;
+    pick.effort = event.target.value;
+    onChange('effort');
+  });
 
   // Where a session works is a dropdown rather than a row of cells: a machine
   // with a dozen preset directories on it would otherwise be a dozen cells
@@ -586,6 +602,8 @@ export function settingsForm(options = {}) {
       onChange('dir');
     },
   });
+  dirPicker.input.id = id('DirInput');
+  dirPicker.input.setAttribute('aria-describedby', id('DirHint'));
   dirRow.append(dictated(dirPicker.node, dirPicker.input));
   // The free-form path is a field like any other: it can be spoken, which with
   // the keyboard put away is the only way it can be filled. The row is what is
@@ -604,7 +622,7 @@ export function settingsForm(options = {}) {
   const picker = combobox({
     value: '',
     items: () => modelItems(pick.harness),
-    placeholder: 'sonnet',
+    placeholder: 'Pick a model, or type its id',
     onChange: (value) => {
       pick.model = value.trim();
       // A model brings its own starting effort - the one set for it in the
@@ -615,16 +633,18 @@ export function settingsForm(options = {}) {
       onChange('model');
     },
   });
+  picker.input.id = id('ModelInput');
   modelHost.append(dictated(picker.node, picker.input));
 
-  // The profile is a dropdown rather than a row of cells: with more than
-  // three profiles the cells were too narrow for a name, let alone the account
-  // and its usage. Every entry in the list still shows how full its account
-  // is, so the choice is made with the numbers in view. A prepared session
-  // has one more entry on top: leave it to the moment it starts, when the
-  // numbers that decide it are the ones that matter.
+  // The profile is a dropdown rather than a row of cards: with more than
+  // three profiles the cards would push the rest of the form off the screen,
+  // and every entry in the list still shows how full its account is, so the
+  // choice is made with the numbers in view. A prepared session has one more
+  // entry on top: leave it to the moment it starts, when the numbers that
+  // decide it are the ones that matter.
   const profilePicker = dropdown({
     value: pick.profile,
+    id: id('ProfileInput'),
     label: 'Sign-in profile',
     items: () => [
       ...(deferredProfile(pick.harness) ? [{ value: AUTO_PROFILE, auto: true }] : []),
@@ -633,6 +653,8 @@ export function settingsForm(options = {}) {
     renderItem: (item) => (item.auto ? autoEntry() : profileEntry(item.profile, pick.harness,
       recommendedProfile(pick.harness) === item.value && profiles().length > 1,
       companions(pick.harness, pick.workdir).get(item.value)?.count || 0)),
+    renderValue: (item) => (item.auto ? profileFace('Automatic', '')
+      : profileFace(item.profile.name, accountLabel(item.profile, pick.harness))),
     onChange: (value) => {
       if (value === AUTO_PROFILE) {
         pick.profileChosen = false;
@@ -648,6 +670,7 @@ export function settingsForm(options = {}) {
       onChange('profile');
     },
   });
+  profilePicker.button.setAttribute('aria-describedby', id('ProfileHint'));
   profileRow.append(profilePicker.node);
 
   /* ------------------------------------------------------------ drawing */
@@ -669,7 +692,8 @@ export function settingsForm(options = {}) {
     dirPicker.setValue(dirValue(pick.mode, pick.workdir), false);
     if (pick.mode === DYNAMIC) dirHint.textContent = dynamicPreview(pick.harness);
     else if (pick.mode === PRESET) dirHint.textContent = pick.workdir;
-    else dirHint.textContent = pick.workdir || 'An absolute path on this machine.';
+    // The path is in the field right above: the hint says what it has to be.
+    else dirHint.textContent = 'An absolute path on this machine.';
   }
 
   // renderEffort follows the model: whether there is an effort to pick at all
@@ -679,21 +703,14 @@ export function settingsForm(options = {}) {
     effortField.hidden = efforts.length === 0 || modelField.hidden;
     if (!efforts.length) {
       pick.effort = '';
-      effortRow.innerHTML = '';
+      morph(effortRow, '');
       return;
     }
     if (pick.effort && !efforts.includes(pick.effort)) pick.effort = '';
-    effortRow.innerHTML = '';
-    for (const value of ['', ...efforts]) {
-      const button = segButton(effortLabel(value), value);
-      button.addEventListener('click', () => {
-        pick.effort = value;
-        pressed(effortRow, pick.effort);
-        onChange('effort');
-      });
-      effortRow.append(button);
-    }
-    pressed(effortRow, pick.effort);
+    morph(effortRow, html`${['', ...efforts].map((value) => html`<label class="ds-chip" data-value="${value}" data-ds-key="${'effort-' + value}"><input class="ds-chip__input" type="radio" name="${effortName}" value="${value}"><span class="ds-chip__body">${raw(icon('check', 18, 'ds-chip__check'))}<span>${effortLabel(value)}</span></span></label>`)}`);
+    // The checked state is the property, which a patch of the markup does not
+    // carry: the choice is said here, after it.
+    for (const input of effortRow.querySelectorAll('input')) input.checked = input.value === pick.effort;
   }
 
   // deferred says whether the profile is left to the start right now.
@@ -753,13 +770,14 @@ export function settingsForm(options = {}) {
     if (ultracodeField.hidden && pick.ultracode) {
       // Ultracode is Claude Code's; another program does not carry it along.
       pick.ultracode = false;
-      pressed(ultracodeRow, 'off');
+      ultracodeInput.checked = false;
     }
     renderProfile();
-    // Both rows are one choice, so both are told what was picked: the row that
-    // does not hold it is the row that has to let go of it.
-    pressed(harnessRow, harnessId);
-    pressed(toolsRow, harnessId);
+    // Both groups are one choice, so the card is checked by its value across
+    // both: a script's choice (selectDefault, set) shows like a tap would.
+    for (const input of harnessField.querySelectorAll('input[name="' + harnessName + '"]')) {
+      input.checked = input.value === harnessId;
+    }
     // Shell has nothing to run on, so the step is not there at all.
     modelField.hidden = !needsModel(harnessId);
     pick.model = modelField.hidden ? '' : defaultModelFor(harnessId);
@@ -856,7 +874,7 @@ export function settingsForm(options = {}) {
       renderEffort();
       if (values.ultracode !== undefined) {
         pick.ultracode = !!values.ultracode && !ultracodeField.hidden;
-        pressed(ultracodeRow, pick.ultracode ? 'on' : 'off');
+        ultracodeInput.checked = pick.ultracode;
       }
       if (values.profile_auto) {
         pick.profileChosen = false;
@@ -891,9 +909,7 @@ export function settingsForm(options = {}) {
 // autoEntry is the "Automatic" entry of a prepared session's profile list,
 // drawn the way a profile is so the list reads as one list.
 function autoEntry() {
-  return el('span', { class: 'profile-entry' },
-    el('span', { class: 'profile-entry-head' }, el('span', { class: 'profile-entry-name', text: 'Automatic' })),
-    el('span', { class: 'profile-entry-account', text: 'a session running in this folder, or the most usage left' }));
+  return html`<span class="ds-combo__name">Automatic</span><span class="ds-combo__meta">a session running in this folder, or the most usage left</span>`;
 }
 
 /**
@@ -914,10 +930,16 @@ export async function openNewSessionSheet() {
   if (!sheet) return null;
   const host = document.getElementById('nsForm');
   const prestartField = document.getElementById('nsPrestartField');
-  const prestartRow = document.getElementById('nsPrestart');
+  const prestartInput = document.getElementById('nsPrestart');
   const hint = document.getElementById('nsHint');
+  const hintText = document.getElementById('nsHintText');
   const start = document.getElementById('nsStart');
-  const cancel = document.getElementById('nsCancel');
+  if (!watched) {
+    // The head's hairline while the body is scrolled (DS Side sheet).
+    watched = true;
+    watchScrolled(sheet.querySelector('.ds-sheet__body'), sheet.querySelector('.ds-sheet__panel'),
+      { gap: 'var(--ds-space-3)' });
+  }
 
   // PreStart is off on every opening: what the sheet is for, most of the
   // time, is a terminal now.
@@ -931,17 +953,7 @@ export async function openNewSessionSheet() {
   // The form is built again on every opening, from the catalogue as it is
   // now; what the last opening drew goes with it.
   host.replaceChildren(form.node);
-
-  for (const button of prestartRow ? prestartRow.querySelectorAll('.seg') : []) {
-    button.onclick = () => {
-      prestartOn = button.dataset.value === 'on';
-      pressed(prestartRow, prestartOn ? 'on' : 'off');
-      // The profile list gains or loses "Automatic" with it.
-      form.refresh();
-      render();
-    };
-  }
-  if (prestartRow) pressed(prestartRow, 'off');
+  if (prestartInput) prestartInput.checked = false;
 
   // render is the part of the sheet around the form: whether PreStart is on
   // offer, what the button says it does, and what stands in the way.
@@ -957,7 +969,9 @@ export async function openNewSessionSheet() {
     const blocked = !later && snap.sessions_available === false;
     if (blocked && snap.sessions_error) parts.push(snap.sessions_error);
     parts.push(...form.notes());
-    hint.textContent = parts.join(' ');
+    const words = parts.join(' ');
+    if (hintText) hintText.textContent = words;
+    hint.hidden = !words;
     start.disabled = !!form.missing() || blocked;
   }
 
@@ -967,7 +981,10 @@ export async function openNewSessionSheet() {
 
   // The sheet is one element that is opened again and again, so every handler
   // this call adds is taken off with it. Without that, the second opening
-  // would resolve the first opening's promise as well.
+  // would resolve the first opening's promise as well. Closing - the close
+  // button, Cancel, Escape, a tap on the backdrop - is DS.overlay's, through
+  // their data-close; whichever way it closes, a sheet that closed without
+  // Start is a no.
   return new Promise((resolve) => {
     const off = new AbortController();
     const on = { signal: off.signal };
@@ -977,8 +994,16 @@ export async function openNewSessionSheet() {
       settled = true;
       off.abort();
       resolve(value);
-      if (sheet.open) sheet.close();
+      if (sheet.open) hideOverlay(sheet);
     };
+    if (prestartInput) {
+      prestartInput.addEventListener('change', () => {
+        prestartOn = prestartInput.checked;
+        // The profile list gains or loses "Automatic" with it.
+        form.refresh();
+        render();
+      }, on);
+    }
     start.addEventListener('click', () => {
       const missing = form.missing();
       if (missing) {
@@ -987,42 +1012,11 @@ export async function openNewSessionSheet() {
       }
       finish({ ...form.value(), prestart: prepared(form.harness()) });
     }, on);
-    cancel.addEventListener('click', () => finish(null), on);
-    // Escape and a tap on the backdrop both mean no.
-    sheet.addEventListener('cancel', (event) => {
-      event.preventDefault();
-      finish(null);
-    }, on);
-    // A tap beside the sheet means no. Deciding that from the event's target
-    // alone is wrong, and expensively so: combobox.js takes an option on
-    // mousedown and hides its list in the same breath, so by the time the
-    // click arrives the option under the pointer is gone and the click is
-    // retargeted to the dialog - which would read as a tap on the backdrop
-    // and throw away the model the person had just picked. Where the pointer
-    // was is the honest answer, so the click is measured against the sheet's
-    // own rectangle instead.
-    //
-    // An open list can hang past the sheet's edge, and an option taken there
-    // leaves a click outside the rectangle too. So the press has to have
-    // started on the backdrop as well: a press on an option never did.
-    const outside = (event) => {
-      if (event.target !== sheet) return false;
-      const box = sheet.getBoundingClientRect();
-      return event.clientX < box.left || event.clientX > box.right
-        || event.clientY < box.top || event.clientY > box.bottom;
-    };
-    let pressedOutside = false;
-    sheet.addEventListener('pointerdown', (event) => { pressedOutside = outside(event); }, on);
-    sheet.addEventListener('click', (event) => {
-      // A click with no pointer behind it - a keyboard activation, or one
-      // dispatched by a script - has no coordinates to judge, and is never a
-      // tap on the backdrop.
-      if (!event.detail) return;
-      const wasOutside = pressedOutside;
-      pressedOutside = false;
-      if (wasOutside && outside(event)) finish(null);
-    }, on);
     sheet.addEventListener('close', () => finish(null), on);
-    sheet.showModal();
+    showOverlay(sheet);
   });
 }
+
+// watched says the sheet's scroll hairline is wired; it is one element for
+// the page's life.
+let watched = false;

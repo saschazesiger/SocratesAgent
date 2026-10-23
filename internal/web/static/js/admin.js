@@ -15,10 +15,15 @@
 // dashboard offers the basics, and every flag a session is started with is
 // fixed policy inside the app. What that policy is, and where each flag in it
 // was verified, is in docs/design/HARNESS-POLICY.md.
+//
+// The page wears the Dashboard-Style app frame: the drawer is its table of
+// contents, each card is one section, and every state the machine reports is
+// a status chip with its word, the technical detail behind the "i".
 
 import {
-  api, el, toast, isOffline, errorMessage, setClass, onWake, infoTip, LiveStream,
+  api, el, toast, isOffline, errorMessage, onWake, infoTip, confirmDialog,
 } from './api.js';
+import { DS, M, html, raw, icon, iconEl, morph, watchScrolled, ms, setFaceLabel, faces } from './ui.js';
 import { agentMark } from './logos.js';
 import { speak, speechKind } from './voice.js';
 import { combobox } from './combobox.js';
@@ -27,20 +32,20 @@ import * as harnesses from './harnesses.js';
 
 const $ = (id) => document.getElementById(id);
 
-// busyButton is the smallest honest answer to a tap that has to wait for the
-// network: the control stops taking taps and says it is working.
-function busyButton(button, on, label) {
-  if (!button) return;
-  button.disabled = on;
-  setClass(button, 'is-busy', on);
-  if (label !== undefined) {
-    if (on) {
-      if (button.dataset.idleLabel === undefined) button.dataset.idleLabel = button.textContent;
-      button.textContent = label;
-    } else if (button.dataset.idleLabel !== undefined) {
-      button.textContent = button.dataset.idleLabel;
-    }
-  }
+// busy is DS.motion.busy for one button: it says it is working while the
+// work runs, shows its done face when it has one, and hands the result - or
+// the failure - back to the caller.
+function busy(button, work) {
+  const done = !!button.querySelector('.ds-btn__face--done');
+  return M.busy(button, work, { done });
+}
+
+// facedButton is a button built in script with the busy face (and the done
+// face, when `doneLabel` is given) of the ones in admin.html.
+function facedButton(label, busyLabel, doneLabel, attrs = {}) {
+  const button = el('button', { class: 'ds-btn ds-btn--sm', type: 'button', ...attrs });
+  morph(button, faces(label, busyLabel, doneLabel));
+  return button;
 }
 
 let settings = null;
@@ -92,6 +97,8 @@ const WINDOW_SIZE_HINTS = {
   largest: 'The window is as large as the biggest viewer, and smaller viewers pan over it.',
 };
 
+const HARNESS_ORDER = ['shell', 'claude', 'codex', 'opencode', 'vscode'];
+
 let tunnelTimer = null;
 let installHints = {};
 let localURL = '';
@@ -142,10 +149,70 @@ const OPTIONS = {
 // the command line it was launched with.
 const START_ONLY_NOTE = 'These apply to sessions started from now on.';
 
+/* ---------------------------------------------------------- status chips */
+
+// A state is a DS status chip: always an icon and a word. The kind is the
+// chip's look, data-state the machine's own word for it, so a test or a
+// script reads what was reported rather than a colour.
+const CHIP = {
+  ok: ['ds-status ds-status--ok', 'check'],
+  warning: ['ds-status ds-status--warning', 'alert'],
+  error: ['ds-status ds-status--error', 'alertCircle'],
+  running: ['ds-status ds-status--running', null],
+  waiting: ['ds-status', 'clock'],
+  off: ['ds-status', 'ban'],
+  plain: ['ds-status', 'check'],
+};
+
+function chip(kind, label, state = kind) {
+  const [cls, glyph] = CHIP[kind];
+  const mark = glyph ? raw(icon(glyph, 16)) : html`<span class="ds-spinner ds-status__spinner" aria-hidden="true"></span>`;
+  return html`<span class="${cls}" data-state="${state}">${mark}<span>${label}</span></span>`;
+}
+
+function chipEl(kind, label, state = kind) {
+  const [cls, glyph] = CHIP[kind];
+  return el('span', { class: cls, 'data-state': state },
+    glyph ? iconEl(glyph, 16) : el('span', { class: 'ds-spinner ds-status__spinner', 'aria-hidden': 'true' }),
+    el('span', { text: label }));
+}
+
+// parts is a run of short facts beside a chip ("last run 2 h ago · next run
+// in 22 h"); DS wraps it between parts and never leaves a "·" at a line end.
+function parts(list) {
+  const shown = list.filter((part) => part !== null && part !== undefined && part !== '');
+  if (!shown.length) return '';
+  return html`<span class="ds-parts"><span class="ds-parts__list">${shown.map((part) => html`<span>${part}</span>`)}</span></span>`;
+}
+
+// setTip keeps the "i" of a status line: a new button only when its lines
+// changed, so a poll that says the same thing leaves an open tooltip alone.
+function setTip(slot, lines, label) {
+  if (!slot) return;
+  const shown = lines.filter((line) => line !== null && line !== undefined && line !== '').map(String);
+  const now = slot.firstElementChild;
+  if (now && now.getAttribute('data-tip') === shown.join('\n') && now.getAttribute('aria-label') === label) return;
+  slot.replaceChildren(...(shown.length ? [infoTip(shown, { label })] : []));
+}
+
+// renderState draws one status line: the chip, its facts, and its "i". The
+// line is patched in place, so a chip that changes glides to its new colour.
+function renderState(host, { kind, label, state, facts = [], tip = [], tipLabel = 'Details' }) {
+  morph(host.querySelector('.so-state__line'), html`${chip(kind, label, state)}${parts(facts)}`);
+  setTip(host.querySelector('.so-state__tip'), tip, tipLabel);
+}
+
+// showAlert fills or empties a DS alert whose text is in `textId`.
+function showAlert(boxId, textId, text) {
+  $(textId).textContent = text || '';
+  $(boxId).hidden = !text;
+}
+
 /* ------------------------------------------------------------------- boot */
 
 // The admin page is loaded once. If the connection was down at that moment it
 // would otherwise stay blank for good, so it retries and comes back on its own.
+wireFrame();
 boot();
 
 function boot(attempt = 1) {
@@ -169,7 +236,7 @@ async function load() {
   renderPresets();
   bind();
   loadProfiles();
-  loadHarnesses();
+  loadHarnesses().then(settleHash);
   refreshTmux();
   refreshUpdates();
   watchUpdatesCard();
@@ -185,6 +252,7 @@ async function load() {
     sessionStorage.removeItem('socrates.tunnel_error');
     showNotice('The tunnel could not be started: ' + tunnelError, 'error');
   }
+  settleHash();
 }
 
 function fillForm() {
@@ -219,6 +287,155 @@ function renderWindowSizeHint() {
   if (node) node.textContent = WINDOW_SIZE_HINTS[$('windowSize').value] || '';
 }
 
+/* -------------------------------------------------------------- the frame */
+
+// The drawer is the page's table of contents. An item scrolls the view to its
+// card and becomes the current one at once; while that scroll runs the spy is
+// muted, or the pill would walk through every card on the way. On a phone the
+// drawer is modal and closes once a card is picked.
+let spyMuted = false;
+let spyIdle = 0;
+let hashSettled = false;
+
+function wireFrame() {
+  const app = $('app');
+  const drawer = $('adminNav');
+  const menu = $('menuBtn');
+  const view = $('main');
+  watchScrolled(view, app);
+  fitDrawer();
+  DS.indicator.createIndicator($('adminNavList'), { active: '[aria-current="page"]', className: 'ds-drawer__indicator' });
+  menu.addEventListener('click', () => {
+    if (app.hasAttribute('data-drawer-open')) DS.overlay.close(drawer);
+    else DS.overlay.open(drawer, { opener: menu });
+  });
+  for (const link of sectionLinks()) {
+    link.addEventListener('click', (event) => {
+      const target = $(link.dataset.section);
+      if (!target) return;
+      event.preventDefault();
+      hashSettled = true;
+      if (app.hasAttribute('data-drawer-open')) DS.overlay.close(drawer);
+      setCurrent(link);
+      muteSpy(view);
+      target.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'start' });
+      history.replaceState(null, '', '#' + target.id);
+    });
+  }
+  let queued = false;
+  view.addEventListener('scroll', () => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      if (!spyMuted) spy(view);
+    });
+  }, { passive: true });
+  // A person who scrolls has decided where they are; a late render does not
+  // take them back to the address's card any more.
+  view.addEventListener('wheel', () => { hashSettled = true; }, { passive: true, once: true });
+  view.addEventListener('touchstart', () => { hashSettled = true; }, { passive: true, once: true });
+  // The page's own links to a card (the voice card names Status & naming).
+  view.addEventListener('click', (event) => {
+    const link = event.target.closest('a[href^="#"]');
+    if (!link) return;
+    const item = sectionLinks().find((one) => one.getAttribute('href') === link.getAttribute('href'));
+    if (item) { event.preventDefault(); item.click(); }
+  });
+  // The first card is current until something else is.
+  const first = sectionLinks()[0];
+  if (first) setCurrent(first);
+}
+
+function sectionLinks() {
+  return [...document.querySelectorAll('#adminNavList a[data-section]')];
+}
+
+// setCurrent marks the card in view in the drawer, and keeps its item in
+// sight when the list is taller than the window.
+function setCurrent(link) {
+  for (const one of sectionLinks()) {
+    if (one === link) one.setAttribute('aria-current', 'page');
+    else one.removeAttribute('aria-current');
+  }
+  const list = $('adminNavList');
+  if (list.scrollHeight > list.clientHeight) {
+    const box = link.getBoundingClientRect();
+    const room = list.getBoundingClientRect();
+    if (box.top < room.top || box.bottom > room.bottom) link.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+// fitDrawer says when the drawer's list is taller than the window, so its
+// scrollbar stays visible (.ds-drawer__list--overflow).
+function fitDrawer() {
+  const list = $('adminNavList');
+  const fit = () => list.classList.toggle('ds-drawer__list--overflow', list.scrollHeight > list.clientHeight + 1);
+  fit();
+  if (window.ResizeObserver) new ResizeObserver(fit).observe(list);
+  else window.addEventListener('resize', fit);
+}
+
+function reducedMotion() {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+// muteSpy holds the scroll spy while a programmatic scroll runs: until
+// `scrollend` where the browser has it, otherwise until no scroll came for a
+// moment. A link to where the view already is never scrolls, so a ceiling
+// lets go of it as well.
+function muteSpy(view) {
+  spyMuted = true;
+  clearTimeout(spyIdle);
+  const release = () => {
+    spyMuted = false;
+    clearTimeout(spyIdle);
+    view.removeEventListener('scroll', restart);
+    view.removeEventListener('scrollend', release);
+  };
+  const restart = () => {
+    clearTimeout(spyIdle);
+    spyIdle = setTimeout(release, ms('--ds-dur-fast') * 2);
+  };
+  view.addEventListener('scroll', restart, { passive: true });
+  if ('onscrollend' in view) view.addEventListener('scrollend', release, { once: true });
+  spyIdle = setTimeout(release, ms('--ds-dur-long') * 3);
+}
+
+// spy makes the card at the top of the view the current one: the last card
+// whose top has passed the upper part of the view, or the last card of all
+// once the view is at its end.
+function spy(view) {
+  const links = sectionLinks();
+  if (!links.length) return;
+  const box = view.getBoundingClientRect();
+  let current = links[0];
+  if (view.scrollTop + view.clientHeight >= view.scrollHeight - 2) {
+    current = links[links.length - 1];
+  } else {
+    const line = box.top + Math.min(box.height / 3, 160);
+    for (const link of links) {
+      const target = $(link.dataset.section);
+      if (target && target.getBoundingClientRect().top <= line) current = link;
+    }
+  }
+  if (current.getAttribute('aria-current') !== 'page') setCurrent(current);
+}
+
+// settleHash brings the card the address names into view (the session page
+// links to /admin#voiceCard). It runs again once the program cards are in,
+// because they push everything below them down - unless the person has
+// moved meanwhile.
+function settleHash() {
+  if (hashSettled) return;
+  const id = location.hash.slice(1);
+  const target = id && $(id);
+  if (!target) return;
+  target.scrollIntoView({ block: 'start' });
+  const link = sectionLinks().find((one) => one.dataset.section === id);
+  if (link) setCurrent(link);
+}
+
 /* ---------------------------------------------------------- model pickers */
 
 const pickers = {};
@@ -229,14 +446,15 @@ function buildModelPickers() {
   for (const [id, path] of MODEL_PICKERS) {
     const host = $(id);
     if (!host) continue;
-    host.innerHTML = '';
     const picker = combobox({
       value: getPath(settings, path) || '',
       items: () => [],
       placeholder: 'google/gemini-2.5-flash',
       onChange: (value) => setPath(settings, path, value),
     });
+    picker.input.id = id + 'Input';
     pickers[id] = picker;
+    host.replaceChildren();
     host.append(dictated(picker.node, picker.input));
   }
 }
@@ -250,56 +468,125 @@ function syncModelPickers() {
 
 /* ------------------------------------------------------------- workspace */
 
+// The default program is one choice of five, each with its mark: radio
+// chips, which keep the choice in the form and the tab order.
 function renderDefaultHarness() {
   const host = $('defaultHarness');
   if (!host) return;
-  host.innerHTML = '';
-  for (const id of ['shell', 'claude', 'codex', 'opencode', 'vscode']) {
-    const button = el('button', {
-      class: 'seg with-mark', type: 'button', 'data-value': id,
-      onclick: () => {
-        setPath(settings, 'workspace.default_harness', id);
-        renderDefaultHarness();
-      },
-    }, agentMark(id, 18), el('span', { class: 'seg-text' },
-      el('span', { text: harnessLabel(id) })));
-    setClass(button, 'on', getPath(settings, 'workspace.default_harness') === id);
-    button.setAttribute('aria-pressed', String(getPath(settings, 'workspace.default_harness') === id));
-    host.append(button);
-  }
+  const current = getPath(settings, 'workspace.default_harness');
+  host.replaceChildren(...HARNESS_ORDER.map((id) => {
+    const input = el('input', {
+      class: 'ds-chip__input', type: 'radio', name: 'defaultHarness', value: id, checked: current === id,
+    });
+    input.addEventListener('change', () => {
+      if (input.checked) setPath(settings, 'workspace.default_harness', id);
+    });
+    return el('label', { class: 'ds-chip', 'data-value': id }, input,
+      el('span', { class: 'ds-chip__body' }, iconEl('check', 18, 'ds-chip__check'),
+        agentMark(id, 18), el('span', { text: harnessLabel(id) })));
+  }));
 }
 
 // The preset editor is a repeating row, read back as a list when the page is
 // saved rather than written into the document on every keystroke: a half-typed
 // path is not a preset yet.
 function presetRow(preset = { label: '', path: '' }) {
-  const label = el('input', { class: 'ds-input', type: 'text', placeholder: 'Name', value: preset.label || '' });
-  const path = el('input', {
-    class: 'ds-input mono', type: 'text', spellcheck: 'false', placeholder: '/srv/projects',
-    value: preset.path || '',
+  const label = el('input', {
+    class: 'ds-input', type: 'text', placeholder: 'Name', value: preset.label || '', 'aria-label': 'Name',
   });
-  const row = el('div', { class: 'preset-row' }, label, path,
+  const path = el('input', {
+    class: 'ds-input', type: 'text', spellcheck: 'false', placeholder: '/srv/projects',
+    value: preset.path || '', 'aria-label': 'Path',
+  });
+  const row = el('div', { class: 'so-preset' }, label, path,
     el('button', {
-      class: 'ds-btn ds-btn--sm', type: 'button', text: 'Remove', 'aria-label': 'Remove this directory',
-      onclick: () => row.remove(),
-    }));
+      class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm', type: 'button',
+      'aria-label': 'Remove this directory', 'data-tip': 'Remove this directory',
+      onclick: () => M.flip(row.parentElement, () => row.remove()),
+    }, iconEl('trash', 18)));
   return row;
 }
 
 function renderPresets() {
   const host = $('presetDirs');
   if (!host) return;
-  host.innerHTML = '';
-  for (const preset of getPath(settings, 'workspace.presets') || []) host.append(presetRow(preset));
+  host.replaceChildren(...(getPath(settings, 'workspace.presets') || []).map((preset) => presetRow(preset)));
 }
 
 function readPresets() {
   const host = $('presetDirs');
   if (!host) return [];
-  return [...host.querySelectorAll('.preset-row')].map((row) => {
+  return [...host.querySelectorAll('.so-preset')].map((row) => {
     const [label, path] = row.querySelectorAll('input');
     return { label: label.value.trim(), path: path.value.trim() };
   }).filter((preset) => preset.path !== '');
+}
+
+/* ------------------------------------------------------------ reordering */
+
+// gripButton moves its row through the list it is in: dragged with a mouse
+// or a finger, or with the arrow keys once it has the focus. `done(host,
+// before)` runs the moment it is let go, with the order it started from;
+// the order is the rows' data-id.
+function gripButton(label, rowSelector, done) {
+  const grip = el('button', {
+    class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-grip', type: 'button',
+    'aria-label': label + ' (arrow keys)', 'data-tip': 'Drag to reorder',
+  }, iconEl('grip', 18));
+  const order = (host) => [...host.querySelectorAll(rowSelector)].map((row) => row.dataset.id);
+  grip.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+    event.preventDefault();
+    const row = grip.closest(rowSelector);
+    const host = row.parentElement;
+    const before = order(host);
+    const prev = row.previousElementSibling;
+    const next = row.nextElementSibling;
+    M.flip(host, () => {
+      if (event.key === 'ArrowUp' && prev && prev.matches(rowSelector)) prev.before(row);
+      else if (event.key === 'ArrowDown' && next && next.matches(rowSelector)) next.after(row);
+    });
+    grip.focus();
+    done(host, before);
+  });
+  grip.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const row = grip.closest(rowSelector);
+    const host = row.parentElement;
+    const before = order(host);
+    row.dataset.state = 'dragging';
+    // The row follows the pointer through the list: it goes before the first
+    // other row whose middle is below the pointer, or to the end. Moving the
+    // row takes it out of the document for a moment, which ends any pointer
+    // capture, so the pointer is followed on the window instead.
+    const move = (e) => {
+      if (e.pointerId !== event.pointerId) return;
+      const rows = [...host.querySelectorAll(rowSelector)];
+      const target = rows.find((other) => {
+        if (other === row) return false;
+        const box = other.getBoundingClientRect();
+        return e.clientY < box.top + box.height / 2;
+      });
+      if (target) {
+        if (row.nextElementSibling !== target) M.flip(host, () => target.before(row));
+      } else if (rows[rows.length - 1] !== row) {
+        M.flip(host, () => rows[rows.length - 1].after(row));
+      }
+    };
+    const end = (e) => {
+      if (e.pointerId !== event.pointerId) return;
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', end);
+      window.removeEventListener('pointercancel', end);
+      delete row.dataset.state;
+      done(host, before);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', end);
+    window.addEventListener('pointercancel', end);
+  });
+  return grip;
 }
 
 /* -------------------------------------------------------------- profiles */
@@ -318,47 +605,36 @@ async function loadProfiles() {
     const data = await api('/api/profiles');
     renderProfiles(data.profiles || []);
   } catch (err) {
-    host.textContent = errorMessage(err);
+    host.replaceChildren(alertEl('error', errorMessage(err)));
   }
 }
 
+// loginSummary is one part per program, and the sessions in the profile.
 function loginSummary(profile) {
   const accounts = profile.accounts || {};
-  return LOGIN_NAMES.map(([id, name]) => {
+  const out = LOGIN_NAMES.map(([id, name]) => {
     const login = accounts[id] || {};
     const who = login.account || (login.signed_in ? 'signed in' : 'not signed in');
     const limits = ((profile.limits || {})[id] || [])
       .filter((w) => w.label === '5h' || w.label === '7d')
       .map((w) => {
         const left = harnesses.untilReset(w);
-        return w.label + ' ' + Math.round(w.used_percent) + '%' + (left ? ' · ' + left + ' left' : '');
+        return w.label + ' ' + Math.round(w.used_percent) + '%' + (left ? ', ' + left + ' left' : '');
       }).join(', ');
     return name + ': ' + who + (limits ? ' (' + limits + ')' : '');
-  }).join(' · ') + (profile.sessions ? ' · ' + profile.sessions + ' session' + (profile.sessions === 1 ? '' : 's') : '');
+  });
+  if (profile.sessions) out.push(profile.sessions + ' session' + (profile.sessions === 1 ? '' : 's'));
+  return out;
 }
 
 function renderProfiles(list) {
-  const host = $('profileList');
-  host.innerHTML = '';
-  for (const profile of list) {
-    const row = profileRow(profile);
-    row.dataset.id = profile.id;
-    row.prepend(profileGrip(profile));
-    host.append(row);
-  }
+  $('profileList').replaceChildren(...list.map(profileRow));
 }
 
 // The order of the list is the order the new-session sheet offers the
-// profiles in. A row is moved by its grip - dragged with a mouse or a finger,
-// or with the arrow keys once the grip has the focus - and the order is saved
-// the moment it is let go.
-
-function profileOrder(host) {
-  return [...host.querySelectorAll('.profile-row')].map((row) => row.dataset.id);
-}
-
+// profiles in, and it is saved the moment a row is let go.
 async function saveProfileOrder(host, before) {
-  const order = profileOrder(host);
+  const order = [...host.querySelectorAll('.so-profile')].map((row) => row.dataset.id);
   if (order.join('\n') === before.join('\n')) return;
   try {
     await api('/api/profiles/order', { method: 'PUT', body: { order } });
@@ -368,111 +644,59 @@ async function saveProfileOrder(host, before) {
   }
 }
 
-function profileGrip(profile) {
-  const grip = el('button', {
-    class: 'profile-grip', type: 'button', title: 'Drag to reorder',
-    'aria-label': 'Move ' + profile.name + ' (arrow keys)',
-    html: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>',
-  });
-  grip.addEventListener('keydown', (event) => {
-    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
-    event.preventDefault();
-    const row = grip.closest('.profile-row');
-    const host = row.parentElement;
-    const before = profileOrder(host);
-    if (event.key === 'ArrowUp' && row.previousElementSibling) row.previousElementSibling.before(row);
-    else if (event.key === 'ArrowDown' && row.nextElementSibling) row.nextElementSibling.after(row);
-    grip.focus();
-    saveProfileOrder(host, before);
-  });
-  grip.addEventListener('pointerdown', (event) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    const row = grip.closest('.profile-row');
-    const host = row.parentElement;
-    const before = profileOrder(host);
-    row.classList.add('dragging');
-    // The row follows the pointer through the list: it goes before the first
-    // other row whose middle is below the pointer, or to the end. Moving the
-    // row takes it out of the document for a moment, which ends any pointer
-    // capture, so the pointer is followed on the window instead.
-    const move = (e) => {
-      if (e.pointerId !== event.pointerId) return;
-      const target = [...host.querySelectorAll('.profile-row')].find((other) => {
-        if (other === row) return false;
-        const box = other.getBoundingClientRect();
-        return e.clientY < box.top + box.height / 2;
-      });
-      if (target) { if (row.nextElementSibling !== target) target.before(row); }
-      else if (host.lastElementChild !== row) host.append(row);
-    };
-    const end = (e) => {
-      if (e.pointerId !== event.pointerId) return;
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', end);
-      window.removeEventListener('pointercancel', end);
-      row.classList.remove('dragging');
-      saveProfileOrder(host, before);
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', end);
-    window.addEventListener('pointercancel', end);
-  });
-  return grip;
-}
-
 function profileRow(profile) {
-  const logins = el('div', { class: 'profile-logins', text: loginSummary(profile) });
+  const logins = el('p', { class: 'ds-meta' },
+    el('span', { class: 'ds-parts' }, el('span', { class: 'ds-parts__list' },
+      loginSummary(profile).map((part) => el('span', { text: part })))));
+  const grip = gripButton('Move ' + profile.name, '.so-profile', saveProfileOrder);
+  const row = (main, actions) => el('div', { class: 'so-profile', 'data-id': profile.id }, grip, main, actions);
   if (profile.default) {
-    return el('div', { class: 'profile-row' },
-      el('span', { class: 'profile-default', text: profile.name }),
-      el('span', { class: 'hint', text: 'the CLIs\' own sign-ins' }),
-      el('span'),
-      logins);
+    return row(el('div', { class: 'so-profile__main' },
+      el('p', { class: 'so-profile__name' }, el('span', { text: profile.name }),
+        el('span', { class: 'ds-meta', text: 'the CLIs’ own sign-ins' })),
+      logins), null);
   }
   const name = el('input', {
     class: 'ds-input', type: 'text', maxlength: '40', value: profile.name,
     'aria-label': 'Name of ' + profile.name,
   });
-  const rename = el('button', { class: 'ds-btn ds-btn--sm', type: 'button', text: 'Rename' });
-  const remove = el('button', { class: 'ds-btn ds-btn--sm', type: 'button', text: 'Delete' });
+  const rename = facedButton('Rename', 'Saving', 'Renamed');
+  const remove = el('button', { class: 'ds-btn ds-btn--sm ds-btn--text', type: 'button', text: 'Delete…' });
   rename.addEventListener('click', async () => {
     const next = name.value.trim();
     if (!next || next === profile.name) return;
-    busyButton(rename, true, 'Saving…');
     try {
-      await api('/api/profiles/' + encodeURIComponent(profile.id), { method: 'PATCH', body: { name: next } });
-      toast('Renamed to ' + next + '.');
+      await busy(rename, api('/api/profiles/' + encodeURIComponent(profile.id), { method: 'PATCH', body: { name: next } }));
+      toast('Renamed to ' + next + '.', 'success');
       await loadProfiles();
     } catch (err) {
       toast(errorMessage(err), 'error');
-    } finally {
-      busyButton(rename, false);
     }
   });
-  // Deleting takes the profile's sign-ins and conversations with it, so the
-  // first tap only asks and the second one, within a few seconds, deletes.
-  let armed = null;
+  name.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); rename.click(); }
+  });
+  // Deleting takes the profile's sign-ins and conversations with it, so it
+  // asks first, opening on Cancel, and the button says what it does.
   remove.addEventListener('click', async () => {
-    if (!armed) {
-      remove.textContent = 'Really delete?';
-      armed = setTimeout(() => { armed = null; remove.textContent = 'Delete'; }, 4000);
-      return;
-    }
-    clearTimeout(armed);
-    armed = null;
-    busyButton(remove, true, 'Deleting…');
+    const yes = await confirmDialog({
+      title: 'Delete ' + profile.name + '?',
+      body: 'Its sign-ins and conversations are deleted with it. A session still running in it keeps it from being deleted.',
+      confirmLabel: 'Delete ' + profile.name,
+      danger: true,
+      opener: remove,
+    });
+    if (!yes) return;
     try {
       await api('/api/profiles/' + encodeURIComponent(profile.id), { method: 'DELETE' });
       toast(profile.name + ' and its sign-ins were deleted.');
       await loadProfiles();
     } catch (err) {
       toast(errorMessage(err), 'error');
-      busyButton(remove, false);
-      remove.textContent = 'Delete';
     }
   });
-  return el('div', { class: 'profile-row' }, name, rename, remove, logins);
+  return row(el('div', { class: 'so-profile__main' }, name, logins),
+    el('div', { class: 'so-profile__actions' }, rename, remove));
 }
 
 async function addProfile() {
@@ -483,23 +707,23 @@ async function addProfile() {
     input.focus();
     return;
   }
-  const button = $('profileAdd');
-  busyButton(button, true, 'Adding…');
   try {
-    await api('/api/profiles', { method: 'POST', body: { name } });
+    await busy($('profileAdd'), api('/api/profiles', { method: 'POST', body: { name } }));
     input.value = '';
-    toast(name + ' was added. Start a session in it to sign in.');
+    toast(name + ' was added. Start a session in it to sign in.', 'success');
     await loadProfiles();
   } catch (err) {
     toast(errorMessage(err), 'error');
-  } finally {
-    busyButton(button, false);
   }
 }
 
 /* ------------------------------------------------------- the tmux engine */
 
-const TMUX_LABEL = { ok: 'tmux is ready', old: 'tmux is too old', missing: 'tmux is missing' };
+const TMUX_CHIP = {
+  ok: ['ok', 'Ready'],
+  old: ['warning', 'Too old'],
+  missing: ['error', 'Missing'],
+};
 
 function tmuxState(report) {
   if (report.ok) return 'ok';
@@ -507,31 +731,18 @@ function tmuxState(report) {
 }
 
 function renderTmux(report) {
-  const host = $('tmuxStatus');
-  let dot = host.querySelector(':scope > .state-dot');
-  if (!dot) {
-    dot = el('span', { class: 'state-dot' });
-    host.prepend(dot);
-  }
   const state = tmuxState(report);
-  for (const name of ['ok', 'old', 'missing']) setClass(dot, name, state === name);
-  while (dot.nextSibling) dot.nextSibling.remove();
-
-  const parts = [el('span', { class: 'state-label', text: TMUX_LABEL[state] })];
-  if (report.version) {
-    parts.push(el('span', { class: 'sep', text: '·' }));
-    parts.push(el('span', { class: 'muted', text: 'tmux ' + report.version }));
-  }
-  parts.push(el('span', { class: 'sep', text: '·' }));
-  parts.push(el('span', { class: 'muted', text: 'needs ' + (report.min || '3.3') + ' or newer' }));
-  // The path is state, not documentation, so it goes behind the "i" where the
-  // rest of this page puts a build number.
-  if (report.path) {
-    parts.push(infoTip([report.path], { label: 'Where tmux is' }));
-  }
-  host.append(...parts);
-
-  $('tmuxReason').textContent = report.ok ? '' : (report.reason || '');
+  const [kind, label] = TMUX_CHIP[state];
+  // The version found and the one needed are what this card is for, so they
+  // are in the line; the path is state, not documentation, so it goes behind
+  // the "i" where the rest of this page puts a build number.
+  renderState($('tmuxStatus'), {
+    kind, label, state,
+    facts: [report.version ? 'tmux ' + report.version : '', 'needs ' + (report.min || '3.3') + ' or newer'],
+    tip: report.path ? [report.path] : [],
+    tipLabel: 'Where tmux is',
+  });
+  showAlert('tmuxReasonBox', 'tmuxReason', report.ok ? '' : (report.reason || ''));
 }
 
 async function refreshTmux() {
@@ -550,14 +761,23 @@ async function refreshTmux() {
 // three seconds while it runs, once a minute otherwise, and only while the
 // card can be seen. onWake catches up with whatever happened in between.
 
-const UPDATES_LABEL = {
-  ok: 'Up to date',
-  failed: 'The last update failed',
-  stalled: 'The last update did not finish',
-  running: 'Updating…',
-  never: 'Never updated',
+const UPDATES_CHIP = {
+  ok: ['ok', 'Up to date'],
+  failed: ['error', 'Failed'],
+  stalled: ['error', 'Did not finish'],
+  running: ['running', 'Updating'],
+  never: ['off', 'Never updated'],
 };
-const UPDATES_DOT = { ok: 'ok', failed: 'failed', stalled: 'failed', running: 'starting', never: '' };
+
+// What one component's run came to, as a chip.
+const COMPONENT_CHIP = {
+  updated: ['ok', 'Updated'],
+  installed: ['ok', 'Installed'],
+  current: ['plain', 'Current'],
+  failed: ['error', 'Failed'],
+  held: ['warning', 'Held'],
+  skipped: ['warning', 'Skipped'],
+};
 
 let updatesTimer = null;
 let updatesRunning = false;
@@ -610,24 +830,16 @@ function updateRow(component) {
   const version = updated
     ? component.previous + ' → ' + component.version
     : (component.version || '—');
-  return el('div', { class: 'update-row' },
-    el('span', { class: 'nm', text: component.name }),
-    el('span', { class: 'ver', text: version }),
-    el('span', { class: 'st ' + (component.status || ''), text: component.status || '' }),
-    component.error
-      ? el('span', { class: 'more err', text: component.error })
-      : (component.detail ? el('span', { class: 'more', text: component.detail }) : null),
-  );
+  const [kind, label] = COMPONENT_CHIP[component.status] || ['waiting', component.status || 'Not run'];
+  const more = component.error || component.detail || '';
+  return html`<tr data-ds-key="${component.name}">
+    <td class="ds-col--text"><span class="so-cell-name">${component.name}</span>${more ? html`<span class="ds-meta so-cell-more so-break">${more}</span>` : ''}</td>
+    <td class="so-break">${version}</td>
+    <td>${chip(kind, label, component.status || '')}</td>
+  </tr>`;
 }
 
 function renderUpdates(data) {
-  const host = $('updatesStatus');
-  let dot = host.querySelector(':scope > .state-dot');
-  if (!dot) {
-    dot = el('span', { class: 'state-dot' });
-    host.prepend(dot);
-  }
-  while (dot.nextSibling) dot.nextSibling.remove();
   // The run the button started counts as running until systemd says so
   // itself, the report shows a new run, or long enough has passed that
   // systemd evidently did not start it.
@@ -638,21 +850,15 @@ function renderUpdates(data) {
   }
   updatesLast = data;
   const state = updatesAwaiting ? 'running' : updatesState(data);
-  dot.className = ('state-dot ' + UPDATES_DOT[state]).trim();
+  const [kind, label] = UPDATES_CHIP[state];
 
   const timer = data.timer || {};
-  const sep = () => el('span', { class: 'sep', text: '·' });
-  const parts = [el('span', { class: 'state-label', text: UPDATES_LABEL[state] })];
+  const facts = [];
   if (status && (status.finished_at || status.started_at)) {
-    parts.push(sep(), el('span', {
-      class: 'muted',
-      text: 'last run ' + updatesWhen(status.finished_at || status.started_at)
-        + (status.trigger ? ' (' + status.trigger + ')' : ''),
-    }));
+    facts.push('last run ' + updatesWhen(status.finished_at || status.started_at)
+      + (status.trigger ? ' (' + status.trigger + ')' : ''));
   }
-  if (timer.installed && timer.enabled && timer.next) {
-    parts.push(sep(), el('span', { class: 'muted', text: 'next run ' + updatesWhen(timer.next) }));
-  }
+  if (timer.installed && timer.enabled && timer.next) facts.push('next run ' + updatesWhen(timer.next));
   // The exact times and what the updater may touch are state, not the
   // verdict, so they go behind the "i".
   const tip = [];
@@ -660,11 +866,14 @@ function renderUpdates(data) {
   if (status && status.finished_at) tip.push('Finished ' + updatesExact(status.finished_at));
   if (timer.next) tip.push('Next run ' + updatesExact(timer.next));
   if (data.auto) tip.push('Updates automatically: ' + data.auto);
-  if (tip.length) parts.push(infoTip(tip, { label: 'Update details' }));
-  host.append(...parts);
+  renderState($('updatesStatus'), { kind, label, state, facts, tip, tipLabel: 'Update details' });
+
+  const running = state === 'running';
+  $('updatesProgress').hidden = !running;
 
   const components = status && Array.isArray(status.components) ? status.components.filter(Boolean) : [];
-  $('updatesList').replaceChildren(...components.map(updateRow));
+  morph($('updatesList'), html`${components.map(updateRow)}`);
+  $('updatesTable').hidden = !components.length;
 
   let hintText = '';
   if (!timer.installed) {
@@ -686,15 +895,15 @@ function renderUpdates(data) {
 
   // A run that has just ended is said once, and an update of Socrates itself
   // means this page is the old one.
-  const running = state === 'running';
   if (updatesRunning && !running && status) {
     const self = components.find((c) => c.name === 'socrates' && c.status === 'updated');
     if (self) toast('Socrates was updated. Reload the page to use the new version.');
-    else toast(status.ok ? 'Update finished' : 'Update finished with errors', status.ok ? undefined : 'error');
+    else toast(status.ok ? 'Update finished' : 'Update finished with errors', status.ok ? 'success' : 'error');
   }
   updatesRunning = running;
-  $('updatesRun').disabled = running;
-  $('updatesRun').textContent = running ? 'Updating…' : 'Update now';
+  const button = $('updatesRun');
+  button.disabled = running;
+  setFaceLabel(button, running ? 'Updating…' : 'Update now');
 
   clearTimeout(updatesTimer);
   updatesTimer = setTimeout(pollUpdates, running ? 3000 : 60000);
@@ -743,20 +952,28 @@ function watchUpdatesCard() {
 
 async function runUpdates() {
   const button = $('updatesRun');
-  busyButton(button, true, 'Starting…');
   try {
-    await api('/api/updates/run', { method: 'POST', body: {} });
+    await busy(button, api('/api/updates/run', { method: 'POST', body: {} }));
     const last = updatesLast && updatesLast.status;
     updatesAwaiting = { before: (last && last.started_at) || '', until: Date.now() + 30000 };
     toast('Update started');
   } catch (err) {
     toast(errorMessage(err), 'error');
   } finally {
-    busyButton(button, false, 'Starting…');
     // renderUpdates decides whether this button belongs enabled at all; the
     // short wait gives systemd the moment it takes to say "activating".
     setTimeout(refreshUpdates, 800);
   }
+}
+
+// toggleLog shows or hides a log under its button, and fetches it fresh.
+function toggleLog(buttonId, logId, refresh) {
+  const log = $(logId);
+  const button = $(buttonId);
+  log.hidden = !log.hidden;
+  button.textContent = log.hidden ? 'Show log' : 'Hide log';
+  button.setAttribute('aria-expanded', String(!log.hidden));
+  if (!log.hidden) refresh();
 }
 
 /* ------------------------------------------------------------- harnesses */
@@ -795,37 +1012,50 @@ function optionValue(id, key) {
   return getPath(defaults, optionPath(id, key));
 }
 
+// alertEl is a DS alert built in script: '' is the neutral one.
+function alertEl(kind, text) {
+  const glyph = kind === 'error' ? 'alertCircle' : kind === 'warning' ? 'alert' : 'info';
+  return el('div', { class: 'ds-alert' + (kind ? ' ds-alert--' + kind : ''), role: kind === 'error' ? 'alert' : 'status' },
+    iconEl(glyph, 20), el('span', { class: 'ds-alert__text', text }));
+}
+
 function renderHarnesses(status) {
   const host = $('harnessCards');
   if (!host) return;
-  host.innerHTML = '';
   const found = harnesses.list();
+  const refreshing = status === 'refreshing';
+  const refresh = facedButton(refreshing ? 'Asking…' : 'Ask this machine again', 'Asking', null, {
+    id: 'harnessRefresh', disabled: refreshing,
+    onclick: () => { loadHarnesses(true).catch(() => {}); },
+  });
+  const intro = el('section', { class: 'ds-card', 'aria-labelledby': 'programsTitle' },
+    el('div', { class: 'ds-card__row' }, el('h2', { class: 'ds-card__title', id: 'programsTitle', text: 'Programs' }),
+      found.length ? refresh : null));
   if (!found.length) {
-    host.append(el('section', { class: 'ds-card' },
-      el('h2', { text: 'Programs' }),
-      el('p', { class: 'ds-muted', text: status === 'loading'
-        ? 'Asking this machine which programs are installed…'
-        : (status || 'Socrates could not ask this machine which programs are installed.') })));
+    intro.append(status === 'loading'
+      ? el('div', { class: 'ds-loading', role: 'status' },
+        el('span', { class: 'ds-loader ds-loader--sm', 'aria-hidden': 'true' }),
+        'Asking this machine which programs are installed')
+      : alertEl('error', status || 'Socrates could not ask this machine which programs are installed.'));
+    host.replaceChildren(intro);
     return;
   }
-  host.append(el('p', { class: 'ds-muted programs-lead',
+  intro.append(el('p', { class: 'ds-muted',
     text: 'Which programs a session can be, where each one lives, and what it starts on. '
       + 'How they are started — permissions, sandbox, remote control, theme — is not a setting: '
       + 'every session gets the same opinionated command line.' }));
-  if (status && status !== 'loading' && status !== 'refreshing') {
-    host.append(el('div', { class: 'hint', text: status }));
+  if (status && status !== 'loading' && !refreshing) {
+    intro.append(alertEl('error', status));
   } else if (harnesses.stale()) {
-    host.append(el('div', { class: 'hint',
-      text: 'Showing the programs from your last visit — this machine could not be asked just now.' }));
+    intro.append(alertEl('',
+      'Showing the programs from your last visit — this machine could not be asked just now.'));
   }
-  for (const id of ['shell', 'claude', 'codex', 'opencode', 'vscode']) {
-    const harness = found.find((h) => h.id === id);
-    if (harness) host.append(harnessCard(harness, status === 'refreshing'));
-  }
+  const cards = HARNESS_ORDER.map((id) => found.find((h) => h.id === id)).filter(Boolean).map(harnessCard);
+  host.replaceChildren(intro, ...cards);
   renderDefaultHarness();
 }
 
-function harnessCard(harness, refreshing) {
+function harnessCard(harness) {
   const toggle = el('input', { type: 'checkbox', id: 'opt-' + harness.id + '-enabled' });
   toggle.checked = !!optionValue(harness.id, 'enabled');
   toggle.addEventListener('change', () => setPath(settings, optionPath(harness.id, 'enabled'), toggle.checked));
@@ -842,41 +1072,42 @@ function harnessCard(harness, refreshing) {
   const count = (harness.models || []).length;
   if (count) facts.push(count + ' model' + (count === 1 ? '' : 's') + (harness.static ? ' · curated' : ''));
 
+  const binaryId = 'opt-' + harness.id + '-binary';
   const binary = el('input', {
-    class: 'ds-input mono', type: 'text', spellcheck: 'false', id: 'opt-' + harness.id + '-binary',
+    class: 'ds-input', type: 'text', spellcheck: 'false', id: binaryId,
     placeholder: harness.path || 'found on PATH',
     value: optionValue(harness.id, 'binary') || '',
   });
   binary.addEventListener('input', () => setPath(settings, optionPath(harness.id, 'binary'), binary.value.trim()));
 
-  const refresh = el('button', {
-    class: 'ds-btn ds-btn--sm', type: 'button', text: refreshing ? 'Asking…' : 'Ask this machine again',
-    disabled: refreshing,
-    onclick: () => { loadHarnesses(true).catch(() => {}); },
-  });
+  const mark = agentMark(harness.id, 24);
+  if (!harness.installed) mark.classList.add('so-agent--quiet');
+  const titleId = 'harness-' + harness.id + '-title';
+  const options = (OPTIONS[harness.id] || []).map((option) => optionField(harness, option));
 
-  const card = el('section', { class: 'ds-card harness-card' + (harness.installed ? '' : ' missing'),
-    id: 'harness-' + harness.id },
-    el('div', { class: 'harness-head' },
-      el('label', { class: 'switch' }, toggle, el('span', { class: 'track' }),
-        el('span', { class: 'harness-name' }, agentMark(harness.id, 22), el('span', { text: harness.label }))),
-      facts.length
-        ? infoTip(facts, { label: harness.label + ' details' })
-        : null,
-    ),
-    harness.error ? el('div', { class: 'agent-note bad', text: harness.error }) : null,
+  return el('section', {
+    class: 'ds-card so-program', id: 'harness-' + harness.id, 'data-installed': String(!!harness.installed),
+    'aria-labelledby': titleId,
+  },
+    el('div', { class: 'ds-card__row' },
+      el('h2', { class: 'ds-card__title', id: titleId },
+        el('span', { class: 'so-program__name' }, mark, el('span', { text: harness.label }))),
+      el('span', { class: 'so-program__state' },
+        harness.installed ? null : chipEl('warning', 'Not installed', 'missing'),
+        facts.length ? infoTip(facts, { label: harness.label + ' details' }) : null)),
+    harness.error ? alertEl('error', harness.error) : null,
     harness.notes ? el('p', { class: 'ds-muted', text: harness.notes }) : null,
-    ['shell', 'vscode'].includes(harness.id) ? null : modelList(harness),
-    field('Binary path', binary,
-      'Leave it empty to look the program up on PATH, which is what a normal installation wants.'),
+    el('label', { class: 'ds-check' }, toggle,
+      el('span', { text: 'Offer ' + harness.label + ' in the new-session sheet' })),
+    // Two fields at most, so they sit in the card rather than behind a
+    // disclosure: a setting nobody can find is a setting nobody has.
+    el('div', { class: 'ds-form' },
+      options.length ? el('div', { class: 'ds-form-grid ds-form-grid--2' }, options) : null,
+      ['shell', 'vscode'].includes(harness.id) ? null : modelList(harness),
+      field('Binary path', binary,
+        'Leave it empty to look the program up on PATH, which is what a normal installation wants.', binaryId)),
+    el('p', { class: 'ds-meta', text: START_ONLY_NOTE }),
   );
-
-  // Two fields at most, so they sit in the card rather than behind a
-  // disclosure: a setting nobody can find is a setting nobody has.
-  for (const option of OPTIONS[harness.id] || []) card.append(optionField(harness, option));
-  card.append(el('div', { class: 'row' }, refresh));
-  card.append(el('div', { class: 'hint start-only', text: START_ONLY_NOTE }));
-  return card;
 }
 
 // optionField turns one catalogue entry into the control it names, with what
@@ -889,7 +1120,6 @@ function optionField(harness, option) {
   const write = (next) => setPath(settings, path, next);
 
   let control = null;
-  let wrapper = null;
   switch (option.type) {
     case 'select': {
       control = el('select', { class: 'ds-input', id });
@@ -907,45 +1137,45 @@ function optionField(harness, option) {
         })),
         onChange: (next) => write(next.trim()),
       });
-      const input = picker.node.querySelector('input');
-      input.id = id;
-      wrapper = dictated(picker.node, input);
-      control = input;
+      picker.input.id = id;
+      control = dictated(picker.node, picker.input);
       break;
     }
     default: {
       control = el('input', {
-        class: 'ds-input mono', type: 'text', id, spellcheck: 'false',
+        class: 'ds-input', type: 'text', id, spellcheck: 'false',
         placeholder: option.placeholder || '', value: value ?? '',
       });
       control.addEventListener('input', () => write(control.value));
     }
   }
-
-  const wrap = el('div', { class: 'ds-field option', 'data-key': option.key, 'data-startonly': '1' });
-  wrap.append(el('label', { for: id, text: option.label }), wrapper || control,
-    el('div', { class: 'hint', text: option.hint || '' }));
-  return wrap;
+  return field(option.label, control, option.hint || '', id);
 }
 
 // modelList is the person's own short list for one harness: the models the
 // new-session sheet offers, in this order, each with the effort it starts on.
-// An empty list means the sheet offers everything the program reported.
+// An empty list means the sheet offers everything the program reported. A
+// row moves by its grip, like a profile.
 function modelList(harness) {
   const path = optionPath(harness.id, 'models');
   const picks = () => (optionValue(harness.id, 'models') || []).map((p) => ({ id: p.id, effort: p.effort || '' }));
   const known = (id) => (harness.models || []).find((m) => m.id === id) || null;
 
-  const rows = el('div', { class: 'model-list' });
+  const rows = el('div', { class: 'so-rows' });
+  const reorder = (host, before) => {
+    const order = [...host.querySelectorAll('.so-model')].map((row) => row.dataset.id);
+    if (order.join('\n') === before.join('\n')) return;
+    const list = picks();
+    setPath(settings, path, order.map((id) => list.find((p) => p.id === id)).filter(Boolean));
+  };
   function render() {
-    rows.innerHTML = '';
     const list = picks();
     if (!list.length) {
-      rows.append(el('div', { class: 'hint', text: 'No short list — the new-session sheet offers every model '
+      rows.replaceChildren(el('p', { class: 'ds-meta', text: 'No short list — the new-session sheet offers every model '
         + harness.label + ' reports.' }));
       return;
     }
-    list.forEach((pick, index) => {
+    rows.replaceChildren(...list.map((pick) => {
       const model = known(pick.id);
       const efforts = harnesses.effortsFor(harness.id, pick.id);
       const effort = el('select', { class: 'ds-input', 'aria-label': 'Default effort for ' + pick.id });
@@ -955,23 +1185,21 @@ function modelList(harness) {
       effort.value = efforts.includes(pick.effort) ? pick.effort : '';
       effort.hidden = !efforts.length;
       effort.addEventListener('change', () => {
-        const next = picks();
-        next[index].effort = effort.value;
-        setPath(settings, path, next);
+        setPath(settings, path, picks().map((p) => (p.id === pick.id ? { ...p, effort: effort.value } : p)));
       });
       const remove = el('button', {
-        class: 'ds-btn ds-btn--sm', type: 'button', text: 'Remove', 'aria-label': 'Remove ' + pick.id,
-        onclick: () => { setPath(settings, path, picks().filter((_, i) => i !== index)); render(); },
-      });
-      rows.append(el('div', { class: 'model-row' },
-        el('div', { class: 'model-name' },
-          el('div', { text: model ? (model.label || pick.id) : pick.id }),
-          el('div', { class: 'hint mono', text: model ? (model.hint || pick.id)
-            : pick.id + ' · typed in, not on the list ' + harness.label + ' reports' }),
-        ),
-        effort, remove,
-      ));
-    });
+        class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm', type: 'button',
+        'aria-label': 'Remove ' + pick.id, 'data-tip': 'Remove',
+        onclick: () => { setPath(settings, path, picks().filter((p) => p.id !== pick.id)); render(); },
+      }, iconEl('trash', 18));
+      return el('div', { class: 'so-model', 'data-id': pick.id },
+        gripButton('Move ' + pick.id, '.so-model', reorder),
+        el('div', { class: 'so-model__name' },
+          el('span', { class: 'so-ellipsis', text: model ? (model.label || pick.id) : pick.id }),
+          el('span', { class: 'ds-meta so-ellipsis', text: model ? (model.hint || pick.id)
+            : pick.id + ' · typed in, not on the list ' + harness.label + ' reports' })),
+        effort, remove);
+    }));
   }
 
   const picker = combobox({
@@ -982,7 +1210,7 @@ function modelList(harness) {
     })),
     onChange: () => {},
   });
-  const input = picker.node.querySelector('input');
+  const input = picker.input;
   input.id = 'models-' + harness.id;
   const add = () => {
     const id = input.value.trim();
@@ -1007,12 +1235,12 @@ function modelList(harness) {
     }
   });
   render();
-  return el('div', { class: 'ds-field model-picks' },
-    el('label', { text: 'Models offered in the sheet' }),
+  return el('div', { class: 'ds-field' },
+    el('label', { class: 'ds-field__label', for: input.id, text: 'Models offered in the sheet' }),
     rows,
-    el('div', { class: 'model-add' }, dictated(picker.node, input),
-      el('button', { class: 'ds-btn ds-btn--sm', type: 'button', text: 'Add', id: 'add-model-' + harness.id, onclick: add })),
-    el('div', { class: 'hint', text: 'Pick from what ' + harness.label + ' reports or type an id, and set the '
+    el('div', { class: 'so-field-row' }, dictated(picker.node, input),
+      el('button', { class: 'ds-btn', type: 'button', text: 'Add', id: 'add-model-' + harness.id, onclick: add })),
+    el('small', { class: 'ds-field__hint', text: 'Pick from what ' + harness.label + ' reports or type an id, and set the '
       + 'effort a new session starts on. Leave the list empty to offer all of them.' }),
   );
 }
@@ -1024,7 +1252,12 @@ function bind() {
   $('saveBottom').addEventListener('click', save);
   $('runChecks').addEventListener('click', runChecks);
   $('changePw').addEventListener('click', changePassword);
-  $('presetAdd').addEventListener('click', () => $('presetDirs').append(presetRow()));
+  $('presetAdd').addEventListener('click', () => {
+    const host = $('presetDirs');
+    const row = presetRow();
+    M.flip(host, () => host.append(row));
+    row.querySelector('input').focus();
+  });
   $('profileAdd').addEventListener('click', addProfile);
   $('profileName').addEventListener('keydown', (event) => {
     if (event.key === 'Enter') { event.preventDefault(); addProfile(); }
@@ -1034,55 +1267,17 @@ function bind() {
   $('tunnelStop').addEventListener('click', stopTunnel);
   $('tunnelMode').addEventListener('change', renderTunnelMode);
   $('tunnelInstall').addEventListener('click', installCloudflared);
-  $('tunnelLogToggle').addEventListener('click', () => {
-    const log = $('tunnelLog');
-    log.hidden = !log.hidden;
-    $('tunnelLogToggle').textContent = log.hidden ? 'Show log' : 'Hide log';
-    if (!log.hidden) refreshTunnel();
-  });
+  $('tunnelLogToggle').addEventListener('click', () => toggleLog('tunnelLogToggle', 'tunnelLog', refreshTunnel));
   $('updatesRun').addEventListener('click', runUpdates);
-  $('updatesLogToggle').addEventListener('click', () => {
-    const log = $('updatesLog');
-    log.hidden = !log.hidden;
-    $('updatesLogToggle').textContent = log.hidden ? 'Show log' : 'Hide log';
-    if (!log.hidden) refreshUpdates();
-  });
+  $('updatesLogToggle').addEventListener('click', () => toggleLog('updatesLogToggle', 'updatesLog', refreshUpdates));
   $('checkVoiceKey').addEventListener('click', checkVoiceKey);
   $('storageTest').addEventListener('click', testStorage);
   $('storageSync').addEventListener('click', syncStorage);
   $('storageSave').addEventListener('click', saveStorageCredentials);
-  $('testVoice').addEventListener('click', async () => {
-    // The server renders with what it has stored, so anything typed into this
-    // card and not saved yet would be read by the old settings. Saying so is
-    // better than sounding wrong, or than testing a key nobody saved.
-    const saved = getPath(settings, 'voice.language') || 'en';
-    const unsaved = $('voiceLanguage').value !== saved ||
-      $('googleKey').value !== (getPath(settings, 'voice.google_api_key') || '') ||
-      $('googleVoiceEn').value !== (getPath(settings, 'voice.google_voice_en') || '') ||
-      $('googleVoiceDe').value !== (getPath(settings, 'voice.google_voice_de') || '') ||
-      Number($('ttsRate').value) !== Number(getPath(settings, 'voice.tts_rate'));
-    if (unsaved) {
-      toast('Save first — the test uses the voice settings the server has stored.');
-      return;
-    }
-    const sample = saved === 'de'
-      ? 'So klingt Socrates, wenn dir eine Antwort im Freisprechmodus vorgelesen wird.'
-      : 'This is how Socrates will read answers to you in audio mode.';
-    const button = $('testVoice');
-    busyButton(button, true, 'Reading…');
-    try {
-      await speak(sample);
-      showVoiceStatus(true, 'The sample was rendered by Google and played here.');
-    } catch (err) {
-      // Every press answers, whether or not this reason has been seen before:
-      // a button that stays silent the second time reads as a button that did
-      // nothing at all.
-      showVoiceStatus(false, errorMessage(err));
-      toast(errorMessage(err), speechKind(err));
-    } finally {
-      busyButton(button, false, 'Reading…');
-    }
-  });
+  $('testVoice').addEventListener('click', testVoice);
+  for (const summary of document.querySelectorAll('.so-disclosure > summary')) {
+    if (!summary.querySelector('.ds-chevron')) summary.append(iconEl('chevronDown', 20, 'ds-chevron'));
+  }
   document.addEventListener('keydown', (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key === 's') {
       event.preventDefault();
@@ -1091,14 +1286,18 @@ function bind() {
   });
 }
 
+let saving = false;
+
 async function save() {
+  if (saving) return;
+  saving = true;
   const next = collect();
-  const buttons = [$('saveTop'), $('saveBottom')];
-  for (const button of buttons) busyButton(button, true, 'Saving…');
+  // Settings are written whole, so the same body sent twice leaves exactly
+  // the same result - which makes this safe to repeat over a bad link.
+  const work = api('/api/settings', { method: 'PUT', attempts: 4, body: { settings: next } });
   try {
-    // Settings are written whole, so the same body sent twice leaves exactly
-    // the same result - which makes this safe to repeat over a bad link.
-    const data = await api('/api/settings', { method: 'PUT', attempts: 4, body: { settings: next } });
+    // Both Save buttons are one action, and they say so together.
+    const [data] = await Promise.all([busy($('saveTop'), work), busy($('saveBottom'), work)]);
     settings = data.settings;
     fillForm();
     syncModelPickers();
@@ -1107,36 +1306,29 @@ async function save() {
     // follow whatever the server normalised them into.
     renderHarnesses('');
     refreshTunnel();
-    hint('Saved');
     for (const warning of data.warnings || []) toast(warning);
-    toast('Settings saved');
+    toast('Settings saved', 'success');
   } catch (err) {
     toast(errorMessage(err), 'error');
   } finally {
-    for (const button of buttons) busyButton(button, false, 'Saving…');
+    saving = false;
   }
 }
 
-function hint(text) {
-  for (const id of ['savedHint', 'savedHint2']) {
-    const node = $(id);
-    if (!node) continue;
-    node.textContent = text;
-    setTimeout(() => { node.textContent = ''; }, 2500);
-  }
-}
-
+// showNotice is the page's one standing message, as a DS alert.
 function showNotice(text, kind) {
   const notice = $('notice');
-  notice.className = 'notice ' + kind;
-  notice.textContent = text;
+  const [cls, glyph] = kind === 'error' ? ['ds-alert ds-alert--error', 'alertCircle']
+    : kind === 'ok' ? ['ds-alert ds-alert--success', 'checkCircle'] : ['ds-alert', 'info'];
+  morph(notice, html`<div class="${cls}" role="${kind === 'error' ? 'alert' : 'status'}">${raw(icon(glyph, 20))}<span class="ds-alert__text">${text}</span></div>`);
+  notice.hidden = false;
 }
 
-function field(label, control, hintText) {
+function field(label, control, hintText, id) {
   return el('div', { class: 'ds-field' },
-    el('label', { text: label }),
+    el('label', { class: 'ds-field__label', for: id || null, text: label }),
     control,
-    hintText ? el('div', { class: 'hint', text: hintText }) : null);
+    hintText ? el('small', { class: 'ds-field__hint', text: hintText }) : null);
 }
 
 // splitArgs understands simple quoting so paths with spaces survive.
@@ -1160,34 +1352,50 @@ function splitArgs(value) {
 function showVoiceStatus(ok, detail) {
   const host = $('voiceStatus');
   host.hidden = false;
-  let dot = host.querySelector(':scope > .state-dot');
-  if (!dot) {
-    dot = el('span', { class: 'state-dot' });
-    host.prepend(dot);
+  renderState(host, {
+    kind: ok ? 'ok' : 'error', label: ok ? 'Voice ready' : 'Voice not working', state: ok ? 'ready' : 'failed',
+    facts: [detail],
+  });
+}
+
+async function testVoice() {
+  // The server renders with what it has stored, so anything typed into this
+  // card and not saved yet would be read by the old settings. Saying so is
+  // better than sounding wrong, or than testing a key nobody saved.
+  const saved = getPath(settings, 'voice.language') || 'en';
+  const unsaved = $('voiceLanguage').value !== saved ||
+    $('googleKey').value !== (getPath(settings, 'voice.google_api_key') || '') ||
+    $('googleVoiceEn').value !== (getPath(settings, 'voice.google_voice_en') || '') ||
+    $('googleVoiceDe').value !== (getPath(settings, 'voice.google_voice_de') || '') ||
+    Number($('ttsRate').value) !== Number(getPath(settings, 'voice.tts_rate'));
+  if (unsaved) {
+    toast('Save first — the test uses the voice settings the server has stored.');
+    return;
   }
-  setClass(dot, 'ready', !!ok);
-  setClass(dot, 'failed', !ok);
-  while (dot.nextSibling) dot.nextSibling.remove();
-  host.append(
-    el('span', { class: 'state-label', text: ok ? 'Voice ready' : 'Voice not working' }),
-    el('span', { class: 'sep', text: '·' }),
-    el('span', { class: 'detail', text: detail }),
-  );
+  const sample = saved === 'de'
+    ? 'So klingt Socrates, wenn dir eine Antwort im Freisprechmodus vorgelesen wird.'
+    : 'This is how Socrates will read answers to you in audio mode.';
+  try {
+    await busy($('testVoice'), () => speak(sample));
+    showVoiceStatus(true, 'The sample was rendered by Google and played here.');
+  } catch (err) {
+    // Every press answers, whether or not this reason has been seen before:
+    // a button that stays silent the second time reads as a button that did
+    // nothing at all.
+    showVoiceStatus(false, errorMessage(err));
+    toast(errorMessage(err), speechKind(err));
+  }
 }
 
 // checkVoiceKey asks Google for the voice list of the stored language, which
 // is the cheapest thing that proves a key: it needs the same API enabled and
 // the same key restriction as speaking does, and it renders nothing.
 async function checkVoiceKey() {
-  const button = $('checkVoiceKey');
-  busyButton(button, true, 'Checking…');
   try {
-    const data = await api('/api/voice/check', { method: 'POST' });
+    const data = await busy($('checkVoiceKey'), api('/api/voice/check', { method: 'POST' }));
     showVoiceStatus(!!data.ok, data.detail || '');
   } catch (err) {
     showVoiceStatus(false, errorMessage(err));
-  } finally {
-    busyButton(button, false, 'Checking…');
   }
 }
 
@@ -1206,75 +1414,52 @@ function tunnelForm() {
 
 function renderTunnelMode() {
   const named = $('tunnelMode').value === 'token';
-  $('tunnelToken').closest('.ds-field').style.display = named ? '' : 'none';
-  $('tunnelHostname').closest('.ds-field').style.display = named ? '' : 'none';
+  $('tunnelToken').closest('.ds-field').hidden = !named;
+  $('tunnelHostname').closest('.ds-field').hidden = !named;
   const local = localURL || 'the local address shown above';
   $('tunnelModeHint').textContent = named
     ? 'Runs your own named tunnel. In the Cloudflare dashboard, point its public hostname at ' + local + '.'
     : 'Free and instant, but the address changes every restart and anyone with the link can reach the login page.';
 }
 
-const STATE_LABEL = {
-  running: 'Tunnel is up',
-  starting: 'Connecting…',
-  installing: 'Downloading cloudflared…',
-  failed: 'Tunnel failed',
-  stopped: 'Tunnel is off',
+const TUNNEL_CHIP = {
+  running: ['ok', 'Up'],
+  starting: ['running', 'Connecting'],
+  installing: ['running', 'Downloading cloudflared'],
+  failed: ['error', 'Failed'],
+  stopped: ['off', 'Off'],
 };
 
 function renderTunnelStatus(status) {
-  const host = $('tunnelStatus');
-  let dot = host.querySelector(':scope > .state-dot');
-  if (!dot) {
-    dot = el('span', { class: 'state-dot' });
-    host.prepend(dot);
-  }
-  for (const name of Object.keys(STATE_LABEL)) setClass(dot, name, status.state === name);
-  while (dot.nextSibling) dot.nextSibling.remove();
-
-  const parts = [
-    el('span', { class: 'state-label', text: STATE_LABEL[status.state] || status.state }),
-  ];
-  if (status.url) {
-    parts.push(el('span', { class: 'sep', text: '·' }));
-    parts.push(el('a', { href: status.url, target: '_blank', rel: 'noopener', text: status.url }));
-  }
-  parts.push(el('span', { class: 'sep', text: '·' }));
-  parts.push(el('span', { class: 'muted', text: 'local: ' + (status.local_url || 'http://127.0.0.1:8080') }));
+  const [kind, label] = TUNNEL_CHIP[status.state] || ['waiting', status.state || 'Unknown'];
+  const facts = [];
+  if (status.url) facts.push(html`<a href="${status.url}" target="_blank" rel="noopener" class="so-break">${status.url}</a>`);
+  facts.push('local: ' + (status.local_url || 'http://127.0.0.1:8080'));
   if (!status.installed) {
-    parts.push(el('span', { class: 'sep', text: '·' }));
-    parts.push(el('span', {
-      class: 'muted',
-      text: status.can_install ? 'cloudflared is downloaded on start' : 'cloudflared is not installed',
-    }));
-  } else if (status.version) {
-    parts.push(el('span', { class: 'sep', text: '·' }));
-    parts.push(el('span', { class: 'muted', text: status.version }));
+    facts.push(status.can_install ? 'cloudflared is downloaded on start' : 'cloudflared is not installed');
   }
-  if (status.error) {
-    parts.push(el('span', { class: 'sep', text: '·' }));
-    parts.push(el('span', { style: 'color:var(--red)', text: status.error }));
-  }
-  if (status.restarts) {
-    parts.push(el('span', { class: 'sep', text: '·' }));
-    parts.push(el('span', { class: 'muted', text: status.restarts + ' restarts' }));
-  }
-  host.append(...parts);
+  if (status.restarts) facts.push(status.restarts + ' restarts');
+  // Which build and where it lives are state, behind the "i".
+  const tip = [];
+  if (status.installed && status.version) tip.push(status.version);
+  if (status.installed && status.path) tip.push(status.path);
+  renderState($('tunnelStatus'), { kind, label, state: status.state || '', facts, tip, tipLabel: 'cloudflared details' });
+  showAlert('tunnelErrorBox', 'tunnelError', status.error || '');
 
   const log = $('tunnelLog');
   if (!log.hidden) {
     log.textContent = (status.logs || []).join('\n') || 'no output yet';
     log.scrollTop = log.scrollHeight;
   }
-  $('tunnelStart').textContent = status.state === 'stopped' ? 'Start tunnel' : 'Restart tunnel';
+  setFaceLabel($('tunnelStart'), status.state === 'stopped' ? 'Start tunnel' : 'Restart tunnel');
   $('tunnelStop').disabled = status.state === 'stopped';
 
   const installButton = $('tunnelInstall');
   installButton.hidden = status.installed || !status.can_install;
   if (status.installed) {
     $('tunnelInstallHint').textContent = status.managed
-      ? 'Managed by Socrates: ' + status.path
-      : 'Found in your PATH: ' + (status.path || 'cloudflared');
+      ? 'Managed by Socrates.'
+      : 'Found on your PATH.';
   } else if (status.can_install) {
     $('tunnelInstallHint').textContent = 'Not installed yet. Socrates downloads it automatically when you start the tunnel.';
   } else {
@@ -1326,53 +1511,40 @@ async function refreshTunnel() {
 }
 
 async function startTunnel() {
-  const button = $('tunnelStart');
-  busyButton(button, true, 'Starting…');
   try {
-    const data = await api('/api/tunnel/start', { method: 'POST', body: { tunnel: tunnelForm() } });
+    const data = await busy($('tunnelStart'), api('/api/tunnel/start', { method: 'POST', body: { tunnel: tunnelForm() } }));
     settings.tunnel = data.tunnel;
     renderTunnelStatus(data.status || {});
     toast('Tunnel starting');
     setTimeout(refreshTunnel, 1200);
   } catch (err) {
     toast(errorMessage(err), 'error');
-  } finally {
-    busyButton(button, false, 'Starting…');
   }
 }
 
 async function installCloudflared() {
-  const button = $('tunnelInstall');
-  button.disabled = true;
-  button.textContent = 'Downloading…';
-  $('tunnelLog').hidden = false;
-  $('tunnelLogToggle').textContent = 'Hide log';
-  refreshTunnel();
+  if ($('tunnelLog').hidden) toggleLog('tunnelLogToggle', 'tunnelLog', refreshTunnel);
+  else refreshTunnel();
   try {
-    const data = await api('/api/tunnel/install', { method: 'POST', body: {} });
+    const data = await busy($('tunnelInstall'), api('/api/tunnel/install', { method: 'POST', body: {} }));
     renderTunnelStatus(data.status || {});
-    toast('cloudflared installed');
+    toast('cloudflared installed', 'success');
   } catch (err) {
     toast(errorMessage(err), 'error');
   } finally {
-    button.disabled = false;
-    button.textContent = 'Download cloudflared';
     refreshTunnel();
   }
 }
 
 async function stopTunnel() {
-  const button = $('tunnelStop');
-  busyButton(button, true, 'Stopping…');
   try {
-    const data = await api('/api/tunnel/stop', { method: 'POST', body: {} });
+    const data = await busy($('tunnelStop'), api('/api/tunnel/stop', { method: 'POST', body: {} }));
     settings.tunnel = data.tunnel;
     renderTunnelStatus(data.status || {});
     toast('Tunnel stopped');
   } catch (err) {
     toast(errorMessage(err), 'error');
   } finally {
-    busyButton(button, false, 'Stopping…');
     // renderTunnelStatus decides whether this button belongs enabled at all.
     refreshTunnel();
   }
@@ -1402,46 +1574,41 @@ function storageWhere(storage) {
     + (storage.prefix ? '/' + storage.prefix.replace(/\/$/, '') : '');
 }
 
-function renderStorage(status, fillForm) {
-  const host = $('storageStatus');
-  let dot = host.querySelector(':scope > .state-dot');
-  if (!dot) {
-    dot = el('span', { class: 'state-dot' });
-    host.prepend(dot);
-  }
-  while (dot.nextSibling) dot.nextSibling.remove();
+// storageTrouble is the alert under the line when the bucket is in trouble.
+function storageTrouble(text) {
+  return html`<div class="ds-alert ds-alert--error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${text}</span></div>`;
+}
 
-  let dotClass = 'failed';
+function renderStorage(status, fillForm) {
+  let kind = 'off';
   let label = 'Not configured';
+  let trouble = '';
   if (status.state === 'fenced') {
-    label = 'Another Socrates took over this bucket';
+    kind = 'error';
+    label = 'Taken over';
+    trouble = 'Another Socrates took over this bucket.';
   } else if (status.state === 'offline') {
-    label = status.error_since
-      ? 'Bucket unreachable since ' + new Date(status.error_since).toLocaleTimeString()
-      : 'Bucket not reached yet';
+    kind = 'error';
+    label = status.error_since ? 'Unreachable' : 'Not reached yet';
+    trouble = status.error_since
+      ? 'The bucket is unreachable since ' + new Date(status.error_since).toLocaleTimeString() + '.'
+      : 'The bucket has not been reached yet.';
   } else if (status.state === 'ok' && status.pending > 0) {
-    dotClass = 'starting';
+    kind = 'running';
     label = status.pending === 1 ? '1 change uploading' : status.pending + ' changes uploading';
   } else if (status.state === 'ok') {
-    dotClass = 'ok';
+    kind = 'ok';
     label = 'Backed up';
   }
-  dot.className = 'state-dot ' + dotClass;
 
-  const parts = [el('span', { class: 'state-label', text: label })];
-  const sep = () => el('span', { class: 'sep', text: '·' });
-  const where = storageWhere(status.storage);
-  if (where) parts.push(sep(), el('span', { class: 'muted', text: where }));
-  if (status.state !== 'ok' && status.pending > 0) {
-    parts.push(sep(), el('span', { class: 'muted', text: status.pending + ' waiting' }));
-  }
-  if (status.configured) {
-    parts.push(sep(), el('span', { class: 'muted', text: 'last upload ' + storageAgo(status.last_flush_at) }));
-  }
-  host.append(...parts);
+  const facts = [storageWhere(status.storage)];
+  if (status.state !== 'ok' && status.pending > 0) facts.push(status.pending + ' waiting');
+  if (status.configured) facts.push('last upload ' + storageAgo(status.last_flush_at));
+  renderState($('storageStatus'), { kind, label, state: status.state || '', facts });
 
-  // The details are technical state, and live in the hint line below rather
-  // than in the verdict: the error, who holds the lease, how it is held.
+  // The details are technical state, and live under the verdict rather than
+  // in it: the error, who holds the lease, how it is held. Trouble is an
+  // alert; the rest is a quiet line.
   const detail = [];
   if (status.last_error) detail.push(status.last_error);
   if (status.state === 'fenced' && status.lease) {
@@ -1456,12 +1623,8 @@ function renderStorage(status, fillForm) {
       ? 'The store enforces conditional writes.'
       : 'The store does not enforce conditional writes; the lease is checked by reading it back.');
   }
-  $('storageDetail').textContent = detail.join(' ');
-  if (status.state === 'fenced' || status.state === 'offline') {
-    $('storageDetail').style.color = 'var(--red)';
-  } else {
-    $('storageDetail').style.color = '';
-  }
+  if (trouble) morph($('storageDetail'), storageTrouble([trouble, ...detail].join(' ')));
+  else morph($('storageDetail'), detail.length ? html`<p class="ds-meta so-break">${detail.join(' ')}</p>` : '');
 
   const env = status.storage && status.storage.source === 'env';
   for (const id of ['storageEndpoint', 'storageRegion', 'storageKey', 'storageSecret', 'storagePathStyle', 'storageSave']) {
@@ -1488,51 +1651,41 @@ async function refreshStorage(fillForm = false) {
   try {
     renderStorage(await api('/api/storage'), fillForm);
   } catch (err) {
-    if (!isOffline(err)) $('storageDetail').textContent = errorMessage(err);
+    if (!isOffline(err)) morph($('storageDetail'), storageTrouble(errorMessage(err)));
     clearTimeout(storageTimer);
     storageTimer = setTimeout(refreshStorage, 10000);
   }
 }
 
 async function testStorage() {
-  const button = $('storageTest');
-  busyButton(button, true, 'Testing…');
   try {
-    const data = await api('/api/storage/test', { method: 'POST', body: {} });
+    const data = await busy($('storageTest'), api('/api/storage/test', { method: 'POST', body: {} }));
     const result = data.result || {};
     if (result.ok) {
-      toast('The bucket answers (' + result.latency_ms + ' ms)');
+      toast('The bucket answers (' + result.latency_ms + ' ms)', 'success');
     } else {
       toast(result.error || 'The bucket did not answer.', 'error');
     }
     if (data.status) renderStorage(data.status);
   } catch (err) {
     toast(errorMessage(err), 'error');
-  } finally {
-    busyButton(button, false, 'Testing…');
   }
 }
 
 async function syncStorage() {
-  const button = $('storageSync');
-  busyButton(button, true, 'Uploading…');
   try {
-    const data = await api('/api/storage/sync', { method: 'POST', body: {} });
-    toast('Everything is uploaded');
+    const data = await busy($('storageSync'), api('/api/storage/sync', { method: 'POST', body: {} }));
+    toast('Everything is uploaded', 'success');
     if (data.status) renderStorage(data.status);
   } catch (err) {
     toast(errorMessage(err), 'error');
     refreshStorage();
-  } finally {
-    busyButton(button, false, 'Uploading…');
   }
 }
 
 async function saveStorageCredentials() {
-  const button = $('storageSave');
-  busyButton(button, true, 'Checking…');
   try {
-    const data = await api('/api/storage/credentials', {
+    const data = await busy($('storageSave'), api('/api/storage/credentials', {
       method: 'PUT',
       body: {
         endpoint: $('storageEndpoint').value.trim(),
@@ -1541,20 +1694,18 @@ async function saveStorageCredentials() {
         secret_access_key: $('storageSecret').value.trim(),
         path_style: $('storagePathStyle').checked,
       },
-    });
-    toast('Credentials saved');
+    }));
+    toast('Credentials saved', 'success');
     if (data.status) renderStorage(data.status, true);
   } catch (err) {
     toast(errorMessage(err), 'error');
-  } finally {
-    busyButton(button, false, 'Checking…');
   }
 }
 
 /* ------------------------------------------------------------ side tasks */
 
 // The marks beside a diagnostics row: a check that names a program is drawn
-// with that program's mark, so the four cards above and this list read as one
+// with that program's mark, so the cards above and this list read as one
 // thing.
 const CHECK_MARKS = {
   'Claude Code': 'claude', 'Claude Code state': 'claude',
@@ -1563,34 +1714,33 @@ const CHECK_MARKS = {
   Shell: 'shell',
 };
 
+function checkRow(check) {
+  const mark = CHECK_MARKS[check.name] || '';
+  // §E.10 rule 3: a version, a path, a socket or an error message is
+  // technical state, so it is behind the row's "i" and never in the line
+  // itself. What is visible is the verdict, in words.
+  const tip = el('td', { class: 'so-check__tip' });
+  // A detail is split into the bubble's lines at its " · " or at a newline,
+  // which is how a row with a list in it - the updates - says one item per
+  // line.
+  if (check.detail) tip.append(infoTip(String(check.detail).split(/\n| · /), { label: check.name + ' details' }));
+  return el('tr', { class: 'so-check', 'data-ok': String(!!check.ok) },
+    el('th', { scope: 'row', class: 'ds-col--text' },
+      el('span', { class: 'so-cell-name' }, mark ? agentMark(mark, 16) : null,
+        el('span', { class: 'so-check__label', text: check.name })),
+      el('span', { class: 'ds-meta so-cell-more so-check__summary', text: check.summary || (check.ok ? 'ok' : 'not ready') })),
+    el('td', {}, check.ok ? chipEl('ok', 'OK') : chipEl('error', 'Not ready', 'failed')),
+    tip);
+}
+
 async function runChecks() {
-  const button = $('runChecks');
-  const host = $('checks');
-  button.disabled = true;
-  button.textContent = 'Checking…';
-  host.innerHTML = '';
   try {
-    const data = await api('/api/diagnostics', { method: 'POST', body: {} });
-    for (const check of data.checks || []) {
-      const mark = CHECK_MARKS[check.name] || '';
-      // §E.10 rule 3: a version, a path, a socket or an error message is
-      // technical state, so it is behind the row's "i" and never in the line
-      // itself. What is visible is the verdict, in words.
-      host.append(el('div', { class: 'check' },
-        el('span', { class: 'st ' + (check.ok ? 'ok' : 'bad') }),
-        el('span', { class: 'nm' }, mark ? agentMark(mark, 14) : null, el('span', { text: check.name })),
-        el('span', { class: 'dt', text: check.summary || (check.ok ? 'ok' : 'not ready') }),
-        // A detail is split into the bubble's lines at its " · " or at a
-        // newline, which is how a row with a list in it - the updates -
-        // says one item per line.
-        check.detail ? infoTip(String(check.detail).split(/\n| · /), { label: check.name + ' details' }) : null,
-      ));
-    }
+    const data = await busy($('runChecks'), api('/api/diagnostics', { method: 'POST', body: {} }));
+    const checks = data.checks || [];
+    $('checks').replaceChildren(...checks.map(checkRow));
+    $('checksTable').hidden = !checks.length;
   } catch (err) {
     toast(errorMessage(err), 'error');
-  } finally {
-    button.disabled = false;
-    button.textContent = 'Run checks';
   }
 }
 
@@ -1601,16 +1751,12 @@ async function changePassword() {
     toast('Fill in both password fields.', 'error');
     return;
   }
-  const button = $('changePw');
-  busyButton(button, true, 'Changing…');
   try {
-    await api('/api/settings/password', { method: 'POST', body: { current, next } });
+    await busy($('changePw'), api('/api/settings/password', { method: 'POST', body: { current, next } }));
     $('pwCurrent').value = '';
     $('pwNext').value = '';
-    toast('Password changed');
+    toast('Password changed', 'success');
   } catch (err) {
     toast(errorMessage(err), 'error');
-  } finally {
-    busyButton(button, false, 'Changing…');
   }
 }

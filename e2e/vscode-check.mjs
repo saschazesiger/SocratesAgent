@@ -38,7 +38,7 @@ try {
  const list = (await (await s.context.request.get(s.url+'/api/sessions')).json()).sessions;
  const row = list.find((one)=>one.harness==='vscode');
  assert(row && row.workdir===project);
- assert.equal(await s.page.locator('.chat-item[data-id="'+row.id+'"]').count(),0);
+ assert.equal(await s.page.locator('.so-row[data-id="'+row.id+'"]').count(),0);
  console.log('Workbench loaded from the folder, without a row of its own');
  // Dismiss workspace trust if VS Code asks before opening project files.
  const trust=iframe.getByRole('button',{name:/Yes, I trust/});
@@ -70,7 +70,7 @@ try {
  await s.page.reload();
  await s.page.frameLocator('iframe.ide-frame').locator('.monaco-workbench').waitFor({timeout:90000});
  console.log('IDE survived Socrates restart');
- await s.page.locator('.chat-item[data-id="'+shell.session.id+'"]').click();
+ await s.page.locator('.so-row[data-id="'+shell.session.id+'"]').click();
  await s.page.locator('.xterm-screen').waitFor();
  assert.equal(await s.page.locator('iframe.ide-frame').count(),0);
  console.log('Switch to shell passed');

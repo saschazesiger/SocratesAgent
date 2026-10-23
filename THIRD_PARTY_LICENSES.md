@@ -14,9 +14,11 @@ Three groups, and they are legally different:
   `cloudflared`. Separate executables, found on `PATH` or downloaded at
   runtime, never linked into anything.
 - **Shipped in the web assets** — the xterm.js terminal and its addons, MIT,
-  vendored as minified bundles under `internal/web/static/vendor/` and embedded
-  into the binary. Shipping the binary ships those files, so their notice
-  travels here.
+  vendored as minified bundles under `internal/web/static/vendor/`, and the
+  Dashboard-Style design system the interface is built on, MIT, vendored under
+  `internal/web/static/vendor/dashboard-style/` with its `LICENSE`; all of it is
+  embedded into the binary. Shipping the binary ships those files, so their
+  notice travels here.
 - **Installed by `scripts/install.sh`** — a handful of Debian or Ubuntu
   packages (`tmux` among them), the three CLIs and code-server.
 
@@ -33,6 +35,11 @@ under the SIL Open Font License 1.1. The unmodified WOFF2 files come from
 [adobe-fonts/source-code-pro, commit 803b7e23](https://github.com/adobe-fonts/source-code-pro/tree/803b7e23ec97ae58b6232ea76519a76d428ba268/WOFF2/OTF).
 The complete copyright and licence notice is shipped alongside them in
 [`internal/web/static/fonts/LICENSE.md`](internal/web/static/fonts/LICENSE.md).
+
+Dashboard-Style brings **Google Sans** (latin and latin-ext, variable weight),
+also under the SIL Open Font License 1.1, unmodified. Its licence is shipped
+beside the files in
+[`internal/web/static/vendor/dashboard-style/fonts/OFL.txt`](internal/web/static/vendor/dashboard-style/fonts/OFL.txt).
 
 ## Compiled into the binary
 

@@ -1,1 +1,338 @@
-/* so-admin.css: project components of the admin page (owner WP7). Tokens only; see MIGRATION.md §3.4. */
+/*
+ * so-admin.css: the admin page's own components, with the prefix so-. They
+ * read tokens only (--ds-* and the --so-* of theme.css), are unlayered, and
+ * never restyle a .ds-* component: DS elements are placed inside them.
+ *
+ *   .so-admin          the page's .ds-app: cards stop clear of the view's top
+ *                      when the drawer scrolls to them
+ *   .so-admin-bar      Save at the end of the top bar
+ *   .so-admin-notice   a slot for a page or card alert, empty until needed
+ *   .so-admin-group    the program cards, one block of the page
+ *   .so-admin-actions  a wrapping row of buttons inside a card
+ *   .so-admin-checks   a wrapping row of checkboxes
+ *   .so-admin-add      the "new profile" inline form under the list
+ *   .so-admin-foot     the second Save and the version at the page's end
+ *   .so-state          a status line: __line (chip and facts), __tip (the "i")
+ *   .so-rows           a list of editable rows with hairlines between them
+ *   .so-preset         one preset directory: name, path, remove
+ *   .so-profile        one profile: grip, __main (__name, logins), __actions
+ *   .so-model          one model of a short list: grip, __name, effort, remove
+ *   .so-grip           the drag handle of a row; the row being dragged
+ *                      carries data-state="dragging"
+ *   .so-program        a program's card: __name (mark and label), __state
+ *   .so-cell-name      a table cell's name with its mark; .so-cell-more the
+ *                      quiet line under it
+ *   .so-check          a setup check row: __label, __summary, __tip
+ *   .so-col-status, .so-col-tip  stable widths for columns with live values
+ *   .so-log            a log tail
+ *   .so-disclosure     <details class="ds-collapsible so-disclosure">: the
+ *                      summary row and __body; .so-guide-steps its numbered steps
+ */
+
+/* ── Frame ───────────────────────────────────────────────────────────── */
+
+.so-admin .ds-page > .ds-card,
+.so-admin .so-admin-group,
+.so-program {
+  scroll-margin-top: var(--ds-space-4);
+}
+
+.so-admin-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  min-width: 0;
+  margin-left: auto;
+}
+
+.so-admin-notice {
+  display: grid;
+  gap: var(--ds-space-3);
+}
+
+.so-admin-notice:empty {
+  display: none;
+}
+
+.so-admin-group {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--ds-space-5);
+}
+
+.so-admin-actions,
+.so-admin-checks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-2);
+}
+
+.so-admin-checks {
+  gap: var(--ds-space-2) var(--ds-space-6);
+}
+
+.so-admin-add {
+  align-items: flex-end;
+}
+
+.so-admin-foot {
+  padding-bottom: var(--ds-space-6);
+}
+
+.so-admin-foot > .ds-meta {
+  margin-left: auto;
+}
+
+/* ── Status line ─────────────────────────────────────────────────────── */
+
+.so-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-2);
+  min-width: 0;
+}
+
+.so-state__line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-2) var(--ds-space-3);
+  min-width: 0;
+  color: var(--ds-text-2);
+  font: var(--ds-font-meta);
+}
+
+.so-state__tip {
+  display: inline-flex;
+}
+
+.so-state__tip:empty {
+  display: none;
+}
+
+/* ── Editable rows ───────────────────────────────────────────────────── */
+
+.so-rows {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+
+.so-rows > .so-preset + .so-preset {
+  margin-top: var(--ds-space-2);
+}
+
+.so-preset {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto;
+  align-items: center;
+  gap: var(--ds-space-2);
+}
+
+.so-profile,
+.so-model {
+  display: grid;
+  align-items: center;
+  gap: var(--ds-space-2) var(--ds-space-3);
+  padding-block: var(--ds-space-3);
+  border-bottom: 1px solid var(--ds-line);
+  background: var(--ds-surface);
+}
+
+.so-profile:first-child,
+.so-model:first-child {
+  border-top: 1px solid var(--ds-line);
+}
+
+.so-profile {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.so-model {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  padding-block: var(--ds-space-2);
+}
+
+.so-profile__main,
+.so-model__name {
+  display: grid;
+  gap: var(--ds-space-1);
+  min-width: 0;
+}
+
+.so-profile__main > .ds-input {
+  max-width: var(--so-name-field-width);
+}
+
+.so-profile__name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--ds-space-2);
+  margin: 0;
+  font: var(--ds-font-label);
+  color: var(--ds-text);
+}
+
+.so-profile__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--ds-space-1);
+}
+
+.so-model__name > .so-ellipsis:first-child {
+  font: var(--ds-font-body);
+  color: var(--ds-text);
+}
+
+.so-grip {
+  cursor: grab;
+  touch-action: none;
+}
+
+.so-profile[data-state="dragging"],
+.so-model[data-state="dragging"] {
+  position: relative;
+  z-index: var(--ds-z-raised);
+  border-color: transparent;
+  border-radius: var(--ds-radius-sm);
+  box-shadow: var(--ds-elev-2);
+}
+
+:is(.so-profile, .so-model)[data-state="dragging"] .so-grip {
+  cursor: grabbing;
+}
+
+/* ── Program cards ───────────────────────────────────────────────────── */
+
+.so-program__name {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-space-3);
+  min-width: 0;
+}
+
+.so-program__state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+}
+
+/* ── Tables ──────────────────────────────────────────────────────────── */
+
+.so-cell-name {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  min-width: 0;
+  color: var(--ds-text);
+}
+
+.so-cell-more {
+  display: block;
+  margin-top: var(--ds-space-1);
+}
+
+.so-col-status {
+  min-width: var(--so-col-status);
+}
+
+.so-col-tip {
+  width: var(--ds-space-10);
+}
+
+.so-check__label {
+  font: var(--ds-font-label);
+}
+
+.so-check__summary {
+  overflow-wrap: anywhere;
+}
+
+.so-check > .so-check__tip {
+  text-align: right;
+}
+
+/* ── Logs ────────────────────────────────────────────────────────────── */
+
+.so-log {
+  max-height: var(--so-log-max-height);
+  margin: 0;
+  padding: var(--ds-space-3) var(--ds-space-4);
+  overflow: auto;
+  border-radius: var(--ds-radius-sm);
+  background: var(--ds-code-bg);
+  color: var(--ds-text);
+  font: var(--ds-font-code);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.so-log:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-offset);
+}
+
+/* ── Disclosure ──────────────────────────────────────────────────────── */
+
+.so-disclosure > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  font: var(--ds-font-label);
+  color: var(--ds-text);
+  cursor: pointer;
+  border-radius: var(--ds-radius-xs);
+}
+
+.so-disclosure > summary:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-offset);
+}
+
+.so-disclosure__body {
+  display: grid;
+  gap: var(--ds-space-3);
+  margin-top: var(--ds-space-3);
+}
+
+.so-guide-steps {
+  display: grid;
+  gap: var(--ds-space-2);
+  margin: 0;
+  padding-left: var(--ds-space-6);
+  font: var(--ds-font-body);
+  color: var(--ds-text);
+}
+
+/* ── Phones ──────────────────────────────────────────────────────────── */
+
+@media (max-width: 600px) {
+  .so-preset {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .so-preset > .ds-input:first-child {
+    grid-column: 1 / -1;
+  }
+
+  .so-profile {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .so-profile__actions {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+
+  .so-model {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .so-model > select {
+    grid-column: 2;
+  }
+}

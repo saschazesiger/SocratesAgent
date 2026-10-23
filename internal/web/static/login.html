@@ -26,47 +26,74 @@
 <script src="/static/vendor/dashboard-style/ds.js" defer></script>
 </head>
 <body>
-<main class="auth">
-  <div class="auth-card">
-    <img class="so-logo" src="/static/img/logo.png" alt="" width="42" height="42">
-    <h1>Welcome back</h1>
-    <p class="sub">Enter your password to open Socrates.</p>
-    <form id="form">
+<main class="so-auth">
+  <section class="ds-card so-auth__card" aria-labelledby="title">
+    <img class="so-logo" src="/static/img/logo.png" alt="" width="32" height="32">
+    <header class="ds-page-head">
+      <h1 class="ds-page-head__title" id="title">Welcome back</h1>
+      <p class="ds-page-head__lead">Enter your password to open Socrates.</p>
+    </header>
+    <form class="ds-form" id="form" novalidate>
       <div class="ds-field">
-        <label for="password">Password</label>
-        <input class="ds-input" type="password" id="password" autocomplete="current-password" autofocus required>
+        <label class="ds-field__label" for="password">Password</label>
+        <input class="ds-input" type="password" id="password" autocomplete="current-password" autofocus required aria-describedby="passwordError">
+        <small class="ds-field__hint ds-field__hint--error" id="passwordError" hidden></small>
       </div>
-      <button class="ds-btn ds-btn--primary" type="submit" id="submit">Sign in</button>
+      <button class="ds-btn ds-btn--primary so-auth__submit" type="submit" id="submit">
+        <span class="ds-btn__faces">
+          <span class="ds-btn__face">Sign in</span>
+          <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Signing in</span>
+        </span>
+      </button>
     </form>
-    <div class="notice" id="notice"></div>
-  </div>
+  </section>
 </main>
 <div class="ds-toasts" id="toasts"></div>
 <script type="module">
-import { api } from '/static/js/api.js';
+import { api, errorMessage } from '/static/js/api.js';
+import { M, icon, html, raw, morph } from '/static/js/ui.js';
+
 const form = document.getElementById('form');
-const notice = document.getElementById('notice');
+const input = document.getElementById('password');
+const error = document.getElementById('passwordError');
 const submit = document.getElementById('submit');
+
+// fail says what went wrong under the field it is about, the documented
+// way: aria-invalid on the field and the error hint it points at.
+function fail(text) {
+  text = text.charAt(0).toUpperCase() + text.slice(1);
+  input.setAttribute('aria-invalid', 'true');
+  morph(error, html`${raw(icon('alertCircle', 16))}${text}`);
+  error.hidden = false;
+  input.focus();
+  input.select();
+}
+
+function clear() {
+  input.removeAttribute('aria-invalid');
+  error.hidden = true;
+  error.textContent = '';
+}
+
+input.addEventListener('input', clear);
+
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
-  notice.className = 'notice';
-  submit.disabled = true;
-  submit.textContent = 'Signing in…';
+  clear();
+  if (!input.value) { fail('Enter your password.'); return; }
   try {
-    await api('/api/login', { method: 'POST', body: { password: document.getElementById('password').value } });
-    // A notification tapped while signed out opened /#q=<id> or /#open=<id>,
-    // the app's "Questions" shortcut /#questions, and the redirect here kept
-    // it: it is where the person was going. Any address the app has is
-    // passed on - session.js routeOf reads what it knows and lands on Home
-    // for anything else - and it only ever goes after '/' on this origin.
-    const route = /^#[^#\s]{1,200}$/.test(location.hash) ? location.hash : '';
-    location.href = '/' + route;
+    await M.busy(submit, () => api('/api/login', { method: 'POST', body: { password: input.value } }), { done: false });
   } catch (err) {
-    notice.className = 'notice error';
-    notice.textContent = err.message;
-    submit.disabled = false;
-    submit.textContent = 'Sign in';
+    fail(errorMessage(err));
+    return;
   }
+  // A notification tapped while signed out opened /#q=<id> or /#open=<id>,
+  // the app's "Questions" shortcut /#questions, and the redirect here kept
+  // it: it is where the person was going. Any address the app has is
+  // passed on - session.js routeOf reads what it knows and lands on Home
+  // for anything else - and it only ever goes after '/' on this origin.
+  const route = /^#[^#\s]{1,200}$/.test(location.hash) ? location.hash : '';
+  location.href = '/' + route;
 });
 </script>
 </body>

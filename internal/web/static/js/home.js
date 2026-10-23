@@ -17,13 +17,14 @@
 // The module draws and nothing else: what a tap does - open a session, open
 // the questions, start a new one - is the page's.
 
-import { el, setClass } from './api.js';
-import { agentMark } from './logos.js';
-import { isTool, label as harnessLabel } from './harnesses.js';
+import { setClass } from './api.js';
+import { M, html, raw, icon, morph, flipMorph } from './ui.js';
+import { agentMarkHtml } from './logos.js';
+import { isTool } from './harnesses.js';
 import { foldersOf, folderKeyOf, isPrepared, momentOf } from './folders.js';
 import { whenShort } from './prestart.js';
 import {
-  OUTCOME_WORDS, CHECKING_WORDS, outcomeMark, outcomeLine, outcomeIconHtml,
+  OUTCOME_WORDS, OUTCOME_ICON, CHECKING_WORDS, outcomeMark, outcomeLine, outcomeIconHtml,
 } from './outcome.js';
 
 // How often the times on the page are worked out again: "2 min ago" turns
@@ -44,19 +45,19 @@ const CONN_EVERY = 2000;
 const LIVE_STATES = new Set(['running', 'starting', 'resuming']);
 const STOPPED_STATES = new Set(['needs_resume', 'exited', 'failed']);
 
-// The cards, in the order they are drawn. Questions is not in the grid: it is
-// the first and the largest card, and the only one a tap answers rather than
-// filters with.
+// The tiles, in the order they are drawn, each with the DS glyph its label
+// wears. Questions is not among them: it is the first and the largest card,
+// and the only one a tap answers rather than filters with.
 const CARDS = [
-  { key: 'running', label: 'Running', none: 'Nothing is working' },
-  { key: 'tasks', label: 'Background tasks', none: 'No background work' },
-  { key: 'finished', label: 'Finished', none: 'Nothing unread' },
-  { key: 'ready', label: 'Ready', none: 'Nothing is idle' },
-  { key: 'review', label: 'Review pending', none: 'Nothing to review' },
-  { key: 'pending', label: 'Pending', none: 'Nothing pending' },
-  { key: 'prepared', label: 'Prepared', none: 'Nothing prepared' },
-  { key: 'stopped', label: 'Not running', none: 'Everything is running' },
-  { key: 'done', label: 'Done', none: 'Nothing done yet' },
+  { key: 'running', label: 'Running', glyph: 'activity', none: 'Nothing is working' },
+  { key: 'tasks', label: 'Background tasks', glyph: 'background', none: 'No background work' },
+  { key: 'finished', label: 'Finished', glyph: 'checkCircle', none: 'Nothing unread' },
+  { key: 'ready', label: 'Ready', glyph: 'compose', none: 'Nothing is idle' },
+  { key: 'review', label: 'Review pending', glyph: 'review', none: 'Nothing to review' },
+  { key: 'pending', label: 'Pending', glyph: 'waiting', none: 'Nothing pending' },
+  { key: 'prepared', label: 'Prepared', glyph: 'prestart', none: 'Nothing prepared' },
+  { key: 'stopped', label: 'Not running', glyph: 'ban', none: 'Everything is running' },
+  { key: 'done', label: 'Done', glyph: 'archive', none: 'Nothing done yet' },
 ];
 const CARD_LABELS = { questions: 'Questions', ...Object.fromEntries(CARDS.map((c) => [c.key, c.label])) };
 
@@ -69,6 +70,11 @@ const NEEDS_YOU = ['questions', 'finished', 'review'];
 // session waiting on them, and one that is stuck. They are in "Needs you"
 // too, wherever else they are counted.
 const NEEDS_YOU_OUTCOMES = new Set(['needs_input', 'blocked']);
+
+// The status-chip colour of each verdict: green for work that is complete,
+// amber for a session that waits on the person, red for one that is stuck;
+// work left over is said in words and the list glyph, without a colour.
+const OUTCOME_TONE = { complete: 'ok', needs_input: 'warning', blocked: 'error' };
 
 /**
  * waitsOnYou says whether the verdict on a session's last turn is one the
@@ -237,9 +243,23 @@ export function connectionLine(conn, reachable, now = Date.now()) {
   return { kind: 'connecting', words: 'Reconnecting…' };
 }
 
-const HOUSE_SVG ='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-  + '<path d="M3.5 10.5L12 3.5l8.5 7"/><path d="M5.5 9v10.5a1 1 0 0 0 1 1h3.5v-6h4v6h3.5a1 1 0 0 0 1-1V9"/></svg>';
-const PLUS_SVG = '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
+/**
+ * connectionChip is the connection line as a DS status chip: always an icon
+ * and the words, in the colour of how far the numbers can be trusted. A
+ * stream on its way back turns the chip's own spinner, the one DS draws for
+ * something that is happening now.
+ */
+function connectionChip({ kind, words }) {
+  if (kind === 'connecting') {
+    return html`<span class="ds-status ds-status--running"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>${words}</span></span>`;
+  }
+  const [modifier, glyph] = {
+    live: [' ds-status--ok', 'wifi'],
+    polling: ['', 'clock'],
+    offline: [' ds-status--warning', 'wifiOff'],
+  }[kind] || ['', 'info'];
+  return html`<span class="ds-status${modifier}">${raw(icon(glyph, 16))}<span>${words}</span></span>`;
+}
 
 /**
  * mountHome wires the page to its host. ctx:
@@ -268,70 +288,105 @@ export function mountHome(ctx) {
   let timer = null;
   let connTimer = null;
 
+  // The frame is drawn once; what changes in it - the figures, the notes,
+  // the connection chip, the list - is patched in place from then on, so a
+  // figure counts on from what it shows and a ring that turns keeps turning.
   function build() {
-    const conn = el('span', { class: 'home-conn', role: 'status' },
-      el('span', { class: 'home-conn-dot', 'aria-hidden': 'true' }),
-      el('span', { class: 'home-conn-text' }));
-    const newBtn = el('button', {
-      class: 'ds-btn home-new', type: 'button', html: PLUS_SVG, onclick: () => ctx.newSession(),
-    });
-    newBtn.append(el('span', { text: 'New session' }));
-    const questions = el('button', {
-      class: 'home-card home-questions', type: 'button', 'data-card': 'questions',
-      onclick: () => {
+    morph(host, html`<div class="ds-content">
+      <div class="ds-page so-home__page">
+        <div class="so-page-head">
+          <header class="ds-page-head">
+            <h1 class="ds-page-head__title" tabindex="-1">Home</h1>
+            <div class="so-home__conn" role="status"></div>
+          </header>
+          <button class="ds-btn so-home__new" type="button" data-action="new">${raw(icon('plus', 16))}New session</button>
+        </div>
+        <section class="so-home__numbers" aria-label="At a glance">
+          <div class="ds-card ds-card--interactive so-home__questions" data-card="questions" data-value="0" data-state="none">
+            <div class="so-home__q">
+              <span class="so-home__q-figure" aria-hidden="true">0</span>
+              <span class="so-home__q-words">
+                <button class="ds-card__action so-home__q-action" type="button" data-action="questions" aria-pressed="false">Questions</button>
+                <span class="so-home__q-note"></span>
+              </span>
+              <span class="so-home__q-end">
+                <span class="ds-status ds-status--warning so-home__q-status" hidden>${raw(icon('waiting', 16))}<span>Waiting for you</span></span>
+                <button class="ds-btn ds-btn--primary so-home__q-answer" type="button" data-action="questions" hidden>Answer</button>
+              </span>
+            </div>
+          </div>
+          <div class="so-home__tiles">${CARDS.map((card) => html`<button class="ds-tile so-home__tile" type="button" data-action="card" data-card="${card.key}" data-value="0" aria-pressed="false">
+            <span class="ds-tile__label">${raw(icon(card.glyph, 20))}<span>${card.label}</span></span>
+            <span class="ds-tile__value">0</span>
+            <span class="ds-tile__note">${card.none}</span>
+          </button>`)}</div>
+        </section>
+        <section class="so-home__sessions" aria-labelledby="homeListTitle">
+          <div class="so-home__list-head">
+            <h2 class="so-home__list-title" id="homeListTitle">Needs you</h2>
+            <div class="so-home__segs" role="group" aria-label="Show">
+              <button class="ds-btn ds-btn--quiet so-home__seg" type="button" data-action="seg" data-filter="needs" aria-pressed="true">Needs you</button>
+              <button class="ds-btn ds-btn--quiet so-home__seg" type="button" data-action="seg" data-filter="all" aria-pressed="false">All</button>
+            </div>
+          </div>
+          <div class="so-home__list"></div>
+          <div class="so-home__empty" hidden></div>
+        </section>
+      </div>
+    </div>`);
+    host.addEventListener('click', onClick);
+    const $ = (selector) => host.querySelector(selector);
+    const tiles = new Map();
+    for (const node of host.querySelectorAll('.so-home__tile')) {
+      tiles.set(node.dataset.card, {
+        node, value: node.querySelector('.ds-tile__value'), note: node.querySelector('.ds-tile__note'),
+      });
+    }
+    return {
+      conn: $('.so-home__conn'),
+      numbers: $('.so-home__numbers'),
+      questions: $('.so-home__questions'),
+      qFigure: $('.so-home__q-figure'),
+      qAction: $('.so-home__q-action'),
+      qNote: $('.so-home__q-note'),
+      qStatus: $('.so-home__q-status'),
+      qAnswer: $('.so-home__q-answer'),
+      tiles,
+      segs: [...host.querySelectorAll('.so-home__seg')],
+      listTitle: $('.so-home__list-title'),
+      list: $('.so-home__list'),
+      empty: $('.so-home__empty'),
+    };
+  }
+
+  // One listener for every control on Home: the list is patched from markup,
+  // so its buttons carry what they do rather than a handler each.
+  function onClick(event) {
+    const target = event.target.closest('[data-action]');
+    if (!target || !host.contains(target)) return;
+    const card = target.closest('.so-home__card');
+    switch (target.dataset.action) {
+      case 'new': ctx.newSession(); break;
+      case 'questions':
         if (questionQueue(ctx).length) ctx.openQuestions('');
         else choose('questions');
-      },
-    },
-    el('span', { class: 'home-q-main' },
-      el('span', { class: 'home-count' }),
-      el('span', { class: 'home-q-words' },
-        el('span', { class: 'home-card-label', text: 'Questions' }),
-        el('span', { class: 'home-card-sub' }))),
-    el('span', { class: 'home-q-answer', text: 'Answer' }));
-    const cards = new Map();
-    const grid = el('div', { class: 'home-grid' });
-    for (const card of CARDS) {
-      const node = el('button', {
-        class: 'home-card', type: 'button', 'data-card': card.key, 'aria-pressed': 'false',
-        onclick: () => choose(filter === card.key ? 'all' : card.key),
-      },
-      el('span', { class: 'home-count' }),
-      el('span', { class: 'home-card-label', text: card.label }),
-      el('span', { class: 'home-card-sub' }));
-      cards.set(card.key, node);
-      grid.append(node);
+        break;
+      case 'card': choose(filter === target.dataset.card ? 'all' : target.dataset.card); break;
+      case 'seg': choose(target.dataset.filter); break;
+      case 'open': if (card) ctx.select(card.dataset.id); break;
+      case 'answer': if (card) ctx.openQuestions(card.dataset.id); break;
+      default: break;
     }
-    const seg = (key, text) => el('button', {
-      class: 'home-seg', type: 'button', 'data-filter': key, 'aria-pressed': 'false', text,
-      onclick: () => choose(key),
-    });
-    const listTitle = el('h2', { class: 'home-list-title' });
-    const segs = el('div', { class: 'home-segs', role: 'group', 'aria-label': 'Show' },
-      seg('needs', 'Needs you'), seg('all', 'All'));
-    const list = el('div', { class: 'home-list' });
-    const empty = el('div', { class: 'home-empty', hidden: true });
-    const inner = el('div', { class: 'home-inner' },
-      el('div', { class: 'home-head' },
-        el('div', { class: 'home-head-text' },
-          el('h1', { class: 'home-title' },
-            el('span', { class: 'home-title-mark', html: HOUSE_SVG }), el('span', { text: 'Home' })),
-          conn),
-        newBtn),
-      el('div', { class: 'home-numbers' }, questions, grid),
-      el('div', { class: 'home-list-head' }, listTitle, segs),
-      list,
-      empty);
-    host.replaceChildren(el('div', { class: 'home-scroll' }, inner));
-    return { conn, questions, cards, segs, listTitle, list, empty, rows: new Map() };
   }
 
   function choose(key) {
     filter = key;
-    render();
+    render({ live: false });
   }
 
-  function render() {
+  // `live` is false only for the person's own tap: a list they reordered
+  // glides at once, one the data reordered waits while it is pointed at.
+  function render({ live = true } = {}) {
     if (!built || host.hidden) return;
     // The connection line is this device's own reckoning (when it last heard
     // anything); every other age on the page is a server timestamp, and is
@@ -350,32 +405,34 @@ export function mountHome(ctx) {
     const asking = questionQueue(ctx);
     drawConnection(local);
 
-    // The Questions card: the one in colour, and the one that is answered
-    // rather than filtered with.
-    const q = built.questions;
+    // The Questions card: the first and the largest, and the one that is
+    // answered rather than filtered with.
     const waiting = asking.length;
-    setClass(q, 'asking', waiting > 0);
-    setClass(q, 'zero', waiting === 0);
-    q.setAttribute('aria-pressed', filter === 'questions' ? 'true' : 'false');
-    q.querySelector('.home-count').textContent = String(waiting);
-    q.querySelector('.home-card-label').textContent = waiting === 1 ? 'Question' : 'Questions';
-    q.querySelector('.home-card-sub').textContent = waiting
-      ? (waiting === 1 ? asking[0].title : 'The oldest: ' + asking[0].title)
-      : 'Nothing to answer';
-    q.setAttribute('aria-label', waiting
+    const q = built;
+    q.questions.dataset.state = waiting ? 'asking' : 'none';
+    q.questions.dataset.value = String(waiting);
+    figure(q.qFigure, waiting);
+    q.qAction.setAttribute('aria-pressed', filter === 'questions' ? 'true' : 'false');
+    setText(q.qAction, waiting === 1 ? 'Question' : 'Questions');
+    q.qAction.setAttribute('aria-label', waiting
       ? waiting + (waiting === 1 ? ' question' : ' questions') + '. Answer'
       : 'No questions');
+    setText(q.qNote, waiting
+      ? (waiting === 1 ? asking[0].title : 'The oldest: ' + asking[0].title)
+      : 'Nothing to answer');
+    q.qStatus.hidden = !waiting;
+    q.qAnswer.hidden = !waiting;
 
     for (const card of CARDS) {
-      const node = built.cards.get(card.key);
+      const tile = built.tiles.get(card.key);
       const members = byCard.get(card.key);
       const count = members.length;
-      setClass(node, 'zero', count === 0);
-      node.setAttribute('aria-pressed', filter === card.key ? 'true' : 'false');
-      node.querySelector('.home-count').textContent = String(count);
-      node.querySelector('.home-card-sub').textContent = count ? cardSub(card.key, members, now) : card.none;
+      tile.node.dataset.value = String(count);
+      tile.node.setAttribute('aria-pressed', filter === card.key ? 'true' : 'false');
+      figure(tile.value, count);
+      setText(tile.note, count ? cardSub(card.key, members, now) : card.none);
     }
-    for (const button of built.segs.querySelectorAll('.home-seg')) {
+    for (const button of built.segs) {
       button.setAttribute('aria-pressed', button.dataset.filter === filter ? 'true' : 'false');
     }
 
@@ -403,9 +460,22 @@ export function mountHome(ctx) {
     } else {
       shown = [...byCard.get(filter)].sort((a, b) => momentOf(b) - momentOf(a));
     }
-    built.listTitle.textContent = filter === 'needs' ? 'Needs you' : filter === 'all' ? 'All sessions' : CARD_LABELS[filter];
-    drawRows(shown, cardsBy, now);
+    setText(built.listTitle, filter === 'needs' ? 'Needs you' : filter === 'all' ? 'All sessions' : CARD_LABELS[filter]);
+    const labels = folderLabels();
+    const cards = shown.map((session) => cardHtml(session, cardsBy.get(session.id) || [], labels, now));
+    flipMorph(built.list, html`${cards}`, { items: '.so-home__card', live });
     drawEmpty(sessions, shown);
+  }
+
+  // A figure counts from what it shows to what it is now (DS.motion.countUp);
+  // the number itself is kept in data-value beside it, which is what is read
+  // back - a figure halfway through its count is not the count.
+  function figure(node, value) {
+    M.countUp(node, value);
+  }
+
+  function setText(node, text) {
+    if (node.textContent !== text) node.textContent = text;
   }
 
   // What a card says under its number: the one fact about its sessions that
@@ -428,18 +498,22 @@ export function mountHome(ctx) {
     return 'Latest: ' + newest.title;
   }
 
-  // The line under the title says how live the numbers are, in words, and
-  // the numbers are dimmed while they are not: a count that is a minute old
-  // and drawn as if it were current is the one thing this page must not do.
+  // The chip under the title says how live the numbers are, in words, and
+  // the numbers are dimmed while they are not (DS .ds-stale): a count that is
+  // a minute old and drawn as if it were current is the one thing this page
+  // must not do.
   function drawConnection(now) {
-    const { kind, words } = connectionLine(ctx.connection(), ctx.reachable(), now);
-    built.conn.dataset.status = kind;
-    const text = built.conn.querySelector('.home-conn-text');
-    if (text.textContent !== words) text.textContent = words;
-    setClass(host, 'not-live', kind !== 'live' && kind !== 'polling');
-    // While it is not live the line counts the seconds, so "updated 40 s ago"
+    const line = connectionLine(ctx.connection(), ctx.reachable(), now);
+    built.conn.dataset.status = line.kind;
+    morph(built.conn, connectionChip(line));
+    const stale = line.kind !== 'live' && line.kind !== 'polling';
+    setClass(built.numbers, 'ds-stale', stale);
+    if (stale) built.numbers.setAttribute('aria-busy', 'true');
+    else built.numbers.removeAttribute('aria-busy');
+    host.toggleAttribute('data-stale', stale);
+    // While it is not live the chip counts the seconds, so "updated 40 s ago"
     // is never a quarter of a minute behind.
-    if (kind === 'live') stopConnTimer();
+    if (line.kind === 'live') stopConnTimer();
     else if (!connTimer) connTimer = setInterval(() => { if (built && !host.hidden) drawConnection(Date.now()); }, CONN_EVERY);
   }
 
@@ -447,38 +521,9 @@ export function mountHome(ctx) {
     if (connTimer) { clearInterval(connTimer); connTimer = null; }
   }
 
-  /* ------------------------------------------------------------ the rows */
+  /* ----------------------------------------------------------- the cards */
 
-  // The rows are patched rather than rebuilt, for the sidebar's reason: a
-  // node taken out and put back restarts its animation, and the ring of a
-  // working session that starts its turn again every second is a page that
-  // looks broken.
-  function drawRows(shown, cardsBy, now) {
-    const labels = folderLabels();
-    const keep = new Set();
-    let previous = null;
-    for (const session of shown) {
-      keep.add(session.id);
-      let row = built.rows.get(session.id);
-      if (!row) {
-        row = buildRow(session.id);
-        built.rows.set(session.id, row);
-      }
-      updateRow(row, session, cardsBy.get(session.id) || [], labels, now);
-      const node = row.node;
-      if (previous ? previous.nextElementSibling !== node : built.list.firstElementChild !== node) {
-        if (previous) previous.after(node); else built.list.prepend(node);
-      }
-      previous = node;
-    }
-    for (const [id, row] of built.rows) {
-      if (keep.has(id)) continue;
-      row.node.remove();
-      built.rows.delete(id);
-    }
-  }
-
-  // The folder a row works in, by the name the sidebar gives its folder -
+  // The folder a card works in, by the name the sidebar gives its folder -
   // which is the directory's own name, widened only as far as it takes to
   // tell two of them apart.
   function folderLabels() {
@@ -487,95 +532,102 @@ export function mountHome(ctx) {
     return labels;
   }
 
-  // A row is two buttons side by side - its title, which opens the session,
-  // and Answer - and never one button with another inside it, which a
-  // screen reader flattens into one. A tap anywhere else on the row opens
-  // the session too, for a finger; that is a convenience, not the control.
-  function buildRow(id) {
-    const mark = el('span', { class: 'home-mark' });
-    const badge = el('span', { class: 'home-badge' });
-    const title = el('button', {
-      class: 'home-row-title', type: 'button',
-      onclick: (event) => { event.stopPropagation(); ctx.select(id); },
-    });
-    const meta = el('span', { class: 'home-row-meta' });
-    const summary = el('span', { class: 'home-row-summary' });
-    const verdict = el('span', { class: 'home-row-outcome', hidden: true });
-    const answer = el('button', {
-      class: 'ds-btn ds-btn--primary home-answer', type: 'button', text: 'Answer', hidden: true,
-      onclick: (event) => { event.stopPropagation(); ctx.openQuestions(id); },
-    });
-    const node = el('div', { class: 'home-row', 'data-id': id },
-      el('span', { class: 'home-mark-wrap' }, mark, badge),
-      el('span', { class: 'home-row-text' }, title, meta, summary, verdict), answer);
-    node.addEventListener('click', () => ctx.select(id));
-    return { node, mark, badge, title, meta, summary, verdict, answer, harness: null, badgeKind: null, verdictKey: null };
-  }
-
-  function updateRow(row, session, cards, labels, now) {
-    if (row.harness !== session.harness) {
-      row.harness = session.harness;
-      row.mark.replaceChildren(agentMark(session.harness, 26));
-      row.mark.title = harnessLabel(session.harness) || '';
-    }
+  // One session is one card, keyed by its id, so a patch keeps its node: a
+  // node taken out and put back restarts its animation, and the ring of a
+  // working session that starts its turn again every second is a page that
+  // looks broken.
+  //
+  // The card is two buttons side by side - its title, which opens the
+  // session and whose hit area DS stretches over the whole card, and Answer
+  // - and never one button with another inside it, which a screen reader
+  // flattens into one.
+  function cardHtml(session, cards, labels, now) {
     const asking = cards.includes('questions');
     const live = LIVE_STATES.has(session.state);
     const act = ctx.activityOf(session);
-    setClass(row.mark, 'busy', live && !!act && act.state === 'busy');
-    setClass(row.mark, 'waiting', asking);
+    const digest = ctx.digestOf(session.id);
+    const done = cards.includes('done');
+    const unread = cards.includes('finished');
     // The hourglass of background work, and of a verdict being read; the
     // verdict's own mark once it is in - the sidebar's corner, larger.
     const outcome = live && ctx.outcomeOf ? ctx.outcomeOf(session) : null;
     const judging = !!outcome && outcome.phase === 'pending';
     const tasks = live && !!act && act.state === 'tasks';
-    const kind = tasks || judging ? 'tasks' : outcomeMark(outcome);
-    if (row.badgeKind !== kind) {
-      row.badgeKind = kind;
-      row.badge.dataset.kind = kind;
-      row.badge.innerHTML = outcomeIconHtml(kind, 16);
-    }
-    row.badge.hidden = !kind;
-    row.badge.title = judging ? CHECKING_WORDS : tasks ? ctx.words.activity.tasks : outcomeLine(outcome);
-    setClass(row.node, 'asking', asking);
-    setClass(row.node, 'unread', cards.includes('finished'));
-    setClass(row.node, 'done', cards.includes('done'));
-    if (row.title.textContent !== session.title) row.title.textContent = session.title;
+    const badge = tasks || judging ? 'tasks' : outcomeMark(outcome);
+    const ring = asking ? 'waiting' : live && !!act && act.state === 'busy' ? 'busy' : '';
+    let mark = agentMarkHtml(session.harness, 24);
+    if (done) mark = mark.replace('class="so-agent', 'class="so-agent so-agent--quiet');
 
     const folder = labels.get(folderKeyOf(session)) || '';
     const at = act && Number(act.since) && live ? Number(act.since) : momentOf(session);
-    const meta = [folder, stateWords(session, cards, act, now), agoWords(at, now)].filter(Boolean).join(' · ');
-    if (row.meta.textContent !== meta) row.meta.textContent = meta;
+    const meta = [folder, agoWords(at, now)].filter(Boolean).join(' · ');
 
-    const digest = ctx.digestOf(session.id);
     let line = '';
     if (digest && digest.summary) line = digest.summary;
     else if (digest && digest.phase === 'pending') line = '…';
     else if (isPrepared(session) && session.draft_preview) line = String(session.draft_preview);
-    if (row.summary.textContent !== line) row.summary.textContent = line;
-    row.summary.hidden = !line;
-    setClass(row.summary, 'pending', !!digest && digest.phase === 'pending');
-    drawVerdict(row, judging ? null : outcome);
-    row.answer.hidden = !asking || unconfirmed(act, digest);
+    const offer = asking && !unconfirmed(act, digest);
+    const state = asking ? 'asking' : unread ? 'unread' : done ? 'done' : '';
+
+    return html`<div class="ds-card ds-card--interactive so-home__card" data-ds-key="${session.id}" data-id="${session.id}" data-state="${state}">
+      <div class="so-home__card-head">
+        <span class="so-mark"${ring ? html` data-ring="${ring}"` : ''}>${raw(mark)}${
+          badge ? html`<span class="so-mark__badge" data-kind="${badge}">${raw(outcomeIconHtml(badge, 16))}</span>` : ''}</span>
+        <span class="so-home__card-text">
+          <button class="ds-card__action so-home__card-title" type="button" data-action="open">${session.title}</button>
+          <span class="so-home__card-status">${stateChip(session, cards, act, outcome, judging, now)}<span class="ds-meta so-home__card-meta">${meta}</span></span>
+        </span>
+        <button class="ds-btn ds-btn--tonal so-home__answer" type="button" data-action="answer"${offer ? '' : ' hidden'}>Answer</button>
+      </div>
+      <p class="so-home__card-summary"${digest && digest.phase === 'pending' ? ' data-state="pending"' : ''}${line ? '' : ' hidden'}>${line}</p>
+      ${verdictHtml(judging ? null : outcome)}
+    </div>`;
   }
 
-  // drawVerdict is the line under a row's summary that says why its turn was
-  // judged so, and what it left open: the reason, then each open task.
-  function drawVerdict(row, outcome) {
+  // verdictHtml is the block under a card's summary that says why its turn
+  // was judged so, and what it left open: the reason, then each open task.
+  function verdictHtml(outcome) {
     const kind = outcomeMark(outcome);
     const todos = kind === 'partial' && Array.isArray(outcome.todos) ? outcome.todos : [];
     const reason = !kind ? '' : kind === 'error' ? outcomeLine(outcome) : (outcome.reason || '');
-    const key = kind + '|' + reason + '|' + todos.join('\n');
-    if (row.verdictKey === key) return;
-    row.verdictKey = key;
-    row.verdict.hidden = !reason && !todos.length;
-    row.verdict.dataset.kind = kind;
-    row.verdict.replaceChildren(
-      ...(reason ? [el('span', { class: 'home-row-reason', text: reason })] : []),
-      ...(todos.length ? [el('ul', { class: 'home-row-todos' }, ...todos.map((todo) => el('li', { text: todo })))] : []));
+    if (!reason && !todos.length) return '';
+    return html`<div class="so-home__verdict" data-kind="${kind}">${
+      reason ? html`<p class="so-home__reason">${reason}</p>` : ''}${
+      todos.length ? html`<ul class="so-home__todos">${todos.map((todo) => html`<li>${todo}</li>`)}</ul>` : ''}</div>`;
   }
 
-  // The state of a row in words: the card it is counted in, said the way the
-  // sidebar says it, and what it was filed as when that is not the ordinary.
+  // The state of a card as a DS status chip: always an icon and the words,
+  // the words being the card it is counted in, said the way the sidebar says
+  // it. The colour is the chip's for what the state asks of the person: amber
+  // for a question, green for work that finished, the spinner for work that
+  // goes on.
+  function stateChip(session, cards, act, outcome, judging, now) {
+    const said = stateWords(session, cards, act, now);
+    let tone = '';
+    let glyph = 'info';
+    if (cards.includes('done')) glyph = 'archive';
+    else if (cards.includes('questions')) {
+      tone = unconfirmed(act, ctx.digestOf(session.id)) ? 'running' : 'warning';
+      glyph = 'waiting';
+    } else if (cards.includes('running') || cards.includes('tasks') || judging) tone = 'running';
+    else if (outcome && outcome.phase === 'ready' && OUTCOME_ICON[outcome.kind]
+      && (cards.includes('finished') || cards.includes('ready'))) {
+      tone = OUTCOME_TONE[outcome.kind] || '';
+      glyph = OUTCOME_ICON[outcome.kind];
+    } else if (cards.includes('finished')) { tone = 'ok'; glyph = 'checkCircle'; }
+    else if (cards.includes('stopped')) { tone = session.state === 'failed' ? 'error' : ''; glyph = session.state === 'failed' ? 'alertCircle' : 'ban'; }
+    else if (cards.includes('ready')) glyph = 'compose';
+    else if (isPrepared(session)) glyph = 'prestart';
+    if (!said) return '';
+    const lead = tone === 'running'
+      ? html`<span class="ds-spinner ds-status__spinner" aria-hidden="true"></span>`
+      : raw(icon(glyph, 16));
+    return html`<span class="ds-status${tone ? ' ds-status--' + tone : ''} so-home__chip">${lead}<span>${said}</span></span>`;
+  }
+
+  // The state of a card in words: the card it is counted in, said the way
+  // the sidebar says it, and what it was filed as when that is not the
+  // ordinary.
   function stateWords(session, cards, act, now) {
     const words = ctx.words;
     if (cards.includes('done')) return 'Done';
@@ -610,32 +662,34 @@ export function mountHome(ctx) {
     return said;
   }
 
-  // What stands where the list would: the one thing to do on an empty
-  // machine, or a plain sentence for a filter with nothing in it.
+  // What stands where the list would (DS empty state): the one thing to do
+  // on an empty machine, or a plain sentence for a filter with nothing in it.
   function drawEmpty(sessions, shown) {
     const empty = built.empty;
-    empty.replaceChildren();
     if (shown.length) { empty.hidden = true; return; }
-    empty.hidden = false;
-    if (!sessions.length) {
-      if (ctx.loading()) {
-        empty.append(el('p', { class: 'home-empty-body', text: 'Loading…' }));
-        return;
-      }
-      if (!ctx.reachable()) {
-        empty.append(
-          el('h2', { class: 'empty-title', text: 'No connection' }),
-          el('p', { class: 'empty-body', text: 'The sessions show up here again as soon as there is signal.' }));
-        return;
-      }
-      empty.append(
-        el('h2', { class: 'empty-title', text: 'No sessions yet' }),
-        el('p', { class: 'empty-body', text: 'Start one and it shows up here, and in the list.' }),
-        el('button', { class: 'ds-btn ds-btn--primary', type: 'button', text: 'New session', onclick: () => ctx.newSession() }));
-      return;
+    let markup;
+    if (!sessions.length && ctx.loading()) {
+      markup = html`<div class="ds-loading" role="status"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span>Loading…</div>`;
+    } else if (!sessions.length && !ctx.reachable()) {
+      markup = html`<div class="ds-empty"><span class="ds-empty__disc" aria-hidden="true">${raw(icon('wifiOff', 24))}</span>
+        <p class="ds-empty__title">No connection</p>
+        <p class="ds-empty__text">The sessions show up here again as soon as there is signal.</p></div>`;
+    } else if (!sessions.length) {
+      markup = html`<div class="ds-empty"><span class="ds-empty__disc" aria-hidden="true">${raw(icon('apps', 24))}</span>
+        <p class="ds-empty__title">No sessions yet</p>
+        <p class="ds-empty__text">Start one and it shows up here, and in the list.</p>
+        <button class="ds-btn ds-btn--tonal" type="button" data-action="new">New session</button></div>`;
+    } else {
+      markup = html`<div class="ds-empty"><span class="ds-empty__disc" aria-hidden="true">${raw(icon(filter === 'needs' ? 'checkCircle' : 'filter', 24))}</span>
+        <p class="ds-empty__title">${filter === 'needs' ? 'Nothing needs you right now.' : 'Nothing here right now.'}</p></div>`;
     }
-    const text = filter === 'needs' ? 'Nothing needs you right now.' : 'Nothing here right now.';
-    empty.append(el('p', { class: 'home-empty-body', text }));
+    morph(empty, markup);
+    if (empty.hidden) {
+      // A filter or live update left nothing: the cards have faded out in
+      // place through the flip, and the empty state fades in without a rise.
+      empty.hidden = false;
+      M.enter(empty, 'fade');
+    }
   }
 
   return {

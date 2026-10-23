@@ -589,7 +589,9 @@ export async function setup(page, url) {
   await page.click('#submit');
   await page.waitForFunction(() => !location.pathname.startsWith('/setup'), null, { timeout: 25000 });
   await page.goto(url + '/', { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('#newSession', { timeout: 15000 });
+  // Attached rather than visible: on a phone it is in the modal drawer,
+  // which is hidden until it is opened.
+  await page.waitForSelector('#newSession', { state: 'attached', timeout: 15000 });
 }
 
 // On a phone the session list is a drawer and "New session" lives in it. This

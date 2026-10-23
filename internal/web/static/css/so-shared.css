@@ -98,7 +98,7 @@ html.ds-theme body {
 
 /* A stale page says so by stopping the one loop that claims "working now";
    DS spinners elsewhere keep turning (§1.2 Frame Q11). */
-body.stale .so-mark[data-ring="busy"]::after {
+body[data-stale] .so-mark[data-ring="busy"]::after {
   animation-play-state: paused;
   opacity: var(--ds-state-stale);
 }
@@ -109,11 +109,21 @@ body.stale .so-mark[data-ring="busy"]::after {
   inset-block-end: calc(-1 * var(--ds-space-1));
   display: grid;
   place-items: center;
-  inline-size: var(--ds-space-5);
-  block-size: var(--ds-space-5);
+  inline-size: var(--so-badge-size);
+  block-size: var(--so-badge-size);
+  padding: var(--so-badge-pad);
   border-radius: var(--ds-radius-action);
   background: var(--ds-surface);
   color: var(--so-outcome, var(--ds-text-2));
+  pointer-events: none;
+}
+
+/* The glyph is drawn at 16px and fills the badge, whatever size it was
+   asked for. */
+.so-mark__badge svg {
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
 }
 
 .so-mark__badge[data-kind="complete"] { --so-outcome: var(--ds-success); }

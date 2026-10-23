@@ -210,7 +210,7 @@ export const CONNECTION_GRACE = OFFLINE_GRACE;
  * reporter backed by a pseudo-stream registered in the same two sets the
  * EventSource wrapper uses. streamsHealthy() weighs it like any other stream,
  * the window's offline listener reaches it through goOffline(), and the bar,
- * body.conn-lost and body.stale keep working with no change at all.
+ * body[data-conn-lost] and body[data-stale] keep working with no change at all.
  *
  * report(status, extra) takes 'live' | 'connecting' | 'offline' | 'idle', with
  * the same extra fields LiveStream reports: retryAt, immediate, retryNow.
@@ -333,7 +333,7 @@ export function mountConnectionBar() {
     // Only a loss that outlived the grace period is worth a line; a stream
     // being swapped for another one is not something anyone needs to read.
     const live = !state.degraded;
-    setClass(document.body, 'conn-lost', !live);
+    document.body.toggleAttribute('data-conn-lost', !live);
     if (live) {
       if (ticker) { clearInterval(ticker); ticker = null; }
       if (shown) {

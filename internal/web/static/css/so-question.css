@@ -1,1 +1,510 @@
-/* so-question.css: project components of the question sheet (owner WP4). Tokens only; see MIGRATION.md §3.4. */
+/*
+ * so-question.css: the question dialog (question.js). It reads tokens only
+ * (--ds-* and the --so-question-* / --so-option-* of theme.css), is
+ * unlayered, and never restyles a .ds-* component: the dialog, the cards,
+ * the alerts, the buttons and the field are Dashboard-Style's own, set
+ * through their hooks and laid out from here.
+ *
+ *   dialog.so-question   the DS dialog; the whole screen on a phone and in
+ *                        touch mode (car, kiosk)
+ *   .so-q-shell          its box: the top bar, the scrolling body and the
+ *                        action bar in one column. [data-stale] while the
+ *                        connection is down (the question is dimmed),
+ *                        [data-arming] for a moment after a new question is
+ *                        drawn (its buttons take no tap)
+ *   .so-q-top            Close, and the walk: Previous, "2 of 3", Next
+ *   .so-q-conn           the connection alert under the top bar
+ *   .so-q-scroll         the session, the question, its options, the field
+ *                        of one's own, and the progress line
+ *   .so-q-session        the agent's mark, the title and folder, Open session
+ *   .so-q-body           the question; [data-state="pending"] while it is
+ *                        read again, [data-state="past"] for the question an
+ *                        answer went in for
+ *   .so-q-option         an option: a DS interactive card as a toggle
+ *                        (aria-pressed), its key (the digit, or a box for a
+ *                        multi-select: [data-multi]) and its ring
+ *   .so-q-own            the field of one's own answer (a DS field)
+ *   .so-q-status         the progress line (a DS alert, data-kind)
+ *   .so-q-actions        Read aloud, Back, Cancel, Open session, Try again,
+ *                        Send; .so-q-big is a button of the finger's size
+ *   .so-q-finished       the last word (a DS empty state)
+ */
+
+/* ── The dialog ──────────────────────────────────────────────────────── */
+
+.so-question {
+  --ds-dialog-width: var(--so-question-width);
+}
+
+/* The box is the column: what it holds scrolls in the middle, the top bar
+   and the actions stay. On a desktop it is as tall as its question. */
+.so-q-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.so-q-shell:focus,
+.so-q-text:focus,
+.so-q-session-title:focus {
+  outline: none;
+}
+
+/* A phone, and touch mode: the dialog is all there is, edge to edge. */
+@media (max-width: 900px) {
+  .so-question {
+    padding: 0;
+  }
+
+  .so-q-shell {
+    --ds-radius-dialog: 0;
+    height: 100%;
+  }
+}
+
+.ds-theme.so-touch .so-question {
+  padding: 0;
+}
+
+.ds-theme.so-touch .so-q-shell {
+  --ds-radius-dialog: 0;
+  height: 100%;
+}
+
+/* A new question takes no tap for a moment (TAP_ARM in question.js). */
+.so-q-shell[data-arming] .so-q-scroll button,
+.so-q-shell[data-arming] .so-q-actions button,
+.so-q-shell[data-arming] .so-q-open {
+  pointer-events: none;
+}
+
+/* ── Top bar ─────────────────────────────────────────────────────────── */
+
+.so-q-top {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  padding: var(--ds-space-3) var(--ds-space-4) var(--ds-space-2);
+  padding-top: calc(var(--ds-space-3) + env(safe-area-inset-top, 0px));
+}
+
+.so-q-top-title {
+  color: var(--ds-text);
+  font: var(--ds-font-subtitle);
+}
+
+.so-q-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-1);
+}
+
+.so-q-counter {
+  min-width: var(--so-question-counter-width);
+  color: var(--ds-text-2);
+  font: var(--ds-font-label);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+/* The keyboard button's copy lies over the top right corner. */
+.ds-theme.so-touch .so-q-top {
+  padding-right: calc(var(--so-kb-copy-reserve) + env(safe-area-inset-right, 0px));
+}
+
+.so-q-conn {
+  flex: none;
+  margin: 0 var(--ds-space-6) var(--ds-space-2);
+}
+
+.so-q-conn[hidden] {
+  display: none;
+}
+
+.so-q-conn-words,
+.so-q-conn-detail {
+  display: block;
+}
+
+.so-q-conn-detail {
+  font: var(--ds-font-meta);
+}
+
+.so-q-conn-detail:empty {
+  display: none;
+}
+
+/* ── The scrolling body ──────────────────────────────────────────────── */
+
+.so-q-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-4);
+  padding: var(--ds-space-2) var(--ds-space-6) var(--ds-space-5);
+  padding-left: calc(var(--ds-space-6) + env(safe-area-inset-left, 0px));
+  padding-right: calc(var(--ds-space-6) + env(safe-area-inset-right, 0px));
+}
+
+.so-q-session {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-3);
+  padding-bottom: var(--ds-space-4);
+  border-bottom: 1px solid var(--ds-line);
+}
+
+.so-q-session-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.so-q-session-title {
+  color: var(--ds-text);
+  font: var(--ds-font-subtitle);
+}
+
+.so-q-session-folder {
+  color: var(--ds-text-2);
+  font: var(--ds-font-meta);
+}
+
+.so-q-open {
+  flex: none;
+}
+
+.so-q-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-4);
+  transition: opacity var(--ds-dur-fast) var(--ds-ease-in-out);
+}
+
+/* What may not be current, or is not to be answered now, is dimmed. */
+.so-q-body[data-state],
+.so-q-shell[data-stale] .so-q-body {
+  opacity: var(--ds-state-stale);
+}
+
+.so-q-reading,
+.so-q-note {
+  flex: none;
+}
+
+/* The arc spinner where an alert has its 20px icon. */
+.so-q-spin {
+  display: grid;
+  flex: none;
+  place-items: center;
+  inline-size: var(--ds-space-5);
+  block-size: var(--ds-space-5);
+}
+
+.so-q-problem {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-3);
+}
+
+.so-q-problem-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-space-2);
+}
+
+.so-q-context {
+  margin: 0;
+  color: var(--ds-text-2);
+  font: var(--ds-font-reading);
+  overflow-wrap: anywhere;
+}
+
+.so-q-step {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-2);
+  color: var(--ds-text-2);
+  font: var(--ds-font-label);
+}
+
+/* The header the program gives an item ("Database"): a label, not a status. */
+.so-q-chip {
+  padding: 0 var(--ds-space-2);
+  border-radius: var(--ds-radius-md);
+  background: var(--ds-surface-high);
+  color: var(--ds-text-2);
+  font: var(--ds-font-caption);
+  line-height: var(--ds-space-6);
+}
+
+.so-q-text {
+  margin: 0;
+  color: var(--ds-text);
+  font: var(--ds-font-headline);
+  overflow-wrap: anywhere;
+}
+
+.so-q-detail {
+  margin: 0;
+  color: var(--ds-text-2);
+  font: var(--ds-font-reading);
+  overflow-wrap: anywhere;
+}
+
+/* ── Options ─────────────────────────────────────────────────────────── */
+
+.so-q-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-3);
+}
+
+.so-q-option {
+  --ds-card-padding: var(--ds-space-4);
+  --ds-card-padding-sm: var(--ds-space-4);
+  justify-content: center;
+  min-height: var(--so-option-min-height);
+}
+
+.so-q-option-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-4);
+  border-radius: inherit;
+}
+
+/* The chosen option: a 2px primary ring inside its edge, besides the filled
+   key (never the tint alone). It follows the card's press morph. */
+.so-q-option-ring {
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 2px var(--ds-primary);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--ds-dur-fast) var(--ds-ease-in-out);
+}
+
+.so-q-option[aria-pressed="true"] .so-q-option-ring {
+  opacity: 1;
+}
+
+.so-q-option-key {
+  display: grid;
+  flex: none;
+  place-items: center;
+  inline-size: var(--so-option-key-size);
+  block-size: var(--so-option-key-size);
+  border: 1px solid var(--ds-line-2);
+  border-radius: var(--ds-radius-action);
+  color: var(--ds-text-2);
+  font: var(--ds-font-label);
+  font-variant-numeric: tabular-nums;
+  transition:
+    background-color var(--ds-dur-fast) var(--ds-ease-in-out),
+    border-color var(--ds-dur-fast) var(--ds-ease-in-out),
+    color var(--ds-dur-fast) var(--ds-ease-in-out);
+}
+
+.so-q-option[data-multi] .so-q-option-key {
+  border-radius: var(--ds-radius-sm);
+}
+
+.so-q-option-key svg {
+  opacity: 0;
+  transition: opacity var(--ds-dur-fast) var(--ds-ease-in-out);
+}
+
+.so-q-option[aria-pressed="true"] .so-q-option-key {
+  border-color: var(--ds-primary);
+  background: var(--ds-primary);
+  color: var(--ds-on-primary);
+}
+
+.so-q-option[aria-pressed="true"] .so-q-option-key svg {
+  opacity: 1;
+}
+
+.so-q-option-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--ds-space-1);
+}
+
+.so-q-option-label {
+  color: var(--ds-text);
+  font: var(--so-option-label-font);
+  overflow-wrap: anywhere;
+}
+
+.so-q-option-desc {
+  color: var(--ds-text-2);
+  font: var(--ds-font-body);
+  overflow-wrap: anywhere;
+}
+
+.so-q-recommended {
+  margin-top: var(--ds-space-1);
+}
+
+/* While an answer goes in the options are locked: the chosen one stays as
+   it is, the others fade. */
+.so-q-option:disabled {
+  cursor: default;
+}
+
+.so-q-option:disabled:not([aria-pressed="true"]) .so-q-option-row {
+  opacity: var(--ds-state-disabled);
+}
+
+/* ── The answer of one's own, and the progress ───────────────────────── */
+
+.so-q-own {
+  margin-top: var(--ds-space-1);
+}
+
+.so-q-status-words,
+.so-q-status-detail {
+  display: block;
+}
+
+.so-q-status-detail {
+  margin-top: var(--ds-space-1);
+  font: var(--ds-font-meta);
+}
+
+/* ── Actions ─────────────────────────────────────────────────────────── */
+
+.so-q-actions {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--ds-space-2);
+  padding: var(--ds-space-3) var(--ds-space-6) var(--ds-space-5);
+  padding-left: calc(var(--ds-space-6) + env(safe-area-inset-left, 0px));
+  padding-right: calc(var(--ds-space-6) + env(safe-area-inset-right, 0px));
+  padding-bottom: calc(var(--ds-space-5) + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--ds-line);
+}
+
+/* A button of the finger's size (taller still in touch mode). */
+.so-q-big {
+  --ds-btn-height: var(--so-question-action-height);
+}
+
+.so-q-send,
+.so-q-retry {
+  flex: 1 1 var(--so-question-grow-basis);
+}
+
+/* Read aloud goes first, at the start; the answer's own buttons at the end. */
+.so-q-read {
+  margin-inline-end: auto;
+}
+
+/* ── The last word ───────────────────────────────────────────────────── */
+
+.so-q-finished {
+  margin: auto;
+}
+
+/* ── Phones and short screens ────────────────────────────────────────── */
+
+@media (max-width: 600px) {
+  .so-q-top {
+    padding-inline: var(--ds-space-2);
+  }
+
+  .so-q-scroll {
+    padding-left: calc(var(--ds-space-4) + env(safe-area-inset-left, 0px));
+    padding-right: calc(var(--ds-space-4) + env(safe-area-inset-right, 0px));
+  }
+
+  .so-q-actions {
+    padding-left: calc(var(--ds-space-4) + env(safe-area-inset-left, 0px));
+    padding-right: calc(var(--ds-space-4) + env(safe-area-inset-right, 0px));
+    padding-top: var(--ds-space-3);
+    padding-bottom: calc(var(--ds-space-3) + env(safe-area-inset-bottom, 0px));
+  }
+
+  .so-q-conn {
+    margin-inline: var(--ds-space-4);
+  }
+
+  .so-q-text {
+    font: var(--ds-font-title);
+  }
+}
+
+/* A phone on its side in a car mount has room for the question and its
+   options or for the chrome around them, not both: the bars shrink to a
+   finger's size, the session is one line, and the context is two lines
+   that open with a tap. */
+@media (max-height: 500px) {
+  .so-q-top {
+    padding-top: calc(var(--ds-space-1) + env(safe-area-inset-top, 0px));
+    padding-bottom: 0;
+  }
+
+  .so-q-scroll {
+    gap: var(--ds-space-2);
+    padding-bottom: var(--ds-space-3);
+  }
+
+  .so-q-body {
+    gap: var(--ds-space-2);
+  }
+
+  .so-q-session {
+    padding-bottom: 0;
+    border-bottom: 0;
+  }
+
+  .so-q-session-folder {
+    display: none;
+  }
+
+  .so-q-context {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+    font: var(--ds-font-body);
+    cursor: pointer;
+  }
+
+  .so-q-context[data-open] {
+    display: block;
+  }
+
+  .so-q-text {
+    font: var(--ds-font-subtitle);
+  }
+
+  .so-q-options {
+    gap: var(--ds-space-2);
+  }
+
+  .so-q-option {
+    --ds-card-padding: var(--ds-space-2) var(--ds-space-4);
+    --ds-card-padding-sm: var(--ds-space-2) var(--ds-space-4);
+  }
+
+  .so-q-actions {
+    padding-top: var(--ds-space-2);
+    padding-bottom: calc(var(--ds-space-2) + env(safe-area-inset-bottom, 0px));
+  }
+}

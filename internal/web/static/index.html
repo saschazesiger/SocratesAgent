@@ -50,7 +50,7 @@
       <!-- The name is edited where it is read; the mark beside it has a model
            name the session again, from its first prompt and its screen. -->
       <h1 class="so-title" tabindex="-1">
-        <button class="ds-btn ds-btn--text" id="sessionTitle" type="button" data-tip="Rename"><span class="so-title__text" id="sessionTitleText">Socrates</span></button>
+        <button class="ds-btn ds-btn--text so-title__button" id="sessionTitle" type="button" data-tip="Rename"><span class="so-title__text" id="sessionTitleText">Socrates</span></button>
       </h1>
       <button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" id="titleRegen" type="button" hidden
               aria-label="Name this session again" data-tip="Name this session again from what it is about">
@@ -92,22 +92,25 @@
             <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner"></span></span>
           </span>
         </button>
-        <button class="ds-btn ds-btn--quiet" id="micBtn" type="button" hidden data-tip="Speak">
+        <!-- Speak and Keyboard carry words, because DS has no glyph for either
+             and they are what a thumb has to find; on a phone they take their
+             short form (so-stage.css). -->
+        <button class="ds-btn ds-btn--quiet so-talk" id="micBtn" type="button" hidden data-tip="Speak">
           <span class="ds-btn__faces">
             <span class="ds-btn__face" id="micText">Speak</span>
-            <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Transcribing</span>
+            <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span><span class="so-talk__long">Transcribing</span></span>
           </span>
         </button>
         <!-- The on-screen keyboard. In touch mode nothing else raises it, and a
              second press puts it away again (keyboard.js); a copy of it sits
              over this spot in every dialog. Out of touch mode it is not shown. -->
-        <button class="ds-btn ds-btn--quiet" id="kbBtn" type="button" hidden aria-pressed="false"
-                aria-label="Show the keyboard" data-tip="Show the keyboard">Keyboard</button>
+        <button class="ds-btn ds-btn--quiet so-talk" id="kbBtn" type="button" hidden aria-pressed="false"
+                aria-label="Show the keyboard" data-tip="Show the keyboard"><span class="so-talk__long">Keyboard</span><span class="so-talk__short" aria-hidden="true">Keys</span></button>
         <!-- The options of this device rather than of a session; what can be
              done to a session is in its row's menu. -->
         <button class="ds-btn ds-btn--quiet ds-btn--icon" id="optionsBtn" type="button"
                 aria-label="Options for this device" data-tip="Options for this device"
-                aria-haspopup="dialog" aria-controls="optionsDialog" data-icon="moreVertical"></button>
+                aria-haspopup="dialog" aria-expanded="false" aria-controls="optionsDialog" data-icon="moreVertical"></button>
       </div>
     </div>
   </div>
@@ -142,6 +145,9 @@
     <main class="ds-view so-view" id="main" tabindex="-1">
       <div class="so-main" id="mainColumn">
         <div class="so-conn" id="connSlot" hidden></div>
+        <!-- On a phone the bar has no room for the usage strip: session.js
+             moves it onto this line under the bar. -->
+        <div class="so-usage-line" id="usageLine" hidden></div>
         <!-- The bucket, when it is not taking what is done here. Hidden while
              all is well; storage.js fills it. -->
         <div class="so-banner" id="storageBanner" role="status" aria-live="polite" hidden></div>
@@ -287,7 +293,7 @@
     </div>
     <div class="ds-dialog__actions">
       <button class="ds-btn ds-btn--text" type="button" data-close>Close</button>
-      <button class="ds-btn ds-btn--primary" type="button" id="copyAll">Copy all</button>
+      <button class="ds-btn ds-btn--primary" type="button" id="copyAll" autofocus>Copy all</button>
     </div>
   </div>
 </dialog>

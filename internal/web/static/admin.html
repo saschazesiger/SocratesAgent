@@ -27,348 +27,535 @@
 <script src="/static/vendor/dashboard-style/ds.js" defer></script>
 </head>
 <body>
-<div class="admin-page">
-  <header class="admin-top">
-    <a class="ds-btn ds-btn--sm" href="/">
-      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-      Sessions
-    </a>
-    <div class="title">Admin</div>
-    <span id="savedHint" style="font-size:13px;color:var(--text-faint)"></span>
-    <button class="ds-btn ds-btn--primary ds-btn--sm" id="saveTop">Save changes</button>
-  </header>
+<div class="ds-app ds-app--drawer so-admin" id="app">
+  <a class="ds-skip" href="#main">Skip to content</a>
 
-  <div class="admin-wrap">
-    <div class="notice" id="notice"></div>
-
-    <section class="ds-card" id="tmuxCard">
-      <h2>Terminal engine</h2>
-      <p class="ds-muted">Socrates keeps every session inside tmux, which is what lets a terminal outlive the browser, the phone and Socrates itself. It is not optional and there is no fallback.</p>
-      <div class="engine-status" id="tmuxStatus">
-        <span class="state-dot"></span>
-        <span class="state-label">Loading…</span>
-      </div>
-      <div class="hint" id="tmuxReason"></div>
-    </section>
-
-    <section class="ds-card" id="updatesCard">
-      <h2>Updates</h2>
-      <p class="ds-muted">Once a day, and after every boot, the updater brings Socrates, the three programs, Go, Node, code-server and cloudflared up to date. It runs beside Socrates rather than inside it, so a run that updates Socrates restarts it and the sessions stay up.</p>
-      <div class="engine-status" id="updatesStatus">
-        <span class="state-dot"></span>
-        <span class="state-label">Loading…</span>
-      </div>
-      <div class="update-list" id="updatesList"></div>
-      <div class="hint" id="updatesHint"></div>
-      <div class="row" style="flex-wrap:wrap;margin-top:12px">
-        <button class="ds-btn ds-btn--sm" id="updatesRun" type="button">Update now</button>
-        <button class="ds-btn ds-btn--sm ds-btn--text" id="updatesLogToggle" type="button">Show log</button>
-      </div>
-      <pre class="log" id="updatesLog" hidden></pre>
-    </section>
-
-    <section class="ds-card" id="storageCard">
-      <h2>Storage</h2>
-      <p class="ds-muted">Socrates keeps its own state in an S3 bucket: the settings, the password, sign-ins, profiles, push subscriptions and every session with its prepared prompt. It is encrypted on this machine with your passphrase before it leaves. The data directory keeps the rest — the programs' own logins and transcripts, the workspaces and tmux.</p>
-      <div class="engine-status" id="storageStatus">
-        <span class="state-dot"></span>
-        <span class="state-label">Loading…</span>
-      </div>
-      <div class="hint" id="storageDetail"></div>
-      <div class="row" style="flex-wrap:wrap;margin:12px 0 18px">
-        <button class="ds-btn ds-btn--sm" id="storageTest" type="button">Test connection</button>
-        <button class="ds-btn ds-btn--sm" id="storageSync" type="button">Sync now</button>
-      </div>
-      <div class="ds-form-grid ds-form-grid--2">
-        <div class="ds-field">
-          <label for="storageEndpoint">Endpoint</label>
-          <input class="ds-input mono" type="text" id="storageEndpoint" spellcheck="false" placeholder="AWS S3">
-        </div>
-        <div class="ds-field">
-          <label for="storageRegion">Region</label>
-          <input class="ds-input mono" type="text" id="storageRegion" spellcheck="false">
-        </div>
-        <div class="ds-field">
-          <label for="storageKey">Access key ID</label>
-          <input class="ds-input mono" type="text" id="storageKey" spellcheck="false" autocomplete="off">
-        </div>
-        <div class="ds-field">
-          <label for="storageSecret">Secret access key</label>
-          <input class="ds-input mono" type="password" id="storageSecret" autocomplete="off" placeholder="unchanged">
-        </div>
-      </div>
-      <div class="ds-field">
-        <div class="row"><label class="switch"><input type="checkbox" id="storagePathStyle"><span class="track"></span><span>Path-style addressing</span></label></div>
-      </div>
-      <div class="row" style="flex-wrap:wrap">
-        <button class="ds-btn ds-btn--sm" id="storageSave" type="button">Save credentials</button>
-      </div>
-      <div class="hint" id="storageCredsHint" style="margin-top:10px">New credentials are tried against the bucket before they are saved. The bucket, the prefix and the encryption passphrase are the installation itself and cannot be changed here.</div>
-    </section>
-
-    <section class="ds-card" id="workspaceCard">
-      <h2>Workspace</h2>
-      <p class="ds-muted">Where a session works, which program it starts on, and the directories the new-session sheet offers by name.</p>
-      <div class="ds-field">
-        <label for="workspaceRoot">Workspace root</label>
-        <input class="ds-input mono" type="text" id="workspaceRoot" spellcheck="false">
-        <div class="hint">An absolute path. A session with a dynamic directory gets its own folder below this one.</div>
-      </div>
-      <div class="ds-field">
-        <label>Default program</label>
-        <div class="seg-row agents" id="defaultHarness"></div>
-        <div class="hint">What the new-session sheet opens on.</div>
-      </div>
-      <div class="ds-field">
-        <label class="switch"><input type="checkbox" id="allowCustomDir"><span class="track"></span><span>Allow a typed-in directory</span></label>
-        <div class="hint">With it off the sheet offers only the workspace root and the presets below — which is what you want on a machine published through a tunnel.</div>
-      </div>
-      <div class="ds-field">
-        <label>Preset directories</label>
-        <div id="presetDirs"></div>
-        <button class="ds-btn ds-btn--sm" id="presetAdd" type="button">Add a directory</button>
-        <div class="hint">Each one becomes a button in the new-session sheet. A path that is not there yet is saved with a warning, because a mount may simply be down.</div>
-      </div>
-    </section>
-
-    <section class="ds-card" id="profilesCard">
-      <h2>Profiles</h2>
-      <p class="ds-muted">A profile is a separate set of sign-ins for Claude Code, Codex and OpenCode - a business account beside a private one. The new-session sheet asks which profile a session runs in, in the order of this list - drag a row by its handle to change it - and a session keeps that profile for its whole life. Settings, instructions, skills, plugins and MCP servers are shared with the default profile; accounts and conversations are not.</p>
-      <div id="profileList"></div>
-      <div class="profile-add">
-        <input class="ds-input" type="text" id="profileName" placeholder="Business" maxlength="40" autocomplete="off">
-        <button class="ds-btn ds-btn--sm" id="profileAdd" type="button">Add profile</button>
-      </div>
-      <div class="hint">Changes here take effect at once. To sign in, start a session in the profile: Claude Code asks by itself, and a Shell in the profile is where <code>codex login --device-auth</code> and <code>opencode auth login</code> sign the other two in.</div>
-    </section>
-
-    <section class="ds-card" id="terminalCard">
-      <h2>Terminal behaviour</h2>
-      <p class="ds-muted">How the pane behaves on the tmux side and how it is drawn on the browser side. The first three reach the sessions that are already open; the rest apply to new ones.</p>
-      <div class="ds-form-grid ds-form-grid--2">
-        <div class="ds-field">
-          <label for="windowSize">Window size policy</label>
-          <select class="ds-input" id="windowSize">
-            <option value="manual">Manual — Socrates decides</option>
-            <option value="latest">Latest — the viewer that last acted</option>
-            <option value="largest">Largest — the biggest viewer</option>
-          </select>
-          <div class="hint" id="windowSizeHint"></div>
-        </div>
-        <div class="ds-field">
-          <label for="historyLimit">Scrollback kept by tmux</label>
-          <input class="ds-input" type="number" id="historyLimit" min="1000" max="200000" step="1000">
-          <div class="hint">Lines per pane. This is the buffer that survives a reload.</div>
-        </div>
-        <div class="ds-field">
-          <label for="scrollback">Scrollback kept by the browser</label>
-          <input class="ds-input" type="number" id="scrollback" min="100" max="100000" step="100">
-          <div class="hint">Lines xterm.js keeps in this tab. It is thrown away on a reload.</div>
-        </div>
-        <div class="ds-field">
-          <label for="fontSize">Font size</label>
-          <input class="ds-input" type="number" id="fontSize" min="8" max="40">
-          <div class="hint">Pixels, in the terminal only.</div>
-        </div>
-      </div>
-      <div class="row" style="gap:22px;flex-wrap:wrap">
-        <label class="switch"><input type="checkbox" id="mouseOn"><span class="track"></span><span>Mouse in the pane</span></label>
-        <label class="switch"><input type="checkbox" id="extendedKeys"><span class="track"></span><span>Extended keys</span></label>
-        <label class="switch"><input type="checkbox" id="webgl"><span class="track"></span><span>Draw with the GPU</span></label>
-      </div>
-      <div class="hint" style="margin-top:10px">Extended keys let Shift+Enter reach the CLIs; they may confuse older terminals. The terminal type, the pane that stays after its program exits and the white window style only take effect for <em>new</em> sessions.</div>
-    </section>
-
-    <div id="harnessCards">
-      <section class="ds-card">
-        <h2>Programs</h2>
-        <p class="ds-muted">Asking this machine which programs are installed…</p>
-      </section>
+  <div class="ds-topbar">
+    <button class="ds-btn ds-btn--quiet ds-btn--icon ds-topbar__menu" id="menuBtn" type="button"
+            aria-label="Sections" aria-expanded="false" aria-controls="adminNav" data-icon="menu"></button>
+    <a class="ds-brand" href="/"><img class="so-logo" src="/static/img/logo.png" alt="" width="32" height="32"><span class="ds-brand__name">Socrates</span></a>
+    <!-- Save is always in reach: the page is one settings document, and this
+         is what sends it. Profiles, storage credentials, the tunnel and the
+         password have buttons of their own and take effect at once. -->
+    <div class="so-admin-bar">
+      <button class="ds-btn ds-btn--primary" id="saveTop" type="button">
+        <span class="ds-btn__faces">
+          <span class="ds-btn__face">Save changes</span>
+          <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Saving</span>
+          <span class="ds-btn__face ds-btn__face--done" aria-hidden="true" data-icon="check" data-icon-size="16">Saved</span>
+        </span>
+      </button>
     </div>
+  </div>
 
-    <section class="ds-card" id="voiceCard">
-      <h2>Voice</h2>
-      <p class="ds-muted">Your recording is transcribed by an OpenRouter model. Reading an answer back is Google Cloud Text-to-Speech: one API key of its own, and the Standard voices are free for the first four million characters a month.</p>
-
-      <div class="ds-field">
-        <label for="orKey">OpenRouter API key</label>
-        <input class="ds-input mono" type="password" id="orKey" placeholder="sk-or-v1-…" autocomplete="off">
-        <div class="hint">Create one at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a>. It transcribes what you dictate, and it runs the models under <a href="#assistCard">Status &amp; naming</a>: the spoken status and the session names, Home's summaries and questions — which send the screen of every coding session to OpenRouter, and with the turn outcome switched on also Claude's last instruction, answer and task list — and the operator that types your answers into a session. The coding programs bring their own credentials.</div>
+  <div class="ds-scrim"></div>
+  <!-- The page is long, so the drawer is its table of contents: each item
+       scrolls to its card, and the one in view is the current one. -->
+  <nav class="ds-drawer" id="adminNav" aria-label="Admin sections" tabindex="-1">
+    <div class="ds-drawer__head" aria-hidden="true"><img class="so-logo" src="/static/img/logo.png" alt="" width="32" height="32"><span class="ds-brand__name">Socrates</span></div>
+    <div class="ds-drawer__list" id="adminNavList">
+      <a class="ds-drawer__item" href="/" data-icon="arrowLeft"><span class="ds-drawer__label">Sessions</span></a>
+      <div class="ds-drawer__group">
+        <p class="ds-drawer__heading">This machine</p>
+        <a class="ds-drawer__item" href="#tmuxCard" data-section="tmuxCard" data-icon="cpu"><span class="ds-drawer__label">Terminal engine</span></a>
+        <a class="ds-drawer__item" href="#updatesCard" data-section="updatesCard" data-icon="download"><span class="ds-drawer__label">Updates</span></a>
+        <a class="ds-drawer__item" href="#storageCard" data-section="storageCard" data-icon="hardDrive"><span class="ds-drawer__label">Storage</span></a>
+        <a class="ds-drawer__item" href="#checksCard" data-section="checksCard" data-icon="activity"><span class="ds-drawer__label">Setup check</span></a>
       </div>
-      <div class="ds-field">
-        <label>Transcription model</label>
-        <div id="orTranscribe"></div>
-        <div class="hint">A dedicated transcriber such as openai/gpt-transcribe, or a chat model that accepts audio such as google/gemini-2.5-flash.</div>
+      <div class="ds-drawer__group">
+        <p class="ds-drawer__heading">New sessions</p>
+        <a class="ds-drawer__item" href="#workspaceCard" data-section="workspaceCard" data-icon="folder"><span class="ds-drawer__label">Workspace</span></a>
+        <a class="ds-drawer__item" href="#profilesCard" data-section="profilesCard" data-icon="users"><span class="ds-drawer__label">Profiles</span></a>
+        <a class="ds-drawer__item" href="#terminalCard" data-section="terminalCard" data-icon="monitor"><span class="ds-drawer__label">Terminal</span></a>
+        <a class="ds-drawer__item" href="#harnessCards" data-section="harnessCards" data-icon="apps"><span class="ds-drawer__label">Programs</span></a>
       </div>
-      <div class="ds-field">
-        <label for="voiceLanguage">Spoken language</label>
-        <select class="ds-input" id="voiceLanguage">
-          <option value="en">English</option>
-          <option value="de">Deutsch</option>
-        </select>
-        <div class="hint">One setting for everything Socrates says: how a recording is transcribed, which of the two voices below reads an answer out loud, and which language an answer is written in.</div>
+      <div class="ds-drawer__group">
+        <p class="ds-drawer__heading">Voice and models</p>
+        <a class="ds-drawer__item" href="#voiceCard" data-section="voiceCard" data-icon="chat"><span class="ds-drawer__label">Voice</span></a>
+        <a class="ds-drawer__item" href="#assistCard" data-section="assistCard" data-icon="sparkles"><span class="ds-drawer__label">Status &amp; naming</span></a>
       </div>
-      <div class="ds-field">
-        <label for="sttPrompt">Transcription instruction</label>
-        <input class="ds-input" type="text" id="sttPrompt">
-        <div class="hint">Sent with the recording when a chat model does the transcribing. A dedicated transcription model is given the language instead.</div>
+      <div class="ds-drawer__group">
+        <p class="ds-drawer__heading">Access</p>
+        <a class="ds-drawer__item" href="#tunnelCard" data-section="tunnelCard" data-icon="globe"><span class="ds-drawer__label">Remote access</span></a>
+        <a class="ds-drawer__item" href="#passwordCard" data-section="passwordCard" data-icon="lock"><span class="ds-drawer__label">Password</span></a>
       </div>
-
-      <div class="ds-field">
-        <label for="googleKey">Google Cloud API key</label>
-        <input class="ds-input mono" type="password" id="googleKey" placeholder="AIza…" autocomplete="off">
-        <div class="hint">This is what reads answers out loud. The five steps below are how to get one. Save before you test: both buttons use the key the server has stored, not the one typed here.</div>
-      </div>
-      <div class="ds-form-grid ds-form-grid--2">
-        <div class="ds-field">
-          <label for="googleVoiceEn">English voice</label>
-          <input class="ds-input mono" type="text" id="googleVoiceEn" placeholder="en-US-Standard-C" autocomplete="off">
-        </div>
-        <div class="ds-field">
-          <label for="googleVoiceDe">German voice</label>
-          <input class="ds-input mono" type="text" id="googleVoiceDe" placeholder="de-DE-Standard-A" autocomplete="off">
-        </div>
-      </div>
-      <div class="hint" style="margin:-6px 0 18px">Only names with <span class="mono">Standard</span> in them are in the four million character free tier. WaveNet and Neural2 voices sound better and have a much smaller allowance of their own — a million characters a month — Studio voices 100,000 bytes a month, and all of them cost more per character beyond it. The full list is in Google's <a href="https://cloud.google.com/text-to-speech/docs/voices" target="_blank" rel="noopener">supported voices</a>.</div>
-      <div class="ds-form-grid ds-form-grid--2">
-        <div class="ds-field">
-          <label for="ttsRate">Speaking rate</label>
-          <input class="ds-input" type="number" id="ttsRate" min="0.25" max="4" step="0.05">
-          <div class="hint">How fast the voice reads. 1 is its own pace; Google accepts 0.25 to 4.</div>
-        </div>
-      </div>
-
-      <div class="voice-status" id="voiceStatus" hidden>
-        <span class="state-dot"></span>
-        <span class="state-label"></span>
-      </div>
-      <div class="row" style="margin-top:16px">
-        <button class="ds-btn ds-btn--sm" id="testVoice" type="button">Test voice output</button>
-        <button class="ds-btn ds-btn--sm" id="checkVoiceKey" type="button">Check key</button>
-      </div>
-
-      <div class="setup-guide">
-        <h3>Getting a Google Cloud key</h3>
-        <ol class="setup-steps">
-          <li>Open the <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">Google Cloud console</a> and sign in. Create a project or pick one. Billing has to be enabled on that project for the API to answer at all — Standard voices still include four million characters a month free, and only what goes beyond that is charged.</li>
-          <li>Enable the API: <span class="mono">APIs &amp; Services → Library</span>, search for “Cloud Text-to-Speech API”, press Enable — or go <a href="https://console.cloud.google.com/apis/library/texttospeech.googleapis.com" target="_blank" rel="noopener">straight to it</a>.</li>
-          <li>Create the credential: <span class="mono">APIs &amp; Services → Credentials → Create credentials → API key</span>. Copy the key.</li>
-          <li>Recommended: edit that key, and under <span class="mono">API restrictions</span> restrict it to the Cloud Text-to-Speech API. A key that leaks can then do nothing else.</li>
-          <li>Paste it above, save, and press “Test voice output”.</li>
-        </ol>
-        <div class="hint" style="margin-top:10px">What you have used is under <span class="mono">APIs &amp; Services → Enabled APIs &amp; services → Cloud Text-to-Speech API → Quotas &amp; System Limits</span>, and <span class="mono">Metrics</span> beside it.</div>
-      </div>
-    </section>
-
-    <!-- The models that read a screen: one says what the session is doing,
-         one calls it something, one writes Home's line and question for
-         it, and the last types the answer a person chose to that question. -->
-    <section class="ds-card" id="assistCard">
-      <h2>Status &amp; naming</h2>
-      <p class="ds-muted">Status has a model read the screen of a session and say what it is doing, in one or two sentences, which the voice above reads out loud. The namer reads the first screen a session answers on and calls the session after it, once.</p>
-
-      <div class="ds-field">
-        <label>Status model</label>
-        <div id="orStatus"></div>
-        <div class="hint">Asked for a sentence about a screen, so a fast, cheap model is the right one — google/gemini-2.5-flash is the default.</div>
-      </div>
-      <div class="ds-field">
-        <label>Title model</label>
-        <div id="orTitle"></div>
-        <div class="hint">Asked for a handful of words once per session, so the cheapest thing that can read a screen will do — google/gemini-2.5-flash-lite is the default.</div>
-      </div>
-      <div class="ds-field">
-        <label>Home summaries and questions</label>
-        <div id="orHome"></div>
-        <div class="hint">Reads the screen of every coding session for Home: a line about what it is doing, and the question it is asking with its choices. It runs on every turn, so a fast, cheap model is the right one — google/gemini-3.5-flash is the default.</div>
-      </div>
-      <div class="ds-field">
-        <label class="switch"><input type="checkbox" id="orOutcomes"><span class="track"></span><span>Check each turn's outcome</span></label>
-        <div class="hint">When a turn ends, the same read also judges whether the task is complete, partly done with open todos, waiting on you, or blocked, and the session shows it. For Claude it is also sent the last instruction, the last answer and the task list. Notifications wait up to 45 seconds for the verdict.</div>
-      </div>
-      <div class="ds-field">
-        <label>Answering questions</label>
-        <div id="orOperator"></div>
-        <div class="hint">Types the answer you chose on Home into the session, key by key, and only ever because you tapped it. Reading a terminal menu is where a cheap model goes wrong, so this one is capable on purpose — anthropic/claude-sonnet-5.5 is the default.</div>
-      </div>
-    </section>
-
-    <section class="ds-card" id="tunnelCard">
-      <h2>Remote access</h2>
-      <p class="ds-muted">Publish Socrates on the internet through a Cloudflare tunnel — no open port, no router configuration. It keeps serving on its local address either way, which is the address you point Cloudflare at.</p>
-
-      <div class="tunnel-status" id="tunnelStatus">
-        <span class="state-dot"></span>
-        <span class="state-label">Loading…</span>
-      </div>
-
-      <div class="ds-form-grid ds-form-grid--2">
-        <div class="ds-field">
-          <label for="tunnelMode">Tunnel type</label>
-          <select class="ds-input" id="tunnelMode">
-            <option value="quick">Quick tunnel — instant, random trycloudflare.com address</option>
-            <option value="token">Named tunnel — your own hostname, needs a token</option>
-          </select>
-          <div class="hint" id="tunnelModeHint"></div>
-        </div>
-        <div class="ds-field">
-          <label for="tunnelHostname">Public hostname</label>
-          <input class="ds-input mono" type="text" id="tunnelHostname" placeholder="socrates.example.com" spellcheck="false">
-          <div class="hint">The hostname you mapped to this tunnel in the Cloudflare dashboard.</div>
-        </div>
-        <div class="ds-field">
-          <label for="tunnelToken">Tunnel token</label>
-          <input class="ds-input mono" type="password" id="tunnelToken" autocomplete="off" placeholder="eyJhIjoi…">
-          <div class="hint">Zero Trust → Networks → Tunnels → your tunnel → Install connector. Copy the token out of the shown command.</div>
-        </div>
-        <div class="ds-field">
-          <label for="tunnelCommand">cloudflared path</label>
-          <input class="ds-input mono" type="text" id="tunnelCommand" placeholder="cloudflared" spellcheck="false">
-          <div class="hint" id="tunnelInstallHint"></div>
-        </div>
-      </div>
-      <div class="ds-field">
-        <label for="tunnelArgs">Extra arguments</label>
-        <input class="ds-input mono" type="text" id="tunnelArgs" placeholder="--loglevel debug" spellcheck="false">
-      </div>
-      <div class="row" style="flex-wrap:wrap">
-        <button class="ds-btn ds-btn--sm ds-btn--primary" id="tunnelStart" type="button">Start tunnel</button>
-        <button class="ds-btn ds-btn--sm" id="tunnelStop" type="button">Stop tunnel</button>
-        <button class="ds-btn ds-btn--sm" id="tunnelInstall" type="button" hidden>Download cloudflared</button>
-        <button class="ds-btn ds-btn--sm ds-btn--text" id="tunnelLogToggle" type="button">Show log</button>
-      </div>
-      <pre class="log" id="tunnelLog" hidden></pre>
-    </section>
-
-    <section class="ds-card" id="checksCard">
-      <h2>Setup check</h2>
-      <p class="ds-muted">Asks this machine everything Socrates depends on: tmux and its socket, the workspace, each program and the state it keeps, the OpenRouter key, and the disk underneath all of it.</p>
-      <button class="ds-btn ds-btn--sm" id="runChecks" type="button">Run checks</button>
-      <div class="checks" id="checks"></div>
-    </section>
-
-    <section class="ds-card" id="passwordCard">
-      <h2>Password</h2>
-      <p class="ds-muted">Changing it signs out every other browser.</p>
-      <div class="ds-form-grid ds-form-grid--2">
-        <div class="ds-field">
-          <label for="pwCurrent">Current password</label>
-          <input class="ds-input" type="password" id="pwCurrent" autocomplete="current-password">
-        </div>
-        <div class="ds-field">
-          <label for="pwNext">New password</label>
-          <input class="ds-input" type="password" id="pwNext" autocomplete="new-password">
-        </div>
-      </div>
-      <button class="ds-btn ds-btn--sm" id="changePw" type="button">Change password</button>
-    </section>
-
-    <div class="admin-foot">
-      <button class="ds-btn ds-btn--primary" id="saveBottom">Save changes</button>
-      <span id="savedHint2" style="font-size:13px;color:var(--text-faint)"></span>
-      <span style="flex:1"></span>
-      <span style="font-size:12px;color:var(--text-faint)" id="versionLabel"></span>
     </div>
+  </nav>
+
+  <div class="ds-panel">
+    <main class="ds-view" id="main" tabindex="-1">
+      <div class="ds-content">
+        <div class="ds-page" id="page">
+          <header class="ds-page-head">
+            <h1 class="ds-page-head__title" tabindex="-1">Admin</h1>
+            <p class="ds-page-head__lead">Everything about Socrates on this machine. Settings are kept once you save them; profiles, storage, the tunnel and the password take effect at once.</p>
+          </header>
+
+          <!-- A message about the whole page: the welcome after setup, or a
+               tunnel that could not be started on the way in. -->
+          <div class="so-admin-notice" id="notice" hidden></div>
+
+          <!-- ── This machine ─────────────────────────────────────────── -->
+
+          <section class="ds-card" id="tmuxCard" aria-labelledby="tmuxTitle">
+            <h2 class="ds-card__title" id="tmuxTitle">Terminal engine</h2>
+            <p class="ds-muted">Socrates keeps every session inside tmux, which is what lets a terminal outlive the browser, the phone and Socrates itself. It is not optional and there is no fallback.</p>
+            <div class="so-state" id="tmuxStatus" aria-live="polite">
+              <span class="so-state__line"><span class="ds-status"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>Loading</span></span></span>
+              <span class="so-state__tip"></span>
+            </div>
+            <div class="ds-alert ds-alert--warning" id="tmuxReasonBox" hidden><span data-icon="alert" data-icon-slot></span><span class="ds-alert__text" id="tmuxReason"></span></div>
+          </section>
+
+          <section class="ds-card" id="updatesCard" aria-labelledby="updatesTitle">
+            <div class="ds-card__row">
+              <h2 class="ds-card__title" id="updatesTitle">Updates</h2>
+              <button class="ds-btn ds-btn--sm" id="updatesRun" type="button">
+                <span class="ds-btn__faces">
+                  <span class="ds-btn__face">Update now</span>
+                  <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Starting</span>
+                </span>
+              </button>
+            </div>
+            <p class="ds-muted">Once a day, and after every boot, the updater brings Socrates, the three programs, Go, Node, code-server and cloudflared up to date. It runs beside Socrates rather than inside it, so a run that updates Socrates restarts it and the sessions stay up.</p>
+            <div class="so-state" id="updatesStatus" aria-live="polite">
+              <span class="so-state__line"><span class="ds-status"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>Loading</span></span></span>
+              <span class="so-state__tip"></span>
+            </div>
+            <div class="ds-progress ds-progress--indeterminate" id="updatesProgress" hidden>
+              <div class="ds-progress__track" role="progressbar" aria-label="Update" aria-valuemin="0" aria-valuemax="100" aria-valuetext="Updating">
+                <div class="ds-progress__bar"></div>
+              </div>
+            </div>
+            <div class="ds-table-wrap" id="updatesTable" hidden>
+              <table class="ds-table ds-table--dense">
+                <caption class="ds-sr">What the last run did</caption>
+                <thead><tr>
+                  <th scope="col">Component</th>
+                  <th scope="col">Version</th>
+                  <th scope="col" class="so-col-status">Result</th>
+                </tr></thead>
+                <tbody id="updatesList"></tbody>
+              </table>
+            </div>
+            <p class="ds-muted" id="updatesHint"></p>
+            <div class="so-admin-actions">
+              <button class="ds-btn ds-btn--text ds-btn--sm" id="updatesLogToggle" type="button" aria-expanded="false" aria-controls="updatesLog">Show log</button>
+            </div>
+            <pre class="so-log" id="updatesLog" tabindex="0" hidden></pre>
+          </section>
+
+          <section class="ds-card" id="storageCard" aria-labelledby="storageTitle">
+            <h2 class="ds-card__title" id="storageTitle">Storage</h2>
+            <p class="ds-muted">Socrates keeps its own state in an S3 bucket: the settings, the password, sign-ins, profiles, push subscriptions and every session with its prepared prompt. It is encrypted on this machine with your passphrase before it leaves. The data directory keeps the rest — the programs' own logins and transcripts, the workspaces and tmux.</p>
+            <div class="so-state" id="storageStatus" aria-live="polite">
+              <span class="so-state__line"><span class="ds-status"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>Loading</span></span></span>
+              <span class="so-state__tip"></span>
+            </div>
+            <div class="so-admin-notice" id="storageDetail"></div>
+            <div class="so-admin-actions">
+              <button class="ds-btn ds-btn--sm" id="storageTest" type="button">
+                <span class="ds-btn__faces">
+                  <span class="ds-btn__face">Test connection</span>
+                  <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Testing</span>
+                </span>
+              </button>
+              <button class="ds-btn ds-btn--sm" id="storageSync" type="button">
+                <span class="ds-btn__faces">
+                  <span class="ds-btn__face">Sync now</span>
+                  <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Uploading</span>
+                  <span class="ds-btn__face ds-btn__face--done" aria-hidden="true" data-icon="check" data-icon-size="16">Uploaded</span>
+                </span>
+              </button>
+            </div>
+            <div class="ds-subsection">
+              <h3 class="ds-card__subtitle">Credentials</h3>
+              <div class="ds-form">
+                <div class="ds-form-grid ds-form-grid--2">
+                  <div class="ds-field">
+                    <label class="ds-field__label" for="storageEndpoint">Endpoint</label>
+                    <input class="ds-input" type="text" id="storageEndpoint" spellcheck="false" placeholder="AWS S3">
+                  </div>
+                  <div class="ds-field">
+                    <label class="ds-field__label" for="storageRegion">Region</label>
+                    <input class="ds-input" type="text" id="storageRegion" spellcheck="false">
+                  </div>
+                  <div class="ds-field">
+                    <label class="ds-field__label" for="storageKey">Access key ID</label>
+                    <input class="ds-input" type="text" id="storageKey" spellcheck="false" autocomplete="off">
+                  </div>
+                  <div class="ds-field">
+                    <label class="ds-field__label" for="storageSecret">Secret access key</label>
+                    <input class="ds-input" type="password" id="storageSecret" autocomplete="off" placeholder="unchanged">
+                  </div>
+                </div>
+                <label class="ds-check"><input type="checkbox" id="storagePathStyle"><span>Path-style addressing</span></label>
+                <div class="ds-form-actions">
+                  <button class="ds-btn" id="storageSave" type="button">
+                    <span class="ds-btn__faces">
+                      <span class="ds-btn__face">Save credentials</span>
+                      <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Checking</span>
+                      <span class="ds-btn__face ds-btn__face--done" aria-hidden="true" data-icon="check" data-icon-size="16">Saved</span>
+                    </span>
+                  </button>
+                  <p class="ds-meta" id="storageCredsHint">New credentials are tried against the bucket before they are saved. The bucket, the prefix and the encryption passphrase are the installation itself and cannot be changed here.</p>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="ds-card" id="checksCard" aria-labelledby="checksTitle">
+            <div class="ds-card__row">
+              <h2 class="ds-card__title" id="checksTitle">Setup check</h2>
+              <button class="ds-btn ds-btn--sm" id="runChecks" type="button">
+                <span class="ds-btn__faces">
+                  <span class="ds-btn__face">Run checks</span>
+                  <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Checking</span>
+                </span>
+              </button>
+            </div>
+            <p class="ds-muted">Asks this machine everything Socrates depends on: tmux and its socket, the workspace, each program and the state it keeps, the OpenRouter key, and the disk underneath all of it.</p>
+            <div class="ds-table-wrap" id="checksTable" hidden>
+              <table class="ds-table ds-table--dense">
+                <caption class="ds-sr">Setup check</caption>
+                <thead><tr>
+                  <th scope="col">Check</th>
+                  <th scope="col" class="so-col-status">Result</th>
+                  <th scope="col" class="so-col-tip"><span class="ds-sr">Details</span></th>
+                </tr></thead>
+                <tbody id="checks"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <!-- ── New sessions ─────────────────────────────────────────── -->
+
+          <section class="ds-card" id="workspaceCard" aria-labelledby="workspaceTitle">
+            <h2 class="ds-card__title" id="workspaceTitle">Workspace</h2>
+            <p class="ds-muted">Where a session works, which program it starts on, and the directories the new-session sheet offers by name.</p>
+            <div class="ds-form">
+              <div class="ds-field">
+                <label class="ds-field__label" for="workspaceRoot">Workspace root</label>
+                <input class="ds-input" type="text" id="workspaceRoot" spellcheck="false" aria-describedby="workspaceRootHint">
+                <small class="ds-field__hint" id="workspaceRootHint">An absolute path. A session with a dynamic directory gets its own folder below this one.</small>
+              </div>
+              <fieldset class="ds-field">
+                <legend class="ds-field__label">Default program</legend>
+                <div class="ds-chips" id="defaultHarness"></div>
+                <small class="ds-field__hint">What the new-session sheet opens on.</small>
+              </fieldset>
+              <div class="ds-field">
+                <label class="ds-check"><input type="checkbox" id="allowCustomDir" aria-describedby="allowCustomDirHint"><span>Allow a typed-in directory</span></label>
+                <small class="ds-field__hint" id="allowCustomDirHint">With it off the sheet offers only the workspace root and the presets below — which is what you want on a machine published through a tunnel.</small>
+              </div>
+              <fieldset class="ds-field">
+                <legend class="ds-field__label">Preset directories</legend>
+                <div class="so-rows" id="presetDirs"></div>
+                <button class="ds-btn ds-btn--text ds-add-row" id="presetAdd" type="button" data-icon="plus" data-icon-size="16">Add a directory</button>
+                <small class="ds-field__hint">Each one becomes a choice in the new-session sheet. A path that is not there yet is saved with a warning, because a mount may simply be down.</small>
+              </fieldset>
+            </div>
+          </section>
+
+          <section class="ds-card" id="profilesCard" aria-labelledby="profilesTitle">
+            <h2 class="ds-card__title" id="profilesTitle">Profiles</h2>
+            <p class="ds-muted">A profile is a separate set of sign-ins for Claude Code, Codex and OpenCode — a business account beside a private one. The new-session sheet asks which profile a session runs in, in the order of this list — drag a row by its handle to change it — and a session keeps that profile for its whole life. Settings, instructions, skills, plugins and MCP servers are shared with the default profile; accounts and conversations are not.</p>
+            <div class="so-rows" id="profileList"></div>
+            <div class="ds-inline-form so-admin-add">
+              <div class="ds-field">
+                <label class="ds-field__label" for="profileName">New profile</label>
+                <input class="ds-input" type="text" id="profileName" placeholder="Business" maxlength="40" autocomplete="off">
+              </div>
+              <button class="ds-btn" id="profileAdd" type="button">
+                <span class="ds-btn__faces">
+                  <span class="ds-btn__face">Add profile</span>
+                  <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Adding</span>
+                </span>
+              </button>
+            </div>
+            <p class="ds-meta">Changes here take effect at once. To sign in, start a session in the profile: Claude Code asks by itself, and a Shell in the profile is where <code class="ds-nowrap">codex login --device-auth</code> and <code class="ds-nowrap">opencode auth login</code> sign the other two in.</p>
+          </section>
+
+          <section class="ds-card" id="terminalCard" aria-labelledby="terminalTitle">
+            <h2 class="ds-card__title" id="terminalTitle">Terminal behaviour</h2>
+            <p class="ds-muted">How the pane behaves on the tmux side and how it is drawn on the browser side. The first three reach the sessions that are already open; the rest apply to new ones.</p>
+            <div class="ds-form">
+              <div class="ds-form-grid ds-form-grid--2">
+                <div class="ds-field">
+                  <label class="ds-field__label" for="windowSize">Window size policy</label>
+                  <select class="ds-input" id="windowSize" aria-describedby="windowSizeHint">
+                    <option value="manual">Manual — Socrates decides</option>
+                    <option value="latest">Latest — the viewer that last acted</option>
+                    <option value="largest">Largest — the biggest viewer</option>
+                  </select>
+                  <small class="ds-field__hint" id="windowSizeHint"></small>
+                </div>
+                <div class="ds-field">
+                  <label class="ds-field__label" for="historyLimit">Scrollback kept by tmux</label>
+                  <input class="ds-input" type="number" id="historyLimit" min="1000" max="200000" step="1000" aria-describedby="historyLimitHint">
+                  <small class="ds-field__hint" id="historyLimitHint">Lines per pane. This is the buffer that survives a reload.</small>
+                </div>
+                <div class="ds-field">
+                  <label class="ds-field__label" for="scrollback">Scrollback kept by the browser</label>
+                  <input class="ds-input" type="number" id="scrollback" min="100" max="100000" step="100" aria-describedby="scrollbackHint">
+                  <small class="ds-field__hint" id="scrollbackHint">Lines xterm.js keeps in this tab. It is thrown away on a reload.</small>
+                </div>
+                <div class="ds-field">
+                  <label class="ds-field__label" for="fontSize">Font size</label>
+                  <input class="ds-input" type="number" id="fontSize" min="8" max="40" aria-describedby="fontSizeHint">
+                  <small class="ds-field__hint" id="fontSizeHint">Pixels, in the terminal only.</small>
+                </div>
+              </div>
+              <div class="so-admin-checks">
+                <label class="ds-check"><input type="checkbox" id="mouseOn"><span>Mouse in the pane</span></label>
+                <label class="ds-check"><input type="checkbox" id="extendedKeys"><span>Extended keys</span></label>
+                <label class="ds-check"><input type="checkbox" id="webgl"><span>Draw with the GPU</span></label>
+              </div>
+              <small class="ds-field__hint">Extended keys let Shift+Enter reach the CLIs; they may confuse older terminals. The terminal type, the pane that stays after its program exits and the white window style only take effect for <em>new</em> sessions.</small>
+            </div>
+          </section>
+
+          <!-- The program cards are drawn by admin.js from what this machine
+               reports; until then this card says it is asking. -->
+          <div class="so-admin-group" id="harnessCards">
+            <section class="ds-card">
+              <h2 class="ds-card__title">Programs</h2>
+              <div class="ds-loading" role="status"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span>Asking this machine which programs are installed</div>
+            </section>
+          </div>
+
+          <!-- ── Voice and models ─────────────────────────────────────── -->
+
+          <section class="ds-card" id="voiceCard" aria-labelledby="voiceTitle">
+            <h2 class="ds-card__title" id="voiceTitle">Voice</h2>
+            <p class="ds-muted">Your recording is transcribed by an OpenRouter model. Reading an answer back is Google Cloud Text-to-Speech: one API key of its own, and the Standard voices are free for the first four million characters a month.</p>
+            <div class="ds-form">
+              <div class="ds-field">
+                <label class="ds-field__label" for="orKey">OpenRouter API key</label>
+                <input class="ds-input" type="password" id="orKey" placeholder="sk-or-v1-…" autocomplete="off" aria-describedby="orKeyHint">
+                <small class="ds-field__hint" id="orKeyHint">Create one at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a>. It transcribes what you dictate, and it runs the models under <a href="#assistCard">Status &amp; naming</a>: the spoken status and the session names, Home's summaries and questions — which send the screen of every coding session to OpenRouter, and with the turn outcome switched on also Claude's last instruction, answer and task list — and the operator that types your answers into a session. The coding programs bring their own credentials.</small>
+              </div>
+              <div class="ds-field">
+                <label class="ds-field__label" for="orTranscribeInput">Transcription model</label>
+                <div id="orTranscribe"></div>
+                <small class="ds-field__hint">A dedicated transcriber such as openai/gpt-transcribe, or a chat model that accepts audio such as google/gemini-2.5-flash.</small>
+              </div>
+              <div class="ds-form-grid ds-form-grid--2">
+                <div class="ds-field">
+                  <label class="ds-field__label" for="voiceLanguage">Spoken language</label>
+                  <select class="ds-input" id="voiceLanguage" aria-describedby="voiceLanguageHint">
+                    <option value="en">English</option>
+                    <option value="de">Deutsch</option>
+                  </select>
+                  <small class="ds-field__hint" id="voiceLanguageHint">One setting for everything Socrates says: how a recording is transcribed, which of the two voices below reads an answer out loud, and which language an answer is written in.</small>
+                </div>
+                <div class="ds-field">
+                  <label class="ds-field__label" for="sttPrompt">Transcription instruction</label>
+                  <input class="ds-input" type="text" id="sttPrompt" aria-describedby="sttPromptHint">
+                  <small class="ds-field__hint" id="sttPromptHint">Sent with the recording when a chat model does the transcribing. A dedicated transcription model is given the language instead.</small>
+                </div>
+              </div>
+            </div>
+
+            <div class="ds-subsection">
+              <h3 class="ds-card__subtitle">Reading answers out loud</h3>
+              <div class="ds-form">
+                <div class="ds-field">
+                  <label class="ds-field__label" for="googleKey">Google Cloud API key</label>
+                  <input class="ds-input" type="password" id="googleKey" placeholder="AIza…" autocomplete="off" aria-describedby="googleKeyHint">
+                  <small class="ds-field__hint" id="googleKeyHint">This is what reads answers out loud. The five steps below are how to get one. Save before you test: both buttons use the key the server has stored, not the one typed here.</small>
+                </div>
+                <div class="ds-form-grid ds-form-grid--3">
+                  <div class="ds-field">
+                    <label class="ds-field__label" for="googleVoiceEn">English voice</label>
+                    <input class="ds-input" type="text" id="googleVoiceEn" placeholder="en-US-Standard-C" autocomplete="off">
+                  </div>
+                  <div class="ds-field">
+                    <label class="ds-field__label" for="googleVoiceDe">German voice</label>
+                    <input class="ds-input" type="text" id="googleVoiceDe" placeholder="de-DE-Standard-A" autocomplete="off">
+                  </div>
+                  <div class="ds-field">
+                    <label class="ds-field__label" for="ttsRate">Speaking rate</label>
+                    <input class="ds-input" type="number" id="ttsRate" min="0.25" max="4" step="0.05" aria-describedby="ttsRateHint">
+                    <small class="ds-field__hint" id="ttsRateHint">1 is the voice's own pace; Google accepts 0.25 to 4.</small>
+                  </div>
+                </div>
+                <small class="ds-field__hint">Only names with <code>Standard</code> in them are in the four million character free tier. WaveNet and Neural2 voices sound better and have a much smaller allowance of their own — a million characters a month — Studio voices 100,000 bytes a month, and all of them cost more per character beyond it. The full list is in Google's <a href="https://cloud.google.com/text-to-speech/docs/voices" target="_blank" rel="noopener">supported voices</a>.</small>
+                <div class="so-state" id="voiceStatus" aria-live="polite" hidden>
+                  <span class="so-state__line"></span>
+                </div>
+                <div class="so-admin-actions">
+                  <button class="ds-btn ds-btn--sm" id="testVoice" type="button">
+                    <span class="ds-btn__faces">
+                      <span class="ds-btn__face">Test voice output</span>
+                      <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Reading</span>
+                    </span>
+                  </button>
+                  <button class="ds-btn ds-btn--sm" id="checkVoiceKey" type="button">
+                    <span class="ds-btn__faces">
+                      <span class="ds-btn__face">Check key</span>
+                      <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Checking</span>
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <details class="ds-collapsible so-disclosure">
+              <summary>Getting a Google Cloud key</summary>
+              <div class="so-disclosure__body">
+                <ol class="so-guide-steps">
+                  <li>Open the <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">Google Cloud console</a> and sign in. Create a project or pick one. Billing has to be enabled on that project for the API to answer at all — Standard voices still include four million characters a month free, and only what goes beyond that is charged.</li>
+                  <li>Enable the API: <code>APIs &amp; Services → Library</code>, search for “Cloud Text-to-Speech API”, press Enable — or go <a href="https://console.cloud.google.com/apis/library/texttospeech.googleapis.com" target="_blank" rel="noopener">straight to it</a>.</li>
+                  <li>Create the credential: <code>APIs &amp; Services → Credentials → Create credentials → API key</code>. Copy the key.</li>
+                  <li>Recommended: edit that key, and under <code>API restrictions</code> restrict it to the Cloud Text-to-Speech API. A key that leaks can then do nothing else.</li>
+                  <li>Paste it above, save, and press “Test voice output”.</li>
+                </ol>
+                <p class="ds-meta">What you have used is under <code>APIs &amp; Services → Enabled APIs &amp; services → Cloud Text-to-Speech API → Quotas &amp; System Limits</code>, and <code>Metrics</code> beside it.</p>
+              </div>
+            </details>
+          </section>
+
+          <!-- The models that read a screen: one says what the session is doing,
+               one calls it something, one writes Home's line and question for
+               it, and the last types the answer a person chose to that question. -->
+          <section class="ds-card" id="assistCard" aria-labelledby="assistTitle">
+            <h2 class="ds-card__title" id="assistTitle">Status &amp; naming</h2>
+            <p class="ds-muted">Status has a model read the screen of a session and say what it is doing, in one or two sentences, which the voice above reads out loud. The namer reads the first screen a session answers on and calls the session after it, once.</p>
+            <div class="ds-form">
+              <div class="ds-form-grid ds-form-grid--2">
+                <div class="ds-field">
+                  <label class="ds-field__label" for="orStatusInput">Status model</label>
+                  <div id="orStatus"></div>
+                  <small class="ds-field__hint">Asked for a sentence about a screen, so a fast, cheap model is the right one — google/gemini-2.5-flash is the default.</small>
+                </div>
+                <div class="ds-field">
+                  <label class="ds-field__label" for="orTitleInput">Title model</label>
+                  <div id="orTitle"></div>
+                  <small class="ds-field__hint">Asked for a handful of words once per session, so the cheapest thing that can read a screen will do — google/gemini-2.5-flash-lite is the default.</small>
+                </div>
+                <div class="ds-field">
+                  <label class="ds-field__label" for="orHomeInput">Home summaries and questions</label>
+                  <div id="orHome"></div>
+                  <small class="ds-field__hint">Reads the screen of every coding session for Home: a line about what it is doing, and the question it is asking with its choices. It runs on every turn, so a fast, cheap model is the right one — google/gemini-3.5-flash is the default.</small>
+                </div>
+                <div class="ds-field">
+                  <label class="ds-field__label" for="orOperatorInput">Answering questions</label>
+                  <div id="orOperator"></div>
+                  <small class="ds-field__hint">Types the answer you chose on Home into the session, key by key, and only ever because you tapped it. Reading a terminal menu is where a cheap model goes wrong, so this one is capable on purpose — anthropic/claude-sonnet-5.5 is the default.</small>
+                </div>
+              </div>
+              <div class="ds-field">
+                <label class="ds-check"><input type="checkbox" id="orOutcomes" aria-describedby="orOutcomesHint"><span>Check each turn's outcome</span></label>
+                <small class="ds-field__hint" id="orOutcomesHint">When a turn ends, the same read also judges whether the task is complete, partly done with open todos, waiting on you, or blocked, and the session shows it. For Claude it is also sent the last instruction, the last answer and the task list. Notifications wait up to 45 seconds for the verdict.</small>
+              </div>
+            </div>
+          </section>
+
+          <!-- ── Access ───────────────────────────────────────────────── -->
+
+          <section class="ds-card" id="tunnelCard" aria-labelledby="tunnelTitle">
+            <h2 class="ds-card__title" id="tunnelTitle">Remote access</h2>
+            <p class="ds-muted">Publish Socrates on the internet through a Cloudflare tunnel — no open port, no router configuration. It keeps serving on its local address either way, which is the address you point Cloudflare at.</p>
+            <div class="so-state" id="tunnelStatus" aria-live="polite">
+              <span class="so-state__line"><span class="ds-status"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>Loading</span></span></span>
+              <span class="so-state__tip"></span>
+            </div>
+            <div class="ds-alert ds-alert--error" id="tunnelErrorBox" hidden><span data-icon="alertCircle" data-icon-slot></span><span class="ds-alert__text" id="tunnelError"></span></div>
+            <div class="ds-form">
+              <div class="ds-form-grid ds-form-grid--2">
+                <div class="ds-field">
+                  <label class="ds-field__label" for="tunnelMode">Tunnel type</label>
+                  <select class="ds-input" id="tunnelMode" aria-describedby="tunnelModeHint">
+                    <option value="quick">Quick tunnel — instant, random trycloudflare.com address</option>
+                    <option value="token">Named tunnel — your own hostname, needs a token</option>
+                  </select>
+                  <small class="ds-field__hint" id="tunnelModeHint"></small>
+                </div>
+                <div class="ds-field">
+                  <label class="ds-field__label" for="tunnelHostname">Public hostname</label>
+                  <input class="ds-input" type="text" id="tunnelHostname" placeholder="socrates.example.com" spellcheck="false" aria-describedby="tunnelHostnameHint">
+                  <small class="ds-field__hint" id="tunnelHostnameHint">The hostname you mapped to this tunnel in the Cloudflare dashboard.</small>
+                </div>
+                <div class="ds-field">
+                  <label class="ds-field__label" for="tunnelToken">Tunnel token</label>
+                  <input class="ds-input" type="password" id="tunnelToken" autocomplete="off" placeholder="eyJhIjoi…" aria-describedby="tunnelTokenHint">
+                  <small class="ds-field__hint" id="tunnelTokenHint">Zero Trust → Networks → Tunnels → your tunnel → Install connector. Copy the token out of the shown command.</small>
+                </div>
+                <div class="ds-field">
+                  <label class="ds-field__label" for="tunnelCommand">cloudflared path</label>
+                  <input class="ds-input" type="text" id="tunnelCommand" placeholder="cloudflared" spellcheck="false" aria-describedby="tunnelInstallHint">
+                  <small class="ds-field__hint" id="tunnelInstallHint"></small>
+                </div>
+                <div class="ds-field ds-field--full">
+                  <label class="ds-field__label" for="tunnelArgs">Extra arguments</label>
+                  <input class="ds-input" type="text" id="tunnelArgs" placeholder="--loglevel debug" spellcheck="false">
+                </div>
+              </div>
+              <div class="ds-form-actions">
+                <button class="ds-btn ds-btn--tonal" id="tunnelStart" type="button">
+                  <span class="ds-btn__faces">
+                    <span class="ds-btn__face">Start tunnel</span>
+                    <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Starting</span>
+                  </span>
+                </button>
+                <button class="ds-btn" id="tunnelStop" type="button">
+                  <span class="ds-btn__faces">
+                    <span class="ds-btn__face">Stop tunnel</span>
+                    <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Stopping</span>
+                  </span>
+                </button>
+                <button class="ds-btn" id="tunnelInstall" type="button" hidden>
+                  <span class="ds-btn__faces">
+                    <span class="ds-btn__face">Download cloudflared</span>
+                    <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Downloading</span>
+                  </span>
+                </button>
+                <button class="ds-btn ds-btn--text" id="tunnelLogToggle" type="button" aria-expanded="false" aria-controls="tunnelLog">Show log</button>
+              </div>
+            </div>
+            <pre class="so-log" id="tunnelLog" tabindex="0" hidden></pre>
+          </section>
+
+          <section class="ds-card" id="passwordCard" aria-labelledby="passwordTitle">
+            <h2 class="ds-card__title" id="passwordTitle">Password</h2>
+            <p class="ds-muted">Changing it signs out every other browser.</p>
+            <div class="ds-form">
+              <div class="ds-form-grid ds-form-grid--2">
+                <div class="ds-field">
+                  <label class="ds-field__label" for="pwCurrent">Current password</label>
+                  <input class="ds-input" type="password" id="pwCurrent" autocomplete="current-password">
+                </div>
+                <div class="ds-field">
+                  <label class="ds-field__label" for="pwNext">New password</label>
+                  <input class="ds-input" type="password" id="pwNext" autocomplete="new-password">
+                </div>
+              </div>
+              <div class="ds-form-actions">
+                <button class="ds-btn" id="changePw" type="button">
+                  <span class="ds-btn__faces">
+                    <span class="ds-btn__face">Change password</span>
+                    <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Changing</span>
+                    <span class="ds-btn__face ds-btn__face--done" aria-hidden="true" data-icon="check" data-icon-size="16">Changed</span>
+                  </span>
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <div class="ds-form-actions so-admin-foot">
+            <button class="ds-btn ds-btn--primary" id="saveBottom" type="button">
+              <span class="ds-btn__faces">
+                <span class="ds-btn__face">Save changes</span>
+                <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Saving</span>
+                <span class="ds-btn__face ds-btn__face--done" aria-hidden="true" data-icon="check" data-icon-size="16">Saved</span>
+              </span>
+            </button>
+            <p class="ds-meta" id="versionLabel"></p>
+          </div>
+        </div>
+      </div>
+    </main>
   </div>
 </div>
 <div class="ds-toasts" id="toasts"></div>

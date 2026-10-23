@@ -10,14 +10,14 @@
 // a restore on another machine; the transcripts they were read from do not.
 
 import { api, el, errorMessage, onWake } from './api.js';
+import { M, html, raw, icon, morph } from './ui.js';
 
 const $ = (id) => document.getElementById(id);
 
-// The categorical slots, in their validated order (dataviz palette, light):
-// a model keeps its slot by its all-time rank, so a filter never repaints it.
-// Everything past the fourth is one quiet "Other".
-const SERIES = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100'];
-const OTHER = '#c4c6cc';
+// The categorical slots, in their validated order (the --so-series-* of
+// theme.css): a model keeps its slot by its all-time rank, so a filter never
+// repaints it. Everything past the fourth is one quiet "Other".
+const SERIES = 4;
 
 const HARNESS = { claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode' };
 const MORE = '#more';
@@ -138,7 +138,7 @@ function decode(data) {
   const byModel = new Map();
   for (const r of out) byModel.set(r.model, (byModel.get(r.model) || 0) + r.cost);
   const ranked = [...byModel.entries()].sort((a, b) => b[1] - a[1]).map(([m]) => m);
-  state.slot = new Map(ranked.slice(0, SERIES.length).map((m, i) => [m, i]));
+  state.slot = new Map(ranked.slice(0, SERIES).map((m, i) => [m, i]));
   return out;
 }
 
@@ -236,12 +236,20 @@ function savePrefs() {
   } catch { /* a private window */ }
 }
 
+// drawRange puts the period's chips in once and then only says which one is
+// chosen: radio chips trade the selection by themselves.
 function drawRange() {
-  const row = $('costsRange');
-  row.replaceChildren(...RANGES.map((r) => el('button', {
-    type: 'button', class: 'seg' + (r.id === state.range ? ' on' : ''), 'aria-pressed': r.id === state.range ? 'true' : 'false',
-    onclick: () => { state.range = r.id; savePrefs(); render(); },
-  }, el('span', { class: 'seg-label', text: r.label }))));
+  const box = $('costsRange');
+  if (!box.querySelector('input')) {
+    morph(box, html`<legend class="ds-sr">Period</legend>${RANGES.map((r) => html`<label class="ds-chip"><input class="ds-chip__input" type="radio" name="costsRange" value="${r.id}"><span class="ds-chip__body">${raw(icon('check', 18, 'ds-chip__check'))}<span>${r.label}</span></span></label>`)}`);
+    box.addEventListener('change', (ev) => {
+      if (ev.target.name !== 'costsRange') return;
+      state.range = ev.target.value;
+      savePrefs();
+      render();
+    });
+  }
+  for (const input of box.querySelectorAll('input')) input.checked = input.value === state.range;
 }
 
 function fillSelect(select, field, options, allLabel) {
@@ -289,16 +297,15 @@ function toggleFilter(field, value) {
   f[field] = on ? '' : value;
   savePrefs();
   render();
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+  // The view is the page's one scroller (DS App frame), not the window.
+  $('main').scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 // ------------------------------------------------------------------ tiles
 
-function tile(label, value, sub, hero = false) {
-  return el('div', { class: 'costs-tile' + (hero ? ' hero' : '') },
-    el('div', { class: 'costs-tile-label', text: label }),
-    el('div', { class: 'costs-tile-value', text: value }),
-    sub ? el('div', { class: 'costs-tile-sub', text: sub }) : null);
+// figure counts a tile's value on from the one it shows (DS countUp).
+function figure(id, value) {
+  M.countUp($(id), value, { format: money });
 }
 
 function drawTiles(filtered, days) {
@@ -309,35 +316,39 @@ function drawTiles(filtered, days) {
   const now = new Date();
   const today = dayKey(now);
   const month = monthKey(now);
-  const lastMonth = monthKey(new Date(now.getFullYear(), now.getMonth() - 1, 1));
   const sumWhere = (fn) => all.reduce((s, r) => (fn(r) ? s + r.cost : s), 0);
   const todayCost = sumWhere((r) => r.day === today);
   const monthCost = sumWhere((r) => r.month === month);
-  const allCost = sumWhere(() => true);
   const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
   const elapsed = now.getDate() - 1 + (now.getHours() * 60 + now.getMinutes()) / 1440;
   const pace = elapsed > 0.5 ? monthCost / elapsed * daysInMonth : 0;
   const rangeName = RANGES.find((r) => r.id === state.range).label;
-  $('costsTiles').replaceChildren(
-    tile(rangeName === 'All' ? 'All time' : rangeName, money(total),
-      `${requests.toLocaleString()} requests · ${tokens(used)} tokens`, true),
-    tile('Per day', money(days ? total / days : 0), `average over ${days} ${days === 1 ? 'day' : 'days'}`),
-    tile('Today', money(todayCost), dayShort.format(now)),
-    tile('This month', money(monthCost), pace ? 'on pace for ' + moneyAxis(pace) : monthLong.format(now)),
-    state.range === 'all'
-      ? tile('Last month', money(sumWhere((r) => r.month === lastMonth)), monthLong.format(dayFromKey(lastMonth)))
-      : tile('All time', money(allCost), allCost && all.length ? 'since ' + dayShort.format(dayFromKey(all.reduce((m, r) => (r.day < m ? r.day : m), today))) : ''),
-  );
+  $('tRangeLabel').textContent = rangeName === 'All' ? 'All time' : rangeName;
+  figure('tRange', total);
+  $('tRangeNote').textContent = `${requests.toLocaleString()} requests · ${tokens(used)} tokens`;
+  figure('tPerDay', days ? total / days : 0);
+  $('tPerDayNote').textContent = `average over ${days} ${days === 1 ? 'day' : 'days'}`;
+  figure('tToday', todayCost);
+  $('tTodayNote').textContent = dayShort.format(now);
+  figure('tMonth', monthCost);
+  $('tMonthNote').textContent = pace ? 'on pace for ' + moneyAxis(pace) : monthLong.format(now);
 }
 
 // ------------------------------------------------------------------ chart
 
 function seriesOf(model) {
-  return state.slot.has(model) ? state.slot.get(model) : SERIES.length;
+  return state.slot.has(model) ? state.slot.get(model) : SERIES;
 }
 
-function colorOf(slot) {
-  return slot < SERIES.length ? SERIES[slot] : OTHER;
+// seriesKey is what a mark carries in data-series, which picks its colour.
+function seriesKey(slot) {
+  return slot < SERIES ? String(slot + 1) : 'other';
+}
+
+// px is a length token of the chart's box in pixels.
+function px(box, token, fallback) {
+  const value = parseFloat(getComputedStyle(box).getPropertyValue(token));
+  return Number.isFinite(value) ? value : fallback;
 }
 
 // niceMax rounds the axis top up to 1, 2, 2.5 or 5 times a power of ten.
@@ -356,7 +367,7 @@ function svg(tag, attrs = {}) {
   return node;
 }
 
-// topRounded is a bar segment with 4px rounded corners at its data end and a
+// topRounded is a bar segment with rounded corners at its data end and a
 // square foot on the baseline.
 function topRounded(x, y, w, h, r) {
   r = Math.min(r, w / 2, h);
@@ -388,7 +399,7 @@ function drawChart(filtered, range) {
   const slots = [...present.keys()].sort((a, b) => a - b);
   const slotName = (slot) => {
     const models = [...present.get(slot)];
-    return slot < SERIES.length || models.length === 1 ? models[0] : 'Other models';
+    return slot < SERIES || models.length === 1 ? models[0] : 'Other models';
   };
 
   const peak = list.reduce((m, b) => Math.max(m, b.total), 0);
@@ -399,12 +410,14 @@ function drawChart(filtered, range) {
     : 'Nothing was spent in this period.';
 
   // A legend for two series or more; one series is named by the title.
-  $('chartLegend').replaceChildren(...(slots.length > 1 ? slots.map((slot) => el('span', { class: 'costs-key' },
-    el('span', { class: 'costs-swatch', style: `background:${colorOf(slot)}` }),
-    el('span', { text: slotName(slot) }))) : []));
+  morph($('chartLegend'), slots.length > 1
+    ? html`${slots.map((slot) => html`<span class="so-costs-key"><span class="so-swatch" data-series="${seriesKey(slot)}"></span><span>${slotName(slot)}</span></span>`)}`
+    : '');
 
   const width = Math.max(280, box.clientWidth || 600);
-  const height = 240;
+  const height = px(box, '--so-chart-height', 240);
+  const gapPx = px(box, '--so-chart-gap', 2);
+  const radius = px(box, '--ds-radius-xs', 4);
   const m = { top: 12, right: 8, bottom: 26, left: 52 };
   const plotW = width - m.left - m.right;
   const plotH = height - m.top - m.bottom;
@@ -415,18 +428,19 @@ function drawChart(filtered, range) {
 
   const root = svg('svg', { width, height, viewBox: `0 0 ${width} ${height}`, role: 'img',
     'aria-label': `${$('chartTitle').textContent}: ${$('chartSub').textContent}` });
-  const hover = svg('rect', { x: 0, y: m.top, width: band, height: plotH, class: 'costs-hoverband', visibility: 'hidden' });
+  const hover = svg('rect', { x: 0, y: m.top, width: band, height: plotH, class: 'so-chart__hover', visibility: 'hidden' });
   root.append(hover);
   for (let v = 0; v <= top + step / 2; v += step) {
     const yy = Math.round(y(v)) + 0.5;
-    root.append(svg('line', { x1: m.left, x2: width - m.right, y1: yy, y2: yy, class: v === 0 ? 'costs-base' : 'costs-grid' }));
-    const label = svg('text', { x: m.left - 8, y: yy + 4, 'text-anchor': 'end', class: 'costs-axis' });
+    root.append(svg('line', { x1: m.left, x2: width - m.right, y1: yy, y2: yy, class: v === 0 ? 'so-chart__base' : 'so-chart__grid' }));
+    const label = svg('text', { x: m.left - 8, y: yy + 4, 'text-anchor': 'end', class: 'so-chart__axis' });
     label.textContent = moneyAxis(v);
     root.append(label);
   }
 
   // Sparse x labels: about one per 70px, always the first and the last.
   const every = Math.max(1, Math.ceil(70 / band));
+  let labelled = -every;
   list.forEach((b, i) => {
     const cx = m.left + band * i + band / 2;
     if (b.total > 0) {
@@ -434,22 +448,25 @@ function drawChart(filtered, range) {
       const present = slots.filter((s) => b.slots.get(s) > 0);
       present.forEach((slot, j) => {
         const h = (b.slots.get(slot) / top) * plotH;
-        const gap = j > 0 ? 2 : 0; // the surface gap between stacked segments
+        const gap = j > 0 ? gapPx : 0; // the surface gap between stacked segments
         const segH = Math.max(0, h - gap);
         const yTop = base - h;
         const last = j === present.length - 1;
         if (segH > 0) {
+          const series = seriesKey(slot);
           root.append(last
-            ? svg('path', { d: topRounded(cx - barW / 2, yTop, barW, segH, 4), fill: colorOf(slot) })
-            : svg('rect', { x: cx - barW / 2, y: yTop, width: barW, height: segH, fill: colorOf(slot) }));
+            ? svg('path', { d: topRounded(cx - barW / 2, yTop, barW, segH, radius), class: 'so-chart__bar', 'data-series': series })
+            : svg('rect', { x: cx - barW / 2, y: yTop, width: barW, height: segH, class: 'so-chart__bar', 'data-series': series }));
         }
         base = yTop;
       });
     }
     if (i % every === 0 || i === list.length - 1) {
-      if (i === list.length - 1 && i % every !== 0 && i % every < every / 2) return;
+      // The last one only where it does not run into the one before it.
+      if (i % every !== 0 && i - labelled < every) return;
+      labelled = i;
       const d = dayFromKey(b.key);
-      const label = svg('text', { x: cx, y: height - 8, 'text-anchor': 'middle', class: 'costs-axis' });
+      const label = svg('text', { x: cx, y: height - 8, 'text-anchor': 'middle', class: 'so-chart__axis' });
       label.textContent = monthly ? (d.getMonth() === 0 || i === 0 ? `${monthShort.format(d)} ${d.getFullYear()}` : monthShort.format(d)) : dayShort.format(d);
       root.append(label);
     }
@@ -463,15 +480,9 @@ function drawChart(filtered, range) {
     hover.setAttribute('visibility', 'visible');
     const title = monthly ? monthLong.format(dayFromKey(b.key)) : dayLong.format(dayFromKey(b.key));
     const lines = [...b.models.entries()].sort((a, c) => c[1] - a[1]);
-    tip.replaceChildren(...[
-      el('div', { class: 'costs-tip-title', text: title }),
-      el('div', { class: 'costs-tip-total', text: money(b.total) }),
-      ...lines.slice(0, 6).map(([model, cost]) => el('div', { class: 'costs-tip-row' },
-        el('span', { class: 'costs-swatch', style: `background:${colorOf(seriesOf(model))}` }),
-        el('span', { class: 'costs-tip-name', text: model }),
-        el('span', { class: 'costs-tip-value', text: money(cost) }))),
-      lines.length > 6 ? el('div', { class: 'costs-tip-more', text: `and ${lines.length - 6} more` }) : null,
-    ].filter(Boolean));
+    morph(tip, html`<p class="so-chart-tip__title">${title}</p><p class="so-chart-tip__total">${money(b.total)}</p>${
+      lines.slice(0, 6).map(([model, cost]) => html`<p class="so-chart-tip__row"><span class="so-swatch" data-series="${seriesKey(seriesOf(model))}"></span><span class="so-chart-tip__name">${model}</span><span class="so-chart-tip__value">${money(cost)}</span></p>`)}${
+      lines.length > 6 ? html`<p class="so-chart-tip__more">and ${lines.length - 6} more</p>` : ''}`);
     tip.hidden = false;
     const rect = box.getBoundingClientRect();
     const tw = tip.offsetWidth;
@@ -488,7 +499,7 @@ function drawChart(filtered, range) {
     tip.hidden = true;
   };
   list.forEach((b, i) => {
-    const hit = svg('rect', { x: m.left + band * i, y: m.top, width: band, height: plotH, fill: 'transparent', class: 'costs-hit' });
+    const hit = svg('rect', { x: m.left + band * i, y: m.top, width: band, height: plotH, class: 'so-chart__hit' });
     hit.addEventListener('pointerenter', (ev) => show(b, i, ev));
     hit.addEventListener('pointerdown', (ev) => show(b, i, ev));
     hit.addEventListener('pointerleave', (ev) => { if (ev.pointerType === 'mouse') hide(); });
@@ -502,86 +513,97 @@ function drawChart(filtered, range) {
 
 const LIMIT = 10;
 
-function table(id, groups, { name, sub, onPick, picked, href, limit = LIMIT, sort = 'cost' }) {
+// table draws one breakdown as a DS table. A row that filters (`onPick`) is
+// an interactive row whose name is its button, pressed while that filter is
+// on; a row with `href` links to its session.
+function table(id, groups, { column, name, sub, onPick, picked, href, limit = LIMIT, sort = 'cost' }) {
   const box = $(id);
   const total = groups.reduce((s, g) => s + g.cost, 0);
   if (sort === 'cost') groups.sort((a, b) => b.cost - a.cost);
   else groups.sort(sort);
   if (!groups.length || total <= 0) {
-    box.replaceChildren(el('div', { class: 'costs-empty', text: 'Nothing in this period.' }));
+    morph(box, html`<p class="ds-muted">Nothing in this period.</p>`);
+    box.onclick = null;
     return;
   }
   const open = state.expanded.has(id);
   const shown = open ? groups : groups.slice(0, limit);
   const peak = groups.reduce((m, g) => Math.max(m, g.cost), 0);
-  const head = el('div', { class: 'costs-row costs-head' },
-    el('span', { class: 'costs-name', text: '' }),
-    el('span', { class: 'costs-num', text: 'Cost' }),
-    el('span', { class: 'costs-num costs-share', text: 'Share' }),
-    el('span', { class: 'costs-num costs-wide', text: 'Tokens' }),
-    el('span', { class: 'costs-num costs-wide', text: 'Requests' }));
-  const rows = shown.map((g) => {
+  const rows = shown.map((g, i) => {
     const used = g.input + g.output + g.cacheRead + g.cacheWrite;
     const label = name(g);
     const detail = sub ? sub(g) : '';
     const target = href ? href(g) : '';
-    const nameCell = el('span', { class: 'costs-name' },
-      el(target ? 'a' : 'span', { class: 'costs-label', text: label, title: label, href: target || null }),
-      detail ? el('span', { class: 'costs-sub', text: detail, title: detail }) : null,
-      el('span', { class: 'costs-bar' }, el('span', { style: `width:${peak ? (g.cost / peak) * 100 : 0}%` })));
-    const row = el(onPick ? 'button' : 'div', {
-      class: 'costs-row' + (onPick ? ' pickable' : '') + (picked && picked(g) ? ' picked' : ''),
-      type: onPick ? 'button' : null,
-      title: onPick ? (picked && picked(g) ? 'Show everything again' : 'Show only this') : null,
-      onclick: onPick ? () => onPick(g) : null,
-    },
-    nameCell,
-    el('span', { class: 'costs-num costs-cost', text: money(g.cost) }),
-    el('span', { class: 'costs-num costs-share', text: pct(g.cost / total) }),
-    el('span', {
-      class: 'costs-num costs-wide', text: tokens(used),
-      title: `${g.input.toLocaleString()} in · ${g.output.toLocaleString()} out · ${g.cacheRead.toLocaleString()} cache read · ${g.cacheWrite.toLocaleString()} cache write`,
-    }),
-    el('span', { class: 'costs-num costs-wide', text: g.requests.toLocaleString() }));
-    return row;
+    const on = !!(picked && picked(g));
+    const title = onPick ? (on ? 'Show everything again' : 'Show only this') : label;
+    const lead = onPick
+      ? html`<button class="ds-link-btn ds-table__row-link" type="button" data-pick="${i}" aria-pressed="${on ? 'true' : 'false'}" title="${title}">${on ? raw(icon('check', 16)) : ''}${label}</button>`
+      : target
+        ? html`<a class="ds-link-btn" href="${target}">${label}</a>`
+        : html`<span>${label}</span>`;
+    return html`<tr data-ds-key="${'k:' + g.key}"${on ? raw(' class="ds-table__row--selected"') : ''}>
+      <td class="ds-col--text so-costs-name">${lead}${detail ? html`<small class="so-costs-sub">${detail}</small>` : ''}<span class="so-costs-bar" aria-hidden="true"><span style="--so-share: ${peak ? (g.cost / peak).toFixed(4) : 0}"></span></span></td>
+      <td class="ds-num"><strong>${money(g.cost)}</strong></td>
+      <td class="ds-num ds-col--secondary">${pct(g.cost / total)}</td>
+      <td class="ds-num ds-col--secondary" title="${`${g.input.toLocaleString()} in · ${g.output.toLocaleString()} out · ${g.cacheRead.toLocaleString()} cache read · ${g.cacheWrite.toLocaleString()} cache write`}">${tokens(used)}</td>
+      <td class="ds-num ds-col--secondary">${g.requests.toLocaleString()}</td>
+    </tr>`;
   });
-  const more = groups.length > limit ? el('button', {
-    class: 'ds-btn ds-btn--sm ds-btn--text costs-more', type: 'button',
-    text: open ? 'Show fewer' : `Show all ${groups.length}`,
-    onclick: () => { if (open) state.expanded.delete(id); else state.expanded.add(id); render(); },
-  }) : null;
-  box.replaceChildren(...[head, ...rows, more].filter(Boolean));
+  morph(box, html`<div class="ds-table-wrap"><table class="ds-table ds-table--dense${onPick ? ' ds-table--interactive' : ''}">
+    <thead><tr>
+      <th scope="col">${column}</th><th scope="col" class="ds-num">Cost</th><th scope="col" class="ds-num ds-col--secondary">Share</th>
+      <th scope="col" class="ds-num ds-col--secondary">Tokens</th><th scope="col" class="ds-num ds-col--secondary">Requests</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table></div>${groups.length > limit
+    ? html`<div class="ds-more"><button class="ds-btn ds-btn--text" type="button" data-more>${open ? 'Show fewer' : `Show all ${groups.length}`}</button></div>`
+    : ''}`);
+  box.onclick = (ev) => {
+    const pick = ev.target.closest('[data-pick]');
+    if (pick && onPick) { onPick(shown[Number(pick.dataset.pick)]); return; }
+    if (ev.target.closest('[data-more]')) {
+      if (open) state.expanded.delete(id); else state.expanded.add(id);
+      render();
+    }
+  };
 }
 
 function drawTables(filtered) {
   const f = state.filters;
   table('tProject', groupBy(filtered, (r) => r.conv.project), {
+    column: 'Project',
     name: (g) => projectLabel(g.key),
     sub: (g) => (g.key === MORE ? 'folders Socrates made for one session' : g.key),
-    onPick: (g) => toggleFilter('project', g.key), picked: (g) => f.project === g.key,
+    onPick: (g) => toggleFilter('project', g.key), picked: (g) => f.project !== '' && f.project === g.key,
   });
   table('tModel', groupBy(filtered, (r) => r.model), {
+    column: 'Model',
     name: (g) => g.key,
     sub: (g) => (g.unpriced && g.cost === 0 ? `${g.unpriced.toLocaleString()} requests without a known price` : ''),
-    onPick: (g) => toggleFilter('model', g.key), picked: (g) => f.model === g.key,
+    onPick: (g) => toggleFilter('model', g.key), picked: (g) => f.model !== '' && f.model === g.key,
   });
-  table('tMonth', groupBy(filtered, (r) => r.month), {
+  table('tMonthly', groupBy(filtered, (r) => r.month), {
+    column: 'Month',
     name: (g) => monthLong.format(dayFromKey(g.key)),
     sort: (a, b) => (a.key < b.key ? 1 : -1), limit: 12,
   });
   table('tDay', groupBy(filtered, (r) => r.day), {
+    column: 'Day',
     name: (g) => dayLong.format(dayFromKey(g.key)),
     sort: (a, b) => (a.key < b.key ? 1 : -1), limit: 14,
   });
   table('tHarness', groupBy(filtered, (r) => r.conv.harness), {
+    column: 'Program',
     name: (g) => HARNESS[g.key] || g.key,
-    onPick: (g) => toggleFilter('harness', g.key), picked: (g) => f.harness === g.key,
+    onPick: (g) => toggleFilter('harness', g.key), picked: (g) => f.harness !== '' && f.harness === g.key,
   });
   table('tProfile', groupBy(filtered, (r) => r.conv.profile), {
+    column: 'Profile',
     name: (g) => profileLabel(g.key),
     onPick: (g) => toggleFilter('profile', g.key), picked: (g) => f.profileSet && f.profile === g.key,
   });
   table('tConv', groupBy(filtered, (r) => r.conv.key), {
+    column: 'Conversation',
     name: (g) => convLabel(g.sample.conv),
     sub: (g) => {
       const c = g.sample.conv;
@@ -597,14 +619,27 @@ function drawTables(filtered) {
 
 function render() {
   if (!state.data) return;
+  $('costsLoading').hidden = true;
+  const none = state.rows.length === 0;
+  $('costsNone').hidden = !none;
+  $('costsBody').hidden = none;
+  $('costsCsv').disabled = true;
+  if (none) return;
   drawRange();
   drawFilters();
   const range = bounds(state.range, state.rows);
   const inRange = state.rows.filter((r) => r.day >= range.from && r.day <= range.to && matches(r));
   const days = daysBetween(range.from, range.to).length;
   drawTiles(inRange, days);
-  drawChart(inRange, range);
-  drawTables(inRange);
+  const empty = inRange.length === 0 || inRange.every((r) => r.cost <= 0 && r.requests === 0);
+  $('costsEmpty').hidden = !empty;
+  $('costsData').hidden = empty;
+  if (!empty) {
+    drawChart(inRange, range);
+    drawTables(inRange);
+  } else {
+    $('chartTip').hidden = true;
+  }
   $('costsCsv').disabled = inRange.length === 0;
   $('costsCsv').onclick = () => downloadCsv(inRange, range);
 }
@@ -613,9 +648,11 @@ function drawState() {
   const data = state.data;
   const line = $('costsState');
   if (!data) return;
-  if (data.scanning) line.textContent = 'Reading transcripts…';
-  else if (data.scanned_at) line.textContent = 'Updated ' + clock.format(new Date(data.scanned_at));
-  else line.textContent = '';
+  if (data.scanning) {
+    morph(line, html`<span class="ds-status ds-status--running"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>Reading transcripts</span></span>`);
+  } else {
+    morph(line, data.scanned_at ? html`Updated ${clock.format(new Date(data.scanned_at))}` : '');
+  }
   const backup = !data.mirrored
     ? 'This Socrates has no bucket, so the ledger is kept on this machine only.'
     : data.pending
@@ -624,6 +661,15 @@ function drawState() {
   $('costsNote').textContent = 'Estimated at the published API prices from the transcripts Claude Code, Codex and OpenCode keep '
     + '(OpenCode prices its answers itself). A subscription is billed differently: this is what the same work would cost on the API. '
     + 'Days are this device\'s days. ' + backup;
+  $('costsNoneText').textContent = data.scanning
+    ? 'Socrates is reading the transcripts on this machine; what they cost shows up here in a moment.'
+    : 'They show up here once Claude Code, Codex or OpenCode has had a conversation on this machine.';
+}
+
+// notice says that the ledger could not be read, with a way to try again.
+function notice(text) {
+  if (!text) { morph($('notice'), ''); return; }
+  morph($('notice'), html`<div class="ds-alert ds-alert--error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${text}</span><button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-retry>Try again</button></div>`);
 }
 
 async function load() {
@@ -634,13 +680,12 @@ async function load() {
     const data = await api('/api/costs');
     state.data = data;
     state.rows = decode(data);
-    $('notice').className = 'notice';
-    $('notice').textContent = '';
+    notice('');
     drawState();
     render();
   } catch (err) {
-    $('notice').className = 'notice error';
-    $('notice').textContent = errorMessage(err);
+    notice(errorMessage(err));
+    if (!state.data) $('costsLoading').hidden = true;
   } finally {
     state.loading = false;
     const scanning = state.data && state.data.scanning;
@@ -678,6 +723,7 @@ $('fClear').addEventListener('click', () => {
   savePrefs();
   render();
 });
+$('notice').addEventListener('click', (ev) => { if (ev.target.closest('[data-retry]')) load(); });
 let resizeFrame = 0;
 new ResizeObserver(() => {
   cancelAnimationFrame(resizeFrame);
