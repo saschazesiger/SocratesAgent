@@ -2293,3 +2293,43 @@ backup leaves its `env` field out (`paths.Redacted`), and the host's `host.lock`
 and socket (`run/chats/`) entirely; the journal and the adapter's `agent/` state go in whole.
 The server writes the spec again before every launch, so a restored chat loses nothing. WP7:
 credentials should still live in the account folders or the store, not only in the spec.
+
+**WP8 / §7 and §9 — the browser suite keeps the agent terminals (`SOCRATES_AGENT_TERMINALS`).**
+Every agent with an adapter is a chat when a session is made from the sheet or prepared, so a
+prepared Claude Code session in the suite became a chat run by the faketui stand-in, which speaks
+no protocol (the `prestart` scenario failed on the branch before this package). The server keeps
+Claude Code, Codex and OpenCode terminals for the sheet and PreStart while
+`SOCRATES_AGENT_TERMINALS=1` is set, and the e2e harness sets it for every server, so the
+scenarios written for agent terminals keep testing them until WP11 moves the suite to the protocol
+fakes; WP10 removes the switch with the agent terminals. The scripted agent is a chat either way,
+and `POST /api/chats` makes a chat of any agent with an adapter. The `design` scenario runs with
+the scripted agent on, so its sheet names one program more.
+
+**WP8 / §7.1 — the chat's controls are in its composer, not in a header of its own.** The page's
+top bar already carries the session's title, the microphone and ⋮ (rename, file, Compact the
+conversation, Download the conversation, delete), so a chat gets no second header: the model and
+effort picker, the account slot (WP7, `useAccountPicker` in `composer.js`) and the usage "i" sit in
+the composer's bar, beside what they change. Status (spoken) is hidden for a chat until it reads
+the journal (WP9); it read a terminal's screen. "Export transcript" downloads the projection as
+JSON (`GET /api/chats/{id}?history=1`).
+
+**WP8 / §5.4 — the question dialog answers at a desk too.** The card in the chat shows the title,
+"n of m answered" and the first open question, and its Answer opens the dialog: centred at a desk,
+the whole screen on a phone and in touch mode. One place answers every kind with its details,
+context, notes and counter-question; twenty questions answered inside a card would be a second
+dialog. A plan's card answers the plan (Approve, Keep planning with a note) and the dialog leaves
+plans out.
+
+**WP8 / §5.2 — how kinds without options answer.** §5.2 gives `selected` and `other`; the view
+puts a text question's answer and a number question's number (as typed, checked against
+`min`/`max`) in `other`, a confirm question's in `selected` (`"yes"`/`"no"`), and sends every
+question of the call, `skipped` when it was neither answered nor delegated. "n of m answered"
+counts the questions the person had in hand (changed, or moved past); a preselected default
+nobody looked at is not counted.
+
+**WP8 / §2.3 — Stop is a request, not an outbox item.** A message or an answer written offline is
+still wanted when the connection is back; a Stop is not (it would interrupt whatever turn runs
+then), so Stop calls `POST /api/chats/{id}/interrupt` once and says when it could not.
+
+**WP8 — an image a tool made is a file chip.** Nothing serves a chat's files to the browser yet, so
+an `image` part shows its name, with the path behind the "i", rather than the picture.
