@@ -55,6 +55,14 @@ func TestRealOpenCode(t *testing.T) {
 		}
 	}
 	base := []string{"PATH=" + filepath.Dir(bin) + string(os.PathListSeparator) + os.Getenv("PATH"), "HOME=" + data}
+	// The network as the test has it (a proxy and its CA), and nothing else
+	// of its environment.
+	for _, key := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy",
+		"SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS"} {
+		if v, ok := os.LookupEnv(key); ok {
+			base = append(base, key+"="+v)
+		}
+	}
 	envA := append(append([]string{}, base...), "OPENCODE_AUTH_CONTENT="+auth)
 	if auth == "" {
 		envA = base
