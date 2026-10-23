@@ -9,8 +9,9 @@
 // For every agent: the model calls ask_user, the answer goes in through
 // POST /api/chats/{id}/asks/{ask}/answer in the shape of REBUILD.md §5.2 (as
 // askdialog.js builds it) and comes back to the model through its transport;
-// an answer after an interrupt goes to the agent as a message instead; and a
-// second device is told the question was answered. Codex on a code-mode
+// an answer after an interrupt goes to the agent as a message instead; a
+// message sent after Stop closes the question nobody waits on (which still
+// takes an answer); and a second device is told the question was answered. Codex on a code-mode
 // model gets its answer as the next message by design.
 //
 // Every check prints what it measured beside its verdict, like run.mjs.
@@ -145,6 +146,23 @@ async function agent(srv, data, harness) {
     const said = lastText(s.events, notice?.seq || before);
     check(notice && reply && said.includes('Answer to your earlier question (Setup)') && said.includes('SQLite [sqlite]'),
       `${harness}: the answer after the interrupt reached the agent as a message`, said.slice(0, 120));
+
+    // Stopped, and then told something else: the question nobody waits on
+    // is closed, the chat stops waiting, and it can still be answered.
+    const mark = s.events[s.events.length - 1].seq;
+    await call(srv, 'POST', `/api/chats/${id}/messages`, { client_id: `${harness}-m3`, text: askTurn[harness] });
+    const third = await s.next((e) => e.type === 'ask', mark);
+    await call(srv, 'POST', `/api/chats/${id}/interrupt`, { client_id: `${harness}-i2` });
+    const stopped = await s.next((e) => e.type === 'turn.ended', third?.seq || mark);
+    await call(srv, 'POST', `/api/chats/${id}/messages`, { client_id: `${harness}-m4`, text: 'skip that, do X' });
+    const closed = await s.next((e) => e.type === 'ask.closed' && e.ask_id === third?.ask_id, stopped?.seq || mark);
+    await s.next((e) => e.type === 'turn.ended' && e.outcome === 'completed', closed?.seq || mark);
+    const after = await call(srv, 'GET', `/api/chats/${id}`);
+    check(closed && !(after.json?.asks || []).length && after.json?.chat?.activity !== 'waiting',
+      `${harness}: a message after Stop closes the question`, { closed: !!closed, open: (after.json?.asks || []).length, activity: after.json?.chat?.activity });
+    const late = await call(srv, 'POST', `/api/chats/${id}/asks/${third?.ask_id}/answer`, { client_id: `${harness}-a4`, answer: dialogAnswer, device: 'phone' });
+    const lateGone = await s.next((e) => e.type === 'ask.delivered' && e.ask_id === third?.ask_id, closed?.seq || mark);
+    check(late.status === 200 && lateGone?.via === 'message', `${harness}: a closed question still takes an answer, as a message`, { status: late.status, via: lateGone?.via });
   } finally {
     s.close();
   }
