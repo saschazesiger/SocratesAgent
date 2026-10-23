@@ -61,6 +61,9 @@ type fileState struct {
 	// consistent copy's for a database.
 	Stored int64    `json:"stored"`
 	Chunks []string `json:"chunks"`
+	// Racy is a file changed within racyWindow of being read, which the
+	// next run reads again whatever its size and time say.
+	Racy bool `json:"racy,omitempty"`
 }
 
 func cacheDir(dataDir string) string { return paths.New(dataDir).Path(paths.BackupCache) }

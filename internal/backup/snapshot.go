@@ -270,15 +270,25 @@ func (s *snapshotter) companion(p string) bool {
 	return false
 }
 
+// racyWindow is how close to the moment a file is read its modification
+// time may be for the index not to vouch for it. A file rewritten in place
+// with the same size within one tick of the file system's clock keeps its
+// size and time, and a run that read it in that tick would take the old
+// content for the current one until the file changed again - the last
+// write before a quiet night missing from every snapshot. Such a file is
+// read again by the next run, as git does with a "racily clean" one.
+const racyWindow = 2 * time.Second
+
 // file backs up one regular file and returns its entry, or nil for a
 // database that could not be copied and has no earlier copy to stand in.
 func (s *snapshotter) file(ctx context.Context, p, rel string, info fs.FileInfo) (*Entry, error) {
+	readAt := time.Now()
 	now := fileState{Size: info.Size(), MTime: info.ModTime().UnixNano()}
 	entry := &Entry{Path: rel, Type: TypeFile, Mode: unixMode(info.Mode()), MTime: now.MTime}
 	prev, known := s.idx.Files[rel]
 	// A file whose size and time are what they were is what it was; only a
 	// changed one is read, and only to see whether it is a database now.
-	sameStat := known && prev.Size == now.Size && prev.MTime == now.MTime
+	sameStat := known && !prev.Racy && prev.Size == now.Size && prev.MTime == now.MTime
 	if sameStat {
 		now.SQLite = prev.SQLite
 	} else {
@@ -287,6 +297,8 @@ func (s *snapshotter) file(ctx context.Context, p, rel string, info fs.FileInfo)
 	if now.SQLite {
 		now.WALSize, now.WALMTime = walStat(p)
 	}
+	racy := func(mtime int64) bool { return mtime != 0 && time.Unix(0, mtime).After(readAt.Add(-racyWindow)) }
+	now.Racy = racy(now.MTime) || racy(now.WALMTime)
 	if sameStat && prev.WALSize == now.WALSize && prev.WALMTime == now.WALMTime && s.remoteHas(prev.Chunks) {
 		s.files[rel] = prev
 		entry.Size, entry.Chunks = prev.Stored, prev.Chunks

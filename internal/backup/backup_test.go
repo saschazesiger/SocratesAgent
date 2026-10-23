@@ -718,6 +718,42 @@ func TestADatabaseThatGrewUploadsOnlyItsChangedChunks(t *testing.T) {
 	}
 }
 
+// A file rewritten in place with the same size and, on a coarse clock, the
+// same time, just after a run read it, is not taken for unchanged by the next
+// run: one changed that close to being read is read again.
+func TestAFileChangedAsItWasReadIsReadAgain(t *testing.T) {
+	clk := newClock()
+	b := newBucket(t, clk)
+	src := t.TempDir()
+	file := filepath.Join(src, "chats/c1/state.json")
+	write(t, file, []byte(`{"turn":1}`), 0o600)
+	info, err := os.Stat(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := engine(t, src, b, clk, "host-a")
+	if _, err := e.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Rewritten within the same tick: same size, same time.
+	write(t, file, []byte(`{"turn":2}`), 0o600)
+	if err := os.Chtimes(file, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	clk.Add(10 * time.Minute)
+	second, err := e.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Unchanged {
+		t.Fatalf("the rewrite was taken for no change: %+v", second)
+	}
+	dest := restoreInto(t, b, "latest")
+	if raw, err := os.ReadFile(filepath.Join(dest, "chats/c1/state.json")); err != nil || string(raw) != `{"turn":2}` {
+		t.Fatalf("restored %q %v", raw, err)
+	}
+}
+
 // A wrong passphrase is refused before anything is written or restored.
 func TestAWrongPassphraseIsRefused(t *testing.T) {
 	clk := newClock()
