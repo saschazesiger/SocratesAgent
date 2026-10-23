@@ -659,6 +659,18 @@ func (s *Server) started(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// terminal refuses the routes that only a terminal has - its socket, its
+// scrollback, its relaunch - for a chat, which has no pane.
+func (s *Server) terminal(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if row, err := s.store.GetSession(r.PathValue("id")); err == nil && row.IsChat() {
+			writeError(w, http.StatusConflict, "this session is a chat and has no terminal")
+			return
+		}
+		next(w, r)
+	}
+}
+
 // keyedLocks is one mutex per session id, made when it is first wanted and
 // dropped when nobody holds or waits for it.
 type keyedLocks struct {

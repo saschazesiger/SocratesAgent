@@ -311,7 +311,7 @@ func codingHarness(id string) bool {
 // its last digest as it is: the last summary of a finished session is still
 // the best line Home has for it.
 func digestible(row *store.Session) bool {
-	return codingHarness(row.Harness) && row.State == store.StateRunning
+	return !row.IsChat() && codingHarness(row.Harness) && row.State == store.StateRunning
 }
 
 // get is one session's digest, and false when it has none.
