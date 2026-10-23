@@ -53,7 +53,11 @@ type Adapter interface {
 	// Answer delivers the answer to an ask through the call that is blocked
 	// on it. ErrAskGone means the call is not there any more (the turn was
 	// interrupted, or the CLI restarted since it asked); the host then
-	// delivers the answer as a user message.
+	// delivers the answer as a user message and says so in the chat.
+	// ErrAskDeferred means the answer is meant to arrive as the next user
+	// message (an ask whose call already returned, by design); the host
+	// sends it that way without a notice. An ask emitted with Via
+	// ViaMessage is never passed to Answer at all.
 	Answer(ctx context.Context, askID string, answer json.RawMessage) error
 	// SetModel switches model and effort for the turns that follow, and
 	// emits TypeModelChanged.
@@ -122,6 +126,11 @@ type Emitter interface {
 
 // ErrAskGone is Answer's "there is no call waiting for this any more".
 var ErrAskGone = errors.New("the question is no longer being waited on")
+
+// ErrAskDeferred is Answer's "send the answer as the next user message", for
+// an ask whose call returned at once by design (Codex code mode, REBUILD.md
+// §5.3). It is the normal path for such an ask, not a loss.
+var ErrAskDeferred = errors.New("the answer goes to the agent as the next message")
 
 // ErrUnknownCommand is Command's answer for a command the agent does not
 // have.

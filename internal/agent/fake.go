@@ -47,6 +47,8 @@ func EnableFake() { Register(FakeHarness, func() Adapter { return &fakeAdapter{}
 //	/stream N [ms]   N text deltas, ms apart (default 10)
 //	/tool            a tool call with streamed output, then a line of text
 //	/ask             an ask; the turn waits for the answer
+//	/asknext         an ask whose answer comes as the next message; the turn ends
+//	/subagent        a subagent tool part with parts nested inside it
 //	/sleep S         a turn that works for S seconds
 //	/bg S            a turn that leaves a background task running for S seconds
 //	/limit           the account's limit stops the turn
@@ -348,6 +350,13 @@ func (f *fakeAdapter) turn(ctx context.Context, msg Outgoing, n int) {
 			return
 		}
 		t.say("you answered: " + string(answer))
+	case "/asknext":
+		f.out.Emit(Event{Type: TypeAsk, AskID: "ask_" + fakeID(), TurnID: t.id, Via: ViaMessage,
+			Payload: json.RawMessage(`{"title":"Fake question","questions":[{"id":"q1","question":"Pick one","kind":"text"}]}`)})
+		t.say("Questions delivered; the answers arrive as the next message.")
+	case "/subagent":
+		f.subagent(t)
+		t.say("The subagent finished.")
 	case "/sleep":
 		if !fakeWait(ctx, time.Duration(fakeFloat(fields, 0, 1)*float64(time.Second))) {
 			t.end(OutcomeInterrupted, "")
@@ -406,6 +415,20 @@ func (f *fakeAdapter) tool(ctx context.Context, t *fakeTurn) bool {
 	done := json.RawMessage(`{"name":"Bash","input":{"command":"echo hello"},"exit_code":0}`)
 	f.out.Emit(Event{Type: TypePart, MessageID: t.msgID, PartID: id, Kind: PartTool, State: PartDone, Content: done, Text: output.String()})
 	return true
+}
+
+// subagent is a Task-like tool part with a subagent's text and tool call
+// nested inside it.
+func (f *fakeAdapter) subagent(t *fakeTurn) {
+	group := t.msgID + "_task"
+	f.out.Emit(Event{Type: TypePart, MessageID: t.msgID, PartID: group, Kind: PartTool, State: PartRunning,
+		Content: json.RawMessage(`{"name":"Task","input":{"description":"look around"}}`)})
+	f.out.Emit(Event{Type: TypePart, MessageID: t.msgID, PartID: group + "_text", ParentPartID: group,
+		Kind: PartText, State: PartDone, Text: "Looking around."})
+	f.out.Emit(Event{Type: TypePart, MessageID: t.msgID, PartID: group + "_ls", ParentPartID: group,
+		Kind: PartTool, State: PartDone, Text: "a\nb\n", Content: json.RawMessage(`{"name":"Bash","input":{"command":"ls"}}`)})
+	f.out.Emit(Event{Type: TypePart, MessageID: t.msgID, PartID: group, Kind: PartTool, State: PartDone,
+		Content: json.RawMessage(`{"name":"Task","input":{"description":"look around"}}`), Text: "Found a and b."})
 }
 
 // ask blocks the turn on a question until it is answered or interrupted.

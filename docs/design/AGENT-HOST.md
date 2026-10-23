@@ -49,9 +49,9 @@ is one `agent.Event`: a flat JSON object, all fields optional except `seq`, `at`
 | `turn.ended` | `turn_id`, `outcome` (`completed`\|`interrupted`\|`failed`\|`limited`), `usage`, `cost_usd`, `text` (why) | end of the turn |
 | `message` | `message_id`, `role` (`user`\|`assistant`), `state`, `client_id`?, `text`?, `attachments`?, `answer_to`?, `turn_id`?, `model`? | creates a message. **User messages carry text and attachments inline**; assistant messages are containers for parts |
 | `message.state` | `message_id`, `state` | user: `pending` (journaled by the host) → `queued` (the agent holds it behind a running turn) → `delivered` (taken up). Assistant: `streaming` → `done`\|`interrupted` |
-| `part` | `message_id`, `part_id`, `kind`, `state`, `text`, `content` | creates **or replaces whole** the part with that id (kind, state, text, content) |
+| `part` | `message_id`, `part_id`, `parent_part_id`?, `kind`, `state`, `text`, `content` | creates **or replaces whole** the part with that id (kind, state, text, content); `parent_part_id` nests it (below) |
 | `part.delta` | `message_id`, `part_id`, `offset`, `text` | appends `text` to the part's text; `offset` is where it starts, in **UTF-16 code units** |
-| `ask` | `ask_id`, `turn_id`, `payload` (WP6's `ask_user` schema, opaque here) | a question the agent is blocked on |
+| `ask` | `ask_id`, `turn_id`, `payload` (WP6's `ask_user` schema, opaque here), `via`? | a question the agent waits for. `via: "message"`: the call already returned by design (Codex code mode, REBUILD §5.3) and the answer is to be sent as the next user message (§4.4) |
 | `ask.answered` | `ask_id`, `answer`, `by_device`, `client_id` | the first answer; later ones are refused (§4.4) |
 | `ask.delivered` | `ask_id`, `via` (`tool`\|`message`) | how the answer reached the agent |
 | `account.switched` | `from`, `to`, `reason` | divider (WP7) |
@@ -64,6 +64,14 @@ is one `agent.Event`: a flat JSON object, all fields optional except `seq`, `at`
 | `command` | `op` (`interrupt`\|`set_model`\|`command`\|`park`\|`stop`), `client_id`, `model`/`effort`, `text` (command name), `args` | a command the host accepted; recorded so its `client_id` is acted on once |
 | `notice` | `code`, `text`, `ask_id`? | a line of its own. Host codes: `resumed`, `answer_as_message` |
 | `error` | `code`, `text`, `message_id`? | a failure that is not a turn's end (e.g. `send_failed`, `rate_limit`) |
+
+**Nesting.** A part with `parent_part_id` belongs inside that part: the parts a subagent or a
+workflow produced go inside the tool part that started it (Claude `Task`/`Agent` and
+`parent_tool_use_id`, Codex sub-threads, OpenCode `task` child sessions, REBUILD §3.1/§7.1). Nesting
+is by part, independent of the message; a nested part without `message_id` takes its parent's. The
+projection puts it in the parent's `children` (in creation order, any depth) and **not** in the
+message's `parts`. The parent must be emitted first; a part whose parent is unknown stays at the top
+of its message, keeping `parent_part_id`. A replacing `part` event keeps the part where it is.
 
 Part kinds: `text`, `reasoning`, `tool`, `diff`, `plan`, `todo`, `image`, `file`, `notice`. Part
 states: `streaming`, `running`, `done`, `error`, `interrupted`. `content` is kind-specific JSON
@@ -163,10 +171,14 @@ journal on every start, so it holds across reconnects and across host generation
 ### 4.4 Answers
 
 Unknown `ask_id` → `unknown_ask`. Already answered with another `client_id` → ack with
-`answered_elsewhere:true, by_device`. Otherwise `ask.answered` is journaled and synced, then
-`Adapter.Answer`: success → `ask.delivered{via:tool}`; `ErrAskGone` (or any error) → the answer is
-sent as a user message: `message{user, pending, answer_to, text: agent.AnswerText(…)}`,
-`ask.delivered{via:message}`, `notice{answer_as_message}`, then `Adapter.Send`. An open ask never
+`answered_elsewhere:true, by_device`. Otherwise `ask.answered` is journaled and synced, then:
+
+- an ask with `via: "message"` is not passed to `Adapter.Answer`: the answer goes as a user message
+  (`message{user, pending, answer_to, text: agent.AnswerText(…)}`, `ask.delivered{via:message}`,
+  then `Adapter.Send`) **without** a notice — this is the designed path;
+- otherwise `Adapter.Answer`: success → `ask.delivered{via:tool}`; `ErrAskDeferred` → as the line
+  above, without a notice (an adapter that only learns at answer time); `ErrAskGone` (or any other
+  error) → the same message plus `notice{answer_as_message}`, because the call was lost. An open ask never
 expires; it survives parks, host deaths and reboots, and an answer to it after any of those arrives
 as a message.
 
@@ -192,7 +204,9 @@ Rules every adapter keeps:
    event). A message left `pending` or `queued` when a host dies is handed to the next one.
 5. For every turn: `turn.started` (with the user `message_id`), an assistant `message`, parts, and
    `turn.ended`. End every part with a full `part` event. Tool output streams as `part.delta`.
-6. Report `ErrAskGone` from `Answer` when the blocking call is not there; report CLI death through
+6. Emit `ask{via:"message"}` (or return `ErrAskDeferred` from `Answer`) for an ask whose answer is
+   meant to start the next turn. Set `parent_part_id` on everything a subagent or workflow
+   produces. Report `ErrAskGone` from `Answer` when the blocking call is not there; report CLI death through
    `Emitter.Exited` (not for exits Park/Stop caused).
 7. `Background()` counts what parking would kill (Claude `task_*`, Codex background terminals).
 
@@ -296,6 +310,8 @@ Script, by message text:
 | `/stream N [ms]` | N deltas `wI ` every ms (default 20 × 10 ms) |
 | `/tool` | a `tool` part, three streamed output lines, then text |
 | `/ask` | an `ask`; blocks until answered (`you answered: <json>`) or interrupted |
+| `/asknext` | an `ask{via:"message"}`, and the turn ends; the answer starts the next turn |
+| `/subagent` | a `Task` tool part with a text and a tool part nested inside it |
 | `/sleep S` | works for S seconds |
 | `/bg S` | ends at once, leaving a background task for S seconds (`tasks`) |
 | `/limit` | `rate_limit`, `error`, `turn.ended{limited}` |

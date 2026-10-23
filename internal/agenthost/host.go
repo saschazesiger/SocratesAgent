@@ -337,7 +337,7 @@ func (h *host) boot() {
 		}
 	}
 	for i := range unsent {
-		h.deliverAsMessage(ctx, &unsent[i], unsent[i].Answer)
+		h.deliverAsMessage(ctx, &unsent[i], unsent[i].Answer, unsent[i].Deliver != agent.ViaMessage)
 	}
 	h.touch()
 }
@@ -532,27 +532,39 @@ func (h *host) answer(ctx context.Context, cmd Command) any {
 // deliver gets an answer to the agent: through the call that asked, if it is
 // still waiting, and as a user message if it is not.
 func (h *host) deliver(ctx context.Context, ask *agent.Ask, answer json.RawMessage) {
+	if ask.Deliver == agent.ViaMessage {
+		// The agent asked for the answer as its next message.
+		h.deliverAsMessage(ctx, ask, answer, false)
+		return
+	}
 	if h.adapter != nil {
 		err := h.adapter.Answer(ctx, ask.ID, answer)
-		if err == nil {
+		switch {
+		case err == nil:
 			h.record(agent.Event{Type: agent.TypeAskDelivered, AskID: ask.ID, Via: agent.ViaTool})
 			return
-		}
-		if !errors.Is(err, agent.ErrAskGone) {
+		case errors.Is(err, agent.ErrAskDeferred):
+			h.deliverAsMessage(ctx, ask, answer, false)
+			return
+		case !errors.Is(err, agent.ErrAskGone):
 			log.Printf("the answer to %s did not reach the agent, so it goes as a message: %v", ask.ID, err)
 		}
 	}
-	h.deliverAsMessage(ctx, ask, answer)
+	h.deliverAsMessage(ctx, ask, answer, true)
 }
 
-func (h *host) deliverAsMessage(ctx context.Context, ask *agent.Ask, answer json.RawMessage) {
+// deliverAsMessage sends an answer as a user message. lost says the call that
+// asked was gone, which the chat says in a notice; an answer that was meant to
+// arrive this way needs none.
+func (h *host) deliverAsMessage(ctx context.Context, ask *agent.Ask, answer json.RawMessage, lost bool) {
 	msg := agent.Event{Type: agent.TypeMessage, MessageID: newID("m_"), Role: agent.RoleUser,
 		State: agent.MessagePending, Text: agent.AnswerText(ask, answer), AnswerTo: ask.ID}
-	if _, err := h.rec.EmitDurable(msg,
-		agent.Event{Type: agent.TypeAskDelivered, AskID: ask.ID, Via: agent.ViaMessage},
-		agent.Event{Type: agent.TypeNotice, Code: agent.NoticeAnswerAsMessage, AskID: ask.ID,
-			Text: "The question was no longer being waited on, so the answer was sent as a message."},
-	); err != nil {
+	events := []agent.Event{msg, {Type: agent.TypeAskDelivered, AskID: ask.ID, Via: agent.ViaMessage}}
+	if lost {
+		events = append(events, agent.Event{Type: agent.TypeNotice, Code: agent.NoticeAnswerAsMessage, AskID: ask.ID,
+			Text: "The question was no longer being waited on, so the answer was sent as a message."})
+	}
+	if _, err := h.rec.EmitDurable(events...); err != nil {
 		log.Printf("journal: %v", err)
 		return
 	}
