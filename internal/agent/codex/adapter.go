@@ -81,8 +81,11 @@ type adapter struct {
 	active   *turn
 	starting *agent.Outgoing
 	// expect is the kind of the next turn codex starts on its own after a
-	// command (a compaction or a review), which cannot be steered.
-	expect turnKind
+	// command (a compaction, a review, a shell command), which cannot be
+	// steered, and expectMsg the "!" line that asked for a shell command:
+	// codex answers the call before it starts the turn.
+	expect    turnKind
+	expectMsg string
 	// turns are the root turns by codex turn id, kept for their subagents'
 	// late events; retry is the journal turn a recovery restarts.
 	turns map[string]*turn
@@ -525,11 +528,11 @@ func (a *adapter) startTurn(ctx context.Context, msg agent.Outgoing) error {
 	}()
 	if isShellLine(msg.Text) {
 		command := strings.TrimPrefix(strings.TrimSpace(msg.Text), "!")
-		if err := a.rpc.call(ctx, "thread/shellCommand", map[string]any{"threadId": thread, "command": command}, nil); err != nil {
-			return err
-		}
-		a.out.Emit(agent.Event{Type: agent.TypeMessageState, MessageID: msg.MessageID, State: agent.MessageDelivered})
-		return nil
+		a.mu.Lock()
+		a.starting = nil
+		a.expect, a.expectMsg = turnShell, msg.MessageID
+		a.mu.Unlock()
+		return a.rpc.call(ctx, "thread/shellCommand", map[string]any{"threadId": thread, "command": command}, nil)
 	}
 	params := map[string]any{"threadId": thread, "input": input(msg), "clientUserMessageId": msg.MessageID}
 	if model != "" {
@@ -690,7 +693,7 @@ func (a *adapter) Command(ctx context.Context, name, args string) error {
 
 func (a *adapter) expectTurn(k turnKind) {
 	a.mu.Lock()
-	a.expect = k
+	a.expect, a.expectMsg = k, ""
 	a.mu.Unlock()
 }
 

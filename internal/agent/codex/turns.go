@@ -316,15 +316,11 @@ func (a *adapter) turnStarted(p notification) {
 		}
 		return
 	}
-	userMsg, kind := "", a.expect
+	userMsg, kind := a.expectMsg, a.expect
 	if a.starting != nil {
-		userMsg = a.starting.MessageID
-		kind = turnNormal
-		if isShellLine(a.starting.Text) {
-			kind = turnShell
-		}
+		userMsg, kind = a.starting.MessageID, turnNormal
 	}
-	a.expect = turnNormal
+	a.expect, a.expectMsg = turnNormal, ""
 	t := a.openTurnLocked(p.Turn.ID, userMsg, kind)
 	if a.starting != nil && len(t.input) == 0 {
 		t.input = append(t.input, *a.starting)

@@ -22,6 +22,7 @@
 //	/crash           a delta, then the process dies
 //	/approve         a command approval request; says the decision it got
 //	/elicit          an MCP elicitation form; says the action it got
+//	/tool NAME       calls the dynamic tool NAME (item/tool/call); says its answer
 //	/bg S            leaves a background terminal for S seconds
 //	anything else    reasoning, then "you said: <text>"
 //
@@ -342,7 +343,11 @@ func (s *server) load(id string) (*thread, error) {
 		return th, nil
 	}
 	var path string
-	_ = filepath.WalkDir(filepath.Join(s.home, "sessions"), func(p string, d fs.DirEntry, err error) error {
+	root := filepath.Join(s.home, "sessions")
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err == nil && !d.IsDir() && strings.HasSuffix(p, id+".jsonl") {
 			path = p
 			return fs.SkipAll
@@ -775,6 +780,36 @@ func (c *tcx) script(text string) (string, map[string]any) {
 		}
 		_ = json.Unmarshal(r.Result, &res)
 		ok = c.say([]string{"action: " + res.Action}, 0)
+	case "/tool":
+		name := "ask_user"
+		if len(fields) > 0 {
+			name = fields[0]
+		}
+		callID := c.id("call")
+		args := map[string]any{"question": "Deploy now?"}
+		item := map[string]any{"type": "dynamicToolCall", "id": callID, "namespace": nil, "tool": name, "arguments": args,
+			"status": "inProgress", "contentItems": nil, "success": nil, "durationMs": nil}
+		c.started(item)
+		r, err := c.s.ask(c.ctx, "item/tool/call", c.with(map[string]any{"callId": callID, "namespace": nil, "tool": name, "arguments": args}))
+		if err != nil {
+			item["status"], item["success"] = "failed", false
+			c.completed(item)
+			return "interrupted", nil
+		}
+		var res struct {
+			ContentItems []struct {
+				Text string `json:"text"`
+			} `json:"contentItems"`
+			Success bool `json:"success"`
+		}
+		_ = json.Unmarshal(r.Result, &res)
+		var said []string
+		for _, ci := range res.ContentItems {
+			said = append(said, ci.Text)
+		}
+		item["status"], item["success"], item["contentItems"] = "completed", res.Success, res.ContentItems
+		c.completed(item)
+		ok = c.say([]string{"tool said: " + strings.Join(said, " ")}, 0)
 	case "/bg":
 		c.s.mu.Lock()
 		c.th.bgUntil = time.Now().Add(time.Duration(atof(fields, 0, 1) * float64(time.Second)))
