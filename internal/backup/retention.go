@@ -78,12 +78,13 @@ type maintenance struct {
 
 // prune deletes this machine's snapshots retention does not keep, and then
 // every chunk that no snapshot left in the bucket refers to and that is older
-// than grace. A manifest that cannot be read stops the collection before
-// anything is deleted: a chunk is only ever deleted on a complete picture of
-// what refers to it.
+// than grace. A manifest that cannot be read, or an object under snapshots/
+// that is not named like one, stops the collection before a chunk is
+// deleted: a chunk is only ever deleted on a complete picture of what refers
+// to it.
 func (e *Engine) prune(ctx context.Context, r *repo, idx *index, host string) (maintenance, error) {
 	var done maintenance
-	refs, err := r.listSnapshots(ctx)
+	refs, strays, err := r.listSnapshotObjects(ctx)
 	if err != nil {
 		return done, err
 	}
@@ -108,6 +109,10 @@ func (e *Engine) prune(ctx context.Context, r *repo, idx *index, host string) (m
 		done.Pruned++
 	}
 
+	if len(strays) > 0 {
+		return done, fmt.Errorf("garbage collection needs to read every snapshot, and %s is not named like one: "+
+			"no chunk is deleted while it is there", strays[0])
+	}
 	referenced := map[string]bool{}
 	left := map[string]bool{}
 	for _, ref := range refs {
@@ -140,7 +145,6 @@ func (e *Engine) prune(ctx context.Context, r *repo, idx *index, host string) (m
 		done.Deleted++
 	}
 	idx.remote = remote
-	idx.listed = true
 	idx.LastGC = now.UnixMilli()
 	return done, nil
 }

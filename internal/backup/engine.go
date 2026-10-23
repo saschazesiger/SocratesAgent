@@ -342,12 +342,24 @@ func (e *Engine) repoOf(ctx context.Context, cfg Config) (*repo, error) {
 	key := cfg.Place() + "\x00" + cfg.AccessKeyID + "\x00" + cfg.SecretAccessKey + "\x00" + cfg.Passphrase +
 		"\x00" + cfg.Region + fmt.Sprint(cfg.PathStyle)
 	e.mu.Lock()
-	if e.repo != nil && e.repoFor == key {
-		r := e.repo
-		e.mu.Unlock()
-		return r, nil
-	}
+	cached, cachedFor := e.repo, e.repoFor
 	e.mu.Unlock()
+	if cached != nil && cachedFor == key {
+		// meta.json is read again at every run. One that was deleted - a
+		// lifecycle rule, a prefix emptied - or replaced by another backup's
+		// must not go on being written to with the old salt, every new
+		// snapshot referring to chunks that are gone: the backup is opened
+		// again, which starts a new one at an empty place and refuses a
+		// place that has objects but no meta.json.
+		m, err := cached.readMeta(ctx)
+		switch {
+		case err == nil && m.Salt == cached.salt:
+			return cached, nil
+		case err != nil && !errors.Is(err, s3.ErrNotFound):
+			return nil, err
+		}
+		log.Printf("backup: meta.json at %s is gone or was replaced; opening the backup there again", cfg.Place())
+	}
 	r, err := openRepo(ctx, cfg, true, e.opts.Iterations)
 	if err != nil {
 		return nil, err
@@ -901,6 +913,8 @@ func Explain(err error) string {
 		return "the backup did not finish in time: " + err.Error()
 	case errors.Is(err, ErrCorrupt):
 		return "the backup is damaged: " + err.Error()
+	case errors.Is(err, ErrTooLarge):
+		return err.Error()
 	}
 	var s3err *s3.Error
 	if errors.As(err, &s3err) {

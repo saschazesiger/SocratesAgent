@@ -1335,6 +1335,120 @@ func TestABrokenConfigurationWarnsAndOffStaysOff(t *testing.T) {
 	}
 }
 
+// meta.json is read again at every run. A prefix emptied while Socrates runs
+// starts a new backup there - every chunk uploaded again, not taken for
+// present - and one that lost only its meta.json is refused rather than
+// written to with a salt nobody can read back.
+func TestABackupWhoseMetaWentAwayIsOpenedAgain(t *testing.T) {
+	clk := newClock()
+	b := newBucket(t, clk)
+	src := t.TempDir()
+	write(t, filepath.Join(src, "chats/c1/events.jsonl"), []byte("history\n"), 0o600)
+	e := engine(t, src, b, clk, "host-a")
+	if _, err := e.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	oldMeta, _ := b.fake.Object("backups", "socrates/backup/v1/meta.json")
+	for _, key := range b.keys("") {
+		b.fake.DeleteObject("backups", key)
+	}
+	clk.Add(10 * time.Minute)
+	info, err := e.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	newMeta, ok := b.fake.Object("backups", "socrates/backup/v1/meta.json")
+	if !ok || bytes.Equal(newMeta, oldMeta) || info.Unchanged || info.Chunks == 0 {
+		t.Fatalf("after the prefix was emptied: meta %v, run %+v", ok, info)
+	}
+	dest := restoreInto(t, b, "latest")
+	if raw, err := os.ReadFile(filepath.Join(dest, "chats/c1/events.jsonl")); err != nil || string(raw) != "history\n" {
+		t.Fatalf("restored: %q %v", raw, err)
+	}
+
+	b.fake.DeleteObject("backups", "socrates/backup/v1/meta.json")
+	clk.Add(10 * time.Minute)
+	write(t, filepath.Join(src, "chats/c1/events.jsonl"), []byte("history, and more\n"), 0o600)
+	before := len(b.keys(snapshotDir))
+	if _, err := e.Run(context.Background()); !errors.Is(err, ErrMetaMissing) {
+		t.Fatalf("a run after meta.json alone went: %v", err)
+	}
+	if got := len(b.keys(snapshotDir)); got != before {
+		t.Fatalf("%d snapshots were written without a meta.json", got-before)
+	}
+}
+
+// An object under snapshots/ that is not named like a snapshot - a host id
+// written into backup.json by hand, a format a later build writes - stops
+// garbage collection: the chunks it may refer to are not deleted. A host id
+// that is not spelled like one is replaced by a new one.
+func TestGarbageCollectionStopsAtAnObjectItCannotRead(t *testing.T) {
+	clk := newClock()
+	b := newBucket(t, clk)
+	src := t.TempDir()
+	write(t, filepath.Join(src, "chats/c1/events.jsonl"), []byte("x"), 0o600)
+	e := engine(t, src, b, clk, "Prod_1")
+	if host := e.Config().HostID; host == "Prod_1" || !validHostID.MatchString(host) {
+		t.Fatalf("a hand-written host id was kept: %q", host)
+	}
+	if _, err := e.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	r, err := openRepo(context.Background(), b.config(""), false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orphan := random(t, 300)
+	orphanName := r.chunkName(orphan)
+	if _, err := r.putChunk(context.Background(), orphanName, orphan); err != nil {
+		t.Fatal(err)
+	}
+	b.fake.PutObject("backups", "socrates/backup/v1/"+snapshotDir+"Prod_1/20261023T120000.000Z.json", []byte("sealed"))
+	orphanKey := "socrates/backup/v1/" + chunkDir + orphanName
+
+	clk.Add(25 * time.Hour)
+	write(t, filepath.Join(src, "chats/c1/events.jsonl"), []byte("y"), 0o600)
+	if _, err := e.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := b.fake.Object("backups", orphanKey); !ok {
+		t.Fatal("a chunk was collected while a snapshot could not be read")
+	}
+	b.fake.DeleteObject("backups", "socrates/backup/v1/"+snapshotDir+"Prod_1/20261023T120000.000Z.json")
+	clk.Add(10 * time.Minute)
+	write(t, filepath.Join(src, "chats/c1/events.jsonl"), []byte("z"), 0o600)
+	if _, err := e.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := b.fake.Object("backups", orphanKey); ok {
+		t.Fatal("the orphan outlived the collection once every snapshot could be read")
+	}
+}
+
+// A snapshot whose manifest would be larger than a restore reads is not
+// written; the run fails and says why.
+func TestASnapshotTooLargeToRestoreIsNotWritten(t *testing.T) {
+	clk := newClock()
+	b := newBucket(t, clk)
+	src := t.TempDir()
+	for i := 0; i < 40; i++ {
+		write(t, filepath.Join(src, fmt.Sprintf("agents/claude/projects/p/%02d.jsonl", i)), random(t, 100), 0o600)
+	}
+	e := engine(t, src, b, clk, "host-a")
+	saved := maxManifest
+	maxManifest = 4 << 10
+	t.Cleanup(func() { maxManifest = saved })
+	if _, err := e.Run(context.Background()); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("a run with a manifest too large to restore: %v", err)
+	}
+	if got := b.keys(snapshotDir); len(got) != 0 {
+		t.Fatalf("snapshots: %v", got)
+	}
+	if st := e.Status(); !strings.Contains(st.LastError, "too large to be restored") {
+		t.Fatalf("the status says %q", st.LastError)
+	}
+}
+
 // Only one run at a time: a second one asked for meanwhile is ErrBusy, and
 // Close waits for the one that runs.
 func TestOneRunAtATime(t *testing.T) {

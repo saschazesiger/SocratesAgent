@@ -43,10 +43,9 @@ type index struct {
 	// LastGC is when the last garbage collection finished.
 	LastGC int64 `json:"last_gc,omitempty"`
 
+	// remote is Remote as a set. It is made again from a listing of the
+	// bucket once per start of Socrates and at every garbage collection.
 	remote map[string]bool
-	// listed is whether Remote has been compared with the bucket in this
-	// process: once per run of Socrates the listing is the truth again.
-	listed bool
 }
 
 // fileState is one file as the last snapshot read it.

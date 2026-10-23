@@ -87,6 +87,14 @@ func (c *Config) Normalize() {
 	if c.IntervalMinutes < int(MinInterval/time.Minute) {
 		c.IntervalMinutes = int(MinInterval / time.Minute)
 	}
+	// A host id is part of every snapshot's object name. One written by
+	// hand that is not spelled like one would put snapshots where a listing
+	// does not find them - and garbage collection would not count their
+	// chunks - so it is dropped, and a new one is made in its place.
+	c.HostID = strings.TrimSpace(c.HostID)
+	if c.HostID != "" && !validHostID.MatchString(c.HostID) {
+		c.HostID = ""
+	}
 }
 
 // Interval is how often a backup runs.
