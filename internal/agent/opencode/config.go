@@ -4,9 +4,6 @@ package opencode
 
 import (
 	"encoding/json"
-	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
@@ -65,35 +62,13 @@ func configContent(spec agent.StartSpec) ([]byte, error) {
 	return json.Marshal(doc)
 }
 
-// BinaryEnv names the opencode binary in a chat's environment, for a
-// harness setting that points elsewhere than PATH. It is not passed on.
+// BinaryEnv names the opencode binary in a chat's environment, for a binary
+// that is not the first opencode on its PATH when the dashboard configured
+// none. It is not passed on.
 const BinaryEnv = "SOCRATES_OPENCODE_BIN"
 
 // serverUser is the Basic-auth user OpenCode defaults to.
 const serverUser = "opencode"
-
-// findBinary is the opencode executable: BinaryEnv, else PATH as the chat's
-// environment has it (this process's PATH only when the environment has
-// none).
-func findBinary(env []string) (string, error) {
-	if bin := envValue(env, BinaryEnv); bin != "" {
-		return bin, nil
-	}
-	path, ok := lookupEnv(env, "PATH")
-	if !ok {
-		return lookPath("opencode")
-	}
-	for _, dir := range filepath.SplitList(path) {
-		if dir == "" {
-			continue
-		}
-		candidate := filepath.Join(dir, "opencode")
-		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
-			return candidate, nil
-		}
-	}
-	return "", errors.New("opencode is not on the chat's PATH")
-}
 
 // processEnv is the serve process's whole environment: the chat's (built for
 // its account), without what would point OpenCode elsewhere than this chat's

@@ -17,8 +17,6 @@ import (
 	"time"
 )
 
-var lookPath = exec.LookPath
-
 // The process's clock.
 const (
 	// listenWait covers a cold start: the binary loads its config and its

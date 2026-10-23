@@ -246,7 +246,9 @@ func (a *Adapter) Start(ctx context.Context, spec agent.StartSpec, out agent.Emi
 		return errors.New("opencode: the data folder is not known")
 	}
 	a.layout = NewLayout(spec.DataDir)
-	bin, err := findBinary(spec.Env)
+	// The dashboard's binary setting, else BinaryEnv, else opencode on the
+	// chat's PATH.
+	bin, err := agent.ResolveBinary(spec.Env, "opencode", spec.Binary, envValue(spec.Env, BinaryEnv))
 	if err != nil {
 		return fmt.Errorf("opencode: %w", err)
 	}

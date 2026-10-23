@@ -609,3 +609,40 @@ func TestStartRefusesAMissingBinaryAndMigratesOnce(t *testing.T) {
 		t.Fatalf("migrated again: %v", err)
 	}
 }
+
+// The dashboard's binary setting reaches the adapter through the spec: a path
+// as it is, a bare name on the chat's PATH, and either wins over BinaryEnv.
+func TestTheConfiguredBinaryIsRun(t *testing.T) {
+	r := newRig(t)
+	r.env = []string{"PATH=/nonexistent", "HOME=" + r.data, BinaryEnv + "=" + filepath.Join(t.TempDir(), "missing")}
+	spec := r.spec("")
+	spec.Binary = filepath.Join(fakeBin, "opencode")
+	if err := r.start(spec); err != nil {
+		t.Fatalf("start with the configured path: %v", err)
+	}
+	r.send("hello")
+	if got := r.waitTurns(1); got[0] != agent.OutcomeCompleted {
+		t.Fatalf("outcome %v", got)
+	}
+	_ = r.a.Park(context.Background())
+
+	named := t.TempDir()
+	if err := os.Symlink(filepath.Join(fakeBin, "opencode"), filepath.Join(named, "opencode-custom")); err != nil {
+		t.Fatal(err)
+	}
+	r.env[0] = "PATH=" + named
+	spec = r.spec(r.conversation())
+	spec.Binary = "opencode-custom"
+	if err := r.start(spec); err != nil {
+		t.Fatalf("start with the configured name: %v", err)
+	}
+	if r.a.bin != filepath.Join(named, "opencode-custom") {
+		t.Fatalf("ran %s", r.a.bin)
+	}
+	_ = r.a.Park(context.Background())
+
+	spec.Binary = filepath.Join(t.TempDir(), "missing")
+	if err := (New()).Start(context.Background(), spec, newRecorder()); err == nil {
+		t.Fatal("a missing configured binary started")
+	}
+}

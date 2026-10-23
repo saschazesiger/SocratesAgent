@@ -320,10 +320,11 @@ package comment.
 
 **Process.** `codex app-server --listen stdio:// -c check_for_update_on_startup=false
 -c projects={"<resolved workdir>"={trust_level="trusted"}}`, started through Spawn with
-`StartSpec.Env` as its whole environment. An empty `Env` is refused (exec would otherwise pass
-the host's own); until WP7 the host fills it with its scrubbed environment, so codex uses
-`~/.codex`. What WP7 puts in it per account: `PATH` (and `SOCRATES_CODEX_BIN` for a binary
-that is not the first `codex` on it), `HOME`, `LANG`/`LC_*` and `TZ` as the host has them,
+`StartSpec.Env` as its whole environment. The binary is `StartSpec.Binary` (the dashboard's
+setting: a path, or a name looked up on `Env`'s `PATH`), else `SOCRATES_CODEX_BIN` from `Env`,
+else `codex` on `Env`'s `PATH` (`agent.ResolveBinary`). An empty `Env` is refused (exec would
+otherwise pass the host's own); until WP7 the host fills it with its scrubbed environment, so
+codex uses `~/.codex`. What WP7 puts in it per account: `PATH`, `HOME`, `LANG`/`LC_*` and `TZ` as the host has them,
 `CODEX_HOME` = the account's home prepared with `codex.PrepareHome` (its `auth.json` is the
 login; an API-key account is logged in there with `account/login/start {type: apiKey}`, so no
 `OPENAI_API_KEY` is needed), and nothing of the service's (`INVOCATION_ID`, `NOTIFY_SOCKET`,
@@ -426,7 +427,8 @@ Registered as `opencode` (imported by `main.go`). Research: research/05
 
 **Process.** One `opencode serve --hostname 127.0.0.1 --port 0` per host, started through Spawn in
 the workdir; the URL is read from its `listening on` line (`--port 0` tries 4096 first). The binary
-is `SOCRATES_OPENCODE_BIN` from `StartSpec.Env`, else `opencode` on that environment's `PATH`. Its
+is `StartSpec.Binary` (a path, or a name looked up on `StartSpec.Env`'s `PATH`), else
+`SOCRATES_OPENCODE_BIN` from `StartSpec.Env`, else `opencode` on that environment's `PATH`. Its
 environment is `StartSpec.Env` without `OPENCODE_*`/`XDG_*` (except `OPENCODE_AUTH_CONTENT`), plus
 the layout, `OPENCODE_SERVER_USERNAME/PASSWORD` (32 random bytes per process),
 `OPENCODE_CONFIG_CONTENT` (share disabled, autoupdate off, `permission`: `external_directory`,
