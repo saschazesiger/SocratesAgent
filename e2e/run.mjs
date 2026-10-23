@@ -13115,8 +13115,10 @@ async function chatoffline() {
     const one = userTexts(await historyOf(s, id)).filter((t) => t === 'kept across a reload').length;
     ok(still.includes('kept across a reload') && later && one === 1,
       'a message still waiting when the page is reloaded goes out after it, once', JSON.stringify({ still, one }));
-    ok(unexpected(s.errors, OFFLINE_NOISE).length === 0, 'no unexpected console errors',
-      unexpected(s.errors, OFFLINE_NOISE).join(' | ') || '0');
+    // The connections this scenario cut are its own doing.
+    const cutNoise = new RegExp(OFFLINE_NOISE.source + '|ERR_CONNECTION_RESET');
+    ok(unexpected(s.errors, cutNoise).length === 0, 'no unexpected console errors',
+      unexpected(s.errors, cutNoise).join(' | ') || '0');
   } finally { await s.stop(); }
 }
 
@@ -13347,7 +13349,7 @@ async function chatask() {
     await page.waitForSelector('dialog.so-askdlg .so-q-option[data-option="a"]', { timeout: 10000 });
     await page.click('dialog.so-askdlg .so-q-option[data-option="a"]');
     await page.click('dialog.so-askdlg [data-action="send"]');
-    await awaitChat(s, id, (b) => !b.asks.some((a) => a.id === late));
+    await awaitChat(s, id, (b) => !(b.asks || []).some((a) => a.id === late));
     const conflict = other.waitForResponse((res) => /\/answer$/.test(res.url()) && res.status() === 409, { timeout: 30000 })
       .then(() => true, () => false);
     await other.unroute('**/asks/*/answer');
@@ -13436,7 +13438,12 @@ async function chatphone() {
   try {
     const id = await startChat(page);
     const mode = await page.evaluate(() => document.documentElement.classList.contains('so-touch'));
-    ok(mode, 'a phone is in touch mode by itself', String(mode));
+    const shut = await page.$eval('#chat .so-composer__input', (n) => n.readOnly);
+    await page.click('#kbBtn');
+    const typing = await page.waitForFunction(() => !document.querySelector('#chat .so-composer__input').readOnly, null,
+      { timeout: 5000 }).then(() => true, () => false);
+    ok(mode && shut && typing, 'a phone is in touch mode by itself, and its keyboard button opens the composer for typing',
+      JSON.stringify({ mode, shut, typing }));
 
     await say(page, '/md 5', { button: true });
     await awaitLog(page, 'The tests in', 20000);
@@ -13457,6 +13464,7 @@ async function chatphone() {
       return {
         send: box('#chat .so-composer__send'), attach: box('#chat .so-composer__attach'),
         model: box('#chat .so-composer__model'), dictate: box('#chat .so-composer__dictate'),
+        usage: box('#chat .so-composer__usage'), copy: box('#chat .so-code__copy'),
         tool: box('#chat .so-tool > summary'),
       };
     });

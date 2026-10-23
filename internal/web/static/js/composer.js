@@ -286,6 +286,9 @@ export function mountComposer(host, ctx) {
   const mic = micButton((text) => insert(text));
   mic.classList.add('so-composer__dictate');
   $('.so-composer__mic').replaceWith(mic);
+  // Send and Stop leave the cursor in the field: the next message is
+  // written where the last one was, and a phone keeps its keyboard up.
+  for (const button of [sendBtn, stopBtn]) button.addEventListener('mousedown', (event) => event.preventDefault());
 
   const draft = draftSync(id, {
     read: () => input.value,

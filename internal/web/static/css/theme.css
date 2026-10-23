@@ -91,6 +91,7 @@
   --so-composer-max: 40vh;
   --so-palette-max: 260px;
   --so-diff-no-width: 4ch;
+  --so-touch-target: 48px;
 
   /* Question sheet */
   --so-question-width: 720px;

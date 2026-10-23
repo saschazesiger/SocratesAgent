@@ -59,8 +59,13 @@ function forgetDraft(askId) {
   try { localStorage.removeItem(draftKey(askId)); } catch { /* private */ }
 }
 
+// An answer as the dialog keeps it: what is sent (selected, other, note,
+// delegated), whether its fields are open, and whether the person has had
+// it in hand - changed it, or moved past it - which is what the card's
+// "2 of 5 answered" counts: a preselected default the person never saw is
+// not an answer they gave yet.
 function emptyAnswer() {
-  return { selected: [], other: '', note: '', delegated: false, noting: false, othering: false };
+  return { selected: [], other: '', note: '', delegated: false, noting: false, othering: false, touched: false };
 }
 
 /** kindOf is a question's kind, read the way the schema means it. */
@@ -83,7 +88,9 @@ export function askProgress(ask) {
   const draft = readDraft(ask.id);
   const set = new Set();
   if (draft) {
-    for (const [id, a] of Object.entries(draft.answers)) if (answered({ ...emptyAnswer(), ...a })) set.add(id);
+    for (const [id, a] of Object.entries(draft.answers)) {
+      if (a && a.touched && answered({ ...emptyAnswer(), ...a })) set.add(id);
+    }
   }
   return { answered: set, count: set.size };
 }
@@ -231,6 +238,9 @@ export async function openChatAsks({ sessions, chatId, askId = '', view, openCha
     watch: (item, onAsk) => (view && view.watchAsk(item.chatId, item.ask.id, onAsk))
       || watchStream(item.chatId, item.ask, onAsk),
     openChat,
+    // The card in the chat says how far this browser got: it is drawn again
+    // once the dialog is put away.
+    closed: () => { if (view) view.redraw(); },
   });
 }
 
@@ -255,8 +265,9 @@ export function closeAskDialog() { if (current) current.close(); }
  *   watch(item, onAsk)  follows one ask live; onAsk(ask) with its newest
  *               state; answers a function that stops following
  *   openChat(id)        the "Open chat" of the dialog
+ *   closed()            the dialog has been put away
  */
-export function openAskDialog({ items, start = 0, watch, openChat }) {
+export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
   if (current) { current.jump(items, start); return current; }
   const opener = document.activeElement;
   const dialog = document.createElement('dialog');
@@ -330,6 +341,7 @@ export function openAskDialog({ items, start = 0, watch, openChat }) {
     if (st.speaking) stopSpeaking();
     save();
     current = null;
+    if (closed) closed();
     hideOverlay(dialog, { remove: true }).then(() => restoreFocus(opener));
   }
 
@@ -540,6 +552,7 @@ export function openAskDialog({ items, start = 0, watch, openChat }) {
     const q = questionsOf().find((one) => one.id === qid);
     const a = st.draft.answers[qid];
     a.delegated = false;
+    a.touched = true;
     if (kindOf(q) === 'multi') {
       const at = a.selected.indexOf(optionId);
       if (at >= 0) a.selected.splice(at, 1);
@@ -576,6 +589,7 @@ export function openAskDialog({ items, start = 0, watch, openChat }) {
       case 'delegate': {
         const a = st.draft.answers[qid];
         a.delegated = !a.delegated;
+        a.touched = true;
         if (a.delegated) { a.selected = []; a.other = ''; a.othering = false; }
         st.problem = null;
         save();
@@ -594,6 +608,7 @@ export function openAskDialog({ items, start = 0, watch, openChat }) {
       case 'forward': {
         const q = questionsOf()[st.draft.step || 0];
         if (!check(q)) { draw(); break; }
+        if (q) st.draft.answers[q.id].touched = true;
         st.draft.step += 1;
         save();
         draw(true);
@@ -645,6 +660,7 @@ export function openAskDialog({ items, start = 0, watch, openChat }) {
     const a = st.draft.answers[qid];
     if (!a || !q) return;
     a[name] = field.value;
+    a.touched = true;
     let redraw = false;
     if (name === 'other' && field.value.trim()) {
       redraw = a.delegated || (kindOf(q) === 'single' && a.selected.length > 0);

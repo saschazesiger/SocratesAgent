@@ -1098,6 +1098,15 @@
   margin: 0;
 }
 
+/* ── Touch mode ──────────────────────────────────────────────────────── */
+
+/* A finger's target, for the compact buttons too (through DS's hooks): the
+   "i", Copy, Details, Try again, the model. */
+.ds-theme.so-touch :is(.so-chat, .so-askdlg) .ds-btn--sm {
+  --ds-btn-height: var(--so-touch-target);
+  --ds-btn-icon-size: var(--so-touch-target);
+}
+
 /* ── Phones ──────────────────────────────────────────────────────────── */
 
 @media (max-width: 600px) {
