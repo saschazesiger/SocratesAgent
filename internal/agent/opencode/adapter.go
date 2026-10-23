@@ -261,7 +261,8 @@ func (a *Adapter) Start(ctx context.Context, spec agent.StartSpec, out agent.Emi
 		return err
 	}
 	if err := a.openSession(ctx); err != nil {
-		a.stopProcess(false)
+		// This adapter is done; the host starts a new one if it goes on.
+		a.stopProcess(true)
 		return err
 	}
 	a.loadCommands(ctx)
@@ -313,7 +314,7 @@ func (a *Adapter) startProcess(ctx context.Context) error {
 	select {
 	case <-connected:
 	case <-time.After(connectedWait):
-		a.stopProcess(false)
+		a.stopProcess(true)
 		return errors.New("opencode: the event stream did not open")
 	case <-srv.exited():
 		return fmt.Errorf("opencode serve exited: %v: %s", srv.err, srv.out.String())
