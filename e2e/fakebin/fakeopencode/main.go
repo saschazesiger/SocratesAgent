@@ -192,6 +192,10 @@ type srv struct {
 	subs     map[chan []byte]chan struct{}
 	runs     map[string]*run
 	pending  map[string]chan string
+	// mcp are the local MCP servers that started, mcpConfig every one the
+	// config names.
+	mcp       map[string]*mcpClient
+	mcpConfig map[string]mcpConfig
 }
 
 // run is a session's loop while it works.
@@ -215,6 +219,7 @@ func serve() error {
 	}
 	s := &srv{password: os.Getenv("OPENCODE_SERVER_PASSWORD"), subs: map[chan []byte]chan struct{}{},
 		runs: map[string]*run{}, pending: map[string]chan string{}}
+	s.startMCP()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return err

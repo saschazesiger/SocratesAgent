@@ -4,6 +4,7 @@ package opencode
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strings"
 	"syscall"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
+	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
 	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
 )
 
@@ -200,5 +202,78 @@ func TestAHostStartsFreshWhenTheSessionIsGone(t *testing.T) {
 	cn.send("m1", "hi")
 	if ev := cn.until("the turn", turnEnded); ev.Outcome != agent.OutcomeCompleted {
 		t.Fatalf("turn %+v", ev)
+	}
+}
+
+// ask_user runs as the local MCP server `socrates mcp-ask` OpenCode starts
+// from its config: listed with its instructions and a day's timeout, a call
+// is an ask of the running turn whose answer goes back on the call, and the
+// model gets §5.2.
+func TestAskUserIsALocalMCPServerThatReachesTheHost(t *testing.T) {
+	h := newHostRig(t)
+	h.launch("")
+	cn := h.dial()
+	cn.until("ready", func(ev agent.Event) bool { return ev.Type == agent.TypeProcess && ev.State == agent.ProcessReady })
+	cn.send("m1", "/mcp")
+	status := cn.until("the MCP status", func(ev agent.Event) bool {
+		return ev.Type == agent.TypePart && ev.State == agent.PartDone && strings.HasPrefix(ev.Text, "socrates:")
+	}).Text
+	if !strings.Contains(status, "socrates: connected timeout=86400000 tools="+agenthost.MCPAskTool+" instructions=When you need") {
+		t.Fatalf("status %q", status)
+	}
+	cn.until("its end", turnEnded)
+
+	cn.send("m2", "/askuser")
+	ask := cn.until("the ask", func(ev agent.Event) bool { return ev.Type == agent.TypeAsk })
+	p := askuser.Decode(ask.Payload)
+	if p == nil || len(p.Questions) != 2 || ask.TurnID == "" || ask.Via != "" {
+		t.Fatalf("ask %+v", ask)
+	}
+	answer := json.RawMessage(`{"answers":{"db":{"selected":["sqlite"]},"name":{"other":"Atlas"}},"general_note":"thanks"}`)
+	if err := cn.c.Send(agenthost.Command{Op: agenthost.OpAnswer, ClientID: "a1", AskID: ask.AskID, Answer: answer, Device: "phone"}); err != nil {
+		t.Fatal(err)
+	}
+	delivered := cn.until("the delivery", func(ev agent.Event) bool { return ev.Type == agent.TypeAskDelivered })
+	if delivered.Via != agent.ViaTool {
+		t.Fatalf("delivered %+v", delivered)
+	}
+	text := cn.until("the answer", func(ev agent.Event) bool {
+		return ev.Type == agent.TypePart && ev.State == agent.PartDone && strings.HasPrefix(ev.Text, "ask_user returned:")
+	}).Text
+	if !strings.Contains(text, `{"answers":{"db":{"selected":["sqlite"]`) || !strings.Contains(text, `"general_note":"thanks"`) {
+		t.Fatalf("the model got %q", text)
+	}
+	if ev := cn.until("its end", turnEnded); ev.Outcome != agent.OutcomeCompleted {
+		t.Fatalf("turn %+v", ev)
+	}
+}
+
+// An abort withdraws the call: the mcp-ask process lets go of its question,
+// the ask stays open, and its answer reaches the agent as a message.
+func TestAnAbortedAskUserCallIsAnsweredAsAMessage(t *testing.T) {
+	h := newHostRig(t)
+	h.launch("")
+	cn := h.dial()
+	cn.send("m1", "/askuser")
+	ask := cn.until("the ask", func(ev agent.Event) bool { return ev.Type == agent.TypeAsk })
+	if err := cn.c.Send(agenthost.Command{Op: agenthost.OpInterrupt, ClientID: "i1"}); err != nil {
+		t.Fatal(err)
+	}
+	if ev := cn.until("the turn's end", turnEnded); ev.Outcome != agent.OutcomeInterrupted {
+		t.Fatalf("turn %+v", ev)
+	}
+	if err := cn.c.Send(agenthost.Command{Op: agenthost.OpAnswer, ClientID: "a1", AskID: ask.AskID,
+		Answer: json.RawMessage(`{"answers":{"db":{"selected":["pg"]}}}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if ev := cn.until("the delivery", func(ev agent.Event) bool { return ev.Type == agent.TypeAskDelivered }); ev.Via != agent.ViaMessage {
+		t.Fatalf("delivered %+v", ev)
+	}
+	cn.until("the notice", func(ev agent.Event) bool { return ev.Type == agent.TypeNotice && ev.Code == agent.NoticeAnswerAsMessage })
+	reply := cn.until("the answer's turn", func(ev agent.Event) bool {
+		return ev.Type == agent.TypePart && ev.State == agent.PartDone && strings.HasPrefix(ev.Text, "you said: Answer to your earlier question (Setup)")
+	})
+	if !strings.Contains(reply.Text, "PostgreSQL [pg]") {
+		t.Fatalf("the agent got %q", reply.Text)
 	}
 }

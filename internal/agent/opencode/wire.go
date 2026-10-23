@@ -191,7 +191,7 @@ type ocPermission struct {
 }
 
 // Question is question.asked's payload: OpenCode's own question tool, which
-// the config denies; one that still arrives goes to QuestionHandler.
+// the config denies; one that still arrives is asked like ask_user.
 type Question struct {
 	ID        string          `json:"id"`
 	SessionID string          `json:"sessionID"`

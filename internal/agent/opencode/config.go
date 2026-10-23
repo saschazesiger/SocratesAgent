@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
+	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
 )
 
 // MCPServer is one entry of OpenCode's `mcp` config: a local command on
@@ -25,11 +26,32 @@ type MCPServer struct {
 	Timeout     int64             `json:"timeout,omitempty"`
 }
 
-// MCPServers is the hook for the MCP servers a chat's OpenCode gets, by name.
-// WP6 sets it to add `socrates` (the ask_user tool: `socrates mcp-ask
-// --socket <host socket>`, a 24 h timeout, progress notifications). Nil, or a
-// nil map, is none.
+// MCPServers is the hook for MCP servers a chat's OpenCode gets besides
+// ask_user, by name. Nil, or a nil map, is none.
 var MCPServers func(spec agent.StartSpec) map[string]MCPServer
+
+// askTimeout is the per-call timeout of the ask_user server, in
+// milliseconds: a day. The server reports progress every
+// askuser.ProgressEvery, which resets it, so a question waits for as long as
+// the person takes; the timeout only bounds a server that stopped talking.
+const askTimeout = 24 * 60 * 60 * 1000
+
+// mcpServers is the chat's `mcp` config: ask_user as the local server
+// "socrates" (`socrates mcp-ask --socket <host socket>`, StartSpec.AskCommand),
+// whose tool the model knows as socrates_ask_user and whose instructions
+// OpenCode puts into the system prompt, and whatever the hook adds.
+func mcpServers(spec agent.StartSpec) map[string]MCPServer {
+	servers := map[string]MCPServer{}
+	if len(spec.AskCommand) > 0 {
+		servers[askuser.ServerName] = MCPServer{Type: "local", Command: spec.AskCommand, Timeout: askTimeout}
+	}
+	if MCPServers != nil {
+		for name, s := range MCPServers(spec) {
+			servers[name] = s
+		}
+	}
+	return servers
+}
 
 // permission is the answer to everything OpenCode asks about (HARNESS-POLICY:
 // always allow), on top of OpenCode's own defaults, which already allow
@@ -57,10 +79,8 @@ func configContent(spec agent.StartSpec) ([]byte, error) {
 	if spec.Model != "" {
 		doc["model"] = spec.Model
 	}
-	if MCPServers != nil {
-		if servers := MCPServers(spec); len(servers) > 0 {
-			doc["mcp"] = servers
-		}
+	if servers := mcpServers(spec); len(servers) > 0 {
+		doc["mcp"] = servers
 	}
 	return json.Marshal(doc)
 }

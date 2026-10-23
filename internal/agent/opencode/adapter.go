@@ -109,6 +109,8 @@ type Adapter struct {
 	// commands are the names GET /command listed: what Command posts to
 	// /command.
 	commands map[string]bool
+	// questions are OpenCode's own questions being asked, by ask id.
+	questions map[string]*question
 }
 
 // New is an adapter, unstarted.
@@ -116,6 +118,7 @@ func New() *Adapter {
 	return &Adapter{
 		users: map[string]*userMsg{}, assistants: map[string]*asstMsg{}, parts: map[string]*seenPart{},
 		children: map[string]childSession{}, childPrompts: map[string]bool{}, windows: map[string]int64{},
+		questions: map[string]*question{},
 	}
 }
 
@@ -868,9 +871,13 @@ func (a *Adapter) Interrupt(ctx context.Context) error {
 	return cl.call(ctx, http.MethodPost, "/session/"+session+"/abort", nil, nil)
 }
 
-// Answer: OpenCode's own question tool is denied, and ask_user (WP6) is not
-// here yet, so no call ever waits on an answer through this adapter.
-func (a *Adapter) Answer(context.Context, string, json.RawMessage) error { return agent.ErrAskGone }
+// Answer answers one of OpenCode's own questions. ask_user's own calls never
+// get here: they wait in the host, on the connection of `socrates mcp-ask`
+// (AGENT-HOST.md §4.4), and an answer the host could not hand to one is
+// agent.ErrAskGone here.
+func (a *Adapter) Answer(ctx context.Context, askID string, answer json.RawMessage) error {
+	return a.answerQuestion(ctx, askID, answer)
+}
 
 // SetModel takes effect from the next prompt: model and variant go with
 // every prompt.

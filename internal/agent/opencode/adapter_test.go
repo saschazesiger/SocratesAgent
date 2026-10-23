@@ -4,6 +4,7 @@ package opencode
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
+	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
 )
 
 func TestATurnStreamsAndEnds(t *testing.T) {
@@ -225,6 +227,24 @@ func TestErrorsPermissionsAndQuestions(t *testing.T) {
 	r.send("/perm")
 	r.send("/question")
 	r.send("/retry")
+	// OpenCode's own question tool is asked like ask_user, and answered with
+	// the labels chosen.
+	var ask agent.Event
+	eventually(t, 10*time.Second, "the question", func() bool {
+		var ok bool
+		ask, ok = r.rec.first(agent.TypeAsk, nil)
+		return ok
+	})
+	p := askuser.Decode(ask.Payload)
+	if p == nil || p.Source != askuser.SourceQuestion || p.Questions[0].Options[1].Label != "Blue" || ask.TurnID == "" {
+		t.Fatalf("ask %+v", ask)
+	}
+	if err := r.a.Answer(context.Background(), ask.AskID, json.RawMessage(`{"answers":{"q1":{"selected":["Blue"],"note":"dark"}}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.a.Answer(context.Background(), ask.AskID, json.RawMessage(`{}`)); !errors.Is(err, agent.ErrAskGone) {
+		t.Fatalf("a second answer: %v", err)
+	}
 	got := r.waitTurns(4)
 	if got[0] != agent.OutcomeFailed {
 		t.Fatalf("outcomes %v", got)
@@ -234,9 +254,6 @@ func TestErrorsPermissionsAndQuestions(t *testing.T) {
 	}
 	if _, ok := r.rec.first(agent.TypeNotice, func(ev agent.Event) bool { return ev.Code == NoticePermission }); !ok {
 		t.Fatal("no permission notice")
-	}
-	if _, ok := r.rec.first(agent.TypeNotice, func(ev agent.Event) bool { return ev.Code == NoticeQuestion }); !ok {
-		t.Fatal("no question notice")
 	}
 	if _, ok := r.rec.first(agent.TypeNotice, func(ev agent.Event) bool { return ev.Code == NoticeRetry }); !ok {
 		t.Fatal("no retry notice")
@@ -252,7 +269,7 @@ func TestErrorsPermissionsAndQuestions(t *testing.T) {
 		}
 	})
 	joined := strings.Join(texts, "|")
-	if !contains(joined, "perm: always") || !contains(joined, "question: rejected") || !contains(joined, "after a retry") {
+	if !contains(joined, "perm: always") || !contains(joined, `question: [["Blue","Note: dark"]]`) || !contains(joined, "after a retry") {
 		t.Fatalf("texts %q", joined)
 	}
 }

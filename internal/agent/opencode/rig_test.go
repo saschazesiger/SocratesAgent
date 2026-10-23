@@ -26,7 +26,7 @@ import (
 var fakeBin string
 
 // init and TestMain also make the test binary stand in for `socrates
-// agent-host`, for the tests that run a real host.
+// agent-host` and `socrates mcp-ask`, for the tests that run a real host.
 func init() {
 	if len(os.Args) > 1 && os.Args[1] == "agent-host" {
 		runtime.LockOSThread()
@@ -36,6 +36,9 @@ func init() {
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "agent-host" {
 		os.Exit(agenthost.Main(os.Args[2:], "test"))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "mcp-ask" {
+		os.Exit(agenthost.MCPAskMain(os.Args[2:]))
 	}
 	dir, err := os.MkdirTemp("", "fakeopencode-")
 	if err != nil {

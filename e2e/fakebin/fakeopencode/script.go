@@ -36,6 +36,13 @@ import (
 //	/dropstream      text, every /event stream is closed, then more text that
 //	                 only a reader of GET …/message sees
 //	/whoami          "account: <identity>"
+//	/mcp             the local MCP servers of the config: connected or not,
+//	                 their tools and the start of their instructions
+//	/askuser [JSON]  the model calling socrates_ask_user (a call of two
+//	                 questions, or the arguments given) on the "socrates"
+//	                 server: a running tool part until the call returns, then
+//	                 "ask_user returned: <result>"; an abort withdraws the call
+//	                 with notifications/cancelled
 //	anything else    "you said: <text> (turn N of <session>)"
 
 var commands = []map[string]any{
@@ -457,6 +464,14 @@ func (t *turn) play(text string) error {
 		}
 		t.s.dropStreams()
 		if err := t.say([]string{"after the drop"}, 5*time.Millisecond); err != nil {
+			return err
+		}
+	case "/mcp":
+		if err := t.say([]string{t.s.mcpStatus()}, 5*time.Millisecond); err != nil {
+			return err
+		}
+	case "/askuser":
+		if err := t.askUser(args); err != nil {
 			return err
 		}
 	case "/whoami":

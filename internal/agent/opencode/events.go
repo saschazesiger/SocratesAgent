@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
+	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
 )
 
 // handle maps one /event frame. Frames of another session are dropped:
@@ -84,6 +85,13 @@ func (a *Adapter) handle(gen int, ev ocEvent) {
 		var q Question
 		if json.Unmarshal(ev.Properties, &q) == nil {
 			a.handleQuestion(gen, q)
+		}
+	case "question.replied", "question.rejected":
+		var p struct {
+			RequestID string `json:"requestID"`
+		}
+		if json.Unmarshal(ev.Properties, &p) == nil {
+			a.questionGone(gen, p.RequestID)
 		}
 	}
 }
@@ -486,57 +494,78 @@ func (a *Adapter) handlePermission(gen int, p ocPermission) {
 		Text: "OpenCode asked for permission to use " + what + "; it was allowed, as every permission is."})
 }
 
-// QuestionReplier answers one of OpenCode's own questions.
-type QuestionReplier interface {
-	// Reply gives one answer per question, each the labels chosen (or free
-	// text).
-	Reply(ctx context.Context, answers [][]string) error
-	// Reject dismisses the question; the turn stops.
-	Reject(ctx context.Context) error
+// question is one of OpenCode's own questions, asked as an ask_user payload:
+// the config denies the question tool so that the model uses ask_user, but
+// one that still arrives is shown the same way (REBUILD.md §5.3).
+type question struct {
+	id      string
+	gen     int
+	payload askuser.Payload
 }
 
-// QuestionHandler is the hook for OpenCode's own question tool, which the
-// config denies so that the agent uses ask_user. WP6 sets it to turn a
-// question that still arrives into an ask; it reports whether it took the
-// question. Without a handler, or when it declines, the question is
-// rejected with a notice, so that the turn does not wait for ever.
-var QuestionHandler func(q Question, out agent.Emitter, r QuestionReplier) bool
-
-type questionReplier struct {
-	cl *client
-	id string
-}
-
-func (r questionReplier) Reply(ctx context.Context, answers [][]string) error {
-	return r.cl.call(ctx, http.MethodPost, "/question/"+r.id+"/reply", map[string]any{"answers": answers}, nil)
-}
-
-func (r questionReplier) Reject(ctx context.Context) error {
-	return r.cl.call(ctx, http.MethodPost, "/question/"+r.id+"/reject", nil, nil)
-}
-
+// handleQuestion asks one of OpenCode's own questions. A question it cannot
+// read is dismissed, with a notice, so that the turn does not wait for ever.
 func (a *Adapter) handleQuestion(gen int, q Question) {
 	a.mu.Lock()
 	_, child := a.children[q.SessionID]
 	ours := a.gen == gen && (q.SessionID == a.session || child)
 	cl := a.cl
+	turnID := ""
+	if a.turn != nil {
+		turnID = a.turn.id
+	}
 	a.mu.Unlock()
 	if !ours || !validID(q.ID, "que") {
 		return
 	}
-	r := questionReplier{cl: cl, id: q.ID}
-	if QuestionHandler != nil && QuestionHandler(q, a.out, r) {
+	payload, ok := askuser.FromOpenCode(q.Questions)
+	if !ok {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), requestWait)
+			defer cancel()
+			if err := cl.call(ctx, http.MethodPost, "/question/"+q.ID+"/reject", nil, nil); err != nil {
+				log.Printf("opencode: reject question %s: %v", q.ID, err)
+			}
+		}()
+		a.out.Emit(agent.Event{Type: agent.TypeNotice, Code: NoticeQuestion,
+			Text: "OpenCode asked a question with its own tool that could not be read; it was dismissed."})
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), requestWait)
-		defer cancel()
-		if err := r.Reject(ctx); err != nil {
-			log.Printf("opencode: reject question %s: %v", q.ID, err)
-		}
-	}()
-	a.out.Emit(agent.Event{Type: agent.TypeNotice, Code: NoticeQuestion,
-		Text: "OpenCode asked a question with its own tool, which this chat does not answer; it was dismissed."})
+	askID := "ask_" + q.ID
+	a.mu.Lock()
+	a.questions[askID] = &question{id: q.ID, gen: gen, payload: payload}
+	a.mu.Unlock()
+	a.out.Emit(agent.Event{Type: agent.TypeAsk, AskID: askID, TurnID: turnID, Payload: payload.JSON()})
+}
+
+// questionGone is OpenCode saying a question was answered or dismissed
+// elsewhere (another client of the server, an abort): no call waits on it.
+func (a *Adapter) questionGone(gen int, requestID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.gen != gen {
+		return
+	}
+	delete(a.questions, "ask_"+requestID)
+}
+
+// answerQuestion replies to one of OpenCode's own questions, one list of
+// labels per question; agent.ErrAskGone when OpenCode no longer waits on it
+// (a server started since does not know it).
+func (a *Adapter) answerQuestion(ctx context.Context, askID string, answer json.RawMessage) error {
+	a.mu.Lock()
+	q := a.questions[askID]
+	delete(a.questions, askID)
+	gen, cl := a.gen, a.cl
+	a.mu.Unlock()
+	if q == nil || q.gen != gen || cl == nil {
+		return agent.ErrAskGone
+	}
+	body := map[string]any{"answers": askuser.OpenCodeAnswers(&q.payload, answer)}
+	if err := cl.call(ctx, http.MethodPost, "/question/"+q.id+"/reply", body, nil); err != nil {
+		return fmt.Errorf("%w: %v", agent.ErrAskGone, err)
+	}
+	return nil
 }
 
 func encodeBase64(raw []byte) string { return base64.StdEncoding.EncodeToString(raw) }

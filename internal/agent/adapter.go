@@ -110,6 +110,11 @@ type StartSpec struct {
 	// its opening prompt at start. An adapter that has no use for that sends
 	// it right after starting.
 	First *Outgoing
+	// AskCommand is the command line of `socrates mcp-ask` for this chat:
+	// ask_user as a stdio MCP server that reaches this host over its socket,
+	// for a CLI that starts its MCP servers as processes of its own
+	// (OpenCode). Empty outside a host.
+	AskCommand []string
 	// Spawn starts a CLI child: on the host's locked main thread, in a
 	// process group of its own, with SIGKILL as its parent-death signal, so
 	// that a host that dies takes its CLI with it (REBUILD.md §2.1). An
