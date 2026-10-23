@@ -96,7 +96,7 @@ type adapter struct {
 	steered map[string]agent.Outgoing
 	agents  map[string]*subagent
 	running int
-	asks    map[string]chan json.RawMessage
+	asks    map[string]*waitingAsk
 	calls   map[string]*call
 	limits  map[string]agent.Event
 	context int64
@@ -112,7 +112,7 @@ func newAdapter() *adapter {
 		turns:   map[string]*turn{},
 		steered: map[string]agent.Outgoing{},
 		agents:  map[string]*subagent{},
-		asks:    map[string]chan json.RawMessage{},
+		asks:    map[string]*waitingAsk{},
 		calls:   map[string]*call{},
 		limits:  map[string]agent.Event{},
 	}
@@ -620,15 +620,18 @@ func (a *adapter) Interrupt(ctx context.Context) error {
 	return err
 }
 
+// Answer hands an answer to the call waiting on it. A call whose wait ended
+// (its turn ended, codex withdrew it) is gone even before its goroutine has
+// let go of it: the turn's end cancels it first.
 func (a *adapter) Answer(_ context.Context, askID string, answer json.RawMessage) error {
 	a.mu.Lock()
-	ch := a.asks[askID]
+	w := a.asks[askID]
 	delete(a.asks, askID)
 	a.mu.Unlock()
-	if ch == nil {
+	if w == nil || w.ctx.Err() != nil {
 		return agent.ErrAskGone
 	}
-	ch <- answer
+	w.answer <- answer
 	return nil
 }
 

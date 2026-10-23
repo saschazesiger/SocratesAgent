@@ -547,6 +547,17 @@ func (a *Adapter) controlRequest(id string, raw json.RawMessage) {
 			a.refuse(id, "no such server: "+req.ServerName)
 			return
 		}
+		if isNotification(req.Message) {
+			// In order with the stream: a call the CLI cancels
+			// (notifications/cancelled) is gone before the turn's end that
+			// follows is read, so an answer after that end goes as a message.
+			resp, _ := s.Handle(a.life, req.Message)
+			if resp == nil {
+				resp = json.RawMessage(`{"jsonrpc":"2.0","result":{}}`)
+			}
+			a.respond(id, map[string]any{"mcp_response": resp})
+			return
+		}
 		a.handle(id, func(ctx context.Context) {
 			resp, err := s.Handle(ctx, req.Message)
 			switch {
@@ -575,6 +586,14 @@ func (a *Adapter) controlRequest(id string, raw json.RawMessage) {
 	default:
 		a.refuse(id, "not supported by Socrates: "+req.Subtype)
 	}
+}
+
+// isNotification is a JSON-RPC message without an id: nothing waits on it.
+func isNotification(msg json.RawMessage) bool {
+	var head struct {
+		ID json.RawMessage `json:"id"`
+	}
+	return json.Unmarshal(msg, &head) == nil && (len(head.ID) == 0 || string(head.ID) == "null")
 }
 
 // handle answers one of the CLI's requests on a goroutine of its own, so that

@@ -193,12 +193,19 @@ func (a *adapter) serverRequest(fr *frame) {
 	}()
 }
 
+// waitingAsk is an ask whose call waits for the answer, for as long as ctx
+// lasts.
+type waitingAsk struct {
+	ctx    context.Context
+	answer chan json.RawMessage
+}
+
 // ask is Call.Ask.
 func (a *adapter) ask(ctx context.Context, turnID string, payload json.RawMessage) (json.RawMessage, error) {
 	id := newID("ask_")
-	ch := make(chan json.RawMessage, 1)
+	w := &waitingAsk{ctx: ctx, answer: make(chan json.RawMessage, 1)}
 	a.mu.Lock()
-	a.asks[id] = ch
+	a.asks[id] = w
 	a.mu.Unlock()
 	defer func() {
 		a.mu.Lock()
@@ -207,7 +214,7 @@ func (a *adapter) ask(ctx context.Context, turnID string, payload json.RawMessag
 	}()
 	a.out.Emit(agent.Event{Type: agent.TypeAsk, AskID: id, TurnID: turnID, Payload: payload})
 	select {
-	case answer := <-ch:
+	case answer := <-w.answer:
 		return answer, nil
 	case <-ctx.Done():
 		return nil, agent.ErrAskGone
