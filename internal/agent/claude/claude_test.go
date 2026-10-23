@@ -873,3 +873,54 @@ func TestPrepareConfigDirSharesTheConversationFolders(t *testing.T) {
 		t.Fatal("two transcript trees were merged silently")
 	}
 }
+
+// An account switch is interrupt, park, and a start under the other
+// account's config directory resuming the same conversation (spike S1).
+func TestAConversationMovesToAnotherAccount(t *testing.T) {
+	e := newEnv(t)
+	root := filepath.Dir(e.conf)
+	shared := filepath.Join(root, "agents", "claude")
+	accA, accB := filepath.Join(root, "acct-a"), filepath.Join(root, "acct-b")
+	for _, dir := range []string{accA, accB} {
+		if err := PrepareConfigDir(dir, shared); err != nil {
+			t.Fatal(err)
+		}
+	}
+	withConf := func(dir string) env {
+		c := e
+		c.conf = dir
+		c.vars = append([]string(nil), e.vars...)
+		for i, kv := range c.vars {
+			if strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=") {
+				c.vars[i] = "CLAUDE_CONFIG_DIR=" + dir
+			}
+		}
+		return c
+	}
+	a, r := start(t, withConf(accA), "")
+	send(t, a, "m1", "/slow 5")
+	r.waitFor(t, "the turn", func(evs []agent.Event) bool { return count(evs, agent.TypeTurnStarted) == 1 })
+	if err := a.Interrupt(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	r.turnsEnded(t, 1)
+	if err := a.Park(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var conv string
+	r.view(func(p *agent.Projection) { conv = p.ConversationID })
+	b, r2 := start(t, withConf(accB), conv)
+	send(t, b, "m2", "/env")
+	r2.turnsEnded(t, 1)
+	r2.view(func(p *agent.Projection) {
+		if p.ConversationID != conv {
+			t.Fatalf("conversation %q, want %q", p.ConversationID, conv)
+		}
+		if text := partsOf(lastAssistant(p), agent.PartText)[0].Text; !strings.Contains(text, "CLAUDE_CONFIG_DIR="+accB) {
+			t.Fatalf("not under account B:\n%s", text)
+		}
+	})
+	if findTranscript(accA, conv) == "" || findTranscript(accB, conv) == "" {
+		t.Fatal("the transcript is not shared between the accounts")
+	}
+}
