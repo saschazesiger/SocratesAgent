@@ -254,7 +254,27 @@ func (h *host) rebuild() {
 func (h *host) recover() error {
 	var events []agent.Event
 	h.rec.View(func(p *agent.Projection) {
+		// A part still running belongs to work that died with the host's
+		// CLI: the turn below, or a subagent or workflow that outlived its
+		// turn (WP3), whose group would otherwise run for ever.
+		var walk func(parts []*agent.Part)
+		walk = func(parts []*agent.Part) {
+			for _, part := range parts {
+				if part.State == agent.PartRunning || part.State == agent.PartStreaming {
+					events = append(events, agent.Event{Type: agent.TypePart, MessageID: part.MessageID, PartID: part.ID,
+						ParentPartID: part.ParentID, Kind: part.Kind, State: agent.PartInterrupted, Text: part.Text, Content: part.Content})
+				}
+				walk(part.Children)
+			}
+		}
+		for _, m := range p.Messages {
+			walk(m.Parts)
+		}
 		if p.Turn == nil {
+			if len(events) > 0 {
+				events = append(events, agent.Event{Type: agent.TypeNotice, Code: agent.NoticeResumed,
+					Text: "Resumed after a restart. Background work that was running was stopped."})
+			}
 			return
 		}
 		events = append(events,

@@ -323,8 +323,10 @@ is refused). `Reap`/`Stop` stop exactly `<unit>.scope` and `<unit>-<digits>.scop
 prefix match that could be another chat's. The launcher returns once the socket accepts, or fails with the tail of `host.log`.
 
 **Host start:** take `host.lock` (wait ≤ 1 s, else exit 0: another host runs) → read the spec →
-open the journal → **recover**: a turn still open in the journal is closed with
-`turn.ended{interrupted}` + `notice{resumed}` → listen → boot (holding the command lock, so nothing
+open the journal (empty with a `conversation` in the spec: rebuild, §5) → **recover**: every part
+still `running`/`streaming` (a turn's, or a subagent or workflow group that outlived its turn) gets
+a `part{interrupted}`, a turn still open in the journal is closed with `turn.ended{interrupted}`,
+and `notice{resumed}` says so → listen → boot (holding the command lock, so nothing
 new reaches the agent first): `process{starting}`, `Adapter.Start` with `ResumeID =` the
 journal's conversation id (`First` = the first undelivered message when there is no conversation
 yet), `process{ready}`, re-send undelivered messages, deliver unsent answers as messages. A start
