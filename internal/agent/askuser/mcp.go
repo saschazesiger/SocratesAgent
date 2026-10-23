@@ -1,11 +1,10 @@
 package askuser
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
-	"sync"
 	"time"
 )
 
@@ -34,7 +33,11 @@ type Call struct {
 // Model Context Protocol one at a time, whatever carries them (the control
 // protocol of Claude Code, the stdio of `socrates mcp-ask`). Handle may be
 // called from many goroutines at once: a tools/call blocks until the person
-// answers, and the notification that cancels it arrives meanwhile.
+// answers. The carrier ends a call's context when the client withdraws it
+// (notifications/cancelled, which Cancelled reads), because only the carrier
+// reads the client's messages in order: a cancel that follows its call at
+// once is then never missed, as it could be by a call still on its way into
+// Handle.
 type MCP struct {
 	// Version is the server's own version in initialize's serverInfo, "1"
 	// when empty.
@@ -48,11 +51,9 @@ type MCP struct {
 	// reachable); a context cancelled by the client is not reported at all.
 	Ask func(ctx context.Context, call Call) (json.RawMessage, error)
 	// Progress, when set, is told every ProgressEvery while a call waits, for
-	// a client that sent a progress token.
+	// a client that sent a progress token, and never once Handle has
+	// returned the call's response.
 	Progress func(token json.RawMessage, progress int)
-
-	mu       sync.Mutex
-	inflight map[string]context.CancelFunc
 }
 
 type rpcMessage struct {
@@ -63,7 +64,7 @@ type rpcMessage struct {
 }
 
 // Handle answers one message: the response, or nil for a notification and
-// for a call the client cancelled.
+// for a call the client cancelled (whose context the carrier ended).
 func (m *MCP) Handle(ctx context.Context, raw json.RawMessage) json.RawMessage {
 	var msg rpcMessage
 	if err := json.Unmarshal(raw, &msg); err != nil {
@@ -79,13 +80,6 @@ func (m *MCP) Handle(ctx context.Context, raw json.RawMessage) json.RawMessage {
 		return rpcResult(msg.ID, map[string]any{"tools": []any{Tool()}})
 	case "tools/call":
 		return m.call(ctx, msg)
-	case "notifications/cancelled":
-		var p struct {
-			RequestID json.RawMessage `json:"requestId"`
-		}
-		_ = json.Unmarshal(msg.Params, &p)
-		m.cancel(string(p.RequestID))
-		return nil
 	}
 	if notification {
 		return nil
@@ -148,20 +142,18 @@ func (m *MCP) call(ctx context.Context, msg rpcMessage) json.RawMessage {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	key := string(msg.ID)
-	m.mu.Lock()
-	if m.inflight == nil {
-		m.inflight = map[string]context.CancelFunc{}
-	}
-	m.inflight[key] = cancel
-	m.mu.Unlock()
-	defer func() {
-		m.mu.Lock()
-		delete(m.inflight, key)
-		m.mu.Unlock()
-	}()
 	if m.Progress != nil && len(p.Meta.ProgressToken) > 0 && string(p.Meta.ProgressToken) != "null" {
-		go m.progress(ctx, p.Meta.ProgressToken)
+		ticking := make(chan struct{})
+		go func() {
+			defer close(ticking)
+			m.progress(ctx, p.Meta.ProgressToken)
+		}()
+		// No progress after the response: the ticks stop, and one being
+		// written is done, before the response is returned.
+		defer func() {
+			cancel()
+			<-ticking
+		}()
 	}
 	answer, err := m.Ask(ctx, Call{Payload: payload, ToolUseID: p.Meta.ToolUseID})
 	switch {
@@ -182,19 +174,49 @@ func (m *MCP) progress(ctx context.Context, token json.RawMessage) {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
+			if ctx.Err() != nil {
+				return
+			}
 			m.Progress(token, n)
 		}
 	}
 }
 
-// cancel ends the call with this JSON-RPC id.
-func (m *MCP) cancel(id string) {
-	m.mu.Lock()
-	cancel := m.inflight[strings.TrimSpace(id)]
-	m.mu.Unlock()
-	if cancel != nil {
-		cancel()
+// RequestID is the id of a JSON-RPC request, a message with a method that
+// expects a response, in a form two messages can be compared by; false for
+// a notification or a response.
+func RequestID(raw json.RawMessage) (string, bool) {
+	var msg rpcMessage
+	if json.Unmarshal(raw, &msg) != nil || msg.Method == "" {
+		return "", false
 	}
+	return idKey(msg.ID)
+}
+
+// Cancelled is the id of the request a notifications/cancelled withdraws, in
+// RequestID's form; false for any other message.
+func Cancelled(raw json.RawMessage) (string, bool) {
+	var msg rpcMessage
+	if json.Unmarshal(raw, &msg) != nil || msg.Method != "notifications/cancelled" {
+		return "", false
+	}
+	var p struct {
+		RequestID json.RawMessage `json:"requestId"`
+	}
+	if json.Unmarshal(msg.Params, &p) != nil {
+		return "", false
+	}
+	return idKey(p.RequestID)
+}
+
+// idKey is a JSON-RPC id as a map key: compact JSON, so that 7 and "7" stay
+// apart and spacing does not matter.
+func idKey(id json.RawMessage) (string, bool) {
+	var b bytes.Buffer
+	if len(id) == 0 || string(id) == "null" || json.Compact(&b, id) != nil {
+		return "", false
+	}
+	return b.String(), true
 }
 
 // ProgressNotification is the notifications/progress message for a token.

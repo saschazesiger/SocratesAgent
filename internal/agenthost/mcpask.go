@@ -26,7 +26,7 @@ const MCPAskTool = askuser.ServerName + "_" + askuser.Name
 // call reaches the chat's agent host over its socket (OpAsk) and waits there
 // for the answer, sending progress notifications meanwhile, so that the
 // CLI's call timeout never runs out (research/05 §4.3).
-func MCPAskMain(args []string) int {
+func MCPAskMain(args []string, version string) int {
 	fs := flag.NewFlagSet("mcp-ask", flag.ContinueOnError)
 	sock := fs.String("socket", "", "the agent host's socket")
 	if err := fs.Parse(args); err != nil {
@@ -38,16 +38,20 @@ func MCPAskMain(args []string) int {
 	}
 	log.SetFlags(0)
 	log.SetPrefix("socrates mcp-ask: ")
-	if err := ServeMCPAsk(context.Background(), *sock, os.Stdin, os.Stdout); err != nil {
+	if err := ServeMCPAsk(context.Background(), *sock, version, os.Stdin, os.Stdout); err != nil {
 		log.Print(err)
 		return 1
 	}
 	return 0
 }
 
-// ServeMCPAsk serves ask_user on one MCP stdio stream until in ends. Calls
-// run concurrently; a call still waiting when in ends is withdrawn.
-func ServeMCPAsk(ctx context.Context, sock string, in io.Reader, out io.Writer) error {
+// ServeMCPAsk serves ask_user on one MCP stdio stream until in ends; version
+// is the server's in initialize. Requests run concurrently, each on a
+// goroutine of its own because a tools/call blocks, under a context that is
+// registered before the next line is read: a notifications/cancelled, read
+// in order, always finds the call it withdraws. A call still waiting when in
+// ends is withdrawn.
+func ServeMCPAsk(ctx context.Context, sock, version string, in io.Reader, out io.Writer) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var wmu sync.Mutex
@@ -57,6 +61,7 @@ func ServeMCPAsk(ctx context.Context, sock string, in io.Reader, out io.Writer) 
 		_, _ = out.Write(append(line, '\n'))
 	}
 	m := &askuser.MCP{
+		Version:      version,
 		Instructions: askuser.Guidance(MCPAskTool),
 		Ask: func(ctx context.Context, call askuser.Call) (json.RawMessage, error) {
 			return askHost(ctx, sock, call.Payload)
@@ -64,19 +69,38 @@ func ServeMCPAsk(ctx context.Context, sock string, in io.Reader, out io.Writer) 
 		Progress: func(token json.RawMessage, n int) { write(askuser.ProgressNotification(token, n)) },
 	}
 	var calls sync.WaitGroup
+	var cmu sync.Mutex
+	inflight := map[string]context.CancelFunc{}
 	r := bufio.NewReaderSize(in, 64<<10)
 	for {
 		line, err := readLine(r)
 		if len(strings.TrimSpace(string(line))) > 0 {
 			msg := json.RawMessage(append([]byte(nil), line...))
-			if isRequest(msg) {
+			if id, ok := askuser.RequestID(msg); ok {
+				cctx, ccancel := context.WithCancel(ctx)
+				cmu.Lock()
+				inflight[id] = ccancel
+				cmu.Unlock()
 				calls.Add(1)
 				go func() {
 					defer calls.Done()
-					if resp := m.Handle(ctx, msg); resp != nil {
+					defer func() {
+						ccancel()
+						cmu.Lock()
+						delete(inflight, id)
+						cmu.Unlock()
+					}()
+					if resp := m.Handle(cctx, msg); resp != nil {
 						write(resp)
 					}
 				}()
+			} else if id, ok := askuser.Cancelled(msg); ok {
+				cmu.Lock()
+				withdraw := inflight[id]
+				cmu.Unlock()
+				if withdraw != nil {
+					withdraw()
+				}
 			} else if resp := m.Handle(ctx, msg); resp != nil {
 				write(resp)
 			}
@@ -92,22 +116,11 @@ func ServeMCPAsk(ctx context.Context, sock string, in io.Reader, out io.Writer) 
 	}
 }
 
-// isRequest is a JSON-RPC message that expects a response, which is handled
-// on a goroutine of its own because a tools/call blocks; notifications (a
-// cancel among them) are handled in order.
-func isRequest(msg json.RawMessage) bool {
-	var head struct {
-		ID     json.RawMessage `json:"id"`
-		Method string          `json:"method"`
-	}
-	return json.Unmarshal(msg, &head) == nil && head.Method != "" && len(head.ID) > 0 && string(head.ID) != "null"
-}
-
 // askHost puts one question to the chat through its host and waits for the
 // answer on that connection. The connection asks for no events: a since far
 // beyond any journal.
 func askHost(ctx context.Context, sock string, payload askuser.Payload) (json.RawMessage, error) {
-	c, err := Dial(ctx, sock, 1<<62)
+	c, err := Dial(ctx, sock, NoEvents)
 	if err != nil {
 		return nil, fmt.Errorf("the chat is not reachable: %w", err)
 	}

@@ -30,6 +30,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
+	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
 )
 
 // Harness is the name the adapter is registered under, the same as the
@@ -109,7 +110,10 @@ type Adapter struct {
 	// handling are the CLI's requests being answered on goroutines of their
 	// own (MCP calls, elicitations), by request id, so that a withdrawn
 	// request ends its handler; life ends them all when the CLI exits.
+	// mcpCalls are the MCP requests among them by server and JSON-RPC id,
+	// which is what the CLI's notifications/cancelled names.
 	handling map[string]context.CancelFunc
+	mcpCalls map[string]string
 	life     context.Context
 	endLife  context.CancelFunc
 
@@ -132,7 +136,7 @@ type Adapter struct {
 func New(opts Options) *Adapter {
 	life, end := context.WithCancel(context.Background())
 	return &Adapter{opts: opts, waiting: map[string]chan controlResult{}, handling: map[string]context.CancelFunc{},
-		life: life, endLife: end}
+		mcpCalls: map[string]string{}, life: life, endLife: end}
 }
 
 // Start launches the CLI, says hello over the control protocol and returns
@@ -552,6 +556,16 @@ func (a *Adapter) controlRequest(id string, raw json.RawMessage) {
 			// In order with the stream: a call the CLI cancels
 			// (notifications/cancelled) is gone before the turn's end that
 			// follows is read, so an answer after that end goes as a message.
+			// Its handler's context ends here, not in the server, which may
+			// not have seen the call yet.
+			if rpcID, ok := askuser.Cancelled(req.Message); ok {
+				a.ctlMu.Lock()
+				cancel := a.handling[a.mcpCalls[req.ServerName+" "+rpcID]]
+				a.ctlMu.Unlock()
+				if cancel != nil {
+					cancel()
+				}
+			}
 			resp, _ := s.Handle(a.life, req.Message)
 			if resp == nil {
 				resp = json.RawMessage(`{"jsonrpc":"2.0","result":{}}`)
@@ -559,7 +573,11 @@ func (a *Adapter) controlRequest(id string, raw json.RawMessage) {
 			a.respond(id, map[string]any{"mcp_response": resp})
 			return
 		}
-		a.handle(id, func(ctx context.Context) {
+		call := ""
+		if rpcID, ok := askuser.RequestID(req.Message); ok {
+			call = req.ServerName + " " + rpcID
+		}
+		a.handle(id, call, func(ctx context.Context) {
 			resp, err := s.Handle(ctx, req.Message)
 			switch {
 			case ctx.Err() != nil, err == nil && resp == nil:
@@ -577,7 +595,7 @@ func (a *Adapter) controlRequest(id string, raw json.RawMessage) {
 		a.mu.Lock()
 		ask := a.ask
 		a.mu.Unlock()
-		a.handle(id, func(ctx context.Context) {
+		a.handle(id, "", func(ctx context.Context) {
 			if resp := ask.elicit(ctx, id, req); resp != nil && ctx.Err() == nil {
 				a.respond(id, resp)
 			}
@@ -597,17 +615,25 @@ func isNotification(msg json.RawMessage) bool {
 
 // handle answers one of the CLI's requests on a goroutine of its own, so that
 // a call waiting for the person never holds up the stream. The context ends
-// when the CLI withdraws the request (control_cancel_request) or exits.
-func (a *Adapter) handle(id string, fn func(ctx context.Context)) {
+// when the CLI withdraws the request (control_cancel_request, or for an MCP
+// call, which call names, notifications/cancelled) or exits. It is
+// registered before the next frame is read, so a cancel never misses it.
+func (a *Adapter) handle(id, call string, fn func(ctx context.Context)) {
 	ctx, cancel := context.WithCancel(a.life)
 	a.ctlMu.Lock()
 	a.handling[id] = cancel
+	if call != "" {
+		a.mcpCalls[call] = id
+	}
 	a.ctlMu.Unlock()
 	go func() {
 		defer func() {
 			cancel()
 			a.ctlMu.Lock()
 			delete(a.handling, id)
+			if call != "" && a.mcpCalls[call] == id {
+				delete(a.mcpCalls, call)
+			}
 			a.ctlMu.Unlock()
 		}()
 		fn(ctx)

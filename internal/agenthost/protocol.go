@@ -28,6 +28,11 @@ const (
 	AskProtocol = 2
 )
 
+// NoEvents is the since of a connection that wants no events at all, beyond
+// any journal: a local tool's, which only asks. It gets no live deltas
+// either.
+const NoEvents int64 = 1 << 62
+
 // Command ops, client to host.
 const (
 	OpHello     = "hello"

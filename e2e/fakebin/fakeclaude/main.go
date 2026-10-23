@@ -47,8 +47,11 @@
 //	                 questions, or the JSON given) through mcp_message, waits
 //	                 for the result and says it; an interrupt withdraws the
 //	                 call (notifications/cancelled, then control_cancel_request)
-//	/elicit          an MCP elicitation of a form with two fields; says the
-//	                 answer
+//	/askdrop         calls ask_user and withdraws the call at once with
+//	                 notifications/cancelled alone, as an abort right after
+//	                 the call does, then says "ask_user was withdrawn"
+//	/elicit [url]    an MCP elicitation of a form with two fields (or of a
+//	                 URL); says the answer
 //	anything else    "you said: <text>"
 //
 // After initialize it does the MCP handshake (initialize,
@@ -594,8 +597,10 @@ func (t *turnRun) script() {
 		t.say(text)
 	case "/askuser":
 		t.askUser(rest)
+	case "/askdrop":
+		t.askDrop()
 	case "/elicit":
-		t.elicit()
+		t.elicit(strings.TrimSpace(rest) == "url")
 	default:
 		t.say("you said: " + t.job.text)
 	}
@@ -1135,10 +1140,33 @@ func (t *turnRun) askUser(arg string) {
 	t.say("ask_user returned: " + text)
 }
 
-// elicit is an MCP server asking the person through the CLI.
-func (t *turnRun) elicit() {
+// askDrop is a call of ask_user withdrawn the moment it is made: the
+// tools/call, and right behind it its notifications/cancelled, without a
+// control_cancel_request, so that only the JSON-RPC id ties the two.
+func (t *turnRun) askDrop() {
+	f := t.f
+	f.mu.Lock()
+	rpcID := f.rpcID
+	f.rpcID++
+	f.mu.Unlock()
+	f.out(map[string]any{"type": "control_request", "request_id": newUUID(),
+		"request": map[string]any{"subtype": "mcp_message", "server_name": "socrates", "message": map[string]any{
+			"jsonrpc": "2.0", "id": rpcID, "method": "tools/call",
+			"params": map[string]any{"name": "ask_user", "arguments": json.RawMessage(askCall)}}}})
+	f.mcpRequest(context.Background(), "socrates", "notifications/cancelled",
+		map[string]any{"requestId": rpcID, "reason": "AbortError: the operation was aborted"}, true)
+	t.say("ask_user was withdrawn")
+}
+
+// elicit is an MCP server asking the person through the CLI: a form, or a
+// URL to open.
+func (t *turnRun) elicit(url bool) {
+	mode := "form"
+	if url {
+		mode = "url"
+	}
 	resp, ok := t.f.ask(t.ctx, map[string]any{"subtype": "elicitation", "mcp_server_name": "lab", "message": "Pick a colour.",
-		"mode": "form", "property_order": []string{"colour", "notes"},
+		"mode": mode, "property_order": []string{"colour", "notes"},
 		"requested_schema": map[string]any{"type": "object", "required": []string{"colour"}, "properties": map[string]any{
 			"colour": map[string]any{"type": "string", "title": "Colour", "enum": []string{"red", "green", "blue"}},
 			"notes":  map[string]any{"type": "string", "title": "Notes"}}}})

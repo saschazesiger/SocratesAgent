@@ -38,7 +38,7 @@ func TestMain(m *testing.M) {
 		os.Exit(agenthost.Main(os.Args[2:], "test"))
 	}
 	if len(os.Args) > 1 && os.Args[1] == "mcp-ask" {
-		os.Exit(agenthost.MCPAskMain(os.Args[2:]))
+		os.Exit(agenthost.MCPAskMain(os.Args[2:], "test"))
 	}
 	dir, err := os.MkdirTemp("", "fakeopencode-")
 	if err != nil {

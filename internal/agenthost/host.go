@@ -1049,6 +1049,10 @@ func (c *hostConn) write(since int64) {
 	var replies [][]byte
 	for {
 		events, deltas := sub.Pull(next)
+		if since >= NoEvents {
+			// A connection that asked for no events wants no deltas.
+			deltas = nil
+		}
 		for _, ev := range events {
 			if !c.send(EncodeEvent(ev)) {
 				return

@@ -151,6 +151,28 @@ func TestAnInterruptedAskUserCallIsGone(t *testing.T) {
 	r.turnsEnded(t, 2)
 }
 
+// A call the CLI withdraws the moment it made it (notifications/cancelled
+// right behind the tools/call) ends its handler: the cancel finds the call
+// by its JSON-RPC id, though the server may not have seen it yet.
+func TestACallWithdrawnAtOnceEndsItsHandler(t *testing.T) {
+	e := newEnv(t)
+	a, r := start(t, e, "")
+	send(t, a, "m1", "/askdrop")
+	r.turnsEnded(t, 1)
+	waitHandled(t, a)
+	var open []string
+	r.view(func(p *agent.Projection) {
+		for _, ask := range p.OpenAsks() {
+			open = append(open, ask.ID)
+		}
+	})
+	for _, id := range open {
+		if err := a.Answer(context.Background(), id, json.RawMessage(`{"answers":{}}`)); !errors.Is(err, agent.ErrAskGone) {
+			t.Fatalf("the answer to a withdrawn call: %v", err)
+		}
+	}
+}
+
 // A CLI that dies ends every handler waiting on it, and its asks are gone.
 func TestACLIThatExitsEndsItsWaitingCalls(t *testing.T) {
 	e := newEnv(t)

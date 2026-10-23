@@ -157,8 +157,11 @@ func TestALocalToolAsksThroughTheHost(t *testing.T) {
 	cl.answer("a1", ask.AskID, "phone", answer)
 	f := tool.frame(5 * time.Second)
 	for f.Answer == nil {
-		if f.Ack != nil && f.Ack.AskID != ask.AskID {
+		switch {
+		case f.Ack != nil && f.Ack.AskID != ask.AskID:
 			t.Fatalf("ack %+v", f.Ack)
+		case f.Event != nil || f.Delta != nil:
+			t.Fatalf("a tool's connection got %+v", f)
 		}
 		f = tool.frame(5 * time.Second)
 	}
@@ -205,7 +208,7 @@ func TestTheAskOpIsRefusedWithoutItsProtocolOrAPayload(t *testing.T) {
 	r.launch()
 	cl := r.dial(0)
 	cl.until(5*time.Second, isProcess(agent.ProcessReady))
-	tool := r.dial(1 << 62)
+	tool := r.dial(NoEvents)
 	if err := tool.c.Send(Command{Op: OpAsk, Payload: json.RawMessage(`{"questions":[]}`)}); err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +257,7 @@ func TestMCPAskServesAskUserThroughTheHost(t *testing.T) {
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	done := make(chan error, 1)
-	go func() { done <- ServeMCPAsk(context.Background(), SocketPath(r.data, r.chat), inR, outW) }()
+	go func() { done <- ServeMCPAsk(context.Background(), SocketPath(r.data, r.chat), "test", inR, outW) }()
 	out := bufio.NewReader(outR)
 	rpc := func(msg string) map[string]any {
 		t.Helper()
@@ -279,11 +282,15 @@ func TestMCPAskServesAskUserThroughTheHost(t *testing.T) {
 	if _, err := io.WriteString(inW, `{"jsonrpc":"2.0","method":"notifications/initialized"}`+"\n"); err != nil {
 		t.Fatal(err)
 	}
+	answered := make(chan Ack, 1)
 	go func() {
 		ask := cl.until(5*time.Second, isType(agent.TypeAsk))
-		cl.answer("a1", ask.AskID, "phone", json.RawMessage(`{"answers":{"db":{"selected":["sqlite"],"note":"one file"}}}`))
+		answered <- cl.answer("a1", ask.AskID, "phone", json.RawMessage(`{"answers":{"db":{"selected":["sqlite"],"note":"one file"}}}`))
 	}()
 	res := rpc(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ask_user","arguments":` + string(askPayload) + `}}`)
+	if ack := <-answered; ack.Seq == 0 {
+		t.Fatalf("the answer's ack %+v", ack)
+	}
 	result := res["result"].(map[string]any)
 	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
 	if result["isError"] != false || !strings.HasPrefix(text, `{"answers":{"db":{"selected":["sqlite"],"other":null,"note":"one file"`) {

@@ -490,11 +490,13 @@ func TestMCPAsksAndWaits(t *testing.T) {
 	}
 }
 
-// notifications/cancelled ends the call it names, which then answers nothing,
-// and a waiting call reports progress.
+// A call whose context the carrier ends (the client's notifications/cancelled,
+// which Cancelled reads) answers nothing, and a waiting call reports
+// progress until it returns, never after.
 func TestMCPCancelAndProgress(t *testing.T) {
 	var mu sync.Mutex
 	var progress []int
+	returned := false
 	m := &MCP{
 		Ask: func(ctx context.Context, c Call) (json.RawMessage, error) {
 			<-ctx.Done()
@@ -502,17 +504,39 @@ func TestMCPCancelAndProgress(t *testing.T) {
 		},
 		Progress: func(token json.RawMessage, n int) {
 			mu.Lock()
+			defer mu.Unlock()
+			if returned {
+				t.Error("progress after the call returned")
+			}
 			progress = append(progress, n)
-			mu.Unlock()
 		},
 	}
 	old := progressEvery
-	progressEvery = 20 * time.Millisecond
+	progressEvery = 2 * time.Millisecond
 	defer func() { progressEvery = old }()
+	call := json.RawMessage(`{"jsonrpc":"2.0","id":"c7","method":"tools/call",` +
+		`"params":{"name":"ask_user","arguments":{"questions":[{"question":"Q"}]},"_meta":{"progressToken":"p"}}}`)
+	if id, ok := RequestID(call); !ok || id != `"c7"` {
+		t.Fatalf("request id %q %v", id, ok)
+	}
+	cancelled := json.RawMessage(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId": "c7","reason":"aborted"}}`)
+	if id, ok := Cancelled(cancelled); !ok || id != `"c7"` {
+		t.Fatalf("cancelled id %q %v", id, ok)
+	}
+	if _, ok := RequestID(cancelled); ok {
+		t.Fatal("a notification taken for a request")
+	}
+	if _, ok := Cancelled(call); ok {
+		t.Fatal("a call taken for a cancel")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan json.RawMessage, 1)
 	go func() {
-		done <- m.Handle(context.Background(), json.RawMessage(`{"jsonrpc":"2.0","id":"c7","method":"tools/call",`+
-			`"params":{"name":"ask_user","arguments":{"questions":[{"question":"Q"}]},"_meta":{"progressToken":"p"}}}`))
+		r := m.Handle(ctx, call)
+		mu.Lock()
+		returned = true
+		mu.Unlock()
+		done <- r
 	}()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
@@ -525,11 +549,12 @@ func TestMCPCancelAndProgress(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatal("no progress while waiting")
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(time.Millisecond)
 	}
-	if m.Handle(context.Background(), json.RawMessage(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"c7","reason":"aborted"}}`)) != nil {
+	if m.Handle(context.Background(), cancelled) != nil {
 		t.Fatal("the cancel was answered")
 	}
+	cancel()
 	select {
 	case r := <-done:
 		if r != nil {
@@ -538,6 +563,7 @@ func TestMCPCancelAndProgress(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("the cancel did not end the call")
 	}
+	time.Sleep(20 * time.Millisecond)
 	note := ProgressNotification(json.RawMessage(`"p"`), 3)
 	if !strings.Contains(string(note), `"method":"notifications/progress"`) || !strings.Contains(string(note), `"progressToken":"p"`) {
 		t.Fatalf("notification %s", note)
