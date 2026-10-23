@@ -203,7 +203,7 @@ export function mountChat(ctx) {
         const wasBusy = busy(chat);
         if (apply(chat, f)) schedule();
         if (f.type === 'turn.ended' && wasBusy && synced && document.visibilityState === 'visible') ctx.read(session.id);
-        if (f.type === 'ask' || f.type === 'ask.answered' || f.type === 'ask.delivered') tellAsk(f.ask_id);
+        if (f.type === 'ask' || f.type === 'ask.answered' || f.type === 'ask.delivered' || f.type === 'ask.closed') tellAsk(f.ask_id);
         break;
       }
       case 'delta':

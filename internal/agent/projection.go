@@ -111,6 +111,10 @@ type Ask struct {
 	// Deliver is ViaMessage for an ask whose answer goes to the agent as
 	// the next user message by design (the ask event's Via).
 	Deliver string `json:"deliver,omitempty"`
+	// Closed is set by ask.closed: nobody waits for the answer any more,
+	// though it may still come.
+	Closed   bool  `json:"closed,omitempty"`
+	ClosedAt int64 `json:"closed_at,omitempty"`
 }
 
 // RateLimit is the last reading of one usage window.
@@ -187,6 +191,10 @@ func (p *Projection) Apply(ev Event) {
 	case TypeAskDelivered:
 		if a := p.asks[ev.AskID]; a != nil {
 			a.Delivered = ev.Via
+		}
+	case TypeAskClosed:
+		if a := p.asks[ev.AskID]; a != nil && !a.Answered && !a.Closed {
+			a.Closed, a.ClosedAt = true, ev.At
 		}
 	case TypeAccountSwitched:
 		p.Account = ev.To
@@ -362,11 +370,28 @@ func (p *Projection) Part(id string) *Part { return p.parts[id] }
 // Ask is one question by id.
 func (p *Projection) Ask(id string) *Ask { return p.asks[id] }
 
-// OpenAsks is every question nobody has answered yet, oldest first.
+// OpenAsks is every question nobody has answered or closed yet, oldest
+// first.
 func (p *Projection) OpenAsks() []*Ask {
 	var out []*Ask
 	for _, a := range p.Asks {
-		if !a.Answered {
+		if !a.Answered && !a.Closed {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// Unwaited is every open question no call waits on any more: its turn has
+// ended (an interrupt, a host that died) or it was answered as the next
+// message by design. A message from the person closes them (ask.closed),
+// because they moved on. An ask without a turn is left alone: the adapter
+// did not say what it belongs to, so a call may still wait on it.
+func (p *Projection) Unwaited() []*Ask {
+	var out []*Ask
+	for _, a := range p.OpenAsks() {
+		ended := a.TurnID != "" && (p.Turn == nil || p.Turn.ID != a.TurnID)
+		if a.Deliver == ViaMessage || ended {
 			out = append(out, a)
 		}
 	}
@@ -444,8 +469,15 @@ func (p *Projection) Summary() Summary {
 			s.Queued++
 		}
 	}
+	// An open question outranks a running turn only when the turn is the
+	// one that asked: a turn of its own means the agent went on, and the
+	// question waits for the person without holding the agent up.
+	waiting := false
+	for _, a := range p.OpenAsks() {
+		waiting = waiting || p.Turn == nil || a.TurnID == "" || a.TurnID == p.Turn.ID
+	}
 	switch {
-	case s.OpenAsks > 0:
+	case waiting:
 		s.Activity = ActivityWaiting
 	case s.TurnRunning:
 		s.Activity = ActivityBusy

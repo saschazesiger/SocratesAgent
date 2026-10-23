@@ -583,7 +583,17 @@ func (h *host) send(ctx context.Context, cmd Command) any {
 	}
 	msg := agent.Event{Type: agent.TypeMessage, MessageID: newID("m_"), Role: agent.RoleUser,
 		State: agent.MessagePending, ClientID: cmd.ClientID, Text: cmd.Text, Attachments: cmd.Attachments}
-	events, err := h.rec.EmitDurable(msg)
+	// A question no call waits on any more is left behind by this message:
+	// the person moved on (pressed Stop and wrote something else, or wrote
+	// instead of answering a question meant for the next message). It stops
+	// counting as waiting; an answer that still comes goes as a message.
+	batch := []agent.Event{msg}
+	h.rec.View(func(p *agent.Projection) {
+		for _, a := range p.Unwaited() {
+			batch = append(batch, agent.Event{Type: agent.TypeAskClosed, AskID: a.ID})
+		}
+	})
+	events, err := h.rec.EmitDurable(batch...)
 	if err != nil {
 		return fail(cmd, CodeFailed, "the message could not be journaled: "+err.Error())
 	}
@@ -629,6 +639,8 @@ func (h *host) answer(ctx context.Context, cmd Command) any {
 // the running turn whose answer goes back on the connection that asked, for
 // as long as it stays open. A connection that closes first (the CLI withdrew
 // the call, or exited) leaves the ask open; its answer then goes as a message.
+// A question outside a turn is refused: the CLI calls its tools only inside
+// one, so it comes from a call already withdrawn, whose cancel overtook it.
 func (h *host) toolAsk(c *hostConn, cmd Command) any {
 	if c == nil || c.proto < AskProtocol {
 		return fail(cmd, CodeBadRequest, fmt.Sprintf("ask needs protocol %d", AskProtocol))
@@ -645,6 +657,9 @@ func (h *host) toolAsk(c *hostConn, cmd Command) any {
 			ev.TurnID = p.Turn.ID
 		}
 	})
+	if ev.TurnID == "" {
+		return fail(cmd, CodeBadRequest, "no turn is running, so nothing can wait for an answer")
+	}
 	h.mu.Lock()
 	h.tools[ev.AskID] = c
 	h.mu.Unlock()
@@ -670,9 +685,9 @@ func (h *host) answerTool(ask *agent.Ask, answer json.RawMessage) bool {
 	if c == nil {
 		return false
 	}
-	live := true
+	live := false
 	h.rec.View(func(p *agent.Projection) {
-		live = ask.TurnID == "" || p.Turn != nil && p.Turn.ID == ask.TurnID
+		live = p.Turn != nil && p.Turn.ID == ask.TurnID
 	})
 	if !live {
 		return false
@@ -781,26 +796,24 @@ func (h *host) control(ctx context.Context, cmd Command) any {
 
 // idle is whether the host may park: the CLI is up and doing nothing that
 // parking would cut short - no turn (a question being waited on is always
-// inside one), no call of a local tool waiting, no background task, and no
-// user message it has not taken up yet (one that was acknowledged a moment
-// ago and is still on its way into the agent).
+// inside one: a local tool's too, whose call does not outlive its turn), no
+// background task, and no user message it has not taken up yet (one that
+// was acknowledged a moment ago and is still on its way into the agent).
 //
 // An open ask outside a running turn does not keep the host: its call is
 // gone (the turn was interrupted, or the host before this one died) or never
 // waited (an ask answered as the next message), so its answer goes to the
 // agent as a message whenever it comes, through whichever host is up then.
 // The ask itself stays open across parks, host deaths and recoveries, and
-// the chat stays "waiting" (REBUILD.md §5.3: a question survives everything).
+// the chat stays "waiting" until it is answered or the person writes
+// something else (REBUILD.md §5.3: a question survives everything).
 func (h *host) idle() bool {
 	if h.adapter == nil || h.isEnding() {
 		return false
 	}
-	h.mu.Lock()
-	tools := len(h.tools)
-	h.mu.Unlock()
-	busy := tools > 0
+	busy := false
 	h.rec.View(func(p *agent.Projection) {
-		busy = busy || p.Turn != nil || len(p.Undelivered()) > 0
+		busy = p.Turn != nil || len(p.Undelivered()) > 0
 	})
 	return !busy && h.adapter.Background() == 0
 }

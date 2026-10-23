@@ -39,6 +39,10 @@ const (
 	// TypeAskDelivered says how the answer reached the agent: through the
 	// blocking tool call, or as a user message because the call was gone.
 	TypeAskDelivered = "ask.delivered"
+	// TypeAskClosed says an open question is no longer waited for: the
+	// person wrote to the agent instead, after the call that asked was gone.
+	// It can still be answered; the answer then goes as a message.
+	TypeAskClosed = "ask.closed"
 	// TypeAccountSwitched is a divider: the chat continues on another account.
 	TypeAccountSwitched = "account.switched"
 	// TypeModelChanged is a new model or effort for the turns that follow.

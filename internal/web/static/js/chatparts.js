@@ -430,15 +430,20 @@ export function askCard(ask, view) {
   const title = payload.title || (questions.length === 1 ? 'A question' : 'Questions');
   let state = 'open';
   if (ask.answered) state = view.mine(ask) ? 'answered' : 'elsewhere';
-  return html`<section class="ds-card so-ask" data-ds-key="${'a:' + ask.id}" data-ask="${ask.id}" data-state="${state}"><div class="ds-card__row"><h3 class="ds-card__title so-ask__title">${raw(icon('chat', 18))}<span>${title}</span></h3>${
-    state === 'open' ? html`<span class="ds-status ds-status--warning">${raw(icon('clock', 16))}<span>Waiting for you</span></span>`
-      : html`<span class="ds-status ds-status--ok">${raw(icon('check', 16))}<span>${state === 'elsewhere' ? 'Answered on another device' : 'Answered'}</span></span>`
-  }</div>${
-    state === 'open' ? html`<p class="so-ask__progress ds-meta">${questions.length > 1 ? progress.count + ' of ' + questions.length + ' answered' : 'One question'}</p>${
+  else if (ask.closed) state = 'closed';
+  let status = html`<span class="ds-status ds-status--warning">${raw(icon('clock', 16))}<span>Waiting for you</span></span>`;
+  if (state === 'closed') status = html`<span class="ds-status">${raw(icon('chat', 16))}<span>Not answered</span></span>`;
+  else if (state !== 'open') status = html`<span class="ds-status ds-status--ok">${raw(icon('check', 16))}<span>${state === 'elsewhere' ? 'Answered on another device' : 'Answered'}</span></span>`;
+  let body = html`<p class="so-ask__done ds-meta">${answerSummary(ask)}</p>`;
+  if (state === 'open') {
+    body = html`<p class="so-ask__progress ds-meta">${questions.length > 1 ? progress.count + ' of ' + questions.length + ' answered' : 'One question'}</p>${
       first ? html`<p class="so-ask__question">${first.question || first.header || ''}</p>` : ''
-    }<div class="ds-form-actions"><button class="ds-btn ds-btn--primary so-ask__open" type="button" data-action="ask-open" data-ask="${ask.id}">Answer</button></div>`
-      : html`<p class="so-ask__done ds-meta">${answerSummary(ask)}</p>`
-  }</section>`;
+    }<div class="ds-form-actions"><button class="ds-btn ds-btn--primary so-ask__open" type="button" data-action="ask-open" data-ask="${ask.id}">Answer</button></div>`;
+  } else if (state === 'closed') {
+    // A message moved the chat on; an answer can still be sent, as a message.
+    body = html`<p class="so-ask__done ds-meta">You wrote something else instead. The agent no longer waits for this.</p><div class="ds-form-actions"><button class="ds-btn ds-btn--tonal so-ask__open" type="button" data-action="ask-open" data-ask="${ask.id}">Answer anyway</button></div>`;
+  }
+  return html`<section class="ds-card so-ask" data-ds-key="${'a:' + ask.id}" data-ask="${ask.id}" data-state="${state}"><div class="ds-card__row"><h3 class="ds-card__title so-ask__title">${raw(icon('chat', 18))}<span>${title}</span></h3>${status}</div>${body}</section>`;
 }
 
 // answerSummary is an answered ask in one line: what was chosen or said.

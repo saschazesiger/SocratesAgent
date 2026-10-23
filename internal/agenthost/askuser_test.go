@@ -104,6 +104,44 @@ func TestAnAskOfAnInterruptedTurnLetsTheHostParkAndIsAnsweredAsAMessage(t *testi
 	}
 }
 
+// A message sent while the call waits leaves the question open; one sent
+// after the call is gone (the person pressed Stop and wrote something else)
+// closes it, and the chat stops waiting. A closed question still takes an
+// answer, which goes as a message.
+func TestAMessageAfterTheCallIsGoneClosesTheQuestion(t *testing.T) {
+	r := newRig(t, time.Hour)
+	r.launch()
+	cl := r.dial(0)
+	cl.send("m1", "/ask")
+	ask := cl.until(5*time.Second, isType(agent.TypeAsk))
+	cl.send("m2", "meanwhile")
+	cl.ack("m2", 5*time.Second)
+	if err := cl.c.Send(Command{Op: OpInterrupt, ClientID: "i1"}); err != nil {
+		t.Fatal(err)
+	}
+	// The interrupted turn, then the queued message's.
+	cl.until(5*time.Second, isType(agent.TypeTurnEnded))
+	cl.until(5*time.Second, isType(agent.TypeTurnEnded))
+	p := agent.Fold(r.journal())
+	if p.Ask(ask.AskID).Closed || p.Summary().Activity != agent.ActivityWaiting {
+		t.Fatalf("after the queued message: %+v, %s", p.Ask(ask.AskID), p.Summary().Activity)
+	}
+	cl.send("m3", "skip that, do X")
+	closed := cl.until(5*time.Second, isType(agent.TypeAskClosed))
+	if closed.AskID != ask.AskID {
+		t.Fatalf("closed %+v", closed)
+	}
+	cl.until(5*time.Second, isType(agent.TypeTurnEnded))
+	if p := agent.Fold(r.journal()); len(p.OpenAsks()) != 0 || p.Summary().Activity != agent.ActivityIdle {
+		t.Fatalf("after the message: %d open, %s", len(p.OpenAsks()), p.Summary().Activity)
+	}
+	cl.answer("a1", ask.AskID, "phone", json.RawMessage(`{"answers":{"q1":{"selected":["a"]}}}`))
+	if ev := cl.seen(5*time.Second, isType(agent.TypeAskDelivered)); ev.Via != agent.ViaMessage {
+		t.Fatalf("delivered %+v", ev)
+	}
+	cl.seen(5*time.Second, isNotice(agent.NoticeAnswerAsMessage))
+}
+
 // A question survives the death of its host: recovery closes the turn but
 // not the ask, and the answer reaches the next host's agent as a message.
 func TestAnAskSurvivesTheDeathOfItsHost(t *testing.T) {
@@ -137,15 +175,14 @@ func TestAnAskSurvivesTheDeathOfItsHost(t *testing.T) {
 }
 
 // A local tool asks over the host protocol (version 2): the ask belongs to
-// the running turn, its answer comes back on the tool's connection, and the
-// host does not park while the tool waits.
+// the running turn, and its answer comes back on the tool's connection.
 func TestALocalToolAsksThroughTheHost(t *testing.T) {
 	r := newRig(t, 200*time.Millisecond)
 	r.launch()
 	cl := r.dial(0)
 	cl.send("m1", "/sleep 30")
 	turn := cl.until(5*time.Second, isType(agent.TypeTurnStarted))
-	tool := r.dial(1 << 62)
+	tool := r.dial(NoEvents)
 	if err := tool.c.Send(Command{Op: OpAsk, Payload: askPayload}); err != nil {
 		t.Fatal(err)
 	}
@@ -172,25 +209,21 @@ func TestALocalToolAsksThroughTheHost(t *testing.T) {
 		t.Fatalf("delivered %+v", ev)
 	}
 
-	// Outside a turn, a waiting tool still keeps the host; once its
-	// connection goes, the host parks, and the ask is answered as a message
-	// through the next one.
-	if err := cl.c.Send(Command{Op: OpInterrupt, ClientID: "i1"}); err != nil {
-		t.Fatal(err)
-	}
-	cl.until(5*time.Second, isType(agent.TypeTurnEnded))
-	waiting := r.dial(1 << 62)
+	// An interrupt withdraws the call with its turn, though the tool has not
+	// let go of its connection: the host parks all the same, and the ask is
+	// answered as a message through the next one.
+	waiting := r.dial(NoEvents)
 	if err := waiting.c.Send(Command{Op: OpAsk, Payload: askPayload}); err != nil {
 		t.Fatal(err)
 	}
 	second := cl.until(5*time.Second, isType(agent.TypeAsk))
-	time.Sleep(600 * time.Millisecond)
-	if alive, _ := r.l.Alive(r.chat); !alive {
-		t.Fatal("the host parked while a tool waited")
+	if err := cl.c.Send(Command{Op: OpInterrupt, ClientID: "i1"}); err != nil {
+		t.Fatal(err)
 	}
-	waiting.c.Close()
+	cl.until(5*time.Second, isType(agent.TypeTurnEnded))
 	cl.until(5*time.Second, isProcess(agent.ProcessParked))
 	r.waitDead(5 * time.Second)
+	waiting.c.Close()
 	r.park = time.Hour
 	r.launch()
 	next := r.dial(cl.events[len(cl.events)-1].Seq)
@@ -199,6 +232,36 @@ func TestALocalToolAsksThroughTheHost(t *testing.T) {
 		return ev.Type == agent.TypeAskDelivered && ev.AskID == second.AskID
 	}); ev.Via != agent.ViaMessage {
 		t.Fatalf("delivered %+v", ev)
+	}
+
+	// Outside a turn nothing could wait for an answer: such a question
+	// comes from a call already withdrawn, and is refused.
+	next.until(5*time.Second, func(ev agent.Event) bool {
+		return ev.Type == agent.TypeTurnEnded && ev.Outcome == agent.OutcomeCompleted
+	})
+	late := r.dial(NoEvents)
+	if err := late.c.Send(Command{Op: OpAsk, Payload: askPayload}); err != nil {
+		t.Fatal(err)
+	}
+	if f := late.frame(5 * time.Second); f.Fail == nil || f.Fail.Code != CodeBadRequest {
+		t.Fatalf("an ask outside a turn: %+v", f)
+	}
+}
+
+// A connection that asked for no events (a local tool's) gets no live
+// deltas either: a long answer streaming in the chat is not its business.
+func TestAToolsConnectionGetsNoDeltas(t *testing.T) {
+	r := newRig(t, time.Hour)
+	r.launch()
+	cl := r.dial(0)
+	cl.until(5*time.Second, isProcess(agent.ProcessReady))
+	tool := r.dial(NoEvents)
+	cl.send("m1", "/stream 40 1")
+	cl.until(5*time.Second, isType(agent.TypeTurnEnded))
+	select {
+	case f := <-tool.frames:
+		t.Fatalf("the tool got %+v", f)
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
