@@ -28,8 +28,10 @@ old agent terminal sessions; `~/.codex-multi` and `~/.config/opencode-multi-auth
 
 ## 2. Branches (all pushed to origin)
 
-`main` is untouched by the rebuild on purpose: the server's nightly update
-(`scripts/update.sh`, `SOCRATES_BRANCH` defaults to `main`) builds and deploys `origin/main`.
+`main` is untouched by the rebuild on purpose: **every push to `main` is installed on the server
+by GitHub Actions** (commit 87f3d08), and the nightly update (`scripts/update.sh`,
+`SOCRATES_BRANCH` defaults to `main`) builds and deploys `origin/main` as well. `main` holds only
+a pointer copy of this file.
 **Do not merge the rebuild into main until it is finished and tested end to end**; see §6.
 
 | Branch | Content | State |
