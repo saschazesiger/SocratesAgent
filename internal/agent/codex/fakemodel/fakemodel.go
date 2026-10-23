@@ -12,6 +12,7 @@
 //	                a call of two questions
 //	INPUT           a request_user_input call of one question (Plan mode)
 //	ASYNC           a request_user_input_async call of one question (code mode)
+//	CALL: <tool> [JSON]  a call of any tool with these arguments
 //	LIMIT           a 429 usage_limit_reached
 //	FAIL            a 500
 //
@@ -284,6 +285,11 @@ func (t *turn) answer(text string) {
 	case strings.Contains(text, "SPAWN:"):
 		task := strings.Fields(after(text, "SPAWN:") + " helper")[0]
 		t.call("collaboration.spawn_agent", map[string]any{"task_name": task, "message": "SAY sub done", "fork_turns": "none"})
+	case strings.Contains(text, "CALL:"):
+		name, raw, _ := strings.Cut(strings.TrimSpace(after(text, "CALL:")), " ")
+		args := map[string]any{}
+		_ = json.Unmarshal([]byte(raw), &args)
+		t.call(name, args)
 	case strings.Contains(text, "ASK:"):
 		args := map[string]any{}
 		if json.Unmarshal([]byte(strings.TrimSpace(after(text, "ASK:"))), &args) != nil || len(args) == 0 {

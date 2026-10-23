@@ -28,6 +28,9 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "agent-host" {
 		os.Exit(agenthost.Main(os.Args[2:], "test"))
 	}
+	if len(os.Args) > 1 && os.Args[1] == "mcp-elicit" {
+		os.Exit(elicitServer())
+	}
 	dir, err := os.MkdirTemp("", "socrates-fakecodex-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

@@ -294,10 +294,19 @@ type threadResult struct {
 	Model string `json:"model"`
 }
 
+// approvalPolicy is "never" for everything that is a permission (decision §1:
+// always allow; with danger-full-access nothing needs one), but lets MCP
+// elicitations through: those are questions a server puts to the person,
+// which "never" would decline on its own (research/04 §2.1), and they are
+// asked like ask_user. The model's instructions say the same as for "never":
+// every category it could ask for is rejected.
+var approvalPolicy = map[string]any{"granular": map[string]any{"sandbox_approval": false, "rules": false,
+	"skill_approval": false, "request_permissions": false, "mcp_elicitations": true}}
+
 // policy is what every thread is started and resumed with (decision §1:
 // always allow everything).
 func (a *adapter) policy(params map[string]any) map[string]any {
-	params["approvalPolicy"] = "never"
+	params["approvalPolicy"] = approvalPolicy
 	params["sandbox"] = "danger-full-access"
 	if a.spec.Workdir != "" {
 		params["cwd"] = a.spec.Workdir

@@ -46,6 +46,7 @@ var adapterNeeds = struct {
 		"execCommandApproval", "applyPatchApproval", "currentTime/read"},
 	fields: map[string][]string{
 		"InitializeParams":                  {"clientInfo", "capabilities"},
+		"AskForApproval":                    {"granular"},
 		"ThreadStartParams":                 {"cwd", "approvalPolicy", "sandbox", "model", "config", "dynamicTools", "developerInstructions"},
 		"ThreadResumeParams":                {"threadId", "excludeTurns", "cwd", "approvalPolicy", "sandbox"},
 		"TurnStartParams":                   {"threadId", "input", "clientUserMessageId", "model", "effort", "collaborationMode"},
