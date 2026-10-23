@@ -36,7 +36,8 @@ type Call struct {
 // called from many goroutines at once: a tools/call blocks until the person
 // answers, and the notification that cancels it arrives meanwhile.
 type MCP struct {
-	// Version is the server's own version in initialize's serverInfo.
+	// Version is the server's own version in initialize's serverInfo, "1"
+	// when empty.
 	Version string
 	// Instructions are the server's instructions in initialize, which an
 	// agent puts into its system prompt (OpenCode does); empty for an agent
@@ -108,10 +109,14 @@ func (m *MCP) initialize(params json.RawMessage) map[string]any {
 			version = v
 		}
 	}
+	own := m.Version
+	if own == "" {
+		own = "1"
+	}
 	out := map[string]any{
 		"protocolVersion": version,
 		"capabilities":    map[string]any{"tools": map[string]any{}},
-		"serverInfo":      map[string]any{"name": ServerName, "version": m.Version},
+		"serverInfo":      map[string]any{"name": ServerName, "version": own},
 	}
 	if m.Instructions != "" {
 		out["instructions"] = m.Instructions

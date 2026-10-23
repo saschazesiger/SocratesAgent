@@ -66,8 +66,9 @@ func init() {
 // protocol (sdkMcpServers in initialize, then mcp_message requests). Handle
 // gets one JSON-RPC message and returns the JSON-RPC response, nil for a
 // notification; it may block for as long as the call takes (an ask_user call
-// blocks until the person answers). This is the hook WP6 registers ask_user
-// through.
+// blocks until the person answers). Its context ends when the CLI withdraws
+// the request or exits. Every chat has ask_user (askServer) this way;
+// Options.Servers adds more.
 type Server interface {
 	Name() string
 	// Config is the server's sdkMcpServerConfigs entry, nil for none.
@@ -87,7 +88,8 @@ type Options struct {
 	// Binary is the claude executable. Empty looks "claude" up on the PATH
 	// of the CLI's environment.
 	Binary string
-	// AppendSystemPrompt is appended to Claude Code's system prompt.
+	// AppendSystemPrompt is appended to Claude Code's system prompt, after
+	// the ask_user guidance every chat gets.
 	AppendSystemPrompt string
 	// Servers are the in-process MCP servers of a chat, made once per start.
 	Servers func(spec agent.StartSpec, out agent.Emitter) []Server
@@ -103,12 +105,19 @@ type Adapter struct {
 
 	ctlMu   sync.Mutex
 	waiting map[string]chan controlResult
+	// handling are the CLI's requests being answered on goroutines of their
+	// own (MCP calls, elicitations), by request id, so that a withdrawn
+	// request ends its handler; life ends them all when the CLI exits.
+	handling map[string]context.CancelFunc
+	life     context.Context
+	endLife  context.CancelFunc
 
 	mu      sync.Mutex
 	out     agent.Emitter
 	spec    agent.StartSpec
 	cmd     *exec.Cmd
 	servers map[string]Server
+	ask     *askServer
 	ending  bool
 	// started is set once Start has succeeded: an exit before is Start's error,
 	// not an Exited.
@@ -120,7 +129,9 @@ type Adapter struct {
 
 // New is an adapter with options.
 func New(opts Options) *Adapter {
-	return &Adapter{opts: opts, waiting: map[string]chan controlResult{}}
+	life, end := context.WithCancel(context.Background())
+	return &Adapter{opts: opts, waiting: map[string]chan controlResult{}, handling: map[string]context.CancelFunc{},
+		life: life, endLife: end}
 }
 
 // Start launches the CLI, says hello over the control protocol and returns
@@ -183,14 +194,15 @@ func (a *Adapter) Start(ctx context.Context, spec agent.StartSpec, out agent.Emi
 	a.exited = make(chan struct{})
 	a.stdin = stdin
 	a.mu.Unlock()
-	servers := map[string]Server{}
+	ask := newAskServer(a)
+	servers := map[string]Server{ask.Name(): ask}
 	if a.opts.Servers != nil {
 		for _, s := range a.opts.Servers(spec, out) {
 			servers[s.Name()] = s
 		}
 	}
 	a.mu.Lock()
-	a.servers = servers
+	a.servers, a.ask = servers, ask
 	st.a = a
 	a.mu.Unlock()
 	if err := spawn(cmd); err != nil {
@@ -238,9 +250,9 @@ func (a *Adapter) Start(ctx context.Context, spec agent.StartSpec, out agent.Emi
 }
 
 // cliArgs is the fixed launch policy (REBUILD.md §3.1, HARNESS-POLICY.md):
-// stream-json both ways, every tool allowed, the CLI's own question tool off,
-// the user's settings and connectors left out, the replay echo on as the
-// delivery receipt.
+// stream-json both ways, every tool allowed, the CLI's own question tool off
+// and the system prompt pointing at ask_user instead, the user's settings and
+// connectors left out, the replay echo on as the delivery receipt.
 func cliArgs(spec agent.StartSpec, opts Options, ultracode bool) []string {
 	settings, _ := json.Marshal(map[string]any{
 		"skipDangerousModePermissionPrompt": true,
@@ -256,9 +268,11 @@ func cliArgs(spec agent.StartSpec, opts Options, ultracode bool) []string {
 		"--dangerously-skip-permissions", "--disallowedTools", "AskUserQuestion",
 		"--settings", string(settings),
 	}
+	prompt := askGuidance
 	if p := strings.TrimSpace(opts.AppendSystemPrompt); p != "" {
-		args = append(args, "--append-system-prompt", p)
+		prompt += "\n\n" + p
 	}
+	args = append(args, "--append-system-prompt", prompt)
 	if m := strings.TrimSpace(spec.Model); m != "" {
 		args = append(args, "--model", m)
 	}
@@ -458,6 +472,9 @@ func (a *Adapter) read(stdout io.Reader) {
 	out := a.out
 	tail := a.stderr.suffix()
 	a.mu.Unlock()
+	// Nothing a handler would answer can reach the CLI any more: the calls it
+	// waits in are gone, and an answer to one of them goes as a message.
+	a.endLife()
 	if !ending {
 		if werr == nil {
 			werr = errors.New("claude exited")
@@ -487,6 +504,12 @@ func (a *Adapter) frame(f *frame) {
 		a.mu.Lock()
 		a.st.cancelPlan(f.RequestID)
 		a.mu.Unlock()
+		a.ctlMu.Lock()
+		cancel := a.handling[f.RequestID]
+		a.ctlMu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
 		return
 	}
 	a.mu.Lock()
@@ -524,24 +547,53 @@ func (a *Adapter) controlRequest(id string, raw json.RawMessage) {
 			a.refuse(id, "no such server: "+req.ServerName)
 			return
 		}
-		go func() {
-			resp, err := s.Handle(context.Background(), req.Message)
-			if err != nil {
+		a.handle(id, func(ctx context.Context) {
+			resp, err := s.Handle(ctx, req.Message)
+			switch {
+			case ctx.Err() != nil:
+				// Withdrawn, or the CLI is gone: it waits for nothing.
+			case err != nil:
 				a.refuse(id, err.Error())
-				return
+			default:
+				if resp == nil {
+					resp = json.RawMessage(`{"jsonrpc":"2.0","result":{}}`)
+				}
+				a.respond(id, map[string]any{"mcp_response": resp})
 			}
-			if resp == nil {
-				resp = json.RawMessage(`{"jsonrpc":"2.0","result":{}}`)
-			}
-			a.respond(id, map[string]any{"mcp_response": resp})
-		}()
+		})
 	case "hook_callback":
 		a.respond(id, map[string]any{"continue": true})
 	case "elicitation":
-		a.respond(id, map[string]any{"action": "cancel"})
+		a.mu.Lock()
+		ask := a.ask
+		a.mu.Unlock()
+		a.handle(id, func(ctx context.Context) {
+			if resp := ask.elicit(ctx, id, req); resp != nil && ctx.Err() == nil {
+				a.respond(id, resp)
+			}
+		})
 	default:
 		a.refuse(id, "not supported by Socrates: "+req.Subtype)
 	}
+}
+
+// handle answers one of the CLI's requests on a goroutine of its own, so that
+// a call waiting for the person never holds up the stream. The context ends
+// when the CLI withdraws the request (control_cancel_request) or exits.
+func (a *Adapter) handle(id string, fn func(ctx context.Context)) {
+	ctx, cancel := context.WithCancel(a.life)
+	a.ctlMu.Lock()
+	a.handling[id] = cancel
+	a.ctlMu.Unlock()
+	go func() {
+		defer func() {
+			cancel()
+			a.ctlMu.Lock()
+			delete(a.handling, id)
+			a.ctlMu.Unlock()
+		}()
+		fn(ctx)
+	}()
 }
 
 // ------------------------------------------------------------ the commands
