@@ -743,6 +743,12 @@ func TestRebuildFromTheTranscript(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	began := time.Now().Add(-time.Minute).UnixMilli()
+	for _, ev := range events {
+		if ev.At < began || ev.At > time.Now().UnixMilli() {
+			t.Fatalf("an event without the transcript's time: %+v", ev)
+		}
+	}
 	p := agent.Fold(number(events))
 	var users []string
 	var diffs, notices, groups int

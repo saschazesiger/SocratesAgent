@@ -146,24 +146,44 @@ func RebuildTranscript(path, conversation string) ([]agent.Event, error) {
 	}
 	r := &rebuild{dir: strings.TrimSuffix(path, ".jsonl"), tools: map[string]int{}, started: map[string]time.Time{}}
 	r.events = append(r.events, agent.Event{Type: agent.TypeConversation, ConversationID: conversation})
+	// Every event carries the time of the line it came from, so the rebuilt
+	// chat has its real times; the journal keeps an At that is set.
+	at, stamped := int64(0), 0
+	stamp := func() {
+		for ; stamped < len(r.events); stamped++ {
+			if r.events[stamped].At == 0 {
+				r.events[stamped].At = at
+			}
+		}
+	}
 	for _, l := range lines {
 		if l.IsSidechain {
 			continue
 		}
-		switch l.Type {
-		case "user":
-			r.user(l)
-		case "assistant":
-			r.assistant(l, "", "")
-		case "system":
-			if l.Subtype == "compact_boundary" {
-				r.events = append(r.events, agent.Event{Type: agent.TypeNotice, Code: "compacted",
-					Text: "The conversation was compacted."})
-			}
+		if t, err := time.Parse(time.RFC3339Nano, l.Timestamp); err == nil {
+			at = t.UnixMilli()
 		}
+		r.line(l)
+		stamp()
 	}
 	r.endTurn()
+	stamp()
 	return r.events, nil
+}
+
+// line maps one line of the main transcript.
+func (r *rebuild) line(l transcriptLine) {
+	switch l.Type {
+	case "user":
+		r.user(l)
+	case "assistant":
+		r.assistant(l, "", "")
+	case "system":
+		if l.Subtype == "compact_boundary" {
+			r.events = append(r.events, agent.Event{Type: agent.TypeNotice, Code: "compacted",
+				Text: "The conversation was compacted."})
+		}
+	}
 }
 
 type rebuild struct {
