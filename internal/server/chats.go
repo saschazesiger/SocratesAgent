@@ -101,8 +101,7 @@ func (h *chatHub) start() {
 			continue
 		}
 		p.report()
-		alive, _ := h.launcher.Alive(p.id)
-		if alive || p.needsHost() {
+		if p.wantsPump() {
 			p.kick()
 		}
 	}
@@ -232,6 +231,9 @@ type chatPeer struct {
 	asked    bool
 	// hostErr is why the last try to reach or start the host failed.
 	hostErr string
+	// warm asks the pump to start a host although the chat has nothing for
+	// it yet: a new chat, whose first message should find the agent up.
+	warm bool
 }
 
 func (p *chatPeer) summary() agent.Summary {
@@ -254,6 +256,16 @@ func (p *chatPeer) needsHostLocked() bool {
 	}
 	pending, err := p.hub.srv.store.Outbox(p.id)
 	return err == nil && len(pending) > 0
+}
+
+// wantsPump is whether the chat should be connected: its host is alive -
+// and may start a turn of its own, or report a background task, at any time -
+// or it has work a host must be there for.
+func (p *chatPeer) wantsPump() bool {
+	if alive, _ := p.hub.launcher.Alive(p.id); alive {
+		return true
+	}
+	return p.needsHost()
 }
 
 // kick starts the pump unless it runs.
@@ -286,10 +298,12 @@ func (p *chatPeer) pump() {
 			return
 		}
 		if err != nil {
-			log.Printf("chats: %s: %v", p.id, err)
-			p.mu.Lock()
-			p.hostErr = err.Error()
-			p.mu.Unlock()
+			if !errors.Is(err, errNoHost) {
+				log.Printf("chats: %s: %v", p.id, err)
+				p.mu.Lock()
+				p.hostErr = err.Error()
+				p.mu.Unlock()
+			}
 			if p.settle(true) {
 				return
 			}
@@ -319,14 +333,17 @@ func (p *chatPeer) stopPumping() {
 }
 
 // settle decides, under the lock that kick takes, whether the pump stops: it
-// does when the chat needs no host, and when its last host could not start
-// the agent - then the next command tries again, rather than a loop that
-// starts a failing CLI every few seconds.
+// does when the host is gone and the chat needs none, and when its last host
+// could not start the agent - then the next command tries again, rather than
+// a loop that starts a failing CLI every few seconds. A host that is alive
+// keeps its pump, whatever dropped the connection: what it does next must
+// be heard.
 func (p *chatPeer) settle(failedToConnect bool) bool {
+	alive, _ := p.hub.launcher.Alive(p.id)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	failed := p.proj.Process == agent.ProcessFailed && p.proj.Turn == nil
-	if !p.needsHostLocked() || (failed && !failedToConnect) {
+	if (!alive && !p.needsHostLocked()) || (failed && !failedToConnect) {
 		p.pumping = false
 		return true
 	}
@@ -351,6 +368,15 @@ func (p *chatPeer) connect(ctx context.Context) (*agenthost.Conn, error) {
 	if alive {
 		return nil, errors.New("the agent host is alive and does not answer yet")
 	}
+	// A host that parked or exited is not started again for nothing: only
+	// for work, or for a new chat's warm start.
+	p.mu.Lock()
+	start := p.warm || p.needsHostLocked()
+	p.warm = false
+	p.mu.Unlock()
+	if !start {
+		return nil, errNoHost
+	}
 	if err := p.launch(ctx); err != nil {
 		return nil, err
 	}
@@ -358,6 +384,9 @@ func (p *chatPeer) connect(ctx context.Context) (*agenthost.Conn, error) {
 	defer cancel()
 	return agenthost.Dial(dctx, sock, p.feed.Last())
 }
+
+// errNoHost is a connect that found no host and no reason to start one.
+var errNoHost = errors.New("the chat has no agent host and nothing for one to do")
 
 // launch starts a host for the chat. One that died with a turn running is
 // recovered: its scope is stopped, which ends the tool processes it left, and
@@ -423,7 +452,7 @@ func (p *chatPeer) serve(conn *agenthost.Conn) {
 		case f.Ack != nil:
 			p.reply(f.Ack.ClientID, chatReply{ack: f.Ack}, true)
 		case f.Fail != nil:
-			p.reply(f.Fail.ClientID, chatReply{fail: f.Fail}, permanentFailure(f.Fail.Code))
+			p.reply(f.Fail.ClientID, chatReply{fail: f.Fail}, !keepForNextHost(f.Fail))
 		}
 	}
 	p.mu.Lock()
@@ -434,10 +463,16 @@ func (p *chatPeer) serve(conn *agenthost.Conn) {
 	conn.Close()
 }
 
-// permanentFailure is whether a refused command would be refused again: such
-// a command leaves the outbox. The others stay and go to the next host.
-func permanentFailure(code string) bool {
-	return code != agenthost.CodeNotRunning && code != agenthost.CodeStopping
+// keepForNextHost is whether a refused command stays in the outbox for the
+// next host: a message or an answer refused because the host was not running
+// or was going away. Everything else leaves - a refusal that would be repeated,
+// and an interrupt or a model change, which mean nothing to a host that starts
+// later.
+func keepForNextHost(f *agenthost.Fail) bool {
+	if f.Code != agenthost.CodeNotRunning && f.Code != agenthost.CodeStopping {
+		return false
+	}
+	return f.Op == agenthost.OpSend || f.Op == agenthost.OpAnswer
 }
 
 // drop closes the connection to the host, which keeps running.
@@ -685,7 +720,10 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 		_, sent = s.sendMessage(r.Context(), p, body.Message)
 	} else {
 		// The host comes up now, so the first message finds the agent warm.
-		p.kick()
+		p.mu.Lock()
+		p.warm = true
+		p.kickLocked()
+		p.mu.Unlock()
 	}
 	s.answerChat(w, http.StatusCreated, row, sent)
 }

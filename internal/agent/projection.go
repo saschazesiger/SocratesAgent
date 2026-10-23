@@ -75,8 +75,13 @@ type Message struct {
 
 // Part is one part of an assistant message.
 type Part struct {
-	ID        string          `json:"id"`
-	MessageID string          `json:"message_id"`
+	ID        string `json:"id"`
+	MessageID string `json:"message_id"`
+	// ParentID is the part this one is nested in, and Children the parts
+	// nested in this one, in the order they were created. A nested part is
+	// in its parent's Children and not in its message's Parts.
+	ParentID  string          `json:"parent_part_id,omitempty"`
+	Children  []*Part         `json:"children,omitempty"`
 	Kind      string          `json:"kind"`
 	State     string          `json:"state,omitempty"`
 	Text      string          `json:"text,omitempty"`
@@ -103,6 +108,9 @@ type Ask struct {
 	// Delivered is how the answer reached the agent (ViaTool, ViaMessage),
 	// empty while it has not yet.
 	Delivered string `json:"delivered,omitempty"`
+	// Deliver is ViaMessage for an ask whose answer goes to the agent as
+	// the next user message by design (the ask event's Via).
+	Deliver string `json:"deliver,omitempty"`
 }
 
 // RateLimit is the last reading of one usage window.
@@ -167,7 +175,7 @@ func (p *Projection) Apply(ev Event) {
 		p.delta(ev)
 	case TypeAsk:
 		if p.asks[ev.AskID] == nil {
-			a := &Ask{ID: ev.AskID, TurnID: ev.TurnID, Payload: ev.Payload, At: ev.At, Seq: ev.Seq}
+			a := &Ask{ID: ev.AskID, TurnID: ev.TurnID, Payload: ev.Payload, At: ev.At, Seq: ev.Seq, Deliver: ev.Via}
 			p.asks[a.ID] = a
 			p.Asks = append(p.Asks, a)
 		}
@@ -233,10 +241,11 @@ func (p *Projection) endTurn(ev Event) {
 		if m.Role == RoleAssistant && m.State == MessageStreaming {
 			m.State = MessageInterrupted
 		}
-		for _, part := range m.Parts {
-			if part.State == PartStreaming || part.State == PartRunning {
-				part.State = PartInterrupted
-			}
+	}
+	// Every part, nested ones included.
+	for _, part := range p.parts {
+		if part.State == PartStreaming || part.State == PartRunning {
+			part.State = PartInterrupted
 		}
 	}
 }
@@ -276,13 +285,37 @@ func (p *Projection) part(ev Event) {
 		return
 	}
 	part := &Part{
-		ID: ev.PartID, MessageID: ev.MessageID, Kind: ev.Kind, State: ev.State, Text: ev.Text,
-		Content: ev.Content, At: ev.At, UpdatedAt: ev.At, textLen: UTF16Len(ev.Text),
+		ID: ev.PartID, MessageID: ev.MessageID, ParentID: ev.ParentPartID, Kind: ev.Kind, State: ev.State,
+		Text: ev.Text, Content: ev.Content, At: ev.At, UpdatedAt: ev.At, textLen: UTF16Len(ev.Text),
+	}
+	p.parts[part.ID] = part
+	// A part nested in one the projection has goes inside it; its message is
+	// the parent's when the event names none. A parent that is not there
+	// (yet) leaves the part at the top of its message, still carrying the
+	// parent's id: adapters emit the parent first.
+	if parent := p.parts[ev.ParentPartID]; parent != nil && parent != part && !parent.within(part) {
+		if part.MessageID == "" {
+			part.MessageID = parent.MessageID
+		}
+		parent.Children = append(parent.Children, part)
+		return
 	}
 	m := p.messageFor(ev)
 	part.MessageID = m.ID
 	m.Parts = append(m.Parts, part)
-	p.parts[part.ID] = part
+}
+
+// within reports whether p is q or nested somewhere inside q.
+func (p *Part) within(q *Part) bool {
+	if p == q {
+		return true
+	}
+	for _, c := range q.Children {
+		if p.within(c) {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Projection) delta(ev Event) {
