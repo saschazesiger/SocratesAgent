@@ -189,6 +189,16 @@ Every CLI's own state — `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `XDG_DATA_HOME`,
 nor write the machine's real credentials, and `FAKE_LOG` records every launch as
 one JSON object per line for the scenarios that assert on argv.
 
+## The chat API (no browser yet)
+
+`node e2e/chats.mjs` drives the rebuild's chat routes and the chat stream against
+the real binary, with real agent host processes running the scripted agent
+(`SOCRATES_FAKE_AGENT=1`, docs/design/AGENT-HOST.md §8). It kills the server
+with SIGKILL in the middle of a turn, starts it again and checks that the stream
+continues exactly where it stopped, then covers duplicate sends and two devices
+answering one question. It is not part of `run.mjs` until the chat view (WP8)
+gives it a page to look at.
+
 ## Reading the terminal
 
 The suite reads the pane out of the DOM, so the scenarios that do it first turn

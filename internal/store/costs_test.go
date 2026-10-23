@@ -79,9 +79,9 @@ func TestMigrationToSchema9(t *testing.T) {
 	}
 }
 
-// A schema 9 database loses the bucket mirror's queue and its records, and
+// A schema 10 database loses the bucket mirror's queue and its records, and
 // keeps everything else.
-func TestMigrationToSchema10(t *testing.T) {
+func TestMigrationToSchema11(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "socrates.db")
 	st, err := Open(path)
 	if err != nil {
@@ -94,7 +94,7 @@ func TestMigrationToSchema10(t *testing.T) {
 		`CREATE TABLE mirror_pending (object TEXT PRIMARY KEY, at INTEGER NOT NULL)`,
 		`INSERT INTO mirror_pending VALUES ('kv/settings', 1)`,
 		`INSERT INTO kv VALUES ('mirror.bucket_id', 'b-1'), ('mirror.meta', '{}'), ('settings', '{}')`,
-		`PRAGMA user_version = 9`,
+		`PRAGMA user_version = 10`,
 	} {
 		if _, err := st.db.Exec(q); err != nil {
 			t.Fatalf("%s: %v", q, err)
@@ -103,7 +103,7 @@ func TestMigrationToSchema10(t *testing.T) {
 	st.Close()
 	st, err = Open(path)
 	if err != nil {
-		t.Fatalf("opening a schema 9 database: %v", err)
+		t.Fatalf("opening a schema 10 database: %v", err)
 	}
 	defer st.Close()
 	if ok, err := hasTable(st.db, "mirror_pending"); err != nil || ok {

@@ -148,7 +148,7 @@ day without a successful one is said on the session page too.
 
 | backed up | left out |
 | --- | --- |
-| the database, `sessions/`, `profiles/`, `vscode/`, `vscode-extensions/`, and whatever later versions keep there (chats, agents, accounts) | working directories (the workspace root and the presets, which live in git), `run/`, `cache/`, `bin/`, sockets, the terminals' byte journals, the updater's files, and `backup.json` itself |
+| the database, `sessions/`, `profiles/`, `vscode/`, `vscode-extensions/`, and whatever later versions keep there (chats, agents, accounts) | working directories (the workspace root and the presets, which live in git), `run/`, `cache/`, `bin/`, sockets, the terminals' byte journals, a chat host's lock and log and the account environment in its launch spec, the updater's files, and `backup.json` itself |
 
 **Everything in the bucket is encrypted on this machine** (AES-256-GCM, with
 keys derived from your passphrase by PBKDF2-SHA256, 600 000 rounds) before it

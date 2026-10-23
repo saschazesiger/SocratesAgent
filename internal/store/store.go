@@ -35,10 +35,12 @@ var ErrNotFound = errors.New("not found")
 // (mirror_pending, the local list of what still had to be uploaded).
 // Version 9 adds the cost ledger (cost_convs, cost_hours) and the local record
 // of which transcripts it was last read from (cost_seen); see costs.go.
-// Version 10 is the end of the bucket as the store of record: the data
+// Version 10 adds chats: sessions.kind tells a chat from a terminal, and
+// chat_outbox holds the commands an agent host has not acknowledged yet.
+// Version 11 is the end of the bucket as the store of record: the data
 // directory is the only truth and the bucket a backup of it
 // (internal/backup), so mirror_pending and the mirror's kv rows go.
-const SchemaVersion = 10
+const SchemaVersion = 11
 
 // Store wraps the database handle.
 type Store struct {
@@ -89,7 +91,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   active_at      INTEGER NOT NULL DEFAULT 0,
   status         TEXT NOT NULL DEFAULT 'in_progress',
   status_at      INTEGER NOT NULL DEFAULT 0,
-  start_at       INTEGER NOT NULL DEFAULT 0
+  start_at       INTEGER NOT NULL DEFAULT 0,
+  kind           TEXT NOT NULL DEFAULT 'terminal'
 );
 
 -- The prompt a prepared session will be started with. It is a table of its
@@ -137,6 +140,19 @@ CREATE TABLE IF NOT EXISTS cost_hours (
 CREATE TABLE IF NOT EXISTS cost_seen (
   key         TEXT PRIMARY KEY,
   fingerprint TEXT NOT NULL
+);
+
+-- The commands to a chat's agent host that it has not acknowledged yet. A
+-- command is written here before it is sent and deleted when the host says it
+-- has journaled it, so a server that crashes in between sends it again, and
+-- the host - idempotent on client_id - acts on it once. It describes this
+-- machine's hosts.
+CREATE TABLE IF NOT EXISTS chat_outbox (
+  chat_id    TEXT NOT NULL,
+  client_id  TEXT NOT NULL,
+  command    TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (chat_id, client_id)
 );
 
 -- The unique index on client_id is what makes creating a session safe to
@@ -465,6 +481,7 @@ func addSessionColumns(db *sql.DB) error {
 		{"status", `TEXT NOT NULL DEFAULT 'in_progress'`},
 		{"status_at", `INTEGER NOT NULL DEFAULT 0`},
 		{"start_at", `INTEGER NOT NULL DEFAULT 0`},
+		{"kind", `TEXT NOT NULL DEFAULT 'terminal'`},
 	} {
 		has, err := hasColumn(db, "sessions", col[0])
 		if err != nil {

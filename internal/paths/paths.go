@@ -6,7 +6,7 @@
 // layout is docs/design/REBUILD.md §6.1:
 //
 //	socrates.db               settings, logins, sessions, drafts, push, cost ledger
-//	chats/<id>/               a chat's history and attachments
+//	chats/<id>/               a chat's journal, launch spec, attachments and adapter state
 //	agents/claude|codex|opencode/  the agents' shared transcripts and data
 //	accounts/<id>/            one account's CLAUDE_CONFIG_DIR, CODEX_HOME or OpenCode auth
 //	terminals/<id>/           a Shell terminal's journal
@@ -71,7 +71,25 @@ const (
 	Lock = Run + "/socrates.lock"
 	// BackupCache is the backup's own bookkeeping.
 	BackupCache = Cache + "/backup"
+
+	// The files of a chat's agent host inside chats/<id>/ (internal/agenthost):
+	// the launch spec the server writes before every launch, the lock the
+	// live host holds, and the host's own log. The host's socket is under
+	// ChatSockets, in run/.
+	ChatSpec    = "host.json"
+	ChatLock    = "host.lock"
+	ChatLog     = "host.log"
+	ChatSockets = Run + "/chats"
 )
+
+// Redacted are files that are backed up without some of what they hold, as
+// path.Match patterns relative to the data directory and the top-level JSON
+// fields left out. A chat's launch spec carries the environment built from
+// its account (WP7), which can hold an API key; the server writes the spec
+// again before every launch, so a restored chat loses nothing by it.
+var Redacted = map[string][]string{
+	Chats + "/*/" + ChatSpec: {"env"},
+}
 
 // NotBackedUp are the parts of the data directory the backup leaves out, as
 // slash separated patterns of path.Match relative to the data directory. A
@@ -105,6 +123,9 @@ var NotBackedUp = []string{
 	VSCode + "/*/logs",
 	VSCode + "/*/CachedData",
 	VSCode + "/*/CachedProfilesData",
+	Chats + "/*/" + ChatLock,
+	Chats + "/*/" + ChatLog,
+	Chats + "/*/" + ChatSpec + ".tmp",
 	"lost+found",
 }
 

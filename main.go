@@ -12,11 +12,16 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
 
+	// The chat adapters register themselves for the server and the hosts.
+	_ "github.com/saschazesiger/SocratesAgent/internal/agent/claude"
+	_ "github.com/saschazesiger/SocratesAgent/internal/agent/codex"
+	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
 	"github.com/saschazesiger/SocratesAgent/internal/backup"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/paths"
@@ -36,6 +41,16 @@ var version = "dev"
 // watchdog restarting it is the way out.
 const startupGrace = 15 * time.Minute
 
+// init pins the main goroutine to the main thread in an agent host. The host
+// forks its CLI with a parent-death signal, which the kernel ties to the
+// forking thread rather than the process, so the fork has to come from the
+// one thread that lives exactly as long as the host (spike S4 §7).
+func init() {
+	if len(os.Args) > 1 && os.Args[1] == "agent-host" {
+		runtime.LockOSThread()
+	}
+}
+
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime)
 
@@ -53,6 +68,8 @@ func main() {
 		case "restore":
 			restoreCommand(args[1:])
 			return
+		case "agent-host":
+			os.Exit(agenthost.Main(args[1:], version))
 		}
 	}
 

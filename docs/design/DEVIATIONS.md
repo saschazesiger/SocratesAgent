@@ -2062,6 +2062,145 @@ handshake ceiling - is in HOME.md itself now, not here.
 
 ## Rebuild
 
+Deviations from REBUILD.md (binding plan of 2026-10-23), per work package.
+
+**WP2 / §2.2 — more event types than the list, and user messages carry their text inline.**
+§2.2 lists the types a UI needs; driving three CLIs and keeping exactly-once needs a few more:
+`message.state` (pending → queued → delivered, which is how "queued" chips and re-delivery after a
+dead host work), `part.delta` (coalesced appends; without it a streaming part would be rewritten
+whole four times a second, quadratic in its length), `ask.delivered` (whether an answer reached
+the agent, so a host that died in between delivers it as a message), `conversation`, `tasks`,
+`usage`, `command` (so the `client_id` of an interrupt or a model change is in the journal and
+acted on once) and `notice`. A user message is one `message` event with `text` and `attachments`
+rather than a message plus parts, so it can never be journaled half. AGENT-HOST.md §2 is the full
+list.
+
+**WP2 / §2.2 — delta offsets are UTF-16 code units.** Live deltas and the coalesced journal lines
+overlap; both carry the offset they start at, so a client applies them idempotently. The unit is
+the one a browser's string length counts in.
+
+**WP2 / §2.1 — a dead host is proven by its lock, not its PID.** The spike proposed "socket refuses
+and the host PID is gone". The host holds `flock` on `chats/<id>/host.lock` for its whole life;
+the kernel releases it however the host ends, and a PID can be reused. The server stops a chat's
+scope only when it can take that lock.
+
+**WP2 / §2.1 — the server keeps no copy of the journal on disk.** The spike's server kept its own
+`recv.jsonl` as its resume point. Here host and server share the data folder, so the server's
+resume point is the host's journal as the server read it at start; it never writes the file.
+
+**WP2 / §2.1 — a CLI that exits on its own ends its host.** The host records the failed turn and
+`process{failed}` and exits; the next command starts a new host that resumes the conversation.
+Restarting the CLI inside the same host would be a second resume path next to the one parking
+already needs.
+
+**WP2 / §2.1 — `compact` is `command{name: "compact"}`, and `switch_account` is not implemented.**
+Compacting is one of the agent's commands, so it goes through the one command op. Switching
+accounts needs accounts (WP7); the op name is reserved in AGENT-HOST.md §4.3.
+
+**WP2 / spike S4 §8.8 — the socket fallback is under the temporary directory.** When
+`<data>/run/chats/<id>.sock` is too long for `sun_path`, the socket is
+`$TMPDIR/socrates-<uid>/<hash of the data folder>/<id>.sock` rather than `/run/socrates/chats/`,
+which a non-root server could not create. Both sides compute the same path.
+
+**WP2 / §7 — filing a chat as done parks its host.** A done terminal has its pane closed; a done
+chat has its host parked (when idle) and resumes on the next message. Deleting a chat stops its
+host and scope and removes `chats/<id>/`; the working directory is kept as for every session.
+
+**WP2 — the "chat routes are gone" test lost `/api/chats`.** `TestTheChatRoutesAreGone` asserted
+that nothing answers there; the rebuild's chats do (`POST /api/chats`). The other old paths are
+still asserted absent.
+
+**WP3 / §3.1 — more flags than the plan's argv.** `--replay-user-messages` (the delivery receipt
+§2.1 already relies on), `--forward-subagent-text` (a subagent's text and thinking reach the
+stream, so its group shows what it said), `--settings` with the terminal launcher's policy keys
+(`disableRemoteControl`, `cleanupPeriodDays: 90`, `skipDangerousModePermissionPrompt`,
+`ultracode`), and `--session-id <uuid>` for a new conversation. `--append-system-prompt` is wired
+(`Options.AppendSystemPrompt`) but empty until WP6 writes the ask_user guidance.
+
+**WP3 / §3.1 — thinking is asked for as a summary.** Claude Code streams thinking blocks with no
+text by default (`thinking.display: "updates"`); a reasoning part would always be empty. The
+adapter sends `set_max_thinking_tokens{thinking_display: "summarized"}` after `initialize`;
+verified live, reasoning parts then carry the summary.
+
+**WP3 / §2.2 — one more event type, `agent.info`.** The composer's slash-command palette, the
+model picker and the account divider need what the CLI says about itself (`initialize`'s
+commands, models and account, the init's version and permission mode). That is chat state, not a
+part of any message, so it is an event of its own (`Projection.Agent`).
+
+**WP3 / §2.2 — the rebuild is wired through host.json.** A host does not know a chat's
+conversation when its journal is gone, so the server now writes the row's `cli_session_id` into
+`host.json` (`conversation`), and a host that opens an empty journal with one asks the adapter
+(`agent.Rebuilder`) before anything else. Codex and OpenCode can implement the same interface.
+
+**WP3 / §3.1 — workflow agents' calls come from their transcripts.** The stream carries a
+workflow's phases and each agent's state and last tool (`task_progress.workflow_progress`), but not
+the agents' calls (research/09 §3). To give every agent its own tool rows, the adapter reads
+`<transcriptDir>/agent-<id>.jsonl` every 500 ms while the workflow runs. Task subagents need no
+such reading: their frames are streamed with `parent_tool_use_id`.
+
+**WP3 / §3.1 — API key and ultracode arrive as adapter variables in the environment.**
+`StartSpec` has no field for either, and the Claude adapter builds the CLI environment from
+scratch, so an ambient `ANTHROPIC_API_KEY` must never pass. An API-key account puts its key in
+`SOCRATES_CLAUDE_API_KEY`, and the ultracode session option is `SOCRATES_CLAUDE_ULTRACODE=1`; the
+adapter turns them into `ANTHROPIC_API_KEY` and the `ultracode` setting and passes neither on.
+
+**WP3 / §3.1 — plan mode is a command.** Switching plan mode on is `Command("plan")` (off:
+`Command("plan", "off")`, back to `bypassPermissions`), through `set_permission_mode`, rather than
+a host op of its own; the plan card itself goes through the generic ask path as planned.
+**WP4 / §4.3 — the stripped retry is a copy under a new thread id.** "Retry with reasoning and
+compaction items stripped from the rollout, on a copy" cannot be done by pointing codex at the
+copy: `thread/fork`/`thread/resume` with `path` refuse a paginated thread ("stale path", verified
+against 0.164). The copy is written next to the original under a fresh UUIDv7 and resumed by that
+id, so the chat's conversation id changes (a `conversation` event says so). The original is never
+rewritten; codex itself appends the refused turn to it.
+
+**WP4 / §4.3 — the chain runs on any `invalid_encrypted_content`, not only after a switch.** The
+error can only come from replayed reasoning, so the adapter does not need to know a switch
+happened. Each step runs at most once per app-server process and continues the same journal turn
+(the failed attempt is not shown as a turn of its own). Verified against the real binary with a
+scripted model that binds its encrypted reasoning to an account; spike S2 stays waived, so real
+ChatGPT accounts were not tried.
+
+**WP4 / §3.2 — messages during a turn are steered, and "queued" until codex takes them up.** The
+host's semantics ("queued by the agent") map onto `turn/steer`: the message is `queued` when codex
+accepts it and `delivered` when its `userMessage` item (our id as `clientUserMessageId`) shows up,
+which 0.164 does at the next step, even cutting a streaming answer short. A turn that cannot be
+steered (compaction, review) holds messages and sends them when it ends, and so does a turn that
+ended without taking one up. A one-line message starting with `!` runs `thread/shellCommand`
+(REBUILD lists it as a command; this lets the composer need no special case).
+
+**WP4 / §3.2 — `thread/fork` is not wired; `/plan` is.** Nothing in the UI forks a chat yet. Plan
+mode (`collaborationMode: plan`) is a palette command because Codex's `request_user_input` only
+exists there.
+
+**WP4 / §5.3 — Codex's own questions are declined until WP6.** Approvals are accepted (always
+allow). `item/tool/requestUserInput` gets a JSON-RPC error and an MCP elicitation a `decline`, each
+with a notice, so no turn waits for ever; WP6 replaces them through `codex.HandleRequest` and adds
+`ask_user` through `codex.RegisterTool`.
+
+**WP4 / §2.2 — a lost journal is found through the adapter's own state, not the server's
+`cli_session_id`.** The adapter keeps the thread id in `chats/<id>/agent/codex/thread.json`; a host
+whose journal has no conversation resumes that thread and, when no message waits, writes the
+history back from `thread/turns/list` + `thread/items/list`. A chat whose whole folder is gone is
+not rebuilt (that would need the server to pass `cli_session_id` in the launch spec). Subagent
+threads are not replayed into a rebuilt history.
+
+**WP4 / HARNESS-POLICY — the app-server runs without `--strict-config` and with a per-process trust
+override.** `--strict-config` would refuse to start on a `config.toml` written by a newer or older
+codex, which for a chat is a host that never comes up; the two `-c` keys the adapter passes are
+covered by the real-binary tests. With `approvalPolicy: never` and `danger-full-access`,
+`thread/start` writes no trust entry into `config.toml` (verified, contrary to research/04 §1.4,
+which used other policies), so the working directory is trusted by the same inline-table `-c`
+override the TUI used.
+
+**WP4 — token usage counts cached input apart, and there is no cost.** Codex's `inputTokens`
+include the cached ones; the journal's `input` excludes them (`cache_read` has them), as Claude
+reports it. Codex reports no price, so `cost_usd` stays 0 (the cost ledger keeps reading rollouts).
+
+**WP4 — shared code.** `internal/agent/palette.go` (`RegisterCommands`/`Commands`, the per-harness
+command palette for the composer) is new and additive; `main.go` imports the adapter so that both
+the server and its hosts register `codex`.
+
 **WP1 / REBUILD.md §6.2 — chunks are named by an HMAC of their content, not by its SHA-256.**
 §6.2 says `chunks/<sha256>`. The name is HMAC-SHA256 under a key derived from the passphrase
 (as the work package's brief asked), so equal content is still stored once, but the bucket's
@@ -2111,3 +2250,13 @@ build for Windows before this change either (`internal/proc`, `internal/termux`)
 
 **WP1 — `SOCRATES_BACKUP_WARN_AFTER`.** A Go duration that shortens the 24 hours before the
 warning, for the browser suite's `backup` scenario; unset in production.
+
+**WP1 — schema 11, not 10.** WP2 took version 10 (sessions.kind, chat_outbox) first; the
+migration that drops `mirror_pending` and the `mirror.*` rows is version 11.
+
+**WP1 — a chat's launch spec is backed up without its environment.** `chats/<id>/host.json`
+will carry the environment built from the chat's account (WP7), which can hold an API key. The
+backup leaves its `env` field out (`paths.Redacted`), and the host's `host.lock`, `host.log`
+and socket (`run/chats/`) entirely; the journal and the adapter's `agent/` state go in whole.
+The server writes the spec again before every launch, so a restored chat loses nothing. WP7:
+credentials should still live in the account folders or the store, not only in the spec.

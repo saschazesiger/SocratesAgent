@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -306,6 +308,17 @@ func (s *snapshotter) file(ctx context.Context, p, rel string, info fs.FileInfo)
 		}
 		defer os.Remove(copyPath)
 		src = copyPath
+	} else if fields := redactedFields(rel); len(fields) > 0 {
+		s.copies++
+		copyPath := filepath.Join(s.tmp, fmt.Sprintf("redacted-%d.json", s.copies))
+		if err := redact(p, copyPath, fields); err != nil {
+			// A file that may hold a secret and cannot be read as the JSON
+			// it should be is left out rather than backed up whole.
+			s.skipped = append(s.skipped, rel)
+			return nil, nil
+		}
+		defer os.Remove(copyPath)
+		src = copyPath
 	}
 	f, err := os.Open(src)
 	if err != nil {
@@ -371,6 +384,37 @@ func (s *snapshotter) remoteHas(chunks []string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.idx.allRemote(chunks)
+}
+
+// redactedFields are the top-level JSON fields of rel the backup leaves out
+// (paths.Redacted).
+func redactedFields(rel string) []string {
+	for pattern, fields := range paths.Redacted {
+		if ok, _ := path.Match(pattern, rel); ok {
+			return fields
+		}
+	}
+	return nil
+}
+
+// redact writes the JSON object at src to dst without fields.
+func redact(src, dst string, fields []string) error {
+	raw, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return err
+	}
+	for _, f := range fields {
+		delete(doc, f)
+	}
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, append(out, '\n'), 0o600)
 }
 
 // isSQLite reports whether the file at p is an SQLite database.

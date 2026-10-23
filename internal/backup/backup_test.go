@@ -903,3 +903,39 @@ func TestOneRunAtATime(t *testing.T) {
 		t.Fatalf("after Close: %+v", st)
 	}
 }
+
+// A chat's journal and launch spec are backed up, the spec without the
+// environment its account put there; the host's lock, log and socket are not.
+func TestAChatIsBackedUpWithoutItsSecrets(t *testing.T) {
+	clk := newClock()
+	b := newBucket(t, clk)
+	src := t.TempDir()
+	write(t, filepath.Join(src, "chats/c1/events.jsonl"), []byte(`{"seq":1,"type":"turn.started"}`+"\n"), 0o600)
+	write(t, filepath.Join(src, "chats/c1/host.json"), []byte(`{"chat_id":"c1","harness":"claude","env":["ANTHROPIC_API_KEY=sk-ant-secret"]}`), 0o600)
+	write(t, filepath.Join(src, "chats/c1/host.lock"), []byte("4242"), 0o600)
+	write(t, filepath.Join(src, "chats/c1/host.log"), []byte("serving c1"), 0o600)
+	write(t, filepath.Join(src, "chats/c1/agent/state.json"), []byte(`{"thread":"t1"}`), 0o600)
+	write(t, filepath.Join(src, "run/chats/c1.sock"), []byte(""), 0o600)
+	e := engine(t, src, b, clk, "host-a")
+	if _, err := e.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range b.keys("") {
+		if obj, _ := b.fake.Object("backups", key); bytes.Contains(obj, []byte("sk-ant-secret")) {
+			t.Fatalf("%s holds the key", key)
+		}
+	}
+	dest := restoreInto(t, b, "latest")
+	spec, err := os.ReadFile(filepath.Join(dest, "chats/c1/host.json"))
+	if err != nil || bytes.Contains(spec, []byte("sk-ant-secret")) || !bytes.Contains(spec, []byte(`"harness": "claude"`)) {
+		t.Fatalf("the restored spec: %s %v", spec, err)
+	}
+	for rel, want := range map[string]bool{
+		"chats/c1/events.jsonl": true, "chats/c1/agent/state.json": true,
+		"chats/c1/host.lock": false, "chats/c1/host.log": false, "run": false,
+	} {
+		if _, err := os.Stat(filepath.Join(dest, rel)); (err == nil) != want {
+			t.Errorf("%s restored: %v, want %v", rel, err == nil, want)
+		}
+	}
+}
