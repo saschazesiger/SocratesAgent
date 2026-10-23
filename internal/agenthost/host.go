@@ -324,7 +324,24 @@ func (h *host) boot() {
 	ad := factory()
 	ctx, cancel := context.WithTimeout(context.Background(), startWait)
 	defer cancel()
-	if err := ad.Start(ctx, spec, emitter{h}); err != nil {
+	err := ad.Start(ctx, spec, emitter{h})
+	if err != nil && resume != "" && errors.Is(err, agent.ErrConversationNotFound) {
+		// The CLI no longer has the conversation (its transcript is gone, or
+		// it belongs to an account this chat no longer uses). A host that
+		// insisted would fail on every message for ever; a fresh conversation
+		// is the way on, and the chat says so.
+		log.Printf("the agent does not know conversation %s, starting a new one: %v", resume, err)
+		h.record(agent.Event{Type: agent.TypeNotice, Code: agent.NoticeConversationLost,
+			Text: "The agent no longer has this conversation, so a new one was started. " +
+				"The messages above stay here, but the agent does not remember them."})
+		spec.ResumeID = ""
+		if spec.First == nil && len(pending) > 0 {
+			spec.First, pending = &pending[0], pending[1:]
+		}
+		ad = factory()
+		err = ad.Start(ctx, spec, emitter{h})
+	}
+	if err != nil {
 		h.failStart(err)
 		return
 	}
@@ -625,13 +642,16 @@ func (h *host) control(ctx context.Context, cmd Command) any {
 
 // idle is whether the host may park: the CLI is up and doing nothing that
 // parking would cut short - no turn, no question being waited on, no
-// background task.
+// background task, and no user message it has not taken up yet (one that
+// was acknowledged a moment ago and is still on its way into the agent).
 func (h *host) idle() bool {
 	if h.adapter == nil || h.isEnding() {
 		return false
 	}
 	busy := false
-	h.rec.View(func(p *agent.Projection) { busy = p.Turn != nil || len(p.OpenAsks()) > 0 })
+	h.rec.View(func(p *agent.Projection) {
+		busy = p.Turn != nil || len(p.OpenAsks()) > 0 || len(p.Undelivered()) > 0
+	})
 	return !busy && h.adapter.Background() == 0
 }
 

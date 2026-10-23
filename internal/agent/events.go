@@ -130,6 +130,10 @@ const (
 	// NoticeAnswerAsMessage: an answer arrived when the blocking call was
 	// gone, and went to the agent as a user message instead.
 	NoticeAnswerAsMessage = "answer_as_message"
+	// NoticeConversationLost: the CLI did not know the conversation to
+	// resume, and a new one was started. The journal keeps the history; the
+	// model's context does not.
+	NoticeConversationLost = "conversation_lost"
 )
 
 // Delivery routes of an answer (ask.delivered's Via).

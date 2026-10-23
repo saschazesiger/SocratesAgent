@@ -89,7 +89,7 @@ func (f *fakeAdapter) Start(ctx context.Context, spec StartSpec, out Emitter) er
 		raw, err := os.ReadFile(f.statePath(spec.ResumeID))
 		if err != nil {
 			// What the real CLIs do with an id they do not know.
-			return fmt.Errorf("no conversation found with id %s", spec.ResumeID)
+			return fmt.Errorf("no conversation found with id %s: %w", spec.ResumeID, ErrConversationNotFound)
 		}
 		var st fakeState
 		if err := json.Unmarshal(raw, &st); err != nil {

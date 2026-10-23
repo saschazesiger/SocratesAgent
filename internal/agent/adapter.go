@@ -41,7 +41,8 @@ import (
 // AGENT-HOST.md §5 has the event mapping in detail.
 type Adapter interface {
 	// Start brings the CLI up, resuming spec.ResumeID when it is set, and
-	// returns once it accepts Send. It reports the conversation id with a
+	// returns once it accepts Send. An id the CLI does not know is an error
+	// that wraps ErrConversationNotFound. It reports the conversation id with a
 	// TypeConversation event as soon as the CLI tells it.
 	Start(ctx context.Context, spec StartSpec, out Emitter) error
 	// Send hands a user message to the agent. A message sent while a turn
@@ -131,6 +132,12 @@ var ErrAskGone = errors.New("the question is no longer being waited on")
 // an ask whose call returned at once by design (Codex code mode, REBUILD.md
 // §5.3). It is the normal path for such an ask, not a loss.
 var ErrAskDeferred = errors.New("the answer goes to the agent as the next message")
+
+// ErrConversationNotFound is what Start wraps when the CLI does not know
+// StartSpec.ResumeID ("No conversation found", an unknown thread or session).
+// The host then starts a fresh conversation and tells the chat
+// (NoticeConversationLost) instead of failing every start for ever.
+var ErrConversationNotFound = errors.New("the agent has no such conversation")
 
 // ErrUnknownCommand is Command's answer for a command the agent does not
 // have.
