@@ -324,7 +324,24 @@ func (h *host) boot() {
 	ad := factory()
 	ctx, cancel := context.WithTimeout(context.Background(), startWait)
 	defer cancel()
-	if err := ad.Start(ctx, spec, emitter{h}); err != nil {
+	err := ad.Start(ctx, spec, emitter{h})
+	if err != nil && resume != "" && errors.Is(err, agent.ErrConversationNotFound) {
+		// The CLI no longer has the conversation (its transcript is gone, or
+		// it belongs to an account this chat no longer uses). A host that
+		// insisted would fail on every message for ever; a fresh conversation
+		// is the way on, and the chat says so.
+		log.Printf("the agent does not know conversation %s, starting a new one: %v", resume, err)
+		h.record(agent.Event{Type: agent.TypeNotice, Code: agent.NoticeConversationLost,
+			Text: "The agent no longer has this conversation, so a new one was started. " +
+				"The messages above stay here, but the agent does not remember them."})
+		spec.ResumeID = ""
+		if spec.First == nil && len(pending) > 0 {
+			spec.First, pending = &pending[0], pending[1:]
+		}
+		ad = factory()
+		err = ad.Start(ctx, spec, emitter{h})
+	}
+	if err != nil {
 		h.failStart(err)
 		return
 	}
@@ -337,7 +354,7 @@ func (h *host) boot() {
 		}
 	}
 	for i := range unsent {
-		h.deliverAsMessage(ctx, &unsent[i], unsent[i].Answer)
+		h.deliverAsMessage(ctx, &unsent[i], unsent[i].Answer, unsent[i].Deliver != agent.ViaMessage)
 	}
 	h.touch()
 }
@@ -532,27 +549,39 @@ func (h *host) answer(ctx context.Context, cmd Command) any {
 // deliver gets an answer to the agent: through the call that asked, if it is
 // still waiting, and as a user message if it is not.
 func (h *host) deliver(ctx context.Context, ask *agent.Ask, answer json.RawMessage) {
+	if ask.Deliver == agent.ViaMessage {
+		// The agent asked for the answer as its next message.
+		h.deliverAsMessage(ctx, ask, answer, false)
+		return
+	}
 	if h.adapter != nil {
 		err := h.adapter.Answer(ctx, ask.ID, answer)
-		if err == nil {
+		switch {
+		case err == nil:
 			h.record(agent.Event{Type: agent.TypeAskDelivered, AskID: ask.ID, Via: agent.ViaTool})
 			return
-		}
-		if !errors.Is(err, agent.ErrAskGone) {
+		case errors.Is(err, agent.ErrAskDeferred):
+			h.deliverAsMessage(ctx, ask, answer, false)
+			return
+		case !errors.Is(err, agent.ErrAskGone):
 			log.Printf("the answer to %s did not reach the agent, so it goes as a message: %v", ask.ID, err)
 		}
 	}
-	h.deliverAsMessage(ctx, ask, answer)
+	h.deliverAsMessage(ctx, ask, answer, true)
 }
 
-func (h *host) deliverAsMessage(ctx context.Context, ask *agent.Ask, answer json.RawMessage) {
+// deliverAsMessage sends an answer as a user message. lost says the call that
+// asked was gone, which the chat says in a notice; an answer that was meant to
+// arrive this way needs none.
+func (h *host) deliverAsMessage(ctx context.Context, ask *agent.Ask, answer json.RawMessage, lost bool) {
 	msg := agent.Event{Type: agent.TypeMessage, MessageID: newID("m_"), Role: agent.RoleUser,
 		State: agent.MessagePending, Text: agent.AnswerText(ask, answer), AnswerTo: ask.ID}
-	if _, err := h.rec.EmitDurable(msg,
-		agent.Event{Type: agent.TypeAskDelivered, AskID: ask.ID, Via: agent.ViaMessage},
-		agent.Event{Type: agent.TypeNotice, Code: agent.NoticeAnswerAsMessage, AskID: ask.ID,
-			Text: "The question was no longer being waited on, so the answer was sent as a message."},
-	); err != nil {
+	events := []agent.Event{msg, {Type: agent.TypeAskDelivered, AskID: ask.ID, Via: agent.ViaMessage}}
+	if lost {
+		events = append(events, agent.Event{Type: agent.TypeNotice, Code: agent.NoticeAnswerAsMessage, AskID: ask.ID,
+			Text: "The question was no longer being waited on, so the answer was sent as a message."})
+	}
+	if _, err := h.rec.EmitDurable(events...); err != nil {
 		log.Printf("journal: %v", err)
 		return
 	}
@@ -613,13 +642,16 @@ func (h *host) control(ctx context.Context, cmd Command) any {
 
 // idle is whether the host may park: the CLI is up and doing nothing that
 // parking would cut short - no turn, no question being waited on, no
-// background task.
+// background task, and no user message it has not taken up yet (one that
+// was acknowledged a moment ago and is still on its way into the agent).
 func (h *host) idle() bool {
 	if h.adapter == nil || h.isEnding() {
 		return false
 	}
 	busy := false
-	h.rec.View(func(p *agent.Projection) { busy = p.Turn != nil || len(p.OpenAsks()) > 0 })
+	h.rec.View(func(p *agent.Projection) {
+		busy = p.Turn != nil || len(p.OpenAsks()) > 0 || len(p.Undelivered()) > 0
+	})
 	return !busy && h.adapter.Background() == 0
 }
 

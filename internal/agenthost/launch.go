@@ -124,7 +124,7 @@ func (l *Launcher) stopScopes(ctx context.Context, chatID string) {
 			continue
 		}
 		name := fields[0]
-		if name != unit+".scope" && !strings.HasPrefix(name, unit+"-") {
+		if !ownScope(unit, name) {
 			continue
 		}
 		l.logf("agent host %s: stopping %s, which a dead host left behind", chatID, name)
@@ -132,6 +132,29 @@ func (l *Launcher) stopScopes(ctx context.Context, chatID string) {
 			l.logf("agent host %s: could not stop %s: %v", chatID, name, err)
 		}
 	}
+}
+
+// ownScope is whether name is the chat's scope: <unit>.scope, or the
+// <unit>-<unix seconds>.scope a refused name made. A chat id may contain a
+// hyphen, so "<unit>-anything" could be another chat's.
+func ownScope(unit, name string) bool {
+	if name == unit+".scope" {
+		return true
+	}
+	digits, ok := strings.CutPrefix(name, unit+"-")
+	if !ok {
+		return false
+	}
+	digits, ok = strings.CutSuffix(digits, ".scope")
+	if !ok || digits == "" {
+		return false
+	}
+	for _, r := range digits {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // Launch writes the chat's spec and starts a host for it, and returns once

@@ -130,6 +130,10 @@ const (
 	// NoticeAnswerAsMessage: an answer arrived when the blocking call was
 	// gone, and went to the agent as a user message instead.
 	NoticeAnswerAsMessage = "answer_as_message"
+	// NoticeConversationLost: the CLI did not know the conversation to
+	// resume, and a new one was started. The journal keeps the history; the
+	// model's context does not.
+	NoticeConversationLost = "conversation_lost"
 )
 
 // Delivery routes of an answer (ask.delivered's Via).
@@ -159,7 +163,12 @@ type Event struct {
 	TurnID    string `json:"turn_id,omitempty"`
 	MessageID string `json:"message_id,omitempty"`
 	PartID    string `json:"part_id,omitempty"`
-	AskID     string `json:"ask_id,omitempty"`
+	// ParentPartID nests a part inside another one: the parts a subagent or a
+	// workflow produced belong inside the tool part that started it (a Claude
+	// Task/Agent call, a Codex sub-thread, an OpenCode task), and a chat view
+	// draws them as that part's collapsible group. Empty is a top-level part.
+	ParentPartID string `json:"parent_part_id,omitempty"`
+	AskID        string `json:"ask_id,omitempty"`
 	// ClientID is the idempotency key of the command that produced the event:
 	// a user message, an answer, a journaled command.
 	ClientID string `json:"client_id,omitempty"`
@@ -188,7 +197,12 @@ type Event struct {
 	Payload json.RawMessage `json:"payload,omitempty"`
 	Answer  json.RawMessage `json:"answer,omitempty"`
 	Device  string          `json:"by_device,omitempty"`
-	Via     string          `json:"via,omitempty"`
+	// Via is how an answer reached the agent (ask.delivered). On an ask
+	// event, ViaMessage says the answer is to be sent as the next user
+	// message by design - the call that asked has already returned, as in
+	// Codex code mode (REBUILD.md §5.3) - and not because a blocking call was
+	// lost.
+	Via string `json:"via,omitempty"`
 
 	From   string `json:"from,omitempty"`
 	To     string `json:"to,omitempty"`

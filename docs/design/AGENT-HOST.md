@@ -49,9 +49,9 @@ is one `agent.Event`: a flat JSON object, all fields optional except `seq`, `at`
 | `turn.ended` | `turn_id`, `outcome` (`completed`\|`interrupted`\|`failed`\|`limited`), `usage`, `cost_usd`, `text` (why) | end of the turn |
 | `message` | `message_id`, `role` (`user`\|`assistant`), `state`, `client_id`?, `text`?, `attachments`?, `answer_to`?, `turn_id`?, `model`? | creates a message. **User messages carry text and attachments inline**; assistant messages are containers for parts |
 | `message.state` | `message_id`, `state` | user: `pending` (journaled by the host) → `queued` (the agent holds it behind a running turn) → `delivered` (taken up). Assistant: `streaming` → `done`\|`interrupted` |
-| `part` | `message_id`, `part_id`, `kind`, `state`, `text`, `content` | creates **or replaces whole** the part with that id (kind, state, text, content) |
+| `part` | `message_id`, `part_id`, `parent_part_id`?, `kind`, `state`, `text`, `content` | creates **or replaces whole** the part with that id (kind, state, text, content); `parent_part_id` nests it (below) |
 | `part.delta` | `message_id`, `part_id`, `offset`, `text` | appends `text` to the part's text; `offset` is where it starts, in **UTF-16 code units** |
-| `ask` | `ask_id`, `turn_id`, `payload` (WP6's `ask_user` schema, opaque here) | a question the agent is blocked on |
+| `ask` | `ask_id`, `turn_id`, `payload` (WP6's `ask_user` schema, opaque here), `via`? | a question the agent waits for. `via: "message"`: the call already returned by design (Codex code mode, REBUILD §5.3) and the answer is to be sent as the next user message (§4.4) |
 | `ask.answered` | `ask_id`, `answer`, `by_device`, `client_id` | the first answer; later ones are refused (§4.4) |
 | `ask.delivered` | `ask_id`, `via` (`tool`\|`message`) | how the answer reached the agent |
 | `account.switched` | `from`, `to`, `reason` | divider (WP7) |
@@ -62,8 +62,16 @@ is one `agent.Event`: a flat JSON object, all fields optional except `seq`, `at`
 | `conversation` | `conversation_id` | the CLI's own id, needed to resume |
 | `tasks` | `count` | background tasks still running |
 | `command` | `op` (`interrupt`\|`set_model`\|`command`\|`park`\|`stop`), `client_id`, `model`/`effort`, `text` (command name), `args` | a command the host accepted; recorded so its `client_id` is acted on once |
-| `notice` | `code`, `text`, `ask_id`? | a line of its own. Host codes: `resumed`, `answer_as_message` |
+| `notice` | `code`, `text`, `ask_id`? | a line of its own. Host codes: `resumed`, `answer_as_message`, `conversation_lost` |
 | `error` | `code`, `text`, `message_id`? | a failure that is not a turn's end (e.g. `send_failed`, `rate_limit`) |
+
+**Nesting.** A part with `parent_part_id` belongs inside that part: the parts a subagent or a
+workflow produced go inside the tool part that started it (Claude `Task`/`Agent` and
+`parent_tool_use_id`, Codex sub-threads, OpenCode `task` child sessions, REBUILD §3.1/§7.1). Nesting
+is by part, independent of the message; a nested part without `message_id` takes its parent's. The
+projection puts it in the parent's `children` (in creation order, any depth) and **not** in the
+message's `parts`. The parent must be emitted first; a part whose parent is unknown stays at the top
+of its message, keeping `parent_part_id`. A replacing `part` event keeps the part where it is.
 
 Part kinds: `text`, `reasoning`, `tool`, `diff`, `plan`, `todo`, `image`, `file`, `notice`. Part
 states: `streaming`, `running`, `done`, `error`, `interrupted`. `content` is kind-specific JSON
@@ -163,10 +171,14 @@ journal on every start, so it holds across reconnects and across host generation
 ### 4.4 Answers
 
 Unknown `ask_id` → `unknown_ask`. Already answered with another `client_id` → ack with
-`answered_elsewhere:true, by_device`. Otherwise `ask.answered` is journaled and synced, then
-`Adapter.Answer`: success → `ask.delivered{via:tool}`; `ErrAskGone` (or any error) → the answer is
-sent as a user message: `message{user, pending, answer_to, text: agent.AnswerText(…)}`,
-`ask.delivered{via:message}`, `notice{answer_as_message}`, then `Adapter.Send`. An open ask never
+`answered_elsewhere:true, by_device`. Otherwise `ask.answered` is journaled and synced, then:
+
+- an ask with `via: "message"` is not passed to `Adapter.Answer`: the answer goes as a user message
+  (`message{user, pending, answer_to, text: agent.AnswerText(…)}`, `ask.delivered{via:message}`,
+  then `Adapter.Send`) **without** a notice — this is the designed path;
+- otherwise `Adapter.Answer`: success → `ask.delivered{via:tool}`; `ErrAskDeferred` → as the line
+  above, without a notice (an adapter that only learns at answer time); `ErrAskGone` (or any other
+  error) → the same message plus `notice{answer_as_message}`, because the call was lost. An open ask never
 expires; it survives parks, host deaths and reboots, and an answer to it after any of those arrives
 as a message.
 
@@ -185,14 +197,17 @@ Rules every adapter keeps:
 2. Use `StartSpec.Env` as the CLI's whole environment (WP7 builds it per account; empty today means
    the host's scrubbed environment — the host has already removed `INVOCATION_ID`, `NOTIFY_SOCKET`,
    `WATCHDOG_*`, `JOURNAL_STREAM`, `LISTEN_*`).
-3. Emit `conversation` as soon as the CLI says its id; resume `StartSpec.ResumeID` when set and fail
-   `Start` when the CLI does not know it.
+3. Emit `conversation` as soon as the CLI says its id; resume `StartSpec.ResumeID` when set, and
+   when the CLI does not know it fail `Start` with an error that wraps
+   `agent.ErrConversationNotFound` (the host then starts fresh).
 4. Move each user message through `message.state` `queued`/`delivered` (Claude: `--replay-user-
    messages` echo = delivered; Codex: `turn/started` or the steer; OpenCode: the user message
    event). A message left `pending` or `queued` when a host dies is handed to the next one.
 5. For every turn: `turn.started` (with the user `message_id`), an assistant `message`, parts, and
    `turn.ended`. End every part with a full `part` event. Tool output streams as `part.delta`.
-6. Report `ErrAskGone` from `Answer` when the blocking call is not there; report CLI death through
+6. Emit `ask{via:"message"}` (or return `ErrAskDeferred` from `Answer`) for an ask whose answer is
+   meant to start the next turn. Set `parent_part_id` on everything a subagent or workflow
+   produces. Report `ErrAskGone` from `Answer` when the blocking call is not there; report CLI death through
    `Emitter.Exited` (not for exits Park/Stop caused).
 7. `Background()` counts what parking would kill (Claude `task_*`, Codex background terminals).
 
@@ -213,7 +228,8 @@ the environment minus `NOTIFY_SOCKET`/`INVOCATION_ID`/`WATCHDOG_*`. Under system
 (`ServiceScope()`: `INVOCATION_ID` set and parent PID 1, as termux decides for tmux) it is
 `systemd-run --scope --quiet --collect --unit=socrates-agents-<id> --description=… -p
 OOMPolicy=continue`, with termux's fallbacks (no OOMPolicy if refused; `-<unix>` suffix if the name
-is refused). The launcher returns once the socket accepts, or fails with the tail of `host.log`.
+is refused). `Reap`/`Stop` stop exactly `<unit>.scope` and `<unit>-<digits>.scope`, never a
+prefix match that could be another chat's. The launcher returns once the socket accepts, or fails with the tail of `host.log`.
 
 **Host start:** take `host.lock` (wait ≤ 1 s, else exit 0: another host runs) → read the spec →
 open the journal → **recover**: a turn still open in the journal is closed with
@@ -221,9 +237,13 @@ open the journal → **recover**: a turn still open in the journal is closed wit
 new reaches the agent first): `process{starting}`, `Adapter.Start` with `ResumeID =` the
 journal's conversation id (`First` = the first undelivered message when there is no conversation
 yet), `process{ready}`, re-send undelivered messages, deliver unsent answers as messages. A start
-that fails journals `process{failed, detail}` and the host exits 2 s later.
+that fails journals `process{failed, detail}` and the host exits 2 s later. A start that fails
+with an error wrapping `agent.ErrConversationNotFound` (the CLI does not know the conversation to
+resume) is retried once as a new conversation with `notice{conversation_lost}`: the history stays in
+the journal, the model's context starts over.
 
-**Idle and parking:** idle = adapter up, no turn, no open ask, `Background() == 0`. After
+**Idle and parking:** idle = adapter up, no turn, no open ask, `Background() == 0`, and no user
+message the agent has not taken up (one acknowledged a moment ago is still on its way in). After
 `park_after_ms` (setting `chats.park_after_minutes`, default 20) of idle with no event or command,
 or as soon as idle after a `park` command: `Adapter.Park` (graceful), `process{parked}`, then the
 host closes its socket, lets connected clients read to the end (≤ 2 s) and exits. The next command
@@ -246,11 +266,15 @@ retried with backoff (200 ms → 5 s), never replaced.
   pump started for every chat whose host is alive or that needs one (turn running, or outbox
   non-empty). The resume point is the last seq in the journal file it read.
 - The pump connects (launching/recovering), resends the whole outbox in order, applies frames
-  (events only forward: seq ≤ last is ignored, a gap is logged), and stops when the host parked or
-  exited and nothing is pending — or after a host whose agent failed to start, so a broken CLI is
-  retried once per user action, not in a loop.
+  (events only forward: seq ≤ last is ignored, a gap is logged), and reconnects whenever the host
+  is still alive, because a host can start a turn or report a task on its own. It stops when the
+  host is gone and nothing is pending — or after a host whose agent failed to start, so a broken CLI
+  is retried once per user action, not in a loop. A host is launched only for work (a turn the
+  journal says runs, or the outbox) or for a new chat's warm start, never just because the pump
+  runs.
 - **Outbox** (`chat_outbox`, keyed by chat and `client_id`): written before a command is sent,
-  deleted on ack (or a permanent `err`). Exactly-once = durable outbox + resend on every connect +
+  deleted on ack or on an `err`, except a `send` or `answer` refused with `not_running`/`stopping`,
+  which waits for the next host (an interrupt or a model change refused that way is dropped). Exactly-once = durable outbox + resend on every connect +
   host dedupe from the journal. The remaining window (host dies between journaling a message and
   writing it to the CLI) is closed by re-delivering every message still `pending` to the next
   host; for Claude, the replay echo is the receipt (WP3).
@@ -296,6 +320,8 @@ Script, by message text:
 | `/stream N [ms]` | N deltas `wI ` every ms (default 20 × 10 ms) |
 | `/tool` | a `tool` part, three streamed output lines, then text |
 | `/ask` | an `ask`; blocks until answered (`you answered: <json>`) or interrupted |
+| `/asknext` | an `ask{via:"message"}`, and the turn ends; the answer starts the next turn |
+| `/subagent` | a `Task` tool part with a text and a tool part nested inside it |
 | `/sleep S` | works for S seconds |
 | `/bg S` | ends at once, leaving a background task for S seconds (`tasks`) |
 | `/limit` | `rate_limit`, `error`, `turn.ended{limited}` |
