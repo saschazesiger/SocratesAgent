@@ -202,7 +202,8 @@ Rules every adapter keeps:
    when the CLI does not know it fail `Start` with an error that wraps
    `agent.ErrConversationNotFound` (the host then starts fresh).
 4. Move each user message through `message.state` `queued`/`delivered` (Claude: `--replay-user-
-   messages` echo = delivered; Codex: `turn/started` or the steer; OpenCode: the user message
+   messages` echo = delivered; Codex: the `turn/start` answer, or for a steered message its
+   `userMessage` item, §5.1; OpenCode: the user message
    event). A message left `pending` or `queued` when a host dies is handed to the next one.
 5. For every turn: `turn.started` (with the user `message_id`), an assistant `message`, parts, and
    `turn.ended`. End every part with a full `part` event. Tool output streams as `part.delta`.
@@ -310,6 +311,107 @@ subagent's calls come from `subagents/agent-<id>.jsonl`, a workflow's agents fro
 
 **fakeclaude** (`e2e/fakebin/fakeclaude`): the stand-in for tests and e2e; its script is in its
 package comment.
+**Command palette.** An adapter registers its palette next to itself with
+`agent.RegisterCommands(harness, []agent.CommandInfo{name, args, description})`; `agent.Commands(harness)`
+is what the composer offers after "/" (WP8). Each name is what `Adapter.Command` is called with.
+
+### 5.2 Codex (`internal/agent/codex`)
+
+**Process.** `codex app-server --listen stdio:// -c check_for_update_on_startup=false
+-c projects={"<resolved workdir>"={trust_level="trusted"}}`, started through Spawn with
+`StartSpec.Env` as its environment (`CODEX_HOME` = the account's home; `SOCRATES_CODEX_BIN` in that
+environment names another binary, else `codex` on its `PATH`). `initialize` with
+`capabilities.experimentalApi`, then `thread/resume {excludeTurns: true}` or `thread/start`, both with
+`approvalPolicy: "never"`, `sandbox: "danger-full-access"`, `cwd`; `thread/start` also carries
+`model`, `config.model_reasoning_effort`, the registered dynamic tools and (handoff only)
+`developerInstructions`. The thread id is kept in `<StateDir>/codex/thread.json`. Park closes
+stdin (the app-server exits at once; the thread is on disk); Stop kills the process group.
+
+**Messages.** No turn running: `turn/start` with `clientUserMessageId = message_id`, `model` and
+`effort` on every turn (and `collaborationMode: plan` while `/plan` is on) → `delivered` and
+`turn.started{message_id}` when codex answers. A turn running: `turn/steer` with the same id →
+`queued`; codex takes it up at its next step (0.164 cuts a streaming answer short for it) and the
+`userMessage` item carrying that id → `delivered`. A turn that cannot be steered (compaction,
+review: `activeTurnNotSteerable`) or a `!` line during a turn → held (`queued`) and sent when the turn
+ends; so is a steered message a turn ended without taking up. A message whose text is one line
+starting with `!` runs `thread/shellCommand` as a turn of its own.
+
+**Turns.** A journal turn is a root turn of the chat's thread (ids are the adapter's own, `t_…`, so
+that a recovery can continue the same journal turn under another codex turn). Turns codex starts
+for a command (compact, review, shell) have no `message_id`. `turn/completed` status → outcome:
+`completed`, `interrupted`, `failed` (`usageLimitExceeded` → `limited`, plus `error{rate_limit}`); an
+`error` notification with `willRetry` → `notice{retrying}`, without it the turn ends failed if
+`turn/completed` does not follow within 30 s. `turn.ended.usage` sums the turn's model calls
+(`tokenUsage.last`; codex counts cached input inside the input, the journal apart: `input` =
+input − cached, `cache_read` = cached), `context`/`window` from the last call;
+`usage{context, window}` follows each call. `account/rateLimits/updated` → one `rate_limit` per
+window that changed: `five_hour` (300 min), `weekly` (10080 min), else `<n>m`; `used` = percent/100.
+Cost is not reported by codex (0).
+
+**Parts** (part ids `<message>_p<n>`; text is the streamed text):
+
+| item | kind | state | content |
+|---|---|---|---|
+| `agentMessage` | `text` | streaming → done | `{phase, delivery, questions}` when any is set (`delivery: "async"` = a code-mode question, WP6) |
+| `reasoning` | `reasoning` | streaming → done | – (text = summary, then raw content) |
+| `plan` | `plan` | streaming → done | – (text = the plan's markdown) |
+| `commandExecution` | `tool` | running → done \| error \| interrupted | `{tool: "command", command, cwd, source, actions, status, exit_code, duration_ms, process_id}`; text = output |
+| `fileChange` | `diff` | running → done \| error | `{tool: "file_change", status, changes: [{path, kind: add\|delete\|update, move_path, diff}]}` |
+| `turn/diff/updated` | `diff` | running → done (at most 1/s while it changes) | `{tool: "turn_diff", diff}`: the turn's whole unified diff |
+| `turn/plan/updated` | `todo` | running | `{explanation, steps: [{step, status}]}` |
+| `mcpToolCall` | `tool` | running → … | `{tool: "mcp", server, name, arguments, result, error, status, duration_ms}` |
+| `dynamicToolCall` | `tool` | running → … | `{tool: "dynamic", namespace, name, arguments, content_items, success, status, duration_ms}` |
+| `collabAgentToolCall` | `tool` | running → … | `{tool: "collab", name, prompt, sender, receivers, model, effort, agents, status}` |
+| `subAgentActivity` started | `tool` (group) | running while the subagent works, done when idle/completed, interrupted | `{tool: "subagent", thread_id, path, name, model, effort, status}`; every item of that thread (and of its own subagents) is a part with `parent_part_id` = the group |
+| `imageView` / `imageGeneration` | `image` | done | `{path}` / `{item}` |
+| `enteredReviewMode` / `exitedReviewMode` | `notice` / `text` | done | `{notice: "review_started"}` / `{review: true}` (text = the review) |
+| `contextCompaction` | `notice` | streaming → done | `{notice: "compacted"}` |
+| `webSearch`, anything else | `tool` | … | `{tool: <item type>, item: <the raw item>}` |
+
+A subagent's parts outlive the turn that spawned it; `tasks{count}` counts subagents at work, and
+`Background()` adds codex's background terminals (`thread/backgroundTerminals/list`).
+
+**Server requests** are answered on goroutines of their own, so a question never holds up the
+stream: command, file-change and legacy approvals → accept; `item/permissions/requestApproval` →
+the requested permissions, for the session; an MCP elicitation that is a tool-call approval →
+accept, any other → decline + `notice{elicitation_declined}`; `item/tool/requestUserInput` →
+JSON-RPC error + `notice{question_declined}`; `item/tool/call` for a tool nobody registered →
+`success: false`; `currentTime/read` → now; anything else → error + `notice{codex_request}`.
+**WP6 hooks:** `codex.RegisterTool(Tool{Name, Spec, Handle})` offers a dynamic tool on every new
+thread (codex keeps it with the thread) and routes its `item/tool/call` to `Handle`;
+`codex.HandleRequest(method, handler)` replaces a built-in answer (`item/tool/requestUserInput`,
+`mcpServer/elicitation/request`). A handler gets a `*codex.Call` with `Ask(ctx, payload)` (emits
+`ask`, blocks until `Answer`; `ErrAskGone` when the turn ends, codex withdraws the request
+(`serverRequest/resolved`) or the app-server goes), `Defer(payload)` (emits `ask{via:"message"}`,
+for code mode) and `Notice`.
+
+**Commands** (`codex.Commands`): `compact` → `thread/compact/start`; `review [base <branch> | commit
+<sha> | instructions]` → `review/start`; `plan [off]` → Plan collaboration mode for the turns that
+follow (`notice{plan_mode}`); `shell <command>` → `thread/shellCommand`.
+
+**Lost journal.** With no conversation in the journal, the adapter resumes the thread its state
+names (a thread codex no longer has is dropped for a new one). When no message is waiting either,
+the history is written back first from `thread/turns/list` + `thread/items/list` (paginated): per
+turn the user messages (`delivered`, the codex `clientId` as `message_id`), `turn.started`, the
+assistant message with its items as parts, `turn.ended` (a turn codex died in is `interrupted`),
+then `notice{history_rebuilt}`. Subagent threads are not replayed.
+
+**Accounts** (mechanics; WP7 drives them). `codex.PrepareHome(home, <data>/agents/codex)` makes an
+account's `CODEX_HOME` with `sessions/` and `archived_sessions/` as relative symlinks into the
+shared folder (an account's own sessions are moved in first); a switch is a relaunch with the
+other account's environment on the same thread. When a turn fails with `invalid_encrypted_content`
+(another account's encrypted reasoning, REBUILD §4.3) the same journal turn goes on: (1)
+`codex.StripRollout` copies the rollout under a new thread id (UUIDv7) without `reasoning` and
+`compaction` items (also inside a compaction's replacement history), the copy is resumed,
+`conversation{new id}` + `notice{codex_reasoning_dropped}`, and the turn's messages are sent again;
+(2) if that is refused too, a new thread whose developer instructions carry the visible transcript
+(≤ 24 000 characters, newest kept), `conversation` + `notice{codex_handoff}`, messages again; (3) a
+third refusal in the same process fails the turn. The original rollout is never rewritten.
+
+**Pin.** `testdata/schema` is the generated schema of codex-cli 0.164.0; `TestPinnedSchema` checks
+every method, field, item type and error code the adapter uses against it, and
+`TestInstalledCodexSchema` (`SOCRATES_REAL_CODEX=1`) against the installed codex
+(`SOCRATES_UPDATE_CODEX_SCHEMA=1` rewrites the pin).
 
 ## 6. Lifecycle
 
@@ -443,6 +545,14 @@ Script, by message text:
   hello and 4401.
 - `e2e/chats.mjs`: the real binary, SIGKILL of the server mid-turn, replay, duplicates, two-device
   answers, the session list.
+- `internal/agent/codex` against `e2e/fakebin/fakecodex` (built by the tests; a scripted app-server
+  that keeps real-format rollouts, see its package comment): every mapping, steering and holding,
+  shell lines, interrupt, limit, crash, answered requests, the dynamic-tool ask hook, park, resume,
+  rebuild, the account-switch chain, and the adapter inside a real host process (SIGKILL takes
+  codex along, the next host resumes). With `SOCRATES_REAL_CODEX=1` the same scenarios run against
+  the installed codex with `internal/agent/codex/fakemodel` as its model provider (a scripted
+  Responses API whose encrypted reasoning is bound to an account; `e2e/fakebin/fakemodel` serves
+  it on a port).
 
 ## 10. Known limits, for the packages that follow
 

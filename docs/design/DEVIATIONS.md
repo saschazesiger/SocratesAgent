@@ -2147,3 +2147,56 @@ adapter turns them into `ANTHROPIC_API_KEY` and the `ultracode` setting and pass
 **WP3 / §3.1 — plan mode is a command.** Switching plan mode on is `Command("plan")` (off:
 `Command("plan", "off")`, back to `bypassPermissions`), through `set_permission_mode`, rather than
 a host op of its own; the plan card itself goes through the generic ask path as planned.
+**WP4 / §4.3 — the stripped retry is a copy under a new thread id.** "Retry with reasoning and
+compaction items stripped from the rollout, on a copy" cannot be done by pointing codex at the
+copy: `thread/fork`/`thread/resume` with `path` refuse a paginated thread ("stale path", verified
+against 0.164). The copy is written next to the original under a fresh UUIDv7 and resumed by that
+id, so the chat's conversation id changes (a `conversation` event says so). The original is never
+rewritten; codex itself appends the refused turn to it.
+
+**WP4 / §4.3 — the chain runs on any `invalid_encrypted_content`, not only after a switch.** The
+error can only come from replayed reasoning, so the adapter does not need to know a switch
+happened. Each step runs at most once per app-server process and continues the same journal turn
+(the failed attempt is not shown as a turn of its own). Verified against the real binary with a
+scripted model that binds its encrypted reasoning to an account; spike S2 stays waived, so real
+ChatGPT accounts were not tried.
+
+**WP4 / §3.2 — messages during a turn are steered, and "queued" until codex takes them up.** The
+host's semantics ("queued by the agent") map onto `turn/steer`: the message is `queued` when codex
+accepts it and `delivered` when its `userMessage` item (our id as `clientUserMessageId`) shows up,
+which 0.164 does at the next step, even cutting a streaming answer short. A turn that cannot be
+steered (compaction, review) holds messages and sends them when it ends, and so does a turn that
+ended without taking one up. A one-line message starting with `!` runs `thread/shellCommand`
+(REBUILD lists it as a command; this lets the composer need no special case).
+
+**WP4 / §3.2 — `thread/fork` is not wired; `/plan` is.** Nothing in the UI forks a chat yet. Plan
+mode (`collaborationMode: plan`) is a palette command because Codex's `request_user_input` only
+exists there.
+
+**WP4 / §5.3 — Codex's own questions are declined until WP6.** Approvals are accepted (always
+allow). `item/tool/requestUserInput` gets a JSON-RPC error and an MCP elicitation a `decline`, each
+with a notice, so no turn waits for ever; WP6 replaces them through `codex.HandleRequest` and adds
+`ask_user` through `codex.RegisterTool`.
+
+**WP4 / §2.2 — a lost journal is found through the adapter's own state, not the server's
+`cli_session_id`.** The adapter keeps the thread id in `chats/<id>/agent/codex/thread.json`; a host
+whose journal has no conversation resumes that thread and, when no message waits, writes the
+history back from `thread/turns/list` + `thread/items/list`. A chat whose whole folder is gone is
+not rebuilt (that would need the server to pass `cli_session_id` in the launch spec). Subagent
+threads are not replayed into a rebuilt history.
+
+**WP4 / HARNESS-POLICY — the app-server runs without `--strict-config` and with a per-process trust
+override.** `--strict-config` would refuse to start on a `config.toml` written by a newer or older
+codex, which for a chat is a host that never comes up; the two `-c` keys the adapter passes are
+covered by the real-binary tests. With `approvalPolicy: never` and `danger-full-access`,
+`thread/start` writes no trust entry into `config.toml` (verified, contrary to research/04 §1.4,
+which used other policies), so the working directory is trusted by the same inline-table `-c`
+override the TUI used.
+
+**WP4 — token usage counts cached input apart, and there is no cost.** Codex's `inputTokens`
+include the cached ones; the journal's `input` excludes them (`cache_read` has them), as Claude
+reports it. Codex reports no price, so `cost_usd` stays 0 (the cost ledger keeps reading rollouts).
+
+**WP4 — shared code.** `internal/agent/palette.go` (`RegisterCommands`/`Commands`, the per-harness
+command palette for the composer) is new and additive; `main.go` imports the adapter so that both
+the server and its hosts register `codex`.
