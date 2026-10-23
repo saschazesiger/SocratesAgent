@@ -214,7 +214,7 @@ func (a *Adapter) handlePart(gen int, p ocPart) {
 	if !ok {
 		return
 	}
-	if c.child != "" {
+	if _, known := a.children[c.child]; c.child != "" && !known {
 		a.children[c.child] = childSession{msg: msg, parent: p.ID}
 	}
 	a.emitPartLocked(p.ID, msg, parent, c)
@@ -250,16 +250,26 @@ func (a *Adapter) stepLocked(tokens ocTokens) {
 }
 
 // emitPartLocked writes a part when it changed since it was last written:
-// text that only grew is a delta, anything else the part whole.
+// text that only grew while the part streams is a delta, anything else the
+// part whole, and so is a part's end. What a catch-up read is older than
+// what /event may have said meanwhile: a part never goes back from its end,
+// and text that lags the deltas of a part still streaming (OpenCode stores
+// the text when the part ends) is not news.
 func (a *Adapter) emitPartLocked(id, msg, parent string, c converted) {
 	sp := a.parts[id]
+	if sp != nil && !live(sp.state) && live(c.state) {
+		return
+	}
 	if sp != nil && sp.kind == c.kind && sp.state == c.state && bytes.Equal(sp.content, c.content) {
 		switch {
 		case c.text == sp.text:
 			return
+		case !live(c.state):
 		case strings.HasPrefix(c.text, sp.text):
 			a.out.Delta(sp.msg, id, c.text[len(sp.text):])
 			sp.text = c.text
+			return
+		case strings.HasPrefix(sp.text, c.text):
 			return
 		}
 	}
@@ -271,6 +281,9 @@ func (a *Adapter) emitPartLocked(id, msg, parent string, c converted) {
 	a.out.Emit(agent.Event{Type: agent.TypePart, MessageID: sp.msg, PartID: id, ParentPartID: sp.parent,
 		Kind: c.kind, State: c.state, Text: c.text, Content: c.content})
 }
+
+// live is a part state that has not ended.
+func live(state string) bool { return state == agent.PartStreaming || state == agent.PartRunning }
 
 func (a *Adapter) handleDelta(gen int, partID, text string) {
 	a.mu.Lock()
@@ -465,10 +478,14 @@ func (a *Adapter) endTurnLocked() {
 func (a *Adapter) handlePermission(gen int, p ocPermission) {
 	a.mu.Lock()
 	_, child := a.children[p.SessionID]
-	ours := a.gen == gen && (p.SessionID == a.session || child)
+	// A catch-up lists what /event may also have said.
+	ours := a.gen == gen && (p.SessionID == a.session || child) && validID(p.ID, "per") && !a.allowed[p.ID]
+	if ours {
+		a.allowed[p.ID] = true
+	}
 	cl := a.cl
 	a.mu.Unlock()
-	if !ours || !validID(p.ID, "per") {
+	if !ours {
 		return
 	}
 	go func() {

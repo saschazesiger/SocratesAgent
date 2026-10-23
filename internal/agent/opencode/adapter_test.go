@@ -559,6 +559,43 @@ func TestAClosedEventStreamIsCaughtUp(t *testing.T) {
 	}
 }
 
+// A permission asked while /event was closed is found by the catch-up and
+// answered, so the turn does not wait for ever.
+func TestAPermissionAskedWhileTheStreamWasClosedIsAnswered(t *testing.T) {
+	r := newRig(t)
+	r.mustStart("")
+	r.send("/dropperm")
+	if got := r.waitTurns(1); got[0] != agent.OutcomeCompleted {
+		t.Fatalf("outcome %v", got)
+	}
+	if r.lastText() != "perm: always" {
+		t.Fatalf("text %q", r.lastText())
+	}
+	if n := r.rec.count(agent.TypeNotice, func(ev agent.Event) bool { return ev.Code == NoticePermission }); n != 1 {
+		t.Fatalf("%d permission notices", n)
+	}
+}
+
+// After a resume, a catch-up does not write the subagents of the history
+// again: the journal has them.
+func TestACatchUpLeavesEarlierSubagentsAlone(t *testing.T) {
+	r := newRig(t)
+	r.mustStart("")
+	sid := r.conversation()
+	r.send("/subagent")
+	r.waitTurns(1)
+	_ = r.a.Park(context.Background())
+	r.mustStart(sid)
+	r.send("/dropstream")
+	r.waitTurns(1)
+	eventually(t, 5*time.Second, "the catch-up", func() bool {
+		return contains(r.lastText(), "after the drop")
+	})
+	if n := r.rec.count(agent.TypePart, func(ev agent.Event) bool { return ev.ParentPartID != "" }); n != 0 {
+		t.Fatalf("the catch-up wrote %d subagent parts of an earlier turn", n)
+	}
+}
+
 func TestSwitchingAccountKeepsTheSession(t *testing.T) {
 	r := newRig(t)
 	keyA := `OPENCODE_AUTH_CONTENT={"fake":{"type":"api","key":"KEY-A"}}`

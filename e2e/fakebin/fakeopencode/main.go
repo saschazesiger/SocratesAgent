@@ -192,6 +192,8 @@ type srv struct {
 	subs     map[chan []byte]chan struct{}
 	runs     map[string]*run
 	pending  map[string]chan string
+	// asked are the pending permissions, as GET /permission lists them.
+	asked map[string]map[string]any
 }
 
 // run is a session's loop while it works.
@@ -220,7 +222,7 @@ func serve() error {
 		return errors.New("Failed query: CREATE TABLE workspace (the database was never migrated)")
 	}
 	s := &srv{password: os.Getenv("OPENCODE_SERVER_PASSWORD"), subs: map[chan []byte]chan struct{}{},
-		runs: map[string]*run{}, pending: map[string]chan string{}}
+		runs: map[string]*run{}, pending: map[string]chan string{}, asked: map[string]map[string]any{}}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return err
@@ -283,6 +285,14 @@ func (s *srv) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"model": map[string]any{"limit": map[string]any{"context": 100000}}}}}, "default": map[string]any{"fake": "model"}})
 	case r.Method == http.MethodGet && path == "session/status":
 		s.status(w)
+	case r.Method == http.MethodGet && path == "permission":
+		s.mu.Lock()
+		list := []any{}
+		for _, p := range s.asked {
+			list = append(list, p)
+		}
+		s.mu.Unlock()
+		writeJSON(w, 200, list)
 	case r.Method == http.MethodPost && path == "session":
 		s.create(w, r)
 	case len(parts) >= 2 && parts[0] == "session":
@@ -316,6 +326,7 @@ func (s *srv) resolve(w http.ResponseWriter, id, answer string) {
 	s.mu.Lock()
 	ch := s.pending[id]
 	delete(s.pending, id)
+	delete(s.asked, id)
 	s.mu.Unlock()
 	if ch == nil {
 		notFound(w, "request "+id)

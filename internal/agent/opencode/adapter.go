@@ -113,6 +113,8 @@ type Adapter struct {
 	// commands are the names GET /command listed: what Command posts to
 	// /command.
 	commands map[string]bool
+	// allowed are the permissions already answered.
+	allowed map[string]bool
 
 	// wait bounds the calls to OpenCode that are not long ones; zero is
 	// requestWait. Tests shorten it.
@@ -124,6 +126,7 @@ func New() *Adapter {
 	return &Adapter{
 		users: map[string]*userMsg{}, assistants: map[string]*asstMsg{}, parts: map[string]*seenPart{},
 		children: map[string]childSession{}, childPrompts: map[string]bool{}, windows: map[string]int64{},
+		allowed: map[string]bool{},
 	}
 }
 
@@ -178,10 +181,12 @@ type seenPart struct {
 }
 
 // childSession is a subagent's session: its parts go inside the task tool
-// part that runs it.
+// part that runs it. A seeded one ran before this process (seed), and the
+// journal has what it did.
 type childSession struct {
 	msg    string
 	parent string
+	seeded bool
 }
 
 type turnState struct {
@@ -506,7 +511,7 @@ func (a *Adapter) seed(msgs []ocMessageWithParts) {
 				}
 				a.parts[p.ID] = &seenPart{msg: m.Info.ID, kind: c.kind, state: c.state, text: c.text, content: c.content, diff: c.diff != nil}
 				if c.child != "" {
-					a.children[c.child] = childSession{msg: m.Info.ID, parent: p.ID}
+					a.children[c.child] = childSession{msg: m.Info.ID, parent: p.ID, seeded: true}
 				}
 			}
 		}
@@ -628,28 +633,35 @@ func (a *Adapter) follow(ctx context.Context, gen int, cl *client, connected cha
 }
 
 // reconcile writes what happened while /event was closed: the session's
-// messages as OpenCode stored them, and whether it is still busy.
+// messages as OpenCode stored them, its subagents', the permissions it asked
+// for meanwhile, and whether it is still busy (research/05 §2.2).
 func (a *Adapter) reconcile(ctx context.Context, gen int, cl *client) {
 	a.mu.Lock()
 	session := a.session
-	children := make([]string, 0, len(a.children))
-	for id := range a.children {
-		children = append(children, id)
-	}
 	a.mu.Unlock()
 	if session == "" {
 		return
 	}
-	for _, sid := range append([]string{session}, children...) {
-		msgs, err := a.messages(ctx, cl, sid)
-		if err != nil {
-			continue
+	a.catchUp(ctx, gen, cl, session)
+	// The subagents this process ran, the ones the session's parts just
+	// named among them; a seeded one's history is the journal's already.
+	a.mu.Lock()
+	var children []string
+	for id, c := range a.children {
+		if !c.seeded {
+			children = append(children, id)
 		}
-		for _, m := range msgs {
-			a.handleMessage(gen, m.Info)
-			for _, p := range m.Parts {
-				a.handlePart(gen, p)
-			}
+	}
+	a.mu.Unlock()
+	for _, sid := range children {
+		a.catchUp(ctx, gen, cl, sid)
+	}
+	// A permission asked while no stream was open would wait for an answer
+	// for ever.
+	var asked []ocPermission
+	if err := cl.call(ctx, http.MethodGet, "/permission", nil, &asked); err == nil {
+		for _, p := range asked {
+			a.handlePermission(gen, p)
 		}
 	}
 	var status map[string]ocStatus
@@ -662,6 +674,20 @@ func (a *Adapter) reconcile(ctx context.Context, gen int, cl *client) {
 			a.endTurnLocked()
 		}
 		a.mu.Unlock()
+	}
+}
+
+// catchUp maps one session's stored messages as if /event had said them.
+func (a *Adapter) catchUp(ctx context.Context, gen int, cl *client, session string) {
+	msgs, err := a.messages(ctx, cl, session)
+	if err != nil {
+		return
+	}
+	for _, m := range msgs {
+		a.handleMessage(gen, m.Info)
+		for _, p := range m.Parts {
+			a.handlePart(gen, p)
+		}
 	}
 }
 

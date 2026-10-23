@@ -30,6 +30,8 @@ import (
 //	/retry           one plain retry, then a normal answer
 //	/error           an APIError 401 on the message and session.error
 //	/perm            permission.asked; the reply goes into the answer
+//	/dropperm        every /event stream is closed, then /perm: only a reader
+//	                 of GET /permission sees the question
 //	/question        question.asked; the answers go into the answer
 //	/sleep S         text, then S seconds of work
 //	/crash           a running bash tool, and the process exits on the spot
@@ -439,7 +441,11 @@ func (t *turn) play(text string) error {
 		t.finish("error", 10, 0)
 		t.s.publish("session.error", map[string]any{"sessionID": t.sid, "error": e})
 		return nil
-	case "/perm", "/question":
+	case "/perm", "/question", "/dropperm":
+		if word == "/dropperm" {
+			t.s.dropStreams()
+			word = "/perm"
+		}
 		answer, err := t.ask(word)
 		if err != nil {
 			return err
@@ -536,11 +542,12 @@ func (t *turn) ask(kind string) (string, error) {
 	ch := make(chan string, 1)
 	if kind == "/perm" {
 		id := newID("per")
+		asked := map[string]any{"id": id, "sessionID": t.sid, "permission": "bash",
+			"patterns": []string{"rm -rf build"}, "always": []string{"rm *"}, "metadata": map[string]any{}}
 		t.s.mu.Lock()
-		t.s.pending[id] = ch
+		t.s.pending[id], t.s.asked[id] = ch, asked
 		t.s.mu.Unlock()
-		t.s.publish("permission.asked", map[string]any{"id": id, "sessionID": t.sid, "permission": "bash",
-			"patterns": []string{"rm -rf build"}, "always": []string{"rm *"}, "metadata": map[string]any{}})
+		t.s.publish("permission.asked", asked)
 	} else {
 		id := newID("que")
 		t.s.mu.Lock()
@@ -553,6 +560,14 @@ func (t *turn) ask(kind string) (string, error) {
 	case a := <-ch:
 		return a, nil
 	case <-t.run.cancel:
+		t.s.mu.Lock()
+		for id, c := range t.s.pending {
+			if c == ch {
+				delete(t.s.pending, id)
+				delete(t.s.asked, id)
+			}
+		}
+		t.s.mu.Unlock()
 		return "", errAborted
 	}
 }

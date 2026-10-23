@@ -464,7 +464,10 @@ then aborted, or a 429), else `interrupted` (`MessageAbortedError`), else `faile
 retries: `notice{retry}` per attempt. `permission.asked` → replied `always` + `notice{permission_allowed}`.
 `question.asked` → the `QuestionHandler` hook (WP6), else rejected + `notice{question_rejected}`.
 `Answer` returns `ErrAskGone` until WP6. After `/event` drops, it is reopened and caught up from
-`GET …/message` and `/session/status`.
+`GET …/message` (the session's, and its subagents' since this process started), `GET /permission`
+(each still pending is answered `always`) and `/session/status`. A catch-up never takes a part back
+from its end, and never replaces streamed text with the shorter text OpenCode stored; a part always
+ends with the part whole, never a delta.
 
 **Parts and content** (exported types in `convert.go`):
 
