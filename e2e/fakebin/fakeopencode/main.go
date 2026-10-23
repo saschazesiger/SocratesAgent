@@ -189,7 +189,7 @@ func newID(prefix string) string {
 type srv struct {
 	password string
 	mu       sync.Mutex
-	subs     map[chan []byte]struct{}
+	subs     map[chan []byte]chan struct{}
 	runs     map[string]*run
 	pending  map[string]chan string
 }
@@ -213,7 +213,7 @@ func serve() error {
 	if !migrated {
 		return errors.New("Failed query: CREATE TABLE workspace (the database was never migrated)")
 	}
-	s := &srv{password: os.Getenv("OPENCODE_SERVER_PASSWORD"), subs: map[chan []byte]struct{}{},
+	s := &srv{password: os.Getenv("OPENCODE_SERVER_PASSWORD"), subs: map[chan []byte]chan struct{}{},
 		runs: map[string]*run{}, pending: map[string]chan string{}}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -243,6 +243,16 @@ func (s *srv) publish(typ string, props any) {
 		case ch <- raw:
 		default:
 		}
+	}
+}
+
+// dropStreams ends every open /event stream, as a disposed instance does.
+func (s *srv) dropStreams() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for ch, drop := range s.subs {
+		close(drop)
+		delete(s.subs, ch)
 	}
 }
 
@@ -317,9 +327,9 @@ func (s *srv) events(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(200)
-	ch := make(chan []byte, 4096)
+	ch, drop := make(chan []byte, 4096), make(chan struct{})
 	s.mu.Lock()
-	s.subs[ch] = struct{}{}
+	s.subs[ch] = drop
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
@@ -331,6 +341,8 @@ func (s *srv) events(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-r.Context().Done():
+			return
+		case <-drop:
 			return
 		case raw := <-ch:
 			if _, err := fmt.Fprintf(w, "data: %s\n\n", raw); err != nil {

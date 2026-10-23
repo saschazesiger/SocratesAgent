@@ -33,6 +33,8 @@ import (
 //	/question        question.asked; the answers go into the answer
 //	/sleep S         text, then S seconds of work
 //	/crash           a running bash tool, and the process exits on the spot
+//	/dropstream      text, every /event stream is closed, then more text that
+//	                 only a reader of GET …/message sees
 //	/whoami          "account: <identity>"
 //	anything else    "you said: <text> (turn N of <session>)"
 
@@ -449,6 +451,14 @@ func (t *turn) play(text string) error {
 				"time": map[string]any{"start": time.Now().UnixMilli()}}})
 		_ = p
 		os.Exit(3)
+	case "/dropstream":
+		if err := t.say([]string{"before the drop"}, 5*time.Millisecond); err != nil {
+			return err
+		}
+		t.s.dropStreams()
+		if err := t.say([]string{"after the drop"}, 5*time.Millisecond); err != nil {
+			return err
+		}
 	case "/whoami":
 		if err := t.say([]string{"account: " + identity()}, 5*time.Millisecond); err != nil {
 			return err
