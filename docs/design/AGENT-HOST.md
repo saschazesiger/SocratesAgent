@@ -452,7 +452,8 @@ account). `Migrate` runs `opencode db "select 1"` through Spawn once per binary 
 has its running tool parts and itself written as `interrupted`, once (`agent/opencode.json` keeps
 which); its text and reasoning stay as the journal streamed them (OpenCode stores a part's text only
 when the part ends), and the host's recovery interrupts them. `Rebuild` reads the whole history
-from `GET /session/{id}/message` (and the task children's), and writes the `conversation` after it,
+from `GET /session/{id}/message` (and the task children's: each task part gets what its subagent
+did while it ran), and writes the `conversation` after it,
 so that a host that dies while it reads leaves a journal the next host rebuilds again.
 
 **Turns.** A message is posted with `prompt_async` and a message id of OpenCode's own form chosen by

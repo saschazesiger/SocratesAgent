@@ -134,7 +134,7 @@ func (t *rebuiltTurn) finalParts(msg, parent string, parts []ocPart, complete bo
 		}
 		if c.child != "" && depth < maxNesting && child != nil {
 			for _, cm := range child(c.child) {
-				if cm.Info.Role != "assistant" {
+				if cm.Info.Role != "assistant" || !ranFor(p, cm.Info) {
 					continue
 				}
 				t.count(cm.Info)
@@ -143,4 +143,15 @@ func (t *rebuiltTurn) finalParts(msg, parent string, parts []ocPart, complete bo
 		}
 	}
 	return events
+}
+
+// ranFor reports whether a subagent's message was made while the task part
+// ran it: a task can resume an earlier task's subagent (task_id), and each
+// task part shows what the subagent did for it.
+func ranFor(task ocPart, m ocMessage) bool {
+	if task.State == nil {
+		return true
+	}
+	start, end := task.State.Time.Start, task.State.Time.End
+	return m.Time.Created >= start && (end == 0 || m.Time.Created <= end)
 }
