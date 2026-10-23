@@ -128,7 +128,9 @@ func TestAnAskSurvivesTheDeathOfItsHost(t *testing.T) {
 	}
 	next.answer("a1", ask.AskID, "desktop", json.RawMessage(`{"answers":{"q1":{"selected":["b"]}}}`))
 	next.seen(5*time.Second, isNotice(agent.NoticeAnswerAsMessage))
-	next.seen(5*time.Second, func(ev agent.Event) bool { return ev.Type == agent.TypeTurnEnded && ev.Outcome == agent.OutcomeCompleted })
+	next.seen(5*time.Second, func(ev agent.Event) bool {
+		return ev.Type == agent.TypeTurnEnded && ev.Outcome == agent.OutcomeCompleted
+	})
 	if got := lastReply(r.journal()); !strings.Contains(got, "B [b]") {
 		t.Fatalf("the agent got %q", got)
 	}
