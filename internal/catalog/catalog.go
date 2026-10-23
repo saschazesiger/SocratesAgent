@@ -10,8 +10,10 @@ package catalog
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -21,10 +23,7 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
 )
 
-// CacheKey is where the last discovery is kept between restarts. It is
-// exported so that `socrates import` can drop a catalogue that was discovered
-// on another machine - it names binaries at paths that are not here - rather
-// than spell the key out a second time.
+// CacheKey is where the last discovery is kept between restarts.
 const CacheKey = "agents_catalog"
 
 // cacheSchema is stamped onto every cached snapshot, and a snapshot carrying
@@ -50,6 +49,11 @@ const versionTimeout = 5 * time.Second
 // point of the budget is only that a wedged CLI cannot keep a goroutine and a
 // subprocess for the life of the server.
 const DiscoveryBudget = 2 * time.Minute
+
+// updatesEvery is how often, at most, the updater's status file is looked at.
+// A stat is cheap but Cached is on every request's path, and an update that
+// lands a few seconds before anybody notices is no worse for it.
+const updatesEvery = 5 * time.Second
 
 // Agent is one program, as the picker and the admin card see it. Every field
 // is always present: an agent that is missing says so in `error` rather than
@@ -141,6 +145,22 @@ type Catalog struct {
 	// while it runs waits on the same one: three CLIs asked for their model
 	// list twice over is a slow machine for no reason.
 	inflight *discovery
+
+	// updates is what WatchUpdates was told to watch; see there.
+	updates updatesWatch
+}
+
+// updatesWatch is the little that is remembered about the updater's status
+// file between looks at it, so that most looks are one stat and nothing more.
+type updatesWatch struct {
+	path    string
+	every   time.Duration
+	checked time.Time
+	// mtime and finished are the file as it was last read: when it was
+	// written, and whether the run it describes was over by then. The file is
+	// read again only when its mtime moves.
+	mtime    time.Time
+	finished bool
 }
 
 // discovery is one run of the probes. It runs on a context of its own and
@@ -160,6 +180,70 @@ func New(st Store, settings func() config.Settings) *Catalog {
 	return &Catalog{store: st, settings: settings}
 }
 
+// WatchUpdates points the catalogue at the status file socrates-update.service
+// writes - <dataDir>/updates.json - so an update that replaced an agent's
+// binary is noticed without waiting out the TTL: the dashboard would otherwise
+// go on showing the version that was just replaced for up to half an hour, and
+// across a restart for as long as the stored copy is fresh.
+//
+// A cached catalogue counts as superseded once the file was written after the
+// catalogue was discovered and says the run is over ("done" or "failed" - a
+// failed run may still have replaced some of the binaries). A superseded
+// catalogue is treated exactly like an expired one: the next Get still answers
+// from it at once and discovers again behind the request, because a picker
+// that waits on three probes after every nightly update is the thing the cache
+// is there to prevent. A run still in progress changes nothing; the write that
+// ends it does.
+//
+// The file is looked at no more than once every few seconds, and read only
+// when its mtime has moved. A missing or unreadable file is no update. An
+// empty path stops the watch. It is safe to call at any time.
+func (c *Catalog) WatchUpdates(path string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.updates = updatesWatch{path: path, every: updatesEvery}
+}
+
+// superseded reports whether an update finished after the cached catalogue
+// was discovered. It is called with c.mu held.
+func (c *Catalog) superseded(now time.Time) bool {
+	w := &c.updates
+	if w.path == "" || len(c.snapshot.Agents) == 0 {
+		return false
+	}
+	if now.Sub(w.checked) >= w.every {
+		w.checked = now
+		w.look()
+	}
+	return w.finished && w.mtime.After(time.UnixMilli(c.snapshot.RefreshedAt))
+}
+
+// look stats the status file and, when it has been written since the last
+// look, reads what state the run was in. The updater writes it through a
+// temporary file and a rename, so a read never sees half of it.
+func (w *updatesWatch) look() {
+	info, err := os.Stat(w.path)
+	if err != nil {
+		w.mtime, w.finished = time.Time{}, false
+		return
+	}
+	if info.ModTime().Equal(w.mtime) {
+		return
+	}
+	w.mtime, w.finished = info.ModTime(), false
+	raw, err := os.ReadFile(w.path)
+	if err != nil {
+		return
+	}
+	var status struct {
+		State string `json:"state"`
+	}
+	if json.Unmarshal(raw, &status) != nil {
+		return
+	}
+	w.finished = status.State == "done" || status.State == "failed"
+}
+
 // Get returns the catalogue, discovering it only if nothing is cached. A stale
 // cache is returned at once and renewed behind the request: a picker that has
 // to wait twenty seconds for a model list is a picker nobody opens twice.
@@ -173,9 +257,9 @@ func New(st Store, settings func() config.Settings) *Catalog {
 // models in it. Detaching the work is the fix: whoever gave up, the probes
 // finish and the answer is there for the next request a moment later.
 func (c *Catalog) Get(ctx context.Context) Snapshot {
-	snap, ok := c.Cached()
+	snap, ok, superseded := c.cached()
 	if ok {
-		if time.Since(time.UnixMilli(snap.RefreshedAt)) > TTL {
+		if superseded || time.Since(time.UnixMilli(snap.RefreshedAt)) > TTL {
 			c.discover()
 		}
 		return snap
@@ -195,6 +279,14 @@ func (c *Catalog) Get(ctx context.Context) Snapshot {
 // validates against, and "nothing cached" is an answer it accepts: a session
 // queued offline must never be failed permanently by a cache miss.
 func (c *Catalog) Cached() (Snapshot, bool) {
+	snap, ok, _ := c.cached()
+	return snap, ok
+}
+
+// cached is Cached, and also whether an update has landed since the answer was
+// discovered - which is Get's business, not session creation's: a superseded
+// catalogue is still the best answer there is until the next one arrives.
+func (c *Catalog) cached() (Snapshot, bool, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.loaded {
@@ -215,9 +307,9 @@ func (c *Catalog) Cached() (Snapshot, bool) {
 		c.loaded = true
 	}
 	if len(c.snapshot.Agents) == 0 {
-		return Snapshot{}, false
+		return Snapshot{}, false, false
 	}
-	return c.withSettings(c.snapshot), true
+	return c.withSettings(c.snapshot), true, c.superseded(time.Now())
 }
 
 // Refresh throws the cache away and asks every installed CLI again. It is what

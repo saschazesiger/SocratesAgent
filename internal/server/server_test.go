@@ -184,7 +184,7 @@ func TestSetupAndTheAuthWall(t *testing.T) {
 	}
 
 	// Anonymous access is refused, and the health check is the one endpoint
-	// that answers without a password because a container asks it.
+	// that answers without a password because scripts/update.sh asks it.
 	res, _ = env.do(t, env.anon, "GET", "/api/settings", "")
 	if res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("anonymous API access should be 401, got %d", res.StatusCode)

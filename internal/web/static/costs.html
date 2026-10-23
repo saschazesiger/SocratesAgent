@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en" class="ds-theme ds-base">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Costs · Socrates</title>
+<meta name="description" content="What every conversation on this machine cost.">
+<meta name="theme-color" content="#f0f4f9">
+<meta name="format-detection" content="telephone=no">
+<!-- The same install tags as index.html (see there). -->
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Socrates">
+<link rel="icon" href="/favicon.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/static/img/apple-touch-icon.png">
+<link rel="manifest" href="/static/manifest.json">
+<link rel="preload" href="/static/vendor/dashboard-style/fonts/google-sans-latin-opsz-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/vendor/dashboard-style/fonts/fonts.css">
+<link rel="stylesheet" href="/static/vendor/dashboard-style/ds.css">
+<link rel="stylesheet" href="/static/css/theme.css">
+<link rel="stylesheet" href="/static/css/so-shared.css">
+<link rel="stylesheet" href="/static/css/so-pages.css">
+<script src="/static/vendor/dashboard-style/ds.js" defer></script>
+</head>
+<body>
+<div class="admin-page costs-page">
+  <header class="admin-top">
+    <a class="ds-btn ds-btn--sm" href="/">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      Sessions
+    </a>
+    <div class="title">Costs</div>
+    <span class="costs-state" id="costsState"></span>
+    <button class="ds-btn ds-btn--sm" id="costsCsv" type="button" disabled>CSV</button>
+  </header>
+
+  <div class="admin-wrap costs-wrap">
+    <div class="notice" id="notice"></div>
+
+    <!-- Every filter in one row above everything it filters: the period, then
+         the four things a cost belongs to. -->
+    <div class="costs-filters">
+      <div class="seg-row costs-range" id="costsRange" role="group" aria-label="Period"></div>
+      <div class="costs-selects">
+        <label class="costs-select"><span>Program</span><select class="ds-input" id="fHarness"></select></label>
+        <label class="costs-select"><span>Profile</span><select class="ds-input" id="fProfile"></select></label>
+        <label class="costs-select"><span>Project</span><select class="ds-input" id="fProject"></select></label>
+        <label class="costs-select"><span>Model</span><select class="ds-input" id="fModel"></select></label>
+        <button class="ds-btn ds-btn--sm ds-btn--text" id="fClear" type="button" hidden>Clear filters</button>
+      </div>
+    </div>
+
+    <section class="costs-hero" id="costsTiles" aria-live="polite"></section>
+
+    <section class="ds-card costs-chart-card">
+      <h2 id="chartTitle">Cost per day</h2>
+      <p class="ds-muted" id="chartSub"></p>
+      <div class="costs-legend" id="chartLegend"></div>
+      <div class="costs-chart" id="chart"></div>
+    </section>
+
+    <section class="ds-card"><h2>By project</h2><div class="costs-table" id="tProject"></div></section>
+    <section class="ds-card"><h2>By model</h2><div class="costs-table" id="tModel"></div></section>
+    <section class="ds-card"><h2>By month</h2><div class="costs-table" id="tMonth"></div></section>
+    <section class="ds-card"><h2>By day</h2><div class="costs-table" id="tDay"></div></section>
+    <section class="ds-card"><h2>By program</h2><div class="costs-table" id="tHarness"></div></section>
+    <section class="ds-card"><h2>By profile</h2><div class="costs-table" id="tProfile"></div></section>
+    <section class="ds-card"><h2>Most expensive conversations</h2><div class="costs-table" id="tConv"></div></section>
+
+    <p class="hint costs-note" id="costsNote"></p>
+  </div>
+</div>
+<div class="costs-tip" id="chartTip" role="tooltip" hidden></div>
+<div class="ds-toasts" id="toasts"></div>
+<script type="module" src="/static/js/costs.js"></script>
+</body>
+</html>

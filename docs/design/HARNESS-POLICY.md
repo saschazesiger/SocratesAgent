@@ -53,7 +53,6 @@ Command line, in order:
          [--model <model>] [--effort <level>]
          --dangerously-skip-permissions
          --settings <session dir>/claude-settings.json
-         [--append-system-prompt <on-host instructions>]
 ```
 
 - `--dangerously-skip-permissions` — "Bypass all permission checks"
@@ -65,7 +64,7 @@ Command line, in order:
     before anybody reads it. The binary's condition is
     `getuid() === 0 && IS_SANDBOX !== "1" && !CLAUDE_CODE_BUBBLEWRAP`, so
     **`IS_SANDBOX=1` is in the pane's environment whenever Socrates is running
-    as root** — which the shipped Docker image is. It is not set for any other
+    as root** — which the installed systemd service is. It is not set for any other
     uid: no such check applies there, and the variable would be a claim about a
     machine nobody asked about. The pane's environment is built rather than
     inherited, so this cannot be left to whatever the server was started from.
@@ -162,7 +161,6 @@ names.
          [-m <model>] [-c model_reasoning_effort="<level>"]
          -c projects={"<cwd>"={trust_level="trusted"}}
          -c tui.theme="light-gray"
-         [-c developer_instructions="<on-host instructions>"]
          --no-alt-screen
          --dangerously-bypass-approvals-and-sandbox
 ```
@@ -221,8 +219,7 @@ that did not cover it would be a blocking prompt nobody would find.
 
 Generated `OPENCODE_CONFIG_CONTENT`: `share: "disabled"` (nothing a session
 does is published anywhere), `autoupdate: false`, the permission block above,
-the model when there is one, and `instructions: ["<session dir>/on-host.md"]`
-when the host is reachable (see below).
+and the model when there is one.
 
 Generated `tui.json` (mode 0600): `theme: "github"`, `mouse: true`,
 `attention.enabled: false` — a server harness has no business making a desktop
@@ -247,41 +244,13 @@ A login shell reads the profile that sets up PATH and the prompt, which is
 what makes the pane look like the machine's own terminal — a shell that did
 not read it is a shell missing the very programs it was opened for.
 
-The new-session sheet chooses Host or Container for each Shell. Host uses
-`deploy/host-shell.sh`, which redirects to the host's login shell. It is
-available only when the container was started with `--pid=host` and the right
-to enter namespaces: PID 1 must live in another mount namespace and `nsenter`
-must succeed. Container uses the local shell, including a binary configured in
-the dashboard. Host stays the default where it is available and no dashboard
-binary overrides it. The chosen execution location is saved with the session
-and used again on restart. Older sessions without a saved choice keep their
-original automatic behavior.
+The shell is the dashboard's binary when one is set, and otherwise `$SHELL`,
+then `/bin/bash`, then `/bin/sh`. A Shell in a profile carries the variables of
+all three agents, which is where Codex and OpenCode are signed in to it.
 
-## Agents on the host
-
-The three agents stay in the container: their binaries, credentials and
-generated files live in the data volume, which the host does not have. They
-reach the host one command at a time through `deploy/on-host.sh`, installed as
-`/usr/local/bin/on-host` — `on-host <cmd> [args]`, `on-host -c '<script>'`, or a
-script on stdin — which enters every namespace of the host's PID 1 and runs a
-login shell there as root, with the host's environment rather than the pane's.
-
-When the wrapper is shipped and the host is reachable — the same test as the
-Host shell above, probed once per process — every agent session is told so in
-the form its binary reads, appended to its own instructions and never
-replacing them:
-
-- Claude Code: `--append-system-prompt <text>`. Not
-  `--append-system-prompt-file`, whose contents 2.1.x presented to the model
-  as something it could decline to follow.
-- Codex: `-c developer_instructions="<text>"`, accepted by `--strict-config`
-  (verified against 0.156.1; an unknown key is rejected there).
-- OpenCode: the text in `<session dir>/on-host.md` (mode 0600), named in the
-  generated config's `instructions`.
-
-When the host is not reachable none of this is passed and no file is written:
-an instruction to use a command that fails would send the agent after a host
-that is not there.
+Shells and agents alike run directly on the machine, as the user the service
+runs as: the machine's files, services and tools are simply there, and nothing
+has to be told how to reach them.
 
 ## What is left in the dashboard
 

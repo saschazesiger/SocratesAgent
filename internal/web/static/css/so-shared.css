@@ -1,0 +1,181 @@
+/*
+ * so-shared.css: the project components every page may render, with the
+ * prefix so-. They read tokens only (--ds-* and the --so-* of theme.css),
+ * are unlayered, and never restyle a .ds-* component.
+ *
+ *   html.ds-theme    X1: no pull-to-reload in the installed app, no iOS font
+ *                    inflation (it would desync the DOM from the terminal canvas)
+ *   .so-logo         the Socrates mark (img/logo.png): a brand image, not a glyph
+ *   .so-agent        an agent's brand mark (logos.js); brand colours live only here
+ *   .so-mark         the activity ring and outcome badge around an agent mark
+ *                    (session list and Home); DS has no ring around an avatar
+ *   .so-field-row    a field and its Dictate/Clear button side by side
+ *   .so-break        a path or id that must wrap anywhere
+ *   .so-ellipsis     one line, cut with an ellipsis
+ *   .so-conn         the connection slot net.js renders its alert into
+ *   .so-page-head    the page header with actions at its end
+ *   .so-info         the "i" button of infoTip() (api.js): a hook for tests and
+ *                    callers, no rule of its own
+ */
+
+/* X1 */
+html.ds-theme,
+html.ds-theme body {
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+.so-logo {
+  display: block;
+  flex: none;
+  inline-size: var(--so-logo-size);
+  block-size: var(--so-logo-size);
+  object-fit: contain;
+}
+
+/* ── Agent marks ─────────────────────────────────────────────────────── */
+
+.so-agent {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  inline-size: var(--so-agent-size);
+  block-size: var(--so-agent-size);
+}
+
+.so-agent svg {
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+}
+
+.so-agent[data-agent="claude"] { color: var(--so-brand-claude); }
+.so-agent[data-agent="vscode"] { color: var(--so-brand-vscode); }
+.so-agent[data-agent="codex"] { color: var(--so-brand-codex); }
+
+.so-agent__tile { fill: var(--so-brand-tile); }
+.so-agent__glyph { fill: var(--so-brand-tile-ink); }
+.so-agent__inner { fill: var(--so-brand-opencode-inner); }
+
+/* An agent without a drawing of its own: its initial on a tile. */
+.so-agent--generic {
+  border-radius: var(--ds-radius-xs);
+  background: var(--ds-surface-high);
+  color: var(--ds-text-2);
+  font: var(--ds-font-caption);
+}
+
+.so-agent--quiet {
+  opacity: var(--ds-state-disabled);
+  filter: grayscale(1);
+}
+
+/* ── Activity ring and outcome badge ─────────────────────────────────── */
+
+.so-mark {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+
+.so-mark[data-ring]::after {
+  content: "";
+  position: absolute;
+  inset: calc(-1 * var(--ds-space-1));
+  border: var(--ds-focus-width) solid var(--ds-line-2);
+  border-radius: var(--ds-radius-action);
+  pointer-events: none;
+}
+
+.so-mark[data-ring="waiting"]::after { border-color: var(--ds-warning); }
+
+.so-mark[data-ring="busy"]::after {
+  border-top-color: var(--ds-primary);
+  animation: ds-spin var(--ds-loop-spin) linear infinite;
+}
+
+/* A stale page says so by stopping the one loop that claims "working now";
+   DS spinners elsewhere keep turning (§1.2 Frame Q11). */
+body.stale .so-mark[data-ring="busy"]::after {
+  animation-play-state: paused;
+  opacity: var(--ds-state-stale);
+}
+
+.so-mark__badge {
+  position: absolute;
+  inset-inline-end: calc(-1 * var(--ds-space-1));
+  inset-block-end: calc(-1 * var(--ds-space-1));
+  display: grid;
+  place-items: center;
+  inline-size: var(--ds-space-5);
+  block-size: var(--ds-space-5);
+  border-radius: var(--ds-radius-action);
+  background: var(--ds-surface);
+  color: var(--so-outcome, var(--ds-text-2));
+}
+
+.so-mark__badge[data-kind="complete"] { --so-outcome: var(--ds-success); }
+.so-mark__badge[data-kind="partial"] { --so-outcome: var(--ds-primary); }
+.so-mark__badge[data-kind="needs_input"] { --so-outcome: var(--ds-warning); }
+.so-mark__badge[data-kind="blocked"] { --so-outcome: var(--ds-error); }
+.so-mark__badge[data-kind="error"] { --so-outcome: var(--ds-text-3); }
+
+/* ── Layout helpers ──────────────────────────────────────────────────── */
+
+/* A field and the button after it (the reference app's ex-field-row). */
+.so-field-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+}
+
+.so-field-row > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Beside a textarea the button stays at the top of it. */
+.so-field-row--top {
+  align-items: flex-start;
+}
+
+.so-break {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.so-ellipsis {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The connection alert stays in view while the page scrolls under it. */
+#main > .so-conn,
+.so-auth > .so-conn {
+  position: sticky;
+  top: 0;
+  z-index: var(--ds-z-sticky);
+  padding: var(--ds-space-2) var(--ds-space-4) 0;
+}
+
+/* In the session page's column it is one more row above the stage. */
+.so-main > .so-conn {
+  flex: none;
+}
+
+.so-page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--ds-space-3) var(--ds-space-6);
+}
+
+.so-page-head > .ds-page-head {
+  flex: 1 1 var(--so-page-head-basis);
+}

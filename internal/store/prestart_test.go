@@ -257,7 +257,7 @@ func TestMigrationToSchema8(t *testing.T) {
 		}
 	}
 	var version int
-	if err := st.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 8 {
+	if err := st.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != SchemaVersion {
 		t.Fatalf("user_version = %d %v", version, err)
 	}
 }

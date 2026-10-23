@@ -273,7 +273,7 @@ type TunnelSettings struct {
 }
 
 // Default returns a fresh settings document, seeded from the environment where
-// that is useful for container deployments.
+// that is useful.
 func Default() Settings {
 	return Settings{
 		OpenRouter: OpenRouterSettings{
@@ -460,11 +460,10 @@ func Slug(in string) string {
 	return strings.Trim(b.String(), "-")
 }
 
-// DefaultDataDir is where the data directory is in the image, and the only
-// place it is without being asked for. Socrates is run as the container; a
-// home-directory fallback would be a second answer for a deployment that no
-// longer exists.
-const DefaultDataDir = "/data"
+// DefaultDataDir is where scripts/install.sh puts the data directory, and the
+// only place it is without being asked for: a home-directory fallback would
+// be a second answer to the one question every script and page relies on.
+const DefaultDataDir = "/var/lib/socrates"
 
 // DataDir is the directory that holds the database and the workspaces.
 func DataDir() string {

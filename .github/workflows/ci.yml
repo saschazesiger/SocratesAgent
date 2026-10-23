@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Started by update-dashboard-style.yml: its push of the new copy is made
+  # with GITHUB_TOKEN, which starts no workflow by itself.
+  workflow_dispatch:
 
 permissions:
   contents: read

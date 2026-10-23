@@ -411,16 +411,12 @@ func newProfileID() (string, error) {
 // checkProfile says whether a session of a harness can run in a profile, as
 // an HTTP status and a sentence, and zero when it can. The default profile
 // suits every session.
-func (s *Server) checkProfile(harnessID, label, shellExecution, id string) (int, string) {
+func (s *Server) checkProfile(harnessID, label, id string) (int, string) {
 	if id == "" {
 		return 0, ""
 	}
 	switch harnessID {
-	case string(harnesses.KindClaude), string(harnesses.KindCodex), string(harnesses.KindOpenCode):
-	case string(harnesses.KindShell):
-		if shellExecution == harnesses.ShellExecutionHost {
-			return http.StatusBadRequest, "a profile is this container's sign-ins, so it needs a container shell"
-		}
+	case string(harnesses.KindClaude), string(harnesses.KindCodex), string(harnesses.KindOpenCode), string(harnesses.KindShell):
 	default:
 		return http.StatusBadRequest, label + " has no sign-in to run in a profile"
 	}

@@ -2,11 +2,11 @@ BINARY  ?= socrates
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: build test race fmt fmt-check vet tidy-check check e2e clean docker
+.PHONY: build test race fmt fmt-check vet tidy-check check e2e vendor-ds ds-check clean
 
-## build: compile the single binary into ./socrates. Socrates is run as the
-## Docker image - `make docker` builds that - and this is here for the tests
-## and for a quick compile check.
+## build: compile the single binary into ./socrates, for the tests and a quick
+## compile check. scripts/install.sh and scripts/update.sh build the installed
+## one.
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) .
 
@@ -52,7 +52,7 @@ check: fmt-check vet tidy-check race build
 ## what it is there to test.
 e2e: build
 	@if [ ! -f e2e/run.mjs ]; then \
-	  echo "e2e/run.mjs is not in this tree - the browser suite is left out of the Docker build context."; \
+	  echo "e2e/run.mjs is not in this tree."; \
 	  exit 1; \
 	fi
 	node e2e/run.mjs
@@ -63,9 +63,21 @@ e2e: build
 vendor-xterm: ## re-download the pinned xterm.js bundle set
 	@bash scripts/vendor-xterm.sh
 
-## docker: build the image, which is how Socrates is run
-docker:
-	docker build -t socrates:$(VERSION) .
+## vendor-ds replaces the vendored Dashboard-Style with the latest main of
+## github.com/saschazesiger/Dashboard-Style, through that commit's own
+## vendor.sh. The copy is committed and checksummed; the nightly
+## update-dashboard-style workflow does the same on its own.
+DS_DEST := internal/web/static/vendor/dashboard-style
+DS_REPO := saschazesiger/Dashboard-Style
+vendor-ds: ## update the vendored Dashboard-Style to its latest main
+	@tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && \
+	curl -fsSL "https://raw.githubusercontent.com/$(DS_REPO)/main/scripts/vendor.sh" -o "$$tmp/vendor.sh" && \
+	sh "$$tmp/vendor.sh" "$(DS_DEST)"
+
+## ds-check verifies the vendored copy against its SHA256SUMS (the same check
+## internal/web's tests make, so `make check` covers it).
+ds-check:
+	go test ./internal/web/ -run 'TestVendoredDashboardStyleIsUntouched' -count=1
 
 clean:
 	rm -f $(BINARY)

@@ -108,6 +108,10 @@ func TestScrapeBackground(t *testing.T) {
 // into its session file when its turn is over and a background shell or a
 // Monitor is still running.
 func TestActivityClaudeShellStatusIsTasks(t *testing.T) {
+	// The status files are looked for under the plan's HOME; a
+	// CLAUDE_CONFIG_DIR inherited from whatever runs the tests - a Claude Code
+	// session, for one - would win over it.
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	home := t.TempDir()
 	dir := filepath.Join(home, ".claude", "sessions")
 	if err := os.MkdirAll(dir, 0o755); err != nil {

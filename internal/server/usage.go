@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/saschazesiger/SocratesAgent/internal/costs"
 	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
@@ -291,13 +292,11 @@ func codexUsage(path, model string) ([]usageWindow, *float64) {
 		effectiveModel = turn.Payload.Model
 		return true
 	})
-	price, ok := codexPrices[effectiveModel]
+	u := tokens.Payload.Thread
+	cost, ok := costs.CodexCost(effectiveModel, u.Input, u.Cached, u.CacheWrite, u.Output)
 	if !ok {
 		return windows, nil
 	}
-	u := tokens.Payload.Thread
-	plain := max(0, u.Input-u.Cached-u.CacheWrite)
-	cost := (plain*price.Input + u.Cached*price.Cached + u.CacheWrite*price.CacheWrite + u.Output*price.Output) / 1e6
 	return windows, &cost
 }
 
@@ -335,22 +334,6 @@ type codexWindow struct {
 	UsedPercent   *float64 `json:"used_percent"`
 	WindowMinutes float64  `json:"window_minutes"`
 	ResetsAt      int64    `json:"resets_at"`
-}
-
-type tokenPrice struct{ Input, Cached, CacheWrite, Output float64 }
-
-// USD per million tokens. These are the published ChatGPT Work/Codex rates;
-// aliases keep old sessions useful while unknown future models omit cost.
-var codexPrices = map[string]tokenPrice{
-	"gpt-6-astra":   {10, 1, 12.5, 50},
-	"gpt-5.6-sol":   {4, .4, 5, 20},
-	"gpt-5.6":       {4, .4, 5, 20},
-	"gpt-5.6-terra": {2, .2, 2.5, 12},
-	"gpt-5.6-luna":  {.2, .02, .25, 1.2},
-	"gpt-5.5":       {5, .5, 6.25, 30},
-	"gpt-5.4":       {2.5, .25, 3.125, 15},
-	"gpt-5.4-mini":  {.75, .075, .9375, 4.5},
-	"gpt-5.3-codex": {1.75, .175, 2.1875, 14},
 }
 
 func epochTime(epoch int64) string {

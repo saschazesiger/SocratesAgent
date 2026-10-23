@@ -16,13 +16,12 @@ import (
 )
 
 // Connect mode is the server Socrates runs while it has no bucket to keep its
-// state in: no configuration yet (a fresh volume), or a configured bucket that
+// state in: no configuration yet (a fresh data directory), or a configured bucket that
 // cannot be used right now - unreachable with no local copy to start from, in
 // use by another machine, or refusing the passphrase.
 //
-// It serves the setup page, its assets, /api/health (200, because a container
-// health check and the redeploy smoke test of a fresh volume ask it before
-// anybody has connected anything), /api/state with "mode":"connect", and the
+// It serves the setup page, its assets, /api/health (200, because
+// scripts/update.sh asks it of an installation nobody has connected yet), /api/state with "mode":"connect", and the
 // three storage actions:
 //
 //	POST /api/storage/connect   connect a bucket (only while nothing is configured)
@@ -34,7 +33,7 @@ import (
 // /setup.
 //
 // It is unauthenticated, exactly like the first-run password page it comes
-// before: on a fresh volume there is no password yet to check against. That
+// before: on a fresh data directory there is no password yet to check against. That
 // is only safe while nothing is configured and nothing is there to take: a
 // data directory that already holds an installation with a password (an
 // upgrade that has no bucket configured yet) connects only with that
@@ -356,7 +355,7 @@ func (c *ConnectServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	// A data directory that already holds an installation with a password -
 	// an existing Socrates upgraded to a build that needs a bucket, without
-	// one configured yet - is not a fresh volume. Connecting it is either
+	// one configured yet - is not a fresh data directory. Connecting it is either
 	// an upload of all of it (the password hash, live sign-ins, push keys)
 	// to whatever bucket is named, or a restore over it from that bucket;
 	// from an unauthenticated page that would hand the machine to whoever

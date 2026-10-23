@@ -30,6 +30,7 @@ import (
 //	logins.json                the whole logins table, as one JSON array
 //	sessions/<id>.json         one session row, the hidden fields included
 //	drafts/<id>.json           one prepared session's prompt draft
+//	costs/<harness>/<conv>.json one conversation's cost ledger (costs.go)
 
 // LoginsObject is the one object the whole logins table is stored as. A
 // handful of rows that are always read together are cheaper as one object
@@ -55,7 +56,7 @@ func SessionObject(id string) string { return sessionPrefix + url.PathEscape(id)
 // DraftObject is the object a prepared session's draft is stored as.
 func DraftObject(id string) string { return draftPrefix + url.PathEscape(id) + objectSuffix }
 
-// ObjectKind says which of the four kinds an object name is.
+// ObjectKind says which of the five kinds an object name is.
 type ObjectKind int
 
 const (
@@ -64,6 +65,7 @@ const (
 	ObjectLogins
 	ObjectSession
 	ObjectDraft
+	ObjectCost
 )
 
 // ParseObject reads an object name back into its kind and the key or id it
@@ -98,6 +100,10 @@ func ParseObject(name string) (ObjectKind, string, error) {
 			return ObjectUnknown, "", err
 		}
 		return ObjectDraft, id, nil
+	case strings.HasPrefix(name, costPrefix):
+		if key, ok := parseCostObject(name); ok {
+			return ObjectCost, key, nil
+		}
 	}
 	return ObjectUnknown, "", fmt.Errorf("%q is not a Socrates object name", name)
 }
@@ -368,6 +374,16 @@ func (s *Store) ExportObject(name string) (data []byte, ok bool, err error) {
 		}
 		data, err := json.Marshal(draft)
 		return data, err == nil, err
+	case ObjectCost:
+		ledger, err := s.GetCostLedger(key)
+		if errors.Is(err, ErrNotFound) {
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		data, err := json.Marshal(ledger)
+		return data, err == nil, err
 	}
 	return nil, false, fmt.Errorf("%q is not a Socrates object name", name)
 }
@@ -420,6 +436,9 @@ func (s *Store) AllObjects() ([]string, error) {
 	if err := collect(`SELECT session_id FROM drafts`, DraftObject, nil); err != nil {
 		return nil, err
 	}
+	if err := collect(`SELECT key FROM cost_convs`, CostObject, nil); err != nil {
+		return nil, err
+	}
 	sort.Strings(out)
 	return out, nil
 }
@@ -428,7 +447,7 @@ func (s *Store) AllObjects() ([]string, error) {
 
 // ImportObject makes the local database hold what the bucket holds for one
 // object: a key/value row, the whole logins table, a session row with its
-// hidden fields, or a draft.
+// hidden fields, a draft, or a conversation's cost ledger.
 //
 // It is a download, not a change, so nothing is recorded as pending and the
 // observer is not told - uploading what was just downloaded would be a round
@@ -456,6 +475,8 @@ func (s *Store) ImportObject(name string, data []byte) error {
 		err = s.importSession(key, data)
 	case ObjectDraft:
 		err = s.importDraft(key, data)
+	case ObjectCost:
+		err = s.importCostLedger(key, data)
 	default:
 		err = fmt.Errorf("%q is not a Socrates object name", name)
 	}
@@ -576,6 +597,8 @@ func (s *Store) DeleteObject(name string) error {
 		_, err = s.db.Exec(`DELETE FROM sessions WHERE id = ?`, key)
 	case ObjectDraft:
 		_, err = s.db.Exec(`DELETE FROM drafts WHERE session_id = ?`, key)
+	case ObjectCost:
+		err = s.deleteCostLedger(key)
 	}
 	if err != nil {
 		return err

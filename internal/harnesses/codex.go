@@ -79,11 +79,14 @@ func (c Codex) plan(req PlanRequest, lead []string) (LaunchPlan, error) {
 	}
 	argv = append(argv, "-c", trustLevelOverride(req.Cwd))
 	argv = append(argv, "-c", tomlAssign("tui.theme", codexTheme))
-	// developer_instructions is added to Codex's own instructions and to any
-	// AGENTS.md, and replaces neither.
-	if text := onHostInstructions(); text != "" {
-		argv = append(argv, "-c", tomlAssign("developer_instructions", text))
-	}
+	// Codex otherwise checks for a newer release at startup and can open on an
+	// "Update available" prompt, which in a pane nobody is watching is a
+	// session that never reaches its first turn. Updates are not its business
+	// here: socrates-update.timer installs them with the standalone installer,
+	// between sessions rather than in front of one. The value is a TOML
+	// boolean, not the string tomlAssign would make of it, and the key is a
+	// documented top-level one, so --strict-config accepts it.
+	argv = append(argv, "-c", "check_for_update_on_startup=false")
 	// Inline rather than the alternate screen, so the pane keeps its
 	// scrollback - which is the whole of what a web terminal has.
 	argv = append(argv, "--no-alt-screen")

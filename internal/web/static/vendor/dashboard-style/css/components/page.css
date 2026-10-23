@@ -1,0 +1,135 @@
+/*
+ * Page content inside the content panel (shell.css): the padded content
+ * area, one page at most --ds-content-max wide, the page header and the
+ * layout helpers for cards.
+ *
+ *   <div class="ds-content">            padding, container "ds-content"
+ *     <div class="ds-page">             one page, gap 20px
+ *       <header class="ds-page-head"> <h1 class="ds-page-head__title"> <p class="ds-page-head__lead">
+ *       <div class="ds-stack"> | <div class="ds-grid-2"> cards ...
+ *
+ * The panel's width, not the window's, decides when tables and form grids
+ * get narrow: the persistent drawer takes --ds-drawer-width of it. Those
+ * rules are container queries on "ds-content". The end of a page stays
+ * clear of a one- or two-line snackbar (--ds-toast-room), so a success
+ * message never covers the actions just pressed.
+ *
+ * Read-only resulting properties of .ds-content (read them, never set
+ * them; set the spacing tokens instead): --ds-content-pad-top and
+ * --ds-content-pad-x, the top and side padding of the panel at the current
+ * width. The loading bar (loading.css) reads them, and inside .ds-page the
+ * page's centring (100cqw of the "ds-content" container), to reach the
+ * panel edges.
+ *
+ * Progressive:
+ * - text-wrap (the lead avoids a lone last word): without it the line
+ *   wraps as usual.
+ */
+
+@layer ds.tokens, ds.base, ds.components, ds.motion, ds.utilities;
+
+@layer ds.components {
+  .ds-content {
+    --ds-content-pad-top: var(--ds-space-6);
+    --ds-content-pad-x: var(--ds-space-8);
+    container: ds-content / inline-size;
+    padding: var(--ds-content-pad-top) var(--ds-content-pad-x) calc(var(--ds-space-6) + var(--ds-toast-room) + var(--ds-space-2));
+  }
+
+  .ds-page {
+    width: min(100%, var(--ds-content-max));
+    margin: 0 auto;
+    display: grid;
+    gap: var(--ds-space-5);
+    align-content: start;
+  }
+
+  /* The page's gap is the rhythm: a closing note has no browser margin. */
+  .ds-page > p {
+    margin: 0;
+  }
+
+  @media (max-width: 720px) {
+    .ds-content {
+      --ds-content-pad-top: var(--ds-space-5);
+      --ds-content-pad-x: var(--ds-space-4);
+    }
+  }
+
+  /* Phones: the snackbar sits closer to the bottom edge (toast.css). */
+  @media (max-width: 600px) {
+    .ds-content {
+      padding-bottom: calc(var(--ds-space-4) + var(--ds-toast-room) + var(--ds-space-2));
+    }
+  }
+
+  /* ── Page header ──────────────────────────────── */
+
+  .ds-page-head {
+    display: grid;
+    gap: var(--ds-space-1);
+    min-width: 0;
+    margin-bottom: var(--ds-space-1);
+  }
+
+  /* A long name without spaces (a serial, a URL) breaks instead of
+     widening the page. */
+  .ds-page-head__title {
+    margin: 0;
+    color: var(--ds-text);
+    font: var(--ds-font-headline);
+    letter-spacing: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .ds-page-head__lead {
+    margin: 0;
+    max-width: var(--ds-measure);
+    color: var(--ds-text-2);
+    font: var(--ds-font-body);
+    text-wrap: pretty;
+  }
+
+  /* ── Layout helpers ───────────────────────────── */
+
+  /* One column that never grows wider than the page: a wide table inside
+     scrolls in its own wrapper instead of scrolling the page sideways. */
+  .ds-stack {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--ds-space-4);
+    min-width: 0;
+  }
+
+  .ds-grid-2 {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    min-width: 0;
+  }
+
+  /* Cards in a list or a grid of the page keep the page's own rhythm. A
+     stack of fields inside a card keeps its 16px. */
+  .ds-page > .ds-stack,
+  .ds-grid-2 {
+    gap: var(--ds-space-5);
+  }
+
+  @media (max-width: 900px) {
+    .ds-grid-2 {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  /* Print: the page fills the paper, without the panel's padding and width
+     cap. Last in the file, so it beats the rules above, the narrow-window
+     ones included, at the same specificity. */
+  @media print {
+    .ds-content {
+      padding: 0;
+    }
+
+    .ds-page {
+      width: auto;
+    }
+  }
+}

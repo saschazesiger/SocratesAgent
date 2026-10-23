@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // MinMajor and MinMinor are the oldest tmux Socrates works with.
@@ -145,22 +146,133 @@ func (t *Tmux) Run(ctx context.Context, args ...string) (string, error) {
 }
 
 // RunConf executes a command with the generated configuration and the UTF-8
-// flag, which only the command that starts the server actually needs. It is
-// used for `new-session` as belt and braces: should the server somehow not be
-// running, the session still gets our configuration rather than the user's.
+// flag, which only the command that starts the server actually needs. A
+// command that starts a server this way starts it outside the scope, so
+// Socrates itself uses RunStart and RunNoStart; tests use this to make a
+// session by hand.
 func (t *Tmux) RunConf(ctx context.Context, args ...string) (string, error) {
 	return t.run(ctx, t.Bin, append([]string{"-f", t.Conf, "-S", t.Sock, "-u"}, args...))
 }
 
 // RunStart executes the command that starts the server.
 //
-// Nothing wraps it. The tmux server daemonizes out of Socrates' process tree
-// and is reparented to PID 1, where tini - the image entrypoint - reaps it.
-// Socrates installs no reaper of its own: one would race os/exec's Wait on its
-// own children (every viewer's `tmux attach`, every discovery subprocess) and
-// turn their exits into ECHILD.
+// Under systemd the server is started in a scope of its own,
+// socrates-tmux.scope, instead of in socrates.service: everything in a
+// service's cgroup is stopped with the service, and the sessions are the one
+// thing an update must not take down. Restarting the service then restarts
+// Socrates and nothing else, and the new process adopts the sessions it finds
+// on the socket.
+//
+// The scope can outlive its server. A program a session started and detached
+// keeps the old scope alive after the server is gone, and systemd then refuses
+// a second socrates-tmux.scope as already existing. That refusal is the moment
+// that matters most - the plain start it used to fall back to put every
+// session back in the service, to be killed by the next update - so the scope
+// is tried once more under a name of its own, socrates-tmux-<unix seconds>.
+// `systemctl stop "socrates-tmux*.scope"` stops either. Only when that fails as
+// well is the failure said out loud and the server started the plain way,
+// because sessions that end with the service are still better than none.
+//
+// The scope is made with OOMPolicy=continue. Its default, stop, would have
+// the kernel's OOM killer taking one runaway agent stop the whole scope and
+// every session in it. A systemd too old to know the property for a scope
+// refuses the assignment by name, and the scope is then made without it rather
+// than not at all.
+//
+// Nothing else wraps it. The tmux server daemonizes out of Socrates' process
+// tree and is reparented to PID 1, which reaps it. Socrates installs no reaper
+// of its own: one would race os/exec's Wait on its own children (every
+// viewer's `tmux attach`, every discovery subprocess) and turn their exits
+// into ECHILD.
 func (t *Tmux) RunStart(ctx context.Context, args ...string) (string, error) {
-	return t.run(ctx, t.Bin, append([]string{"-f", t.Conf, "-S", t.Sock, "-u"}, args...))
+	args = append([]string{"-f", t.Conf, "-S", t.Sock, "-u"}, args...)
+	if systemdRun := serviceScope(); systemdRun != "" {
+		out, err := t.startScoped(ctx, t.run, systemdRun, args, time.Now())
+		if err == nil {
+			return out, nil
+		}
+		t.logf("tmux: the server could not be started in its own scope, so it is started in the service and its sessions end with it: %s", failure(err))
+	}
+	return t.run(ctx, t.Bin, args)
+}
+
+// RunNoStart executes a command that must not start a server, with -N: where
+// the command would start one - `new-session` on a socket nobody listens on -
+// tmux refuses with the same "error connecting" that serverGone reads instead.
+// A server started that way would be a child of socrates.service rather than
+// of the scope, so every server is started by RunStart and nothing else.
+func (t *Tmux) RunNoStart(ctx context.Context, args ...string) (string, error) {
+	return t.run(ctx, t.Bin, append([]string{"-f", t.Conf, "-S", t.Sock, "-u", "-N"}, args...))
+}
+
+// scopeUnit is the scope the server is normally started in, and the name the
+// README tells people to stop.
+const scopeUnit = "socrates-tmux"
+
+// runner is the signature of Tmux.run, so that tests can stand in for it.
+type runner func(ctx context.Context, bin string, args []string) (string, error)
+
+// startScoped runs tmux with args in a new scope: socrates-tmux first, then,
+// if systemd refuses that, socrates-tmux-<now in unix seconds>. Any failure
+// earns the second name, not only "already exists", because the message is
+// systemd's to word and a wrong guess here costs every session at the next
+// restart; running start-server twice costs nothing. A refusal that names
+// OOMPolicy retries the same name without the property, once.
+func (t *Tmux) startScoped(ctx context.Context, run runner, systemdRun string, args []string, now time.Time) (string, error) {
+	unit, oom := scopeUnit, true
+	for {
+		out, err := run(ctx, systemdRun, append(scopeArgs(unit, oom), append([]string{t.Bin}, args...)...))
+		if err == nil {
+			return out, nil
+		}
+		switch {
+		case oom && strings.Contains(Stderr(err), "OOMPolicy"):
+			t.logf("tmux: systemd refuses OOMPolicy for a scope, so the scope is made without it: %s", failure(err))
+			oom = false
+		case unit == scopeUnit:
+			unit = fmt.Sprintf("%s-%d", scopeUnit, now.Unix())
+			t.logf("tmux: %s.scope could not be made, so the server is started in %s.scope: %s", scopeUnit, unit, failure(err))
+		default:
+			return out, err
+		}
+	}
+}
+
+// scopeArgs is the systemd-run command line, without the program, that starts
+// a program in the transient scope unit. --collect lets systemd forget a scope
+// that ended badly instead of keeping it, failed, under the name the next
+// start needs.
+func scopeArgs(unit string, oom bool) []string {
+	args := []string{"--scope", "--quiet", "--collect", "--unit=" + unit, "--description=Socrates sessions"}
+	if oom {
+		args = append(args, "-p", "OOMPolicy=continue")
+	}
+	return args
+}
+
+// failure is the line worth logging about a failed command: what it said on
+// standard error, or the error itself when it said nothing.
+func failure(err error) string {
+	if msg := strings.TrimSpace(Stderr(err)); msg != "" {
+		return msg
+	}
+	return err.Error()
+}
+
+// serviceScope is the path to systemd-run when the server should be started in
+// a scope of its own, or empty when Socrates is not a systemd service.
+// INVOCATION_ID is what systemd gives a service; the parent has to be PID 1 as
+// well, because a program started inside a session inherits the variable
+// through tmux and is not the service.
+func serviceScope() string {
+	if os.Getenv("INVOCATION_ID") == "" || os.Getppid() != 1 {
+		return ""
+	}
+	bin, err := exec.LookPath("systemd-run")
+	if err != nil {
+		return ""
+	}
+	return bin
 }
 
 func (t *Tmux) run(ctx context.Context, bin string, args []string) (string, error) {

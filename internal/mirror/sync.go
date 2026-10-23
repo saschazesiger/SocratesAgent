@@ -143,7 +143,7 @@ func (m *Mirror) uploadPending(ctx context.Context) error {
 // Connect and Attach runs - a hydrate of a large installation, or the first
 // upload of all of it, can take longer than the lease lives, and the flusher
 // that renews it normally only starts once the server is built. Without it a
-// second container would find the lease expired half way through and start
+// second installation would find the lease expired half way through and start
 // from a half uploaded bucket.
 //
 // The returned context ends when the lease is lost, so the work stops at
@@ -197,7 +197,7 @@ func (m *Mirror) keepAlive(ctx context.Context) (context.Context, func() error) 
 //     machine that ran without a bucket). Everything goes up.
 //   - another installation, or none, or the same one written by another
 //     Socrates since - a crash here and a start elsewhere, a takeover, a
-//     rollback to an old volume: the bucket wins. What this machine had
+//     rollback to an old data directory: the bucket wins. What this machine had
 //     and never uploaded to it is dropped, because it is older than what
 //     the other Socrates wrote.
 func (m *Mirror) hydrate(ctx context.Context) error {

@@ -1,79 +1,23 @@
-// A searchable dropdown for picking a model.
+// A searchable list for picking a model or a working directory.
 //
 // The model catalogue has several hundred entries, so a plain <select> is
-// unusable and a datalist gives no control over what is shown. This is a
-// proper combobox: type to filter, arrow keys to move, enter to take the
-// highlighted entry, escape to go back to what was there before. It follows
-// the ARIA combobox pattern so it works with a keyboard and a screen reader.
+// unusable and a datalist gives no control over what is shown. This is the
+// Dashboard-Style combobox: type to filter, arrow keys to move, enter to take
+// the highlighted entry, escape to go back to what was there before. DS opens,
+// places and closes the list (DS.overlay), so it is never cut off by the
+// dialog or sheet it sits in and follows its field while anything moves; this
+// file filters and chooses.
+//
+// The microphone beside a field is the caller's (keyboard.js dictated()).
 
 import { el } from './api.js';
-import { guard, micButton } from './keyboard.js';
-
-let openInstance = null;
-
-// closeOpen closes whichever combobox is currently showing its list.
-function closeOpen(except) {
-  if (openInstance && openInstance !== except) openInstance.close();
-}
-
-document.addEventListener('click', (event) => {
-  if (openInstance && !openInstance.root.contains(event.target)) closeOpen(null);
-});
+import { guard } from './keyboard.js';
+import { DS, html, iconEl, morph } from './ui.js';
 
 let comboCount = 0;
 
-// pinList pins an open list to its field on the screen itself rather than
-// inside the field's box. A dialog scrolls its own contents, and a list
-// positioned inside it was cut off at the dialog's bottom edge; a fixed one
-// is drawn over the dialog's edge and past it.
-//
-// It opens downwards when it fits there, and upwards when the room above
-// the field is what it needs. Either way it is as tall as the screen allows
-// and scrolls inside itself beyond that: on a phone with the keyboard up
-// the room is what the visual viewport has left, not the window.
-function pinList(list, anchor, most = 300) {
-  const box = anchor.getBoundingClientRect();
-  const view = window.visualViewport;
-  const top = view ? view.offsetTop : 0;
-  const height = view ? view.height : window.innerHeight;
-  const gap = 4;
-  const edge = 8;
-  const below = top + height - box.bottom - gap - edge;
-  const above = box.top - top - gap - edge;
-  list.style.maxHeight = '';
-  const wanted = Math.min(most, list.scrollHeight + 2);
-  const down = below >= wanted || below >= above;
-  const room = Math.max(0, down ? below : above);
-  const tall = Math.min(wanted, room);
-  list.style.width = box.width + 'px';
-  list.style.maxHeight = tall + 'px';
-  const wantLeft = box.left;
-  const wantTop = down ? box.bottom + gap : box.top - gap - tall;
-  list.style.left = wantLeft + 'px';
-  list.style.top = wantTop + 'px';
-  // A dialog that is still animating in has a transform, and a transform
-  // makes it the box a fixed element is placed in. Whatever that shifts is
-  // measured and taken back out, and the dialog's animationend places the
-  // list again once there is nothing left to correct for.
-  const drawn = list.getBoundingClientRect();
-  if (Math.abs(drawn.left - wantLeft) > 0.5 || Math.abs(drawn.top - wantTop) > 0.5) {
-    list.style.left = (2 * wantLeft - drawn.left) + 'px';
-    list.style.top = (2 * wantTop - drawn.top) + 'px';
-  }
-}
-
-// followMoves keeps an open list on its field while anything under it moves:
-// the dialog scrolling, the window resizing, the keyboard coming up.
-function followMoves(on, handler) {
-  const how = on ? 'addEventListener' : 'removeEventListener';
-  document[how]('scroll', handler, true);
-  document[how]('animationend', handler, true);
-  window[how]('resize', handler);
-  if (window.visualViewport) {
-    window.visualViewport[how]('resize', handler);
-    window.visualViewport[how]('scroll', handler);
-  }
-}
+// The most a list shows at once; a filter finds the rest.
+const LIST_MAX = 200;
 
 /**
  * combobox builds the control.
@@ -91,7 +35,9 @@ function followMoves(on, handler) {
  * options.display      how a value reads in the field. Without it the value is
  *                      its own label, which is right for a model id and wrong
  *                      for anything whose value is a key.
- * options.emptyText    what an empty list says.
+ * options.emptyText    what the list says when nothing matches.
+ *
+ * Returns { node, input, setValue(value, notify), value(), isOpen(), focus() }.
  */
 export function combobox(options = {}) {
   const {
@@ -110,11 +56,11 @@ export function combobox(options = {}) {
   const id = 'combo' + (++comboCount);
   let current = value ?? '';
   let filtered = [];
+  let total = 0;
   let active = -1;
-  let isOpen = false;
 
   const input = el('input', {
-    class: 'input mono combo-input',
+    class: 'ds-input ds-combo__input',
     type: 'text',
     value: shown(current),
     placeholder,
@@ -125,31 +71,26 @@ export function combobox(options = {}) {
     'aria-autocomplete': 'list',
     'aria-controls': id + '-list',
   });
-
-  const list = el('div', { class: 'combo-list', id: id + '-list', role: 'listbox', hidden: true });
   const toggle = el('button', {
-    class: 'combo-toggle', type: 'button', tabindex: '-1',
-    'aria-label': 'Show the list',
-  }, el('span', { class: 'combo-caret' }));
-
-  const combo = el('div', { class: 'combo' }, input, toggle, list);
-
-  // The field can be spoken into as well as typed into, and what is said is
-  // what would have been typed: it filters the list, and the entry is still
-  // chosen by hand. With the keyboard put away it is the only way this
-  // control can be used at all, which is why the microphone is beside the
-  // field rather than inside it - the caret button is already in there, and
-  // two glyphs in the corner of one field is a puzzle rather than a control.
-  const mic = micButton((text) => {
-    input.value = text;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-  });
+    class: 'ds-combo__toggle', type: 'button', tabindex: '-1', 'aria-label': 'Show all',
+  }, iconEl('chevronDown', 20));
+  const list = el('ul', { class: 'ds-combo__list', id: id + '-list', role: 'listbox' });
+  const status = el('p', { class: 'ds-combo__status', role: 'status' });
+  const popup = el('div', { class: 'ds-combo__popup', hidden: true }, list, status);
+  const node = el('div', { class: 'ds-combo' }, input, toggle, popup);
+  // The keyboard switch mutes the field like every other one (keyboard.js).
   guard(input);
-  const root = el('div', { class: 'dictate' }, combo, mic);
 
-  // The instance owns the whole row, microphone included: a click on the
-  // microphone must not read as a click outside the list that is open.
-  const instance = { root, close };
+  // An option's id stays the same for its value across renders, so
+  // aria-activedescendant and DS's keyed patching both follow the entry
+  // rather than its place in the list.
+  const optionIds = new Map();
+  const optionId = (one) => {
+    if (!optionIds.has(one)) optionIds.set(one, id + '-' + optionIds.size);
+    return optionIds.get(one);
+  };
+
+  const isOpen = () => input.getAttribute('aria-expanded') === 'true';
 
   function setValue(next, notify = true) {
     current = next ?? '';
@@ -161,8 +102,9 @@ export function combobox(options = {}) {
   // merely contains it, so typing "claude" puts the Claude models on top.
   function matches(query) {
     const all = items() || [];
+    total = all.length;
     const q = query.trim().toLowerCase();
-    if (!q) return all.slice(0, 200);
+    if (!q) return all.slice(0, LIST_MAX);
     const words = q.split(/\s+/);
     const scored = [];
     for (const item of all) {
@@ -175,97 +117,51 @@ export function combobox(options = {}) {
       scored.push({ item, score });
     }
     scored.sort((a, b) => a.score - b.score);
-    return scored.slice(0, 200).map((entry) => entry.item);
+    return scored.slice(0, LIST_MAX).map((entry) => entry.item);
   }
 
+  // render draws the filtered entries. The group an entry belongs to is said
+  // in its meta line ("Anthropic · 200k"): DS has no group heading in a
+  // listbox, and an uppercase eyebrow is not its style.
   function render() {
-    list.innerHTML = '';
-    if (!filtered.length) {
-      list.append(el('div', { class: 'combo-empty', text: emptyText }));
-      return;
-    }
-    let group = null;
-    filtered.forEach((item, index) => {
-      if (item.group && item.group !== group) {
-        group = item.group;
-        list.append(el('div', { class: 'combo-group', text: group }));
-      }
-      const option = el('div', {
-        class: 'combo-option' + (index === active ? ' active' : '') + (item.value === current ? ' chosen' : ''),
-        role: 'option',
-        // The value is on the element so anything outside can find the entry
-        // it means without matching on the words.
-        'data-value': item.value,
-        id: id + '-opt-' + index,
-        'aria-selected': index === active ? 'true' : 'false',
-        // mousedown, not click: the input must not lose focus first.
-        onmousedown: (event) => {
-          event.preventDefault();
-          choose(index);
-        },
-        onmouseenter: () => { setActive(index, false); },
-      },
-        el('span', { class: 'combo-label', text: item.label || item.value }),
-        item.hint ? el('span', { class: 'combo-hint', text: item.hint }) : null,
-      );
-      list.append(option);
-    });
+    // Nothing matches: the list hides and the popup stays with its status line.
+    list.hidden = !filtered.length;
+    morph(list, filtered.map((item, index) => {
+      const meta = [item.group, item.hint].filter(Boolean).join(' · ');
+      return html`<li class="ds-combo__option" id="${optionId(item.value)}" role="option" data-value="${item.value}" data-ds-key="${item.value}" aria-selected="${item.value === current ? 'true' : 'false'}"${index === active ? html` data-active` : ''}><span class="ds-combo__name">${item.label || item.value}</span>${meta ? html`<span class="ds-combo__meta">${meta}</span>` : ''}</li>`;
+    }).join(''));
+    status.textContent = filtered.length
+      ? filtered.length + ' of ' + total
+      : emptyText;
+    markActive(true);
   }
 
-  function setActive(index, scroll = true) {
-    active = index;
-    const nodes = list.querySelectorAll('.combo-option');
-    nodes.forEach((node, i) => {
-      node.classList.toggle('active', i === index);
-      node.setAttribute('aria-selected', i === index ? 'true' : 'false');
-    });
-    if (index >= 0 && index < nodes.length) {
-      input.setAttribute('aria-activedescendant', id + '-opt-' + index);
-      if (scroll) nodes[index].scrollIntoView({ block: 'nearest' });
+  // markActive moves the keyboard's place without drawing the list again.
+  function markActive(scroll) {
+    const nodes = list.querySelectorAll('.ds-combo__option');
+    nodes.forEach((option, i) => option.toggleAttribute('data-active', i === active));
+    if (active >= 0 && active < nodes.length) {
+      input.setAttribute('aria-activedescendant', nodes[active].id);
+      if (scroll) nodes[active].scrollIntoView({ block: 'nearest' });
     } else {
       input.removeAttribute('aria-activedescendant');
     }
   }
 
   function open(query) {
-    closeOpen(instance);
-    openInstance = instance;
     filtered = matches(query ?? '');
     // Start on the entry that is already chosen, so enter is a no-op.
     active = filtered.findIndex((item) => item.value === current);
-    isOpen = true;
-    list.hidden = false;
-    input.setAttribute('aria-expanded', 'true');
     render();
-    place();
-    if (active >= 0) setActive(active);
-    follow(true);
-  }
-
-  // place and follow keep the open list against its field; see pinList.
-  function place() {
-    if (isOpen) pinList(list, input);
-  }
-
-  function follow(on) { followMoves(on, onMove); }
-
-  function onMove(event) {
-    // The list scrolling through its own options is not the field moving.
-    if (event && event.target === list) return;
-    place();
+    if (!isOpen()) DS.overlay.open(popup, { opener: input });
   }
 
   function close() {
-    if (!isOpen) return;
-    isOpen = false;
     // A strict field shows the entry it is on, never the half-typed filter
     // that was used to find one.
     if (strict) input.value = shown(current);
-    list.hidden = true;
-    follow(false);
-    input.setAttribute('aria-expanded', 'false');
     input.removeAttribute('aria-activedescendant');
-    if (openInstance === instance) openInstance = null;
+    if (isOpen()) DS.overlay.close(popup);
   }
 
   function choose(index) {
@@ -295,34 +191,39 @@ export function combobox(options = {}) {
     switch (event.key) {
       case 'ArrowDown':
         event.preventDefault();
-        if (!isOpen) return open(input.value);
-        setActive(Math.min(active + 1, filtered.length - 1));
+        if (!isOpen()) return open(input.value);
+        active = Math.min(active + 1, filtered.length - 1);
+        markActive(true);
         break;
       case 'ArrowUp':
         event.preventDefault();
-        if (!isOpen) return open(input.value);
-        setActive(Math.max(active - 1, 0));
+        if (!isOpen()) return open(input.value);
+        active = Math.max(active - 1, 0);
+        markActive(true);
         break;
       case 'Home':
-        if (!isOpen) return;
+        if (!isOpen()) return;
         event.preventDefault();
-        setActive(0);
+        active = 0;
+        markActive(true);
         break;
       case 'End':
-        if (!isOpen) return;
+        if (!isOpen()) return;
         event.preventDefault();
-        setActive(filtered.length - 1);
+        active = filtered.length - 1;
+        markActive(true);
         break;
       case 'Enter':
-        if (!isOpen) return;
+        if (!isOpen()) return;
         event.preventDefault();
         if (active >= 0) choose(active);
         else close();
         break;
       case 'Escape':
-        if (!isOpen) return;
+        if (!isOpen()) return;
+        // The Escape is the list's: the sheet around it stays open, and the
+        // field goes back to what it was before the typing.
         event.preventDefault();
-        event.stopPropagation();
         input.value = shown(current);
         close();
         break;
@@ -332,21 +233,45 @@ export function combobox(options = {}) {
     }
   });
 
-  input.addEventListener('blur', () => {
-    // A click on an option runs on mousedown, so closing here is safe.
-    setTimeout(() => { if (openInstance === instance) close(); }, 0);
+  // A press on an option chooses on click, so the field must keep the focus
+  // through the pointerdown; blur therefore only ever means "somewhere else".
+  input.addEventListener('blur', () => close());
+
+  // One listener for every option, ever: the list is patched in place, and an
+  // option kept by the patch keeps the listeners it had.
+  list.addEventListener('pointerdown', (event) => event.preventDefault());
+  list.addEventListener('click', (event) => {
+    const option = event.target.closest('.ds-combo__option');
+    if (!option) return;
+    choose(filtered.findIndex((item) => item.value === option.dataset.value));
+  });
+  list.addEventListener('pointermove', (event) => {
+    const option = event.target.closest('.ds-combo__option');
+    if (!option) return;
+    const index = filtered.findIndex((item) => item.value === option.dataset.value);
+    if (index !== active) {
+      active = index;
+      markActive(false);
+    }
   });
 
   toggle.addEventListener('click', () => {
-    if (isOpen) {
+    if (isOpen()) {
       close();
       return;
     }
     input.focus();
-    open('');
+    if (!isOpen()) open('');
   });
 
-  return { node: root, setValue };
+  return {
+    node,
+    input,
+    setValue,
+    value: () => current,
+    isOpen,
+    focus: () => input.focus(),
+  };
 }
 
 /**
@@ -363,6 +288,9 @@ export function combobox(options = {}) {
  * options.renderValue  (item) => Node, what the closed field shows; the
  *                      entry itself when left out
  * options.label        the field's accessible name
+ *
+ * It goes once the profile is chosen from radio cards; until then its list
+ * opens in place under the field rather than being pinned over the page.
  */
 export function dropdown(options = {}) {
   const {
@@ -382,18 +310,16 @@ export function dropdown(options = {}) {
 
   const face = el('span', { class: 'drop-face' });
   const button = el('button', {
-    class: 'input drop-button', type: 'button',
+    class: 'ds-input drop-button', type: 'button',
     'aria-haspopup': 'listbox', 'aria-expanded': 'false', 'aria-controls': id + '-list',
     'aria-label': label || null,
   }, face, el('span', { class: 'combo-caret' }));
   const list = el('div', { class: 'combo-list drop-list', id: id + '-list', role: 'listbox', hidden: true });
   const root = el('div', { class: 'combo drop' }, button, list);
-  const instance = { root, close };
-
   function chosenItem() { return (items() || []).find((item) => item.value === current) || null; }
 
   function drawFace() {
-    face.innerHTML = '';
+    face.replaceChildren();
     const item = chosenItem();
     if (item) face.append(renderValue ? renderValue(item) : renderItem(item, true));
   }
@@ -405,7 +331,7 @@ export function dropdown(options = {}) {
   }
 
   function render() {
-    list.innerHTML = '';
+    list.replaceChildren();
     all.forEach((item, index) => {
       const chosen = item.value === current;
       list.append(el('div', {
@@ -437,36 +363,21 @@ export function dropdown(options = {}) {
   }
 
   function open() {
-    closeOpen(instance);
-    openInstance = instance;
     all = items() || [];
     active = all.findIndex((item) => item.value === current);
     isOpen = true;
     list.hidden = false;
     button.setAttribute('aria-expanded', 'true');
     render();
-    place();
     if (active >= 0) setActive(active);
-    followMoves(true, onMove);
-  }
-
-  function place() {
-    if (isOpen) pinList(list, button, 360);
-  }
-
-  function onMove(event) {
-    if (event && event.target === list) return;
-    place();
   }
 
   function close() {
     if (!isOpen) return;
     isOpen = false;
     list.hidden = true;
-    followMoves(false, onMove);
     button.setAttribute('aria-expanded', 'false');
     button.removeAttribute('aria-activedescendant');
-    if (openInstance === instance) openInstance = null;
   }
 
   function choose(index) {
@@ -518,7 +429,7 @@ export function dropdown(options = {}) {
   });
 
   button.addEventListener('blur', () => {
-    setTimeout(() => { if (openInstance === instance) close(); }, 0);
+    setTimeout(close, 0);
   });
 
   drawFace();

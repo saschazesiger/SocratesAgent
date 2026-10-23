@@ -110,11 +110,6 @@ func (c Claude) plan(req PlanRequest, lead []string, id string) (LaunchPlan, err
 	// settings key below is what stops Claude Code asking about it first.
 	argv = append(argv, "--dangerously-skip-permissions")
 	argv = append(argv, "--settings", settingsPath)
-	// The host is described as text on the command line rather than through
-	// --append-system-prompt-file: the file form reaches the model as
-	// something it may decline to follow, and this is how the agent learns
-	// that on-host exists at all.
-	argv = flag(argv, "--append-system-prompt", onHostInstructions())
 	// --remote-control is never passed. See claudeSettings and
 	// pinClaudeGlobalConfig for the two places it is also turned off, because
 	// not passing the flag is not on its own enough.
@@ -130,22 +125,29 @@ func (c Claude) plan(req PlanRequest, lead []string, id string) (LaunchPlan, err
 	// would take it from the pane as well as from the program.
 	env["CLAUDE_CODE_DISABLE_TERMINAL_TITLE"] = "1"
 	env["CLAUDE_CODE_NO_FLICKER"] = "1"
+	// The auto-updater is deliberately left on: neither DISABLE_AUTOUPDATER
+	// nor the autoUpdates preference is set anywhere a session is built. The
+	// native installer puts each version in a directory of its own and swaps
+	// the ~/.local/bin/claude link atomically, so a session updating itself
+	// cannot pull the binary out from under another one - argv[0] is the
+	// link, not the version it points at, which is also what lets the next
+	// session pick the new version up. socrates-update.timer runs
+	// `claude update` as the backstop for a machine no session runs on.
 	// --dangerously-skip-permissions refuses to run as root:
 	// `--dangerously-skip-permissions cannot be used with root/sudo
 	// privileges for security reasons`, and the pane is dead before the user
 	// can read it. The binary's condition is
 	// `getuid() === 0 && IS_SANDBOX !== "1" && !CLAUDE_CODE_BUBBLEWRAP` [BIN],
-	// so the variable is what says "this root is a container's root". Socrates
-	// in its own Docker image is exactly that, and it is the deployment the
-	// product ships. It is set only when the process really is root, because a
-	// normal account has no such check and IS_SANDBOX would then be a claim
-	// about a machine nobody asked us about.
+	// so the variable is what lets a session run as root at all. Socrates is
+	// installed as a root service, which is the deployment the product ships.
+	// It is set only when the process really is root, because a normal
+	// account has no such check and IS_SANDBOX would then be a claim about a
+	// machine nobody asked us about.
 	//
 	// The pane's environment is built here rather than inherited, so this is
 	// not a variable Socrates' own environment can be relied on to carry: a
 	// server started from a login shell that happened to export IS_SANDBOX
-	// would work and the same server started as the container entrypoint,
-	// which is how Socrates actually runs, would not.
+	// would work and the same server started by systemd would not.
 	if os.Geteuid() == 0 {
 		env["IS_SANDBOX"] = "1"
 	}

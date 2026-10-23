@@ -1,0 +1,81 @@
+/*
+ * The Socrates theme for Dashboard-Style: loaded after ds.css, unlayered, on
+ * .ds-theme. No DS role is overridden: Socrates wears Dashboard-Style's own
+ * look. Only the project's --so-* tokens, two documented hooks for touch
+ * mode, and the bundled terminal font live here.
+ */
+@font-face { font-family: 'Source Code Pro'; src: url('/static/fonts/SourceCodePro-Regular.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Source Code Pro'; src: url('/static/fonts/SourceCodePro-Bold.woff2') format('woff2'); font-weight: 700; font-style: normal; font-display: swap; }
+
+.ds-theme {
+  /* Terminal: the bundled cell font (xterm reads the family from term.js) and the pane's pure white (tmux OSC 11). */
+  --so-font-mono: 'Source Code Pro', var(--ds-font-mono);
+  --so-term-bg: var(--ds-surface);
+  --so-pane-veil: color-mix(in srgb, var(--ds-surface) 86%, transparent);
+
+  /* Brand: the Socrates logo and the agents' marks (brand colours are allowed only in logos). */
+  --so-logo-size: 32px;
+  --so-agent-size: 20px;
+  /* Below this width a page head and its actions stack (the reference app's ex-page-head). */
+  --so-page-head-basis: 320px;
+  --so-brand-claude: #D97757;
+  --so-brand-vscode: #007ACC;
+  --so-brand-codex: #000000;
+  --so-brand-tile: #131010;
+  --so-brand-tile-ink: #ffffff;
+  --so-brand-opencode-inner: #8a8686;
+
+  /* Stage */
+  --so-meter-height: 64px;
+  --so-rec-action-height: 56px;
+  --so-copy-width: 760px;
+  --so-copy-height: min(60vh, 520px);
+
+  /* PreStart */
+  --so-prestart-side: 380px;
+  --so-prompt-min-height: max(300px, 48vh);
+  --so-conflict-preview-max: 160px;
+
+  /* Question sheet */
+  --so-question-width: 720px;
+  --so-option-min-height: 72px;
+  --so-option-key-size: 40px;
+  --so-option-label-font: var(--ds-weight-label) 20px/28px var(--ds-font);
+  --so-question-action-height: 56px;
+  --so-question-grow-basis: 140px;
+  --so-question-counter-width: 72px;
+  --so-kb-copy-reserve: 120px;
+
+  /* Admin */
+  --so-log-max-height: 280px;
+  --so-col-status: 136px;
+
+  /* Login, setup, costs */
+  --so-auth-width: 400px;
+  --so-chart-height: 240px;
+  --so-chart-gap: 2px;
+  --so-series-1: #2a78d6;
+  --so-series-2: #eb6834;
+  --so-series-3: #1baf7a;
+  --so-series-4: #eda100;
+  --so-series-other: #c4c6cc;
+}
+
+/* Touch mode (car, kiosk): bigger targets through DS hooks (X16). */
+.ds-theme.so-touch {
+  --ds-btn-height: 48px;
+  --ds-btn-icon-size: 48px;
+  --ds-chip-height: 48px;
+  --ds-input-font: var(--ds-font-input);   /* 16px field text at any width: no iOS focus zoom on an iPad/car screen */
+  --so-option-min-height: 84px;
+  --so-question-action-height: 64px;
+  --so-question-width: 100%;
+}
+
+@media (max-width: 900px) {
+  .ds-theme { --so-question-width: 100%; }
+}
+
+@media (max-height: 500px) {
+  .ds-theme { --so-option-min-height: 60px; --so-question-action-height: 48px; }
+}

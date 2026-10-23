@@ -1733,53 +1733,38 @@ plus `no-overlap`, `status-speak`, `status-ticker`, `design`, `typekeepsfocus`, 
 
 ---
 
-## Docker is the only deployment (2026-09-14)
+## A systemd service on the host is the only deployment (2026-10-22)
 
-Socrates is run as the Docker image and nothing else. The image is the product; a binary on a
-host is no longer a shape this repository supports. Everything below is history, and the code
-that implemented it is gone.
+Socrates runs directly on the machine as `socrates.service`, installed by `scripts/install.sh`
+and updated by `scripts/update.sh`. It replaces the Docker image of 2026-09-14, whose console had
+few rights on the machine and needed namespace jumps to reach it. Everything the image needed is
+gone: the Dockerfile, the entrypoint, the compose file, `host-shell.sh`, `on-host.sh`, the
+redeploy and migration scripts, `socrates export` / `socrates import` (`migrate.go`), the Host /
+Container choice for Shell sessions (`shell_execution`, `HostShellAvailable`, the sheet's
+toggle) and the on-host instructions every agent was given.
 
-**§A.12 — the systemd shape.** `deploy/socrates.service`, `internal/termux/supervise.go`, the
-`Supervisor` interface and `SystemdScope`, `DetectSupervisor`, and the `Supervisor` field on
-`termux.Config` and `termux.Tmux` are removed. `Tmux.RunStart` now runs tmux directly. The trap
-§A.12 was built around — `KillMode=control-group` turning `systemctl restart socrates` into the
-reboot path — cannot be reached from a container, and the reparent that remains is handled where
-it always was: `tini` as the entrypoint reaps the tmux server at PID 1, and Socrates still
-installs no SIGCHLD reaper of its own, for the ECHILD reason §A.12 already gives.
-`TestSessionSurvivesManagerKill` keeps its meaning — it proves a process kill is survived — and
-its comment no longer points at a unit file that does not exist. J7 in the risk table is now
-answered by `tini` and the restart policy on `docker run` alone.
+**Sessions survive an update.** Everything in a service's cgroup is stopped with the service, so
+`Tmux.RunStart` starts the tmux server through `systemd-run --scope --unit=socrates-tmux` when
+Socrates is a systemd service (`INVOCATION_ID` set and the parent is PID 1 — a program started
+inside a session inherits the variable but not the parent). `systemctl restart socrates` then
+restarts the web server alone, and the new process adopts the sessions on the socket. A scope
+that cannot be made under that name is made as `socrates-tmux-<unix seconds>` (2026-10-22, see
+DECISIONS revision 9); only when that fails too is it logged and the server started the plain way. The tmux server
+daemonizes to PID 1, which reaps it; Socrates still installs no SIGCHLD reaper of its own, for
+the ECHILD reason §A.12 gives. J7 in the risk table is answered by the scope.
 
-**§F.1 — the tmux installer.** `internal/termux/install.go` (the package-manager matrix for
-apt-get, apk, dnf, yum, pacman, zypper and brew, the sudo probe, `Install`, `ErrInstalling`,
-`InstallTimeout`, `InstallLogLines`) is gone, and with it `POST /api/tmux/install`, `GET
-/api/tmux/events`, the `tmux_install_log` document, the SSE fan-out in `internal/server/tmux.go`
-and the install button, log, result line and manual-command field on the dashboard card. What is
-left is `internal/termux/detect.go`: `Detector.Detect` and a `Report` of `installed`, `path`,
-`version`, `ok`, `min` and `reason`. The card reports and nothing more — the image ships tmux, so
-a container without it is a broken image rather than a machine waiting for a package manager, and
-the honest answer is a sentence rather than a button. The e2e `tmuxinstaller` scenario became
-`tmuxcard`, which asserts the same detection half against a stub tmux 3.2a.
+**`scripts/update.sh`** and **`scripts/install.sh`** were rebuilt the same day into the
+self-updating installation DECISIONS revision 9 describes: native installs of every tool, a
+nightly `socrates-update.timer`, a smoke test before the swap, a version-checked health check, a
+rollback that remembers the commit, and a systemd watchdog.
 
-**Platform paths.** `pty_windows.go`, `proc_windows.go` and `disk_other.go` are removed and their
-`!windows` / `linux || darwin` counterparts lost their build tags (`pty.go`, `proc.go`,
-`disk.go`); `termux.ErrUnsupported`, which existed only for the Windows pty stubs, is gone with
-them. `readClaudeCredentials` no longer falls back to the macOS login keychain. The cloudflared
-installer publishes for one operating system: `assetFor` takes an architecture, every Linux asset
-is a bare binary, and `binaryFromArchive` — which unpacked the macOS tarballs — is removed.
-`config.DataDir()` defaults to `/data` (`config.DefaultDataDir`) instead of `~/.socrates`, and
-`harnesses.homeDir()` reads `HOME` and nothing else, because the image puts `HOME` inside the data
-volume and both the e2e suite and the tests point it at a scratch directory.
+**Paths.** `config.DataDir()` defaults to `/var/lib/socrates` (`config.DefaultDataDir`), and
+`HOME` is the service user's own (`/root`), so the CLIs keep their logins where they would
+anyway. `harnesses.homeDir()` reads `HOME` and nothing else, because the e2e suite and the tests
+point it at a scratch directory. The listen address defaults to `127.0.0.1:8080`.
 
-**The image.** `HOME=/data/home`, created by `deploy/docker-entrypoint.sh` on a volume that
-predates the image, so the CLI credentials and the transcripts a resume reads survive `docker rm`.
-`deploy/docker-compose.yml` is the supported run written down. `socrates export` / `socrates
-import` (`migrate.go`) and `scripts/migrate-to-docker.sh` carry a settings document, the password
-hash and the CLI credentials of an older non-Docker installation into the volume — they are the
-on-ramp off that shape, not support for it.
-
-**The Makefile** lost `run` and `install`: the binary is built for the tests and for a compile
-check, and it is started as the image.
+**tmux card.** `internal/termux/detect.go` reports and installs nothing: `scripts/install.sh`
+installs tmux, so a machine without it is an installation that was not finished.
 
 **Verification.** `gofmt`, `go vet ./...`, `go mod tidy -diff` and `go test ./...` green.
 

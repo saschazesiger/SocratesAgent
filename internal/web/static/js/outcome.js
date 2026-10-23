@@ -5,6 +5,8 @@
 // The sidebar, the header, Home and the notifications all say it, so the
 // words and the marks are here, once.
 
+import { icon, iconEl } from './ui.js';
+
 // The words for each kind, as a row's tooltip, the header's tag and a
 // notification say them. "Waiting on you" is not "Needs you": that is Home's
 // list, which holds these and more.
@@ -19,30 +21,38 @@ export const OUTCOME_WORDS = {
 // something about it is still going on.
 export const CHECKING_WORDS = 'Checking how the turn went…';
 
-// The hourglass of a turn that is over while something about it still goes
-// on: background work it started, or the read of its verdict.
-export const HOURGLASS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-  + '<path d="M5 2.5h14M5 21.5h14"/><path d="M7 2.5v2.2c0 2.6 5 4.6 5 7.3 0 2.7-5 4.7-5 7.3v2.2"/>'
-  + '<path d="M17 2.5v2.2c0 2.6-5 4.6-5 7.3 0 2.7 5 4.7 5 7.3v2.2"/>'
-  + '<path d="M8.5 20.5c0-1.6 3.5-3 3.5-4.5 0 1.5 3.5 2.9 3.5 4.5z" fill="currentColor" stroke-width="1"/></svg>';
-
-// One small drawing per kind, on the corner of the agent's mark where the
-// hourglass of background work sits: two ticks for done, a list for work
-// left, a speech bubble for a session that waits on the person, a triangle
-// for one that is stuck - and an exclamation mark for a verdict that could
-// not be had.
-export const OUTCOME_SVG = {
-  complete: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-    + '<path d="M1.5 13l4.5 4.5L15 8"/><path d="M11 16l1.5 1.5L22.5 8"/></svg>',
-  partial: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-    + '<path d="M9 6h12M9 12h12M9 18h12"/><path d="M3 6h.01M3 12h.01M3 18h.01" stroke-width="4"/></svg>',
-  needs_input: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-    + '<path d="M21 11.5a8.5 8.5 0 0 1-12.3 7.6L3 21l1.9-5.7A8.5 8.5 0 1 1 21 11.5z"/></svg>',
-  blocked: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-    + '<path d="M12 3L2 20.5h20L12 3z"/><path d="M12 10v4.5M12 17.5h.01"/></svg>',
-  error: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" aria-hidden="true">'
-    + '<path d="M12 4v10M12 19.5h.01"/></svg>',
+// One glyph per kind, on the corner of the agent's mark: a check in a circle
+// for done, a list for work left, a speech bubble for a session that waits on
+// the person, a triangle for one that is stuck - and the exclamation mark in a
+// circle for a verdict that could not be had.
+export const OUTCOME_ICON = {
+  complete: 'checkCircle',
+  partial: 'list',
+  needs_input: 'chat',
+  blocked: 'alert',
+  error: 'alertCircle',
 };
+
+// The mark of a turn that is over while something about it still goes on:
+// background work it started, or the read of its verdict.
+export const TASKS_ICON = 'waiting';
+
+// glyphFor is the glyph a badge kind draws: an outcome, 'tasks', or nothing.
+function glyphFor(kind) {
+  return kind === 'tasks' ? TASKS_ICON : OUTCOME_ICON[kind] || '';
+}
+
+/** outcomeIcon is the glyph of one kind as an element, or null for a kind without one. */
+export function outcomeIcon(kind, size = 16) {
+  const glyph = glyphFor(kind);
+  return glyph ? iconEl(glyph, size) : null;
+}
+
+/** outcomeIconHtml is the same glyph as markup, for html`` templates ('' without one). */
+export function outcomeIconHtml(kind, size = 16) {
+  const glyph = glyphFor(kind);
+  return glyph ? icon(glyph, size) : '';
+}
 
 /**
  * outcomeCurrent is an outcome if it is the verdict on the turn the session is

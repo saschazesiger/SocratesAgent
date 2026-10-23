@@ -1,0 +1,21 @@
+# When Socrates updates itself and its tools: every night at a random moment
+# between 3 and 5, and ten minutes after every boot - the boot run is also
+# what puts back a tool that went missing. A night the machine was off is made
+# up for at the next boot (Persistent).
+#
+# SOCRATES_AUTO_UPDATE in /etc/socrates.env says what the timer does: all
+# (the default), deps (the tools, not Socrates) or off (only put back what is
+# missing or broken). `systemctl disable --now socrates-update.timer` stops it
+# altogether.
+
+[Unit]
+Description=Socrates: nightly update
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=2h
+OnBootSec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

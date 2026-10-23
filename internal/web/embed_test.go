@@ -2,6 +2,8 @@ package web
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -27,7 +29,7 @@ func TestVersionIsAShortStableHash(t *testing.T) {
 // The whole point of the stamp: a document can only ask for the scripts of its
 // own build, so a script kept from an earlier one is never handed to it.
 func TestPagesAskForStampedAssets(t *testing.T) {
-	for _, page := range []string{"index.html", "admin.html", "login.html", "setup.html"} {
+	for _, page := range []string{"index.html", "admin.html", "costs.html", "login.html", "setup.html"} {
 		rec := httptest.NewRecorder()
 		ServePage(rec, httptest.NewRequest(http.MethodGet, "/", nil), page)
 		body := rec.Body.String()
@@ -36,14 +38,25 @@ func TestPagesAskForStampedAssets(t *testing.T) {
 				t.Errorf("%s asks for %s without the build stamp", page, ref[1])
 			}
 		}
-		if !strings.Contains(body, "/static/css/app.css?v="+version) {
-			t.Errorf("%s does not carry a stamped stylesheet", page)
+		// Every page wears Dashboard-Style the documented way: its stylesheet
+		// and its one classic runtime, then the project's theme and shared
+		// components on top.
+		for _, want := range []string{
+			"/static/vendor/dashboard-style/ds.css", "/static/vendor/dashboard-style/ds.js",
+			"/static/css/theme.css", "/static/css/so-shared.css",
+		} {
+			if !strings.Contains(body, want+"?v="+version) {
+				t.Errorf("%s does not ask for a stamped %s", page, want)
+			}
+		}
+		if strings.Contains(body, "/static/css/app.css") {
+			t.Errorf("%s still asks for the old app.css", page)
 		}
 	}
 }
 
 func TestTerminalFontsAreVersionedAndPrecached(t *testing.T) {
-	css := string(asset("css/app.css"))
+	css := string(asset("css/theme.css"))
 	worker := string(asset("sw.js"))
 	for _, name := range []string{"SourceCodePro-Regular.woff2", "SourceCodePro-Bold.woff2"} {
 		if !strings.Contains(css, "/static/fonts/"+name+"?v="+version) {
@@ -129,8 +142,8 @@ func TestServiceWorkerShellHoldsTheWholeChatImportGraph(t *testing.T) {
 			t.Errorf("sw.js does not precache /static/js/%s, which the session page imports", name)
 		}
 	}
-	// The page itself and its stylesheet are what everything else hangs off.
-	for _, path := range []string{"'/'", "'/static/css/app.css'"} {
+	// The page itself and its stylesheets are what everything else hangs off.
+	for _, path := range []string{"'/'", "'/static/css/theme.css'", "'/static/css/so-shared.css'"} {
 		if !strings.Contains(worker, path) {
 			t.Errorf("sw.js does not precache %s", path)
 		}
@@ -171,6 +184,45 @@ func TestVendoredTerminalIsStampedAndPrecached(t *testing.T) {
 	}
 }
 
+// Opening the session page in a tunnel needs every file its head and body
+// load, not only the modules it imports: a stylesheet that is not in SHELL is
+// a page that comes up unstyled offline, and a font fonts.css names but the
+// worker does not hold is text in a fallback face. The list is checked against
+// what index.html actually asks for, so a new <link> or <script> cannot be
+// added without the worker hearing of it.
+func TestSessionPageAssetsArePrecached(t *testing.T) {
+	rec := httptest.NewRecorder()
+	ServePage(rec, httptest.NewRequest(http.MethodGet, "/", nil), "index.html")
+	page := rec.Body.String()
+	worker := string(assets["sw.js"])
+
+	tags := regexp.MustCompile(`<link rel="stylesheet" href="([^"?]+)|<script[^>]* src="([^"?]+)`).FindAllStringSubmatch(page, -1)
+	if len(tags) < 10 {
+		t.Fatalf("index.html loads only %d stylesheets and scripts, so this proves nothing", len(tags))
+	}
+	for _, tag := range tags {
+		path := tag[1] + tag[2]
+		if !strings.Contains(worker, "'"+path+"'") {
+			t.Errorf("sw.js does not precache %s, which index.html loads", path)
+		}
+	}
+
+	fonts := string(assets["vendor/dashboard-style/fonts/fonts.css"])
+	urls := regexp.MustCompile(`url\(['"]?([^)'"?]+)`).FindAllStringSubmatch(fonts, -1)
+	if len(urls) == 0 {
+		t.Fatal("fonts.css names no font files, so this proves nothing")
+	}
+	for _, u := range urls {
+		path := "/static/vendor/dashboard-style/fonts/" + u[1]
+		if assets[strings.TrimPrefix(path, "/static/")] == nil {
+			t.Errorf("fonts.css names %s, which is not embedded", path)
+		}
+		if !strings.Contains(worker, "'"+path+"'") {
+			t.Errorf("sw.js does not precache %s, which fonts.css names", path)
+		}
+	}
+}
+
 // The old web chat's modules went with it, and so did the panel that later
 // took the name: nothing on the session page asks a model to type any more.
 // A file that survived a deletion is how a page ends up importing half a
@@ -202,14 +254,18 @@ func TestStampedAssetsAreKeptUnstampedOnesRevalidated(t *testing.T) {
 // The documents have their own routes, and those routes are where signing in
 // is decided. Serving them from here as well would be a way around it.
 func TestPagesAreNotServedAsAssets(t *testing.T) {
-	for _, page := range []string{"/index.html", "/admin.html", "/login.html", "/setup.html"} {
+	for _, page := range []string{"/index.html", "/admin.html", "/costs.html", "/login.html", "/setup.html"} {
 		if code := do(t, page).Code; code != http.StatusNotFound {
 			t.Errorf("GET /static%s = %d, want 404: a page has to come from its own route", page, code)
 		}
 	}
 	// The assets the login and setup pages need are public, or nobody could
 	// ever get as far as signing in.
-	for _, file := range []string{"/css/app.css", "/js/net.js", "/img/logo.png"} {
+	for _, file := range []string{
+		"/css/theme.css", "/css/so-shared.css", "/css/so-pages.css",
+		"/vendor/dashboard-style/ds.css", "/vendor/dashboard-style/ds.js", "/vendor/dashboard-style/fonts/fonts.css",
+		"/js/net.js", "/js/ui.js", "/img/logo.png",
+	} {
 		if code := do(t, file).Code; code != http.StatusOK {
 			t.Errorf("GET /static%s = %d, want 200", file, code)
 		}
@@ -257,5 +313,55 @@ func TestAppleTouchIconAtTheRoot(t *testing.T) {
 		if !bytes.Equal(rec.Body.Bytes(), want) {
 			t.Fatalf("%s is not the icon the pages link to", path)
 		}
+	}
+}
+
+// Dashboard-Style is vendored, not edited: the copy has to match the
+// SHA256SUMS that vendor.sh wrote next to it, with no file missing and none
+// added, or `make vendor-ds` would silently throw a local change away.
+func TestVendoredDashboardStyleIsUntouched(t *testing.T) {
+	const dir = "static/vendor/dashboard-style"
+	sums, err := files.ReadFile(dir + "/SHA256SUMS")
+	if err != nil {
+		t.Fatalf("no vendored Dashboard-Style: %v", err)
+	}
+	listed := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(string(sums)), "\n") {
+		want, name, ok := strings.Cut(line, "  ")
+		if !ok {
+			t.Fatalf("SHA256SUMS line %q is not in sha256sum format", line)
+		}
+		listed[name] = true
+		data, err := files.ReadFile(dir + "/" + name)
+		if err != nil {
+			t.Errorf("%s is listed but missing", name)
+			continue
+		}
+		if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != want {
+			t.Errorf("%s was edited: the vendored copy is replaced as a whole by make vendor-ds", name)
+		}
+	}
+	for name := range assets {
+		rel, ok := strings.CutPrefix(name, "vendor/dashboard-style/")
+		if ok && rel != "SHA256SUMS" && !listed[rel] {
+			t.Errorf("%s was added to the vendored copy", name)
+		}
+	}
+	if !listed["ds.css"] || !listed["ds.js"] {
+		t.Fatal("the vendored copy has no ds.css or ds.js")
+	}
+}
+
+// The vendored fonts.css names its files relative to itself, and a relative
+// address does not inherit the stylesheet's query: it has to be stamped too.
+// A data: mask in ds.css must come through untouched.
+func TestDashboardStyleURLsAreStamped(t *testing.T) {
+	fonts := string(asset("vendor/dashboard-style/fonts/fonts.css"))
+	if !strings.Contains(fonts, "google-sans-latin-opsz-normal.woff2?v="+version) {
+		t.Error("fonts.css names its font without the build stamp")
+	}
+	ds := string(asset("vendor/dashboard-style/ds.css"))
+	if strings.Contains(ds, "data:image/svg+xml") && regexp.MustCompile(`data:[^)'"]*\?v=`).MatchString(ds) {
+		t.Error("a data: URL in ds.css was stamped")
 	}
 }

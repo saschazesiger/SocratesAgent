@@ -1,0 +1,181 @@
+/*
+ * Snackbar (Material 3): the inverse surface on the overlay elevation, at
+ * the bottom left of the content panel. Icon and text, never colour alone.
+ * Place the region right after .ds-app: next to a persistent drawer it
+ * then starts at the panel's edge by itself.
+ * Enters with a fade and a short rise on the spatial spring, leaves with a
+ * quick fade in place while the messages around it close the gap.
+ *
+ *   <div class="ds-toasts"></div>
+ *   DS.overlay.toast(region, 'Saved.');                      // or { kind: 'error' }, { persistent: true }
+ *
+ *   <div class="ds-toast [ds-toast--error | ds-toast--info]">  what toast() builds from a string
+ *     <svg ...>(checkCircle | alertCircle, 20)</svg>
+ *     <span class="ds-toast__text">Saved.</span>
+ *     <button class="ds-btn ds-btn--quiet ds-btn--icon ds-toast__close" type="button" aria-label="Close">(close)</button>
+ *
+ *   .ds-toast--shown  runtime: toast() marks a message whose entrance has
+ *                     played, so moving its region never replays it
+ *
+ * DS.overlay.toast() (js/overlay.js) stacks at most three with FLIP, evicts
+ * the oldest message that would close by itself or queues one behind three
+ * that stay, pauses the timers on hover, focus and a hidden tab, announces
+ * the text through two .ds-sr live regions next to the region (the region
+ * and the messages are not live, so their buttons stay reachable), keeps
+ * focus off <body> when a focused message leaves, and moves the region
+ * into an open dialog (in place) or side sheet (with the panel's edge,
+ * data-follow), so messages stay above its scrim and usable.
+ * Deprecated: the region with role="status" aria-live="polite" and
+ * role="alert" on error messages (toast() then adds no announcers), and
+ * the hand recipe of --ds-toast-shift below.
+ *
+ * Runtime properties a page may set: --ds-toast-left (the region's left
+ * edge; set it when the panel starts elsewhere), --ds-toast-bottom (its
+ * distance from the bottom edge; set it to stay above a bar pinned there),
+ * --ds-toast-shift and --ds-toast-shift-y (glide it from where it stood
+ * when it moves; deprecated for side sheets, which toast() follows by
+ * itself), and --ds-toast-reserve (room kept for an open message, with
+ * data-toast-reserve on .ds-view or .ds-sheet__body).
+ *
+ * Progressive:
+ * - View Transitions (while DS.motion.transition() runs, data-ds-vt on
+ *   <html>, a region with messages is named ds-toasts, so motion.css keeps
+ *   it live and still above the page's groups; in the root snapshot the
+ *   panel's opaque image would cover it until the end. One region with
+ *   messages per page: transition() lifts the name of any further one):
+ *   without them nothing is named.
+ */
+
+@layer ds.tokens, ds.base, ds.components, ds.motion, ds.utilities;
+
+@layer ds.components {
+  .ds-toasts {
+    position: fixed;
+    left: var(--ds-toast-left, var(--ds-space-6));
+    bottom: var(--ds-toast-bottom, var(--ds-space-6));
+    /* Above the home indicator (viewport-fit=cover); a margin, so `bottom`
+       stays the offset a script may mirror. */
+    margin-bottom: env(safe-area-inset-bottom);
+    z-index: var(--ds-z-toast);
+    display: grid;
+    justify-items: start;
+    /* The stack keeps to the bottom edge: while a leaving message holds the
+       region's height (DS.motion.flip()), the others stay where they are. */
+    align-content: end;
+    gap: var(--ds-space-2);
+    max-width: min(560px, calc(100vw - var(--ds-toast-left, var(--ds-space-6)) - var(--ds-space-6)));
+    pointer-events: none;
+    /* Moving into or out of a side sheet, the messages on screen start where
+       they stood and glide to the new edge (the page sets the shift for
+       one style flush). */
+    translate: var(--ds-toast-shift, 0px) var(--ds-toast-shift-y, 0px);
+    transition: translate var(--ds-dur-medium) var(--ds-ease-in-out);
+  }
+
+  /* Following a side sheet (DS.overlay.open / close): the messages arrive
+     with the panel's edge, on the sheet's own timing. */
+  .ds-toasts[data-follow="enter"] {
+    transition-duration: var(--ds-dur-long);
+    transition-timing-function: var(--ds-ease-spatial);
+  }
+
+  .ds-toasts[data-follow="exit"] {
+    transition-duration: var(--ds-dur-base);
+    transition-timing-function: var(--ds-ease-exit);
+  }
+
+  /* Beside the persistent drawer (above 900px, shell.css): the panel's
+     left edge plus the usual 24px. */
+  @media (min-width: 901px) {
+    .ds-app--drawer:not([data-drawer-hidden]) ~ .ds-toasts {
+      --ds-toast-left: calc(var(--ds-drawer-width) + env(safe-area-inset-left) + var(--ds-space-6));
+    }
+  }
+
+  .ds-toast {
+    display: flex;
+    align-items: center;
+    gap: var(--ds-space-3);
+    min-height: 48px;
+    max-width: 100%;
+    padding: var(--ds-space-3) var(--ds-space-4);
+    border-radius: var(--ds-radius-sm);
+    background: var(--ds-inverse);
+    color: var(--ds-on-inverse);
+    font: var(--ds-font-body);
+    box-shadow: var(--ds-elev-overlay);
+    /* Invisible; forced colors paint it, so the message keeps an edge. */
+    outline: 1px solid transparent;
+    pointer-events: auto;
+    --ds-motion-distance: var(--ds-distance-md);
+    --ds-leave-duration: var(--ds-dur-fast);
+    animation:
+      ds-fade-in var(--ds-dur-medium) var(--ds-ease-in-out) backwards,
+      ds-lift-in var(--ds-dur-medium) var(--ds-ease-spatial) backwards;
+  }
+
+  /* Played once (mark it .ds-toast--shown; toast() does after the
+     entrance): moving the region into or out of a side sheet re-inserts
+     the message where moveBefore() is missing, which would restart it, so
+     a message already on screen would blink out and rise again. enter() and
+     .ds-leave still play: the motion utilities sit in the ds.utilities
+     layer, which beats this rule whatever its specificity. */
+  .ds-toast--shown:not(.ds-leave) {
+    animation: none;
+  }
+
+  .ds-toast > svg {
+    flex-shrink: 0;
+    color: var(--ds-inverse-primary);
+  }
+
+  .ds-toast__text {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .ds-toast--error > svg,
+  .ds-toast--info > svg {
+    color: var(--ds-on-inverse);
+  }
+
+  /* The shared quiet icon button (state layers for hover and press), in the
+     inverse text colour; toast.css loads after button.css, so these win. */
+  .ds-toast__close {
+    --ds-btn-icon-size: 36px;
+    --ds-btn-quiet-color: var(--ds-on-inverse);
+    --ds-btn-hover-color: var(--ds-on-inverse);
+    flex-shrink: 0;
+    margin: calc(-1 * var(--ds-space-2)) calc(-1 * var(--ds-space-2)) calc(-1 * var(--ds-space-2)) auto;
+  }
+
+  .ds-toast__close:focus-visible {
+    outline-color: var(--ds-on-inverse);
+  }
+
+  /* While an error message stays open (it waits to be closed), the content
+     panel keeps room for it at its end (the page measures the height):
+     the last form actions can scroll clear of it. The panel's own padding
+     is the safe area (shell.css). A side sheet's body does the same
+     while the message shows in it (sheet.css). */
+  .ds-view[data-toast-reserve] {
+    padding-bottom: calc(env(safe-area-inset-bottom) + var(--ds-toast-reserve, 0px));
+    scroll-padding-bottom: var(--ds-toast-reserve, 0px);
+  }
+
+  /* A region with messages, only while a transition runs (see the header). */
+  .ds-theme[data-ds-vt] .ds-toasts:has(> .ds-toast) {
+    view-transition-name: ds-toasts;
+  }
+
+  /* Phones: across the width, above the bottom edge. */
+  @media (max-width: 600px) {
+    .ds-toasts {
+      left: var(--ds-space-4);
+      right: var(--ds-space-4);
+      bottom: var(--ds-toast-bottom, var(--ds-space-4));
+      max-width: none;
+      justify-items: stretch;
+    }
+  }
+}

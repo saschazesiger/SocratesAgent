@@ -13,7 +13,7 @@ import (
 
 // The lease is how one bucket ends up with exactly one Socrates writing to it.
 //
-// Two containers writing through to one bucket would each upload their own
+// Two installations writing through to one bucket would each upload their own
 // session rows over the other's, and the bucket would end up a patchwork
 // that neither of them holds. So a Socrates writes nothing before it holds
 // lease.json, keeps it fresh with a heartbeat, and stops writing the moment

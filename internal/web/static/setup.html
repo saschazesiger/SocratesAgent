@@ -1,11 +1,11 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="ds-theme ds-base">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Set up · Socrates</title>
 <meta name="description" content="A web terminal for Claude Code, Codex, OpenCode and your shell.">
-<meta name="theme-color" content="#ffffff">
+<meta name="theme-color" content="#f0f4f9">
 <meta name="format-detection" content="telephone=no">
 <!-- The same install tags as index.html (see there): a page can be added to
      the Home Screen from wherever it happens to be, and iOS reads them from
@@ -17,26 +17,18 @@
 <link rel="icon" href="/favicon.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/static/img/apple-touch-icon.png">
 <link rel="manifest" href="/static/manifest.json">
-<link rel="stylesheet" href="/static/css/app.css">
-<style>
-  /* The storage step's own pieces. Everything else is the auth card the
-     password step and the login page already use. */
-  .step { font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-faint); margin: 0 0 6px; }
-  .s3-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
-  @media (max-width: 420px) { .s3-grid { grid-template-columns: 1fr; } }
-  .choice { border: 1px solid var(--line); border-radius: var(--r); padding: 12px 14px; margin: 0 0 18px; font-size: 13.5px; line-height: 1.5; }
-  .choice p { margin: 0 0 10px; }
-  .choice .btn { margin-top: 8px; }
-  .choice .btn + .btn { margin-top: 8px; }
-  .storage-where { font-family: var(--mono); font-size: 12.5px; color: var(--text-soft); overflow-wrap: anywhere; margin: 0 0 14px; }
-  #storageStatus .btn { margin-top: 10px; }
-  .auth .engine-status { margin-bottom: 10px; }
-</style>
+<link rel="preload" href="/static/vendor/dashboard-style/fonts/google-sans-latin-opsz-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/vendor/dashboard-style/fonts/fonts.css">
+<link rel="stylesheet" href="/static/vendor/dashboard-style/ds.css">
+<link rel="stylesheet" href="/static/css/theme.css">
+<link rel="stylesheet" href="/static/css/so-shared.css">
+<link rel="stylesheet" href="/static/css/so-pages.css">
+<script src="/static/vendor/dashboard-style/ds.js" defer></script>
 </head>
 <body>
 <main class="auth">
   <div class="auth-card">
-    <img class="auth-mark" src="/static/img/logo.png" alt="" width="42" height="42">
+    <img class="so-logo" src="/static/img/logo.png" alt="" width="42" height="42">
 
     <!-- Step 1: where the state is kept. Shown while the server is in
          connect mode: either nothing is configured yet (the form), or a
@@ -55,90 +47,90 @@
         <div class="notice" id="storageReason"></div>
         <div id="takeoverBox" hidden>
           <div class="divider"></div>
-          <div class="field">
+          <div class="ds-field">
             <label for="takeoverPassword">Socrates password</label>
-            <input class="input" type="password" id="takeoverPassword" autocomplete="current-password">
+            <input class="ds-input" type="password" id="takeoverPassword" autocomplete="current-password">
             <div class="hint">Taking over stops the other Socrates from writing to the bucket. It keeps running, but nothing it does is saved any more. Use this when that machine is gone or you are moving away from it.</div>
           </div>
-          <button class="btn primary" type="button" id="takeoverBtn">Take over this bucket</button>
+          <button class="ds-btn ds-btn--primary" type="button" id="takeoverBtn">Take over this bucket</button>
         </div>
-        <button class="btn" type="button" id="retryBtn">Retry now</button>
+        <button class="ds-btn" type="button" id="retryBtn">Retry now</button>
         <div class="hint" id="retryHint" style="margin-top:8px"></div>
       </div>
 
       <form id="storageForm" hidden autocomplete="off">
-        <div class="field">
+        <div class="ds-field">
           <label for="s3Endpoint">Endpoint</label>
-          <input class="input mono" type="text" id="s3Endpoint" spellcheck="false" placeholder="https://hel1.your-objectstorage.com">
+          <input class="ds-input mono" type="text" id="s3Endpoint" spellcheck="false" placeholder="https://hel1.your-objectstorage.com">
           <div class="hint">Any S3-compatible store: Hetzner Object Storage (https://&lt;location&gt;.your-objectstorage.com), Cloudflare R2 (https://&lt;account&gt;.r2.cloudflarestorage.com), MinIO, or leave it empty for AWS S3.</div>
         </div>
-        <div class="s3-grid">
-          <div class="field">
+        <div class="ds-form-grid ds-form-grid--2">
+          <div class="ds-field">
             <label for="s3Region">Region</label>
-            <input class="input mono" type="text" id="s3Region" spellcheck="false" placeholder="us-east-1">
+            <input class="ds-input mono" type="text" id="s3Region" spellcheck="false" placeholder="us-east-1">
             <div class="hint">hel1, eu-central-1, auto for R2.</div>
           </div>
-          <div class="field">
+          <div class="ds-field">
             <label for="s3Bucket">Bucket</label>
-            <input class="input mono" type="text" id="s3Bucket" spellcheck="false" required>
+            <input class="ds-input mono" type="text" id="s3Bucket" spellcheck="false" required>
           </div>
         </div>
-        <div class="field">
+        <div class="ds-field">
           <label for="s3Prefix">Prefix <span style="font-weight:400;color:var(--text-faint)">· optional</span></label>
-          <input class="input mono" type="text" id="s3Prefix" spellcheck="false" placeholder="socrates/">
+          <input class="ds-input mono" type="text" id="s3Prefix" spellcheck="false" placeholder="socrates/">
           <div class="hint">A folder inside the bucket, to share one bucket between installations. Empty uses the bucket root.</div>
         </div>
-        <div class="field">
+        <div class="ds-field">
           <label for="s3Key">Access key ID</label>
-          <input class="input mono" type="text" id="s3Key" spellcheck="false" required>
+          <input class="ds-input mono" type="text" id="s3Key" spellcheck="false" required>
         </div>
-        <div class="field">
+        <div class="ds-field">
           <label for="s3Secret">Secret access key</label>
-          <input class="input mono" type="password" id="s3Secret" autocomplete="off" required>
+          <input class="ds-input mono" type="password" id="s3Secret" autocomplete="off" required>
         </div>
-        <div class="field">
+        <div class="ds-field">
           <div class="row"><label class="switch"><input type="checkbox" id="s3PathStyle" checked><span class="track"></span><span>Path-style addressing</span></label></div>
           <div class="hint">On for Hetzner, MinIO and most self-hosted stores. AWS works either way.</div>
         </div>
         <div class="divider"></div>
-        <div class="field">
+        <div class="ds-field">
           <label for="s3Passphrase">Encryption passphrase</label>
-          <input class="input" type="password" id="s3Passphrase" autocomplete="new-password" required>
+          <input class="ds-input" type="password" id="s3Passphrase" autocomplete="new-password" required>
           <div class="hint">Everything in the bucket is encrypted with a key made from this passphrase. It stays on this machine; the bucket only ever sees ciphertext. <strong>Lose it and the bucket cannot be read by anyone</strong> — keep it somewhere safe. For an existing bucket, enter the passphrase it was set up with.</div>
         </div>
 
         <div id="confirmBox" hidden>
-          <div class="field">
+          <div class="ds-field">
             <label for="s3Confirm">Repeat the passphrase</label>
-            <input class="input" type="password" id="s3Confirm" autocomplete="new-password">
+            <input class="ds-input" type="password" id="s3Confirm" autocomplete="new-password">
             <div class="hint">This bucket holds no Socrates state yet, so the passphrase is about to be used for the first time. It cannot be changed or recovered later.</div>
           </div>
         </div>
 
         <div id="localPasswordBox" hidden>
-          <div class="field">
+          <div class="ds-field">
             <label for="s3LocalPassword">Socrates password of this machine</label>
-            <input class="input" type="password" id="s3LocalPassword" autocomplete="current-password">
+            <input class="ds-input" type="password" id="s3LocalPassword" autocomplete="current-password">
             <div class="hint">This machine already has a Socrates installation with a password. Connecting it to a bucket uploads it there, or replaces it with what the bucket holds, so it takes that password.</div>
           </div>
         </div>
 
         <div class="choice" id="conflictBox" hidden>
           <p id="conflictText"></p>
-          <button class="btn" type="button" id="useBucket">Use the bucket (discard this machine's state)</button>
-          <button class="btn danger" type="button" id="overwriteBucket">Overwrite the bucket with this installation</button>
+          <button class="ds-btn" type="button" id="useBucket">Use the bucket (discard this machine's state)</button>
+          <button class="ds-btn" type="button" id="overwriteBucket">Overwrite the bucket with this installation</button>
         </div>
 
         <div class="choice" id="leaseBox" hidden>
           <p id="leaseText"></p>
-          <div class="field" style="margin-bottom:0">
+          <div class="ds-field" style="margin-bottom:0">
             <label for="s3TakeoverPassword">Socrates password</label>
-            <input class="input" type="password" id="s3TakeoverPassword" autocomplete="current-password">
+            <input class="ds-input" type="password" id="s3TakeoverPassword" autocomplete="current-password">
             <div class="hint">The password of the installation in the bucket. Taking over stops the other Socrates from writing to it.</div>
           </div>
         </div>
 
-        <button class="btn primary" type="submit" id="connectBtn">Connect</button>
+        <button class="ds-btn ds-btn--primary" type="submit" id="connectBtn">Connect</button>
       </form>
       <div class="notice" id="storageNotice"></div>
     </section>
@@ -150,25 +142,25 @@
       <h1>Set up Socrates</h1>
       <p class="sub">Choose the password you will use to sign in. You can change everything else later in the admin dashboard.</p>
       <form id="form">
-        <div class="field">
+        <div class="ds-field">
           <label for="password">Password</label>
-          <input class="input" type="password" id="password" autocomplete="new-password" minlength="6" required>
+          <input class="ds-input" type="password" id="password" autocomplete="new-password" minlength="6" required>
           <div class="hint">At least 6 characters. This is the only account.</div>
         </div>
-        <div class="field">
+        <div class="ds-field">
           <label for="repeat">Repeat password</label>
-          <input class="input" type="password" id="repeat" autocomplete="new-password" minlength="6" required>
+          <input class="ds-input" type="password" id="repeat" autocomplete="new-password" minlength="6" required>
         </div>
         <div class="divider"></div>
-        <div class="field">
+        <div class="ds-field">
           <label for="key">OpenRouter API key <span style="font-weight:400;color:var(--text-faint)">· optional</span></label>
-          <input class="input mono" type="password" id="key" placeholder="sk-or-v1-…" autocomplete="off">
+          <input class="ds-input mono" type="password" id="key" placeholder="sk-or-v1-…" autocomplete="off">
           <div class="hint">It transcribes what you dictate, and it runs the spoken status, the session names, Home's summaries and questions — which send the screen of every coding session to OpenRouter — and the operator that types your answers into a session. The coding programs bring their own credentials, and the voice that reads answers out loud has a key of its own in Admin → Voice. Get one at openrouter.ai/keys — you can also add it later.</div>
         </div>
         <div class="divider"></div>
-        <div class="field">
+        <div class="ds-field">
           <label for="tunnelMode">Reach it from outside <span style="font-weight:400;color:var(--text-faint)">· optional</span></label>
-          <select class="select" id="tunnelMode">
+          <select class="ds-input" id="tunnelMode">
             <option value="off" id="localOnly">Local only — http://localhost:8080</option>
             <option value="quick">Cloudflare quick tunnel — instant public URL</option>
             <option value="token">Cloudflare named tunnel — your own hostname</option>
@@ -176,22 +168,23 @@
           <div class="hint" id="tunnelHint">Socrates always keeps serving locally, so you can change this later in the admin dashboard.</div>
         </div>
         <div id="tunnelNamed" hidden>
-          <div class="field">
+          <div class="ds-field">
             <label for="tunnelToken">Tunnel token</label>
-            <input class="input mono" type="password" id="tunnelToken" autocomplete="off" placeholder="eyJhIjoi…">
+            <input class="ds-input mono" type="password" id="tunnelToken" autocomplete="off" placeholder="eyJhIjoi…">
             <div class="hint">Cloudflare Zero Trust → Networks → Tunnels → Create a tunnel → Cloudflared. Name it and save; the token is in the install command Cloudflare shows next. Point the tunnel's public hostname at <code class="local-url">http://localhost:8080</code>.</div>
           </div>
-          <div class="field">
+          <div class="ds-field">
             <label for="tunnelHostname">Public hostname</label>
-            <input class="input mono" type="text" id="tunnelHostname" placeholder="socrates.example.com" spellcheck="false">
+            <input class="ds-input mono" type="text" id="tunnelHostname" placeholder="socrates.example.com" spellcheck="false">
           </div>
         </div>
-        <button class="btn primary" type="submit" id="submit">Create workspace</button>
+        <button class="ds-btn ds-btn--primary" type="submit" id="submit">Create workspace</button>
       </form>
       <div class="notice" id="notice"></div>
     </section>
   </div>
 </main>
+<div class="ds-toasts" id="toasts"></div>
 <script type="module">
 import { api } from '/static/js/api.js';
 
@@ -314,7 +307,7 @@ function renderStatus(c) {
       + 'It becomes free by itself when that Socrates stops or has not been seen for 90 seconds.';
   } else if (c.reason === 'wrong_passphrase') {
     reason += c.source === 'env'
-      ? ' Set SOCRATES_S3_PASSPHRASE to the passphrase this bucket was set up with and restart the container.'
+      ? ' Set SOCRATES_S3_PASSPHRASE to the passphrase this bucket was set up with in /etc/socrates.env and restart Socrates.'
       : ' Put the right passphrase into s3.json in the data directory; it is read again on the next attempt.';
   }
   notice($('storageReason'), reason, c.reason === 'leased' ? 'ok' : 'error');

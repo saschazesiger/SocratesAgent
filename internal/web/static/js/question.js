@@ -712,7 +712,7 @@ function mount(ctx, startId) {
     shell.replaceChildren(el('div', { class: 'q-finished' },
       el('div', { class: 'q-finished-mark', 'aria-hidden': 'true', html: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>' }),
       el('h2', { class: 'q-finished-title', text: answeredHere ? 'All questions answered' : 'No question is waiting' }),
-      el('button', { class: 'btn q-big', type: 'button', text: 'Close', onclick: close })));
+      el('button', { class: 'ds-btn q-big', type: 'button', text: 'Close', onclick: close })));
     closeTimer = setTimeout(close, MOVE_ON);
   }
 
@@ -1566,18 +1566,18 @@ function mount(ctx, startId) {
     // Named for what they move between: the questions of other sessions.
     // The steps of one prompt are moved through by the big button below.
     const prev = el('button', {
-      class: 'icon-btn q-nav-btn', type: 'button', html: PREV_SVG, title: 'Previous question',
+      class: 'ds-btn ds-btn--quiet ds-btn--icon q-nav-btn', type: 'button', html: PREV_SVG, title: 'Previous question',
       'aria-label': 'Previous question', 'data-step': '-1', disabled: index === 0, onclick: () => go(-1),
     });
     const next = el('button', {
-      class: 'icon-btn q-nav-btn', type: 'button', html: NEXT_SVG, title: 'Next question',
+      class: 'ds-btn ds-btn--quiet ds-btn--icon q-nav-btn', type: 'button', html: NEXT_SVG, title: 'Next question',
       'aria-label': 'Next question', 'data-step': '1', disabled: index >= queue.length - 1, onclick: () => go(1),
     });
     // Close is on the left, where a sheet's way out is on a phone: the top
     // right corner is where the keyboard button lands in touch mode.
     return el('div', { class: 'q-top' },
       el('button', {
-        class: 'icon-btn q-close', type: 'button', html: CLOSE_SVG, title: 'Close', 'aria-label': 'Close',
+        class: 'ds-btn ds-btn--quiet ds-btn--icon q-close', type: 'button', html: CLOSE_SVG, title: 'Close', 'aria-label': 'Close',
         onclick: close,
       }),
       queue.length < 2
@@ -1622,13 +1622,13 @@ function mount(ctx, startId) {
       // Without a key, reading again fails the same way: the way out is the
       // settings, where the key is added, or the terminal itself.
       const fix = keyless
-        ? el('a', { class: 'btn q-big', href: '/admin#voiceCard', text: 'Add a key' })
-        : el('button', { class: 'btn q-big', type: 'button', text: 'Try again', onclick: () => readAgain(id) });
+        ? el('a', { class: 'ds-btn q-big', href: '/admin#voiceCard', text: 'Add a key' })
+        : el('button', { class: 'ds-btn q-big', type: 'button', text: 'Try again', onclick: () => readAgain(id) });
       scroll.insertBefore(el('div', { class: 'q-problem', role: 'alert' },
         el('p', { text: digest.error || 'The question could not be read.' }),
         el('div', { class: 'q-problem-actions' },
           fix,
-          el('button', { class: 'btn q-big', type: 'button', text: 'Open session', onclick: () => openSession(id) }))), wrap);
+          el('button', { class: 'ds-btn q-big', type: 'button', text: 'Open session', onclick: () => openSession(id) }))), wrap);
     }
     if (digest && digest.context) {
       // On a short screen the context is two lines, and a tap opens the rest.
@@ -1683,7 +1683,7 @@ function mount(ctx, startId) {
       el('span', { class: 'q-session-text' },
         el('span', { class: 'q-session-title', tabindex: '-1', text: title }),
         el('span', { class: 'q-session-folder', text: folder, hidden: !folder })),
-      el('button', { class: 'btn q-open', type: 'button', text: 'Open session', onclick: () => openSession(id) }));
+      el('button', { class: 'ds-btn q-open', type: 'button', text: 'Open session', onclick: () => openSession(id) }));
   }
 
   // The options are buttons that say whether they are chosen (aria-pressed):
@@ -1795,7 +1795,7 @@ function mount(ctx, startId) {
   // the item it answers, or -1 for the answer to a screen with no question.
   function ownAnswer(id, st, at, label, sig) {
     const field = el('textarea', {
-      class: 'textarea q-own-field', rows: '2', placeholder: 'Type or dictate an answer…',
+      class: 'ds-input q-own-field', rows: '2', placeholder: 'Type or dictate an answer…',
       'aria-label': label,
       value: at < 0 ? st.own : (st.texts.get(at) || ''),
       disabled: st.phase !== 'ask' && st.phase !== 'error',
@@ -1834,7 +1834,7 @@ function mount(ctx, startId) {
     const at = Math.min(st.item, Math.max(0, items.length - 1));
     const item = items[at] || null;
     const read = el('button', {
-      class: 'btn q-big q-read', type: 'button', 'aria-pressed': speaking ? 'true' : 'false',
+      class: 'ds-btn q-big q-read', type: 'button', 'aria-pressed': speaking ? 'true' : 'false',
       'aria-label': speaking ? 'Stop reading' : 'Read aloud', title: speaking ? 'Stop reading' : 'Read aloud',
       onclick: (event) => toggleReading(sayable(digest, item), event.currentTarget),
       disabled: !digest,
@@ -1842,22 +1842,22 @@ function mount(ctx, startId) {
     el('span', { class: 'q-read-text', text: speaking ? 'Stop reading' : 'Read aloud' }));
     setClass(read, 'speaking', speaking);
     const back = items.length > 1 && st.item > 0 && (st.phase === 'ask' || st.phase === 'error')
-      ? el('button', { class: 'btn q-big q-back', type: 'button', text: 'Back', onclick: () => { st.item -= 1; draw(true); } })
+      ? el('button', { class: 'ds-btn q-big q-back', type: 'button', text: 'Back', onclick: () => { st.item -= 1; draw(true); } })
       : null;
     const last = !question || st.item >= items.length - 1;
     // "Continue", not "Next question": the arrows at the top are the next
     // question - another session's - and this is the next step of this one.
     const sendBtn = el('button', {
-      class: 'btn primary q-big q-send', type: 'button', text: last ? 'Send' : 'Continue',
+      class: 'ds-btn ds-btn--primary q-big q-send', type: 'button', text: last ? 'Send' : 'Continue',
       'aria-label': last ? 'Send' : 'Continue to question ' + (at + 2) + ' of ' + items.length,
       onclick: () => advance(id, question),
     });
     const cancel = el('button', {
-      class: 'btn q-big q-cancel', type: 'button', text: 'Cancel', hidden: true,
+      class: 'ds-btn q-big q-cancel', type: 'button', text: 'Cancel', hidden: true,
       onclick: (event) => pressCancel(id, event.currentTarget),
     });
     const retry = el('button', {
-      class: 'btn primary q-big q-retry', type: 'button', text: 'Try again', hidden: true,
+      class: 'ds-btn ds-btn--primary q-big q-retry', type: 'button', text: 'Try again', hidden: true,
       onclick: () => {
         if (st.retry === 'digest') { readAgain(id); return; }
         const again = st.phase === 'error' ? againRev(st, ctx.digestOf(id)) : -1;
@@ -1870,7 +1870,7 @@ function mount(ctx, startId) {
       },
     });
     const openIt = el('button', {
-      class: 'btn q-big q-open-error', type: 'button', text: 'Open session', hidden: true,
+      class: 'ds-btn q-big q-open-error', type: 'button', text: 'Open session', hidden: true,
       onclick: () => openSession(id),
     });
     return el('div', { class: 'q-actions' }, read, back, cancel, openIt, retry, sendBtn);

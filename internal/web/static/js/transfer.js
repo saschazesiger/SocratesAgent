@@ -73,11 +73,11 @@ export function mountTransfer(ctx) {
       return;
     }
     const area = el('textarea', {
-      class: 'textarea mono copy-text', readonly: true, spellcheck: 'false',
+      class: 'ds-input mono copy-text', readonly: true, spellcheck: 'false',
       'aria-label': 'Terminal text', value: text,
     });
-    const copy = el('button', { class: 'btn sm primary', type: 'button', text: 'Copy all' });
-    const close = el('button', { class: 'btn sm', type: 'button', text: 'Close' });
+    const copy = el('button', { class: 'ds-btn ds-btn--sm ds-btn--primary', type: 'button', text: 'Copy all' });
+    const close = el('button', { class: 'ds-btn ds-btn--sm', type: 'button', text: 'Close' });
     const dialog = el('dialog', { class: 'modal copy-sheet' },
       el('h2', { class: 'modal-title', text: 'Copy from the terminal' }),
       el('p', { class: 'hint', text: 'Select a part to copy just that, or copy everything.' }),

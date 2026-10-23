@@ -26,22 +26,37 @@ const PUSH_STATE = 'socrates-push';
 
 // The shell is small and entirely local, so it is worth having in full before
 // the first bad connection rather than only what happened to load. It is the
-// session page, everything it imports, and the vendored terminal it loads with
-// plain script tags - and nothing else: the dashboard's own modules can never
-// be reached from a page this worker serves offline, and a file that has to
-// arrive before anything can be served offline at all is a file worth not
-// having in the list.
+// session page, everything it imports, the stylesheets and fonts it wears, and
+// the vendored terminal and Dashboard-Style it loads with plain tags - and
+// nothing else: the dashboard's own modules can never be reached from a page
+// this worker serves offline, and a file that has to arrive before anything
+// can be served offline at all is a file worth not having in the list.
 //
 // The vendored terminal alone is 801 KB uncompressed and 210 KB gzipped -
 // xterm.js is 489 KB of that and the WebGL renderer 248 KB - and both earn it,
 // because a terminal that has to be fetched is a terminal that is not there in
-// a tunnel. Socrates itself serves the files as they are: the compression is
-// whatever is in front of it, the Cloudflare edge or a reverse proxy. The measurement for the
-// whole list below is in the README, under "The app shell works with no
-// network", and is where an addition should be noticed.
+// a tunnel. Dashboard-Style adds about 865 KB for the same reason - ds.css and
+// ds.js are 399 KB and 378 KB, 94 KB and 104 KB gzipped, and the two Google
+// Sans files 86 KB - because a page without its look is not one anybody can
+// use. Socrates itself serves the files as they are: the compression is
+// whatever is in front of it, the Cloudflare edge or a reverse proxy. The
+// measurement for the whole list below is in the README, under "The app shell
+// works with no network", and is where an addition should be noticed.
 const SHELL = [
   '/',
-  '/static/css/app.css',
+  '/static/vendor/dashboard-style/fonts/fonts.css',
+  '/static/vendor/dashboard-style/fonts/google-sans-latin-opsz-normal.woff2',
+  '/static/vendor/dashboard-style/fonts/google-sans-latin-ext-opsz-normal.woff2',
+  '/static/vendor/dashboard-style/ds.css',
+  '/static/vendor/dashboard-style/ds.js',
+  '/static/css/theme.css',
+  '/static/css/so-shared.css',
+  '/static/css/so-frame.css',
+  '/static/css/so-stage.css',
+  '/static/css/so-home.css',
+  '/static/css/so-question.css',
+  '/static/css/so-prestart.css',
+  '/static/css/so-sheet.css',
   '/static/fonts/SourceCodePro-Regular.woff2',
   '/static/fonts/SourceCodePro-Bold.woff2',
   '/static/vendor/xterm.css',
@@ -50,6 +65,7 @@ const SHELL = [
   '/static/vendor/addon-unicode11.js',
   '/static/vendor/addon-web-links.js',
   '/static/vendor/addon-webgl.js',
+  '/static/js/ui.js',
   '/static/js/net.js',
   '/static/js/api.js',
   '/static/js/session.js',

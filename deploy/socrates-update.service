@@ -1,0 +1,25 @@
+# Updates Socrates and every tool it runs on: scripts/update.sh, from the copy
+# install.sh and every successful update put in /usr/local/lib/socrates, so a
+# checkout somebody is editing is never what runs at night. Started by
+# socrates-update.timer, by the admin page's "Update now" and, for a run from
+# a terminal, under its own name (socrates-update-manual).
+#
+# scripts/install.sh puts this file in /etc/systemd/system, and update.sh
+# keeps it equal to the one in the source; change it here, not there.
+
+[Unit]
+Description=Socrates: update Socrates and the tools it runs
+Documentation=https://github.com/saschazesiger/SocratesAgent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/socrates/update.sh --auto
+Environment=SOCRATES_UPDATE_DETACHED=1 SOCRATES_UPDATE_TRIGGER=timer
+Environment=HOME=/root LANG=C.UTF-8
+# Downloads and a Go build, beside sessions that should not feel them.
+Nice=10
+IOSchedulingClass=idle
+# A slow mirror is retried rather than given up on; this is the bound.
+TimeoutStartSec=3h

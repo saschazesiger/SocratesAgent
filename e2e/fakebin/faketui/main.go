@@ -32,8 +32,8 @@
 // It also answers the white-background question end to end: on start it writes
 // the OSC 10 and OSC 11 queries its real counterpart writes, and its banner
 // says which background it was told about. Only OSC 11 decides that. It must
-// never wait for a `CSI ? 996 n` answer: tmux 3.3a, which is what the Docker
-// base image ships, does not send one.
+// never wait for a `CSI ? 996 n` answer: tmux 3.3a, which is what Debian 12
+// ships, does not send one.
 package main
 
 import (

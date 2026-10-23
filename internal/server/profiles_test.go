@@ -145,7 +145,6 @@ func TestSessionRunsInItsProfile(t *testing.T) {
 	for _, body := range []string{
 		`{"harness":"claude","profile":"p-000000000000"}`,
 		`{"harness":"claude","profile":"../etc"}`,
-		fmt.Sprintf(`{"harness":"shell","shell_execution":"host","profile":%q}`, id),
 	} {
 		if res, _ := e.create(body); res.StatusCode != http.StatusBadRequest {
 			t.Errorf("create %s answered %d", body, res.StatusCode)

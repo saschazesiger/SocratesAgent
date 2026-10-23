@@ -14,9 +14,8 @@ import (
 // new-session sheet refuses to start anything - so the whole job here is to
 // say what is wrong in words somebody can act on.
 //
-// There is deliberately nothing here that installs it. Socrates is run as the
-// Docker image, and the image has tmux; a machine without it is a broken
-// image, not a machine waiting for a package manager.
+// There is deliberately nothing here that installs it: scripts/install.sh
+// does, and a machine without it is an installation that was not finished.
 
 // Report is what the dashboard knows about tmux on this machine.
 type Report struct {
@@ -49,8 +48,8 @@ func (d Detector) Detect(ctx context.Context) Report {
 	rep := Report{Min: fmt.Sprintf("%d.%d", MinMajor, MinMinor)}
 	path, err := d.lookPath("tmux")
 	if err != nil {
-		rep.Reason = "tmux is not installed. Socrates needs it to keep sessions alive, " +
-			"and the Docker image ships with it - this one is missing it"
+		rep.Reason = "tmux is not installed. Socrates needs it to keep sessions alive; " +
+			"scripts/install.sh installs it"
 		return rep
 	}
 	rep.Installed, rep.Path = true, path

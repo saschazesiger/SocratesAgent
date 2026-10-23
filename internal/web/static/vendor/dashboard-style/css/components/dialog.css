@@ -1,0 +1,358 @@
+/*
+ * Dialog (confirmation): a modal box over the whole window, above an open
+ * side sheet (it may ask from inside one) and below snackbars. The scrim
+ * fades in while the box fades, grows from just below full size and rises
+ * a little on the spatial spring, from an origin towards its opener. It
+ * leaves faster than it came, the same way back, accelerating. A close
+ * taken back mid-way continues from where the box is.
+ *
+ * Native markup (preferred): showModal() makes the page inert and gives
+ * the dialog its modal semantics, so the box carries no role.
+ *
+ *   <dialog class="ds-dialog" role="alertdialog" aria-labelledby="d-title" aria-describedby="d-text">
+ *     <div class="ds-dialog__backdrop" data-close></div>
+ *     <div class="ds-dialog__box">
+ *       <h2 class="ds-dialog__title" id="d-title">Delete 3 devices?</h2>
+ *       <p class="ds-dialog__text" id="d-text">They are removed for everyone.</p>
+ *       <div class="ds-dialog__actions">
+ *         <button class="ds-btn ds-btn--text" type="button" data-close autofocus>Cancel</button>
+ *         <button class="ds-btn ds-btn--primary" type="button">Delete devices</button>
+ *
+ * Div markup (fallback): the same tree in a div; the box takes the role.
+ *
+ *   <div class="ds-dialog" hidden>
+ *     <div class="ds-dialog__backdrop" data-close></div>
+ *     <div class="ds-dialog__box" role="alertdialog" aria-modal="true" aria-labelledby="d-title" aria-describedby="d-text">
+ *
+ * Open and close both with DS.overlay.open(dialog, { opener }) and
+ * DS.overlay.close(dialog) (js/overlay.js): focus, trap, Escape, the
+ * scroll lock and data-state. The motion runs on transitions keyed on
+ * data-state ("closed", then "open"; "closed" again to leave), so a
+ * reversal continues from the current value in every engine. The scrim is
+ * the __backdrop child; a native dialog's ::backdrop stays transparent.
+ *
+ *   .ds-dialog--hidden     not shown (or use the hidden attribute; it works
+ *                          without .ds-base)
+ *   .ds-dialog--closing    the exit by hand, without data-state (keyframes):
+ *                          release the trap and focus the opener first, add
+ *                          the class, and after DS.motion.settled(box) hide
+ *                          the dialog and remove the class in the same task.
+ *                          On a native dialog it keeps the element shown and
+ *                          stacked (position: fixed, --ds-z-dialog) after
+ *                          close() took it out of the top layer. The box
+ *                          ignores the pointer during the exit, the backdrop
+ *                          still catches clicks, so nothing reaches the page
+ *                          under it.
+ *   .ds-dialog--nested     over another open modal (a sheet, the modal
+ *                          drawer): the lighter --ds-scrim-nested, so the
+ *                          scrims add up to about 43%. DS.overlay sets it.
+ *   .ds-dialog--contained  covers its positioned container instead of the
+ *                          window (div markup only: a dialog inside an
+ *                          embedded panel); in a container taller than
+ *                          the window the box stays in the visible part
+ *                          (position: sticky)
+ *
+ * At 600px and below the box moves on --ds-ease-out: a box nearly as wide
+ * as the window never overshoots past it.
+ *
+ * There are no red buttons: the main action names the consequence.
+ *
+ * Hooks: --ds-dialog-width (400px), --ds-dialog-border (an invisible
+ * hairline that forced colors paint, so the dialog keeps its edge once
+ * shadow and scrim are gone), --ds-dialog-shadow, --ds-dialog-scrim
+ * (--ds-scrim).
+ *
+ * Progressive:
+ * - @starting-style, allow-discrete transitions and the overlay property
+ *   (a native dialog driven by hand, showModal() and close() of the page
+ *   without DS.overlay, plays the same transitions, also on close();
+ *   Chromium keeps a dialog in the top layer through every exit, DS.overlay's
+ *   included): without them it enters with the keyframes and closes at
+ *   once.
+ */
+
+@layer ds.tokens, ds.base, ds.components, ds.motion, ds.utilities;
+
+@layer ds.components {
+  .ds-dialog {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: var(--ds-z-dialog);
+    display: grid;
+    place-items: center;
+    /* Out of flow: no rhythm margin from a parent card (.ds-card > * + *)
+       pushes the cover off its container or the window. */
+    margin: 0;
+    padding: var(--ds-space-4);
+  }
+
+  /* A native <dialog> loses the UA box: it is the same full-window grid
+     as the div, and the box inside is the surface. */
+  dialog.ds-dialog {
+    width: auto;
+    height: auto;
+    max-width: none;
+    max-height: none;
+    margin: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    overflow: visible;
+  }
+
+  dialog.ds-dialog::backdrop {
+    background: transparent;
+  }
+
+  /* display: grid above outranks the UA rule that hides a closed dialog.
+     --closing keeps it shown while its exit plays outside the top layer;
+     data-state="open" keeps it shown when the page closes it natively
+     (close(), a <form method="dialog">), until the close event, a task
+     later, starts the exit from where it stands. */
+  dialog.ds-dialog:not([open]):not(.ds-dialog--closing):not([data-state="open"]) {
+    display: none;
+  }
+
+  .ds-dialog--contained {
+    position: absolute;
+    z-index: var(--ds-z-popover);
+  }
+
+  /* The container may be taller than the window (a long list, a grid cell
+     the host stretches): the box sticks inside the visible part instead of
+     centring below the fold, and stays centred when the container fits. A
+     box taller than the window scrolls inside it. */
+  .ds-dialog--contained .ds-dialog__box {
+    position: sticky;
+    top: var(--ds-space-4);
+    bottom: var(--ds-space-4);
+    max-height: min(100%, calc(100dvh - 2 * var(--ds-space-4)));
+  }
+
+  .ds-dialog--hidden,
+  .ds-dialog[hidden] {
+    display: none;
+  }
+
+  .ds-dialog--nested {
+    --ds-dialog-scrim: var(--ds-scrim-nested);
+  }
+
+  .ds-dialog__backdrop {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    background: var(--ds-dialog-scrim, var(--ds-scrim));
+  }
+
+  .ds-dialog__box {
+    position: relative;
+    width: min(var(--ds-dialog-width, 400px), 100%);
+    max-height: 100%;
+    overflow-y: auto;
+    padding: var(--ds-space-6);
+    display: grid;
+    gap: var(--ds-space-4);
+    border: var(--ds-dialog-border, 1px solid transparent);
+    border-radius: var(--ds-radius-dialog);
+    background: var(--ds-surface);
+    box-shadow: var(--ds-dialog-shadow, var(--ds-elev-overlay));
+    /* Its own ink on its own surface (a widget without .ds-base). */
+    color: var(--ds-text);
+    text-align: left;
+  }
+
+  /* Only the box lets clicks through while it leaves; the backdrop swallows
+     them until the dialog is hidden or removed. */
+  .ds-dialog--closing .ds-dialog__box,
+  .ds-dialog[data-state="closed"] .ds-dialog__box {
+    pointer-events: none;
+  }
+
+  /* State-driven (DS.overlay): transitions, so a reversal continues from
+     the current value. A transition takes the timing of the state it moves
+     to: the entrance from these rules, the exit from the closed ones. The
+     opacity is opaque within --ds-dur-fast, before the spring has settled. */
+  .ds-dialog[data-state] .ds-dialog__backdrop {
+    animation: none;
+    transition: opacity var(--ds-dur-medium) var(--ds-ease-in-out);
+  }
+
+  .ds-dialog[data-state] .ds-dialog__box {
+    animation: none;
+    transform-origin: var(--ds-motion-origin, 50% 50%);
+    transition:
+      opacity var(--ds-dur-fast) var(--ds-ease-in-out),
+      scale var(--ds-dur-slow) var(--ds-ease-spatial),
+      translate var(--ds-dur-slow) var(--ds-ease-spatial);
+  }
+
+  .ds-dialog[data-state="closed"] .ds-dialog__backdrop {
+    opacity: 0;
+    transition: opacity var(--ds-dur-base) var(--ds-ease-in-out);
+  }
+
+  .ds-dialog[data-state="closed"] .ds-dialog__box {
+    opacity: 0;
+    scale: var(--ds-scale-enter);
+    translate: 0 var(--ds-distance-sm);
+    transition:
+      opacity var(--ds-dur-base) var(--ds-ease-in-out),
+      scale var(--ds-dur-base) var(--ds-ease-exit),
+      translate var(--ds-dur-base) var(--ds-ease-exit);
+  }
+
+  /* Keyframes: markup driven by hand, without data-state. The exit mirrors
+     the entrance, movement-only plus the fade. The box rises the same
+     --ds-distance-sm as on the state path; the keyframes keep the
+     --ds-dur-medium of the hand path (docs/motion.md rule 3). */
+  .ds-dialog:not([data-state]) .ds-dialog__backdrop {
+    animation: ds-fade-in var(--ds-dur-medium) var(--ds-ease-in-out) backwards;
+  }
+
+  .ds-dialog:not([data-state]) .ds-dialog__box {
+    --ds-motion-distance: var(--ds-distance-sm);
+    animation:
+      ds-fade-in var(--ds-dur-medium) var(--ds-ease-in-out) backwards,
+      ds-grow-in var(--ds-dur-medium) var(--ds-ease-spatial) backwards;
+  }
+
+  .ds-dialog--closing:not([data-state]) .ds-dialog__backdrop {
+    animation: ds-fade-out var(--ds-dur-base) var(--ds-ease-in-out) forwards;
+  }
+
+  .ds-dialog--closing:not([data-state]) .ds-dialog__box {
+    --ds-motion-distance: var(--ds-distance-sm);
+    animation:
+      ds-fade-out var(--ds-dur-base) var(--ds-ease-in-out) forwards,
+      ds-shrink-out var(--ds-dur-base) var(--ds-ease-exit) forwards;
+  }
+
+  /* A native dialog driven by hand: the same transitions, keyed on [open].
+     display and overlay step at the end of the exit, so close() animates
+     and Chromium keeps the dialog in the top layer meanwhile. Under
+     DS.overlay only overlay steps: --closing keeps display, and the dialog
+     must not linger, invisible, once it is done. */
+  @supports (transition-behavior: allow-discrete) {
+    dialog.ds-dialog:not([data-state]) {
+      transition:
+        display var(--ds-dur-base) allow-discrete,
+        overlay var(--ds-dur-base) allow-discrete;
+    }
+
+    dialog.ds-dialog[data-state] {
+      transition: overlay var(--ds-dur-base) allow-discrete;
+    }
+
+    dialog.ds-dialog:not([data-state]) .ds-dialog__backdrop {
+      animation: none;
+      transition: opacity var(--ds-dur-medium) var(--ds-ease-in-out);
+    }
+
+    dialog.ds-dialog:not([data-state]) .ds-dialog__box {
+      animation: none;
+      transition:
+        opacity var(--ds-dur-fast) var(--ds-ease-in-out),
+        scale var(--ds-dur-slow) var(--ds-ease-spatial),
+        translate var(--ds-dur-slow) var(--ds-ease-spatial);
+    }
+
+    dialog.ds-dialog:not([data-state]):not([open]) .ds-dialog__backdrop {
+      opacity: 0;
+      transition: opacity var(--ds-dur-base) var(--ds-ease-in-out);
+    }
+
+    dialog.ds-dialog:not([data-state]):not([open]) .ds-dialog__box {
+      opacity: 0;
+      scale: var(--ds-scale-enter);
+      translate: 0 var(--ds-distance-sm);
+      transition:
+        opacity var(--ds-dur-base) var(--ds-ease-in-out),
+        scale var(--ds-dur-base) var(--ds-ease-exit),
+        translate var(--ds-dur-base) var(--ds-ease-exit);
+    }
+  }
+
+  /* Where the dialog enters from when showModal() shows it (a rule of its
+     own, not nested; engines without it play the keyframes). */
+  @starting-style {
+    dialog.ds-dialog[open]:not([data-state]) .ds-dialog__backdrop {
+      opacity: 0;
+    }
+
+    dialog.ds-dialog[open]:not([data-state]) .ds-dialog__box {
+      opacity: 0;
+      scale: var(--ds-scale-enter);
+      translate: 0 var(--ds-distance-sm);
+    }
+  }
+
+  .ds-dialog__title {
+    margin: 0;
+    color: var(--ds-text);
+    font: var(--ds-font-title);
+    letter-spacing: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .ds-dialog__text {
+    margin: 0;
+    color: var(--ds-text-2);
+    font: var(--ds-font-body);
+  }
+
+  /* The title and its text belong together. */
+  .ds-dialog__title + .ds-dialog__text {
+    margin-top: calc(-1 * var(--ds-space-2));
+  }
+
+  .ds-dialog__actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    align-items: center;
+    gap: var(--ds-space-2);
+    margin-top: var(--ds-space-2);
+  }
+
+  /* Phones: a box nearly as wide as the window never overshoots past it;
+     the movement decelerates instead of springing (every path). */
+  @media (max-width: 600px) {
+    .ds-dialog[data-state="open"] .ds-dialog__box {
+      transition:
+        opacity var(--ds-dur-fast) var(--ds-ease-in-out),
+        scale var(--ds-dur-slow) var(--ds-ease-out),
+        translate var(--ds-dur-slow) var(--ds-ease-out);
+    }
+
+    .ds-dialog:not([data-state]) .ds-dialog__box {
+      animation:
+        ds-fade-in var(--ds-dur-medium) var(--ds-ease-in-out) backwards,
+        ds-grow-in var(--ds-dur-medium) var(--ds-ease-out) backwards;
+    }
+
+    /* The rule above matches a closing dialog too; the exit stays the
+       exit (it accelerates and cannot overshoot). */
+    .ds-dialog--closing:not([data-state]) .ds-dialog__box {
+      animation:
+        ds-fade-out var(--ds-dur-base) var(--ds-ease-in-out) forwards,
+        ds-shrink-out var(--ds-dur-base) var(--ds-ease-exit) forwards;
+    }
+  }
+
+  @supports (transition-behavior: allow-discrete) {
+    @media (max-width: 600px) {
+      dialog.ds-dialog[open]:not([data-state]) .ds-dialog__box {
+        transition:
+          opacity var(--ds-dur-fast) var(--ds-ease-in-out),
+          scale var(--ds-dur-slow) var(--ds-ease-out),
+          translate var(--ds-dur-slow) var(--ds-ease-out);
+      }
+    }
+  }
+}

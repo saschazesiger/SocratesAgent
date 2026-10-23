@@ -12,10 +12,9 @@ import (
 // The terminal engine card of the dashboard: whether tmux is on this machine
 // and whether sessions are possible at all.
 //
-// It only reports. The image ships tmux, so a container without it is a broken
-// image rather than a machine waiting for a package manager, and there is
-// nothing here that could put it right that would not be better done by
-// building the image again.
+// It only reports. scripts/install.sh installs tmux, so a machine without it is
+// an installation that was not finished, and running the script again is what
+// puts it right.
 
 // detectEvery is how long a detection stands. The card is refreshed on load,
 // on every wake and whenever it is opened, and each detection runs `tmux -V`.

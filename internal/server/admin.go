@@ -207,8 +207,10 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	}
 	results = append(results, voiceCheck(s.Settings().Voice))
 
-	// Remote access, and then the disk everything above writes to.
+	// Remote access, the updater that keeps all of the above current, and
+	// then the disk everything above writes to.
 	results = append(results, s.tunnelCheck(settings))
+	results = append(results, s.updatesCheck(r.Context()))
 	results = append(results, diskCheck(s.dataDir))
 
 	writeJSON(w, http.StatusOK, map[string]any{"checks": results})

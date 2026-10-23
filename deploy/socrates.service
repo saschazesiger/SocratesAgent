@@ -1,0 +1,50 @@
+# Socrates as a systemd service. scripts/install.sh puts this file at
+# /etc/systemd/system/socrates.service; change it here, not there.
+#
+# The sessions do not run in this service. Socrates starts the tmux server in a
+# scope of its own, socrates-tmux.scope, so stopping or restarting this service
+# - an update - leaves every session running, and the new process adopts them.
+# `systemctl stop socrates-tmux.scope` is what ends them.
+
+[Unit]
+Description=Socrates
+Documentation=https://github.com/saschazesiger/SocratesAgent
+Wants=network-online.target
+After=network-online.target
+# Never give up restarting: the default rate limit parks a unit that crashes a
+# few times in quick succession in "failed" for good, and a Socrates that is
+# down until somebody logs in to the machine is worse than one that keeps
+# trying while, say, the network or the bucket comes back.
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=/usr/local/bin/socrates
+EnvironmentFile=-/etc/socrates.env
+WorkingDirectory=/root
+Environment=HOME=/root
+Environment=LANG=C.UTF-8
+# The service's PATH is also the agents' PATH. /snap/bin is where Ubuntu keeps
+# Node when it came as a snap, and ~/.local/bin is where Claude Code's own
+# installer puts it.
+Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
+Restart=always
+RestartSec=3
+# Socrates pings the watchdog every 40 seconds while its own /api/health
+# answers (and, while it starts, for at most 15 minutes), so a process that is
+# hung rather than crashed is killed and restarted after two minutes without
+# one. Only the main process may ping: the agents inherit NOTIFY_SOCKET.
+WatchdogSec=120
+NotifyAccess=main
+# Every terminal, connection and agent pipe is a descriptor, and the default
+# soft limit of 1024 is a busy afternoon. The hard limit lets children raise
+# theirs further.
+LimitNOFILE=65536:524288
+# The kernel's OOM killer taking one child - an editor, the tunnel - is not a
+# reason to stop the whole service, which is what the default does.
+OOMPolicy=continue
+# A stop flushes what is pending to the bucket and lets go of the lease, which
+# is bounded well inside this; the sessions are elsewhere and not waited for.
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

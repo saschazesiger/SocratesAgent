@@ -1,0 +1,612 @@
+/*
+ * Data tables (Material 3): a 48px header in the label style, 52px rows
+ * divided by the passive hairline, a quiet hover, no zebra. Numbers
+ * right-aligned and tabular. Inside a card the table runs to the card's
+ * edges, so the row hover spans the whole width and the first column lines
+ * up with the card text. The wrapper scrolls sideways on narrow screens,
+ * which rules out a sticky header (it would stick to the wrapper).
+ *
+ *   <div class="ds-table-wrap">
+ *     <table class="ds-table [ds-table--wide]">
+ *       <thead><tr><th>Name</th><th class="ds-num">Count</th><th class="ds-col--secondary">Owner</th></tr></thead>
+ *       <tbody><tr><td class="ds-col--text">...</td><td class="ds-num">12</td><td class="ds-col--secondary">...</td></tr></tbody>
+ *
+ *   .ds-col--text       a text column that keeps a readable width
+ *   .ds-col--secondary  dropped on phones (and in .ds-table--wide when the
+ *                       content area is narrow)
+ *   .ds-link-btn        a button that reads like a link (opens a detail)
+ *   .ds-table--dense    40px rows (long lists)
+ *   <th aria-sort="ascending"><button class="ds-table__sort">Name (arrowUp .ds-table__sort-arrow)</button></th>
+ *                       a sortable column; the arrow at the sorted column
+ *                       says it, not the colour; every sort button keeps
+ *                       the arrow's room, so moving the sort never shifts
+ *                       the columns
+ *   .ds-table__sort-arrow  on the arrow's svg: one up arrow for both
+ *                       directions, which turns to point down for
+ *                       aria-sort="descending" (opt-in: an unmarked svg
+ *                       is never turned, so a page that renders arrowDown
+ *                       for descending keeps its direction)
+ *
+ * .ds-table--wide narrows by container query on "ds-content"; when it
+ * still scrolls sideways, a fade at the edge of its card says so. Where
+ * scroll timelines exist the fades follow the scroll position: the right
+ * fade shows while columns follow, the left one once the table has
+ * scrolled away from its start (ds-edge-fade drives the registered
+ * --ds-table-fade-start and --ds-table-fade-end, internal); a table that
+ * fits shows neither.
+ *
+ * The sort button presses in --ds-dur-micro (also while js/ripple.js holds
+ * .ds-pressed) and ripples; it is not a pill and does not morph. Keyboard
+ * focus on the sort button and .ds-link-btn: a ring that is solid from the
+ * first frame and snaps from offset + width to the offset (outline-offset,
+ * --ds-dur-fast), plus the focus layer on the sort button. The link button
+ * is an inline link: no ripple, no morph; a press darkens its underline
+ * (the press feedback on touch screens).
+ *
+ * Rows:
+ *   hover                  a state layer on the cells (currentColor at
+ *                          --ds-state-hover-lg), so it adds to a selected
+ *                          row's colour; hook --ds-table-row-hover
+ *   .ds-table--interactive every body row opens something: its primary link
+ *                          or button carries .ds-table__row-link, whose
+ *                          ::after stretches over the row (the focus ring
+ *                          sits on it, inset, so the scroller never clips
+ *                          it); the press is the cell layer at
+ *                          --ds-state-pressed in --ds-dur-micro, or the
+ *                          ripple (js/ripple.js, the row is a host); other
+ *                          controls in the row stay above the link and
+ *                          keep their own press (no row layer, no ripple);
+ *                          the table draws separate borders (a positioned
+ *                          row would cover collapsed hairlines in Firefox)
+ *   .ds-table__row--selected, or a checked checkbox directly in a cell: the
+ *                          row takes --ds-table-row-selected (default
+ *                          --ds-accent) over --ds-dur-fast; the checkbox is
+ *                          the cue that does not rely on colour, also in
+ *                          the header cell (select all, indeterminate for
+ *                          some); select all changes every row in one frame
+ *   expandable             the trigger row holds
+ *                          <button class="ds-btn ds-btn--quiet ds-btn--icon ds-table__toggle" aria-expanded="false" aria-controls="d1">(chevronDown .ds-chevron)</button>
+ *                          and is followed by
+ *                          <tr class="ds-table__detail" id="d1" inert><td colspan="N"><div class="ds-table__expand"><div>...</div></div></td></tr>
+ *                          The detail opens by grid-template-rows (0fr to
+ *                          1fr) over --ds-dur-medium on --ds-ease-out and
+ *                          closes over --ds-dur-base on --ds-ease-in: it
+ *                          pushes the rows below, so it never overshoots;
+ *                          its content fades over --ds-dur-fast. One
+ *                          hairline, below the detail. The page toggles
+ *                          aria-expanded, sets inert on the collapsed
+ *                          detail row and keys both rows (data-ds-key), so
+ *                          flip() and morphHtml keep them together.
+ *
+ * Sorting: with .ds-table__sort-arrow the page renders the same up arrow
+ * for both directions; aria-sort="descending" turns it 180deg on the
+ * spring (--ds-dur-medium), when the header is patched in place
+ * (DS.dom.morphHtml). Without the marker the arrow is what the page
+ * renders (arrowUp or arrowDown), as before 1.4.
+ *
+ * Data motion (docs/motion.md, "Data motion"): sort, filter (also while
+ * typing) and live data glide through DS.motion.flip with keyed rows and
+ * DS.dom.morphHtml; figures in cells change at once and never count up.
+ * A removed row goes at once while the rows below glide up. While rows
+ * glide, flip() marks the tbody data-ds-glide and sets --ds-flip-backdrop
+ * (the colour behind the table): every row gets an opaque backing in that
+ * colour (the selection colour over it), so crossing rows never show
+ * through each other.
+ *
+ * :has() and container queries are baseline.
+ * Progressive:
+ * - scroll-driven edge fades (animation-timeline, the registered
+ *   --ds-table-fade-* through @property): without them the static fade at
+ *   the right edge stays.
+ */
+
+@layer ds.tokens, ds.base, ds.components, ds.motion, ds.utilities;
+
+/*
+ * The widths of the scroll-linked edge fades (ds-edge-fade in motion.css
+ * animates them on the wrapper's own scroll timeline). Registered, so they
+ * interpolate as lengths; a table that does not scroll has an inactive
+ * timeline, so both stay at 0px and nothing fades.
+ */
+@property --ds-table-fade-start {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --ds-table-fade-end {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
+@layer ds.components {
+  /* Positioned, so absolutely placed descendants (the visually hidden header
+     text .ds-sr) are clipped by the scroller instead of widening the page. */
+  .ds-table-wrap {
+    position: relative;
+    overflow-x: auto;
+  }
+
+  .ds-card .ds-table-wrap {
+    margin-inline: calc(-1 * var(--ds-card-pad));
+  }
+
+  .ds-table {
+    width: 100%;
+    border-collapse: collapse;
+    /* Its own ink (a widget without .ds-base would take the host's). */
+    color: var(--ds-text);
+    font: var(--ds-font-dense);
+    /* Dates, times and counts line up from row to row. */
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ds-table th,
+  .ds-table td {
+    padding: var(--ds-space-4);
+    border-bottom: 1px solid var(--ds-line);
+    text-align: left;
+    vertical-align: middle;
+  }
+
+  .ds-card .ds-table-wrap :is(th, td):first-child {
+    padding-left: var(--ds-card-pad);
+  }
+
+  .ds-card .ds-table-wrap :is(th, td):last-child {
+    padding-right: var(--ds-card-pad);
+  }
+
+  .ds-table caption {
+    text-align: left;
+  }
+
+  .ds-table th {
+    height: 48px;
+    padding-block: var(--ds-space-3);
+    color: var(--ds-text-2);
+    font: var(--ds-font-label);
+    white-space: nowrap;
+  }
+
+  .ds-table td {
+    height: 52px;
+    padding-block: var(--ds-space-3);
+  }
+
+  /* The row holds the selection colour, its cells the state layer: the
+     layer adds to the selection instead of replacing it. */
+  .ds-table tbody tr,
+  .ds-table tbody tr > :is(td, th) {
+    transition: background-color var(--ds-dur-fast) var(--ds-ease-in-out);
+  }
+
+  @media (hover: hover) {
+    .ds-table tbody tr:not(.ds-table__detail):hover > :is(td, th) {
+      background-color: var(--ds-table-row-hover, color-mix(in srgb, currentColor calc(var(--ds-state-hover-lg) * 100%), transparent));
+    }
+  }
+
+  /* Selected rows (bulk selection): the checkbox in the row is the cue
+     that does not rely on colour. Two rules: the class marks a row on its
+     own (set by the page), and the :has() rule picks up a row whose
+     checkbox is checked. */
+  .ds-table tbody tr.ds-table__row--selected {
+    background-color: var(--ds-table-row-selected, var(--ds-accent));
+  }
+
+  .ds-table tbody tr:has(> :is(td, th) > input[type="checkbox"]:checked) {
+    background-color: var(--ds-table-row-selected, var(--ds-accent));
+  }
+
+  /* While rows glide (DS.motion.flip marks the tbody data-ds-glide with
+     --ds-flip-backdrop, the colour behind the table), every row is opaque,
+     so a row that crosses another never shows its text through. A
+     background image: it switches at once (no colour transition), and the
+     selection colour lies over the backing; the cells' state layer stays
+     above both. At rest it matches what is behind the table. */
+  .ds-table tbody[data-ds-glide] > tr {
+    background-image: linear-gradient(var(--ds-flip-backdrop, var(--ds-surface)), var(--ds-flip-backdrop, var(--ds-surface)));
+  }
+
+  .ds-table tbody[data-ds-glide] > tr.ds-table__row--selected {
+    background-image:
+      linear-gradient(var(--ds-table-row-selected, var(--ds-accent)), var(--ds-table-row-selected, var(--ds-accent))),
+      linear-gradient(var(--ds-flip-backdrop, var(--ds-surface)), var(--ds-flip-backdrop, var(--ds-surface)));
+  }
+
+  .ds-table tbody[data-ds-glide] > tr:has(> :is(td, th) > input[type="checkbox"]:checked) {
+    background-image:
+      linear-gradient(var(--ds-table-row-selected, var(--ds-accent)), var(--ds-table-row-selected, var(--ds-accent))),
+      linear-gradient(var(--ds-flip-backdrop, var(--ds-surface)), var(--ds-flip-backdrop, var(--ds-surface)));
+  }
+
+  /*
+   * Interactive rows: the row's primary link or button stretches over the
+   * row (::after against the positioned row). Other controls in the row
+   * stay above it (zero specificity: a control's own position wins).
+   */
+  /* Positioned rows paint after the table's collapsed borders (Firefox
+     then covers a selected row's hairlines with its colour): separate
+     borders, which each cell paints over its row. Only bottom borders are
+     drawn, so the lines look the same. */
+  .ds-table--interactive {
+    border-collapse: separate;
+    border-spacing: 0;
+  }
+
+  .ds-table--interactive tbody tr:not(.ds-table__detail) {
+    position: relative;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  :where(.ds-table--interactive tbody tr) :where(a[href], button, input, select, textarea, label, summary, [tabindex]):where(:not(.ds-table__row-link)) {
+    position: relative;
+    z-index: var(--ds-z-raised);
+  }
+
+  .ds-table__row-link::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    /* The ring rests at the row's edge and snaps inward. */
+    outline-offset: 0;
+    transition: outline-offset var(--ds-dur-fast) var(--ds-ease-out);
+  }
+
+  .ds-table--interactive .ds-table__row-link:focus-visible {
+    outline: none;
+  }
+
+  /* Inset by the ring's width, so the scroller never clips it. */
+  .ds-table__row-link:focus-visible::after {
+    outline: var(--ds-focus-outline);
+    outline-offset: calc(-1 * var(--ds-focus-width));
+  }
+
+  /* Keyboard focus: the focus layer on the cells, at once. */
+  .ds-table--interactive tbody tr:not(.ds-table__detail):where(:has(.ds-table__row-link:focus-visible)):focus-within > :is(td, th) {
+    background-color: color-mix(in srgb, currentColor calc(var(--ds-state-focus) * 100%), transparent);
+    transition-duration: 0s;
+  }
+
+  /* Press-in in --ds-dur-micro (.ds-pressed: js/ripple.js holds it); not
+     while a control inside the row is pressed (it has its own press). */
+  .ds-table--interactive tbody tr:not(.ds-table__detail):is(:active, .ds-pressed):not(:where(:has(:is(a[href], button, input, select, textarea, label, summary):not(.ds-table__row-link):active))) > :is(td, th) {
+    background-color: color-mix(in srgb, currentColor calc(var(--ds-state-pressed) * 100%), transparent);
+    transition-duration: var(--ds-dur-micro);
+  }
+
+  /*
+   * Expandable rows: the detail row has no padding, height or hairline of
+   * its own until it opens; the trigger row gives its hairline to the
+   * detail, so there is one line, below the detail, which travels down as
+   * it opens.
+   */
+  .ds-table tbody tr:has(+ .ds-table__detail) > :is(td, th) {
+    border-bottom: 0;
+  }
+
+  .ds-table .ds-table__detail > td,
+  .ds-card .ds-table-wrap .ds-table__detail > td {
+    height: auto;
+    padding: 0;
+  }
+
+  .ds-table__expand {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows var(--ds-dur-base) var(--ds-ease-in);
+  }
+
+  /* The content: horizontal room as the cells', vertical room as spacers
+     inside the clip (a padding would stay as the collapsed height). */
+  .ds-table__expand > * {
+    min-height: 0;
+    overflow: hidden;
+    padding-inline: var(--ds-space-4);
+    opacity: 0;
+    transition: opacity var(--ds-dur-fast) var(--ds-ease-in);
+  }
+
+  .ds-table__expand > *::before,
+  .ds-table__expand > *::after {
+    content: '';
+    display: block;
+    height: var(--ds-space-4);
+  }
+
+  .ds-table__expand > *::before {
+    height: var(--ds-space-1);
+  }
+
+  .ds-card .ds-table-wrap .ds-table__expand > * {
+    padding-inline: var(--ds-card-pad);
+  }
+
+  tr:has(.ds-table__toggle[aria-expanded="true"]) + .ds-table__detail .ds-table__expand {
+    grid-template-rows: 1fr;
+    transition: grid-template-rows var(--ds-dur-medium) var(--ds-ease-out);
+  }
+
+  tr:has(.ds-table__toggle[aria-expanded="true"]) + .ds-table__detail .ds-table__expand > * {
+    opacity: 1;
+    transition: opacity var(--ds-dur-fast) var(--ds-ease-in-out);
+  }
+
+  /* The 40px round toggle hangs out of the 20px text line, so the row
+     keeps its height; its icon lines up with the column's text. Its margin
+     box is the text line: aligned to the line's top (not its baseline),
+     its centre is the line's centre. */
+  .ds-table .ds-table__toggle {
+    vertical-align: top;
+    margin-block: calc((var(--ds-space-5) - var(--ds-btn-icon-size, 40px)) / 2);
+    margin-inline: calc((var(--ds-space-5) - var(--ds-btn-icon-size, 40px)) / 2) 0;
+  }
+
+  .ds-table tbody tr:last-child td {
+    border-bottom: none;
+  }
+
+  /* Dense rows: 40px, the text stays 14/20. The hairline counts: 7 + 24 (a
+     status chip) + 7 + 1 = 40. */
+  .ds-table--dense :is(th, td) {
+    height: 40px;
+    padding-block: calc(var(--ds-space-2) - 1px);
+  }
+
+  /* Sort button in a header cell. Its 4px padding (the room of its state
+     layer) hangs into the cell's padding, so the header keeps its height
+     and the label lines up with the cells below. */
+  .ds-table__sort {
+    position: relative;
+    isolation: isolate;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--ds-space-1);
+    margin: calc(-1 * var(--ds-space-1));
+    padding: var(--ds-space-1);
+    border: 0;
+    border-radius: var(--ds-radius-xs);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    white-space: inherit;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    /* The ring rests (invisible) one width further out and snaps in. */
+    outline-offset: calc(var(--ds-focus-offset) + var(--ds-focus-width));
+    transition: outline-offset var(--ds-dur-fast) var(--ds-ease-out);
+  }
+
+  .ds-table__sort::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background: currentColor;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--ds-dur-fast) var(--ds-ease-in-out);
+  }
+
+  @media (hover: hover) {
+    .ds-table__sort:hover::before {
+      opacity: var(--ds-state-hover);
+    }
+  }
+
+  .ds-table__sort:focus-visible::before {
+    opacity: var(--ds-state-focus);
+    transition-duration: 0s;
+  }
+
+  .ds-table__sort:active::before,
+  .ds-table__sort.ds-pressed::before {
+    opacity: var(--ds-state-pressed);
+    transition-duration: var(--ds-dur-micro);
+  }
+
+  .ds-table__sort:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-offset);
+  }
+
+  .ds-table__sort > svg {
+    flex-shrink: 0;
+  }
+
+  /* A sortable column without its arrow keeps the arrow's room (the gap
+     and the documented 16px arrow) in its padding, so a sort that moves to
+     another column never resizes the columns. Padding, not an empty flex
+     item: that would become the inline-flex button's baseline and move it
+     down in its row. In a .ds-num column the room leads, as the arrow does. */
+  .ds-table__sort:not(:has(> svg)) {
+    padding-inline-end: calc(2 * var(--ds-space-1) + 16px);
+  }
+
+  /* Opt-in: one up arrow for both directions, which descending turns on
+     the spring. An unmarked svg keeps the direction the page drew. */
+  .ds-table__sort-arrow {
+    transition: rotate var(--ds-dur-medium) var(--ds-ease-spatial);
+  }
+
+  .ds-table th[aria-sort="descending"] .ds-table__sort-arrow {
+    rotate: 180deg;
+  }
+
+  /* A number column sorts with the arrow in front, so the figures keep
+     their right edge. */
+  .ds-table th.ds-num .ds-table__sort {
+    flex-direction: row-reverse;
+  }
+
+  .ds-table th.ds-num .ds-table__sort:not(:has(> svg)) {
+    padding-inline: calc(2 * var(--ds-space-1) + 16px) var(--ds-space-1);
+  }
+
+  .ds-table th:is([aria-sort="ascending"], [aria-sort="descending"]) {
+    color: var(--ds-text);
+  }
+
+  /*
+   * Short cells (numbers, status chips, dates with .ds-nowrap) stay on one
+   * line, and text cells keep a readable width instead of breaking word by
+   * word. A wide table (.ds-table--wide) drops its secondary columns
+   * whenever the content area is narrow, also next to the persistent drawer;
+   * on phones every table does. A table that still does not fit scrolls
+   * sideways, and a fade at the right edge of its card tells that more
+   * columns follow (it covers only the card's padding when nothing does).
+   */
+  .ds-table td.ds-num,
+  .ds-table .ds-status {
+    white-space: nowrap;
+  }
+
+  .ds-table .ds-col--text {
+    min-width: 168px;
+  }
+
+  @container ds-content (max-width: 1040px) {
+    .ds-table--wide th {
+      white-space: normal;
+    }
+
+    .ds-table--wide .ds-col--secondary {
+      display: none;
+    }
+
+    .ds-card .ds-table-wrap:has(> .ds-table--wide) {
+      -webkit-mask-image: linear-gradient(to left, transparent, #000 var(--ds-card-pad));
+      mask-image: linear-gradient(to left, transparent, #000 var(--ds-card-pad));
+    }
+
+    /* Scroll-linked: a fade on each side that still has columns to show
+       (the timeline is the wrapper's own inline scroll; the shorthand
+       comes first, it resets animation-timeline). */
+    @supports (animation-timeline: scroll()) {
+      .ds-card .ds-table-wrap:has(> .ds-table--wide) {
+        -webkit-mask-image: linear-gradient(to right, transparent, #000 var(--ds-table-fade-start), #000 calc(100% - var(--ds-table-fade-end)), transparent);
+        mask-image: linear-gradient(to right, transparent, #000 var(--ds-table-fade-start), #000 calc(100% - var(--ds-table-fade-end)), transparent);
+        animation: ds-edge-fade linear both;
+        animation-timeline: scroll(self inline);
+      }
+    }
+  }
+
+  @media (max-width: 600px) {
+    .ds-table th {
+      white-space: normal;
+    }
+
+    .ds-table .ds-col--secondary {
+      display: none;
+    }
+
+    /* A 360px phone has no room for a 168px text column next to three
+       others: it takes what is left, and the cells keep closer together. */
+    .ds-table .ds-col--text {
+      min-width: 0;
+    }
+
+    .ds-table :is(th, td) {
+      padding-inline: var(--ds-space-3);
+    }
+
+    .ds-table .ds-table__expand > * {
+      padding-inline: var(--ds-space-3);
+    }
+
+    .ds-card .ds-table-wrap {
+      -webkit-mask-image: linear-gradient(to left, transparent, #000 var(--ds-card-pad));
+      mask-image: linear-gradient(to left, transparent, #000 var(--ds-card-pad));
+    }
+
+    @supports (animation-timeline: scroll()) {
+      .ds-card .ds-table-wrap {
+        -webkit-mask-image: linear-gradient(to right, transparent, #000 var(--ds-table-fade-start), #000 calc(100% - var(--ds-table-fade-end)), transparent);
+        mask-image: linear-gradient(to right, transparent, #000 var(--ds-table-fade-start), #000 calc(100% - var(--ds-table-fade-end)), transparent);
+        animation: ds-edge-fade linear both;
+        animation-timeline: scroll(self inline);
+      }
+    }
+  }
+
+  /* 320px (400% zoom): closer still, so three columns fit without a sideways
+     scroll. */
+  @media (max-width: 359px) {
+    .ds-table :is(th, td) {
+      padding-inline: var(--ds-space-2);
+    }
+
+    .ds-table .ds-table__expand > * {
+      padding-inline: var(--ds-space-2);
+    }
+  }
+
+  /* A link that leaves the app carries the external icon. Its own display:
+     a layered preflight (svg { display: block }) would drop it below the
+     text. */
+  .ds-table a > svg {
+    display: inline-block;
+    margin-left: var(--ds-space-1);
+    vertical-align: -2px;
+  }
+
+  /* Small notes inside a cell ("(default)", "was: ...") stay in one piece:
+     a note broken over two lines reads as two notes. */
+  .ds-table small {
+    font: var(--ds-font-meta);
+    white-space: nowrap;
+  }
+
+  /* A button that reads like a link (the subject that opens the detail). */
+  .ds-link-btn {
+    padding: 0;
+    border: 0;
+    border-radius: var(--ds-radius-xs);
+    background: none;
+    color: var(--ds-link);
+    font: inherit;
+    font-weight: var(--ds-weight-label);
+    text-align: left;
+    text-decoration: underline;
+    text-decoration-thickness: var(--ds-link-underline-thickness);
+    text-decoration-color: var(--ds-link-underline);
+    text-underline-offset: var(--ds-link-underline-offset);
+    cursor: pointer;
+    /* The ring rests (invisible) one width further out and snaps in. */
+    outline-offset: calc(var(--ds-focus-offset) + var(--ds-focus-width));
+    transition:
+      text-decoration-color var(--ds-dur-fast) var(--ds-ease-in-out),
+      outline-offset var(--ds-dur-fast) var(--ds-ease-out);
+  }
+
+  @media (hover: hover) {
+    .ds-link-btn:hover {
+      text-decoration-color: var(--ds-link-underline-hover);
+    }
+  }
+
+  /* The press on touch screens, which show no hover: the underline darkens
+     like on hover. An inline link has no ripple and no morph. */
+  .ds-link-btn:active {
+    text-decoration-color: var(--ds-link-underline-hover);
+  }
+
+  /* Its own ring, also without .ds-base; it follows the small radius. */
+  .ds-link-btn:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-offset);
+  }
+}

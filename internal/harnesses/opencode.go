@@ -153,15 +153,7 @@ func (o OpenCode) plan(req PlanRequest, session []string) (LaunchPlan, error) {
 	}
 	tuiPath := SessionFile(req.DataDir, req.SessionID, openCodeTUIFile)
 	files := []GenFile{{Path: tuiPath, Mode: 0o600, Data: tui}}
-	// OpenCode takes extra instructions only as files, which it reads next to
-	// its own and to any AGENTS.md.
-	var instructions []string
-	if text := onHostInstructions(); text != "" {
-		path := SessionFile(req.DataDir, req.SessionID, onHostFile)
-		files = append(files, GenFile{Path: path, Mode: 0o600, Data: []byte(text)})
-		instructions = append(instructions, path)
-	}
-	inline, err := openCodeConfig(opts, req, instructions)
+	inline, err := openCodeConfig(opts, req)
 	if err != nil {
 		return LaunchPlan{}, err
 	}
@@ -171,6 +163,11 @@ func (o OpenCode) plan(req PlanRequest, session []string) (LaunchPlan, error) {
 	}
 
 	env := baseEnv(req)
+	// OpenCode would otherwise replace its own binary from inside a running
+	// session, racing every other session started from the same file. The
+	// updates are socrates-update.timer's job, which installs them between
+	// sessions; `autoupdate: false` in the generated config says the same
+	// thing again for the day this variable is dropped.
 	env["OPENCODE_DISABLE_AUTOUPDATE"] = "1"
 	env["OPENCODE_DISABLE_TERMINAL_TITLE"] = "1"
 	// This is what lets OpenCode start with no network at all, which is the
@@ -226,19 +223,17 @@ func openCodeTUI() ([]byte, error) {
 
 // openCodeConfig is OPENCODE_CONFIG_CONTENT, which is merged last of every
 // file source and is therefore the one lever that reliably wins.
-func openCodeConfig(opts config.OpenCodeOptions, req PlanRequest, instructions []string) ([]byte, error) {
+func openCodeConfig(opts config.OpenCodeOptions, req PlanRequest) ([]byte, error) {
 	doc := map[string]any{
 		"$schema": "https://opencode.ai/config.json",
 		// Nothing a session does is published anywhere.
-		"share":      "disabled",
+		"share": "disabled",
+		// Updates come from socrates-update.timer, never from a session.
 		"autoupdate": false,
 		"permission": openCodePermission,
 	}
 	if model := pick(req.Model, opts.DefaultModel); model != "" {
 		doc["model"] = model
-	}
-	if len(instructions) > 0 {
-		doc["instructions"] = instructions
 	}
 	return json.Marshal(doc)
 }

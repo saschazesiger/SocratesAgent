@@ -101,13 +101,30 @@ func stamp(name string, data []byte) []byte {
 	case strings.HasSuffix(name, ".js"):
 		return stampedImport.ReplaceAll(data, []byte("${1}?v="+version+"${2}"))
 	case strings.HasSuffix(name, ".css"):
-		return stampedCSSURL.ReplaceAll(data, []byte("${1}?v="+version+"${2}"))
+		return stampedCSSURL.ReplaceAllFunc(data, func(m []byte) []byte {
+			sub := stampedCSSURL.FindSubmatch(m)
+			if !stampable(string(sub[2])) {
+				return m
+			}
+			return []byte(string(sub[1]) + string(sub[2]) + "?v=" + version + string(sub[3]))
+		})
 	}
 	return data
 }
 
-// Font requests must use the same build addresses as the offline shell.
-var stampedCSSURL = regexp.MustCompile(`(url\(['"]?/static/[^)'"?#]+)(['"]?\))`)
+// Font requests must use the same build addresses as the offline shell. That
+// covers the absolute /static/ addresses of our own stylesheets and the
+// relative ones of the vendored Dashboard-Style fonts.css, which resolve
+// against the stylesheet's address but do not inherit its query.
+var stampedCSSURL = regexp.MustCompile(`(url\(['"]?)([^)'"]+)(['"]?\))`)
+
+// stampable says whether a url() in a stylesheet names one of our files: a
+// data: mask, an anchor, another origin or an address that already carries a
+// query is left as it is.
+func stampable(ref string) bool {
+	return !strings.HasPrefix(ref, "data:") && !strings.HasPrefix(ref, "#") &&
+		!strings.Contains(ref, "//") && !strings.ContainsAny(ref, "?")
+}
 
 // asset returns a file as it is served, or nil when there is no such file.
 func asset(name string) []byte { return assets[path.Clean(strings.TrimPrefix(name, "/"))] }

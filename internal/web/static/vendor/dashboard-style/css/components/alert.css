@@ -1,0 +1,210 @@
+/*
+ * Alerts: notices on tonal containers with an icon, never colour alone.
+ * The neutral alert has no colour of its own: the quiet surface and the
+ * icon in the primary colour.
+ *
+ *   <div class="ds-alert ds-alert--warning" role="status">
+ *     <svg ...>(alert, 20)</svg>
+ *     <span class="ds-alert__text">The certificate expires in 5 days.</span>
+ *     <button class="ds-btn ds-btn--text ds-btn--sm" type="button">Renew</button>
+ *   </div>
+ *
+ *   (none: neutral info)  --success  --warning  --error
+ *
+ * The summary of .ds-errors is a pressable part: a state layer in its
+ * colour (hover, press in --ds-dur-micro, focus with --ds-state-focus) in
+ * a 4px padding that hangs into the space around it, the ripple
+ * (js/ripple.js), and its own ring for keyboard focus (also without
+ * .ds-base): solid from the first frame, it snaps from offset + width to
+ * the offset (outline-offset, --ds-dur-fast). It is not a pill and does
+ * not morph. Its chevron (.ds-errors__chevron) turns 180deg with the list
+ * on the spring, like .ds-chevron; <details class="ds-errors
+ * ds-collapsible"> opens the list with the collapsible timing.
+ *
+ * Inserting and dismissing (docs/motion.md, "Data motion"): through
+ * DS.motion.flip on the stack, for a user action and live data alike.
+ * Dismiss: flip(stack, () => alert.remove()): the alert fades out in place,
+ * out of flow, and the alerts below glide up on the spring (in any flex or
+ * grid gap, no height animated). Insert: flip(stack, () =>
+ * stack.prepend(alert)): it fades in while the others glide down.
+ */
+
+@layer ds.tokens, ds.base, ds.components, ds.motion, ds.utilities;
+
+@layer ds.components {
+  /* No entrance of their own: an alert re-rendered with fresh data is
+     patched in place and never fades in again. An alert that comes or goes
+     (a user action or live data) does it through DS.motion.flip on its
+     stack (the header above); one that replaces a placeholder takes
+     .ds-reveal, never per update. */
+
+  .ds-alert {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--ds-space-3);
+    padding: var(--ds-space-3) var(--ds-space-4);
+    border-radius: var(--ds-radius-card);
+    background: var(--ds-surface-low);
+    color: var(--ds-text);
+    font: var(--ds-font-body);
+  }
+
+  .ds-alert > svg {
+    flex-shrink: 0;
+    color: var(--ds-primary);
+  }
+
+  /* The 20px icon and a 20px line share one baseline. */
+  .ds-alert__text {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  /* The button hangs out of the 20px text line by the same amount above and
+     below, so its label sits on the text's centre line and the banner keeps
+     its even padding. */
+  .ds-alert .ds-btn {
+    flex-shrink: 0;
+    margin-block: calc((var(--ds-space-5) - var(--ds-btn-height, 32px)) / 2);
+    margin-inline: auto calc(-1 * var(--ds-space-2));
+  }
+
+  .ds-alert a {
+    color: inherit;
+  }
+
+  .ds-alert--success {
+    background: var(--ds-success-container);
+    color: var(--ds-on-success-container);
+  }
+
+  .ds-alert--success > svg { color: var(--ds-success); }
+
+  .ds-alert--warning {
+    background: var(--ds-warning-surface);
+    color: var(--ds-text);
+  }
+
+  .ds-alert--warning > svg { color: var(--ds-warning); }
+
+  .ds-alert--error {
+    background: var(--ds-error-container);
+    color: var(--ds-on-error-container);
+  }
+
+  .ds-alert--error > svg { color: var(--ds-error); }
+
+  .ds-alert--error .ds-btn {
+    --ds-btn-color: var(--ds-on-error-container);
+  }
+
+  /* Code in a tonal alert is told apart by the typeface alone. */
+  .ds-alert code {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+  }
+
+  /* Collapsible list of messages: icon and text in the summary.
+
+     <details class="ds-errors ds-collapsible"><summary><svg ...>(alertCircle)</svg>2 errors<svg class="ds-errors__chevron" ...>(chevronDown)</svg></summary><ul><li>...</li></ul></details> */
+  .ds-errors {
+    font: var(--ds-font-body);
+  }
+
+  /* Its 4px padding (the room of its state layer) hangs into the space
+     around it, like the table's sort button, so the text keeps its place. */
+  .ds-errors summary {
+    position: relative;
+    isolation: isolate;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--ds-space-2);
+    margin: calc(-1 * var(--ds-space-1));
+    padding: var(--ds-space-1);
+    border-radius: var(--ds-radius-xs);
+    color: var(--ds-on-error-container);
+    font: var(--ds-font-label);
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    /* The ring rests (invisible) one width further out and snaps in. */
+    outline-offset: calc(var(--ds-focus-offset) + var(--ds-focus-width));
+    transition: outline-offset var(--ds-dur-fast) var(--ds-ease-out);
+  }
+
+  /* State layer in the content colour. */
+  .ds-errors summary::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background: currentColor;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--ds-dur-fast) var(--ds-ease-in-out);
+  }
+
+  @media (hover: hover) {
+    .ds-errors summary:hover::before {
+      opacity: var(--ds-state-hover);
+    }
+  }
+
+  /* Keyboard focus: the layer appears with the ring and fades out on blur. */
+  .ds-errors summary:focus-visible::before {
+    opacity: var(--ds-state-focus);
+    transition-duration: 0s;
+  }
+
+  /* Press-in in --ds-dur-micro (.ds-pressed: js/ripple.js holds it). */
+  .ds-errors summary:active::before,
+  .ds-errors summary.ds-pressed::before {
+    opacity: var(--ds-state-pressed);
+    transition-duration: var(--ds-dur-micro);
+  }
+
+  .ds-errors summary:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-offset);
+  }
+
+  .ds-errors summary svg {
+    flex-shrink: 0;
+    color: var(--ds-error);
+  }
+
+  /* Its own bullets: a layered reset (list-style: none on ul) would leave
+     the indent without its markers. */
+  .ds-errors ul {
+    list-style-type: disc;
+    margin: var(--ds-space-2) 0 0;
+    padding-left: var(--ds-space-5);
+    color: var(--ds-text-2);
+    overflow-wrap: anywhere;
+  }
+
+  .ds-errors li + li {
+    margin-top: var(--ds-space-1);
+  }
+
+  .ds-errors summary::-webkit-details-marker {
+    display: none;
+  }
+
+  /* The disclosure chevron turns 180deg with the expansion (D25), on the
+     timing of .ds-chevron. */
+  .ds-errors .ds-errors__chevron {
+    color: inherit;
+    transition: rotate var(--ds-dur-medium) var(--ds-ease-spatial);
+  }
+
+  .ds-errors[open] .ds-errors__chevron {
+    rotate: 180deg;
+  }
+}

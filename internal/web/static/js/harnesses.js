@@ -97,7 +97,6 @@ export async function load(force = false) {
       cached = {
         harnesses: data.harnesses || [],
         workspace: data.workspace || EMPTY_WORKSPACE,
-        shell_execution: data.shell_execution || { host_available: false, default: 'container' },
         profiles: data.profiles || [],
         sessions_available: data.sessions_available !== false,
         sessions_error: data.sessions_error || '',
@@ -171,15 +170,14 @@ const sameDir = (a, b) => String(a || '').replace(/\/+$/, '') === String(b || ''
 // run in, each with how many there are and when one was last active. Claude
 // Code sessions in one profile can reach each other, so a session started
 // beside another joins its profile. A session is active while its program
-// runs and nobody has called it done; a host shell signs in to nothing. The
-// server's companionProfiles (internal/server/prestart.go) is the same rule.
+// runs and nobody has called it done. The server's companionProfiles (internal/server/prestart.go) is the same rule.
 function companions(harnessId, workdir) {
   const out = new Map();
   if (!harnessId || !workdir) return out;
   for (const s of sessionList() || []) {
     if (s.harness !== harnessId || s.status === 'done') continue;
     if (s.state !== 'running' && s.state !== 'starting') continue;
-    if (!sameDir(s.workdir, workdir) || s.options?.shell_execution === 'host') continue;
+    if (!sameDir(s.workdir, workdir)) continue;
     const id = s.options?.profile || '';
     const seen = out.get(id) || { count: 0, activeAt: 0 };
     out.set(id, { count: seen.count + 1, activeAt: Math.max(seen.activeAt, s.active_at || 0) });
@@ -350,8 +348,8 @@ function signInHint(profile, harnessId) {
   const login = (profile.accounts || {})[harnessId];
   if (!login || login.signed_in) return '';
   if (harnessId === 'claude') return 'Claude Code is not signed in to ' + profile.name + ' yet; the session opens on its sign-in.';
-  if (harnessId === 'codex') return 'Codex is not signed in to ' + profile.name + ' yet. Start a container Shell in this profile and run codex login --device-auth.';
-  if (harnessId === 'opencode') return 'OpenCode has no provider in ' + profile.name + ' yet. Start a container Shell in this profile and run opencode auth login.';
+  if (harnessId === 'codex') return 'Codex is not signed in to ' + profile.name + ' yet. Start a Shell in this profile and run codex login --device-auth.';
+  if (harnessId === 'opencode') return 'OpenCode has no provider in ' + profile.name + ' yet. Start a Shell in this profile and run opencode auth login.';
   return '';
 }
 
@@ -493,41 +491,34 @@ export function settingsForm(options = {}) {
   // editor, opened from its mark in the sidebar.
   const toolsRow = el('div', { class: 'seg-row agents tools', id: id('Tools'), role: 'group', 'aria-label': 'Tool' });
 
-  const shellExecutionRow = el('div', {
-    class: 'seg-row', id: id('ShellExecution'), role: 'group', 'aria-label': 'Shell execution',
-  }, segButton('Host', 'host', 'redirect to host'), segButton('Container', 'container', 'run inside container'));
-  const shellExecutionHint = el('div', { class: 'hint', id: id('ShellExecutionHint') });
-  const shellExecutionField = el('div', { class: 'field', id: id('ShellExecutionField'), hidden: true },
-    el('label', { text: 'Shell execution' }), shellExecutionRow, shellExecutionHint);
-
   // Which sign-ins the session runs on. Only there when the dashboard has
   // more profiles than the default one.
   const profileRow = el('div', { id: id('Profile') });
   const profileHint = el('div', { class: 'hint', id: id('ProfileHint') });
-  const profileField = el('div', { class: 'field', id: id('ProfileField'), hidden: true },
+  const profileField = el('div', { class: 'ds-field', id: id('ProfileField'), hidden: true },
     el('label', { text: 'Profile' }), profileRow, profileHint);
 
   const dirRow = el('div', { id: id('Dir') });
   const dirPath = el('input', {
-    class: 'input mono', type: 'text', id: id('DirPath'), spellcheck: 'false',
+    class: 'ds-input mono', type: 'text', id: id('DirPath'), spellcheck: 'false',
     autocorrect: 'off', autocapitalize: 'none', placeholder: '/srv/projects/socrates',
   });
   const dirHint = el('div', { class: 'hint mono', id: id('DirHint') });
-  const dirField = el('div', { class: 'field', id: id('DirField') },
+  const dirField = el('div', { class: 'ds-field', id: id('DirField') },
     el('label', { text: 'Working directory' }), dirRow, dirPath, dirHint);
 
   const modelHost = el('div', { id: id('Model') });
-  const modelField = el('div', { class: 'field', id: id('ModelField') }, el('label', { text: 'Model' }), modelHost);
+  const modelField = el('div', { class: 'ds-field', id: id('ModelField') }, el('label', { text: 'Model' }), modelHost);
 
   const effortRow = el('div', { class: 'seg-row', id: id('Effort'), role: 'group', 'aria-label': 'Reasoning effort' });
-  const effortField = el('div', { class: 'field', id: id('EffortField'), hidden: true },
+  const effortField = el('div', { class: 'ds-field', id: id('EffortField'), hidden: true },
     el('label', { text: 'Effort' }), effortRow);
 
   // Claude Code only. Off every time the sheet opens, and fixed for the
   // session's life once it is started.
   const ultracodeRow = el('div', { class: 'seg-row', id: id('Ultracode'), role: 'group', 'aria-label': 'Ultracode' },
     segButton('Off', 'off'), segButton('On', 'on'));
-  const ultracodeField = el('div', { class: 'field', id: id('UltracodeField'), hidden: true },
+  const ultracodeField = el('div', { class: 'ds-field', id: id('UltracodeField'), hidden: true },
     el('label', { text: 'Ultracode' }), ultracodeRow,
     el('div', {
       class: 'hint',
@@ -535,7 +526,7 @@ export function settingsForm(options = {}) {
         + 'which uses much more of the account’s limits.',
     }));
 
-  const node = el('div', { class: 'settings-form' }, harnessRow, toolsRow, shellExecutionField, profileField,
+  const node = el('div', { class: 'settings-form' }, harnessRow, toolsRow, profileField,
     dirField, modelField, effortField, ultracodeField);
 
   /* -------------------------------------------------------------- state */
@@ -544,27 +535,10 @@ export function settingsForm(options = {}) {
   // editor, opened from the folder's own mark in the sidebar.
   const entries = list().filter((entry) => entry.id !== 'vscode' && include(entry));
   const space = workspace();
-  const shellCapability = snapshot().shell_execution || { host_available: false, default: 'container' };
   const pick = {
     harness: '', model: '', effort: '', mode: DYNAMIC, workdir: '',
-    shellExecution: shellCapability.default === 'host' && shellCapability.host_available ? 'host' : 'container',
     profile: lastProfile(), profileChosen: false, profileAuto: false, profileJoined: false, ultracode: false,
   };
-
-  const hostButton = shellExecutionRow.querySelector('[data-value="host"]');
-  hostButton.disabled = !shellCapability.host_available;
-  shellExecutionHint.textContent = shellCapability.host_available
-    ? 'Host uses the host login shell and credentials. Container uses the shell and tools installed inside Socrates.'
-    : 'Host execution needs a container started with host namespace access.';
-  for (const button of shellExecutionRow.querySelectorAll('.seg')) {
-    button.addEventListener('click', () => {
-      pick.shellExecution = button.dataset.value;
-      pressed(shellExecutionRow, pick.shellExecution);
-      renderProfile();
-      onChange('shell');
-    });
-  }
-  pressed(shellExecutionRow, pick.shellExecution);
 
   // Ultracode starts off on every opening: it costs a great deal more of the
   // account, so it is something asked for each time rather than remembered.
@@ -612,7 +586,7 @@ export function settingsForm(options = {}) {
       onChange('dir');
     },
   });
-  dirRow.append(dirPicker.node);
+  dirRow.append(dictated(dirPicker.node, dirPicker.input));
   // The free-form path is a field like any other: it can be spoken, which with
   // the keyboard put away is the only way it can be filled. The row is what is
   // hidden and shown from here on, because hiding the field alone would leave
@@ -641,7 +615,7 @@ export function settingsForm(options = {}) {
       onChange('model');
     },
   });
-  modelHost.append(picker.node);
+  modelHost.append(dictated(picker.node, picker.input));
 
   // The profile is a dropdown rather than a row of cells: with more than
   // three profiles the cells were too narrow for a name, let alone the account
@@ -728,13 +702,11 @@ export function settingsForm(options = {}) {
   }
 
   // renderProfile offers the sign-in profiles to the programs that sign in -
-  // and to a container shell, which is where Codex and OpenCode are signed in
-  // to one. Each choice says which account it means for this program, which
+  // and to a shell, which is where Codex and OpenCode are signed in to one. Each choice says which account it means for this program, which
   // is the whole point of choosing.
   function renderProfile() {
     const all = profiles();
-    const onHost = pick.harness === 'shell' && pick.shellExecution === 'host';
-    const wanted = all.length > 1 && PROFILE_HARNESSES.includes(pick.harness) && !onHost;
+    const wanted = all.length > 1 && PROFILE_HARNESSES.includes(pick.harness);
     profileField.hidden = !wanted;
     if (!wanted) return;
     // Until somebody picks a profile, the program decides: the profile an
@@ -777,7 +749,6 @@ export function settingsForm(options = {}) {
 
   function selectHarness(harnessId) {
     pick.harness = harnessId;
-    shellExecutionField.hidden = harnessId !== 'shell';
     ultracodeField.hidden = harnessId !== 'claude';
     if (ultracodeField.hidden && pick.ultracode) {
       // Ultracode is Claude Code's; another program does not carry it along.
@@ -817,7 +788,6 @@ export function settingsForm(options = {}) {
         harness: pick.harness,
         model: modelField.hidden ? '' : pick.model,
         effort: pick.effort,
-        shell_execution: pick.harness === 'shell' ? pick.shellExecution : undefined,
         profile: profileField.hidden || later ? '' : pick.profile,
         profile_auto: later,
         ultracode: !ultracodeField.hidden && pick.ultracode,
@@ -928,7 +898,7 @@ function autoEntry() {
 
 /**
  * openNewSessionSheet asks the questions a session is bound by. It resolves
- * with {harness, model, effort, shell_execution, profile, profile_auto,
+ * with {harness, model, effort, profile, profile_auto,
  * ultracode, workdir_mode, workdir, prestart} or null if the person backed
  * out.
  *

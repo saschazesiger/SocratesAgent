@@ -1,0 +1,96 @@
+/*
+ * Utilities: border-box sizing inside .ds-theme, screen-reader text and
+ * small text helpers.
+ *
+ *   .ds-sr       visually hidden, still read by screen readers
+ *   .ds-muted    quieter body text (tabular figures)
+ *   .ds-meta     a meta line: hints, "last saved ..." (tabular figures)
+ *   .ds-stale    content on its way out, dimmed until it is replaced (set
+ *                aria-busy="true" on the container while it is stale)
+ *   .ds-num      right-aligned tabular figures (table cells)
+ *   .ds-center   centred text
+ *   .ds-nowrap   keeps a value and its unit together
+ *
+ * .ds-stale dims only after --ds-delay-loader, so an update that answers
+ * within 200ms never dims; taking it off is instant, so fresh values show
+ * at once (docs/motion.md, "Data motion").
+ *
+ * Progressive:
+ * - text-wrap (a paragraph of .ds-muted avoids a lone last word): without
+ *   it the text wraps as usual.
+ */
+
+@layer ds.tokens, ds.base, ds.components, ds.motion, ds.utilities;
+
+@layer ds.components {
+  /* Every component is measured as border-box (a 100% wide field with its
+     padding, a dialog of min(400px, 100%)). Zero specificity, so a host page
+     that embeds .ds-theme keeps any sizing it sets itself. */
+  :where(.ds-theme),
+  :where(.ds-theme) *,
+  :where(.ds-theme) *::before,
+  :where(.ds-theme) *::after {
+    box-sizing: border-box;
+  }
+
+  /* Placed at the top left of its positioned ancestor: left where it stands
+     (the end of a row that scrolls sideways) it would widen the nearest
+     positioned scroller, up to a sideways scroll of the page. */
+  .ds-sr {
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+  }
+
+  .ds-muted {
+    color: var(--ds-text-2);
+    font: var(--ds-font-body);
+    /* Counts and times beside a title line up. */
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* A paragraph of notes keeps the reading measure and ends without a lone
+     last word. */
+  p.ds-muted {
+    max-width: var(--ds-measure);
+    text-wrap: pretty;
+  }
+
+  .ds-meta {
+    margin: 0;
+    color: var(--ds-text-2);
+    font: var(--ds-font-meta);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Content on its way out (a filter applied, a test running again): it
+     stays in place, dimmed, until the new one replaces it in one step, so
+     nothing collapses and jumps back meanwhile. It dims after the loader
+     delay (a fast answer never dims); the rest state has no transition, so
+     removing the class shows the fresh values at once. */
+  .ds-stale {
+    opacity: var(--ds-state-stale);
+    transition: opacity var(--ds-dur-base) var(--ds-ease-in-out) var(--ds-delay-loader);
+  }
+
+  .ds-num {
+    text-align: right !important;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ds-center {
+    text-align: center !important;
+  }
+
+  .ds-nowrap {
+    white-space: nowrap;
+  }
+}

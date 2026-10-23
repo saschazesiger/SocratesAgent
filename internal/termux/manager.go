@@ -760,11 +760,22 @@ func (m *Manager) newSession(ctx context.Context, row *store.Session, plan harne
 	args = append(args, "--")
 	args = append(args, plan.Argv...)
 
+	// The create runs with -N, so it never starts a server of its own: one
+	// started by `new-session` would be a child of the service rather than of
+	// the scope ensureServer starts it in, and the next restart would take its
+	// sessions down. A server that went away between the two is started again,
+	// in the scope, once; a second refusal is left to the guard below.
 	attempt := func() error {
 		if err := m.ensureServer(ctx); err != nil {
 			return err
 		}
-		_, err := m.tmux.RunConf(ctx, args...)
+		_, err := m.tmux.RunNoStart(ctx, args...)
+		if err != nil && serverGone(err) {
+			if err := m.ensureServer(ctx); err != nil {
+				return err
+			}
+			_, err = m.tmux.RunNoStart(ctx, args...)
+		}
 		return err
 	}
 	err := attempt()

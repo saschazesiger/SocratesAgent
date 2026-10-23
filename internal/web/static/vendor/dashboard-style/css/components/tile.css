@@ -1,0 +1,185 @@
+/*
+ * Key figures: tonal tiles in a row of four (two below 1100px).
+ *
+ *   <div class="ds-tiles">
+ *     <div class="ds-tile">
+ *       <p class="ds-tile__label">[icon] <span>Open items</span></p>
+ *       <p class="ds-tile__value">128</p>
+ *       <p class="ds-tile__note">+12 this week</p>
+ *
+ * The value never wraps and never takes a colour: on narrow tiles it gets
+ * smaller instead (a broken number reads as another number). Status goes
+ * into the label as an icon. A tile that opens something is a <button
+ * class="ds-tile"> or <a class="ds-tile">: a 6% state layer, the press
+ * in --ds-dur-micro (also while js/ripple.js holds .ds-pressed) with the
+ * ripple, and keyboard focus with the focus layer and a ring that is solid
+ * from the first frame and snaps from offset + width to the offset
+ * (outline-offset, --ds-dur-fast); no lift, no scale. While pressed it
+ * turns squarer (16px to --ds-tile-radius-pressed, 12px) in
+ * --ds-dur-micro and springs back over --ds-dur-medium, like a card. A
+ * disabled or aria-disabled tile shows no hover or press layer and does
+ * not morph; an aria-disabled one keeps its focus layer.
+ *
+ * Values (docs/motion.md, "Data motion"): every new value goes through
+ * DS.motion.countUp(el, next), which counts from the figure on screen
+ * (the first call from 0) on --ds-ease-value over --ds-dur-glide,
+ * retargets mid-count and gives assistive technology the final value. A
+ * meter or progress bar set in the same task lands on the same frame. The
+ * note changes at once.
+ *
+ * Hooks: --ds-tile-radius, --ds-tile-radius-pressed.
+ *
+ * On narrow tiles the value shrinks with the tile (container units).
+ */
+
+@layer ds.tokens, ds.base, ds.components, ds.motion, ds.utilities;
+
+@layer ds.components {
+  .ds-tiles {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: var(--ds-space-3);
+  }
+
+  @media (max-width: 1100px) {
+    .ds-tiles {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  .ds-tile {
+    /* Its value scales with the tile (cqi, below). */
+    container-type: inline-size;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    padding: var(--ds-space-4) var(--ds-space-5) var(--ds-space-5);
+    border-radius: var(--ds-tile-radius, var(--ds-radius-lg));
+    background: var(--ds-surface-low);
+  }
+
+  @media (max-width: 600px) {
+    .ds-tiles {
+      gap: var(--ds-space-2);
+    }
+
+    .ds-tile {
+      padding: var(--ds-space-3) var(--ds-space-4) var(--ds-space-4);
+    }
+  }
+
+  .ds-tile__label {
+    display: flex;
+    align-items: center;
+    gap: var(--ds-space-2);
+    margin: 0;
+    color: var(--ds-text-2);
+    font: var(--ds-font-body);
+  }
+
+  .ds-tile__label svg {
+    flex-shrink: 0;
+  }
+
+  .ds-tile__value {
+    margin: var(--ds-space-2) 0 0;
+    color: var(--ds-text);
+    font: var(--ds-font-display);
+    /* Tiles of a row are equally wide, so their values keep one size. */
+    font-size: min(var(--ds-size-display), 26cqi);
+    letter-spacing: 0;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  /* Clickable tile: the element's own button or link look is reset. */
+  :is(button, a).ds-tile {
+    position: relative;
+    isolation: isolate;
+    width: 100%;
+    margin: 0;
+    border: 0;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    text-decoration: none;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    /* The ring rests (invisible) one width further out and snaps in. */
+    outline-offset: calc(var(--ds-focus-offset) + var(--ds-focus-width));
+    transition:
+      border-radius var(--ds-dur-medium) var(--ds-ease-spatial),
+      outline-offset var(--ds-dur-fast) var(--ds-ease-out);
+  }
+
+  /* The press morph: squarer while pressed (never rounder than at rest);
+     the layer follows through border-radius: inherit. */
+  :is(button, a).ds-tile:active:not(:disabled, [aria-disabled="true"]),
+  :is(button, a).ds-tile.ds-pressed:not(:disabled, [aria-disabled="true"]) {
+    border-radius: min(var(--ds-tile-radius-pressed, var(--ds-radius-md)), var(--ds-tile-radius, var(--ds-radius-lg)));
+    transition:
+      border-radius var(--ds-dur-micro) var(--ds-ease-out),
+      outline-offset var(--ds-dur-fast) var(--ds-ease-out);
+  }
+
+  :is(button, a).ds-tile::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background: currentColor;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--ds-dur-fast) var(--ds-ease-in-out);
+  }
+
+  @media (hover: hover) {
+    :is(button, a).ds-tile:hover::before {
+      opacity: var(--ds-state-hover-lg);
+    }
+  }
+
+  :is(button, a).ds-tile:focus-visible::before {
+    opacity: var(--ds-state-focus);
+    transition-duration: 0s;
+  }
+
+  :is(button, a).ds-tile:active::before,
+  :is(button, a).ds-tile.ds-pressed::before {
+    opacity: var(--ds-state-pressed);
+    transition-duration: var(--ds-dur-micro);
+  }
+
+  /* A blocked tile (disabled, aria-disabled) shows neither hover nor press,
+     like its morph above; an aria-disabled tile keeps its focus layer. */
+  @media (hover: hover) {
+    :is(button, a).ds-tile:is(:disabled, [aria-disabled="true"]):hover::before {
+      opacity: 0;
+    }
+  }
+
+  :is(button, a).ds-tile:is(:disabled, [aria-disabled="true"]):is(:active, .ds-pressed)::before {
+    opacity: 0;
+  }
+
+  :is(button, a).ds-tile[aria-disabled="true"]:focus-visible::before {
+    opacity: var(--ds-state-focus);
+  }
+
+  :is(button, a).ds-tile:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-offset);
+  }
+
+  /* On the tonal tile the quieter text colour is text-2, never text-3. */
+  .ds-tile__note {
+    margin: var(--ds-space-1) 0 0;
+    color: var(--ds-text-2);
+    font: var(--ds-font-meta);
+    font-variant-numeric: tabular-nums;
+  }
+}

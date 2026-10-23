@@ -441,7 +441,7 @@ func TestGlobalHooksFireForEverySession(t *testing.T) {
 // that made it.
 //
 // It proves survival of a *process* kill - the crash and the SIGTERM case -
-// and nothing else. It says nothing about the container going away, which
+// and nothing else. It says nothing about the machine going down, which
 // takes the tmux server with it: that is the reboot path, and a session comes
 // back through resume rather than through this.
 func TestSessionSurvivesManagerKill(t *testing.T) {

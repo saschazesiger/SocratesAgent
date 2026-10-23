@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/config"
+	"github.com/saschazesiger/SocratesAgent/internal/sdnotify"
 	"github.com/saschazesiger/SocratesAgent/internal/server"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
@@ -25,6 +26,12 @@ import (
 
 // version is overridden at build time with -ldflags "-X main.version=...".
 var version = "dev"
+
+// startupGrace is how long systemd's watchdog is fed before the listener
+// serves, with nothing to prove it. It is a few bucket connects long: a start
+// that reaches neither the server nor the connect page in that time is not
+// slow, it is stuck, and the watchdog restarting it is the way out.
+const startupGrace = 3 * connectTimeout
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime)
@@ -34,12 +41,6 @@ func main() {
 		switch args[0] {
 		case "serve":
 			args = args[1:]
-		case "export":
-			exportSettings(args[1:])
-			return
-		case "import":
-			importSettings(args[1:])
-			return
 		case "journal-sink":
 			journalSink(args[1:])
 			return
@@ -50,15 +51,12 @@ func main() {
 	}
 
 	fs := flag.NewFlagSet("socrates", flag.ExitOnError)
-	addr := fs.String("addr", envOr("SOCRATES_ADDR", ":8080"), "address to listen on (use 127.0.0.1:8080 to keep it reachable from this machine only)")
+	addr := fs.String("addr", envOr("SOCRATES_ADDR", "127.0.0.1:8080"), "address to listen on (use :8080 to make it reachable from the network)")
 	dataDir := fs.String("data", config.DataDir(), "directory for the database and workspaces")
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Socrates %s - a terminal harness for Shell, Claude Code, Codex and OpenCode\n\n", version)
-		fmt.Fprintf(os.Stderr, "Usage:\n  socrates [flags]        start the web server\n"+
-			"  socrates export         write this installation's settings and password to stdout\n"+
-			"  socrates import         read that document into this data directory\n\n"+
-			"Each subcommand takes -h of its own.\n\nFlags:\n")
+		fmt.Fprintf(os.Stderr, "Usage:\n  socrates [flags]        start the web server\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -79,6 +77,13 @@ func main() {
 	}
 
 	server.Version = version
+
+	// The watchdog comes first, before anything that can hang, so a hung
+	// start is restarted like a crashed one. A re-exec starts here again in
+	// the same process, so the new image takes over the pinging at once.
+	// Its loop is not tied to life: a shutdown is fed too, for a while.
+	watchdog := sdnotify.NewWatchdog(startupGrace)
+	watchdog.Start(context.Background())
 
 	if err := os.MkdirAll(*dataDir, 0o700); err != nil {
 		log.Fatalf("could not create the data directory %s: %v", *dataDir, err)
@@ -121,6 +126,10 @@ func main() {
 				log.Fatalf("server error: %v", err)
 			}
 		}()
+		// From here a ping has to be earned: the connect page answers
+		// /api/health as the server does, so the probe is the same in
+		// both, and the switch from one to the other is not a gap.
+		watchdog.Serving(sdnotify.HTTPProbe(ln.Addr(), "/api/health"))
 	}
 
 	// The bucket comes first: it is the store of record, and the database
@@ -128,6 +137,7 @@ func main() {
 	m := openStorage(life, st, *dataDir, front, serve)
 	if m == nil {
 		log.Print("shutting down")
+		watchdog.Stopping()
 		shutdownHTTP(httpServer)
 		return
 	}
@@ -162,13 +172,14 @@ func main() {
 		log.Print("listening on loopback only - reachable from this machine, and through the Cloudflare tunnel in /admin")
 	} else {
 		log.Printf("listening on %s - reachable from the network. Anyone who gets past the password can run commands here; "+
-			"pass -addr 127.0.0.1:8080 to keep it local and publish it through the Cloudflare tunnel instead", listener.Addr())
+			"set SOCRATES_ADDR=127.0.0.1:8080 to keep it local and publish it through the Cloudflare tunnel instead", listener.Addr())
 	}
 
 	srv.StartTunnelIfEnabled()
 
 	<-life.Done()
 	log.Print("shutting down")
+	watchdog.Stopping()
 	srv.StopTunnel()
 	// The tmux server and every session on it are deliberately left running.
 	stopSessions()
@@ -177,7 +188,7 @@ func main() {
 	// Last, once nothing can write any more: what is still pending goes up,
 	// and the lease is let go so the next start - here or elsewhere - takes
 	// it at once. Bounded, because a bucket that does not answer must not
-	// hold a container's stop for ever; what does not make it stays pending
+	// hold the service's stop for ever; what does not make it stays pending
 	// in the database for the next start.
 	flushCtx, cancelFlush := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelFlush()

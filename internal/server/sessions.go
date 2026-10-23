@@ -153,11 +153,10 @@ type createSessionBody struct {
 	// that dropped finds the session it already made instead of making a
 	// second one, which is the whole of "start a session in a tunnel and come
 	// back to one session".
-	ClientID       string `json:"client_id"`
-	Harness        string `json:"harness"`
-	Model          string `json:"model"`
-	Effort         string `json:"effort"`
-	ShellExecution string `json:"shell_execution"`
+	ClientID string `json:"client_id"`
+	Harness  string `json:"harness"`
+	Model    string `json:"model"`
+	Effort   string `json:"effort"`
 	// Profile is the sign-in profile the session runs in; empty is the
 	// default one.
 	Profile string `json:"profile"`
@@ -191,16 +190,15 @@ type createSessionBody struct {
 // program - "Start" on a prepared session is the same launch a new session
 // gets, and it is the same because it is the same code.
 type launchSpec struct {
-	ID             string
-	ClientID       string
-	Harness        string
-	Model          string
-	Effort         string
-	ShellExecution string
-	Profile        string
-	Ultracode      bool
-	WorkdirMode    string
-	Workdir        string
+	ID          string
+	ClientID    string
+	Harness     string
+	Model       string
+	Effort      string
+	Profile     string
+	Ultracode   bool
+	WorkdirMode string
+	Workdir     string
 	// Title is the name the person gave the session, and "" when they gave
 	// none. It is also what Claude Code is told the session is called.
 	Title   string
@@ -261,20 +259,19 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), createTimeout)
 	defer cancel()
 	row, err := s.launch(ctx, launchSpec{
-		ID:             id,
-		ClientID:       strings.TrimSpace(body.ClientID),
-		Harness:        body.Harness,
-		Model:          body.Model,
-		Effort:         body.Effort,
-		ShellExecution: body.ShellExecution,
-		Profile:        body.Profile,
-		Ultracode:      body.Ultracode,
-		WorkdirMode:    body.WorkdirMode,
-		Workdir:        body.Workdir,
-		Title:          body.Title,
-		Options:        body.Options,
-		Cols:           body.Cols,
-		Rows:           body.Rows,
+		ID:          id,
+		ClientID:    strings.TrimSpace(body.ClientID),
+		Harness:     body.Harness,
+		Model:       body.Model,
+		Effort:      body.Effort,
+		Profile:     body.Profile,
+		Ultracode:   body.Ultracode,
+		WorkdirMode: body.WorkdirMode,
+		Workdir:     body.Workdir,
+		Title:       body.Title,
+		Options:     body.Options,
+		Cols:        body.Cols,
+		Rows:        body.Rows,
 	}, nil)
 	var refused *launchError
 	if errors.As(err, &refused) {
@@ -326,25 +323,8 @@ func (s *Server) checkLaunch(spec *launchSpec, settings config.Settings) (harnes
 	if entry, known := settings.Harnesses.Entry(spec.Harness); known && !entry.Enabled {
 		return nil, refuse(http.StatusBadRequest, "%s is switched off in the dashboard", h.Label())
 	}
-	if spec.ShellExecution != "" && spec.Harness != string(harnesses.KindShell) {
-		return nil, refuse(http.StatusBadRequest, "shell_execution is only valid for Shell sessions")
-	}
-	if spec.Harness == string(harnesses.KindShell) {
-		if spec.ShellExecution == "" {
-			spec.ShellExecution = harnesses.DefaultShellExecution(settings.Harnesses.Shell.Binary)
-		}
-		switch spec.ShellExecution {
-		case harnesses.ShellExecutionContainer:
-		case harnesses.ShellExecutionHost:
-			if !harnesses.HostShellAvailable() {
-				return nil, refuse(http.StatusBadRequest, "host shell is unavailable on this installation")
-			}
-		default:
-			return nil, refuse(http.StatusBadRequest, "shell_execution must be host or container")
-		}
-	}
 	spec.Profile = strings.TrimSpace(spec.Profile)
-	if status, msg := s.checkProfile(spec.Harness, h.Label(), spec.ShellExecution, spec.Profile); status != 0 {
+	if status, msg := s.checkProfile(spec.Harness, h.Label(), spec.Profile); status != 0 {
 		return nil, refuse(status, "%s", msg)
 	}
 	if spec.Ultracode && spec.Harness != string(harnesses.KindClaude) {
@@ -353,8 +333,8 @@ func (s *Server) checkLaunch(spec *launchSpec, settings config.Settings) (harnes
 	spec.Model, spec.Effort = strings.TrimSpace(spec.Model), strings.TrimSpace(spec.Effort)
 	// What the session has to be relaunched with is kept in its options, next
 	// to whatever the client put there.
-	choices := map[string]any{"shell_execution": spec.ShellExecution, "profile": spec.Profile, "ultracode": spec.Ultracode}
-	if spec.ShellExecution != "" || spec.Profile != "" || spec.Ultracode {
+	choices := map[string]any{"profile": spec.Profile, "ultracode": spec.Ultracode}
+	if spec.Profile != "" || spec.Ultracode {
 		fields := map[string]json.RawMessage{}
 		if len(spec.Options) > 0 && string(spec.Options) != "null" {
 			if err := json.Unmarshal(spec.Options, &fields); err != nil || fields == nil {
@@ -402,18 +382,17 @@ func (s *Server) launch(ctx context.Context, spec launchSpec, prepared *store.Se
 	}
 
 	plan, err := h.Plan(ctx, harnesses.PlanRequest{
-		SessionID:      spec.ID,
-		Title:          spec.Title,
-		Cwd:            workdir,
-		Model:          spec.Model,
-		Effort:         spec.Effort,
-		ShellExecution: spec.ShellExecution,
-		Profile:        spec.Profile,
-		Ultracode:      spec.Ultracode,
-		InitialPrompt:  spec.Prompt,
-		Settings:       settings,
-		DataDir:        s.dataDir,
-		Logf:           log.Printf,
+		SessionID:     spec.ID,
+		Title:         spec.Title,
+		Cwd:           workdir,
+		Model:         spec.Model,
+		Effort:        spec.Effort,
+		Profile:       spec.Profile,
+		Ultracode:     spec.Ultracode,
+		InitialPrompt: spec.Prompt,
+		Settings:      settings,
+		DataDir:       s.dataDir,
+		Logf:          log.Printf,
 	})
 	if err != nil {
 		if mode == harnesses.WorkdirDynamic {

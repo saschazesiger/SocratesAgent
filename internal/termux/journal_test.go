@@ -112,8 +112,8 @@ func TestTailJournalReachesIntoTheRotatedFile(t *testing.T) {
 }
 
 func TestPipeCommandQuotesBothPaths(t *testing.T) {
-	got := PipeCommand("/a b/it's/socrates", "/data/it's/journal.raw", 42, 1)
-	want := `exec '/a b/it'\''s/socrates' journal-sink --path '/data/it'\''s/journal.raw' --max-bytes 42 --keep 1`
+	got := PipeCommand("/a b/it's/socrates", "/var/lib/socrates/it's/journal.raw", 42, 1)
+	want := `exec '/a b/it'\''s/socrates' journal-sink --path '/var/lib/socrates/it'\''s/journal.raw' --max-bytes 42 --keep 1`
 	if got != want {
 		t.Fatalf("PipeCommand = %s\nwant %s", got, want)
 	}

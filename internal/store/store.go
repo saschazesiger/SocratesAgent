@@ -33,7 +33,9 @@ var ErrNotFound = errors.New("not found")
 // Version 8 is one migration for two features that landed together: prepared
 // sessions (the drafts table and sessions.start_at) and the bucket mirror
 // (mirror_pending, the local list of what still has to be uploaded).
-const SchemaVersion = 8
+// Version 9 adds the cost ledger (cost_convs, cost_hours) and the local record
+// of which transcripts it was last read from (cost_seen); see costs.go.
+const SchemaVersion = 9
 
 // Store wraps the database handle.
 type Store struct {
@@ -120,6 +122,41 @@ CREATE TABLE IF NOT EXISTS mirror_pending (
   object TEXT PRIMARY KEY,
   at     INTEGER NOT NULL
 );
+-- The cost ledger: what every conversation any CLI had on this machine cost,
+-- by UTC hour and model (costs.go). It outlives the sessions and the
+-- transcripts it was read from, which is why it is a table and an object in
+-- the bucket of its own rather than something computed when it is asked for.
+CREATE TABLE IF NOT EXISTS cost_convs (
+  key        TEXT PRIMARY KEY,
+  harness    TEXT NOT NULL,
+  conv_id    TEXT NOT NULL,
+  profile    TEXT NOT NULL DEFAULT '',
+  workdir    TEXT NOT NULL DEFAULT '',
+  title      TEXT NOT NULL DEFAULT '',
+  session_id TEXT NOT NULL DEFAULT '',
+  first_at   INTEGER NOT NULL DEFAULT 0,
+  last_at    INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS cost_hours (
+  key         TEXT NOT NULL,
+  hour        INTEGER NOT NULL,
+  model       TEXT NOT NULL,
+  cost_usd    REAL NOT NULL DEFAULT 0,
+  input       INTEGER NOT NULL DEFAULT 0,
+  output      INTEGER NOT NULL DEFAULT 0,
+  cache_read  INTEGER NOT NULL DEFAULT 0,
+  cache_write INTEGER NOT NULL DEFAULT 0,
+  requests    INTEGER NOT NULL DEFAULT 0,
+  unpriced    INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (key, hour, model)
+);
+-- Which state of a conversation's transcripts the ledger was last computed
+-- from. It describes files on this disk, so it is never mirrored.
+CREATE TABLE IF NOT EXISTS cost_seen (
+  key         TEXT PRIMARY KEY,
+  fingerprint TEXT NOT NULL
+);
+
 -- The unique index on client_id is what makes creating a session safe to
 -- retry: the same key can only ever produce one session.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_client ON sessions(client_id) WHERE client_id <> '';

@@ -19,11 +19,11 @@ import (
 //
 // It comes from one of two places. A data directory connected through the
 // setup page has <data>/s3.json, written by that page (mode 0600, because it
-// holds the secret key and the passphrase). A container started with
+// holds the secret key and the passphrase). A service started with
 // SOCRATES_S3_BUCKET in its environment takes everything from the environment
 // instead and ignores the file: an operator who configures a deployment by
-// its environment expects the environment to win, and a stale file left on a
-// volume must not quietly point the container somewhere else.
+// its environment expects the environment to win, and a stale file left in
+// the data directory must not quietly point the service somewhere else.
 
 // ConfigFile is the name of the bootstrap file inside the data directory.
 const ConfigFile = "s3.json"

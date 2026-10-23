@@ -113,8 +113,8 @@ func writeBucketConfig(t *testing.T, fake *s3fake.Server, dir string) mirror.Con
 	return cfg
 }
 
-// A fresh volume with no bucket serves the connect page, and answers the
-// health check that the redeploy smoke test asks of exactly such a volume.
+// A fresh data directory with no bucket serves the connect page, and answers
+// the health check that scripts/update.sh asks of it.
 func TestStartupWithoutStorageServesTheConnectPage(t *testing.T) {
 	t.Setenv(mirror.EnvBucket, "")
 	dir := t.TempDir()

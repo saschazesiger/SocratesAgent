@@ -23,7 +23,7 @@ import { isTool, label as harnessLabel } from './harnesses.js';
 import { foldersOf, folderKeyOf, isPrepared, momentOf } from './folders.js';
 import { whenShort } from './prestart.js';
 import {
-  OUTCOME_WORDS, OUTCOME_SVG, HOURGLASS_SVG, CHECKING_WORDS, outcomeMark, outcomeLine,
+  OUTCOME_WORDS, CHECKING_WORDS, outcomeMark, outcomeLine, outcomeIconHtml,
 } from './outcome.js';
 
 // How often the times on the page are worked out again: "2 min ago" turns
@@ -273,7 +273,7 @@ export function mountHome(ctx) {
       el('span', { class: 'home-conn-dot', 'aria-hidden': 'true' }),
       el('span', { class: 'home-conn-text' }));
     const newBtn = el('button', {
-      class: 'btn home-new', type: 'button', html: PLUS_SVG, onclick: () => ctx.newSession(),
+      class: 'ds-btn home-new', type: 'button', html: PLUS_SVG, onclick: () => ctx.newSession(),
     });
     newBtn.append(el('span', { text: 'New session' }));
     const questions = el('button', {
@@ -502,7 +502,7 @@ export function mountHome(ctx) {
     const summary = el('span', { class: 'home-row-summary' });
     const verdict = el('span', { class: 'home-row-outcome', hidden: true });
     const answer = el('button', {
-      class: 'btn primary home-answer', type: 'button', text: 'Answer', hidden: true,
+      class: 'ds-btn ds-btn--primary home-answer', type: 'button', text: 'Answer', hidden: true,
       onclick: (event) => { event.stopPropagation(); ctx.openQuestions(id); },
     });
     const node = el('div', { class: 'home-row', 'data-id': id },
@@ -532,7 +532,7 @@ export function mountHome(ctx) {
     if (row.badgeKind !== kind) {
       row.badgeKind = kind;
       row.badge.dataset.kind = kind;
-      row.badge.innerHTML = kind === 'tasks' ? HOURGLASS_SVG : (OUTCOME_SVG[kind] || '');
+      row.badge.innerHTML = outcomeIconHtml(kind, 16);
     }
     row.badge.hidden = !kind;
     row.badge.title = judging ? CHECKING_WORDS : tasks ? ctx.words.activity.tasks : outcomeLine(outcome);
@@ -631,7 +631,7 @@ export function mountHome(ctx) {
       empty.append(
         el('h2', { class: 'empty-title', text: 'No sessions yet' }),
         el('p', { class: 'empty-body', text: 'Start one and it shows up here, and in the list.' }),
-        el('button', { class: 'btn primary', type: 'button', text: 'New session', onclick: () => ctx.newSession() }));
+        el('button', { class: 'ds-btn ds-btn--primary', type: 'button', text: 'New session', onclick: () => ctx.newSession() }));
       return;
     }
     const text = filter === 'needs' ? 'Nothing needs you right now.' : 'Nothing here right now.';

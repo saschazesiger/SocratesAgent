@@ -945,6 +945,10 @@ func TestActivityCodexHostnameTitleIsUnavailable(t *testing.T) {
 // never cleaned, so a recycled pid can point at a dead session's file that
 // still says busy.
 func TestActivityClaudeFileOlderThanItsProcessIsIgnored(t *testing.T) {
+	// The status files are looked for under the plan's HOME; a
+	// CLAUDE_CONFIG_DIR inherited from whatever runs the tests - a Claude Code
+	// session, for one - would win over it.
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	home := t.TempDir()
 	dir := filepath.Join(home, ".claude", "sessions")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -1005,6 +1009,10 @@ func TestActivityClaudeFileOlderThanItsProcessIsIgnored(t *testing.T) {
 // pane's own pid never writes a file, and the answer has to come from the
 // process tree below it.
 func TestActivityClaudeStatusIsFoundOnADescendant(t *testing.T) {
+	// The status files are looked for under the plan's HOME; a
+	// CLAUDE_CONFIG_DIR inherited from whatever runs the tests - a Claude Code
+	// session, for one - would win over it.
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	home := t.TempDir()
 	dir := filepath.Join(home, ".claude", "sessions")
 	if err := os.MkdirAll(dir, 0o755); err != nil {

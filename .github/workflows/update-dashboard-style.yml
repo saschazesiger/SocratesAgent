@@ -1,0 +1,98 @@
+# Keeps the vendored copy of Dashboard-Style on its latest main.
+#
+# From templates/update-dashboard-style.yml of
+# github.com/saschazesiger/Dashboard-Style (docs/install.md, "Automatic
+# updates"). Once a day it compares the commit in <DEST>/VERSION with main of
+# Dashboard-Style: unchanged, the run ends after that one request; changed, it
+# vendors main, runs the web tests (the checksum of the copy, the stamping of
+# its addresses, the pages that load it), commits the new copy and starts CI.
+#
+# Why CI has to be started explicitly: a push made with GITHUB_TOKEN does not
+# trigger other workflows (GitHub prevents loops), but workflow_dispatch does.
+# The one change against the template: Socrates is Go, so the Verify step gets
+# Go rather than Node.
+
+name: Update Dashboard-Style
+
+on:
+  schedule:
+    # Daily at 02:30 UTC. Off the full hour on purpose: scheduled runs at
+    # minute 0 queue the longest and are the first GitHub drops under load.
+    - cron: '30 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # commit the new copy
+  actions: write    # start BUILD_WORKFLOW
+
+concurrency:
+  group: update-dashboard-style
+  cancel-in-progress: false
+
+env:
+  # Where the copy lives, relative to the repository root.
+  DEST: internal/web/static/vendor/dashboard-style
+  # Shell command that must pass before the update is committed. Runs after
+  # the copy was replaced.
+  VERIFY: 'go vet ./internal/web/... && go test ./internal/web/... ./internal/server/...'
+  # The workflow that checks the whole tree; it has a workflow_dispatch trigger.
+  BUILD_WORKFLOW: 'ci.yml'
+  REPO: saschazesiger/Dashboard-Style
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Compare with main of Dashboard-Style
+        id: compare
+        run: |
+          current=$(sed -n 's/^commit //p' "$DEST/VERSION" 2>/dev/null || true)
+          latest=$(curl -fsSL -H 'Accept: application/vnd.github.sha' "https://api.github.com/repos/$REPO/commits/main")
+          echo "current ${current:-none}, latest $latest"
+          if [ "$current" = "$latest" ]; then
+            echo "Dashboard-Style is up to date; nothing to build." >> "$GITHUB_STEP_SUMMARY"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Vendor main
+        if: steps.compare.outputs.changed == 'true'
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/$REPO/${{ steps.compare.outputs.latest }}/scripts/vendor.sh" -o "$RUNNER_TEMP/vendor.sh"
+          sh "$RUNNER_TEMP/vendor.sh" "${{ steps.compare.outputs.latest }}" "$DEST"
+
+      - uses: actions/setup-go@v5
+        if: steps.compare.outputs.changed == 'true' && env.VERIFY != ''
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify
+        if: steps.compare.outputs.changed == 'true' && env.VERIFY != ''
+        run: ${{ env.VERIFY }}
+
+      - name: Commit and push
+        id: commit
+        if: steps.compare.outputs.changed == 'true'
+        run: |
+          git add -A -- "$DEST"
+          if git diff --cached --quiet; then
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m "Update Dashboard-Style to ${{ steps.compare.outputs.latest }}"
+          git push
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+          echo "Updated Dashboard-Style to ${{ steps.compare.outputs.latest }}." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Start the build
+        if: steps.commit.outputs.pushed == 'true' && env.BUILD_WORKFLOW != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run "$BUILD_WORKFLOW" --ref "${{ github.ref_name }}"

@@ -573,9 +573,4 @@ func TestCompanionProfilesAreTheActiveSessionsInTheFolder(t *testing.T) {
 	if _, ok := companionProfile(views[:1], map[string]int64{"p-gone": 5}, ""); ok {
 		t.Fatal("companionProfile chose a profile that no longer exists")
 	}
-	// A host shell has no profile to share.
-	shells := []store.Session{session("h", "shell", "/srv/app", store.StateRunning, store.StatusInProgress, `{"shell_execution":"host","profile":"p-a"}`, 5)}
-	if got := companionProfiles(shells, "shell", "/srv/app", ""); len(got) != 0 {
-		t.Fatalf("companionProfiles for a host shell = %v", got)
-	}
 }

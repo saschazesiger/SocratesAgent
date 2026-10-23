@@ -507,47 +507,6 @@ func TestRestartAfterExit(t *testing.T) {
 	}
 }
 
-func TestShellExecutionChoiceIsStoredAndRestarted(t *testing.T) {
-	e := newSessionEnv(t)
-	for _, body := range []string{
-		`{"harness":"shell","shell_execution":"elsewhere"}`,
-		`{"harness":"claude","shell_execution":"container"}`,
-	} {
-		res, _ := e.create(body)
-		if res.StatusCode != http.StatusBadRequest {
-			t.Fatalf("invalid shell execution %s answered %d", body, res.StatusCode)
-		}
-	}
-	if !harnesses.HostShellAvailable() {
-		res, _ := e.create(`{"harness":"shell","shell_execution":"host"}`)
-		if res.StatusCode != http.StatusBadRequest {
-			t.Fatalf("unavailable host shell answered %d", res.StatusCode)
-		}
-	}
-	res, session := e.create(`{"harness":"shell","shell_execution":"container","options":{"note":"kept"}}`)
-	if res.StatusCode != http.StatusCreated {
-		t.Fatalf("container shell create: %d %#v", res.StatusCode, session)
-	}
-	id := sessionID(t, session)
-	options, _ := session["options"].(map[string]any)
-	if options["shell_execution"] != "container" || options["note"] != "kept" {
-		t.Fatalf("stored shell options = %#v", options)
-	}
-	if _, err := e.tmux("send-keys", "-t", termux.TmuxName(id), "exit", "Enter"); err != nil {
-		t.Fatal(err)
-	}
-	e.waitForState(id, 15*time.Second, store.StateExited)
-	res, payload := e.do(t, e.client, "POST", "/api/sessions/"+id+"/restart", "")
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("restart: %d %#v", res.StatusCode, payload)
-	}
-	restarted, _ := payload["session"].(map[string]any)
-	options, _ = restarted["options"].(map[string]any)
-	if options["shell_execution"] != "container" || restarted["state"] != store.StateRunning {
-		t.Fatalf("restarted shell = %#v", restarted)
-	}
-}
-
 // TestRebootResumesTheConversation is the reboot case end to end: the tmux
 // server is killed under the running Socrates, the session becomes one to
 // resume, and opening it starts the CLI again on its own conversation - with
@@ -673,11 +632,6 @@ func TestHarnessCatalogue(t *testing.T) {
 	}
 	if payload["sessions_available"] != true {
 		t.Fatalf("sessions should be available here: %#v", payload)
-	}
-	shellExecution, _ := payload["shell_execution"].(map[string]any)
-	if shellExecution["host_available"] != harnesses.HostShellAvailable() ||
-		shellExecution["default"] != harnesses.DefaultShellExecution(e.srv.Settings().Harnesses.Shell.Binary) {
-		t.Fatalf("shell execution capability = %#v", shellExecution)
 	}
 	workspace, _ := payload["workspace"].(map[string]any)
 	if workspace["allow_custom"] != true || workspace["root"] != filepath.Join(e.home, "workspaces") {

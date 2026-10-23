@@ -22,6 +22,7 @@ import {
 import { agentMark } from './logos.js';
 import { speak, speechKind } from './voice.js';
 import { combobox } from './combobox.js';
+import { dictated } from './keyboard.js';
 import * as harnesses from './harnesses.js';
 
 const $ = (id) => document.getElementById(id);
@@ -170,6 +171,8 @@ async function load() {
   loadProfiles();
   loadHarnesses();
   refreshTmux();
+  refreshUpdates();
+  watchUpdatesCard();
   refreshStorage(true);
   if (data.local_url) localURL = data.local_url;
   refreshTunnel();
@@ -234,7 +237,7 @@ function buildModelPickers() {
       onChange: (value) => setPath(settings, path, value),
     });
     pickers[id] = picker;
-    host.append(picker.node);
+    host.append(dictated(picker.node, picker.input));
   }
 }
 
@@ -270,14 +273,14 @@ function renderDefaultHarness() {
 // saved rather than written into the document on every keystroke: a half-typed
 // path is not a preset yet.
 function presetRow(preset = { label: '', path: '' }) {
-  const label = el('input', { class: 'input', type: 'text', placeholder: 'Name', value: preset.label || '' });
+  const label = el('input', { class: 'ds-input', type: 'text', placeholder: 'Name', value: preset.label || '' });
   const path = el('input', {
-    class: 'input mono', type: 'text', spellcheck: 'false', placeholder: '/srv/projects',
+    class: 'ds-input mono', type: 'text', spellcheck: 'false', placeholder: '/srv/projects',
     value: preset.path || '',
   });
   const row = el('div', { class: 'preset-row' }, label, path,
     el('button', {
-      class: 'btn sm', type: 'button', text: 'Remove', 'aria-label': 'Remove this directory',
+      class: 'ds-btn ds-btn--sm', type: 'button', text: 'Remove', 'aria-label': 'Remove this directory',
       onclick: () => row.remove(),
     }));
   return row;
@@ -428,11 +431,11 @@ function profileRow(profile) {
       logins);
   }
   const name = el('input', {
-    class: 'input', type: 'text', maxlength: '40', value: profile.name,
+    class: 'ds-input', type: 'text', maxlength: '40', value: profile.name,
     'aria-label': 'Name of ' + profile.name,
   });
-  const rename = el('button', { class: 'btn sm', type: 'button', text: 'Rename' });
-  const remove = el('button', { class: 'btn sm', type: 'button', text: 'Delete' });
+  const rename = el('button', { class: 'ds-btn ds-btn--sm', type: 'button', text: 'Rename' });
+  const remove = el('button', { class: 'ds-btn ds-btn--sm', type: 'button', text: 'Delete' });
   rename.addEventListener('click', async () => {
     const next = name.value.trim();
     if (!next || next === profile.name) return;
@@ -539,6 +542,223 @@ async function refreshTmux() {
   }
 }
 
+/* --------------------------------------------------------------- updates */
+
+// What the updater did last, read from GET /api/updates. The run itself is
+// socrates-update.service, beside Socrates rather than inside it: the button
+// only asks systemd to start it, and the card polls until it is over - every
+// three seconds while it runs, once a minute otherwise, and only while the
+// card can be seen. onWake catches up with whatever happened in between.
+
+const UPDATES_LABEL = {
+  ok: 'Up to date',
+  failed: 'The last update failed',
+  stalled: 'The last update did not finish',
+  running: 'Updating…',
+  never: 'Never updated',
+};
+const UPDATES_DOT = { ok: 'ok', failed: 'failed', stalled: 'failed', running: 'starting', never: '' };
+
+let updatesTimer = null;
+let updatesRunning = false;
+let updatesSeenAt = 0;
+let updatesOnScreen = true;
+// updatesLast is the last answer drawn, and updatesAwaiting a run the button
+// has asked systemd for that systemd may not be showing yet: --no-block
+// returns before the unit is "activating", and until it is the card would
+// otherwise say the run is over before it began.
+let updatesLast = null;
+let updatesAwaiting = null;
+
+// updatesWhen is a time from the report or from systemd, said relative to
+// now in either direction. systemd's own text, when the server could not read
+// it, is shown as it came.
+function updatesWhen(iso) {
+  const at = Date.parse(iso || '');
+  if (Number.isNaN(at)) return iso || '';
+  const diff = Math.round((at - Date.now()) / 1000);
+  const s = Math.abs(diff);
+  if (s < 60) return diff > 0 ? 'in a moment' : 'just now';
+  let text;
+  if (s < 3600) text = Math.round(s / 60) + ' min';
+  else if (s < 86400) text = Math.round(s / 3600) + ' h';
+  else if (s < 7 * 86400) text = Math.round(s / 86400) + (Math.round(s / 86400) === 1 ? ' day' : ' days');
+  else return new Date(at).toLocaleString();
+  return diff > 0 ? 'in ' + text : text + ' ago';
+}
+
+// updatesExact is a time for the "i": the local date and time when it can be
+// read, and the text as it came when it cannot, never "Invalid Date".
+function updatesExact(iso) {
+  const at = Date.parse(iso || '');
+  return Number.isNaN(at) ? (iso || '') : new Date(at).toLocaleString();
+}
+
+// updatesState is the card's verdict. A report that says "running" while the
+// service is not is a run that died - a reboot in the middle of it - unless
+// there is no service to ask, which is somebody running the script by hand.
+function updatesState(data) {
+  const status = data.status;
+  if (data.running) return 'running';
+  if (!status) return 'never';
+  if (status.state === 'running') return data.timer && data.timer.installed ? 'stalled' : 'running';
+  return status.state === 'done' && status.ok ? 'ok' : 'failed';
+}
+
+function updateRow(component) {
+  const updated = component.status === 'updated' && component.previous;
+  const version = updated
+    ? component.previous + ' → ' + component.version
+    : (component.version || '—');
+  return el('div', { class: 'update-row' },
+    el('span', { class: 'nm', text: component.name }),
+    el('span', { class: 'ver', text: version }),
+    el('span', { class: 'st ' + (component.status || ''), text: component.status || '' }),
+    component.error
+      ? el('span', { class: 'more err', text: component.error })
+      : (component.detail ? el('span', { class: 'more', text: component.detail }) : null),
+  );
+}
+
+function renderUpdates(data) {
+  const host = $('updatesStatus');
+  let dot = host.querySelector(':scope > .state-dot');
+  if (!dot) {
+    dot = el('span', { class: 'state-dot' });
+    host.prepend(dot);
+  }
+  while (dot.nextSibling) dot.nextSibling.remove();
+  // The run the button started counts as running until systemd says so
+  // itself, the report shows a new run, or long enough has passed that
+  // systemd evidently did not start it.
+  const status = data.status;
+  if (updatesAwaiting && (data.running || Date.now() > updatesAwaiting.until
+    || (status && status.started_at && status.started_at !== updatesAwaiting.before))) {
+    updatesAwaiting = null;
+  }
+  updatesLast = data;
+  const state = updatesAwaiting ? 'running' : updatesState(data);
+  dot.className = ('state-dot ' + UPDATES_DOT[state]).trim();
+
+  const timer = data.timer || {};
+  const sep = () => el('span', { class: 'sep', text: '·' });
+  const parts = [el('span', { class: 'state-label', text: UPDATES_LABEL[state] })];
+  if (status && (status.finished_at || status.started_at)) {
+    parts.push(sep(), el('span', {
+      class: 'muted',
+      text: 'last run ' + updatesWhen(status.finished_at || status.started_at)
+        + (status.trigger ? ' (' + status.trigger + ')' : ''),
+    }));
+  }
+  if (timer.installed && timer.enabled && timer.next) {
+    parts.push(sep(), el('span', { class: 'muted', text: 'next run ' + updatesWhen(timer.next) }));
+  }
+  // The exact times and what the updater may touch are state, not the
+  // verdict, so they go behind the "i".
+  const tip = [];
+  if (status && status.started_at) tip.push('Started ' + updatesExact(status.started_at));
+  if (status && status.finished_at) tip.push('Finished ' + updatesExact(status.finished_at));
+  if (timer.next) tip.push('Next run ' + updatesExact(timer.next));
+  if (data.auto) tip.push('Updates automatically: ' + data.auto);
+  if (tip.length) parts.push(infoTip(tip, { label: 'Update details' }));
+  host.append(...parts);
+
+  const components = status && Array.isArray(status.components) ? status.components.filter(Boolean) : [];
+  $('updatesList').replaceChildren(...components.map(updateRow));
+
+  let hintText = '';
+  if (!timer.installed) {
+    hintText = 'The update timer is not installed on this machine, so nothing updates by itself. scripts/install.sh sets it up.';
+  } else if (!timer.enabled) {
+    hintText = 'The update timer is switched off, so nothing updates by itself until it is enabled again.';
+  } else if (state === 'stalled') {
+    hintText = 'The run stopped before it wrote its result. The log shows how far it got.';
+  } else if (status && status.state === 'failed') {
+    hintText = 'The run itself was aborted. The log says where.';
+  }
+  $('updatesHint').textContent = hintText;
+
+  const log = $('updatesLog');
+  if (!log.hidden) {
+    log.textContent = data.log_tail || 'no output yet';
+    log.scrollTop = log.scrollHeight;
+  }
+
+  // A run that has just ended is said once, and an update of Socrates itself
+  // means this page is the old one.
+  const running = state === 'running';
+  if (updatesRunning && !running && status) {
+    const self = components.find((c) => c.name === 'socrates' && c.status === 'updated');
+    if (self) toast('Socrates was updated. Reload the page to use the new version.');
+    else toast(status.ok ? 'Update finished' : 'Update finished with errors', status.ok ? undefined : 'error');
+  }
+  updatesRunning = running;
+  $('updatesRun').disabled = running;
+  $('updatesRun').textContent = running ? 'Updating…' : 'Update now';
+
+  clearTimeout(updatesTimer);
+  updatesTimer = setTimeout(pollUpdates, running ? 3000 : 60000);
+}
+
+// pollUpdates is the timer's tick. The slow poll does nothing while the card
+// is off screen or the page is hidden; a run in progress is followed as long
+// as the page is open, because its end is what the person is waiting for.
+function pollUpdates() {
+  const hidden = document.visibilityState === 'hidden';
+  if (hidden || (!updatesRunning && !updatesOnScreen)) {
+    clearTimeout(updatesTimer);
+    updatesTimer = setTimeout(pollUpdates, updatesRunning ? 3000 : 60000);
+    return;
+  }
+  refreshUpdates();
+}
+
+async function refreshUpdates() {
+  // Set when asking rather than when answered, so the observer's first
+  // callback, which comes while the first request is still out, does not
+  // send a second one.
+  updatesSeenAt = Date.now();
+  try {
+    const data = await api('/api/updates');
+    renderUpdates(data);
+  } catch (err) {
+    clearTimeout(updatesTimer);
+    // A run that updates Socrates restarts it, so a poll that cannot reach
+    // the server is expected now and then, and the connection bar already
+    // says so. The poll goes on either way.
+    updatesTimer = setTimeout(pollUpdates, updatesRunning ? 3000 : 10000);
+    if (!isOffline(err)) $('updatesHint').textContent = errorMessage(err);
+  }
+}
+
+function watchUpdatesCard() {
+  if (!('IntersectionObserver' in window)) return;
+  new IntersectionObserver((entries) => {
+    updatesOnScreen = entries.some((entry) => entry.isIntersecting);
+    // Scrolled back to after the minute was up: the card catches up now
+    // rather than at the next tick.
+    if (updatesOnScreen && settings && Date.now() - updatesSeenAt > 60000) refreshUpdates();
+  }).observe($('updatesCard'));
+}
+
+async function runUpdates() {
+  const button = $('updatesRun');
+  busyButton(button, true, 'Starting…');
+  try {
+    await api('/api/updates/run', { method: 'POST', body: {} });
+    const last = updatesLast && updatesLast.status;
+    updatesAwaiting = { before: (last && last.started_at) || '', until: Date.now() + 30000 };
+    toast('Update started');
+  } catch (err) {
+    toast(errorMessage(err), 'error');
+  } finally {
+    busyButton(button, false, 'Starting…');
+    // renderUpdates decides whether this button belongs enabled at all; the
+    // short wait gives systemd the moment it takes to say "activating".
+    setTimeout(refreshUpdates, 800);
+  }
+}
+
 /* ------------------------------------------------------------- harnesses */
 
 async function loadHarnesses(force = false) {
@@ -581,14 +801,14 @@ function renderHarnesses(status) {
   host.innerHTML = '';
   const found = harnesses.list();
   if (!found.length) {
-    host.append(el('section', { class: 'card' },
+    host.append(el('section', { class: 'ds-card' },
       el('h2', { text: 'Programs' }),
-      el('p', { class: 'card-sub', text: status === 'loading'
+      el('p', { class: 'ds-muted', text: status === 'loading'
         ? 'Asking this machine which programs are installed…'
         : (status || 'Socrates could not ask this machine which programs are installed.') })));
     return;
   }
-  host.append(el('p', { class: 'card-sub programs-lead',
+  host.append(el('p', { class: 'ds-muted programs-lead',
     text: 'Which programs a session can be, where each one lives, and what it starts on. '
       + 'How they are started — permissions, sandbox, remote control, theme — is not a setting: '
       + 'every session gets the same opinionated command line.' }));
@@ -623,19 +843,19 @@ function harnessCard(harness, refreshing) {
   if (count) facts.push(count + ' model' + (count === 1 ? '' : 's') + (harness.static ? ' · curated' : ''));
 
   const binary = el('input', {
-    class: 'input mono', type: 'text', spellcheck: 'false', id: 'opt-' + harness.id + '-binary',
+    class: 'ds-input mono', type: 'text', spellcheck: 'false', id: 'opt-' + harness.id + '-binary',
     placeholder: harness.path || 'found on PATH',
     value: optionValue(harness.id, 'binary') || '',
   });
   binary.addEventListener('input', () => setPath(settings, optionPath(harness.id, 'binary'), binary.value.trim()));
 
   const refresh = el('button', {
-    class: 'btn sm', type: 'button', text: refreshing ? 'Asking…' : 'Ask this machine again',
+    class: 'ds-btn ds-btn--sm', type: 'button', text: refreshing ? 'Asking…' : 'Ask this machine again',
     disabled: refreshing,
     onclick: () => { loadHarnesses(true).catch(() => {}); },
   });
 
-  const card = el('section', { class: 'card harness-card' + (harness.installed ? '' : ' missing'),
+  const card = el('section', { class: 'ds-card harness-card' + (harness.installed ? '' : ' missing'),
     id: 'harness-' + harness.id },
     el('div', { class: 'harness-head' },
       el('label', { class: 'switch' }, toggle, el('span', { class: 'track' }),
@@ -645,7 +865,7 @@ function harnessCard(harness, refreshing) {
         : null,
     ),
     harness.error ? el('div', { class: 'agent-note bad', text: harness.error }) : null,
-    harness.notes ? el('p', { class: 'card-sub', text: harness.notes }) : null,
+    harness.notes ? el('p', { class: 'ds-muted', text: harness.notes }) : null,
     ['shell', 'vscode'].includes(harness.id) ? null : modelList(harness),
     field('Binary path', binary,
       'Leave it empty to look the program up on PATH, which is what a normal installation wants.'),
@@ -672,7 +892,7 @@ function optionField(harness, option) {
   let wrapper = null;
   switch (option.type) {
     case 'select': {
-      control = el('select', { class: 'select', id });
+      control = el('select', { class: 'ds-input', id });
       for (const v of option.values) control.append(el('option', { value: v, text: v || '—' }));
       control.value = value ?? '';
       control.addEventListener('change', () => write(control.value));
@@ -689,20 +909,20 @@ function optionField(harness, option) {
       });
       const input = picker.node.querySelector('input');
       input.id = id;
-      wrapper = picker.node;
+      wrapper = dictated(picker.node, input);
       control = input;
       break;
     }
     default: {
       control = el('input', {
-        class: 'input mono', type: 'text', id, spellcheck: 'false',
+        class: 'ds-input mono', type: 'text', id, spellcheck: 'false',
         placeholder: option.placeholder || '', value: value ?? '',
       });
       control.addEventListener('input', () => write(control.value));
     }
   }
 
-  const wrap = el('div', { class: 'field option', 'data-key': option.key, 'data-startonly': '1' });
+  const wrap = el('div', { class: 'ds-field option', 'data-key': option.key, 'data-startonly': '1' });
   wrap.append(el('label', { for: id, text: option.label }), wrapper || control,
     el('div', { class: 'hint', text: option.hint || '' }));
   return wrap;
@@ -728,7 +948,7 @@ function modelList(harness) {
     list.forEach((pick, index) => {
       const model = known(pick.id);
       const efforts = harnesses.effortsFor(harness.id, pick.id);
-      const effort = el('select', { class: 'select sm', 'aria-label': 'Default effort for ' + pick.id });
+      const effort = el('select', { class: 'ds-input', 'aria-label': 'Default effort for ' + pick.id });
       for (const value of ['', ...efforts]) {
         effort.append(el('option', { value, text: harnesses.effortLabel(value) }));
       }
@@ -740,7 +960,7 @@ function modelList(harness) {
         setPath(settings, path, next);
       });
       const remove = el('button', {
-        class: 'btn sm', type: 'button', text: 'Remove', 'aria-label': 'Remove ' + pick.id,
+        class: 'ds-btn ds-btn--sm', type: 'button', text: 'Remove', 'aria-label': 'Remove ' + pick.id,
         onclick: () => { setPath(settings, path, picks().filter((_, i) => i !== index)); render(); },
       });
       rows.append(el('div', { class: 'model-row' },
@@ -781,17 +1001,17 @@ function modelList(harness) {
   input.addEventListener('keydown', (event) => {
     // Enter with the list closed adds what is typed; with the list open the
     // combobox takes the highlighted entry first, and a second Enter adds it.
-    if (event.key === 'Enter' && picker.node.querySelector('.combo-list').hidden) {
+    if (event.key === 'Enter' && !picker.isOpen()) {
       event.preventDefault();
       add();
     }
   });
   render();
-  return el('div', { class: 'field model-picks' },
+  return el('div', { class: 'ds-field model-picks' },
     el('label', { text: 'Models offered in the sheet' }),
     rows,
-    el('div', { class: 'model-add' }, picker.node,
-      el('button', { class: 'btn sm', type: 'button', text: 'Add', id: 'add-model-' + harness.id, onclick: add })),
+    el('div', { class: 'model-add' }, dictated(picker.node, input),
+      el('button', { class: 'ds-btn ds-btn--sm', type: 'button', text: 'Add', id: 'add-model-' + harness.id, onclick: add })),
     el('div', { class: 'hint', text: 'Pick from what ' + harness.label + ' reports or type an id, and set the '
       + 'effort a new session starts on. Leave the list empty to offer all of them.' }),
   );
@@ -819,6 +1039,13 @@ function bind() {
     log.hidden = !log.hidden;
     $('tunnelLogToggle').textContent = log.hidden ? 'Show log' : 'Hide log';
     if (!log.hidden) refreshTunnel();
+  });
+  $('updatesRun').addEventListener('click', runUpdates);
+  $('updatesLogToggle').addEventListener('click', () => {
+    const log = $('updatesLog');
+    log.hidden = !log.hidden;
+    $('updatesLogToggle').textContent = log.hidden ? 'Show log' : 'Hide log';
+    if (!log.hidden) refreshUpdates();
   });
   $('checkVoiceKey').addEventListener('click', checkVoiceKey);
   $('storageTest').addEventListener('click', testStorage);
@@ -906,7 +1133,7 @@ function showNotice(text, kind) {
 }
 
 function field(label, control, hintText) {
-  return el('div', { class: 'field' },
+  return el('div', { class: 'ds-field' },
     el('label', { text: label }),
     control,
     hintText ? el('div', { class: 'hint', text: hintText }) : null);
@@ -979,8 +1206,8 @@ function tunnelForm() {
 
 function renderTunnelMode() {
   const named = $('tunnelMode').value === 'token';
-  $('tunnelToken').closest('.field').style.display = named ? '' : 'none';
-  $('tunnelHostname').closest('.field').style.display = named ? '' : 'none';
+  $('tunnelToken').closest('.ds-field').style.display = named ? '' : 'none';
+  $('tunnelHostname').closest('.ds-field').style.display = named ? '' : 'none';
   const local = localURL || 'the local address shown above';
   $('tunnelModeHint').textContent = named
     ? 'Runs your own named tunnel. In the Cloudflare dashboard, point its public hostname at ' + local + '.'
@@ -1066,6 +1293,7 @@ onWake(() => {
   if (document.visibilityState === 'hidden' || !settings) return;
   refreshTunnel();
   refreshTmux();
+  refreshUpdates();
   refreshStorage();
 });
 
@@ -1242,7 +1470,7 @@ function renderStorage(status, fillForm) {
   $('storageSync').disabled = !status.configured || status.state === 'fenced';
   $('storageTest').disabled = !status.configured;
   $('storageCredsHint').textContent = env
-    ? 'Configured by the SOCRATES_S3_* environment variables, so it is shown read-only here: change them where the container is defined.'
+    ? 'Configured by the SOCRATES_S3_* environment variables, so it is shown read-only here: change them in /etc/socrates.env and restart Socrates.'
     : 'New credentials are tried against the bucket before they are saved. The bucket, the prefix and the encryption passphrase are the installation itself and cannot be changed here.';
   if (fillForm && status.storage) {
     $('storageEndpoint').value = status.storage.endpoint || '';
@@ -1352,7 +1580,10 @@ async function runChecks() {
         el('span', { class: 'st ' + (check.ok ? 'ok' : 'bad') }),
         el('span', { class: 'nm' }, mark ? agentMark(mark, 14) : null, el('span', { text: check.name })),
         el('span', { class: 'dt', text: check.summary || (check.ok ? 'ok' : 'not ready') }),
-        check.detail ? infoTip(String(check.detail).split(' · '), { label: check.name + ' details' }) : null,
+        // A detail is split into the bubble's lines at its " · " or at a
+        // newline, which is how a row with a list in it - the updates -
+        // says one item per line.
+        check.detail ? infoTip(String(check.detail).split(/\n| · /), { label: check.name + ' details' }) : null,
       ));
     }
   } catch (err) {

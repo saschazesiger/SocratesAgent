@@ -120,7 +120,7 @@ func (s *Server) createPrestart(w http.ResponseWriter, body createSessionBody) {
 		return
 	}
 	spec := launchSpec{
-		Harness: harnessID, Model: body.Model, Effort: body.Effort, ShellExecution: body.ShellExecution,
+		Harness: harnessID, Model: body.Model, Effort: body.Effort,
 		Profile: body.Profile, Ultracode: body.Ultracode, Options: body.Options, Cols: body.Cols, Rows: body.Rows,
 	}
 	h, refused := s.checkLaunch(&spec, settings)
@@ -313,7 +313,7 @@ func (s *Server) handlePatchPrestart(w http.ResponseWriter, r *http.Request) {
 // checkLaunch writes back from the settings, so that a choice taken away is
 // not kept by the old options.
 func stripChoices(raw json.RawMessage) json.RawMessage {
-	for _, key := range []string{"profile", "profile_auto", "ultracode", "shell_execution"} {
+	for _, key := range []string{"profile", "profile_auto", "ultracode"} {
 		raw = withOption(raw, key, nil)
 	}
 	if string(raw) == "{}" {
@@ -587,8 +587,8 @@ func (s *Server) autoProfile(ctx context.Context, row *store.Session, fallback s
 
 // companionProfiles is the profiles the active sessions of a program in one
 // folder run in, each with the last moment one of them was active. A session
-// is active while its program runs and nobody has called it done; a host
-// shell signs in to nothing of ours, and self is the session being started.
+// is active while its program runs and nobody has called it done, and self is
+// the session being started.
 // The sheet's companions (harnesses.js) are the same rule.
 func companionProfiles(rows []store.Session, harnessID, workdir, self string) map[string]int64 {
 	out := map[string]int64{}
@@ -604,7 +604,7 @@ func companionProfiles(rows []store.Session, harnessID, workdir, self string) ma
 		if row.State != store.StateRunning && row.State != store.StateStarting {
 			continue
 		}
-		if row.Workdir == "" || filepath.Clean(row.Workdir) != workdir || hostShell(row) {
+		if row.Workdir == "" || filepath.Clean(row.Workdir) != workdir {
 			continue
 		}
 		id := sessionProfile(row)
@@ -631,18 +631,6 @@ func companionProfile(views []profileView, companions map[string]int64, recommen
 		}
 	}
 	return best, found
-}
-
-// hostShell reports whether a session is a shell run on the host, which has
-// no profile to share.
-func hostShell(row *store.Session) bool {
-	if row.Harness != string(harnesses.KindShell) || len(row.Options) == 0 {
-		return false
-	}
-	var options struct {
-		ShellExecution string `json:"shell_execution"`
-	}
-	return json.Unmarshal(row.Options, &options) == nil && options.ShellExecution == "host"
 }
 
 // answerWithSessionCode is answerWithSession with a status of its own, and

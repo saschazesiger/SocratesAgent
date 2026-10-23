@@ -1,0 +1,267 @@
+/*
+ * Menu (Material 3): actions for one item or the overflow of a toolbar, on
+ * the popover elevation, opened from a button. Each item is an icon and a
+ * label; a checkable item shows a check when checked (aria-checked, never
+ * colour alone); a divider separates groups.
+ *
+ *   <button class="ds-btn ds-btn--quiet ds-btn--icon" type="button" aria-label="More actions"
+ *           aria-haspopup="menu" aria-expanded="false" aria-controls="row-menu">(moreVertical)</button>
+ *   <div class="ds-menu" role="menu" id="row-menu" aria-label="Actions" hidden data-state="open | closed" [data-placement="top"] [data-anchored]>
+ *     <button class="ds-menu__item" role="menuitem" type="button">(pencil) <span class="ds-menu__label">Edit</span></button>
+ *     <button class="ds-menu__item" role="menuitemcheckbox" type="button" aria-checked="true">(check, .ds-menu__check) <span class="ds-menu__label">Pinned</span></button>
+ *     <div class="ds-menu__divider" role="separator"></div>
+ *     <button class="ds-menu__item" role="menuitem" type="button" aria-disabled="true">(trash) <span class="ds-menu__label">Delete</span></button>
+ *   </div>
+ *
+ *   DS.overlay.open(menu, { opener: button });   DS.overlay.close(menu);
+ *
+ * DS.overlay (js/overlay.js) places it below the trigger, aligned with its
+ * start edge (towards the start edge without room; above it when it does
+ * not fit below and there is more room above; never taller than the room
+ * on its side, so it never covers its trigger: it scrolls inside),
+ * focuses the first enabled item (the last one when opened from ArrowUp),
+ * moves focus with ArrowUp, ArrowDown, Home and End (wrapping), closes on
+ * Escape (focus back on the trigger), on Tab, after an item's click
+ * handlers ran, and on a pointerdown outside (focus stays where the pointer
+ * put it), and sets aria-expanded on the trigger.
+ *
+ * Placement API: --ds-menu-x and --ds-menu-y (left and top, px, written by
+ * DS.overlay where anchor positioning is missing).
+ *
+ * Motion (D17): as the combobox list, it grows out of its trigger. It fades
+ * in over --ds-dur-fast while its clip opens from the trigger's edge
+ * (--ds-clip-from) and it grows from --ds-scale-popup at the trigger
+ * (--ds-motion-origin), both over --ds-dur-medium on the spring; the
+ * resting clip reaches --ds-space-6 beyond the box, so the shadow is there
+ * from the first frame. It leaves with a fade only (--ds-dur-instant).
+ * Transitions keyed on data-state (DS.overlay), so a menu closed mid-way
+ * turns back from where it is; without data-state (a page that toggles
+ * hidden by hand) it plays ds-fade-in and ds-clip-in once.
+ *
+ * Items: a 48px row in the body role, a state layer in the content colour
+ * (hover, press in --ds-dur-micro, the focus layer and an inset ring that
+ * snaps in), the ripple (js/ripple.js) and no press morph (a menu row is
+ * not a pill). aria-disabled items stay focusable (their name is read) but
+ * show the disabled ink and take no press.
+ *
+ * Forced colours: the menu keeps an edge (its transparent outline), the
+ * focused item its ring.
+ *
+ * Progressive:
+ * - popover and CSS anchor positioning (anchor-name on the trigger,
+ *   position-anchor, position-area and position-try-fallbacks on the menu,
+ *   behind @supports; DS.overlay opens the menu as popover="manual" in the
+ *   top layer with data-anchored, below the trigger, flipped above or
+ *   towards the start edge when there is no room): without them the
+ *   script writes --ds-menu-x/-y and sets data-placement="top" above.
+ * - scrollbar-color and scrollbar-width (a thin scrollbar in a long menu):
+ *   without them the platform scrollbar shows.
+ */
+
+@layer ds.tokens, ds.base, ds.components, ds.motion, ds.utilities;
+
+@layer ds.components {
+  /* Fixed, so no scrolling or clipping box cuts it off. inset, margin and
+     border double as the reset of the UA box of a popover. */
+  .ds-menu {
+    position: fixed;
+    inset: var(--ds-menu-y, 0px) auto auto var(--ds-menu-x, 0px);
+    z-index: var(--ds-z-popover);
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    min-width: 112px;
+    max-width: min(280px, calc(100vw - 2 * var(--ds-space-2)));
+    max-height: calc(100vh - 2 * var(--ds-space-2));
+    margin: 0;
+    padding: var(--ds-space-2) 0;
+    overflow-y: auto;
+    border: 0;
+    border-radius: var(--ds-radius-xs);
+    background: var(--ds-surface);
+    color: var(--ds-text);
+    box-shadow: var(--ds-elev-popover);
+    scrollbar-width: thin;
+    scrollbar-color: var(--ds-line-2) transparent;
+    /* Invisible; forced colors paint it, so the menu keeps an edge. */
+    outline: 1px solid transparent;
+    /* Grows at its trigger (originFrom() writes the origin); its clip rests
+       --ds-space-6 beyond the box, room for the shadow. */
+    transform-origin: var(--ds-motion-origin, 0% 0%);
+    clip-path: inset(calc(-1 * var(--ds-space-6)));
+  }
+
+  /* Above the trigger: it is revealed from its bottom edge. */
+  .ds-menu[data-placement="top"] {
+    transform-origin: var(--ds-motion-origin, 0% 100%);
+  }
+
+  /* Shown by hand (no data-state): the reveal plays once. */
+  .ds-menu:not([data-state]) {
+    animation:
+      ds-fade-in var(--ds-dur-fast) var(--ds-ease-in-out) backwards,
+      ds-clip-in var(--ds-dur-medium) var(--ds-ease-spatial) backwards;
+  }
+
+  /* Driven by DS.overlay: transitions keyed on data-state, so a menu closed
+     mid-way continues from where it is. */
+  .ds-menu[data-state] {
+    animation: none;
+    transition:
+      opacity var(--ds-dur-fast) var(--ds-ease-in-out),
+      scale var(--ds-dur-medium) var(--ds-ease-spatial),
+      clip-path var(--ds-dur-medium) var(--ds-ease-spatial);
+  }
+
+  /* The exit only fades, in --ds-dur-instant; scale and clip go back to
+     their start once the menu is invisible. Closed, it takes no pointer. */
+  .ds-menu[data-state="closed"] {
+    opacity: 0;
+    scale: var(--ds-motion-scale, var(--ds-scale-popup));
+    clip-path: var(--ds-clip-from, inset(0 0 100% 0));
+    pointer-events: none;
+    transition:
+      opacity var(--ds-dur-instant) var(--ds-ease-in-out),
+      scale 0ms var(--ds-ease-in-out) var(--ds-dur-instant),
+      clip-path 0ms var(--ds-ease-in-out) var(--ds-dur-instant);
+  }
+
+  .ds-menu[hidden] {
+    display: none;
+  }
+
+  /* Anchor positioning: in the top layer (popover="manual"), below the
+     trigger from its start edge or above it (data-placement="top", the
+     side DS.overlay chose), towards the start edge without room (the
+     margins flip with it); never taller than the room on its side, its
+     position-area being its containing block. */
+  @supports (position-area: block-end) {
+    .ds-menu[data-anchored] {
+      inset: auto;
+      max-height: calc(100% - 2 * var(--ds-space-1));
+      margin: var(--ds-space-1) 0;
+      position-area: block-end span-inline-end;
+      position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+    }
+
+    .ds-menu[data-anchored][data-placement="top"] {
+      position-area: block-start span-inline-end;
+    }
+  }
+
+  .ds-menu__item {
+    position: relative;
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: var(--ds-space-3);
+    width: 100%;
+    min-height: 48px;
+    margin: 0;
+    padding: 0 var(--ds-space-3);
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--ds-text);
+    font: var(--ds-font-body);
+    text-align: start;
+    text-decoration: none;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    /* An inset ring (the scrolling menu clips anything outside): it rests
+       on the edge and snaps inward. */
+    outline-offset: 0;
+    transition: outline-offset var(--ds-dur-fast) var(--ds-ease-out);
+  }
+
+  .ds-menu__item svg {
+    flex-shrink: 0;
+    color: var(--ds-text-2);
+  }
+
+  .ds-menu__label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* The check of a checkable item keeps its room when unchecked, so the
+     labels line up; it shows only with aria-checked="true". */
+  .ds-menu__item:not([aria-checked="true"]) .ds-menu__check {
+    visibility: hidden;
+  }
+
+  /* State layer in the content colour. */
+  .ds-menu__item::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    background: currentColor;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--ds-dur-fast) var(--ds-ease-in-out);
+  }
+
+  @media (hover: hover) {
+    .ds-menu__item:hover::before {
+      opacity: var(--ds-state-hover);
+    }
+  }
+
+  .ds-menu__item:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: calc(-1 * var(--ds-focus-width));
+  }
+
+  .ds-menu__item:focus-visible::before {
+    opacity: var(--ds-state-focus);
+    transition-duration: 0s;
+  }
+
+  /* Press-in in --ds-dur-micro (.ds-pressed: js/ripple.js holds it). */
+  .ds-menu__item:active::before,
+  .ds-menu__item.ds-pressed::before {
+    opacity: var(--ds-state-pressed);
+    transition-duration: var(--ds-dur-micro);
+  }
+
+  /* Cannot be chosen: the disabled ink, no hover and no press (no ripple
+     either); the focus layer stays, so keyboard users find it. */
+  .ds-menu__item[aria-disabled="true"],
+  .ds-menu__item:disabled {
+    opacity: var(--ds-disabled-opacity, var(--ds-state-disabled));
+    color: var(--ds-disabled-ink, var(--ds-text));
+    cursor: default;
+  }
+
+  .ds-menu__item[aria-disabled="true"] svg,
+  .ds-menu__item:disabled svg {
+    color: inherit;
+  }
+
+  @media (hover: hover) {
+    .ds-menu__item[aria-disabled="true"]:hover::before {
+      opacity: 0;
+    }
+  }
+
+  .ds-menu__item[aria-disabled="true"]:is(:active, .ds-pressed)::before {
+    opacity: 0;
+  }
+
+  .ds-menu__item[aria-disabled="true"]:focus-visible::before {
+    opacity: var(--ds-state-focus);
+  }
+
+  .ds-menu__divider {
+    flex-shrink: 0;
+    height: 1px;
+    margin: var(--ds-space-2) 0;
+    background: var(--ds-line);
+  }
+}

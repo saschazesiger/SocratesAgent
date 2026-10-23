@@ -113,7 +113,7 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-// A fresh volume with no bucket: the health check answers, everything else
+// A fresh data directory with no bucket: the health check answers, everything else
 // points at the setup page, and the storage step connects a new bucket in
 // two steps (the passphrase is confirmed) and restarts.
 func TestConnectModeConnectsANewBucket(t *testing.T) {
@@ -373,7 +373,7 @@ func TestAFencedMirrorHoldsScheduledStartsBack(t *testing.T) {
 }
 
 // A data directory that already holds an installation with a password - an
-// upgrade with no bucket configured yet - is not a fresh volume: the
+// upgrade with no bucket configured yet - is not a fresh data directory: the
 // unauthenticated connect page must not upload it to, or restore it from,
 // a bucket of anybody's choosing. It takes the password it already has.
 func TestConnectingAnExistingInstallationTakesItsPassword(t *testing.T) {

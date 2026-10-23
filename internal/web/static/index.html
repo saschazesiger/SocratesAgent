@@ -1,15 +1,15 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="ds-theme ds-base">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Socrates</title>
 <meta name="description" content="A web terminal for Claude Code, Codex, OpenCode and your shell.">
-<meta name="theme-color" content="#ffffff">
+<meta name="theme-color" content="#f0f4f9">
 <meta name="format-detection" content="telephone=no">
 <!-- Added to the Home Screen, Socrates opens as an app of its own: no browser
-     bar, a white status bar over the white page, and the short name under the
-     icon. iOS reads these rather than the manifest for all of that, and also
+     bar, a status bar in the tint of the page's backdrop, and the short name
+     under the icon. iOS reads these rather than the manifest for all of that, and also
      takes its icon from apple-touch-icon - an opaque one, because iOS fills a
      transparent corner with black. -->
 <meta name="mobile-web-app-capable" content="yes">
@@ -19,236 +19,282 @@
 <link rel="icon" href="/favicon.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/static/img/apple-touch-icon.png">
 <link rel="manifest" href="/static/manifest.json">
-<link rel="stylesheet" href="/static/css/app.css">
+<link rel="preload" href="/static/vendor/dashboard-style/fonts/google-sans-latin-opsz-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/vendor/dashboard-style/fonts/fonts.css">
+<link rel="stylesheet" href="/static/vendor/dashboard-style/ds.css">
+<link rel="stylesheet" href="/static/css/theme.css">
 <link rel="stylesheet" href="/static/vendor/xterm.css">
+<link rel="stylesheet" href="/static/css/so-shared.css">
+<link rel="stylesheet" href="/static/css/so-frame.css">
+<link rel="stylesheet" href="/static/css/so-stage.css">
+<link rel="stylesheet" href="/static/css/so-home.css">
+<link rel="stylesheet" href="/static/css/so-question.css">
+<link rel="stylesheet" href="/static/css/so-prestart.css">
+<link rel="stylesheet" href="/static/css/so-sheet.css">
+<script src="/static/vendor/dashboard-style/ds.js" defer></script>
 </head>
 <body>
-<div class="app">
-  <aside class="sidebar" id="sidebar">
-    <div class="side-head">
-      <!-- The name of the thing, the way back to Home, and the one control
-           that takes the column down to a rail. On a phone the sidebar is
-           already a drawer, so the rail control is not there at all - and
-           Home is, which is why it is not a .side-toggle. -->
-      <div class="brand-row">
-        <div class="brand">
-          <img class="mark" src="/static/img/logo.png" alt="" width="24" height="24">
-          <span class="brand-name">Socrates</span>
+<div class="ds-app ds-app--drawer so-app" id="app">
+  <a class="ds-skip" href="#main">Skip to content</a>
+
+  <div class="ds-topbar">
+    <button class="ds-btn ds-btn--quiet ds-btn--icon ds-topbar__menu" id="menuBtn" type="button"
+            aria-label="Sessions" aria-expanded="false" aria-controls="sidebar" data-icon="menu"></button>
+    <a class="ds-brand" href="#home"><img class="so-logo" src="/static/img/logo.png" alt="" width="32" height="32"><span class="ds-brand__name">Socrates</span></a>
+    <!-- At a desk the session list can be put away for the terminal's sake;
+         on a narrow window the drawer is modal and this is not there. -->
+    <button class="ds-btn ds-btn--quiet ds-btn--icon so-drawer-toggle" id="sideCollapse" type="button"
+            aria-label="Hide the session list" data-tip="Hide the session list"
+            aria-expanded="true" aria-controls="sidebar" data-icon="sidebar"></button>
+    <div class="so-topbar" id="topbar">
+      <!-- The name is edited where it is read; the mark beside it has a model
+           name the session again, from its first prompt and its screen. -->
+      <h1 class="so-title" tabindex="-1">
+        <button class="ds-btn ds-btn--text" id="sessionTitle" type="button" data-tip="Rename"><span class="so-title__text" id="sessionTitleText">Socrates</span></button>
+      </h1>
+      <button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" id="titleRegen" type="button" hidden
+              aria-label="Name this session again" data-tip="Name this session again from what it is about">
+        <span class="ds-btn__faces">
+          <span class="ds-btn__face" data-icon="sparkles" data-icon-size="18"></span>
+          <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span></span>
+        </span>
+      </button>
+      <!-- Where the person filed this session; In progress says nothing. -->
+      <span class="ds-status" id="sessionStatus" hidden></span>
+      <!-- How the last turn left the work, when the dashboard checks it. A tap
+           says why. -->
+      <button class="ds-btn ds-btn--quiet ds-btn--sm so-outcome" id="sessionOutcome" type="button" hidden></button>
+      <!-- Account limits and this conversation's estimated cost. A tap opens
+           the whole reading, because a touch screen has no tooltip. -->
+      <button class="ds-btn ds-btn--quiet ds-btn--sm so-usage" id="sessionUsage" type="button" hidden
+              aria-haspopup="dialog" aria-expanded="false" aria-controls="usageDialog"></button>
+      <div class="so-topbar__actions">
+        <!-- Copy, paste and upload (transfer.js), hidden until a terminal is
+             attached. -->
+        <div class="so-transfer" id="transfer" hidden>
+          <button class="ds-btn ds-btn--quiet ds-btn--icon" id="copyBtn" type="button" aria-label="Copy" data-tip="Copy" data-icon="copy"></button>
+          <button class="ds-btn ds-btn--quiet ds-btn--icon" id="pasteBtn" type="button" aria-label="Paste" data-tip="Paste" data-icon="paste"></button>
+          <button class="ds-btn ds-btn--quiet ds-btn--icon" id="uploadBtn" type="button" aria-label="Upload a file" data-tip="Upload a file">
+            <span class="ds-btn__faces">
+              <span class="ds-btn__face" data-icon="upload"></span>
+              <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner"></span></span>
+              <span class="ds-btn__face ds-btn__face--done" aria-hidden="true" data-icon="check"></span>
+            </span>
+          </button>
         </div>
-        <!-- An editor with no folder open, in a tab of its own. Its mark is
-             put in by session.js, which draws every agent's mark. -->
-        <button class="icon-btn blank-ide-btn" id="blankIDE" type="button" hidden
-                title="Open an empty VS Code in a new tab"
-                aria-label="Open an empty VS Code in a new tab"></button>
-        <button class="icon-btn home-btn" id="homeBtn" type="button"
-                title="Home" aria-label="Home" aria-pressed="false">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 10.5L12 3.5l8.5 7"/><path d="M5.5 9v10.5a1 1 0 0 0 1 1h3.5v-6h4v6h3.5a1 1 0 0 0 1-1V9"/></svg>
+        <!-- What this session is doing, said out loud, and how to talk into it
+             without a keyboard. Hidden until there is a session to attach
+             them to. -->
+        <button class="ds-btn ds-btn--quiet ds-btn--icon" id="statusBtn" type="button" hidden aria-pressed="false"
+                aria-label="Summarize this session" data-tip="Summarize this session">
+          <span class="ds-btn__faces">
+            <span class="ds-btn__face"><span class="ds-icon-swap"><span class="ds-icon-swap__a" data-icon="summarize"></span><span class="ds-icon-swap__b" data-icon="stop"></span></span></span>
+            <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner"></span></span>
+          </span>
         </button>
-        <button class="icon-btn side-toggle" id="sideCollapse" type="button"
-                title="Collapse the sidebar" aria-label="Collapse the sidebar"
-                aria-expanded="true" aria-controls="sidebar">
-          <svg class="ico-wide" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M16.5 9.5L14 12l2.5 2.5"/></svg>
-          <svg class="ico-rail" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M14 9.5L16.5 12 14 14.5"/></svg>
+        <button class="ds-btn ds-btn--quiet" id="micBtn" type="button" hidden data-tip="Speak">
+          <span class="ds-btn__faces">
+            <span class="ds-btn__face" id="micText">Speak</span>
+            <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Transcribing</span>
+          </span>
         </button>
+        <!-- The on-screen keyboard. In touch mode nothing else raises it, and a
+             second press puts it away again (keyboard.js); a copy of it sits
+             over this spot in every dialog. Out of touch mode it is not shown. -->
+        <button class="ds-btn ds-btn--quiet" id="kbBtn" type="button" hidden aria-pressed="false"
+                aria-label="Show the keyboard" data-tip="Show the keyboard">Keyboard</button>
+        <!-- The options of this device rather than of a session; what can be
+             done to a session is in its row's menu. -->
+        <button class="ds-btn ds-btn--quiet ds-btn--icon" id="optionsBtn" type="button"
+                aria-label="Options for this device" data-tip="Options for this device"
+                aria-haspopup="dialog" aria-controls="optionsDialog" data-icon="moreVertical"></button>
       </div>
-      <button class="btn new-chat" id="newSession" title="New session">
-        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-        <span class="btn-label">New session</span>
-      </button>
     </div>
-    <nav class="chat-list" id="sessionList"></nav>
-    <!-- What a session just did, for a reader that cannot see the sidebar. It
-         is the only place the activity of a row is put into words, and it is
-         throttled so a busy machine does not talk over itself. -->
-    <div class="sr-only" id="activityLive" role="status" aria-live="polite"></div>
-    <div class="side-foot">
-      <a class="btn" href="/admin" title="Admin">
-        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 9 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></svg>
-        <span class="btn-label">Admin</span>
-      </a>
-      <button class="btn" id="logout" title="Sign out">
-        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
-        <span class="btn-label">Sign out</span>
-      </button>
+  </div>
+
+  <!-- The scrim is a real element because it has to be tappable: tapping
+       beside a drawer is how a drawer is closed on a phone. -->
+  <div class="ds-scrim" id="navScrim"></div>
+  <nav class="ds-drawer" id="sidebar" aria-label="Sessions" tabindex="-1">
+    <div class="ds-drawer__head" aria-hidden="true"><img class="so-logo" src="/static/img/logo.png" alt="" width="32" height="32"><span class="ds-brand__name">Socrates</span></div>
+    <div class="so-drawer-actions">
+      <button class="ds-btn ds-btn--primary" id="newSession" type="button" data-icon="plus" data-icon-size="16"><span class="so-btn-label">New session</span></button>
+      <!-- An editor with no folder open, in a tab of its own. Its mark is put
+           in by session.js, which draws every agent's mark. -->
+      <button class="ds-btn ds-btn--quiet ds-btn--icon" id="blankIDE" type="button" hidden
+              aria-label="Open an empty VS Code in a new tab" data-tip="Open an empty VS Code in a new tab"></button>
     </div>
-  </aside>
+    <div class="ds-drawer__list" id="drawerList">
+      <a class="ds-drawer__item" id="homeBtn" href="#home" data-icon="home"><span class="ds-drawer__label">Home</span></a>
+      <div class="so-session-list" id="sessionList"></div>
+    </div>
+    <!-- What a session just did, for a reader that cannot see the list:
+         throttled, so a busy machine does not talk over itself. -->
+    <div class="ds-sr" id="activityLive" role="status" aria-live="polite"></div>
+    <div class="so-drawer-foot">
+      <a class="ds-drawer__item" href="/costs" data-icon="barChart"><span class="ds-drawer__label">Costs</span></a>
+      <a class="ds-drawer__item" href="/admin" data-icon="settings"><span class="ds-drawer__label">Admin</span></a>
+      <button class="ds-drawer__item" id="logout" type="button" data-icon="logout"><span class="ds-drawer__label">Sign out</span></button>
+    </div>
+  </nav>
 
-  <!-- The scrim behind the drawer is a real element rather than a pseudo
-       element on the body, because it has to be tappable: iOS only delivers a
-       click to something that carries a handler of its own, and tapping beside
-       a drawer is how a drawer is closed on a phone. -->
-  <div class="nav-scrim" id="navScrim" aria-hidden="true"></div>
-
-  <main class="main">
-    <header class="topbar">
-      <button class="icon-btn menu-btn" id="menuBtn" aria-label="Menu">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
-      </button>
-      <!-- The name is edited where it is read: a click makes it editable and
-           Enter or leaving it commits. The arrow beside it has a model name
-           the session again, from its first prompt and its screen. -->
-      <div class="title-wrap">
-        <div class="title" id="sessionTitle">Socrates</div>
-        <button class="icon-btn title-regen" id="titleRegen" type="button" hidden
-                title="Name this session again from what it is about" aria-label="Name this session again">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>
-        </button>
-      </div>
-      <!-- Where the person filed this session. In progress, what every session
-           starts as, says nothing. -->
-      <span class="tag status" id="sessionStatus" hidden></span>
-      <!-- How the last turn left the work, when the dashboard checks it:
-           "Checking…" while it is read, then its word. A tap says why. -->
-      <button class="tag outcome" id="sessionOutcome" type="button" hidden></button>
-      <!-- Account limits and this conversation's estimated API-equivalent
-           cost, and how long until each limit renews. A tap opens the whole
-           reading - what each window is, when exactly it renews - because a
-           touch screen has no tooltip to put that in. -->
-      <button class="usage-strip" id="sessionUsage" type="button" hidden
-              aria-haspopup="true" aria-expanded="false"></button>
-      <!-- Copy, paste and upload (transfer.js). In the bar at a desk; on a
-           phone the bar is full, and the three float over the top corner of
-           the pane instead. Hidden until a terminal is attached. -->
-      <div class="transfer" id="transfer" hidden>
-        <button class="icon-btn" id="copyBtn" type="button" title="Copy" aria-label="Copy">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11.5" height="11.5" rx="2"/><path d="M5.5 15H5a1.5 1.5 0 0 1-1.5-1.5V5A1.5 1.5 0 0 1 5 3.5h8.5A1.5 1.5 0 0 1 15 5v.5"/></svg>
-        </button>
-        <button class="icon-btn" id="pasteBtn" type="button" title="Paste" aria-label="Paste">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="8.5" y="2.5" width="7" height="4" rx="1"/><path d="M15.5 4.5h2A1.5 1.5 0 0 1 19 6v13.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 19.5V6a1.5 1.5 0 0 1 1.5-1.5h2"/></svg>
-        </button>
-        <button class="icon-btn" id="uploadBtn" type="button" title="Upload a file" aria-label="Upload a file">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 11.5l-8.2 8.2a5.3 5.3 0 0 1-7.5-7.5l8.2-8.2a3.5 3.5 0 0 1 5 5l-8.2 8.2a1.8 1.8 0 0 1-2.5-2.5l7.6-7.6"/></svg>
-        </button>
-      </div>
-      <!-- What this session is doing, said out loud, and how to talk into it
-           without a keyboard. Both are hidden until there is a session to
-           attach them to. -->
-      <!-- The drawing is what the button does: a screen with words on it, and
-           the same two arcs the loudspeaker beside it uses coming off the
-           side. Not a speech bubble - a bubble is somebody talking, and what
-           this does is read out what is already on the pane. -->
-      <button class="icon-btn" id="statusBtn" title="Summarize this session" aria-label="Summarize this session" hidden>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="13.5" height="12" rx="2"/><path d="M5.2 10.4h7M5.2 13.6h4"/><path d="M17.6 9.4a4 4 0 0 1 0 5.2"/><path d="M20.4 7.2a7.5 7.5 0 0 1 0 9.6"/></svg>
-      </button>
-      <!-- Speaking into the session. It keeps its word and a generous touch
-           area at a desk; on a narrow bar the word gives way before the icon. -->
-      <button class="pill" id="micBtn" type="button" title="Speak" aria-label="Speak" hidden>
-        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
-        <span class="pill-text" id="micText">Speak</span>
-      </button>
-      <!-- The on-screen keyboard. In touch mode nothing else raises it: the
-           pane and every field are muted until this is pressed, and a second
-           press puts the keyboard away again (keyboard.js). A copy of it sits
-           over this spot in every dialog, so it can be pressed there too.
-           Filled while the keyboard is up, like a modifier armed on the key
-           bar. Out of touch mode - a device with a mouse, unless the options
-           menu says otherwise - it is not shown at all. -->
-      <button class="icon-btn" id="kbBtn" type="button" aria-pressed="false"
-              title="Show the keyboard" aria-label="Show the keyboard">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="5.5" width="19" height="13" rx="2"/><path d="M6.3 9.4h.01M10.1 9.4h.01M13.9 9.4h.01M17.7 9.4h.01M6.3 12.2h.01M17.7 12.2h.01M8 15h8"/></svg>
-      </button>
-      <!-- The options of this device rather than of a session: the key bar,
-           touch mode, the chime and the notification. It is here whether or
-           not a session is attached; what can be done to a session is in its
-           row's menu in the list. -->
-      <button class="icon-btn" id="optionsBtn" type="button" title="Options" aria-label="Options"
-              aria-haspopup="true" aria-expanded="false">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>
-      </button>
-    </header>
-
-    <!-- The bucket, when it is not taking what is done here: unreachable, with
-         how long and how much is waiting, or taken over by another Socrates.
-         Hidden while all is well. storage.js fills it. -->
-    <div class="storage-banner" id="storageBanner" role="status" aria-live="polite" hidden></div>
-
-    <!-- The terminal takes the whole area under the bar. -->
-    <div class="stage" id="stage">
-      <div class="term-wrap" id="termWrap">
-        <div class="term-host" id="term"></div>
-        <!-- Blocks the terminal: it ended, it could not start, or it is coming
-             back after a reboot. -->
-        <div class="term-overlay" id="termOverlay" hidden></div>
-        <!-- The two lines that may sit over the top of the pane: the notice,
-             which is dismissible and never blocks, and under it the ticker,
-             which is one line at a time of what is happening right now. -->
-        <div class="term-lines" id="termLines">
-          <div class="term-notice" id="termNotice" hidden></div>
-          <div class="term-ticker" id="termTicker" hidden>
-            <div class="ticker-window" id="tickerWindow" role="status" aria-live="polite"></div>
+  <div class="ds-panel">
+    <main class="ds-view so-view" id="main" tabindex="-1">
+      <div class="so-main" id="mainColumn">
+        <div class="so-conn" id="connSlot" hidden></div>
+        <!-- The bucket, when it is not taking what is done here. Hidden while
+             all is well; storage.js fills it. -->
+        <div class="so-banner" id="storageBanner" role="status" aria-live="polite" hidden></div>
+        <!-- The terminal takes the whole area under the bar. -->
+        <div class="so-stage" id="stage">
+          <div class="so-pane" id="termWrap">
+            <div class="so-pane__host" id="term"></div>
+            <!-- Blocks the terminal: it ended, it could not start, or it is
+                 coming back after a reboot. -->
+            <div class="ds-dialog ds-dialog--contained so-pane__cover" id="termOverlay" hidden>
+              <div class="ds-dialog__backdrop"></div>
+              <div class="ds-dialog__box" role="alertdialog" aria-modal="true"
+                   aria-labelledby="termOverlayTitle" aria-describedby="termOverlayText"></div>
+            </div>
+            <!-- The notice, which is dismissible and never blocks, and under it
+                 the ticker: one line at a time of what is happening now. -->
+            <div class="so-pane__lines" id="termLines">
+              <div class="ds-alert so-notice" id="termNotice" role="status" hidden></div>
+              <div class="ds-alert so-ticker" id="termTicker" hidden>
+                <i data-icon="activity" data-icon-slot></i>
+                <span class="ds-alert__text so-ticker__line" id="tickerWindow" role="status" aria-live="polite"></span>
+              </div>
+            </div>
           </div>
+          <!-- A prepared session (PreStart) has no terminal yet; its panel takes
+               the pane's place. prestart.js draws it. -->
+          <section class="so-prestart" id="prestart" aria-label="Prepared session" hidden></section>
+          <!-- Home: what every session is doing, live. The landing page, and
+               what the stage shows when no session is open. home.js draws it. -->
+          <section class="so-home" id="home" aria-label="Home" hidden></section>
         </div>
+        <!-- The keys a phone keyboard does not have. keybar.js fills them in. -->
+        <div class="so-keybar" id="keybar" hidden></div>
       </div>
-      <!-- A prepared session (PreStart) has no terminal yet. Its panel takes
-           the pane's place: its settings, its first prompt and its Start
-           button. prestart.js draws it. -->
-      <section class="prestart" id="prestart" aria-label="Prepared session" hidden></section>
-      <!-- Home: what every session is doing, as numbers and as a list, live.
-           It is the landing page and what the stage shows when no session is
-           open. home.js draws it. -->
-      <section class="home" id="home" aria-label="Home" hidden></section>
-    </div>
-
-    <!-- The keys a phone keyboard does not have. keybar.js fills them in; the
-         options menu is what puts the bar on screen, on any device. -->
-    <div class="keybar" id="keybar" hidden></div>
-  </main>
+    </main>
+  </div>
 </div>
+<div class="ds-toasts" id="toasts"></div>
+
+<!-- Overlays: inside .ds-theme (<html>); opened and closed only through DS.overlay. -->
+<div class="ds-menu" role="menu" id="sessionMenu" aria-label="Session actions" hidden></div>
+
+<dialog class="ds-dialog" id="optionsDialog" aria-labelledby="optionsTitle">
+  <div class="ds-dialog__backdrop" data-close></div>
+  <div class="ds-dialog__box">
+    <h2 class="ds-dialog__title" id="optionsTitle">This device</h2>
+    <div class="so-options">
+      <div class="ds-field">
+        <label class="ds-switch"><input type="checkbox" role="switch" data-option="keybar" aria-describedby="optKeybarHint">
+          <span class="ds-switch__track" aria-hidden="true"></span><span class="ds-switch__label">Key bar</span>
+          <span class="ds-switch__state" aria-hidden="true"><span class="ds-switch__on">On</span><span class="ds-switch__off">Off</span></span></label>
+        <small class="ds-field__hint" id="optKeybarHint">Esc, Tab, Ctrl, arrows</small>
+      </div>
+      <div class="ds-field">
+        <label class="ds-switch"><input type="checkbox" role="switch" data-option="touch" aria-describedby="optTouchHint">
+          <span class="ds-switch__track" aria-hidden="true"></span><span class="ds-switch__label">Touch mode</span>
+          <span class="ds-switch__state" aria-hidden="true"><span class="ds-switch__on">On</span><span class="ds-switch__off">Off</span></span></label>
+        <small class="ds-field__hint" id="optTouchHint">Keyboard button in the top bar</small>
+      </div>
+      <div class="ds-field">
+        <label class="ds-switch"><input type="checkbox" role="switch" data-option="sound" aria-describedby="optSoundHint">
+          <span class="ds-switch__track" aria-hidden="true"></span><span class="ds-switch__label">Sound</span>
+          <span class="ds-switch__state" aria-hidden="true"><span class="ds-switch__on">On</span><span class="ds-switch__off">Off</span></span></label>
+        <small class="ds-field__hint" id="optSoundHint">A chime when a session finishes</small>
+      </div>
+      <!-- The hint is notifier.notifyHint(), and the switch is disabled where
+           this browser cannot notify; session.js writes both. -->
+      <div class="ds-field">
+        <label class="ds-switch"><input type="checkbox" role="switch" data-option="notify" aria-describedby="optNotifyHint">
+          <span class="ds-switch__track" aria-hidden="true"></span><span class="ds-switch__label">Notifications</span>
+          <span class="ds-switch__state" aria-hidden="true"><span class="ds-switch__on">On</span><span class="ds-switch__off">Off</span></span></label>
+        <small class="ds-field__hint" id="optNotifyHint">Not available in this browser</small>
+      </div>
+    </div>
+    <div class="ds-dialog__actions"><button class="ds-btn ds-btn--text" type="button" data-close autofocus>Done</button></div>
+  </div>
+</dialog>
+
+<dialog class="ds-dialog" id="usageDialog" aria-labelledby="usageTitle">
+  <div class="ds-dialog__backdrop" data-close></div>
+  <div class="ds-dialog__box">
+    <h2 class="ds-dialog__title" id="usageTitle">Usage limits</h2>
+    <div class="so-usage-reading" id="usageReading"></div>
+    <div class="ds-dialog__actions"><button class="ds-btn ds-btn--text" type="button" data-close autofocus>Close</button></div>
+  </div>
+</dialog>
 
 <!-- The new session sheet: which program, where it works, and what it runs on.
      A session is bound to all three before it exists, so they are chosen once
      rather than guessed at and corrected afterwards. -->
-<dialog class="sheet" id="newSessionSheet" aria-label="Start a new session">
-  <h2 class="sheet-title">What should this session run?</h2>
-  <!-- The program, how a shell runs, the profile, the directory, the model,
-       the effort and Ultracode. harnesses.js draws them (settingsForm) every
-       time the sheet opens, with the ids they have always had - nsHarness,
-       nsDir, nsModelField and the rest - and the panel of a prepared session
-       draws the same controls with the same code, so the two never differ. -->
-  <div id="nsForm"></div>
-  <!-- PreStart: the session is stored with these settings and a field for its
-       first prompt, and nothing runs until it is started - by hand, or at a
-       time set in its panel. Only for the programs a prompt can be handed to,
-       and off every time the sheet opens. -->
-  <div class="field" id="nsPrestartField" hidden>
-    <label>PreStart</label>
-    <div class="seg-row" id="nsPrestart" role="group" aria-label="PreStart">
-      <button class="seg" type="button" data-value="off" aria-pressed="true">
-        <span class="seg-text"><span class="seg-label">Off</span></span>
-      </button>
-      <button class="seg" type="button" data-value="on" aria-pressed="false">
-        <span class="seg-text"><span class="seg-label">On</span></span>
-      </button>
+<dialog class="ds-sheet so-ns" id="newSessionSheet" aria-labelledby="nsTitle">
+  <div class="ds-sheet__backdrop" data-close></div>
+  <section class="ds-sheet__panel">
+    <div class="ds-sheet__head">
+      <h2 class="ds-sheet__title" id="nsTitle">What should this session run?</h2>
+      <button class="ds-btn ds-btn--quiet ds-btn--icon" type="button" aria-label="Close" data-tip="Close" data-close data-icon="close"></button>
     </div>
-    <div class="hint">Prepare the session now and write its first prompt; it starts when you press Start, or by itself at a time you set.</div>
-  </div>
-  <div class="hint" id="nsHint"></div>
-  <div class="sheet-actions">
-    <button class="btn sm" type="button" id="nsCancel">Cancel</button>
-    <button class="btn sm primary" type="button" id="nsStart">Start session</button>
+    <div class="ds-sheet__body" tabindex="0">
+      <!-- harnesses.js draws the settings (settingsForm) every time the sheet
+           opens, with the ids they have always had; a prepared session's panel
+           draws the same controls with the same code. -->
+      <div id="nsForm"></div>
+      <!-- PreStart: stored with these settings and a field for its first
+           prompt; nothing runs until it is started. Only for the programs a
+           prompt can be handed to, and off every time the sheet opens. -->
+      <div class="ds-field" id="nsPrestartField" hidden>
+        <label class="ds-check"><input type="checkbox" id="nsPrestart" aria-describedby="nsPrestartHint"><span>Prepare it first (PreStart)</span></label>
+        <small class="ds-field__hint" id="nsPrestartHint">Prepare the session now and write its first prompt; it starts when you press Start, or by itself at a time you set.</small>
+      </div>
+      <div class="ds-alert ds-alert--warning" id="nsHint" role="status" hidden><i data-icon="alert" data-icon-slot></i><span class="ds-alert__text" id="nsHintText"></span></div>
+      <div class="ds-form-actions">
+        <button class="ds-btn ds-btn--primary" type="button" id="nsStart">Start session</button>
+        <button class="ds-btn ds-btn--text" type="button" id="nsCancel" data-close>Cancel</button>
+      </div>
+    </div>
+  </section>
+</dialog>
+
+<!-- The recording. What is asked of it - keep this, or throw it away - is the
+     only thing being asked, and the meter makes a microphone that hears
+     nothing look like one. -->
+<dialog class="ds-dialog so-rec" id="recSheet" aria-labelledby="recTitle">
+  <div class="ds-dialog__backdrop" data-close></div>
+  <div class="ds-dialog__box">
+    <h2 class="ds-dialog__title" id="recTitle">Listening…</h2>
+    <div class="so-meter" id="recMeter" aria-hidden="true"></div>
+    <p class="ds-meta ds-center" id="recTime">0:00</p>
+    <div class="ds-dialog__actions so-rec__actions">
+      <button class="ds-btn so-rec__action" type="button" id="recCancel">Cancel</button>
+      <button class="ds-btn ds-btn--primary so-rec__action" type="button" id="recSend">Send</button>
+    </div>
   </div>
 </dialog>
 
-<!-- The recording sheet. A recording is the whole screen while it runs, because
-     what is being asked of it - keep this, or throw it away - is the only thing
-     being asked, and both answers have to be findable without looking. The
-     meter is there so that a microphone that hears nothing looks like one. -->
-<dialog class="sheet rec-sheet" id="recSheet" aria-label="Recording">
-  <h2 class="sheet-title">Listening…</h2>
-  <div class="rec-meter" id="recMeter" aria-hidden="true"></div>
-  <div class="rec-time mono" id="recTime">0:00</div>
-  <div class="rec-buttons">
-    <button class="btn primary rec-big" type="button" id="recSend">Send</button>
-    <button class="btn rec-big" type="button" id="recCancel">Cancel</button>
+<dialog class="ds-dialog so-copy" id="copySheet" aria-labelledby="copyTitle" aria-describedby="copyText">
+  <div class="ds-dialog__backdrop" data-close></div>
+  <div class="ds-dialog__box">
+    <h2 class="ds-dialog__title" id="copyTitle">Copy from the terminal</h2>
+    <p class="ds-dialog__text" id="copyText">Select a part to copy just that, or copy everything.</p>
+    <div class="ds-field">
+      <label class="ds-field__label ds-sr" for="copyArea">Terminal text</label>
+      <textarea class="ds-input so-copy__text" id="copyArea" readonly spellcheck="false"></textarea>
+    </div>
+    <div class="ds-dialog__actions">
+      <button class="ds-btn ds-btn--text" type="button" data-close>Close</button>
+      <button class="ds-btn ds-btn--primary" type="button" id="copyAll">Copy all</button>
+    </div>
   </div>
 </dialog>
 
-<div class="toasts" id="toasts"></div>
-
-<!-- The vendored bundles are plain UMD scripts that define browser globals -
-     Terminal, FitAddon, Unicode11Addon, WebLinksAddon,
-     WebglAddon - so they come before the module that uses them. They are not
-     ESM; nothing imports them. -->
+<!-- The vendored terminal bundles are plain UMD scripts that define browser
+     globals - Terminal, FitAddon, Unicode11Addon, WebLinksAddon, WebglAddon -
+     so they come before the module that uses them. Nothing imports them. -->
 <script src="/static/vendor/xterm.js"></script>
 <script src="/static/vendor/addon-fit.js"></script>
 <script src="/static/vendor/addon-unicode11.js"></script>

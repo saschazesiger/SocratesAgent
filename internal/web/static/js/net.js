@@ -11,6 +11,8 @@
 //   3. Nothing the user did is lost. Anything they send goes into a queue that
 //      survives a reload and is retried until the server confirms it.
 
+import { M, iconEl } from './ui.js';
+
 /* ---------------------------------------------------------------- helpers */
 
 // clientKey mints the idempotency key that makes a request safe to repeat.
@@ -276,72 +278,101 @@ window.addEventListener('online', () => {
 
 /* ------------------------------------------------------------- status bar */
 
+// The line counts the seconds to the next attempt, so it is redrawn this often
+// while it shows. Data cadence, not motion.
+const CONN_TICK_MS = 1000;
+
 // mountConnectionBar puts one honest line at the top of the page. It is the
 // answer to "is what I am looking at still true?", and it is never hidden
 // behind a menu or a toast that has already faded away.
+//
+// It is a Dashboard-Style alert in the page's own slot (#connSlot), not a bar
+// laid over the page: the slot sits where the page put it, so nothing has to
+// move out from under it. The alert is built once and only its words change
+// afterwards, because a live region that is replaced together with its text
+// is one a screen reader may never read.
 export function mountConnectionBar() {
-  const bar = document.createElement('div');
-  bar.className = 'conn-bar';
-  bar.hidden = true;
-  bar.setAttribute('role', 'status');
-  bar.setAttribute('aria-live', 'polite');
+  let slot = document.getElementById('connSlot');
+  if (!slot) {
+    slot = document.createElement('div');
+    slot.className = 'so-conn';
+    slot.id = 'connSlot';
+    slot.hidden = true;
+    const host = document.querySelector('.so-main') || document.getElementById('main')
+      || document.querySelector('.so-auth') || document.body;
+    host.prepend(slot);
+  }
 
-  const dot = document.createElement('span');
-  dot.className = 'conn-dot';
+  const alert = document.createElement('div');
+  alert.className = 'ds-alert ds-alert--warning';
   const label = document.createElement('span');
-  label.className = 'conn-label';
+  label.className = 'ds-alert__text';
+  label.setAttribute('role', 'status');
+  label.setAttribute('aria-live', 'polite');
+  // The countdown changes every second; it is not a live region, or a screen
+  // reader would read nothing else.
   const countdown = document.createElement('span');
-  countdown.className = 'conn-count';
+  countdown.className = 'ds-meta';
   const retry = document.createElement('button');
   retry.type = 'button';
-  retry.className = 'conn-retry';
+  retry.className = 'ds-btn ds-btn--text ds-btn--sm';
   retry.textContent = 'Retry';
   retry.addEventListener('click', () => {
     if (connection.retryNow) connection.retryNow();
     wake('manual');
   });
-  bar.append(dot, label, countdown, retry);
-  document.body.append(bar);
+  alert.append(iconEl('wifiOff', 20), label, countdown, retry);
+  slot.replaceChildren(alert);
 
   let ticker = null;
+  let shown = false;
 
   const render = () => {
     const state = connectionState();
     const offline = state.status === OFFLINE || !state.online;
-    // Only a loss that outlived the grace period is worth a bar; a stream
+    // Only a loss that outlived the grace period is worth a line; a stream
     // being swapped for another one is not something anyone needs to read.
     const live = !state.degraded;
-    bar.hidden = live;
     setClass(document.body, 'conn-lost', !live);
     if (live) {
       if (ticker) { clearInterval(ticker); ticker = null; }
+      if (shown) {
+        shown = false;
+        M.leave(slot, '', { then: 'hide' });
+      }
       return;
     }
-    setClass(bar, 'offline', offline);
+    setClass(alert, 'ds-alert--warning', !offline);
+    setClass(alert, 'ds-alert--error', offline);
 
     // Read at a glance, possibly from behind a steering wheel: what is wrong,
     // and how old what is on screen is.
     const away = Math.round((Date.now() - state.lastContact) / 1000);
     const headline = offline ? 'No network.' : 'Connection lost.';
-    label.textContent = away > 4
+    setText(label, away > 4
       ? headline + ' What you see is ' + agoLabel(away) + '.'
-      : headline + ' Nothing on this screen is updating.';
+      : headline + ' Nothing on this screen is updating.');
     const wait = state.retryAt ? Math.max(0, Math.round((state.retryAt - Date.now()) / 1000)) : 0;
-    countdown.textContent = offline
+    setText(countdown, offline
       ? 'Waiting for signal'
-      : (wait > 0 ? 'Retrying in ' + wait + 's' : 'Reconnecting…');
+      : (wait > 0 ? 'Retrying in ' + wait + 's' : 'Reconnecting…'));
 
-    // The bar's real height is published so the page can move out from under
-    // it rather than being covered: it grows with a notch and with a wrapped
-    // line, so it is measured after the text is in place.
-    requestAnimationFrame(() => {
-      document.documentElement.style.setProperty('--conn-bar-h', bar.offsetHeight + 'px');
-    });
-    if (!ticker) ticker = setInterval(render, 1000);
+    if (!shown) {
+      shown = true;
+      slot.hidden = false;
+      M.enter(slot);
+    }
+    if (!ticker) ticker = setInterval(render, CONN_TICK_MS);
   };
 
   onConnectionChange(render);
   render();
+}
+
+// setText writes a text only when it changed, so the live region is not told
+// the same sentence again every second.
+function setText(node, text) {
+  if (node.textContent !== text) node.textContent = text;
 }
 
 function agoLabel(seconds) {

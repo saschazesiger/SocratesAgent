@@ -56,9 +56,6 @@ func newLab(t *testing.T) *lab {
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Whether the host is reachable is a property of the machine the tests
-	// run on, so every plan is built as if it were not unless a test says so.
-	onHost(t, false)
 	return &lab{t: t, home: home, data: t.TempDir(), cwd: cwd, settings: config.Default()}
 }
 
@@ -651,6 +648,61 @@ func TestCodexBypassesApprovalsAndSandbox(t *testing.T) {
 		if carries(plan.Argv, remote) {
 			t.Errorf("%s was passed: %v", remote, plan.Argv)
 		}
+	}
+}
+
+// Codex's startup update check can stop a session on an "Update available"
+// prompt before its first turn. It is switched off on every command line -
+// fresh and resumed - and as a TOML boolean: the quoted string "false" is a
+// type error under --strict-config and a session that never starts.
+func TestCodexNeverChecksForUpdatesAtStartup(t *testing.T) {
+	l := newLab(t)
+	const off = "check_for_update_on_startup=false"
+	if plan := l.plan(Codex{}); !has(plan.Argv, "-c", off) {
+		t.Errorf("a fresh session checks for updates: %v", plan.Argv)
+	}
+	req := l.req()
+	req.CLISession = uuid.NewString()
+	plan, err := Codex{}.ResumePlan(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !has(plan.Argv, "-c", off) {
+		t.Errorf("a resumed session checks for updates: %v", plan.Argv)
+	}
+}
+
+// Claude Code's native installer updates atomically, so its own auto-updater
+// is left on: nothing a plan sets may switch it off, in the pane or in the
+// settings file every tool's subprocess inherits.
+func TestClaudeLeavesItsAutoUpdaterOn(t *testing.T) {
+	plan := newLab(t).plan(Claude{})
+	if _, set := plan.Env["DISABLE_AUTOUPDATER"]; set {
+		t.Errorf("the pane disables the auto-updater: %v", plan.Env)
+	}
+	doc := claudeSettingsDoc(t, plan)
+	if _, set := doc["autoUpdates"]; set {
+		t.Errorf("the settings file sets autoUpdates: %v", doc)
+	}
+	if env, _ := doc["env"].(map[string]any); env != nil {
+		if _, set := env["DISABLE_AUTOUPDATER"]; set {
+			t.Errorf("the settings env disables the auto-updater: %v", env)
+		}
+	}
+}
+
+// OpenCode never updates itself inside a session; socrates-update.timer does.
+func TestOpenCodeNeverUpdatesItself(t *testing.T) {
+	plan := newLab(t).plan(OpenCode{})
+	if plan.Env["OPENCODE_DISABLE_AUTOUPDATE"] != "1" {
+		t.Errorf("OPENCODE_DISABLE_AUTOUPDATE = %q", plan.Env["OPENCODE_DISABLE_AUTOUPDATE"])
+	}
+	var inline map[string]any
+	if err := json.Unmarshal([]byte(plan.Env["OPENCODE_CONFIG_CONTENT"]), &inline); err != nil {
+		t.Fatal(err)
+	}
+	if inline["autoupdate"] != false {
+		t.Errorf("autoupdate = %v", inline["autoupdate"])
 	}
 }
 

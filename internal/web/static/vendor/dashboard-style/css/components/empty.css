@@ -1,0 +1,66 @@
+/*
+ * Empty state: centred, at most 400px. A tinted disc with the icon (24px),
+ * a title, at most one line of what to do next and at most one action.
+ *
+ *   <div class="ds-empty">
+ *     <span class="ds-empty__disc" aria-hidden="true"><svg ...></span>
+ *     <p class="ds-empty__title">No devices yet</p>
+ *     <p class="ds-empty__text">Add the first one to start the inventory.</p>
+ *     <button class="ds-btn ds-btn--tonal" type="button">Add device</button>
+ *
+ * No motion of its own; the page picks it by what brought the empty state
+ * (docs/motion.md, "Data motion"):
+ *   replacing a skeleton           .ds-reveal
+ *   a filter, search or live update the rows leave through DS.motion.flip
+ *                                  (they fade out in place), then
+ *                                  DS.motion.enter(empty, 'fade'), no rise
+ *   the filter cleared             DS.motion.leave(empty) while the rows
+ *                                  enter through flip
+ *   the user deleted the last item DS.motion.enter(disc, 'pop') on the disc
+ *
+ * Progressive:
+ * - text-wrap (the text avoids a lone last word): without it the line
+ *   wraps as usual.
+ */
+
+@layer ds.tokens, ds.base, ds.components, ds.motion, ds.utilities;
+
+@layer ds.components {
+  .ds-empty {
+    display: grid;
+    justify-items: center;
+    gap: var(--ds-space-2);
+    max-width: 400px;
+    margin: 0 auto;
+    padding: var(--ds-space-8) var(--ds-space-4);
+    text-align: center;
+  }
+
+  .ds-empty__disc {
+    display: grid;
+    place-items: center;
+    width: 48px;
+    height: 48px;
+    margin-bottom: var(--ds-space-2);
+    border-radius: var(--ds-radius-action);
+    background: var(--ds-accent);
+    color: var(--ds-on-accent-icon);
+  }
+
+  .ds-empty__title {
+    margin: 0;
+    color: var(--ds-text);
+    font: var(--ds-font-subtitle);
+  }
+
+  .ds-empty__text {
+    margin: 0;
+    color: var(--ds-text-2);
+    font: var(--ds-font-body);
+    text-wrap: pretty;
+  }
+
+  .ds-empty > .ds-btn {
+    margin-top: var(--ds-space-3);
+  }
+}

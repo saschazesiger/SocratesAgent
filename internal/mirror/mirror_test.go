@@ -185,7 +185,7 @@ func TestConfigFromTheEnvironmentWinsOverTheFile(t *testing.T) {
 
 // ------------------------------------------------------- migration upload
 
-// The upgrade path of the production container: an existing database, a
+// The upgrade path of an existing installation: an existing database, a
 // bucket with nothing in it. Everything goes up, sealed, and nothing that
 // is local-only does.
 func TestMigrationUploadsAnExistingDatabase(t *testing.T) {

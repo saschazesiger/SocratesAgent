@@ -205,7 +205,7 @@ the reply with a timeout.
 | 6 | `ESC [ ? 996 n` (theme-mode report) with the style set | pane receives `\x1b[?997;2n`, i.e. **light** **[V]** |
 | 7 | `ESC [ c` (DA1) | answered by **tmux itself** (`\x1b[?1;2;4c`), never proxied **[V]** |
 
-Every row was reproduced on **tmux 3.3a** (Debian bookworm, the Docker base image) as well as on
+Every row was reproduced on **tmux 3.3a** (Debian bookworm) as well as on
 3.6, with one difference: 3.3a does **not** answer `ESC[?996n`. Nothing depends on that — Codex and
 OpenCode both read the OSC 11 reply, which 3.3a answers correctly (§C.1.1).
 
@@ -604,48 +604,27 @@ Under systemd's default `KillMode=control-group`, `systemctl restart socrates` k
 server too — which would turn every ordinary restart into the reboot path and quietly defeat the
 whole design. Nothing in the current repo says otherwise.
 
-**(a) systemd.** Ship `deploy/socrates.service`:
-
-```ini
-[Unit]
-Description=Socrates
-After=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/socrates -addr 127.0.0.1:8080
-Restart=on-failure
-# The tmux server is deliberately outside this unit's lifecycle: sessions
-# survive a restart of Socrates itself.
-KillMode=process
-TimeoutStopSec=20
-
-[Install]
-WantedBy=multi-user.target
-```
-
-and, belt and braces, start the tmux server outside the service cgroup when possible:
-`internal/termux/supervise.go` detects `systemd-run` on `PATH` **and** that Socrates is running
-under systemd (`$INVOCATION_ID` is set, or `/run/systemd/system` exists), and then prefixes the
-server-starting command with
+**(a) systemd.** `deploy/socrates.service` keeps the default `KillMode=control-group`, so
+cloudflared, code-server and the viewers' `tmux attach` clients stop with it, and the tmux server
+is started **outside** the service's cgroup instead: when Socrates is a systemd service
+(`$INVOCATION_ID` is set and the parent is PID 1), `Tmux.RunStart` in `internal/termux/tmux.go`
+prefixes the server-starting command with
 
 ```
-systemd-run --user --scope --quiet --unit socrates-tmux-<pid> --collect -- tmux -f … -S … new-session …
+systemd-run --scope --quiet --collect --unit=socrates-tmux -- tmux -f … -S … -u start-server
 ```
 
-falling back to the system bus when not running as a user unit, and to a plain exec when
-`systemd-run` fails for any reason. A failure here is logged and never fatal: the worst case is
-the behaviour we have today.
+with `-p OOMPolicy=continue`, so one agent the kernel's OOM killer takes does not stop the scope
+and every session in it. A scope can outlive its server - a program a session detached keeps it
+alive - and systemd then refuses a second `socrates-tmux.scope`; the server is then started in
+`socrates-tmux-<unix seconds>.scope` instead. Only when that fails as well does it fall back to a
+plain exec, logged: the worst case is sessions that end with the service. `new-session` runs with
+`-N`, so it can never start a server of its own outside the scope.
 
-**(b) Docker.** The container's lifecycle *is* the machine's: a container restart is a reboot and
-takes the resume path. The README says so plainly. The Dockerfile gains **`tini` as the
-entrypoint** (equivalently, the image is documented to need `docker run --init`) so a reparented
-tmux process cannot become a zombie when Socrates is PID 1.
-
-**Socrates must not install its own `SIGCHLD` reaper.** A Go-side reaper at PID 1 races
-`os/exec`'s `Wait` on Socrates' *own* children — every `tmux attach` viewer, the installer, every
-discovery subprocess — and turns their exits into `ECHILD` errors. `tini` reaps only what it should
-and is the whole answer.
+**(b) PID 1 reaps.** The tmux server daemonizes and is reparented to PID 1 — systemd — which reaps
+it. **Socrates must not install its own `SIGCHLD` reaper.** A Go-side reaper races `os/exec`'s
+`Wait` on Socrates' *own* children — every `tmux attach` viewer, every discovery subprocess — and
+turns their exits into `ECHILD` errors.
 
 **(c) Test.** `TestSessionSurvivesManagerKill`: create a session, `SIGKILL` the process that owns
 the Manager, assert from a new process that the tmux session and its pane are still alive and that
@@ -654,8 +633,7 @@ leaves the client exiting 1 and the session alive [V].
 
 The test's comment must say what it does **not** prove: it demonstrates survival of a *process*
 kill, which is the crash and the `SIGTERM` case. It says nothing about a **cgroup** kill, which is
-what `systemctl restart` does by default and what `KillMode=process` plus `systemd-run --scope`
-exist to prevent. That path is verified by hand on a machine with systemd, not by `go test`.
+what `systemctl restart` does by default and what `systemd-run --scope` exists to prevent. That path is verified by hand on a machine with systemd, not by `go test`.
 
 ---
 
@@ -2581,8 +2559,7 @@ Shows: `#tmuxStatus` (a `.state-dot` + `.state-label`), the version, and the bin
    `new-session -e` in **3.2**. On tmux 3.2a — which is what Ubuntu 22.04 ships — the conf errors
    at load and `-e` is rejected outright, at which point the start-up guard (§A.3) would quietly
    fall back to a minimal conf and the installer would cheerfully report 3.2a as "ok" while
-   sessions launched without their environment. Verified that 3.3a (Debian bookworm, the Docker
-   base) loads the conf and does everything load-bearing [V]. Local machine has 3.6 [V].
+   sessions launched without their environment. Verified that 3.3a (Debian bookworm) loads the conf and does everything load-bearing [V]. Local machine has 3.6 [V].
 2. If missing, detect the package manager by `LookPath`, first hit wins:
    `apt-get` → `apk` → `dnf` → `yum` → `pacman` → `zypper` → `brew`.
 3. Privilege: `os.Geteuid() == 0` ⇒ no wrapper. Else `LookPath("sudo")` and probe with
@@ -3002,14 +2979,9 @@ on a model turn.
 `Makefile`: `check` keeps `fmt-check vet tidy-check race build`; `e2e` keeps its guard; add
 `vendor-xterm` (§E.1).
 
-`Dockerfile`: add `tmux` and `ncurses-term` to the existing apt line —
-`ca-certificates curl git ripgrep tmux ncurses-term` — so the auto-installer never runs in the
-image, and add `tini` as the entrypoint (or document `--init`) so a reparented tmux cannot become a
-zombie when Socrates is PID 1 (§A.12).
-
-`deploy/socrates.service` ships with `KillMode=process` (§A.12) and the README explains, in one
-short section, the two deployment shapes: under systemd a Socrates restart keeps sessions alive; in
-Docker a container restart is a reboot and takes the resume path.
+`scripts/install.sh` installs `ca-certificates curl git ripgrep tmux ncurses-term` and holds
+tmux. `deploy/socrates.service` (§A.12) is what it installs, and the README says in one short
+section that an update keeps sessions alive and a reboot takes the resume path.
 
 ---
 
@@ -3075,8 +3047,9 @@ Ship `deploy/socrates.service`.
       `pipe-pane` only when `#{pane_pipe}` is 0.
 - [ ] `pipe-pane` is issued **without** `-o` (it is a toggle).
 - [ ] A failed `new-session` sets `state='failed'` with tmux's stderr in `fail_reason`.
-- [ ] `supervise.go` uses `tini`/`--init` for the PID-1 case and installs **no** in-process
-      `SIGCHLD` reaper — one would race `os/exec`'s `Wait` on our own children.
+- [ ] `Tmux.RunStart` starts the server in `socrates-tmux.scope` under systemd, and Socrates
+      installs **no** in-process `SIGCHLD` reaper — one would race `os/exec`'s `Wait` on our own
+      children.
 - [ ] `TestSessionSurvivesManagerKill`'s comment says it does not prove the cgroup case.
 
 ---
@@ -3110,7 +3083,7 @@ assertion, `mockOpenRouter`).
 **Checklist:**
 - [ ] The Claude theme-key verification (§C.1.2) belongs to **this** package, not WP4.
 - [ ] `faketui` decides `theme=light` from the **OSC 11** reply alone. It must not require an
-      `ESC[?996n` answer: tmux 3.3a, the Docker base image, does not send one.
+      `ESC[?996n` answer: tmux 3.3a, Debian bookworm's, does not send one.
 
 ---
 
@@ -3250,8 +3223,8 @@ this package makes it visible and proves it end to end.
 **Depends on:** all of the above.
 **Scope:** `README.md` (rewritten around sessions, tmux and the two deployment shapes),
 `e2e/README.md`, `docs/screenshot-*.png` regenerated via `e2e/shots.mjs` (keep
-`screenshot-tunnel.png`), `Dockerfile` (apt line + `tini` as the entrypoint, and **no** in-process
-reaper), `.github/workflows/ci.yml` (tmux step,
+`screenshot-tunnel.png`), `scripts/install.sh` and `deploy/socrates.service` (and **no**
+in-process reaper), `.github/workflows/ci.yml` (tmux step,
 the Windows note), `Makefile`, `THIRD_PARTY_LICENSES.md` final pass, the `design` and `lighttheme`
 scenarios, and a full run of every scenario.
 **Acceptance**
@@ -3286,16 +3259,16 @@ overlay conventions.
 | J3 | **OpenCode `--session <unknown id>` exits immediately** [V]. A stale id turns "open the session" into a crashed pane. | `VerifyCLISession` is mandatory before an OpenCode resume, and "could not tell" degrades to a fresh session (§C.7). Covered by a test with a deliberately bogus id, and by `faketui`, which refuses the same way. |
 | J4 | **`window-size latest` follows typing, not attachment** [V] — the naive policy would re-lay out the TUI on every alternation between two devices. | The default is `manual` with Socrates issuing every `resize-window` (§A.7), which is verified to ignore keystrokes. `latest` and `largest` remain admin choices with hints saying what they do. `TestManualSizingIgnoresTyping` pins it. |
 | J5 | **A global `window-size manual` segfaults the tmux server on the *next* `new-session`** — in a conf file or set live, on 3.6 and 3.3a [V]. Set live it is especially treacherous: the first session works and the second takes every session down with it. | The global is never touched; the policy is a **per-window** option applied with `setw -t soc_<id>` after each create and re-applied in `Adopt` (§A.3, §A.7). `TestManualPolicyIsPerWindow` creates **three** sessions in a row so a one-session pass cannot hide the crash, `TestNoGlobalWindowSizeAnywhere` forbids the global command outright, and `TestBadConfFallsBack` keeps the start-up guard honest. |
-| J6 | **`tmux-256color` is absent in a slim image** [A]. | Probe with `infocmp tmux-256color` at start-up and fall back to `screen-256color`; the Dockerfile installs `ncurses-term` and the installer does too. |
+| J6 | **`tmux-256color` is absent in a slim image** [A]. | Probe with `infocmp tmux-256color` at start-up and fall back to `screen-256color`; `scripts/install.sh` installs `ncurses-term`. |
 | J19 | **A too-old tmux passes as healthy.** The conf needs 3.3 (`allow-passthrough`, `remain-on-exit-format`) and 3.2 (`-e`, `extended-keys`); on 3.2a the conf errors, the start-up guard falls back to a minimal conf, and sessions launch without their environment while the admin page says "ok". | The floor is **3.3** in `requireTmux`, the `/api/tmux` response and the admin state (§F.1), with the reason recorded there. 3.3a is verified to do everything load-bearing [V]. |
-| J7 | **A systemd or Docker restart kills the tmux server** with it, turning every restart into a reboot. | `deploy/socrates.service` with `KillMode=process`, `systemd-run --scope` where available, a SIGCHLD reaper at PID 1, `tini` in the image, and the README stating that a container restart is the reboot path. `TestSessionSurvivesManagerKill` proves the survival property (§A.12). |
+| J7 | **A systemd restart kills the tmux server** with it, turning every restart into a reboot. | The tmux server is started in `socrates-tmux.scope` with `systemd-run --scope`, outside the service's cgroup, and systemd reaps it at PID 1. `TestSessionSurvivesManagerKill` proves the process-kill half (§A.12). |
 | J8 | **xterm.js behaviour was never tested in a browser during research**; everything in `tmux-xterm.md` §5 beyond versions and file layout is [A]. | WP6's acceptance is browser-level, and `lighttheme` measures the computed background rather than trusting an option name. `allowProposedApi: true` is required for unicode11 and its absence throws loudly. |
 | J9 | **iOS will not raise the keyboard** unless focus happens inside a real user-gesture handler [A]. | <!-- rev 9 --> The top bar's `#kbBtn` is the path (`ACTIVITY.md` §D.7), and its `focus()` call is synchronous inside `click`. A code comment says why, so a future refactor cannot make it async. The line input that used to be the primary path on phones is gone (§E.6); what a phone would have typed into it, it asks the chat instead. |
 | J10 | **iOS drops WebGL contexts** when a tab backgrounds [A]. | `onContextLoss` disposes the addon and falls back to the DOM renderer; the addon is loaded in a `try/catch`. |
 | J11 | **`extended-keys` / `modifyOtherKeys` interop between tmux 3.6 and xterm.js 6 is untested.** | Default `extended_keys` to **off**; it is an admin switch with a warning, not a default. `CODEX_TUI_DISABLE_KEYBOARD_ENHANCEMENT=1` is the escape hatch for Codex. |
 | J12 | **The clean cut destroys existing chats.** | A `socrates.db.pre-v3.bak` copy is written first and its path logged. DECISIONS.md chose the clean cut explicitly; this makes it reversible by hand. |
 | J13 | **Two new direct dependencies** in a repo that guards its dependency list. | Both are MIT-class and zero-dependency; `creack/pty`'s `go.mod` is three lines [V]. A verified Linux-only fallback exists for it (`golang.org/x/sys/unix` with `/dev/ptmx` + `TIOCSPTLCK`/`TIOCGPTN`, proven working). Both are recorded in `THIRD_PARTY_LICENSES.md`. |
-| J14 | **The macOS/Alpine/dnf install commands were never executed** [A]. | The apt path is verified and is what the image and the CI runner use. The others show their exact command in the UI on failure. Do not claim verification in a comment. |
+| J14 | **The macOS/Alpine/dnf install commands were never executed** [A]. | The apt path is verified and is what `scripts/install.sh` and the CI runner use. The others show their exact command in the UI on failure. Do not claim verification in a comment. |
 | J15 | **OpenCode's embedded HTTP server drives the agent with no auth by default** — any local process could `POST /session/{id}/shell`. | A per-session 32-byte `OPENCODE_SERVER_PASSWORD` (§C.7), Basic auth from the discoverer, an ephemeral loopback port, and `plan.json` at mode 0600. The tunnel never proxies that port. |
 | J16 | **A CLI upgrade changes flags under us.** Codex 0.152.0 already removed `--full-auto`, `--yolo` and four more. | The admin card is built from the *installed* binary's discovery, the version is shown behind the `infoTip`, and `--strict-config` makes a stale Codex override fail loudly at launch with the message in `fail_reason` and the `failed` overlay. |
 | J17 | **A transient tmux failure could mass-flip sessions to `needs_resume`** and trigger a wave of resumes. | The reboot case requires the socket to be absent or two consecutive failed polls 2 s apart (§A.9). `TestTransientPollFailureDoesNotResume` covers it. |
@@ -3310,7 +3283,7 @@ Added 2026-10-13. Binding like the rest; the decision is DECISIONS.md "Revision 
 
 Socrates' own state lives in one S3 bucket (under an optional prefix) and is mandatory: a server
 that cannot use a bucket serves the connect page and nothing else (`/api/health` still answers
-200, because a fresh volume is smoke-tested with no bucket at all). SQLite stays the local
+200, because `scripts/update.sh` asks it of an installation with no bucket yet). SQLite stays the local
 **working copy** — every handler reads and writes it exactly as before, so nothing waits on the
 network — and the bucket is the truth it is made equal to at start.
 
@@ -3376,7 +3349,7 @@ it is behind.
    the local `mirror.bucket_id` **and the lease last held by this instance** → upload what is still
    pending first (it is newer than the bucket), then download everything else. Same `bucket_id` but
    another instance held the lease since (a crash here and a start elsewhere, a takeover, a rollback
-   to an old volume) → the bucket wins and the pending writes are dropped: they are older than what
+   to an old data directory) → the bucket wins and the pending writes are dropped: they are older than what
    the other machine wrote. Downloads fetch and open every object before anything local is touched,
    so an object that does not open changes nothing. A bucket with state but no `kv/password_hash`
    never resets the password: a copy of this installation keeps its hash and uploads it again, any
@@ -3515,6 +3488,68 @@ empty). The same endpoint without `unnamed` is the arrow beside the name in the 
 session but an editor: it names the session again from its first prompt (the draft) and its screen,
 whatever it was called. It answers when the name is there — a prepared session has no socket for
 `title` frames — and still sends the frames to every other browser.
+
+
+# M. The cost ledger and the costs page
+
+Added 2026-10-22.
+
+## M.1 What is counted
+
+Every conversation any CLI had on this machine, under every profile directory on the disk (a deleted
+profile's included), whether a session still exists for it or not (`internal/costs`):
+
+- **Claude Code**: `<config>/projects/*/<id>.jsonl` plus every `*.jsonl` below `<id>/` (subagents,
+  workflow agents). An answer is an `assistant` line, counted once per `message.id` (the blocks of one
+  answer repeat its usage; the largest output count wins), priced from its tokens: input, output,
+  cache read, cache writes at 1.25x (5 min) or 2x (1 h) of the input price, web searches, fast mode
+  (2x on Opus 5/5.5), Haiku 5.5's long-prompt rate. The prices are verified against Claude Code's own
+  figure to the microdollar. Helper requests (titles, compaction, …) are billed but never written to
+  the transcript - 10-25 % of a long run. The `cost-state` line a run appends at exit holds what that
+  run spent per model; where its answers come to less, the difference is spread over the answers of
+  that run in proportion to their cost. A model without a price counts tokens and is marked
+  unpriced; the run's `cost-state` still brings its dollars in.
+- **Codex**: every rollout under `sessions/` and `archived_sessions/`. A `token_usage_record` is one
+  request; its `session_id` is the conversation (an agent's thread has a rollout of its own with the
+  parent's id), the model is the one the last `turn_context` named, duplicates are dropped by
+  `response_id`. Older rollouts without records fall back to `token_count` events.
+- **OpenCode**: `opencode.db`, read only. An assistant message carries its own cost; a child session
+  (`parent_id`) counts under its root.
+
+The numbers are API-equivalent estimates, and the page says so.
+
+## M.2 The ledger
+
+`cost_convs(key = harness/conversation id, harness, conv_id, profile, workdir, title, session_id,
+first_at, last_at)` and `cost_hours(key, hour = Unix time / 3600, model, cost_usd, input, output,
+cache_read, cache_write, requests, unpriced)`. Hours are UTC so the page can put them into its own
+days. One bucket object per conversation, `costs/<harness>/<conversation id>.json` (sealed like
+every other object), holding the row and all its hours; it is written only when it changed. A
+restore brings the whole ledger back although the transcripts stay on the old disk, and a ledger
+whose transcripts are not on this disk is never touched again. `cost_seen(key, fingerprint)` is local
+only: the paths, sizes and times (and the reader's version) the ledger was last computed from, so a
+restart does not read months of transcripts again.
+
+## M.3 The loop (`internal/server/costs.go`)
+
+Started first in `StartSessions` (it needs no tmux), first pass after 20 s, then every 2 minutes, and
+at once when the page asks and the last pass is older than 30 s. A pass stats every transcript, reads
+only what was appended since the last one (files are append-only; a shorter file is read again
+whole), and lets go of the parsed contents of files that have not changed for 15 minutes. The first
+pass of an installation reads everything (on the reference machine: 5 GB, ~80 s, 27 MB heap); later
+passes take about a second. A conversation started from a session takes the session's title, folder
+and id, and keeps them after the session is gone.
+
+## M.4 The page (`/costs`, `js/costs.js`)
+
+`GET /api/costs` sends the whole ledger compactly - conversations and models named once, rows as
+arrays - and the page sums it in the browser's time zone: a period (7/30/90 days, this or last month,
+this year, all), filters by program, profile, project (the sidebar's folders; Socrates' own
+directories are "More Chats") and model, five tiles (the period, per day, today, this month with its
+pace, all time), cost per day or per month (over 120 days) stacked by the four models that cost the
+most over all time plus "Other", and tables by project, model, month, day, program, profile and
+conversation. A row of the first four filters to it. CSV export of the period by day, conversation
+and model.
 
 ---
 

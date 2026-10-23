@@ -428,3 +428,155 @@ func TestTheCacheIsNotTheOldBuildsAnswer(t *testing.T) {
 		t.Errorf("a static refresh changed refreshed_at")
 	}
 }
+
+// writeUpdates writes the updater's status file as socrates-update.service
+// would, stamped with the given modification time.
+func writeUpdates(t *testing.T, path, state string, at time.Time) {
+	t.Helper()
+	doc := fmt.Sprintf(`{"schema":1,"state":%q,"trigger":"timer","ok":true,"components":[]}`, state)
+	if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, at, at); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// claudeVersion replaces the fake claude with one reporting another version,
+// which is what an update does to the real one.
+func claudeVersion(t *testing.T, version string) {
+	t.Helper()
+	path := filepath.Join(os.Getenv("PATH"), "claude")
+	script := "#!/bin/sh\necho 'claude " + version + "'\n"
+	if err := os.WriteFile(path+".new", []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(path+".new", path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// settle waits for whatever discovery Get started behind the request.
+func settle(t *testing.T, c *Catalog) {
+	t.Helper()
+	select {
+	case <-c.discover().done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the discovery did not finish")
+	}
+}
+
+// An update that finished after the catalogue was discovered is what makes
+// the next Get discover again, long before the TTL: the dashboard must not
+// show the version that was just replaced for another half hour. The request
+// itself is still answered from the cache at once.
+func TestAFinishedUpdateRenewsTheCatalogue(t *testing.T) {
+	onlyClaude(t)
+	status := filepath.Join(t.TempDir(), "updates.json")
+	c := New(newStore(), settingsFn(config.Default()))
+	c.WatchUpdates(status)
+	c.updates.every = 0
+	c.Refresh(context.Background())
+	if v := mustAgent(t, c.Get(context.Background()), "claude").Version; v != "claude 9.9.9-test" {
+		t.Fatalf("version = %q", v)
+	}
+
+	claudeVersion(t, "10.0.0-test")
+	// A run still going changes nothing: the binary may be half-way through
+	// being replaced, and the write that ends the run comes later.
+	writeUpdates(t, status, "running", time.Now().Add(time.Minute))
+	if v := mustAgent(t, c.Get(context.Background()), "claude").Version; v != "claude 9.9.9-test" {
+		t.Fatalf("a running update renewed the catalogue: %q", v)
+	}
+	c.mu.Lock()
+	idle := c.inflight == nil
+	c.mu.Unlock()
+	if !idle {
+		t.Fatal("a running update started a discovery")
+	}
+
+	writeUpdates(t, status, "done", time.Now().Add(2*time.Minute))
+	if v := mustAgent(t, c.Get(context.Background()), "claude").Version; v != "claude 9.9.9-test" {
+		t.Fatalf("the request waited for the discovery: %q", v)
+	}
+	settle(t, c)
+	snap, _ := c.Cached()
+	if v := mustAgent(t, snap, "claude").Version; v != "claude 10.0.0-test" {
+		t.Fatalf("the update was not noticed: %q", v)
+	}
+}
+
+// The comparison is with when the catalogue was discovered, so an update that
+// finished before it - the last nightly run, as seen by a server that has
+// discovered since - is not a reason to discover again; and a failed run is,
+// since it may have replaced some binaries before it stopped.
+func TestOnlyAnUpdateAfterTheDiscoveryCounts(t *testing.T) {
+	onlyClaude(t)
+	status := filepath.Join(t.TempDir(), "updates.json")
+	c := New(newStore(), settingsFn(config.Default()))
+	c.Refresh(context.Background())
+	c.WatchUpdates(status)
+	c.updates.every = 0
+
+	superseded := func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.superseded(time.Now())
+	}
+	if superseded() {
+		t.Fatal("a missing status file counted as an update")
+	}
+	writeUpdates(t, status, "done", time.Now().Add(-time.Hour))
+	if superseded() {
+		t.Fatal("an update older than the catalogue counted")
+	}
+	writeUpdates(t, status, "failed", time.Now().Add(time.Minute))
+	if !superseded() {
+		t.Fatal("a failed run after the discovery did not count")
+	}
+	if err := os.WriteFile(status, []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(status, time.Now().Add(2*time.Minute), time.Now().Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if superseded() {
+		t.Fatal("a status file that is not JSON counted as an update")
+	}
+
+	c.WatchUpdates("")
+	writeUpdates(t, status, "done", time.Now().Add(3*time.Minute))
+	if superseded() {
+		t.Fatal("an empty path did not stop the watch")
+	}
+}
+
+// The status file is looked at once every few seconds at most, however many
+// requests ask in between.
+func TestTheStatusFileIsNotStattedOnEveryRequest(t *testing.T) {
+	onlyClaude(t)
+	status := filepath.Join(t.TempDir(), "updates.json")
+	c := New(newStore(), settingsFn(config.Default()))
+	c.Refresh(context.Background())
+	c.WatchUpdates(status)
+
+	now := time.Now()
+	c.mu.Lock()
+	first := c.superseded(now)
+	c.mu.Unlock()
+	if first {
+		t.Fatal("nothing has been written yet")
+	}
+	writeUpdates(t, status, "done", now.Add(time.Minute))
+
+	c.mu.Lock()
+	soon := c.superseded(now.Add(updatesEvery / 2))
+	later := c.superseded(now.Add(updatesEvery))
+	c.mu.Unlock()
+	if soon {
+		t.Fatal("the file was looked at again within the interval")
+	}
+	if !later {
+		t.Fatal("the file was not looked at again after the interval")
+	}
+}

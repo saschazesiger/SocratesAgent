@@ -29,6 +29,7 @@
 import { el, toast, infoTip, setClass, onWake } from './api.js';
 import * as harnesses from './harnesses.js';
 import { dictated } from './keyboard.js';
+import { icon } from './ui.js';
 
 // How long a pause in typing is before the text is sent, and before a change
 // of settings is. A setting is one tap; a prompt is a run of keystrokes.
@@ -57,17 +58,6 @@ const MAX_DRAFT_BYTES = 100 << 10;
 const SCHEDULE_WATCH = 10 * 60 * 1000;
 
 const encoder = new TextEncoder();
-
-// The mark of a prepared session: a page with a start on it. The sidebar's
-// group wears it too.
-export const PRESTART_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" '
-  + 'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-  + '<path d="M6 2.8h8.2L19 7.6v13.6H6z"/><path d="M14 2.8v5h5"/><path d="M10.3 11.2v6.1l4.9-3.05z"/></svg>';
-
-// A small clock, for a session that starts by itself at a time.
-export const CLOCK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" '
-  + 'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/>'
-  + '<path d="M12 7v5l3.2 2"/></svg>';
 
 /* ------------------------------------------------------- local storage */
 
@@ -283,7 +273,7 @@ function openPanel(ctx, first) {
   /* ----------------------------------------------------------- markup */
 
   const textarea = el('textarea', {
-    class: 'textarea prestart-text', id: 'psPrompt', rows: '14', spellcheck: 'true',
+    class: 'ds-input prestart-text', id: 'psPrompt', rows: '14', spellcheck: 'true',
     placeholder: 'What should it do? This is sent as the first prompt the moment the session starts.',
     'aria-describedby': 'psSave',
   });
@@ -300,7 +290,7 @@ function openPanel(ctx, first) {
   const conflictBox = el('div', { class: 'prestart-conflict', id: 'psConflict', hidden: true });
   const failedBox = el('div', { class: 'prestart-failed', id: 'psFailed', hidden: true });
   const startButton = el('button', {
-    class: 'btn primary prestart-start', type: 'button', id: 'psStart', text: 'Start',
+    class: 'ds-btn ds-btn--primary prestart-start', type: 'button', id: 'psStart', text: 'Start',
     onclick: () => start(),
   });
   const keyHint = el('span', { class: 'prestart-key', text: (/Mac|iPhone|iPad/.test(navigator.platform || '') ? '⌘' : 'Ctrl') + '+Enter' });
@@ -309,17 +299,17 @@ function openPanel(ctx, first) {
   const settingsLine = el('div', { class: 'prestart-settings-status hint', id: 'psSettingsStatus', role: 'status' });
 
   const startAt = el('input', {
-    class: 'input', type: 'datetime-local', id: 'psStartAt', 'aria-describedby': 'psStartAtHint',
+    class: 'ds-input', type: 'datetime-local', id: 'psStartAt', 'aria-describedby': 'psStartAtHint',
   });
   const clearAt = el('button', {
-    class: 'btn sm', type: 'button', id: 'psStartAtClear', text: 'Clear', onclick: () => schedule(0),
+    class: 'ds-btn ds-btn--sm', type: 'button', id: 'psStartAtClear', text: 'Clear', onclick: () => schedule(0),
   });
   const atHint = el('div', { class: 'hint', id: 'psStartAtHint' });
 
   host.replaceChildren(el('div', { class: 'prestart-scroll' },
     el('div', { class: 'prestart-inner' },
       el('div', { class: 'prestart-head' },
-        el('span', { class: 'prestart-badge', html: PRESTART_SVG + '<span>PreStart</span>' }),
+        el('span', { class: 'prestart-badge', html: icon('prestart', 16) + '<span>PreStart</span>' }),
         el('span', { class: 'prestart-lede', text: 'Nothing runs yet. It starts with these settings and this prompt.' })),
       el('div', { class: 'prestart-grid' },
         el('div', { class: 'prestart-main' },
@@ -330,7 +320,7 @@ function openPanel(ctx, first) {
           failedBox,
           el('div', { class: 'prestart-actions' }, startButton, keyHint)),
         el('div', { class: 'prestart-side' },
-          el('div', { class: 'field prestart-schedule', id: 'psScheduleField' },
+          el('div', { class: 'ds-field prestart-schedule', id: 'psScheduleField' },
             el('label', { for: 'psStartAt', text: 'Start automatically' }),
             el('div', { class: 'prestart-when' }, startAt, clearAt),
             atHint),
@@ -648,11 +638,11 @@ function openPanel(ctx, first) {
       el('pre', { class: 'prestart-conflict-text', text: preview || '(empty)' }),
       el('div', { class: 'prestart-conflict-actions' },
         el('button', {
-          class: 'btn sm', type: 'button', id: 'psUseTheirs', text: 'Use the other device’s text',
+          class: 'ds-btn ds-btn--sm', type: 'button', id: 'psUseTheirs', text: 'Use the other device’s text',
           onclick: () => resolveConflict(false),
         }),
         el('button', {
-          class: 'btn sm primary', type: 'button', id: 'psKeepMine', text: 'Keep mine',
+          class: 'ds-btn ds-btn--sm ds-btn--primary', type: 'button', id: 'psKeepMine', text: 'Keep mine',
           onclick: () => resolveConflict(true),
         })));
     conflictBox.hidden = false;

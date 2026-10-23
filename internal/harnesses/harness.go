@@ -193,7 +193,7 @@ func flag(argv []string, name, value string) []string {
 }
 
 // homeDir is where a CLI keeps its own state. It reads HOME and nothing else:
-// the image puts HOME inside the data volume so the credentials survive the
-// container, and the e2e suite and the tests point it at a scratch directory.
+// the service runs with the HOME of the account it runs as, and the e2e suite
+// and the tests point it at a scratch directory.
 // A fallback to the user database would quietly ignore both.
 func homeDir() string { return strings.TrimSpace(os.Getenv("HOME")) }

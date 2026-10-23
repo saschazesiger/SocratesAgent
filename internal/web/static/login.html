@@ -1,11 +1,11 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="ds-theme ds-base">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Sign in · Socrates</title>
 <meta name="description" content="A web terminal for Claude Code, Codex, OpenCode and your shell.">
-<meta name="theme-color" content="#ffffff">
+<meta name="theme-color" content="#f0f4f9">
 <meta name="format-detection" content="telephone=no">
 <!-- The same install tags as index.html (see there): a page can be added to
      the Home Screen from wherever it happens to be, and iOS reads them from
@@ -17,24 +17,31 @@
 <link rel="icon" href="/favicon.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/static/img/apple-touch-icon.png">
 <link rel="manifest" href="/static/manifest.json">
-<link rel="stylesheet" href="/static/css/app.css">
+<link rel="preload" href="/static/vendor/dashboard-style/fonts/google-sans-latin-opsz-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/vendor/dashboard-style/fonts/fonts.css">
+<link rel="stylesheet" href="/static/vendor/dashboard-style/ds.css">
+<link rel="stylesheet" href="/static/css/theme.css">
+<link rel="stylesheet" href="/static/css/so-shared.css">
+<link rel="stylesheet" href="/static/css/so-pages.css">
+<script src="/static/vendor/dashboard-style/ds.js" defer></script>
 </head>
 <body>
 <main class="auth">
   <div class="auth-card">
-    <img class="auth-mark" src="/static/img/logo.png" alt="" width="42" height="42">
+    <img class="so-logo" src="/static/img/logo.png" alt="" width="42" height="42">
     <h1>Welcome back</h1>
     <p class="sub">Enter your password to open Socrates.</p>
     <form id="form">
-      <div class="field">
+      <div class="ds-field">
         <label for="password">Password</label>
-        <input class="input" type="password" id="password" autocomplete="current-password" autofocus required>
+        <input class="ds-input" type="password" id="password" autocomplete="current-password" autofocus required>
       </div>
-      <button class="btn primary" type="submit" id="submit">Sign in</button>
+      <button class="ds-btn ds-btn--primary" type="submit" id="submit">Sign in</button>
     </form>
     <div class="notice" id="notice"></div>
   </div>
 </main>
+<div class="ds-toasts" id="toasts"></div>
 <script type="module">
 import { api } from '/static/js/api.js';
 const form = document.getElementById('form');

@@ -187,9 +187,12 @@ func TestResolveFallsBackWhenConfiguredCommandIsMissing(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	server := releaseServer(t, releasePayload(t, "9.9.9"), nil)
 
+	// A path that is certainly missing: /usr/local/bin/cloudflared is there
+	// on many a machine the tests run on.
+	missing := filepath.Join(t.TempDir(), "cloudflared")
 	settings := config.Default()
 	settings.Tunnel = config.TunnelSettings{
-		Enabled: true, Mode: config.TunnelQuick, Command: "/usr/local/bin/cloudflared",
+		Enabled: true, Mode: config.TunnelQuick, Command: missing,
 	}
 	dir := filepath.Join(t.TempDir(), "bin")
 	m := New(func() config.Settings { return settings }, func() string { return "" }, dir)
@@ -203,7 +206,7 @@ func TestResolveFallsBackWhenConfiguredCommandIsMissing(t *testing.T) {
 		t.Fatalf("resolved to %q", path)
 	}
 	logs := strings.Join(m.Status().Logs, "\n")
-	if !strings.Contains(logs, "/usr/local/bin/cloudflared was not found") {
+	if !strings.Contains(logs, missing+" was not found") {
 		t.Errorf("the fallback should be visible in the log: %s", logs)
 	}
 }

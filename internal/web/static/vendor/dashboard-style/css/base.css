@@ -1,0 +1,117 @@
+/*
+ * Page base for full apps (opt-in): the backdrop, body type, selection,
+ * links, inline code and the focus ring. (Border-box sizing applies to
+ * all of .ds-theme, see utilities.css.)
+ *
+ *   <html class="ds-theme ds-base">
+ *
+ * Every rule is scoped to .ds-base through :where(), which adds no
+ * specificity: the rules weigh exactly what bare element selectors would,
+ * so any class of the page still wins over them. An embedded widget puts
+ * .ds-base on its root element: the html/body rules never match there, so
+ * the host page stays untouched.
+ */
+
+@layer ds.tokens, ds.base, ds.components, ds.motion, ds.utilities;
+
+@layer ds.base {
+  /* Under .ds-base `hidden` beats everything, page CSS included. Without
+     it (a widget that leaves it off), motion.css still hides ds components that
+     carry `hidden` inside .ds-theme, in ds.utilities. */
+  :where(.ds-base) [hidden] {
+    display: none !important;
+  }
+
+  html:where(.ds-base),
+  :where(.ds-base) body {
+    margin: 0;
+    height: 100%;
+  }
+
+  /* The tinted backdrop of the whole app: white panels sit on it. */
+  html:where(.ds-base) {
+    -webkit-text-size-adjust: 100%;
+    background: var(--ds-backdrop);
+  }
+
+  :where(.ds-base) body {
+    font: var(--ds-font-body);
+    color: var(--ds-text);
+    background: var(--ds-backdrop);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  :where(.ds-base) ::selection {
+    background: var(--ds-accent);
+    color: var(--ds-on-accent);
+  }
+
+  /* Set while a modal layer is open (the page behind must not scroll). */
+  :where(.ds-base) body.ds-no-scroll {
+    overflow: hidden;
+  }
+
+  /* Links are told apart from text by the underline, not by colour. */
+  :where(.ds-base) a {
+    color: var(--ds-link);
+    text-decoration-line: underline;
+    text-decoration-thickness: var(--ds-link-underline-thickness);
+    text-underline-offset: var(--ds-link-underline-offset);
+    text-decoration-color: var(--ds-link-underline);
+    outline-offset: calc(var(--ds-focus-offset) + var(--ds-focus-width));
+    transition:
+      text-decoration-color var(--ds-dur-fast) var(--ds-ease-in-out),
+      outline-offset var(--ds-dur-fast) var(--ds-ease-out);
+  }
+
+  @media (hover: hover) {
+    :where(.ds-base) a:hover {
+      text-decoration-color: var(--ds-link-underline-hover);
+    }
+  }
+
+  /* Inline code takes the size and colour of the text around it, only the
+     typeface changes (a layered reset's code colour does not reach it).
+     Its own box is just its glyphs: the monospace font sits higher on the
+     baseline and would open up the line by a pixel. */
+  :where(.ds-base) code {
+    font-family: var(--ds-font-mono);
+    font-size: inherit;
+    color: inherit;
+    line-height: 1;
+    background: var(--ds-code-bg);
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius-xs);
+    padding: 0 var(--ds-space-1);
+  }
+
+  :where(.ds-base) button,
+  :where(.ds-base) input,
+  :where(.ds-base) select,
+  :where(.ds-base) textarea {
+    font-family: inherit;
+  }
+
+  /* Two weights, 400 and the label weight: emphasis in UI copy is a label,
+     not the browser's bold. */
+  :where(.ds-base) strong,
+  :where(.ds-base) b {
+    font-weight: var(--ds-weight-label);
+  }
+
+  /* The ring is solid from the first frame and snaps in: links (above),
+     disclosure summaries and focusable elements rest one ring width further
+     out. Other elements, and programmatic focus targets (tabindex -1, such
+     as the drawer, whose forced-colours edge is an outline), show it at
+     once. The outline follows the element's radius. */
+  :where(.ds-base) :where(summary, [tabindex]:not([tabindex^="-"])) {
+    outline-offset: calc(var(--ds-focus-offset) + var(--ds-focus-width));
+    transition: outline-offset var(--ds-dur-fast) var(--ds-ease-out);
+  }
+
+  :where(.ds-base) :focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-offset);
+  }
+}

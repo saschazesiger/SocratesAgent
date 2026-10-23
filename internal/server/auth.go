@@ -21,8 +21,8 @@ import (
 )
 
 const (
-	// PasswordKey holds the PBKDF2 hash of the password, and is exported for
-	// the same reason as SettingsKey: `socrates export` carries it.
+	// PasswordKey holds the PBKDF2 hash of the password. It is exported so
+	// that a test can hold internal/mirror to the same spelling.
 	PasswordKey    = "password_hash"
 	sessionCookie  = "socrates_session"
 	sessionTTL     = 30 * 24 * time.Hour
@@ -138,8 +138,8 @@ func clientIP(r *http.Request) string {
 	// Cloudflare and a reverse proxy put the real caller in a header, and it
 	// is the value to rate limit on when Socrates is published through one.
 	// The header is believed only when the connection itself came from a
-	// machine that could be that proxy - loopback, or the private network the
-	// container sits on. From anywhere else it is a caller choosing its own
+	// machine that could be that proxy - loopback, or a private network a
+	// reverse proxy sits on. From anywhere else it is a caller choosing its own
 	// identity, which is a rate limit that limits nothing.
 	if forwarder(host) {
 		if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
@@ -153,7 +153,7 @@ func clientIP(r *http.Request) string {
 }
 
 // forwarder reports whether a peer is close enough to be the proxy in front of
-// Socrates: cloudflared runs beside it, and a container's proxy is on the same
+// Socrates: cloudflared runs beside it, and a reverse proxy is on the same
 // private network.
 func forwarder(host string) bool {
 	ip := net.ParseIP(host)

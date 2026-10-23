@@ -42,7 +42,7 @@ These are binding. The design spec must implement them; it may add detail but no
   (no duplicated or lost keystrokes; use seq-numbered frames both ways). Keep net.js style
   status bar and sw.js app shell.
 - tmux missing: Socrates tries to install it automatically (apt-get / apk / dnf / brew, with sudo if
-  needed and available), shows progress and result in setup/admin; Dockerfile installs tmux.
+  needed and available), shows progress and result in setup/admin; scripts/install.sh installs tmux.
   If install fails, a clear error with manual instructions. No PTY fallback.
 
 ## Admin (everything configurable)
@@ -198,9 +198,9 @@ Binding like the rest. Detail: `docs/design/DESIGN.md` §K and §L.
   usable bucket the server serves the connect page and `/api/health`, and nothing else. SQLite
   stays as the local working copy, so no request waits on the network and the rest of the code
   barely changed; the data directory keeps what belongs to the machine and the CLIs (`HOME`,
-  transcripts, workspaces, tmux, journals, `plan.json`, VS Code). *Why:* a container is
-  disposable, and the state that makes a Socrates *this* Socrates should come back on a new
-  machine from an empty volume.
+  transcripts, workspaces, tmux, journals, `plan.json`, VS Code). *Why:* a machine is
+  replaceable, and the state that makes a Socrates *this* Socrates should come back on a new
+  machine from an empty data directory.
 - **Encrypted on this side, with a passphrase the bucket never sees.** AES-256-GCM, PBKDF2-SHA256
   with 600 000 rounds, the object name as AAD. Losing the passphrase loses the bucket's contents;
   the README says so in bold. Only `meta.json` and `lease.json` are plain.
@@ -240,14 +240,15 @@ Binding like the rest. Detail: `docs/design/DESIGN.md` §K and §L.
   was not released waits that window out (plus a margin). *Why:* a fence that only narrows the
   window still lets a slow upload of the old holder land after the new holder hydrated.
 - **Connecting a data directory that already has a password takes that password.** The connect
-  page is unauthenticated on a fresh volume, like first-run setup; on an existing installation it
+  page is unauthenticated on a fresh data directory, like first-run setup; on an existing installation it
   would upload its sign-ins and keys to, or replace its state from, a bucket of anybody's choosing.
 - **Damage to the bucket fails closed.** A missing `meta.json` over existing objects is never a new
   installation (a cached copy is put back, or the start is refused); a missing password hash over a
   bucket with sessions never opens first-run setup; an object that does not open changes nothing
   locally.
-- **Every schema upgrade is backed up** (`socrates.db.pre-v8.bak`), and the redeploy script copies
-  the database before the swap and refuses a swap that would leave production on the connect page.
+- **Every schema upgrade is backed up** (`socrates.db.pre-v8.bak`), and `scripts/update.sh` copies
+  the database before the swap and puts it back with the previous binary when the new one does not
+  answer.
   *Why:* the old build refuses a migrated database, so a rollback needs the file as it was.
 
 ## Revision 7 — the options menu, 2026-10-16
@@ -282,4 +283,48 @@ Binding like the rest. Detail: `docs/design/DESIGN.md` §K and §L.
 - **Claude's transcript is read for the instruction, the answer and the task list; the others
   give the screen.** The reason is always English. Verdicts are kept on this machine, not in the
   bucket.
+
+## Revision 9 — an installation that keeps itself working, 2026-10-22
+
+- **Every tool comes from its vendor, in a directory of its own version, and is switched by a
+  link.** Go and Node from their official tarballs (checksums verified), Claude Code and Codex
+  from their native installers, OpenCode and code-server from their release archives, all under
+  `/opt/socrates/<tool>/<version>` or the vendor's own versions directory. *Why:* the
+  distribution's Go (1.22) cannot build a `go 1.25` module and its Node (18) is past its end; and
+  `npm install -g` rewrites a package in place under the sessions running it, which is how a
+  Claude Code session dies of a bus error.
+- **A version is deleted only when nothing runs from it.** The newest two are kept otherwise.
+  *Why:* a VS Code or agent session that started before an update still loads files from its
+  version for as long as it runs.
+- **Everything updates itself, nightly and after every boot** (`socrates-update.timer`, from a
+  copy of the scripts in `/usr/local/lib/socrates`). `SOCRATES_AUTO_UPDATE` is `all`, `deps` or
+  `off` (repair only). *Why:* an agent CLI a few weeks old is a different program, and the boot
+  run is also what puts back a tool that went missing. The copy, not a checkout, because a
+  checkout is something people edit.
+- **A new Socrates has to prove itself twice before it stays:** started once on a scratch
+  directory before the swap, and answering `/api/health` with its own version - and not restarting
+  - after it. Otherwise the previous binary and database are put back and the commit is written
+  to `update-state/bad-commits`, so it is not tried again until a newer one arrives. *Why:* a
+  build that fails only as the service (seen in testing: a database schema it does not know) would
+  otherwise be retried, and rolled back, every night.
+- **The update runs as a unit of its own,** never as a child of the shell that asked. *Why:* run
+  from a Socrates session, the shell is in the scope and its terminal goes with the service's
+  restart; the unit finishes regardless.
+- **One tool failing is reported, not fatal; nothing is changed without network.** Each tool runs
+  in a subshell of its own and records what it found in `updates.json`; the admin page's Updates
+  card and the setup check read it.
+- **The service has a watchdog, fed only while Socrates answers its own health check.** A start
+  is given 15 minutes (three bucket connects), a stop one. `StartLimitIntervalSec=0`. *Why:*
+  `Restart=always` restarts a process that exits, not one that hangs, and the start limit would
+  otherwise park a crash loop in `failed` for good.
+- **tmux stays held, and is upgraded by the updater when no tmux server runs at all.** *Why:* a
+  tmux upgraded under a running server cannot talk to it, and a hold forever is a hold on its
+  security fixes.
+- **The tmux scope is retried under a unique name, and has `OOMPolicy=continue`.** *Why:* a
+  leftover scope used to send the server into the service, where the next update killed every
+  session; one runaway agent must not stop the scope.
+- **Codex starts with `check_for_update_on_startup=false`; OpenCode's own updater stays off;
+  Claude Code's stays on.** *Why:* Codex's prompt would block an unattended session and OpenCode
+  replaces its one binary in place, while Claude Code's native updater switches versions
+  atomically and is the fastest way to a fix.
 

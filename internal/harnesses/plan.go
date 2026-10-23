@@ -69,15 +69,12 @@ type LaunchPlan struct {
 
 // PlanRequest is what a plan is built from.
 type PlanRequest struct {
-	SessionID string
-	Title     string
-	Cwd       string
-	Model     string
-	Effort    string
-	// ShellExecution selects the machine for a Shell session. Empty keeps the
-	// launch behavior of sessions created before this choice existed.
-	ShellExecution string
-	CLISession     string
+	SessionID  string
+	Title      string
+	Cwd        string
+	Model      string
+	Effort     string
+	CLISession string
 	// Profile is the id of the sign-in profile the session runs in, and
 	// empty for the default one. See profiles.go.
 	Profile string

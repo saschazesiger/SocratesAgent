@@ -256,19 +256,12 @@ func (m *Manager) planRequest(row *store.Session) (harnesses.PlanRequest, error)
 	}
 	if len(row.Options) > 0 {
 		var options struct {
-			ShellExecution string `json:"shell_execution"`
-			Profile        string `json:"profile"`
-			Ultracode      bool   `json:"ultracode"`
+			Profile   string `json:"profile"`
+			Ultracode bool   `json:"ultracode"`
 		}
 		// Options that are not an object were never written by Socrates and
-		// carry neither field; only a shell has a choice that cannot be
-		// guessed, so only a shell refuses them.
-		if err := json.Unmarshal(row.Options, &options); err != nil && row.Harness == string(harnesses.KindShell) {
-			return req, err
-		}
-		if row.Harness == string(harnesses.KindShell) {
-			req.ShellExecution = options.ShellExecution
-		}
+		// carry neither field.
+		_ = json.Unmarshal(row.Options, &options)
 		req.Profile = options.Profile
 		req.Ultracode = options.Ultracode && row.Harness == string(harnesses.KindClaude)
 	}

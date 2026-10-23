@@ -225,7 +225,7 @@ func (f *Fake) Object(bucket, key string) ([]byte, bool) {
 }
 
 // PutObject stores an object directly, bypassing HTTP - a stand-in for
-// another writer (a second container taking the lease, say).
+// another writer (a second installation taking the lease, say).
 func (f *Fake) PutObject(bucket, key string, body []byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

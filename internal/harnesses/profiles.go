@@ -27,7 +27,7 @@ import (
 //
 // Signing in is done by the CLI itself, in a session started in the profile:
 // Claude Code opens on its own login when its directory is empty, and a
-// container Shell in the profile carries all three variables for
+// Shell in the profile carries all three variables for
 // `codex login` and `opencode auth login`. Socrates never handles a
 // credential.
 //

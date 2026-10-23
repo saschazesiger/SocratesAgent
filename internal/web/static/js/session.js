@@ -31,14 +31,15 @@ import { mountNotify } from './notify.js';
 import { mountTransfer } from './transfer.js';
 import { mountKeyBar, keyBarWanted, setKeyBarWanted, followViewport } from './keybar.js';
 import { initKeyboard, guard, watchFrame, dictated, touchScreen, setTouchMode } from './keyboard.js';
-import { mountPrestart, forgetDraft, whenShort, PRESTART_SVG, CLOCK_SVG } from './prestart.js';
+import { mountPrestart, forgetDraft, whenShort } from './prestart.js';
 import { mountStorageBanner } from './storage.js';
 import { mountEvents } from './events.js';
 import { mountHome, questionQueue, connectionLine } from './home.js';
 import { openQuestions, updateQuestions, questionsOpen, closeQuestions } from './question.js';
 import {
-  OUTCOME_WORDS, OUTCOME_SVG, HOURGLASS_SVG, CHECKING_WORDS, outcomeCurrent, outcomeMark, outcomeLine,
+  OUTCOME_WORDS, CHECKING_WORDS, outcomeCurrent, outcomeMark, outcomeLine, outcomeIconHtml,
 } from './outcome.js';
+import { icon } from './ui.js';
 
 /* ------------------------------------------------------------- transport */
 
@@ -762,7 +763,7 @@ const ACTIVITY_WORDS = {
 // something it started - a background shell, a monitor, a sub-agent - is
 // still running: not working, and not done either. The same hourglass says
 // that a finished turn's verdict is being read (outcome.js).
-const TASKS_SVG = HOURGLASS_SVG;
+const TASKS_SVG = icon('waiting', 16);
 
 /**
  * activityOf is what a session is doing, for the page to draw.
@@ -874,7 +875,7 @@ function drawOutcomeTag() {
   if (tag.dataset.key === key) return;
   tag.dataset.key = key;
   tag.dataset.kind = pending ? 'checking' : kind;
-  tag.innerHTML = pending ? TASKS_SVG : (OUTCOME_SVG[kind] || '');
+  tag.innerHTML = pending ? TASKS_SVG : outcomeIconHtml(kind, 16);
   tag.append(el('span', { text: pending ? 'Checking…' : (kind === 'error' ? 'Not checked' : OUTCOME_WORDS[kind]) }));
   tag.title = outcomeLine(outcome);
 }
@@ -1115,12 +1116,12 @@ function buildFolder(folder) {
   el('span', { class: 'caret', html: CARET_SVG }),
   // The prepared sessions' shelf wears the mark their panel wears, so it
   // reads as a different kind of thing from the sessions under it.
-  folder.status === PREPARED ? el('span', { class: 'folder-icon', html: PRESTART_SVG }) : null,
+  folder.status === PREPARED ? el('span', { class: 'folder-icon', html: icon('prestart', 16) }) : null,
   el('span', { class: 'folder-name' }),
   el('span', { class: 'folder-dot', 'aria-hidden': 'true' }),
   el('span', { class: 'folder-count' }));
   const ide = folder.status || folder.key === MORE_KEY ? null : el('button', {
-    class: 'icon-btn folder-ide',
+    class: 'ds-btn ds-btn--quiet ds-btn--icon folder-ide',
     type: 'button',
     onclick: () => openFolderIDE(folder.key),
   }, agentMark(IDE, 15));
@@ -1279,7 +1280,7 @@ function buildRow(session) {
   el('span', { class: 'row-when' }),
   el('span', { class: 'row-status' }),
   el('button', {
-    class: 'icon-btn act', type: 'button', 'aria-label': 'Session actions',
+    class: 'ds-btn ds-btn--quiet ds-btn--icon act', type: 'button', 'aria-label': 'Session actions',
     html: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>',
     onclick: (event) => { event.stopPropagation(); openRowMenu(event.currentTarget, session.id); },
   }));
@@ -1301,9 +1302,6 @@ function rowFacts(session) {
     STATE_WORDS[session.state] || session.state,
     session.workdir,
   ];
-  if (session.harness === 'shell' && session.options?.shell_execution) {
-    facts.push('Execution: ' + (session.options.shell_execution === 'host' ? 'Host' : 'Container'));
-  }
   if (session.options?.profile) facts.push('Profile: ' + harnesses.profileName(session.options.profile));
   if (session.options?.ultracode) facts.push('Ultracode on');
   if (isPrepared(session)) {
@@ -1369,7 +1367,7 @@ function updateRow(row, session) {
   const whenText = startAt ? whenShort(startAt) : '';
   if (when.dataset.at !== String(startAt)) {
     when.dataset.at = String(startAt);
-    when.innerHTML = startAt ? CLOCK_SVG : '';
+    when.innerHTML = startAt ? icon('clock', 16) : '';
     if (startAt) when.append(el('span', { class: 'row-when-time', text: whenText }));
   } else if (startAt) {
     // The same time can read differently tomorrow ("Tue 09:00" becomes
@@ -1426,7 +1424,7 @@ function updateRow(row, session) {
   const badge = row.querySelector('.row-outcome');
   if (badge.dataset.kind !== kind) {
     badge.dataset.kind = kind;
-    badge.innerHTML = OUTCOME_SVG[kind] || '';
+    badge.innerHTML = outcomeIconHtml(kind, 16);
   }
   setClass(mark, 'judged', !!kind);
   let word = STATE_WORDS[session.state] || session.state;
@@ -2100,15 +2098,15 @@ async function renameSession(session) {
 function promptTitle(current) {
   return new Promise((resolve) => {
     const dialog = el('dialog', { class: 'modal' });
-    const input = el('input', { class: 'input', type: 'text', value: current });
-    const cancel = el('button', { class: 'btn sm', type: 'button', text: 'Cancel' });
-    const accept = el('button', { class: 'btn sm primary', type: 'button', text: 'Rename' });
+    const input = el('input', { class: 'ds-input', type: 'text', value: current });
+    const cancel = el('button', { class: 'ds-btn ds-btn--sm', type: 'button', text: 'Cancel' });
+    const accept = el('button', { class: 'ds-btn ds-btn--sm ds-btn--primary', type: 'button', text: 'Rename' });
     dialog.append(
       el('h2', { class: 'modal-title', text: 'Rename this session' }),
       // A name is a sentence somebody says about a session, so it is one of
       // the fields that can be spoken instead of typed - and with the
       // keyboard put away it is the only way this dialog can be answered.
-      el('div', { class: 'field' }, dictated(input, input)),
+      el('div', { class: 'ds-field' }, dictated(input, input)),
       el('div', { class: 'modal-actions' }, cancel, accept),
     );
     let settled = false;
@@ -2151,7 +2149,7 @@ function promptTitle(current) {
 // drawn - a row is a mark and a name, and nothing else.
 function infoDialog(session) {
   const dialog = el('dialog', { class: 'modal' });
-  const close = el('button', { class: 'btn sm primary', type: 'button', text: 'Close' });
+  const close = el('button', { class: 'ds-btn ds-btn--sm ds-btn--primary', type: 'button', text: 'Close' });
   dialog.append(
     el('h2', { class: 'modal-title', text: session.title }),
     el('div', { class: 'facts mono' },
@@ -2762,10 +2760,10 @@ function drawOverlay(session) {
       el('p', { class: 'overlay-detail', text: 'Its terminal was closed. ' + (deleteWords(session) || 'It is deleted soon') + '.' }),
       el('div', { class: 'overlay-actions' },
         el('button', {
-          class: 'btn primary', type: 'button', text: 'Pick it up again',
+          class: 'ds-btn ds-btn--primary', type: 'button', text: 'Pick it up again',
           onclick: () => setStatus(session, 'in_progress'),
         }),
-        el('button', { class: 'btn', type: 'button', text: 'Delete now', onclick: () => deleteSession(session) })),
+        el('button', { class: 'ds-btn', type: 'button', text: 'Delete now', onclick: () => deleteSession(session) })),
     );
     return;
   }
@@ -2781,7 +2779,7 @@ function drawOverlay(session) {
         el('p', { class: 'overlay-detail mono', text: 'Exit status ' + session.exit_status }),
         el('div', { class: 'overlay-actions' },
           actionButton(session, 'Restart', 'Restarting…'),
-          el('button', { class: 'btn', type: 'button', text: 'Delete', onclick: () => deleteSession(session) })),
+          el('button', { class: 'ds-btn', type: 'button', text: 'Delete', onclick: () => deleteSession(session) })),
       );
       break;
     case 'failed':
@@ -2802,7 +2800,7 @@ function drawOverlay(session) {
         el('p', { class: 'overlay-title', text: 'This session is not running.' }),
         el('div', { class: 'overlay-actions' },
           el('button', {
-            class: 'btn primary', type: 'button', text: 'Open',
+            class: 'ds-btn ds-btn--primary', type: 'button', text: 'Open',
             onclick: () => { if (!state.resuming) attach(session); },
           })),
       );
@@ -2819,7 +2817,7 @@ function drawOverlay(session) {
 function actionButton(session, label, busyLabel) {
   const busy = state.restarting === session.id;
   return el('button', {
-    class: 'btn primary', type: 'button', id: 'termRestart',
+    class: 'ds-btn ds-btn--primary', type: 'button', id: 'termRestart',
     text: busy ? busyLabel : label,
     disabled: busy,
     onclick: () => restart(session),
@@ -2885,7 +2883,7 @@ function notice(kind, text, onDismiss, facts, extra) {
     if (onDismiss) onDismiss();
   };
   const close = el('button', {
-    class: 'icon-btn notice-close', type: 'button', 'aria-label': 'Dismiss',
+    class: 'ds-btn ds-btn--quiet ds-btn--icon notice-close', type: 'button', 'aria-label': 'Dismiss',
     html: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
     onclick: dismiss,
   });
@@ -3136,7 +3134,7 @@ async function openIDE(session, generation) {
     // nothing is.
     spinner.remove();
     words.textContent = errorMessage(err);
-    loading.append(el('button', { class: 'btn', text: 'Retry', onclick: () => attach(sessionOf(session.id) || session) }));
+    loading.append(el('button', { class: 'ds-btn', text: 'Retry', onclick: () => attach(sessionOf(session.id) || session) }));
   }
 }
 
@@ -3604,7 +3602,6 @@ async function newSession() {
         harness: pick.harness,
         model: pick.model,
         effort: pick.effort,
-        shell_execution: pick.shell_execution,
         profile: pick.profile || undefined,
         ultracode: pick.ultracode || undefined,
         workdir_mode: pick.workdir_mode,

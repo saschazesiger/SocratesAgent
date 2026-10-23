@@ -73,7 +73,7 @@ async function reloadBack(page, id) {
 
 // startSession drives the sheet the way a person would and waits until the
 // session it made is the one on screen.
-async function startSession(page, harness, shellExecution = '') {
+async function startSession(page, harness) {
   // The hash already names whatever session this tab is on, so the wait below
   // is for it to become a different one: a second session started in the same
   // tab is otherwise "finished" before it has begun, and the id handed back is
@@ -84,9 +84,6 @@ async function startSession(page, harness, shellExecution = '') {
   await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
   await page.waitForSelector('#newSessionSheet .seg[data-value="' + harness + '"]', { timeout: 10000 });
   await page.click('#newSessionSheet .seg[data-value="' + harness + '"]');
-  if (harness === 'shell' && shellExecution) {
-    await page.click('#nsShellExecution .seg[data-value="' + shellExecution + '"]');
-  }
   await pickModelIfNeeded(page);
   await page.click('#nsStart');
   await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
@@ -259,11 +256,8 @@ async function createshell() {
     await useDomRenderer(s);
     await open(s);
 
-    const id = await startSession(s.page, 'shell', 'container');
+    const id = await startSession(s.page, 'shell');
     ok(!!id, 'the sheet made a session and opened it', id || 'no id in the hash');
-    const created = await (await s.context.request.get(s.url + '/api/sessions/' + id)).json();
-    ok(created.session?.options?.shell_execution === 'container',
-      'the shell toggle saved container execution', JSON.stringify(created.session?.options));
 
     await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
     const marker = 'socrates-' + Date.now();
@@ -1295,8 +1289,8 @@ async function adminoptions() {
 /* ----------------------------------------------------------- 11. tmuxcard */
 
 // The engine card against a machine whose tmux is too old. There is no
-// installer any more - Socrates runs as the Docker image and the image ships
-// tmux - so all the card owes anybody is an honest, actionable sentence.
+// installer in the app - scripts/install.sh installs tmux - so all the card
+// owes anybody is an honest, actionable sentence.
 function stubMachine() {
   // Through the harness, so that the run's own cleanup takes it away.
   const dir = scratchDir('socrates-e2e-stub-');
@@ -6633,8 +6627,8 @@ async function s3restore() {
     const cookies = await a.context.cookies(a.url);
     cookie = cookies.map((c) => c.name + '=' + c.value).join('; ');
 
-    // Machine A goes away: the server is stopped the way a container is, and
-    // then everything it had on its disk is gone - data directory, tmux
+    // Machine A goes away: the server is stopped the way systemd stops it,
+    // and then everything it had on its disk is gone - data directory, tmux
     // server, the panes in it.
     await a.context.close().catch(() => {});
     await a.browser.close().catch(() => {});

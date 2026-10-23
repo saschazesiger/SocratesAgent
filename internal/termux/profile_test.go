@@ -19,7 +19,7 @@ func TestClaudeStatusFilesFollowTheProfile(t *testing.T) {
 	}{
 		{nil, filepath.Join("/home/someone", ".claude", "sessions")},
 		{map[string]string{"HOME": "/elsewhere"}, filepath.Join("/elsewhere", ".claude", "sessions")},
-		{map[string]string{"CLAUDE_CONFIG_DIR": "/data/profiles/p-1/claude"}, filepath.Join("/data/profiles/p-1/claude", "sessions")},
+		{map[string]string{"CLAUDE_CONFIG_DIR": "/var/lib/socrates/profiles/p-1/claude"}, filepath.Join("/var/lib/socrates/profiles/p-1/claude", "sessions")},
 	}
 	for _, c := range cases {
 		if got := claudeSessionsDir(harnesses.LaunchPlan{Env: c.env}); got != c.want {
@@ -40,7 +40,7 @@ func TestClaudeStatusFilesFollowAnInheritedConfigDir(t *testing.T) {
 	}{
 		{nil, filepath.Join("/srv/claude", "sessions")},
 		{map[string]string{"HOME": "/elsewhere"}, filepath.Join("/srv/claude", "sessions")},
-		{map[string]string{"CLAUDE_CONFIG_DIR": "/data/profiles/p-1/claude"}, filepath.Join("/data/profiles/p-1/claude", "sessions")},
+		{map[string]string{"CLAUDE_CONFIG_DIR": "/var/lib/socrates/profiles/p-1/claude"}, filepath.Join("/var/lib/socrates/profiles/p-1/claude", "sessions")},
 	}
 	for _, c := range cases {
 		if got := claudeSessionsDir(harnesses.LaunchPlan{Env: c.env}); got != c.want {

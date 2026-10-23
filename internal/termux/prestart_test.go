@@ -106,7 +106,7 @@ func TestStartPrestartLaunchesOnce(t *testing.T) {
 	cwd := realDir(t, t.TempDir())
 	spec := shellSpec(cwd)
 	spec.ID = "prep2"
-	spec.Options = json.RawMessage(`{"shell_execution":"container"}`)
+	spec.Options = json.RawMessage(`{"ultracode":true}`)
 	promptPath := filepath.Join(SessionDir(l.dataDir, "prep2"), harnesses.InitialPromptFile)
 	spec.Plan.Files = []harnesses.GenFile{{Path: promptPath, Mode: 0o600, Data: []byte("the secret prompt"), Transient: true}}
 
@@ -115,7 +115,7 @@ func TestStartPrestartLaunchesOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	if row.State != store.StateRunning || row.TmuxName != TmuxName("prep2") || row.Workdir != cwd ||
-		row.StartAt != 0 || string(row.Options) != `{"shell_execution":"container"}` {
+		row.StartAt != 0 || string(row.Options) != `{"ultracode":true}` {
 		t.Fatalf("started row = %#v", row)
 	}
 	if out := l.tmuxOut("has-session", "-t", TmuxName("prep2")); out != "" {

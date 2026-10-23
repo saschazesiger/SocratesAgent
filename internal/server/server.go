@@ -29,9 +29,6 @@ import (
 var Version = "dev"
 
 // SettingsKey is where the settings document lives in the key/value table.
-// It is exported because `socrates export` and `socrates import` read and
-// write that document without a server, and two spellings of one key is one
-// spelling too many.
 const SettingsKey = "settings"
 
 // Server wires storage, the terminal sessions and the HTTP handlers together.
@@ -58,6 +55,10 @@ type Server struct {
 	// behind /api/tmux and the install it streams. Its zero value is a server
 	// that has installed nothing, so it needs nothing from New.
 	tmuxAdmin tmuxAdmin
+	// updates is the updates card: it reads what socrates-update.service
+	// left in the data directory and asks systemd to start it (updates.go).
+	// Its zero value is the real machine.
+	updates updatesAdmin
 
 	mu       sync.RWMutex
 	settings config.Settings
@@ -112,6 +113,9 @@ type Server struct {
 	// the number is how it knows the second for the same frame, and not a
 	// second failure to be told about in a second dialog.
 	titleSeq atomic.Int64
+
+	// costs keeps the cost ledger current (costs.go).
+	costs *costLedger
 }
 
 type attempt struct {
@@ -168,12 +172,16 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	s.push.checking = s.digests.outcomePending
 	s.answers = newOperatorDriver(s)
 	s.sched = newScheduler(s)
+	s.costs = newCostLedger(s)
 	manager, err := termux.New(st, cfg)
 	if err != nil {
 		return nil, err
 	}
 	s.manager = manager
 	s.catalog = catalog.New(st, s.Settings)
+	// An update that replaced a program's binary makes the catalogue's
+	// versions stale; the updater's status file is how it finds out.
+	s.catalog.WatchUpdates(filepath.Join(dataDir, updatesFile))
 
 	s.tunnel = tunnel.New(s.Settings, s.LocalURL, filepath.Join(dataDir, "bin"))
 
@@ -206,6 +214,9 @@ func managerConfig(dataDir string, settings config.Settings) termux.Config {
 // gone. A failure here is reported and not fatal: a Socrates that cannot start
 // sessions still has to serve the dashboard that says why.
 func (s *Server) StartSessions(ctx context.Context) error {
+	// What every conversation cost is read from the CLIs' files, not from
+	// tmux, so a machine whose terminals cannot start still keeps its ledger.
+	s.costs.start(ctx)
 	if err := s.manager.Start(ctx); err != nil {
 		return err
 	}
@@ -340,6 +351,7 @@ func (s *Server) routes() {
 	// Pages
 	mux.HandleFunc("GET /{$}", s.page("index.html"))
 	mux.HandleFunc("GET /admin", s.page("admin.html"))
+	mux.HandleFunc("GET /costs", s.page("costs.html"))
 	mux.HandleFunc("GET /login", s.pageLogin)
 	mux.HandleFunc("GET /setup", s.pageSetup)
 	mux.Handle("GET /static/", http.StripPrefix("/static/", web.Static()))
@@ -381,6 +393,8 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/sessions/{id}/ack-resume", s.auth(s.handleAckResume))
 	mux.HandleFunc("POST /api/sessions/{id}/read", s.auth(s.handleMarkRead))
 	mux.HandleFunc("GET /api/sessions/{id}/usage", s.auth(s.handleSessionUsage))
+	// What every conversation on this machine cost, for the costs page.
+	mux.HandleFunc("GET /api/costs", s.auth(s.handleCosts))
 	// What a terminal is doing, said out loud.
 	mux.HandleFunc("POST /api/sessions/{id}/status", s.auth(s.handleSessionStatus))
 	// Home: the event stream, its hello as a poll, the reading of a session's
@@ -414,6 +428,10 @@ func (s *Server) routes() {
 	// The terminal engine: is tmux here and can it run a session.
 	mux.HandleFunc("GET /api/tmux", s.auth(s.handleTmux))
 
+	// Updates: what the updater did last, and a run started now.
+	mux.HandleFunc("GET /api/updates", s.auth(s.handleUpdates))
+	mux.HandleFunc("POST /api/updates/run", s.auth(s.handleUpdatesRun))
+
 	// Cloudflare tunnel
 	mux.HandleFunc("GET /api/tunnel", s.auth(s.handleTunnelStatus))
 	mux.HandleFunc("POST /api/tunnel/start", s.auth(s.handleTunnelStart))
@@ -437,8 +455,8 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/storage/sync", s.auth(s.handleStorageSync))
 	mux.HandleFunc("PUT /api/storage/credentials", s.auth(s.handleStorageCredentials))
 
-	// Liveness, and the one endpoint nothing in the browser calls: the
-	// container's HEALTHCHECK is what asks for it, because a process that is
+	// Liveness, and the one endpoint nothing in the browser calls:
+	// scripts/update.sh asks it after a restart, because a process that is
 	// running is not the same thing as a server that answers.
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": Version})

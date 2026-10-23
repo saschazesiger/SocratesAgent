@@ -2,7 +2,7 @@
 # Re-download the pinned xterm.js bundle set into internal/web/static/vendor.
 #
 # The files it writes are committed, so this script is for an upgrade and never
-# for a build: CI, the Dockerfile and `make check` never run it. It reads
+# for a build: CI and `make check` never run it. It reads
 # vendor/VERSIONS - the pin, one `package@version <file-in-tarball>
 # <vendored-as>` per line - fetches each tarball from the npm registry once,
 # and extracts only the files we ship. The `.js.map` files are deliberately not

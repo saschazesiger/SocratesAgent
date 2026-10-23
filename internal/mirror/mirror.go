@@ -12,12 +12,13 @@
 //
 // At startup the direction reverses (Connect, sync.go): the local copy is
 // made equal to the bucket, after uploading what this machine wrote and had
-// not uploaded yet. That is what lets a container on a new machine, with an
-// empty /data, come up with the same password, settings and session list.
+// not uploaded yet. That is what lets an installation on a new machine, with
+// an empty data directory, come up with the same password, settings and
+// session list.
 //
 // What is not in the bucket on purpose: HOME and the CLIs' logins and
-// transcripts, the workspaces, tmux, journals, plan.json - the /data volume
-// keeps those - and the few key/value rows that describe this machine only
+// transcripts, the workspaces, tmux, journals, plan.json - the machine keeps
+// those - and the few key/value rows that describe this machine only
 // (store.MirroredKV).
 //
 // One bucket has one writer at a time, enforced with the lease (lease.go).

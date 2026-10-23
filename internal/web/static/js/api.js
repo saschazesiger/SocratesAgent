@@ -1,11 +1,15 @@
-// Small helpers shared by every page: JSON fetch, DOM building and toasts.
+// Small helpers shared by every page: JSON fetch, DOM building, snackbars and
+// the dialogs every page asks the same questions with.
 
 import { request, NetworkError, HttpError, mountConnectionBar } from './net.js';
+import { DS, startUI, iconEl, region } from './ui.js';
 
 export { clientKey, onWake, LiveStream, Outbox, HttpError, NetworkError, RetryLater, setClass, CONNECTION_GRACE } from './net.js';
 
-// Every page gets the connection bar, because every page can be looking at
-// something that stopped being true.
+// Every page gets Dashboard-Style's delegated behaviour (ripple, tooltips, the
+// icons of its static markup), and the connection line, because every page
+// can be looking at something that stopped being true.
+startUI();
 mountConnectionBar();
 
 // The offline shell. Without it, opening or reloading Socrates with no signal
@@ -86,94 +90,131 @@ export function restoreFocus(was) {
   focusFallback();
 }
 
+let dialogSeq = 0;
+
+// openDialog builds a Dashboard-Style dialog for one question, shows it and
+// resolves with what the person answered. The native `close` event comes at
+// the start of every way out - Escape, the backdrop, a [data-close] button,
+// an accept that calls close - so it is the one place the answer is given.
+// The dialog leaves the page once its exit has played.
+function openDialog({ title, body, lines, code, actions, alert, opener }) {
+  const id = 'dlg' + (++dialogSeq);
+  const box = el('div', { class: 'ds-dialog__box' },
+    el('h2', { class: 'ds-dialog__title', id: id + '-title', text: title }),
+    body ? el('p', { class: 'ds-dialog__text', id: id + '-text', text: body }) : null,
+    lines && lines.length
+      ? el('ul', { class: 'ds-plain-list', id: body ? null : id + '-text' },
+        lines.map((line) => el('li', {}, code ? el('code', { class: 'so-break', text: line }) : line)))
+      : null,
+    el('div', { class: 'ds-dialog__actions' }, actions));
+  const dialog = el('dialog', {
+    class: 'ds-dialog',
+    role: alert ? 'alertdialog' : null,
+    'aria-labelledby': id + '-title',
+    'aria-describedby': body || (lines && lines.length) ? id + '-text' : null,
+  }, el('div', { class: 'ds-dialog__backdrop', 'data-close': true }), box);
+
+  // Where the focus was. DS gives it back to the opener; when the opener is
+  // gone by then - very often the terminal's textarea, rebuilt meanwhile -
+  // the page is asked where it should go, because a page whose focus is on
+  // the body swallows every key.
+  const was = opener || document.activeElement;
+  return {
+    dialog,
+    shown: new Promise((resolve) => {
+      let answer = false;
+      dialog.answer = (value) => { answer = value; };
+      dialog.addEventListener('close', () => resolve(answer), { once: true });
+      document.body.append(dialog);
+      DS.overlay.open(dialog, { opener: was });
+    }).then(async (answer) => {
+      await DS.overlay.close(dialog);
+      dialog.remove();
+      const now = document.activeElement;
+      if (!now || now === document.body || now.id === 'main' || now.id === 'sidebar') restoreFocus(was);
+      return answer;
+    }),
+  };
+}
+
 // confirmDialog is the app's own version of window.confirm: same promise in,
 // same yes or no out, but it looks like the rest of Socrates, can say what the
 // button actually does, and does not freeze the page while it is open.
+//
+// There are no red buttons: a destructive question is an alertdialog that
+// opens on Cancel, and its accept button names the consequence.
 export function confirmDialog(options = {}) {
   const {
     title,
     body = '',
     confirmLabel = 'Confirm',
+    cancelLabel = 'Cancel',
     danger = false,
-    // An alert is the same dialog with one button: something to be read and
-    // acknowledged, not a question.
-    alert = false,
+    opener = null,
   } = options;
-
-  return new Promise((resolve) => {
-    const dialog = el('dialog', { class: 'modal' });
-    const cancel = alert ? null : el('button', { class: 'btn sm', type: 'button', text: 'Cancel' });
-    const accept = el('button', {
-      class: 'btn sm ' + (danger ? 'danger' : 'primary'), type: 'button', text: confirmLabel,
-    });
-    dialog.append(
-      el('h2', { class: 'modal-title', text: title }),
-      body ? el('p', { class: 'modal-body', text: body }) : null,
-      el('div', { class: 'modal-actions' }, cancel, accept),
-    );
-
-    // Where the focus was, so that it can go back there. A dialog that ends
-    // with the focus on a button of its own - which is what a dialog that is
-    // closed but left in the page does - is a page that answers no key at all,
-    // and the element it was taken from is very often the terminal, where
-    // every key matters.
-    const was = document.activeElement;
-    const dismiss = () => {
-      dialog.remove();
-      restoreFocus(was);
-    };
-    let settled = false;
-    const finish = (value) => {
-      if (settled) return;
-      settled = true;
-      resolve(value);
-      dialog.close();
-      dismiss();
-    };
-    if (cancel) cancel.addEventListener('click', () => finish(false));
-    accept.addEventListener('click', () => finish(true));
-    // Escape and a click on the backdrop both mean no.
-    dialog.addEventListener('cancel', (event) => {
-      event.preventDefault();
-      finish(false);
-    });
-    dialog.addEventListener('click', (event) => {
-      if (event.target === dialog) finish(false);
-    });
-    dialog.addEventListener('close', () => {
-      finish(false);
-      dismiss();
-    });
-
-    document.body.append(dialog);
-    dialog.showModal();
-    // A destructive dialog opens on the way out, not on the way through.
-    (danger && cancel ? cancel : accept).focus();
+  const cancel = el('button', {
+    class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, autofocus: danger, text: cancelLabel,
   });
+  const accept = el('button', {
+    class: 'ds-btn ds-btn--primary', type: 'button', autofocus: !danger, text: confirmLabel,
+  });
+  const { dialog, shown } = openDialog({ title, body, actions: [cancel, accept], alert: danger, opener });
+  accept.addEventListener('click', () => {
+    dialog.answer(true);
+    DS.overlay.close(dialog);
+  });
+  return shown;
 }
 
 // alertDialog is window.alert in the app's own clothes: it resolves once the
-// message has been dismissed.
-export function alertDialog({ title, body = '', confirmLabel = 'OK' } = {}) {
-  return confirmDialog({ title, body, confirmLabel, alert: true });
+// message has been dismissed - true when its button was pressed. `lines` are
+// shown as a list, each in <code> when `code` is set (a path, an exit status).
+export function alertDialog({ title, body = '', lines = [], code = false, confirmLabel = 'OK', opener = null } = {}) {
+  const ok = el('button', {
+    class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, autofocus: true, text: confirmLabel,
+  });
+  const { dialog, shown } = openDialog({ title, body, lines, code, actions: [ok], opener });
+  ok.addEventListener('click', () => dialog.answer(true));
+  return shown;
 }
 
-let toastHost = null;
-export function toast(message, kind = '') {
-  if (!toastHost) {
-    toastHost = document.getElementById('toasts');
-    if (!toastHost) {
-      toastHost = el('div', { class: 'toasts', id: 'toasts' });
-      document.body.append(toastHost);
-    }
+// A message that is on screen already is not shown again: an offline burst
+// would otherwise stack the same error three times and queue the rest. The
+// key is the kind and the words.
+const showing = new Map();
+
+/**
+ * toast shows a snackbar (DS.overlay.toast). `kind` is 'error' (stays until
+ * closed), 'success', or anything else for a neutral 'info'. `action` is
+ * { label, run }: a button in the message, which then stays until it is used
+ * or closed. Returns DS's handle, { el, close, closed }.
+ */
+export function toast(message, kind = 'info', { persistent = false, timeout, action } = {}) {
+  const text = String(message ?? '');
+  const sort = kind === 'error' ? 'error' : kind === 'success' ? 'success' : 'info';
+  const key = sort + '\n' + text;
+  const open = showing.get(key);
+  if (open) return open;
+  let content = text;
+  if (action) {
+    // The documented message, built by hand because it holds a button of its
+    // own: DS takes a .ds-toast element as it is.
+    const run = el('button', { class: 'ds-btn ds-btn--text', type: 'button', text: action.label });
+    content = el('div', { class: sort === 'success' ? 'ds-toast' : 'ds-toast ds-toast--' + sort },
+      iconEl(sort === 'error' ? 'alertCircle' : sort === 'info' ? 'info' : 'checkCircle', 20),
+      el('span', { class: 'ds-toast__text', text }),
+      run,
+      el('button', { class: 'ds-btn ds-btn--quiet ds-btn--icon ds-toast__close', type: 'button', 'aria-label': 'Close' },
+        iconEl('close', 20)));
+    run.addEventListener('click', () => {
+      handle.close();
+      action.run();
+    });
   }
-  const node = el('div', { class: 'toast ' + kind, text: message });
-  toastHost.append(node);
-  setTimeout(() => {
-    node.style.transition = 'opacity .25s ease';
-    node.style.opacity = '0';
-    setTimeout(() => node.remove(), 260);
-  }, kind === 'error' ? 6000 : 3200);
+  const handle = DS.overlay.toast(region(), content, { kind: sort, persistent, timeout });
+  showing.set(key, handle);
+  handle.closed.then(() => { if (showing.get(key) === handle) showing.delete(key); });
+  return handle;
 }
 
 // isBusyConflict is the one refusal that passes on its own: the session is still
@@ -201,123 +242,30 @@ export function fmtClock(seconds) {
   return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
 }
 
-// ------------------------------------------------------------- the tooltip
+// ------------------------------------------------------------- the "i"
 
 // infoTip is the small "i" that stands in for a line of detail nobody needs
-// until they do: a build number, a path, the full binding behind a badge. The
-// detail is in the page the whole time - a test or a screen reader finds it -
-// but it is only drawn when the mark is hovered, focused, or tapped.
-//
-// A tap is the phone's hover: the mark toggles the bubble, and a tap anywhere
-// else closes it. The bubble is nudged back inside the viewport once it is
-// open, because a phone puts a mark close enough to the edge for a centred
-// bubble to hang off it.
-//
-// content is a string, a node, or a list of either; every string is its own
-// line. The returned element is the whole control, with the bubble inside it.
-let openTip = null;
-let tipSeq = 0;
-
-export function infoTip(content, options = {}) {
-  const { label = 'Details', bubbleClass = '', variant = '' } = options;
-  const id = 'tip-' + (++tipSeq);
-  const lines = (Array.isArray(content) ? content : [content]).filter((line) => line !== null && line !== undefined && line !== '');
-  const bubble = el('span', { class: ('tip-bubble ' + bubbleClass).trim(), id, role: 'tooltip' },
-    ...lines.map((line) => (line && line.nodeType ? line : el('span', { class: 'tip-line', text: String(line) }))));
-  const mark = el('button', {
-    class: 'tip-mark',
+// until they do: a build number, a path, the full binding behind a badge. A
+// pointer or the keyboard gets the lines as a tooltip; a press opens them in a
+// dialog, because a tooltip never shows for a finger and an "i" a finger
+// cannot open would be decoration. The lines are in the button's data-tip the
+// whole time, so a test or a script finds them without opening anything.
+export function infoTip(content, { label = 'Details', code = false } = {}) {
+  const lines = (Array.isArray(content) ? content : [content])
+    .filter((line) => line !== null && line !== undefined && line !== '')
+    .map((line) => (line && line.nodeType ? line.textContent : String(line)));
+  const button = el('button', {
+    class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-info',
     type: 'button',
     'aria-label': label,
-    'aria-describedby': id,
-  });
-  mark.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>';
-  const tip = el('span', { class: ('tip ' + variant).trim() }, mark, bubble);
-
-  const close = () => {
-    tip.classList.remove('open');
-    if (openTip === tip) openTip = null;
-  };
-  const open = () => {
-    if (openTip && openTip !== tip) openTip.classList.remove('open');
-    openTip = tip;
-    tip.classList.add('open');
-    placeTip(tip, bubble);
-  };
-  mark.addEventListener('click', (event) => {
+    'data-tip': lines.join('\n'),
+  }, iconEl('info', 18));
+  button.addEventListener('click', (event) => {
+    // It often sits inside something that reacts to a click of its own: a
+    // row, a summary.
     event.preventDefault();
     event.stopPropagation();
-    if (tip.classList.contains('open')) close(); else open();
+    alertDialog({ title: label, lines, code, confirmLabel: 'Close', opener: button });
   });
-  mark.addEventListener('mouseenter', () => placeTip(tip, bubble));
-  mark.addEventListener('focus', () => placeTip(tip, bubble));
-  // The finger that opens a bubble leaves it open: the mark's own click
-  // handler is the one that closes it, and the document's handler below
-  // closes it for a tap anywhere else.
-  bubble.addEventListener('click', (event) => event.stopPropagation());
-  mark.addEventListener('keydown', (event) => { if (event.key === 'Escape') { close(); mark.blur(); } });
-  return tip;
+  return button;
 }
-
-// placeTip puts the bubble under its mark. The bubble is fixed to the
-// viewport rather than to the mark for two reasons: a bubble inside a badge
-// that clips its overflow would be clipped with it, and a hidden bubble that
-// hangs past the right edge of a phone would make the page scroll sideways
-// even while nobody can see it. It is measured after the bubble is shown, so
-// it is called from the same events that show it.
-function placeTip(tip, bubble) {
-  placeBubble(tip.querySelector('.tip-mark') || tip, bubble);
-}
-
-/**
- * placeBubble sets a fixed bubble's position from its anchor: centred under
- * it, then slid sideways until the whole bubble is on screen.
- */
-export function placeBubble(anchor, bubble) {
-  const rect = anchor.getBoundingClientRect();
-  const margin = 10;
-  bubble.style.top = Math.round(rect.bottom + 7) + 'px';
-  bubble.style.left = Math.round(rect.left + rect.width / 2) + 'px';
-  bubble.style.setProperty('--tip-shift', '0px');
-  requestAnimationFrame(() => {
-    const box = bubble.getBoundingClientRect();
-    if (!box.width) return;
-    let shift = 0;
-    if (box.left < margin) shift = margin - box.left;
-    else if (box.right > window.innerWidth - margin) shift = (window.innerWidth - margin) - box.right;
-    bubble.style.setProperty('--tip-shift', Math.round(shift) + 'px');
-    // A mark at the bottom of a phone's screen gets its bubble above it.
-    if (box.bottom > window.innerHeight - margin) {
-      bubble.style.top = Math.round(rect.top - 7 - box.height) + 'px';
-    }
-  });
-}
-
-// A tap or click anywhere else puts an open bubble away - including a tap on
-// the scrim of a drawer, which is how the same gesture behaves everywhere.
-document.addEventListener('click', (event) => {
-  if (openTip && !openTip.contains(event.target)) {
-    openTip.classList.remove('open');
-    openTip = null;
-  }
-});
-// Escape closes the bubble and nothing else: the dialog under it stays open,
-// which is why this runs before the browser's own Escape handling.
-document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && openTip) {
-    event.preventDefault();
-    event.stopPropagation();
-    openTip.classList.remove('open');
-    // The mark keeps focus after a tap, and focus alone keeps the bubble
-    // drawn; Escape means "put it away", so the focus goes with it.
-    if (openTip.contains(document.activeElement)) document.activeElement.blur();
-    openTip = null;
-  }
-}, true);
-// A bubble is placed for where its mark was; once the page moves under it,
-// it is put away rather than left floating over the wrong thing.
-document.addEventListener('scroll', () => {
-  if (openTip) {
-    openTip.classList.remove('open');
-    openTip = null;
-  }
-}, { capture: true, passive: true });

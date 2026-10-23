@@ -38,6 +38,7 @@
 // the answer is remembered and wins over every sign from then on.
 
 import { el, setClass } from './api.js';
+import { M, faces, morph } from './ui.js';
 import { record, recPhase } from './dictate.js';
 
 // A touch screen is a device that shows any sign of one: a pointer that is a
@@ -79,7 +80,7 @@ function becomeTouch() {
 function enterTouch() {
   if (touch) return;
   touch = true;
-  document.documentElement.classList.add('touch');
+  document.documentElement.classList.add('so-touch');
   applyAll();
   paint();
   placeCopy();
@@ -96,7 +97,7 @@ function leaveTouch() {
   if (!touch) return;
   open = false;
   touch = false;
-  document.documentElement.classList.remove('touch');
+  document.documentElement.classList.remove('so-touch');
   applyAll();
   paint();
   placeCopy();
@@ -117,7 +118,7 @@ export function setTouchMode(on) {
 
 if (touchPref() === 'on' || (touchPref() !== 'off' && looksTouch())) {
   touch = true;
-  document.documentElement.classList.add('touch');
+  document.documentElement.classList.add('so-touch');
 }
 
 const FIELD = 'input, textarea, [contenteditable]:not([contenteditable="false"])';
@@ -489,7 +490,7 @@ export function guard(input) {
 export function initKeyboard(bar, pane) {
   button = bar;
   fallback = pane || (() => null);
-  copy = el('button', { class: 'icon-btn kb-copy', type: 'button', html: bar.innerHTML });
+  copy = el('button', { class: 'ds-btn ds-btn--quiet ds-btn--icon kb-copy', type: 'button', html: bar.innerHTML });
   for (const one of [button, copy]) {
     // The field keeps the focus: a tap that took it would put the keyboard
     // away before the button could say whether that was wanted.
@@ -515,27 +516,19 @@ export function initKeyboard(bar, pane) {
 
 /* ------------------------------------------------------- the microphone */
 
-// One drawing, the same one the top bar's pill wears, because it is the same
-// microphone and the same sheet behind it.
-const MIC = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" '
-  + 'stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/>'
-  + '<path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>';
-
 /**
  * micButton is a microphone that hands what it heard to `onText`.
  *
- * It wears the same ring every other control in this app wears while it is
- * working - around the mark rather than on it - so a field waiting for its
- * words looks like the sidebar looks while a session is working.
+ * Dashboard-Style has no microphone glyph, so it is a text button ("Dictate")
+ * with the busy face every working button in this app has: the spinner while
+ * the words are being listened for.
  *
  * `onError`, when given, is told why a recording failed instead of a toast
  * (see record).
  */
 export function micButton(onText, label = 'Dictate', { onError } = {}) {
-  const button = el('button', {
-    class: 'icon-btn mic-btn', type: 'button', title: label, 'aria-label': label,
-    html: MIC,
-  });
+  const button = el('button', { class: 'ds-btn so-mic', type: 'button' });
+  morph(button, faces(label, 'Listening'));
   // A microphone that took the focus out of the pane would leave the terminal
   // unable to be typed into by the person who just filled a field.
   button.addEventListener('mousedown', (event) => event.preventDefault());
@@ -543,15 +536,8 @@ export function micButton(onText, label = 'Dictate', { onError } = {}) {
     // The one microphone is already open somewhere else: `record` would answer
     // with nothing, and a button that spun for that would be lying.
     if (recPhase() !== 'idle') return;
-    button.disabled = true;
-    setClass(button, 'working', true);
-    try {
-      const text = await record({ onError });
-      if (text) onText(text);
-    } finally {
-      button.disabled = false;
-      setClass(button, 'working', false);
-    }
+    const text = await M.busy(button, () => record({ onError }), { done: false });
+    if (text) onText(text);
   });
   return button;
 }
@@ -563,21 +549,23 @@ export function micButton(onText, label = 'Dictate', { onError } = {}) {
  * `control` is what stands in the layout - the field itself, or the wrapper a
  * combobox builds around one - and `input` is where the words go. `onText`
  * takes over from the default, which is to write the words into the field and
- * say so, because a field that is watched for changes has to be told.
+ * say so, because a field that is watched for changes has to be told. Beside
+ * a textarea (or with `top`) the button stays at the top of the field.
  *
  * It is idempotent: a sheet that is opened twice builds its fields twice, and
  * a second row around the first would be a second microphone beside it.
  */
-export function dictated(control, input, onText, { onError } = {}) {
+export function dictated(control, input, onText, { onError, top = false } = {}) {
   guard(input);
   const already = control.parentElement;
-  if (already && already.classList.contains('dictate')) return already;
+  if (already && already.classList.contains('so-field-row')) return already;
   const mic = micButton((text) => {
     if (onText) { onText(text); return; }
     input.value = text;
     input.dispatchEvent(new Event('input', { bubbles: true }));
   }, undefined, { onError });
-  const row = el('div', { class: 'dictate' });
+  const tall = top || input.tagName === 'TEXTAREA';
+  const row = el('div', { class: tall ? 'so-field-row so-field-row--top' : 'so-field-row' });
   if (control.parentNode) control.replaceWith(row);
   row.append(control, mic);
   return row;
