@@ -27,6 +27,8 @@
 //	/write           a Write that creates new.txt
 //	/todo            TaskCreate twice, then TaskUpdate the first to completed
 //	/subagent        a background Agent call with a Bash call inside it
+//	/subagent bg S   one whose Bash call still runs when the turn ends (S s)
+//	/subagent fail   a foreground one that fails before its call returns
 //	/workflow [S]    a Workflow run of two phases and three agents (S seconds),
 //	                 which reports back with a turn of the CLI's own
 //	/bg S            a background Bash task that reports back after S seconds
@@ -442,7 +444,14 @@ func (t *turnRun) script() {
 	case "/todo":
 		t.todo()
 	case "/subagent":
-		t.subagent()
+		switch {
+		case len(fields) > 0 && fields[0] == "bg":
+			t.subagentOutliving(floatArg(fields, 1, 1))
+		case len(fields) > 0 && fields[0] == "fail":
+			t.subagentFailing()
+		default:
+			t.subagent()
+		}
 	case "/workflow":
 		t.workflow(floatArg(fields, 0, 1))
 	case "/bg":
@@ -730,6 +739,61 @@ func (t *turnRun) subagent() {
 		agentID + "</task-id>\n<status>completed</status>\n<result>sub-ok</result>\n</task-notification>"},
 		"session_id": t.f.session, "uuid": newUUID(), "isReplay": true, "origin": map[string]any{"kind": "task-notification"}})
 	t.say("The subagent said sub-ok.")
+}
+
+// agentCall starts an Agent call and returns its tool_use id and task id.
+func (t *turnRun) agentCall(background bool) (string, string) {
+	t.closeText()
+	if t.apiMsg == "" {
+		t.msgStart()
+	}
+	id := "toolu_fake_" + randHex(10)
+	agentID := "a" + randHex(8)
+	t.assistant(map[string]any{"type": "tool_use", "id": id, "name": "Agent",
+		"input": map[string]any{"description": "A subagent", "subagent_type": "general-purpose", "prompt": "Work"}}, "")
+	t.index++
+	t.setBG(agentID, "local_agent")
+	t.system(map[string]any{"subtype": "task_started", "task_id": agentID, "tool_use_id": id, "description": "A subagent",
+		"subagent_type": "general-purpose", "is_backgrounded": background, "task_type": "local_agent", "prompt": "Work"})
+	return id, agentID
+}
+
+// subagentOutliving is a background subagent whose Bash call is still
+// running when the turn ends; the call, the agent and a turn of the CLI's
+// own follow after seconds.
+func (t *turnRun) subagentOutliving(seconds float64) {
+	f := t.f
+	id, agentID := t.agentCall(true)
+	t.result(id, "Async agent launched successfully.\nagentId: "+agentID, map[string]any{"isAsync": true,
+		"status": "async_launched", "agentId": agentID}, false, "")
+	inner := "toolu_fake_" + randHex(10)
+	t.assistant(map[string]any{"type": "tool_use", "id": inner, "name": "Bash", "input": map[string]any{"command": "sleep 1; echo late"}}, id)
+	t.say("The subagent works on.")
+	go func() {
+		time.Sleep(time.Duration(seconds * float64(time.Second)))
+		bt := &turnRun{f: f, ctx: context.Background(), apiMsg: "msg_fake_" + randHex(8)}
+		bt.result(inner, "late", nil, false, id)
+		bt.assistant(map[string]any{"type": "text", "text": "late"}, id)
+		bt.system(map[string]any{"subtype": "task_updated", "task_id": agentID, "patch": map[string]any{"status": "completed"}})
+		bt.system(map[string]any{"subtype": "task_notification", "task_id": agentID, "tool_use_id": id, "status": "completed", "summary": "late"})
+		f.mu.Lock()
+		delete(f.bg, agentID)
+		f.queue = append(f.queue, job{uuid: newUUID(), text: "<task-notification>\n<task-id>" + agentID + "</task-id>\n</task-notification>", origin: "task-notification"})
+		f.mu.Unlock()
+		bt.tasksChanged()
+		f.poke()
+	}()
+}
+
+// subagentFailing is a foreground subagent that fails: its task reports the
+// failure before the call returns its hand-back.
+func (t *turnRun) subagentFailing() {
+	id, agentID := t.agentCall(false)
+	t.system(map[string]any{"subtype": "task_updated", "task_id": agentID, "patch": map[string]any{"status": "failed"}})
+	t.system(map[string]any{"subtype": "task_notification", "task_id": agentID, "tool_use_id": id, "status": "failed", "summary": "it broke"})
+	t.setBG(agentID, "")
+	t.result(id, "[Subagent hand-back] it broke", map[string]any{"status": "completed", "agentId": agentID}, false, "")
+	t.say("The subagent failed.")
 }
 
 // workflow launches a background workflow of two phases and three agents.

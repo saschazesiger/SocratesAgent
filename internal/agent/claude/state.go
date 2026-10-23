@@ -109,6 +109,22 @@ func (p *part) live() bool {
 	return p.state == agent.PartRunning || (p.tool != nil && p.tool.Task != nil && p.tool.Task.Status == "running")
 }
 
+// inLiveGroup is whether a part is nested in a group that still runs: a
+// background subagent's call outlives the turn as its group does.
+func (s *state) inLiveGroup(p *part) bool {
+	for seen := 0; p.parent != "" && seen < 64; seen++ {
+		g := s.parts[p.parent]
+		if g == nil {
+			return false
+		}
+		if g.live() {
+			return true
+		}
+		p = g
+	}
+	return false
+}
+
 // closeLive ends every group still running when the CLI is gone: what it was
 // doing died with it.
 func (s *state) closeLive() {
@@ -308,7 +324,7 @@ func (s *state) endTurn(outcome string, usage *agent.Usage, cost float64, why st
 	sort.Slice(ids, func(i, j int) bool { return s.parts[ids[i]].started.Before(s.parts[ids[j]].started) })
 	for _, id := range ids {
 		p := s.parts[id]
-		if p.live() {
+		if p.live() || s.inLiveGroup(p) {
 			continue
 		}
 		if p.state == agent.PartStreaming || p.state == agent.PartRunning {

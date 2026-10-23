@@ -275,8 +275,19 @@ func (s *state) toolResult(b block, structured json.RawMessage, parent string) {
 			// The call returned at once; the agent works on in the
 			// background, and its group stays open until it reports back.
 			c.Agent.Background, c.Agent.Status, p.state = true, "running", agent.PartRunning
-		} else if p.state == agent.PartDone {
-			c.Agent.Status = "completed"
+		} else {
+			// A foreground agent reports its end before its call returns;
+			// the hand-back keeps what the task said.
+			switch c.Agent.Status {
+			case "failed":
+				p.state = agent.PartError
+			case "killed", "stopped":
+				p.state = agent.PartInterrupted
+			default:
+				if p.state == agent.PartDone {
+					c.Agent.Status = "completed"
+				}
+			}
 		}
 	case c.Tool == "Workflow":
 		var r struct {

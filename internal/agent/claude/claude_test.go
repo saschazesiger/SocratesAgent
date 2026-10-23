@@ -949,3 +949,38 @@ func TestAConversationMovesToAnotherAccount(t *testing.T) {
 		t.Fatal("the transcript is not shared between the accounts")
 	}
 }
+
+// A background subagent's call still running when the turn ends belongs to
+// the group, not the turn: it is not interrupted, and its result comes later.
+func TestABackgroundSubagentsCallOutlivesTheTurn(t *testing.T) {
+	e := newEnv(t)
+	a, r := start(t, e, "")
+	send(t, a, "m1", "/subagent bg 0.5")
+	r.turnsEnded(t, 1)
+	r.view(func(p *agent.Projection) {
+		g := partsOf(p.Messages[0], agent.PartTool)[0]
+		if g.State != agent.PartRunning || len(g.Children) != 1 || g.Children[0].State != agent.PartRunning {
+			t.Fatalf("after the turn: group %q, children %+v", g.State, g.Children)
+		}
+	})
+	r.turnsEnded(t, 2)
+	r.view(func(p *agent.Projection) {
+		g := partsOf(p.Messages[0], agent.PartTool)[0]
+		if g.State != agent.PartDone || g.Children[0].State != agent.PartDone || g.Children[0].Text != "late" {
+			t.Fatalf("after the agent: group %q, children %+v", g.State, g.Children[0])
+		}
+	})
+}
+
+func TestAFailedSubagentStaysFailed(t *testing.T) {
+	e := newEnv(t)
+	a, r := start(t, e, "")
+	send(t, a, "m1", "/subagent fail")
+	r.turnsEnded(t, 1)
+	r.view(func(p *agent.Projection) {
+		g := partsOf(lastAssistant(p), agent.PartTool)[0]
+		if c := content(t, g); g.State != agent.PartError || c.Agent.Status != "failed" || c.Agent.Summary != "it broke" {
+			t.Fatalf("group %q %+v", g.State, c.Agent)
+		}
+	})
+}
