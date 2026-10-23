@@ -587,7 +587,15 @@ Opening the stream of a chat whose host died with a turn running starts the reco
 **The chat view** (WP8, `internal/web/static/js/chat*.js`, `composer.js`, `askdialog.js`) folds
 the stream with the projection's rules (`chatfold.js`) and sends everything through one `Outbox`
 (`chatoutbox.js`, localStorage `socrates.outbox.chats`) with a fresh `client_id` per message,
-command, model change and answer. An answer to `ask_user` is REBUILD §5.2's object, every question
+command, model change and answer, strictly in order (a model chosen offline is the model of the
+message written after it). Every tab of a browser shares that queue: each change is made to the
+queue as storage holds it at that moment and other tabs take it in on `storage`, so two tabs may
+both send an item, which its `client_id` makes one. Stop is the one action sent directly
+(DEVIATIONS, WP8). What the Outbox holds is on screen until the journal has it: a message as "Not
+sent yet" / "Sending", an answer on its question's card (and in the dialog) instead of a new
+"Answer", a plan answer on the plan card with its buttons held; an item the server refused for
+good says so with Try again (a command the journal has but the agent refused shows as "Not run"
+on its line, to the browser that sent it, until dismissed). An answer to `ask_user` is REBUILD §5.2's object, every question
 present: `selected` holds option ids (`"yes"`/`"no"` for a confirm question), `other` the person's
 own words (a text question's answer, a number question's number as typed, or "Other"), `note`,
 `delegated` ("You decide") and `skipped` (neither answered nor delegated); `general_note` and

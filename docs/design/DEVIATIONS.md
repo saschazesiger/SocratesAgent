@@ -2341,3 +2341,10 @@ saved over the server's when the server's draft is empty, rather than asking whi
 composer's draft is emptied by every message sent, so "changed on another device" against an
 empty text would be asked after most sends from another device, and there is nothing in it to
 lose. A text typed before the saved draft has loaded is this browser's own text, by the same rule.
+
+**WP8 / §7.1 — Home's Questions card walks one kind of question at a time.** A walk that starts at
+a chat's question goes through the chats' questions in their dialog (`askdialog.js`); one that
+starts at a terminal's goes through the terminals' in theirs (`question.js`). Joining the two
+walks would be work for a dialog WP10 removes with the agent terminals; until then the other
+kind's questions are reached from their sessions, or from the card once the oldest kind's are
+answered.
