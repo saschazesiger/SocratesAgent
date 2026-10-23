@@ -43,10 +43,11 @@ func TestATurnStreamsAndEnds(t *testing.T) {
 		}
 		var names []string
 		for _, c := range p.Palette() {
-			names = append(names, c.Name)
+			names = append(names, c.Name+" "+c.Args)
 		}
-		if strings.Join(names, ",") != "compact,shell,agent,init,review,hello" {
-			t.Fatalf("commands %v", names)
+		want := "compact |shell <command>|agent build|plan|init |review <arguments>|hello <arg1> <arg2>"
+		if strings.Join(names, "|") != want {
+			t.Fatalf("commands %q", names)
 		}
 	})
 	if r.rec.deltas < 5 {

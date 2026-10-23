@@ -47,7 +47,9 @@ import (
 var commands = []map[string]any{
 	{"name": "init", "description": "guided AGENTS.md setup", "source": "command", "template": "init"},
 	{"name": "review", "description": "review changes", "source": "command", "template": "review", "hints": []string{"$ARGUMENTS"}},
-	{"name": "hello", "description": "say hello", "source": "command", "template": "hello $ARGUMENTS"},
+	{"name": "hello", "description": "say hello", "source": "command", "template": "hello $1 and $2", "hints": []string{"$1", "$2"}},
+	// A project's command named like one the adapter has itself.
+	{"name": "shell", "description": "a project's shell command", "source": "command", "template": "shell"},
 }
 
 type promptBody struct {

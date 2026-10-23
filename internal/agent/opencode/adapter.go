@@ -569,19 +569,41 @@ func (a *Adapter) loadCommands(ctx context.Context) {
 		log.Printf("opencode: list the commands: %v", err)
 	}
 	info := agent.AgentInfo{Agent: Harness, Version: health.Version, Commands: append([]agent.CommandInfo{}, ownCommands...)}
+	// One of OpenCode's commands named like one Command handles itself
+	// could never be reached.
+	taken := map[string]bool{"summarize": true, "revert": true, "unrevert": true, "fork": true}
+	for _, c := range ownCommands {
+		taken[c.Name] = true
+	}
 	names := map[string]bool{}
 	for _, c := range list {
-		if c.Name == "" || names[c.Name] {
+		if c.Name == "" || names[c.Name] || taken[c.Name] {
 			continue
 		}
 		names[c.Name] = true
-		info.Commands = append(info.Commands, agent.CommandInfo{Name: c.Name, Args: strings.Join(c.Hints, " "), Description: c.Description})
+		info.Commands = append(info.Commands, agent.CommandInfo{Name: c.Name, Args: hintArgs(c.Hints), Description: c.Description})
 	}
 	a.mu.Lock()
 	a.commands = names
 	a.mu.Unlock()
 	raw, _ := json.Marshal(info)
 	a.out.Emit(agent.Event{Type: agent.TypeAgentInfo, Content: raw})
+}
+
+// hintArgs is what a command's hints say in the palette: OpenCode names the
+// placeholders of its template ($ARGUMENTS, $1, $2, …).
+func hintArgs(hints []string) string {
+	out := make([]string, 0, len(hints))
+	for _, h := range hints {
+		switch n := strings.TrimPrefix(h, "$"); {
+		case h == "$ARGUMENTS":
+			h = "<arguments>"
+		case n != h && n != "" && strings.Trim(n, "0123456789") == "":
+			h = "<arg" + n + ">"
+		}
+		out = append(out, h)
+	}
+	return strings.Join(out, " ")
 }
 
 func (a *Adapter) client() *client {

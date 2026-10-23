@@ -489,7 +489,8 @@ build|plan` (for every following prompt, kept across hosts; `notice{agent}`), `r
 (`notice{forked, conversation_id}` — a new chat made with it as its `cli_session_id` resumes it,
 its history rebuilt), and any name from `GET /command` (a turn whose user message is `/name args`). `agent.info`
 (`{agent, version, commands}`) lists `compact`, `shell`, `agent` and OpenCode's commands (`hints`
-as `args`) at start. `SetModel`: `provider/model`
+as `args`, `$ARGUMENTS` shown as `<arguments>` and `$1` as `<arg1>`; one named like a command the
+adapter handles itself is left out) at start. `SetModel`: `provider/model`
 and the effort as `variant`, both sent with every prompt.
 
 **Account switch** (mechanics for WP7): `(*opencode.Adapter).SwitchAccount(ctx, account, env)`
