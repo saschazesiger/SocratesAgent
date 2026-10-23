@@ -166,6 +166,31 @@ type state struct {
 	// CheckedAt is the last run that found nothing changed since the last
 	// snapshot, which is as good as a snapshot for being up to date.
 	CheckedAt int64 `json:"checked_at,omitempty"`
+	// Skipped, Withheld and Kept are what the last good run - one that
+	// wrote a snapshot or found nothing new - could not take as it is: an
+	// unchanged run writes no snapshot that would say so. Kept holds, for
+	// each database whose earlier copy stands in for it, since when.
+	Skipped  []string         `json:"skipped,omitempty"`
+	Withheld []string         `json:"withheld,omitempty"`
+	Kept     map[string]int64 `json:"kept,omitempty"`
+}
+
+// noteGaps records what a good run could not take, and since when each
+// database has been standing in with an older copy.
+func (st *state) noteGaps(info *RunInfo, now int64) {
+	st.Skipped, st.Withheld = info.Skipped, info.Withheld
+	kept := make(map[string]int64, len(info.Kept))
+	for _, rel := range info.Kept {
+		since, ok := st.Kept[rel]
+		if !ok {
+			since = now
+		}
+		kept[rel] = since
+	}
+	st.Kept = kept
+	if len(kept) == 0 {
+		st.Kept = nil
+	}
 }
 
 func loadState(dataDir string) state {

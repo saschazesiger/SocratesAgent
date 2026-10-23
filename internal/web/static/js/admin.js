@@ -21,7 +21,7 @@
 // a status chip with its word, the technical detail behind the "i".
 
 import {
-  api, el, toast, isOffline, errorMessage, onWake, infoTip, confirmDialog,
+  api, el, toast, isOffline, errorMessage, onWake, infoTip, confirmDialog, alertDialog,
 } from './api.js';
 import { DS, M, html, raw, icon, iconEl, morph, flipMorph, watchScrolled, ms, setFaceLabel, faces } from './ui.js';
 import { agentMark } from './logos.js';
@@ -1274,6 +1274,8 @@ function bind() {
   $('backupTest').addEventListener('click', testBackup);
   $('backupRun').addEventListener('click', runBackup);
   $('backupSave').addEventListener('click', saveBackup);
+  $('backupOff').addEventListener('click', turnBackupOff);
+  $('backupDetail').addEventListener('click', openBackupTip);
   $('testVoice').addEventListener('click', testVoice);
   for (const summary of document.querySelectorAll('.so-disclosure > summary')) {
     if (!summary.querySelector('.ds-chevron')) summary.append(iconEl('chevronDown', 20, 'ds-chevron'));
@@ -1585,10 +1587,22 @@ function bytes(n) {
   return (i ? n.toFixed(n < 10 ? 1 : 0) : n) + ' ' + units[i];
 }
 
-function backupAlert(kind, text) {
+// backupAlert is one alert of the card. What it is about - paths, the
+// technical rest - goes behind its "i", which the card's click handler opens.
+function backupAlert(kind, text, tip = [], tipLabel = 'Details') {
   const [cls, glyph, role] = kind === 'error' ? ['ds-alert ds-alert--error', 'alertCircle', 'alert']
     : kind === 'warning' ? ['ds-alert ds-alert--warning', 'alert', 'alert'] : ['ds-alert', 'info', 'status'];
-  return html`<div class="${cls}" role="${role}">${raw(icon(glyph, 20))}<span class="ds-alert__text">${text}</span></div>`;
+  const info = tip.length
+    ? html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-info" type="button" aria-label="${tipLabel}" data-tip="${tip.join('\n')}">${raw(icon('info', 18))}</button>`
+    : '';
+  return html`<div class="${cls}" role="${role}">${raw(icon(glyph, 20))}<span class="ds-alert__text">${text}</span>${info}</div>`;
+}
+
+function openBackupTip(event) {
+  const button = event.target.closest('.so-info');
+  if (!button) return;
+  alertDialog({ title: button.getAttribute('aria-label'), lines: button.getAttribute('data-tip').split('\n'),
+    confirmLabel: 'Close', opener: button });
 }
 
 // firstSentence is a server error without its technical rest, which goes
@@ -1610,13 +1624,16 @@ function renderBackup(status, fillForm) {
     kind = 'running';
     label = status.phase ? status.phase.charAt(0).toUpperCase() + status.phase.slice(1) : 'Backing up';
     if (status.files) facts.push(status.files + ' files read', bytes(status.uploaded) + ' sent');
+  } else if (status.broken) {
+    kind = 'error';
+    label = 'Backups off';
   } else if (cfg && status.last_error && (!last || status.last_error_at > last.at)) {
     kind = 'error';
     label = 'Last backup failed';
     facts.push(ago(status.last_error_at));
   } else if (cfg && (last || status.checked_at)) {
-    kind = status.warning ? 'error' : 'ok';
-    label = 'Backed up';
+    kind = status.overdue ? 'error' : 'ok';
+    label = status.overdue ? 'Backup overdue' : 'Backed up';
     facts.push(ago(Math.max(last ? last.at : 0, status.checked_at || 0)));
     if (last) facts.push(bytes(last.size), last.files + ' files');
   } else if (cfg) {
@@ -1634,19 +1651,35 @@ function renderBackup(status, fillForm) {
   renderState($('backupStatus'), { kind, label, state: status.running ? 'running' : kind, facts, tip, tipLabel: 'Backup details' });
 
   const alerts = [];
-  if (status.warning) alerts.push(backupAlert('warning', status.warning));
-  if (kind === 'error' && status.last_error) alerts.push(backupAlert('error', firstSentence(status.last_error)));
-  if (last && last.skipped && last.skipped.length) {
-    alerts.push(backupAlert('warning', 'Some databases could not be copied and are not in the last snapshot: ' + last.skipped.join(', ') + '.'));
+  if (status.broken) alerts.push(backupAlert('error', status.warning, [status.broken], 'Why backup.json cannot be read'));
+  else if (status.warning) alerts.push(backupAlert('warning', status.warning));
+  if (kind === 'error' && status.last_error && !status.broken) {
+    alerts.push(backupAlert('error', firstSentence(status.last_error), [status.last_error], 'What went wrong'));
+  }
+  const kept = status.kept || [];
+  if (kept.length && !status.warning) {
+    alerts.push(backupAlert('warning', (kept.length === 1 ? 'A database' : kept.length + ' databases')
+      + ' could not be copied in the last run; the backup holds an earlier copy.',
+    kept.map((k) => k.path + ': the copy of ' + new Date(k.since).toLocaleString()), 'Databases kept as an earlier copy'));
+  }
+  if (status.skipped && status.skipped.length) {
+    alerts.push(backupAlert('warning', (status.skipped.length === 1 ? 'A database' : status.skipped.length + ' databases')
+      + ' could not be copied and ' + (status.skipped.length === 1 ? 'is' : 'are') + ' not in the backup.',
+    status.skipped, 'Databases not in the backup'));
+  }
+  if (status.withheld && status.withheld.length) {
+    alerts.push(backupAlert('warning', 'Some files that may hold a secret could not be read as they should be, and are left out of the backup.',
+      status.withheld, 'Files left out'));
   }
   if (status.other_hosts && status.other_hosts.length) {
-    alerts.push(backupAlert('info', 'Another machine backed up into this bucket in the last day: ' + status.other_hosts.join(', ')
-      + '. Each machine keeps snapshots of its own.'));
+    alerts.push(backupAlert('warning', 'Another machine backed up into this bucket in the last day. Each machine keeps snapshots of its own.',
+      status.other_hosts, 'Other machines'));
   }
   morph($('backupDetail'), html`${alerts}`);
 
   $('backupRun').disabled = !cfg || status.running;
   $('backupTest').disabled = false;
+  $('backupOff').hidden = !cfg && !status.broken;
   if (fillForm) {
     $('backupEndpoint').value = cfg ? cfg.endpoint || '' : '';
     $('backupRegion').value = cfg ? cfg.region || '' : '';
@@ -1741,6 +1774,29 @@ async function saveBackup() {
     loadSnapshots();
   } catch (err) {
     toast(firstSentence(errorMessage(err)), 'error');
+  }
+}
+
+// turnBackupOff removes backup.json. The bucket keeps what it holds, and
+// saving the settings again turns backups back on.
+async function turnBackupOff() {
+  const yes = await confirmDialog({
+    title: 'Turn off backups?',
+    body: 'Nothing more is backed up from this machine. The snapshots in the bucket stay there, and saving these settings again turns backups back on.',
+    confirmLabel: 'Turn off backups',
+    danger: true,
+    opener: $('backupOff'),
+  });
+  if (!yes) return;
+  try {
+    const data = await api('/api/backup/config', { method: 'DELETE' });
+    toast('Backups are off.');
+    $('backupSnapshots').hidden = true;
+    $('backupSnapshotsHint').textContent = '';
+    snapshotsLoaded = false;
+    if (data.status) renderBackup(data.status, true);
+  } catch (err) {
+    toast(errorMessage(err), 'error');
   }
 }
 

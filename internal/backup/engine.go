@@ -102,6 +102,10 @@ type Engine struct {
 	// listedFor is the backup whose chunks have been listed in this
 	// process (its place and salt).
 	listedFor string
+	// broken is why backup.json could not be read, while it cannot: the
+	// backup is off, and says so rather than looking as though it had
+	// never been set up.
+	broken string
 
 	wake   chan struct{}
 	stop   context.CancelFunc
@@ -132,10 +136,10 @@ func New(opts Options) (*Engine, error) {
 	}
 	cfg, err := LoadConfig(opts.DataDir)
 	if err != nil {
-		// A broken backup.json is backups off, said on the admin page,
-		// where saving the form writes a good one.
+		// A broken backup.json is backups off, said on the admin page and
+		// in the notice, until saving the form writes a good one.
 		log.Printf("backup: %v", err)
-		e.st.LastError, e.st.LastErrorAt = err.Error(), opts.Now().UnixMilli()
+		e.broken = err.Error()
 		return e, nil
 	}
 	// A backup.json on a data directory that holds no installation was
@@ -324,6 +328,7 @@ func (e *Engine) runLocked(ctx context.Context, cfg Config, prog *progress) (*Ru
 		} else {
 			e.st.LastSuccess = info
 		}
+		e.st.noteGaps(info, e.now().UnixMilli())
 	}
 	if serr := e.st.save(e.opts.DataDir); serr != nil {
 		log.Printf("backup: could not record the run: %v", serr)
@@ -433,7 +438,7 @@ func (e *Engine) backup(ctx context.Context, cfg Config, prog *progress) (*RunIn
 	}
 	info := &RunInfo{
 		Uploaded: prog.uploaded.Load(), Chunks: int(prog.chunks.Load()),
-		Skipped: snap.skipped, Kept: snap.kept,
+		Skipped: snap.skipped, Kept: snap.kept, Withheld: snap.withheld,
 	}
 	if prev := cachedManifest(e.opts.DataDir, prevID); prev != nil && prev.Host == cfg.HostID && sameEntries(prev.Entries, m.Entries) {
 		sum := prev.Summary()
@@ -654,8 +659,25 @@ func (e *Engine) SetConfig(ctx context.Context, next Config) error {
 		return err
 	}
 	e.mu.Lock()
-	e.cfg = saved
+	e.cfg, e.broken = saved, ""
 	e.started = e.now()
+	e.mu.Unlock()
+	e.poke()
+	return nil
+}
+
+// Disable turns backups off: backup.json is removed, and the bucket and
+// what is in it are left as they are. A run that is going on finishes. The
+// mirror's configuration of earlier builds is not carried over again.
+func (e *Engine) Disable() error {
+	if err := os.Remove(paths.New(e.opts.DataDir).BackupConfig()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := markMigrated(e.opts.DataDir); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	e.cfg, e.broken, e.others = nil, "", nil
 	e.mu.Unlock()
 	e.poke()
 	return nil
@@ -728,11 +750,29 @@ type Status struct {
 	LastError   string `json:"last_error,omitempty"`
 	LastErrorAt int64  `json:"last_error_at,omitempty"`
 	NextRun     int64  `json:"next_run,omitempty"`
-	// Warning is set when no backup has succeeded for WarnAfter.
+	// Warning is the one thing a person should be told: a backup.json that
+	// cannot be read, no backup that succeeded for WarnAfter (Overdue), or
+	// a database whose older copy has stood in for it that long.
 	Warning string `json:"warning,omitempty"`
+	Overdue bool   `json:"overdue,omitempty"`
 	// OtherHosts wrote snapshots into the same bucket in the last
 	// WarnAfter.
 	OtherHosts []string `json:"other_hosts,omitempty"`
+	// Broken is why backup.json cannot be read: the backup is off until
+	// the form is saved again.
+	Broken string `json:"broken,omitempty"`
+	// Skipped, Withheld and Kept are what the last good run could not take
+	// as it is (state.Skipped).
+	Skipped  []string   `json:"skipped,omitempty"`
+	Withheld []string   `json:"withheld,omitempty"`
+	Kept     []KeptCopy `json:"kept,omitempty"`
+}
+
+// KeptCopy is a database that could not be copied, whose earlier copy
+// stands in for it, and since when.
+type KeptCopy struct {
+	Path  string `json:"path"`
+	Since int64  `json:"since"`
 }
 
 // Status says how the backup stands.
@@ -742,11 +782,13 @@ func (e *Engine) Status() Status {
 	st := Status{
 		Configured: e.cfg != nil, LastSuccess: e.st.LastSuccess, CheckedAt: e.st.CheckedAt,
 		LastAttempt: e.st.LastAttempt, LastError: e.st.LastError, LastErrorAt: e.st.LastErrorAt,
-		OtherHosts: e.others,
+		OtherHosts: e.others, Broken: e.broken,
 	}
 	if e.cfg == nil {
+		st.Warning, _ = e.warningLocked()
 		return st
 	}
+	st.Skipped, st.Withheld, st.Kept = e.st.Skipped, e.st.Withheld, e.keptLocked()
 	pub := e.cfg.Public()
 	st.Config = &pub
 	if !e.nextRun.IsZero() {
@@ -757,7 +799,7 @@ func (e *Engine) Status() Status {
 		st.Phase = e.running.getPhase()
 		st.Files, st.Bytes, st.Uploaded = e.running.files.Load(), e.running.bytes.Load(), e.running.uploaded.Load()
 	}
-	st.Warning = e.warningLocked()
+	st.Warning, st.Overdue = e.warningLocked()
 	return st
 }
 
@@ -765,13 +807,31 @@ func (e *Engine) Status() Status {
 func (e *Engine) Warning() string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.cfg == nil {
-		return ""
-	}
-	return e.warningLocked()
+	text, _ := e.warningLocked()
+	return text
 }
 
-func (e *Engine) warningLocked() string {
+// keptLocked is state.Kept in path order.
+func (e *Engine) keptLocked() []KeptCopy {
+	out := make([]KeptCopy, 0, len(e.st.Kept))
+	for rel, since := range e.st.Kept {
+		out = append(out, KeptCopy{Path: rel, Since: since})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
+// warningLocked is the one sentence a person is warned with, and whether it
+// is that no backup has succeeded for WarnAfter: a backup.json that cannot
+// be read is said at once, an overdue backup next, and a database whose
+// older copy has stood in for it for WarnAfter last.
+func (e *Engine) warningLocked() (string, bool) {
+	if e.broken != "" {
+		return "Backups are off: backup.json cannot be read. Save the Backup settings again to write a good one.", false
+	}
+	if e.cfg == nil {
+		return "", false
+	}
 	var good int64
 	if e.st.LastSuccess != nil {
 		good = e.st.LastSuccess.At
@@ -781,13 +841,32 @@ func (e *Engine) warningLocked() string {
 	if good > 0 {
 		since = time.UnixMilli(good)
 	}
-	if e.now().Sub(since) < e.opts.WarnAfter {
-		return ""
+	switch {
+	case e.now().Sub(since) < e.opts.WarnAfter:
+	case good == 0:
+		return "No backup has succeeded since Socrates started " + ago(e.now().Sub(since)) + ".", true
+	default:
+		return "The last successful backup was " + ago(e.now().Sub(since)) + ".", true
 	}
-	if good == 0 {
-		return "No backup has succeeded since Socrates started " + ago(e.now().Sub(since)) + "."
+	var oldest int64
+	var stale []string
+	for _, k := range e.keptLocked() {
+		if e.now().Sub(time.UnixMilli(k.Since)) >= e.opts.WarnAfter {
+			stale = append(stale, k.Path)
+			if oldest == 0 || k.Since < oldest {
+				oldest = k.Since
+			}
+		}
 	}
-	return "The last successful backup was " + ago(e.now().Sub(since)) + "."
+	switch {
+	case len(stale) == 1:
+		return "The database " + stale[0] + " has not been copied since " + ago(e.now().Sub(time.UnixMilli(oldest))) +
+			"; the backup holds an older copy of it.", false
+	case len(stale) > 1:
+		return fmt.Sprintf("%d databases have not been copied since %s; the backup holds older copies of them.",
+			len(stale), ago(e.now().Sub(time.UnixMilli(oldest)))), false
+	}
+	return "", false
 }
 
 // ago says a duration the way a sentence does.

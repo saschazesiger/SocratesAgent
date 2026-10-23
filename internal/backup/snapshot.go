@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net/url"
 	"os"
 	"path"
@@ -61,6 +62,10 @@ type RunInfo struct {
 	// snapshot; Kept are those whose earlier copy stands in for them.
 	Skipped []string `json:"skipped,omitempty"`
 	Kept    []string `json:"kept,omitempty"`
+	// Withheld are files that may hold a secret the backup leaves out
+	// (paths.Redacted) and that could not be read as the JSON they should
+	// be: they are not in this snapshot rather than in it whole.
+	Withheld []string `json:"withheld,omitempty"`
 }
 
 // progress is a run as it goes, read by Status while it runs.
@@ -102,12 +107,13 @@ type snapshotter struct {
 	err    error
 	cancel context.CancelFunc
 
-	buf     []byte
-	files   map[string]fileState
-	entries []Entry
-	skipped []string
-	kept    []string
-	copies  int
+	buf      []byte
+	files    map[string]fileState
+	entries  []Entry
+	skipped  []string
+	kept     []string
+	withheld []string
+	copies   int
 }
 
 // walk reads the whole data directory into entries, and returns once every
@@ -298,6 +304,7 @@ func (s *snapshotter) file(ctx context.Context, p, rel string, info fs.FileInfo)
 			// A database that will not copy must not stop every other file
 			// from being backed up. Its last good copy stands in for it;
 			// without one it is left out, and the run says so.
+			log.Printf("backup: %s could not be copied: %v", rel, err)
 			if known && prev.SQLite && s.remoteHas(prev.Chunks) {
 				s.kept = append(s.kept, rel)
 				s.files[rel] = prev
@@ -315,7 +322,8 @@ func (s *snapshotter) file(ctx context.Context, p, rel string, info fs.FileInfo)
 		if err := redact(p, copyPath, fields); err != nil {
 			// A file that may hold a secret and cannot be read as the JSON
 			// it should be is left out rather than backed up whole.
-			s.skipped = append(s.skipped, rel)
+			log.Printf("backup: %s is left out: %v", rel, err)
+			s.withheld = append(s.withheld, rel)
 			return nil, nil
 		}
 		defer os.Remove(copyPath)

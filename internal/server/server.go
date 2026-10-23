@@ -478,6 +478,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/backup/snapshots", s.auth(s.handleBackupSnapshots))
 	mux.HandleFunc("POST /api/backup/test", s.auth(s.handleBackupTest))
 	mux.HandleFunc("PUT /api/backup/config", s.auth(s.handleBackupConfig))
+	mux.HandleFunc("DELETE /api/backup/config", s.auth(s.handleBackupOff))
 	// Restore: a new machine, from the setup page, before there is a
 	// password (backup.go says when it is allowed).
 	mux.HandleFunc("POST /api/restore/snapshots", s.handleRestoreSnapshots)

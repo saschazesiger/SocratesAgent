@@ -1213,8 +1213,125 @@ func TestStatusWarnsAfterADayWithoutABackup(t *testing.T) {
 		t.Fatal("a run against a bucket that is down succeeded")
 	}
 	st := e.Status()
-	if !strings.Contains(st.Warning, "last successful backup was 25 hours ago") || st.LastError == "" {
+	if !strings.Contains(st.Warning, "last successful backup was 25 hours ago") || !st.Overdue || st.LastError == "" {
 		t.Fatalf("a day after the last good run: %+v", st)
+	}
+}
+
+// A database that stops copying is not quietly backed up as its old copy
+// for ever: the status names it, unchanged runs included, and once its copy
+// is a day old the warning says so. A launch spec that cannot be redacted is
+// left out and named as such, not as a database.
+func TestWhatARunCouldNotTakeIsSaid(t *testing.T) {
+	clk := newClock()
+	b := newBucket(t, clk)
+	src := t.TempDir()
+	dbPath := filepath.Join(src, "agents/opencode/opencode.db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	db := openDB(t, dbPath, false)
+	if _, err := db.Exec(`CREATE TABLE msg(id INTEGER PRIMARY KEY, text TEXT); INSERT INTO msg(text) VALUES ('hello')`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	e := engine(t, src, b, clk, "host-a")
+	if _, err := e.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// The database is damaged past opening, and a spec is not JSON.
+	for _, companion := range []string{"-wal", "-shm"} {
+		os.Remove(dbPath + companion)
+	}
+	write(t, dbPath, append(append([]byte{}, sqliteMagic...), bytes.Repeat([]byte{0xff}, 4096)...), 0o600)
+	write(t, filepath.Join(src, "chats/c1/host.json"), []byte(`{"env": [`), 0o600)
+	clk.Add(10 * time.Minute)
+	info, err := e.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info.Kept) != 1 || info.Kept[0] != "agents/opencode/opencode.db" || len(info.Withheld) != 1 ||
+		info.Withheld[0] != "chats/c1/host.json" || len(info.Skipped) != 0 {
+		t.Fatalf("the run: %+v", info)
+	}
+	st := e.Status()
+	if len(st.Kept) != 1 || st.Kept[0].Since != clk.Now().UnixMilli() || len(st.Withheld) != 1 || st.Warning != "" {
+		t.Fatalf("the status after it: %+v", st)
+	}
+
+	// A day of unchanged runs later the database still stands in with its
+	// old copy, and that is a warning.
+	for i := 0; i < 5; i++ {
+		clk.Add(5 * time.Hour)
+		info, err := e.Run(context.Background())
+		if err != nil || !info.Unchanged {
+			t.Fatalf("run %d: %+v %v", i, info, err)
+		}
+	}
+	st = e.Status()
+	if len(st.Kept) != 1 || !strings.Contains(st.Warning, "agents/opencode/opencode.db has not been copied since 25 hours ago") {
+		t.Fatalf("a day on: %+v", st)
+	}
+
+	// Fixed, the next run copies it again and the warning goes.
+	if err := os.Remove(dbPath); err != nil {
+		t.Fatal(err)
+	}
+	db = openDB(t, dbPath, false)
+	if _, err := db.Exec(`CREATE TABLE msg(id INTEGER PRIMARY KEY, text TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	clk.Add(10 * time.Minute)
+	if _, err := e.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if st := e.Status(); len(st.Kept) != 0 || st.Warning != "" {
+		t.Fatalf("after the database copied again: %+v", st)
+	}
+}
+
+// A backup.json that cannot be read is said at once - on the card and in
+// the notice - rather than shown as backups never set up; saving a good
+// configuration ends it. Turning backups off removes backup.json for good:
+// the mirror's configuration is not carried over again at the next start.
+func TestABrokenConfigurationWarnsAndOffStaysOff(t *testing.T) {
+	clk := newClock()
+	b := newBucket(t, clk)
+	dir := t.TempDir()
+	install(t, dir)
+	write(t, filepath.Join(dir, paths.BackupConfig), []byte(`{"bucket": `), 0o600)
+	e, err := New(Options{DataDir: dir, Now: clk.Now, Iterations: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := e.Status(); st.Configured || st.Broken == "" || !strings.Contains(st.Warning, "backup.json cannot be read") {
+		t.Fatalf("with a broken backup.json: %+v", st)
+	}
+	if !strings.Contains(e.Warning(), "Backups are off") {
+		t.Fatalf("the notice: %q", e.Warning())
+	}
+	if err := e.SetConfig(context.Background(), b.config("")); err != nil {
+		t.Fatal(err)
+	}
+	if st := e.Status(); !st.Configured || st.Broken != "" || st.Warning != "" {
+		t.Fatalf("after saving a good one: %+v", st)
+	}
+
+	env := map[string]string{"SOCRATES_S3_BUCKET": "b2", "SOCRATES_S3_ACCESS_KEY_ID": "AK2",
+		"SOCRATES_S3_SECRET_ACCESS_KEY": "SK2", "SOCRATES_S3_PASSPHRASE": "pp2"}
+	if err := e.Disable(); err != nil {
+		t.Fatal(err)
+	}
+	if st := e.Status(); st.Configured || st.Warning != "" {
+		t.Fatalf("turned off: %+v", st)
+	}
+	if _, err := e.Run(context.Background()); !errors.Is(err, ErrNotConfigured) {
+		t.Fatalf("a run after turning off: %v", err)
+	}
+	again, err := New(Options{DataDir: dir, Now: clk.Now, Getenv: func(k string) string { return env[k] }})
+	if err != nil || again.Config() != nil {
+		t.Fatalf("the next start: %+v %v", again.Config(), err)
 	}
 }
 

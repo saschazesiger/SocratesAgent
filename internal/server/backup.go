@@ -22,6 +22,7 @@ import (
 //	GET  /api/backup/snapshots   {"snapshots": [backup.Summary]}
 //	POST /api/backup/test        {"result": backup.TestResult}
 //	PUT  /api/backup/config      {"status"}; 400 with what the bucket said
+//	DELETE /api/backup/config    {"status"}: backups off, the bucket left as it is
 //
 // The restore is the one part of it that is reached without a password,
 // because it is what a machine with none is set up from - and only while
@@ -169,6 +170,20 @@ func (s *Server) handleBackupConfig(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	if err := e.SetConfig(ctx, body.config()); err != nil {
 		writeError(w, http.StatusBadRequest, backup.Explain(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": e.Status()})
+}
+
+// handleBackupOff turns backups off. What the bucket holds stays there, and
+// saving the card again turns them back on.
+func (s *Server) handleBackupOff(w http.ResponseWriter, r *http.Request) {
+	e := s.backupEngine(w)
+	if e == nil {
+		return
+	}
+	if err := e.Disable(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": e.Status()})

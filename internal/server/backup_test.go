@@ -117,6 +117,15 @@ func TestBackupCardAndRestoreFromTheSetupPage(t *testing.T) {
 	if res, _ := a.do(t, a.anon, "POST", "/api/restore/snapshots", fakeBackupForm(fake.URL, "pp-one")); res.StatusCode != http.StatusConflict {
 		t.Fatalf("a restore onto a machine that is set up: %d", res.StatusCode)
 	}
+	// Turned off, the machine has no backup.json; the bucket keeps its
+	// snapshot for the new machine below.
+	res, payload = a.do(t, a.client, "DELETE", "/api/backup/config", "")
+	if res.StatusCode != http.StatusOK || payload["status"].(map[string]any)["configured"] != false {
+		t.Fatalf("turning backups off: %d %#v", res.StatusCode, payload)
+	}
+	if _, err := os.Stat(filepath.Join(a.srv.dataDir, "backup.json")); !os.IsNotExist(err) {
+		t.Fatalf("backup.json after turning backups off: %v", err)
+	}
 
 	b := newEnv(t)
 	restarted := make(chan struct{})

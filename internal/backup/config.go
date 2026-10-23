@@ -277,9 +277,7 @@ func MigrateConfig(dataDir string, getenv func(string) string) (bool, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, err
 	}
-	done := func() error {
-		return writeFileAtomic(marker, []byte("The bucket mirror's configuration has been carried over into backup.json.\n"), 0o600)
-	}
+	done := func() error { return markMigrated(dataDir) }
 	if _, err := os.Stat(layout.BackupConfig()); err == nil {
 		return false, done()
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -334,4 +332,11 @@ func MigrateConfig(dataDir string, getenv func(string) string) (bool, error) {
 		return false, err
 	}
 	return true, done()
+}
+
+// markMigrated leaves paths.BackupMigrated behind: the mirror's
+// configuration is not carried over into backup.json again.
+func markMigrated(dataDir string) error {
+	return writeFileAtomic(paths.New(dataDir).Path(paths.BackupMigrated),
+		[]byte("The bucket mirror's configuration has been carried over into backup.json.\n"), 0o600)
 }
