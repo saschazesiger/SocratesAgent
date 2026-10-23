@@ -218,7 +218,7 @@ export function useAccountPicker(draw) { accountPicker = draw; }
  * paletteOf is the commands a chat offers after "/": what the agent reported
  * about itself in its newest agent.info (AGENT-HOST.md §5, one palette source).
  */
-export function paletteOf(harness, info) {
+export function paletteOf(info) {
   const seen = new Map();
   const reported = info && Array.isArray(info.commands) ? info.commands : [];
   for (const one of reported) {
@@ -343,7 +343,7 @@ export function mountComposer(host, ctx) {
 
   function palettes() {
     const chat = ctx.chat();
-    return paletteOf(ctx.session().harness, chat && chat.info);
+    return paletteOf(chat && chat.info);
   }
 
   function drawPalette(reset = true) {
