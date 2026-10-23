@@ -18,6 +18,10 @@
 // Go's own caches are pinned where they were, so that the fakes a TestMain
 // builds and the toolchain go.mod asks for are not fetched and compiled again
 // under the new home.
+//
+// A long temporary directory (macOS gives every user one under /var/folders)
+// is replaced by /tmp: the tests put tmux and agent-host sockets under
+// t.TempDir(), and a Unix socket path has a limit of about 104 bytes.
 package testhome
 
 import (
@@ -25,6 +29,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -40,6 +45,9 @@ var (
 	}
 	clearedPrefixes = []string{"OPENCODE_", "SOCRATES_S3_", "CLAUDE_CODE_", "ANTHROPIC_"}
 )
+
+// shortTemp is the temporary directory a long one is replaced by.
+const shortTemp = "/tmp"
 
 // goVars are the variables of Go's own that are derived from HOME and are
 // pinned to the values they resolve to now.
@@ -69,6 +77,11 @@ func Isolate() (func(), error) {
 			if i < len(lines) && strings.TrimSpace(lines[i]) != "" {
 				pinned[name] = strings.TrimSpace(lines[i])
 			}
+		}
+	}
+	if runtime.GOOS != "windows" && len(os.TempDir()) > len(shortTemp) {
+		if info, err := os.Stat(shortTemp); err == nil && info.IsDir() {
+			_ = os.Setenv("TMPDIR", shortTemp)
 		}
 	}
 	root, err := os.MkdirTemp("", "socrates-testhome-")
