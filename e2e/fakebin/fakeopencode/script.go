@@ -28,7 +28,9 @@ import (
 //	/limit           retry with a free-tier-limit action, every second, until
 //	                 aborted (research/06 §3.7)
 //	/retry           one plain retry, then a normal answer
-//	/error           an APIError 401 on the message and session.error
+//	/error           an APIError 401 on the message and session.error, and
+//	                 after session.idle a second session.error with a stack
+//	                 trace, as OpenCode 1.19.4 sends
 //	/perm            permission.asked; the reply goes into the answer
 //	/dropperm        every /event stream is closed, then /perm: only a reader
 //	                 of GET /permission sees the question
@@ -129,6 +131,13 @@ func (s *srv) loop(sid string, r *run) {
 		s.mu.Unlock()
 		s.publish("session.status", map[string]any{"sessionID": sid, "status": map[string]any{"type": "idle"}})
 		s.publish("session.idle", map[string]any{"sessionID": sid})
+		if r.failure != nil {
+			data, _ := r.failure["data"].(map[string]any)
+			msg, _ := data["message"].(string)
+			s.publish("session.error", map[string]any{"sessionID": sid, "error": map[string]any{"name": "UnknownError",
+				"data": map[string]any{"message": r.failure["name"].(string) + ": " + msg +
+					"\n    at SessionPrompt.run (/$bunfs/root/chunk-577s80tf.js:50:14576)"}}})
+		}
 		close(r.done)
 	}()
 	for {
@@ -442,6 +451,7 @@ func (t *turn) play(text string) error {
 		t.msg["error"] = e
 		t.finish("error", 10, 0)
 		t.s.publish("session.error", map[string]any{"sessionID": t.sid, "error": e})
+		t.run.failure = e
 		return nil
 	case "/perm", "/question", "/dropperm":
 		if word == "/dropperm" {

@@ -91,6 +91,7 @@ Replay after a disconnect (important for the phone and car use case):
 - The end of a turn is `session.status {type:"idle"}` immediately followed by **`session.idle {sessionID}`**. That is the reliable "turn finished" signal.
 - `session.error {sessionID, error:{name, data}}` carries one of these error names: `ProviderAuthError`, `UnknownError`, `MessageOutputLengthError`, `MessageAbortedError`, `StructuredOutputError`, `ContextOverflowError`, `ContentFilterError` or `APIError`.
   - **VERIFIED**: a bad key gave `APIError{message:"User not found.", statusCode:401, isRetryable:false, responseHeaders…}` on the assistant `info.error`.
+  - **VERIFIED** (1.19.4, an unknown model): a failed prompt's error comes twice, `session.error {UnknownError "Model not found: …"}` before `session.idle`, then 2 ms after it a second `session.error {UnknownError "ProviderModelNotFoundError: Model not found: …\n    at …"}` with a stack trace (the `prompt_async` handler's rejection).
 
 **Messages**
 

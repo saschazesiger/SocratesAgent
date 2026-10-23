@@ -110,6 +110,11 @@ type Adapter struct {
 	windows      map[string]int64
 	lastModel    string
 	retries      int
+	// failedTurn is a turn that ended without completing, the last one to
+	// end. OpenCode says a failed turn's error once more after
+	// session.idle (the rejected prompt, with a stack trace); the turn's end
+	// said it already.
+	failedTurn bool
 	// commands are the names GET /command listed: what Command posts to
 	// /command.
 	commands map[string]bool

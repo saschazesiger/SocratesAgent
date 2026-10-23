@@ -286,11 +286,15 @@ func TestErrorsPermissionsAndQuestions(t *testing.T) {
 	r.send("/question")
 	r.send("/retry")
 	got := r.waitTurns(4)
-	if got[0] != agent.OutcomeFailed {
+	if got[0] != agent.OutcomeFailed || got[1] != agent.OutcomeCompleted {
 		t.Fatalf("outcomes %v", got)
 	}
 	if _, ok := r.rec.first(agent.TypeError, func(ev agent.Event) bool { return ev.Code == "auth" && contains(ev.Text, "User not found") }); !ok {
 		t.Fatal("no auth error")
+	}
+	// The error OpenCode repeats after the failed turn is idle is not news.
+	if n := r.rec.count(agent.TypeError, nil); n != 1 {
+		t.Fatalf("%d errors", n)
 	}
 	if _, ok := r.rec.first(agent.TypeNotice, func(ev agent.Event) bool { return ev.Code == NoticePermission }); !ok {
 		t.Fatal("no permission notice")

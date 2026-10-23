@@ -401,6 +401,10 @@ func (a *Adapter) handleError(gen int, session string, e *ocError) {
 		}
 		return
 	}
+	if a.turn == nil && a.failedTurn {
+		a.failedTurn = false
+		return
+	}
 	text := e.text()
 	code := "agent_error"
 	switch {
@@ -435,6 +439,7 @@ func (a *Adapter) beginTurnLocked(oc string) {
 		a.endTurnLocked()
 	}
 	u.started = true
+	a.failedTurn = false
 	t := &turnState{id: newTurnID(), user: oc, our: u.our, adopt: u.adopt, model: a.model}
 	if u.adopt {
 		t.user = ""
@@ -470,6 +475,7 @@ func (a *Adapter) endTurnLocked() {
 	case t.failure != "":
 		outcome = agent.OutcomeFailed
 	}
+	a.failedTurn = outcome != agent.OutcomeCompleted
 	usage := &agent.Usage{Context: t.context, Window: a.windows[t.model]}
 	var cost float64
 	var events []agent.Event

@@ -205,6 +205,10 @@ type run struct {
 	once   sync.Once
 	// done is closed once a prompt's loop has ended and said so.
 	done chan struct{}
+	// failure is the error a turn of the loop ended with, which OpenCode
+	// says again after session.idle: the rejected prompt, with a stack
+	// trace.
+	failure map[string]any
 }
 
 func (r *run) stop() { r.once.Do(func() { close(r.cancel) }) }

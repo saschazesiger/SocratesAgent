@@ -463,7 +463,9 @@ live and in a rebuild. **While a turn runs,
 messages wait in the adapter (`queued`) and go one by one after `session.idle`** (DEVIATIONS).
 A `!line` is `POST /shell`. Turn outcome: `limited` (a `retry` status with `action.reason`, which is
 then aborted, or a 429), else `interrupted` (`MessageAbortedError`), else `failed` (any other error;
-`error{code: auth}` for 401/ProviderAuthError with "sign in again"), else `completed`. Other
+`error{code: auth}` for 401/ProviderAuthError with "sign in again"), else `completed`. The
+`session.error` OpenCode 1.19.4 repeats after a failed turn's `session.idle` (the rejected prompt,
+with a stack trace) is dropped: the turn's error and end said it. Other
 retries: `notice{retry}` per attempt. `permission.asked` → replied `always` + `notice{permission_allowed}`.
 `question.asked` → the `QuestionHandler` hook (WP6), else rejected + `notice{question_rejected}`.
 `Answer` returns `ErrAskGone` until WP6. After `/event` drops, it is reopened and caught up from
