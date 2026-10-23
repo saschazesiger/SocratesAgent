@@ -36,7 +36,7 @@ func TestStripRolloutCopiesWithoutEncryptedItems(t *testing.T) {
 	if !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(id) {
 		t.Fatalf("not a UUIDv7: %s", id)
 	}
-	dst, removed, err := StripRollout(src, old, id)
+	dst, removed, err := StripRollout(src, old, id, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,10 +59,25 @@ func TestStripRolloutCopiesWithoutEncryptedItems(t *testing.T) {
 	if orig, _ := os.ReadFile(src); string(orig) != realRollout {
 		t.Fatal("the original was changed")
 	}
-	if _, _, err := StripRollout(src, old, id); err == nil {
+	if _, _, err := StripRollout(src, old, id, ""); err == nil {
 		t.Fatal("a second copy under the same id overwrote the first")
 	}
-	if _, _, err := StripRollout(src, "another-id", newThreadID()); err == nil {
+	// Cut before the refused turn t2: nothing of it reaches the copy.
+	refused := `{"timestamp":"2026-10-23T11:30:00.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t2"}}
+{"timestamp":"2026-10-23T11:30:00.001Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"SAY two"}]}}
+`
+	if err := os.WriteFile(src, []byte(realRollout+refused), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cut, _, err := StripRollout(src, old, newThreadID(), "t2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = os.ReadFile(cut)
+	if strings.Contains(string(raw), "SAY two") || !strings.Contains(string(raw), "task_complete") {
+		t.Fatalf("the cut copy:\n%s", raw)
+	}
+	if _, _, err := StripRollout(src, "another-id", newThreadID(), ""); err == nil {
 		t.Fatal("a rollout of another thread was copied")
 	}
 }

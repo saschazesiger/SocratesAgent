@@ -22,8 +22,9 @@ var strippedTypes = map[string]bool{"reasoning": true, "compaction": true}
 // StripRollout copies the rollout at src as a new thread, newID, without its
 // reasoning and compaction items, next to it in the same sessions folder, and
 // returns the copy's path and how many items it left out. The original is
-// read, never written.
-func StripRollout(src, oldID, newID string) (string, int, error) {
+// read, never written. With cutTurn set, the copy ends before that turn
+// started: the refused turn whose messages are about to be sent again.
+func StripRollout(src, oldID, newID, cutTurn string) (string, int, error) {
 	if oldID == "" || !strings.Contains(filepath.Base(src), oldID) {
 		return "", 0, fmt.Errorf("%s is not the rollout of %s", src, oldID)
 	}
@@ -40,6 +41,9 @@ func StripRollout(src, oldID, newID string) (string, int, error) {
 		line := sc.Bytes()
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
+		}
+		if cutTurn != "" && startsTurn(line, cutTurn) {
+			break
 		}
 		kept, n, err := stripLine(line)
 		if err != nil {
@@ -68,6 +72,19 @@ func StripRollout(src, oldID, newID string) (string, int, error) {
 		return "", 0, err
 	}
 	return dst, removed, nil
+}
+
+// startsTurn is whether line is the task_started event of turn.
+func startsTurn(line []byte, turn string) bool {
+	var rec struct {
+		Type    string `json:"type"`
+		Payload struct {
+			Type   string `json:"type"`
+			TurnID string `json:"turn_id"`
+		} `json:"payload"`
+	}
+	return json.Unmarshal(line, &rec) == nil && rec.Type == "event_msg" &&
+		rec.Payload.Type == "task_started" && rec.Payload.TurnID == turn
 }
 
 // stripLine is one rollout line without encrypted items: nil for a line that

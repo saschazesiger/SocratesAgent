@@ -548,6 +548,17 @@ func TestAccountSwitchChain(t *testing.T) {
 		p.LastTurn.MessageID != msg.MessageID || p.ConversationID != conv {
 		t.Fatalf("strip\n%s", dump(r.since(n)))
 	}
+	// The copy ends before the refused turn: "two" is in it once, from the
+	// retry.
+	copies, _ := filepath.Glob(filepath.Join(lab.shared, "sessions", "*", "*", "*", "*"+conv+".jsonl"))
+	if len(copies) != 1 {
+		t.Fatalf("copies %v", copies)
+	}
+	copied, _ := os.ReadFile(copies[0])
+	if n := strings.Count(string(copied), `{"text":"two","type":"input_text"}`); n != 1 {
+		t.Fatalf("the message is in the copy %d times:\n%s", n, copied)
+	}
+
 	// The original keeps everything it had; codex only appended the refused
 	// turn to it.
 	after, _ := os.ReadFile(original[0])

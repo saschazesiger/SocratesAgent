@@ -46,17 +46,19 @@ func (a *adapter) beginRecoveryLocked(t *turn, terr *turnError) {
 	a.retry = t
 	a.recovered++
 	step := a.recovered
-	go a.recover(t, step, terr)
+	go a.recover(t, step, terr, t.codexID)
 }
 
-func (a *adapter) recover(t *turn, step int, terr *turnError) {
+// recover runs the next step of the chain for t; failed is the codex turn
+// that was refused.
+func (a *adapter) recover(t *turn, step int, terr *turnError, failed string) {
 	a.sendMu.Lock()
 	defer a.sendMu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	err := errors.New("no step left")
 	if step == 1 {
-		err = a.stripped(ctx)
+		err = a.stripped(ctx, failed)
 		if err != nil {
 			a.mu.Lock()
 			a.recovered = 2
@@ -78,8 +80,9 @@ func (a *adapter) recover(t *turn, step int, terr *turnError) {
 	}
 }
 
-// stripped is step 1.
-func (a *adapter) stripped(ctx context.Context) error {
+// stripped is step 1. The copy ends before the refused turn, whose
+// messages resend gives codex again.
+func (a *adapter) stripped(ctx context.Context, failed string) error {
 	a.mu.Lock()
 	thread, path := a.thread, a.path
 	a.mu.Unlock()
@@ -87,7 +90,7 @@ func (a *adapter) stripped(ctx context.Context) error {
 		return errors.New("the thread has no rollout file")
 	}
 	id := newThreadID()
-	if _, _, err := StripRollout(path, thread, id); err != nil {
+	if _, _, err := StripRollout(path, thread, id, failed); err != nil {
 		return err
 	}
 	if err := a.resume(ctx, id); err != nil {

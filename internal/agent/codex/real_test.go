@@ -4,6 +4,7 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http/httptest"
 	"os"
@@ -70,6 +71,44 @@ func (l *realLab) home(name, path, model string) string {
 		l.t.Fatal(err)
 	}
 	return home
+}
+
+// lastRequestCount is how often text appears as a user message in the input
+// of the last model request that mentions it.
+func (l *realLab) lastRequestCount(t *testing.T, text string) int {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(l.root, "model.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := -1
+	for _, line := range strings.Split(string(raw), "\n") {
+		var req struct {
+			Body struct {
+				Input []struct {
+					Role    string `json:"role"`
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
+				} `json:"input"`
+			} `json:"body"`
+		}
+		if json.Unmarshal([]byte(line), &req) != nil {
+			continue
+		}
+		n := 0
+		for _, in := range req.Body.Input {
+			for _, c := range in.Content {
+				if in.Role == "user" && c.Text == text {
+					n++
+				}
+			}
+		}
+		if n > 0 {
+			count = n
+		}
+	}
+	return count
 }
 
 func (l *realLab) spec(home, stateDir, resume string) agent.StartSpec {
@@ -303,6 +342,11 @@ func TestRealAccountSwitchFallbackChain(t *testing.T) {
 	original, err := filepath.Glob(filepath.Join(lab.shared, "sessions", "*", "*", "*", "*"+thread+".jsonl"))
 	if err != nil || len(original) != 1 {
 		t.Fatalf("the original rollout: %v %v", original, err)
+	}
+	// The retried call carries the message once: the copy ends before the
+	// refused turn.
+	if got := lab.lastRequestCount(t, "SAY two"); got != 1 {
+		t.Fatalf("the retried request carries the message %d times", got)
 	}
 	park(t, b)
 
