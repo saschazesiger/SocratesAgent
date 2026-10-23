@@ -94,7 +94,9 @@ All five branches are 5 commits behind `rebuild`'s tip (the WP4 review fixes).
     questions and elicitations.
   - **OpenCode:** the `MCPServers` and `QuestionHandler` hooks; the tool runs as
     `socrates mcp-ask --socket <host sock>`, a local MCP server with a 24 h timeout and progress
-    notifications.
+    notifications. The catch-up after a dropped `/event` (`reconcile`) answers pending permissions
+    but reads no `GET /question`: a question asked while no stream was open is never handled.
+    Read it there and hand each pending question over once (AGENT-HOST.md §10).
   - **Generic:** an open ask left by an interrupted turn keeps the host alive (WP2 review). Decide
     whether recovery closes it.
 - **WP7 accounts** (§4):
@@ -104,7 +106,10 @@ All five branches are 5 commits behind `rebuild`'s tip (the WP4 review fixes).
   - **Switching:** a `switch_account` host op (reserved in WP2). It always interrupts gracefully
     first.
   - **Limits and recommender:** limits per account and the headroom recommender. Auto-switch on
-    limit is a per-chat option, off by default.
+    limit is a per-chat option, off by default. The OpenCode adapter still runs its queue after a
+    `limited` turn, so every queued message goes into the account at its limit and ends `limited`
+    as well; hold the queue after a limited turn until the switch or a "continue" (AGENT-HOST.md
+    §10).
   - **Helpers:** call `claude.PrepareConfigDir` (shares `projects/ tasks/ plans/ todos/`),
     `codex.PrepareHome` (shares `sessions/ archived_sessions/`) and
     `opencode Layout.PrepareAccount` (shared `OPENCODE_DB`, per-account `XDG_DATA_HOME`) before an

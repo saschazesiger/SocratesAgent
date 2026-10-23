@@ -474,7 +474,7 @@ retries: `notice{retry}` per attempt. `permission.asked` → replied `always` + 
 `GET …/message` (the session's, and its subagents' since this process started or resumed them), `GET /permission`
 (each still pending is answered `always`) and `/session/status`. A catch-up never takes a part back
 from its end, and never replaces streamed text with the shorter text OpenCode stored; a part always
-ends with the part whole, never a delta.
+ends with the part whole, never a delta. No `GET /question` (§10).
 
 **Parts and content** (exported types in `convert.go`):
 
@@ -505,7 +505,7 @@ new process does not come up, the adapter reports `Exited` and refuses further s
 the failure; the next host resumes and re-sends what is undelivered). The caller journals
 `account.switched`. API-key
 accounts may pass `OPENCODE_AUTH_CONTENT` in `env`; OAuth accounts keep `auth.json` in their data
-home (research/06 §3.2).
+home (research/06 §3.2). After a `limited` turn the queue runs on (§10).
 
 ## 6. Lifecycle
 
@@ -661,3 +661,11 @@ palette is `compact`. Script, by message text:
 - The Claude adapter's replay receipt is in (§5.1). Ultracode and an API-key account reach it
   only through `StartSpec.Env` (`SOCRATES_CLAUDE_ULTRACODE`, `SOCRATES_CLAUDE_API_KEY`); the server
   sets neither yet (WP7, WP9).
+- OpenCode, for WP7: a turn that ends `limited` lets the queue run like any other, so each queued
+  message is posted into the account at its limit and ends `limited` too. The limit card and the
+  auto-switch (REBUILD §4.3) need the adapter to hold the queue after a limited turn until the chat
+  switches (`SwitchAccount` runs it on the new account) or is told to continue.
+- OpenCode, for WP6: the catch-up after a dropped `/event` reads no `GET /question`, so a
+  `question.asked` sent while no stream was open is never handled and its turn waits. Once
+  questions go to `QuestionHandler`, read it there and hand each pending one over once, as
+  `handlePermission` answers each permission once.

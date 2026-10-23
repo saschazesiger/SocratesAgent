@@ -2256,6 +2256,13 @@ chat; the variables a tool has for that (`GH_CONFIG_DIR`, `GIT_CONFIG_GLOBAL`) p
 WP7, which builds the chat's environment, can set them. Giving tools the user's XDG values back
 would take a plugin on OpenCode's `shell.env` hook, which was not tried.
 
+**WP5 / §4.3 and §5.3 — two OpenCode gaps are left to the packages that need them.** After a
+`limited` turn the adapter runs its queue as after any other, so queued messages go into the
+account at its limit; holding them until a switch or a "continue" belongs with the limit card and
+the auto-switch (WP7). The catch-up after a dropped `/event` answers pending permissions but reads
+no `GET /question`, so a question asked while no stream was open is never handled; that belongs
+with the question handler (WP6). AGENT-HOST.md §10 and HANDOFF.md §4 name both.
+
 **WP1 / REBUILD.md §6.2 — chunks are named by an HMAC of their content, not by its SHA-256.**
 §6.2 says `chunks/<sha256>`. The name is HMAC-SHA256 under a key derived from the passphrase
 (as the work package's brief asked), so equal content is still stored once, but the bucket's
