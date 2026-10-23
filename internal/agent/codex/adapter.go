@@ -1,0 +1,780 @@
+//go:build !windows
+
+package codex
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/saschazesiger/SocratesAgent/internal/agent"
+)
+
+// Harness is the name the adapter is registered under.
+const Harness = "codex"
+
+// BinEnv names the codex binary in a chat's environment, for a binary that is
+// not the first `codex` on its PATH (the settings' binary, or a fake).
+const BinEnv = "SOCRATES_CODEX_BIN"
+
+// Version is what the adapter calls itself in initialize's clientInfo; it ends
+// up in the app-server's user agent and the thread's originator.
+var Version = "dev"
+
+func init() {
+	agent.Register(Harness, func() agent.Adapter { return newAdapter() })
+	agent.RegisterCommands(Harness, Commands)
+}
+
+// The adapter's clock.
+var (
+	// errorGrace is how long a turn whose model call failed for good waits
+	// for the turn/completed that 0.164 sends right after; past it, the turn
+	// is ended here so that a chat never stays busy on a lost notification.
+	errorGrace = 30 * time.Second
+	// diffEvery is the most often a turn's aggregated diff is journaled while
+	// it changes. Codex re-sends the whole diff each time.
+	diffEvery = time.Second
+	// stopWait is how long Stop waits for the killed process to be reaped.
+	stopWait = 2 * time.Second
+)
+
+// adapter is one chat's app-server.
+type adapter struct {
+	spec   agent.StartSpec
+	out    agent.Emitter
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	stderr *tail
+	rpc    *conn
+	// exited is closed once the process is reaped.
+	exited chan struct{}
+
+	// sendMu makes turn starts, steers and the recovery chain one at a time,
+	// whichever goroutine they come from.
+	sendMu sync.Mutex
+
+	mu sync.Mutex
+	// thread is the chat's codex thread and path its rollout file; model is
+	// what the thread runs on when the chat did not choose (for plan mode).
+	thread      string
+	path        string
+	threadModel string
+	model       string
+	effort      string
+	plan        bool
+	ending      bool
+	// active is the running root turn. starting is the message whose
+	// turn/start is in flight, so the turn/started that answers it is known
+	// as its turn.
+	active   *turn
+	starting *agent.Outgoing
+	// expect is the kind of the next turn codex starts on its own after a
+	// command (a compaction or a review), which cannot be steered.
+	expect turnKind
+	// turns are the root turns by codex turn id, kept for their subagents'
+	// late events; retry is the journal turn a recovery restarts.
+	turns map[string]*turn
+	retry *turn
+	// queue holds messages codex cannot take now (a compaction or review
+	// runs, or a "!" line waits for the turn to end); steered are messages
+	// handed to the running turn, by client id, until codex takes them up.
+	queue   []agent.Outgoing
+	steered map[string]agent.Outgoing
+	agents  map[string]*subagent
+	running int
+	asks    map[string]chan json.RawMessage
+	calls   map[string]*call
+	limits  map[string]agent.Event
+	context int64
+	// recovered is how far the invalid_encrypted_content fallback chain got
+	// in this process (§4.3): 0 none, 1 stripped, 2 handed off.
+	recovered int
+}
+
+func newAdapter() *adapter {
+	return &adapter{
+		exited:  make(chan struct{}),
+		turns:   map[string]*turn{},
+		steered: map[string]agent.Outgoing{},
+		agents:  map[string]*subagent{},
+		asks:    map[string]chan json.RawMessage{},
+		calls:   map[string]*call{},
+		limits:  map[string]agent.Event{},
+	}
+}
+
+// ------------------------------------------------------------------- start
+
+func (a *adapter) Start(ctx context.Context, spec agent.StartSpec, out agent.Emitter) error {
+	a.spec, a.out = spec, out
+	a.model, a.effort = spec.Model, spec.Effort
+	if err := a.launch(); err != nil {
+		return err
+	}
+	if err := a.handshake(ctx); err != nil {
+		a.kill()
+		return err
+	}
+	if spec.First != nil {
+		if err := a.Send(ctx, *spec.First); err != nil {
+			out.Emit(agent.Event{Type: agent.TypeError, Code: "send_failed", MessageID: spec.First.MessageID, Text: err.Error()})
+		}
+	}
+	return nil
+}
+
+// launch starts `codex app-server` on stdio with the fixed policy.
+func (a *adapter) launch() error {
+	bin, err := codexBinary(a.spec.Env)
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(bin, appServerArgs(a.spec.Workdir)...)
+	cmd.Env = a.spec.Env
+	cmd.Dir = a.spec.Workdir
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	a.stderr = &tail{}
+	cmd.Stderr = a.stderr
+	if a.spec.Spawn != nil {
+		err = a.spec.Spawn(cmd)
+	} else {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		err = cmd.Start()
+	}
+	if err != nil {
+		return fmt.Errorf("start codex: %w", err)
+	}
+	a.cmd, a.stdin, a.rpc = cmd, stdin, newConn(stdin)
+	go a.read(stdout)
+	return nil
+}
+
+// appServerArgs is the fixed command line (HARNESS-POLICY.md, Codex): stdio,
+// no update check, and the working directory trusted, so that its project
+// config and AGENTS.md apply without codex writing a trust entry of its own.
+func appServerArgs(workdir string) []string {
+	args := []string{"app-server", "--listen", "stdio://", "-c", "check_for_update_on_startup=false"}
+	if workdir != "" {
+		args = append(args, "-c", trustOverride(workdir))
+	}
+	return args
+}
+
+// trustOverride trusts one directory, as a whole inline table: codex splits a
+// dotted -c key on every dot, quoted or not.
+func trustOverride(dir string) string {
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	return "projects={" + tomlString(dir) + "={trust_level=" + tomlString("trusted") + "}}"
+}
+
+// tomlString quotes a TOML basic string; JSON's escaping is TOML's, but for
+// DEL.
+func tomlString(s string) string {
+	quoted, _ := json.Marshal(s)
+	return strings.ReplaceAll(string(quoted), "\u007f", `\u007F`)
+}
+
+// codexBinary is BinEnv from the environment, else `codex` on its PATH.
+func codexBinary(env []string) (string, error) {
+	if bin := envValue(env, BinEnv); bin != "" {
+		return bin, nil
+	}
+	path := envValue(env, "PATH")
+	if path == "" {
+		path = os.Getenv("PATH")
+	}
+	for _, dir := range filepath.SplitList(path) {
+		if dir == "" {
+			continue
+		}
+		p := filepath.Join(dir, "codex")
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
+			return p, nil
+		}
+	}
+	return "", errors.New("codex is not installed: no codex on the PATH")
+}
+
+func envValue(env []string, key string) string {
+	for i := len(env) - 1; i >= 0; i-- {
+		if k, v, ok := strings.Cut(env[i], "="); ok && k == key {
+			return v
+		}
+	}
+	return ""
+}
+
+// handshake is initialize, then the thread: resumed, rebuilt or new.
+func (a *adapter) handshake(ctx context.Context) error {
+	var init struct {
+		CodexHome string `json:"codexHome"`
+	}
+	if err := a.rpc.call(ctx, "initialize", map[string]any{
+		"clientInfo":   map[string]any{"name": "socrates", "title": "Socrates", "version": Version},
+		"capabilities": map[string]any{"experimentalApi": true},
+	}, &init); err != nil {
+		return a.startErr("codex refused the handshake", err)
+	}
+	if err := a.rpc.notify("initialized", map[string]any{}); err != nil {
+		return err
+	}
+	resume := a.spec.ResumeID
+	rebuild := false
+	if resume == "" && a.spec.First == nil {
+		// The journal knows no conversation, but this chat had one: the
+		// journal was lost, and the thread is where its history still is.
+		if st, err := a.loadState(); err == nil && st.ThreadID != "" {
+			resume, rebuild = st.ThreadID, true
+		}
+	}
+	if resume != "" {
+		if err := a.resume(ctx, resume); err != nil {
+			return err
+		}
+	} else if err := a.startThread(ctx, ""); err != nil {
+		return err
+	}
+	if rebuild {
+		if err := a.rebuild(ctx, resume); err != nil {
+			a.out.Emit(agent.Event{Type: agent.TypeNotice, Code: "history_unavailable",
+				Text: "The earlier history of this chat could not be read back from Codex: " + err.Error()})
+		}
+	}
+	a.mu.Lock()
+	thread := a.thread
+	a.mu.Unlock()
+	a.out.Emit(agent.Event{Type: agent.TypeConversation, ConversationID: thread})
+	return nil
+}
+
+// startErr names a failure, with the process's last words when it died.
+func (a *adapter) startErr(what string, err error) error {
+	if errors.Is(err, errClosed) {
+		if last := a.stderr.last(); last != "" {
+			return fmt.Errorf("%s: codex exited: %s", what, last)
+		}
+	}
+	return fmt.Errorf("%s: %w", what, err)
+}
+
+// threadResult is the part of thread/start's and thread/resume's answer the
+// adapter reads.
+type threadResult struct {
+	Thread struct {
+		ID   string `json:"id"`
+		Path string `json:"path"`
+	} `json:"thread"`
+	Model string `json:"model"`
+}
+
+// policy is what every thread is started and resumed with (decision §1:
+// always allow everything).
+func (a *adapter) policy(params map[string]any) map[string]any {
+	params["approvalPolicy"] = "never"
+	params["sandbox"] = "danger-full-access"
+	if a.spec.Workdir != "" {
+		params["cwd"] = a.spec.Workdir
+	}
+	return params
+}
+
+// startThread starts a new thread. instructions, when set, are developer
+// instructions for it (a handoff summary).
+func (a *adapter) startThread(ctx context.Context, instructions string) error {
+	params := a.policy(map[string]any{})
+	a.mu.Lock()
+	model, effort := a.model, a.effort
+	a.mu.Unlock()
+	if model != "" {
+		params["model"] = model
+	}
+	if effort != "" {
+		params["config"] = map[string]any{"model_reasoning_effort": effort}
+	}
+	if tools := dynamicToolSpecs(); len(tools) > 0 {
+		params["dynamicTools"] = tools
+	}
+	if instructions != "" {
+		params["developerInstructions"] = instructions
+	}
+	var res threadResult
+	if err := a.rpc.call(ctx, "thread/start", params, &res); err != nil {
+		return a.startErr("codex could not start a thread", err)
+	}
+	if res.Thread.ID == "" {
+		return errors.New("codex started a thread without an id")
+	}
+	return a.setThread(res)
+}
+
+// resume loads an existing thread, without its turns: the journal has them.
+func (a *adapter) resume(ctx context.Context, id string) error {
+	var res threadResult
+	if err := a.rpc.call(ctx, "thread/resume", a.policy(map[string]any{"threadId": id, "excludeTurns": true}), &res); err != nil {
+		return a.startErr("codex could not resume the conversation "+id, err)
+	}
+	if res.Thread.ID == "" {
+		res.Thread.ID = id
+	}
+	return a.setThread(res)
+}
+
+func (a *adapter) setThread(res threadResult) error {
+	a.mu.Lock()
+	a.thread, a.path = res.Thread.ID, res.Thread.Path
+	if res.Model != "" {
+		a.threadModel = res.Model
+	}
+	a.mu.Unlock()
+	return a.saveState(state{ThreadID: res.Thread.ID})
+}
+
+// state is what the adapter keeps in its StateDir: the thread, so that a chat
+// whose journal is gone can still be rebuilt from it.
+type state struct {
+	ThreadID string `json:"thread_id"`
+}
+
+func (a *adapter) statePath() string {
+	if a.spec.StateDir == "" {
+		return ""
+	}
+	return filepath.Join(a.spec.StateDir, "codex", "thread.json")
+}
+
+func (a *adapter) loadState() (state, error) {
+	var st state
+	path := a.statePath()
+	if path == "" {
+		return st, os.ErrNotExist
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return st, err
+	}
+	return st, json.Unmarshal(raw, &st)
+}
+
+func (a *adapter) saveState(st state) error {
+	path := a.statePath()
+	if path == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	raw, _ := json.Marshal(st)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// read consumes the process's stdout until it ends, then reaps it.
+func (a *adapter) read(stdout io.Reader) {
+	a.rpc.read(stdout, a.handle)
+	err := a.cmd.Wait()
+	a.rpc.close(errClosed)
+	a.mu.Lock()
+	ending := a.ending
+	a.ending = true
+	for _, c := range a.calls {
+		c.cancel()
+	}
+	a.mu.Unlock()
+	close(a.exited)
+	if ending {
+		return
+	}
+	what := "codex exited"
+	if err != nil {
+		what += ": " + err.Error()
+	}
+	if last := a.stderr.last(); last != "" {
+		what += ": " + last
+	}
+	a.out.Exited(errors.New(what))
+}
+
+// ------------------------------------------------------------------- send
+
+func (a *adapter) Send(ctx context.Context, msg agent.Outgoing) error {
+	a.sendMu.Lock()
+	defer a.sendMu.Unlock()
+	return a.send(ctx, msg)
+}
+
+// send hands one message to codex: a new turn when none runs, steered into
+// the running one when it does, held when codex cannot take it now. The
+// caller holds sendMu.
+func (a *adapter) send(ctx context.Context, msg agent.Outgoing) error {
+	a.mu.Lock()
+	if a.ending {
+		a.mu.Unlock()
+		return errClosed
+	}
+	active := a.active
+	shell := isShellLine(msg.Text)
+	if active != nil && (shell || active.kind != turnNormal) || len(a.queue) > 0 {
+		a.queue = append(a.queue, msg)
+		a.mu.Unlock()
+		a.out.Emit(agent.Event{Type: agent.TypeMessageState, MessageID: msg.MessageID, State: agent.MessageQueued})
+		return nil
+	}
+	a.mu.Unlock()
+	if active == nil {
+		return a.startTurn(ctx, msg)
+	}
+	err := a.steer(ctx, active, msg)
+	var rerr *rpcError
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &rerr) && notSteerable(rerr):
+		a.mu.Lock()
+		a.queue = append(a.queue, msg)
+		a.mu.Unlock()
+		a.out.Emit(agent.Event{Type: agent.TypeMessageState, MessageID: msg.MessageID, State: agent.MessageQueued})
+		return nil
+	case errors.As(err, &rerr) && strings.Contains(rerr.Message, "no active turn"):
+		// The turn ended between the look and the steer.
+		return a.startTurn(ctx, msg)
+	}
+	return err
+}
+
+// isShellLine is a "!" line, which runs as a shell command of its own.
+func isShellLine(text string) bool {
+	t := strings.TrimSpace(text)
+	return strings.HasPrefix(t, "!") && len(t) > 1 && !strings.Contains(t, "\n")
+}
+
+// notSteerable is codex's "cannot steer a compact (or review) turn".
+func notSteerable(e *rpcError) bool {
+	var data struct {
+		CodexErrorInfo map[string]json.RawMessage `json:"codexErrorInfo"`
+	}
+	if json.Unmarshal(e.Data, &data) == nil {
+		if _, ok := data.CodexErrorInfo["activeTurnNotSteerable"]; ok {
+			return true
+		}
+	}
+	return strings.Contains(e.Message, "cannot steer")
+}
+
+// input is a message as codex input items: the text, images as local images
+// and any other file named by its path.
+func input(msg agent.Outgoing) []any {
+	text := msg.Text
+	var items []any
+	for _, at := range msg.Attachments {
+		if at.Path == "" {
+			continue
+		}
+		if strings.HasPrefix(at.Mime, "image/") {
+			items = append(items, map[string]any{"type": "localImage", "path": at.Path})
+			continue
+		}
+		text += fmt.Sprintf("\n\nAttached file %s: %s", at.Name, at.Path)
+	}
+	return append([]any{map[string]any{"type": "text", "text": text, "text_elements": []any{}}}, items...)
+}
+
+// startTurn opens a turn with msg: turn/start with the model and effort on
+// every turn, so a resumed thread runs on what the chat chose, or a shell
+// command for a "!" line.
+func (a *adapter) startTurn(ctx context.Context, msg agent.Outgoing) error {
+	a.mu.Lock()
+	thread, model, effort, plan := a.thread, a.model, a.effort, a.plan
+	threadModel := a.threadModel
+	a.starting = &msg
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		if a.starting != nil && a.starting.MessageID == msg.MessageID {
+			a.starting = nil
+		}
+		a.mu.Unlock()
+	}()
+	if isShellLine(msg.Text) {
+		command := strings.TrimPrefix(strings.TrimSpace(msg.Text), "!")
+		if err := a.rpc.call(ctx, "thread/shellCommand", map[string]any{"threadId": thread, "command": command}, nil); err != nil {
+			return err
+		}
+		a.out.Emit(agent.Event{Type: agent.TypeMessageState, MessageID: msg.MessageID, State: agent.MessageDelivered})
+		return nil
+	}
+	params := map[string]any{"threadId": thread, "input": input(msg), "clientUserMessageId": msg.MessageID}
+	if model != "" {
+		params["model"] = model
+	}
+	if effort != "" {
+		params["effort"] = effort
+	}
+	if plan {
+		if model == "" {
+			model = threadModel
+		}
+		var re any
+		if effort != "" {
+			re = effort
+		}
+		params["collaborationMode"] = map[string]any{"mode": "plan",
+			"settings": map[string]any{"model": model, "reasoning_effort": re, "developer_instructions": nil}}
+	}
+	var res struct {
+		Turn struct {
+			ID string `json:"id"`
+		} `json:"turn"`
+	}
+	if err := a.rpc.call(ctx, "turn/start", params, &res); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	t := a.openTurnLocked(res.Turn.ID, msg.MessageID, turnNormal, true)
+	t.input = append(t.input, msg)
+	a.mu.Unlock()
+	return nil
+}
+
+// steer adds msg to the running turn. It is queued until codex takes it up at
+// its next step, which the userMessage item carrying its id says.
+func (a *adapter) steer(ctx context.Context, t *turn, msg agent.Outgoing) error {
+	a.mu.Lock()
+	thread := a.thread
+	a.mu.Unlock()
+	err := a.rpc.call(ctx, "turn/steer", map[string]any{"threadId": thread, "expectedTurnId": t.codexID,
+		"input": input(msg), "clientUserMessageId": msg.MessageID}, nil)
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.steered[msg.MessageID] = msg
+	t.input = append(t.input, msg)
+	a.mu.Unlock()
+	a.out.Emit(agent.Event{Type: agent.TypeMessageState, MessageID: msg.MessageID, State: agent.MessageQueued})
+	return nil
+}
+
+// flush starts the next turn with what was held, once a turn has ended.
+func (a *adapter) flush() {
+	a.sendMu.Lock()
+	defer a.sendMu.Unlock()
+	a.mu.Lock()
+	if a.ending || a.active != nil || len(a.queue) == 0 {
+		a.mu.Unlock()
+		return
+	}
+	queue := a.queue
+	a.queue = nil
+	a.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	for i, msg := range queue {
+		if err := a.send(ctx, msg); err != nil {
+			a.out.Emit(agent.Event{Type: agent.TypeError, Code: "send_failed", MessageID: msg.MessageID, Text: err.Error()})
+		}
+		a.mu.Lock()
+		held := len(a.queue) > 0
+		if held {
+			// codex could not take this one; the rest wait behind it.
+			a.queue = append(a.queue, queue[i+1:]...)
+		}
+		a.mu.Unlock()
+		if held {
+			return
+		}
+	}
+}
+
+// ---------------------------------------------------------------- commands
+
+func (a *adapter) Interrupt(ctx context.Context) error {
+	a.mu.Lock()
+	t, thread := a.active, a.thread
+	a.mu.Unlock()
+	if t == nil {
+		return nil
+	}
+	err := a.rpc.call(ctx, "turn/interrupt", map[string]any{"threadId": thread, "turnId": t.codexID}, nil)
+	var rerr *rpcError
+	if errors.As(err, &rerr) {
+		// The turn ended on its own meanwhile.
+		return nil
+	}
+	return err
+}
+
+func (a *adapter) Answer(_ context.Context, askID string, answer json.RawMessage) error {
+	a.mu.Lock()
+	ch := a.asks[askID]
+	delete(a.asks, askID)
+	a.mu.Unlock()
+	if ch == nil {
+		return agent.ErrAskGone
+	}
+	ch <- answer
+	return nil
+}
+
+func (a *adapter) SetModel(_ context.Context, model, effort string) error {
+	a.mu.Lock()
+	if model != "" {
+		a.model = model
+	}
+	a.effort = effort
+	a.mu.Unlock()
+	a.out.Emit(agent.Event{Type: agent.TypeModelChanged, Model: model, Effort: effort})
+	return nil
+}
+
+func (a *adapter) Command(ctx context.Context, name, args string) error {
+	a.mu.Lock()
+	thread := a.thread
+	a.mu.Unlock()
+	args = strings.TrimSpace(args)
+	switch strings.TrimPrefix(name, "/") {
+	case "compact":
+		a.expectTurn(turnOther)
+		return a.rpc.call(ctx, "thread/compact/start", map[string]any{"threadId": thread}, nil)
+	case "review":
+		a.expectTurn(turnOther)
+		return a.rpc.call(ctx, "review/start", map[string]any{"threadId": thread, "target": reviewTarget(args)}, nil)
+	case "plan":
+		on := args != "off"
+		a.mu.Lock()
+		a.plan = on
+		a.mu.Unlock()
+		text := "Plan mode is on: Codex plans before it changes anything."
+		if !on {
+			text = "Plan mode is off."
+		}
+		a.out.Emit(agent.Event{Type: agent.TypeNotice, Code: "plan_mode", Text: text})
+		return nil
+	case "shell", "!":
+		if args == "" {
+			return errors.New("the shell command is empty")
+		}
+		a.expectTurn(turnShell)
+		return a.rpc.call(ctx, "thread/shellCommand", map[string]any{"threadId": thread, "command": args}, nil)
+	}
+	return agent.ErrUnknownCommand
+}
+
+func (a *adapter) expectTurn(k turnKind) {
+	a.mu.Lock()
+	a.expect = k
+	a.mu.Unlock()
+}
+
+// reviewTarget reads /review's argument: nothing for the uncommitted changes,
+// "base <branch>", "commit <sha>", or instructions of one's own.
+func reviewTarget(args string) map[string]any {
+	word, rest, _ := strings.Cut(args, " ")
+	rest = strings.TrimSpace(rest)
+	switch {
+	case args == "":
+		return map[string]any{"type": "uncommittedChanges"}
+	case word == "base" && rest != "":
+		return map[string]any{"type": "baseBranch", "branch": rest}
+	case word == "commit" && rest != "":
+		return map[string]any{"type": "commit", "sha": rest, "title": nil}
+	}
+	return map[string]any{"type": "custom", "instructions": args}
+}
+
+// Park closes stdin, which ends the app-server at once; the thread is on disk
+// and the next host resumes it.
+func (a *adapter) Park(ctx context.Context) error {
+	a.mu.Lock()
+	a.ending = true
+	a.mu.Unlock()
+	if a.stdin != nil {
+		_ = a.stdin.Close()
+	}
+	select {
+	case <-a.exited:
+		return nil
+	case <-ctx.Done():
+		a.kill()
+		return ctx.Err()
+	}
+}
+
+func (a *adapter) Stop() error {
+	a.mu.Lock()
+	a.ending = true
+	a.mu.Unlock()
+	a.kill()
+	return nil
+}
+
+// kill ends the app-server and everything it started.
+func (a *adapter) kill() {
+	a.mu.Lock()
+	a.ending = true
+	a.mu.Unlock()
+	if a.cmd == nil || a.cmd.Process == nil {
+		return
+	}
+	_ = syscall.Kill(-a.cmd.Process.Pid, syscall.SIGKILL)
+	select {
+	case <-a.exited:
+	case <-time.After(stopWait):
+	}
+}
+
+// Background counts what parking would cut short: subagents still at work
+// and background terminals.
+func (a *adapter) Background() int {
+	a.mu.Lock()
+	n, thread, ending := a.running, a.thread, a.ending
+	a.mu.Unlock()
+	if ending || thread == "" {
+		return n
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var res struct {
+		Data []json.RawMessage `json:"data"`
+	}
+	if err := a.rpc.call(ctx, "thread/backgroundTerminals/list", map[string]any{"threadId": thread}, &res); err == nil {
+		n += len(res.Data)
+	}
+	return n
+}
+
+func (a *adapter) PID() int {
+	if a.cmd == nil || a.cmd.Process == nil {
+		return 0
+	}
+	return a.cmd.Process.Pid
+}
+
+func newID(prefix string) string {
+	var b [6]byte
+	_, _ = rand.Read(b[:])
+	return prefix + hex.EncodeToString(b[:])
+}

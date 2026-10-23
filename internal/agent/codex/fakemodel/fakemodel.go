@@ -273,7 +273,7 @@ func (t *turn) answer(text string) {
 		t.custom("apply_patch", "*** Begin Patch\n*** Add File: "+name+"\n+hello from the fake model\n*** End Patch\n")
 	case strings.Contains(text, "SPAWN:"):
 		task := strings.Fields(after(text, "SPAWN:") + " helper")[0]
-		t.call("collaboration.spawn_agent", map[string]any{"task_name": task, "message": "SAY sub done"})
+		t.call("collaboration.spawn_agent", map[string]any{"task_name": task, "message": "SAY sub done", "fork_turns": "none"})
 	case strings.Contains(text, "PROPOSE"):
 		t.message("Here is my plan.\n<proposed_plan>\n# Rename the button\n- Find the usages\n- Rename them\n</proposed_plan>\n")
 	default:
