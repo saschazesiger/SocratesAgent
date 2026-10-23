@@ -112,13 +112,28 @@ func (f *fakeAdapter) markdown(ctx context.Context, t *fakeTurn, every time.Dura
 	return true
 }
 
-// toolPart is one tool call from running to its end, its output streamed.
-func (f *fakeAdapter) toolPart(ctx context.Context, t *fakeTurn, id, parent, name string, input any,
+// toolPart is one tool call from running to its end, its output streamed. Its
+// content is Claude's shape (AGENT-HOST.md §5.1): the tool, its input, a
+// one-line summary, and how long it took.
+func (f *fakeAdapter) toolPart(ctx context.Context, t *fakeTurn, id, parent, kind, name string, input map[string]any,
 	output []string, state string, extra map[string]any) bool {
-	content := map[string]any{"name": name, "input": input}
+	summary, _ := input["command"].(string)
+	for _, key := range []string{"file_path", "pattern", "description"} {
+		if summary == "" {
+			summary, _ = input[key].(string)
+		}
+	}
+	content := map[string]any{"tool": name, "tool_use_id": id, "input": input, "summary": summary}
+	if c, ok := input["command"]; ok {
+		content["command"] = c
+	}
+	if p, ok := input["file_path"]; ok {
+		content["path"] = p
+	}
 	raw, _ := json.Marshal(content)
-	f.out.Emit(Event{Type: TypePart, MessageID: t.msgID, PartID: id, ParentPartID: parent, Kind: PartTool,
+	f.out.Emit(Event{Type: TypePart, MessageID: t.msgID, PartID: id, ParentPartID: parent, Kind: kind,
 		State: PartRunning, Content: raw})
+	started := time.Now()
 	var text strings.Builder
 	for _, line := range output {
 		if !fakeWait(ctx, 30*time.Millisecond) {
@@ -130,8 +145,9 @@ func (f *fakeAdapter) toolPart(ctx context.Context, t *fakeTurn, id, parent, nam
 	for k, v := range extra {
 		content[k] = v
 	}
+	content["duration_ms"] = time.Since(started).Milliseconds() + 1200
 	raw, _ = json.Marshal(content)
-	f.out.Emit(Event{Type: TypePart, MessageID: t.msgID, PartID: id, ParentPartID: parent, Kind: PartTool,
+	f.out.Emit(Event{Type: TypePart, MessageID: t.msgID, PartID: id, ParentPartID: parent, Kind: kind,
 		State: state, Content: raw, Text: text.String()})
 	return true
 }
@@ -159,22 +175,24 @@ const fakeDiff = "--- a/server/handler.go\n+++ b/server/handler.go\n" +
 	"+// TestUnknownIDIsNotFound covers the new branch.\n" +
 	" import \"testing\"\n"
 
-// tools is a read, a command with streamed output, an edit with its diff, and
-// a search that fails.
+// tools is a read, a command with streamed output, an edit with its diff, a
+// change to two files as one diff, and a search that fails.
 func (f *fakeAdapter) tools(ctx context.Context, t *fakeTurn) bool {
+	cut := strings.Index(fakeDiff, "--- a/server/handler_test.go")
 	steps := []func() bool{
 		func() bool {
-			return f.toolPart(ctx, t, t.msgID+"_read", "", "Read", map[string]any{"file_path": "/srv/app/server/handler.go"},
+			return f.toolPart(ctx, t, t.msgID+"_read", "", PartTool, "Read", map[string]any{"file_path": "/srv/app/server/handler.go"},
 				[]string{"package server", "", "func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {"}, PartDone, nil)
 		},
 		func() bool {
-			return f.toolPart(ctx, t, t.msgID+"_bash", "", "Bash", map[string]any{"command": "go test ./server/...", "description": "Run the server tests"},
+			return f.toolPart(ctx, t, t.msgID+"_bash", "", PartTool, "Bash", map[string]any{"command": "go test ./server/...", "description": "Run the server tests"},
 				[]string{"=== RUN   TestHandleGet", "--- PASS: TestHandleGet (0.01s)", "PASS", "ok  \tapp/server\t0.214s"},
-				PartDone, map[string]any{"exit_code": 0})
+				PartDone, nil)
 		},
 		func() bool {
-			return f.toolPart(ctx, t, t.msgID+"_edit", "", "Edit", map[string]any{"file_path": "/srv/app/server/handler.go",
-				"old_string": "if err != nil {", "new_string": "if errors.Is(err, store.ErrNotFound) {"}, nil, PartDone, nil)
+			return f.toolPart(ctx, t, t.msgID+"_edit", "", PartDiff, "Edit", map[string]any{"file_path": "/srv/app/server/handler.go",
+				"old_string": "if err != nil {", "new_string": "if errors.Is(err, store.ErrNotFound) {"}, nil, PartDone,
+				map[string]any{"diff": fakeDiff[:cut], "added": 6, "removed": 2})
 		},
 	}
 	for _, step := range steps {
@@ -182,22 +200,22 @@ func (f *fakeAdapter) tools(ctx context.Context, t *fakeTurn) bool {
 			return false
 		}
 	}
-	diff, _ := json.Marshal(map[string]any{"files": []map[string]any{
-		{"path": "server/handler.go", "status": "modified", "diff": fakeDiff[:strings.Index(fakeDiff, "--- a/server/handler_test.go")]},
-		{"path": "server/handler_test.go", "status": "modified", "diff": fakeDiff[strings.Index(fakeDiff, "--- a/server/handler_test.go"):]},
+	// Codex's shape for a change to several files (AGENT-HOST.md §5.2).
+	changes, _ := json.Marshal(map[string]any{"tool": "file_change", "status": "completed", "changes": []map[string]any{
+		{"path": "/srv/app/server/handler.go", "kind": "update", "diff": fakeDiff[:cut]},
+		{"path": "/srv/app/server/handler_test.go", "kind": "update", "diff": fakeDiff[cut:]},
 	}})
-	f.out.Emit(Event{Type: TypePart, MessageID: t.msgID, PartID: t.msgID + "_diff", Kind: PartDiff, State: PartDone, Content: diff})
-	return f.toolPart(ctx, t, t.msgID+"_grep", "", "Grep", map[string]any{"pattern": "TODO", "path": "/srv/app"},
-		[]string{"grep: /srv/app/vendor: Permission denied"}, PartError,
-		map[string]any{"exit_code": 2, "error": "Permission denied"})
+	f.out.Emit(Event{Type: TypePart, MessageID: t.msgID, PartID: t.msgID + "_diff", Kind: PartDiff, State: PartDone, Content: changes})
+	return f.toolPart(ctx, t, t.msgID+"_grep", "", PartTool, "Grep", map[string]any{"pattern": "TODO", "path": "/srv/app"},
+		[]string{"grep: /srv/app/vendor: Permission denied"}, PartError, map[string]any{"is_error": true})
 }
 
-// todoContent is a task list with the first `done` tasks completed and the
-// next one in progress.
+// todoContent is Claude's task list with the first `done` tasks completed and
+// the next one in progress.
 func todoContent(done int) json.RawMessage {
-	items := []string{"Validate the request body", "Return 404 for an unknown id", "Log every failure"}
-	todos := make([]map[string]any, len(items))
-	for i, item := range items {
+	subjects := []string{"Validate the request body", "Return 404 for an unknown id", "Log every failure"}
+	items := make([]map[string]any, len(subjects))
+	for i, subject := range subjects {
 		status := "pending"
 		switch {
 		case i < done:
@@ -205,15 +223,16 @@ func todoContent(done int) json.RawMessage {
 		case i == done:
 			status = "in_progress"
 		}
-		todos[i] = map[string]any{"content": item, "status": status, "active_form": "Working on: " + strings.ToLower(item)}
+		items[i] = map[string]any{"id": fmt.Sprint(i + 1), "subject": subject, "status": status,
+			"active_form": "Working on: " + strings.ToLower(subject)}
 	}
-	raw, _ := json.Marshal(map[string]any{"todos": todos})
+	raw, _ := json.Marshal(map[string]any{"items": items})
 	return raw
 }
 
 // todo works through three tasks, replacing the list part after each one.
 func (f *fakeAdapter) todo(ctx context.Context, t *fakeTurn, every time.Duration) bool {
-	id := t.msgID + "_todo"
+	id := "todo_" + t.msgID
 	for done := 0; done <= 3; done++ {
 		state := PartRunning
 		if done == 3 {
@@ -227,85 +246,88 @@ func (f *fakeAdapter) todo(ctx context.Context, t *fakeTurn, every time.Duration
 	return true
 }
 
-// workflow is a Workflow tool part with three phases, and an agent per phase
-// nested in it, each with a part of its own nested in the agent.
+// workflow is a Workflow tool part with three phases and four agents nested
+// in it, each with a part of its own nested in the agent: Claude's shape.
 func (f *fakeAdapter) workflow(ctx context.Context, t *fakeTurn, every time.Duration) bool {
 	group := t.msgID + "_wf"
-	phases := []map[string]any{
-		{"id": "plan", "title": "Plan", "state": "pending"},
-		{"id": "build", "title": "Build", "state": "pending"},
-		{"id": "review", "title": "Review", "state": "pending"},
+	phases := []map[string]any{{"index": 0, "title": "Plan"}, {"index": 1, "title": "Build"}, {"index": 2, "title": "Review"}}
+	agents := []struct{ id, phase, label string }{
+		{"planner", "Plan", "Write the plan"},
+		{"api", "Build", "Build the API"},
+		{"ui", "Build", "Build the page"},
+		{"reviewer", "Review", "Review the change"},
 	}
-	agents := []struct{ id, phase, task string }{
-		{"planner", "plan", "Write the plan"},
-		{"api", "build", "Build the API"},
-		{"ui", "build", "Build the page"},
-		{"reviewer", "review", "Review the change"},
-	}
-	emitGroup := func(state string) {
-		raw, _ := json.Marshal(map[string]any{"name": "Workflow", "input": map[string]any{"description": "Ship the feature"},
-			"workflow": map[string]any{"phases": phases}})
+	done := 0
+	emitGroup := func(state, status string) {
+		raw, _ := json.Marshal(map[string]any{"tool": "Workflow", "tool_use_id": group, "summary": "Ship the feature",
+			"input": map[string]any{"description": "Ship the feature"},
+			"workflow": map[string]any{"name": "ship", "description": "Ship the feature", "status": status, "phases": phases,
+				"agents": len(agents), "agents_done": done}})
 		f.out.Emit(Event{Type: TypePart, MessageID: t.msgID, PartID: group, Kind: PartTool, State: state, Content: raw})
 	}
-	agent := func(i int, state string) {
+	agent := func(i int, state, status, activity string) {
 		a := agents[i]
-		raw, _ := json.Marshal(map[string]any{"name": "Agent", "input": map[string]any{"description": a.task}, "phase": a.phase,
-			"agent": a.id})
-		f.out.Emit(Event{Type: TypePart, MessageID: t.msgID, PartID: group + "_" + a.id, ParentPartID: group,
+		raw, _ := json.Marshal(map[string]any{"tool": "WorkflowAgent", "summary": a.label,
+			"agent": map[string]any{"id": a.id, "label": a.label, "phase": a.phase, "status": status, "activity": activity}})
+		f.out.Emit(Event{Type: TypePart, MessageID: t.msgID, PartID: fmt.Sprintf("%s_a%d", group, i), ParentPartID: group,
 			Kind: PartTool, State: state, Content: raw})
 	}
-	emitGroup(PartRunning)
-	for p, phase := range phases {
-		phase["state"] = "running"
-		emitGroup(PartRunning)
+	emitGroup(PartRunning, "running")
+	for _, phase := range phases {
 		for i, a := range agents {
-			if a.phase == phase["id"] {
-				agent(i, PartRunning)
+			if a.phase == phase["title"] {
+				agent(i, PartRunning, "running", "Reading the code")
 			}
 		}
 		if !fakeWait(ctx, every) {
 			return false
 		}
 		for i, a := range agents {
-			if a.phase != phase["id"] {
+			if a.phase != phase["title"] {
 				continue
 			}
-			f.out.Emit(Event{Type: TypePart, MessageID: t.msgID, PartID: group + "_" + a.id + "_text",
-				ParentPartID: group + "_" + a.id, Kind: PartText, State: PartDone, Text: a.task + ": done."})
-			agent(i, PartDone)
+			f.out.Emit(Event{Type: TypePart, MessageID: t.msgID, PartID: fmt.Sprintf("%s_a%d_text", group, i),
+				ParentPartID: fmt.Sprintf("%s_a%d", group, i), Kind: PartText, State: PartDone, Text: a.label + ": done."})
+			agent(i, PartDone, "completed", "")
+			done++
 		}
-		phase["state"] = "done"
-		if p == len(phases)-1 {
-			emitGroup(PartDone)
-		} else {
-			emitGroup(PartRunning)
-		}
+		emitGroup(PartRunning, "running")
 	}
+	emitGroup(PartDone, "completed")
 	return true
 }
 
 // fakePlan is the plan /plan asks to have approved.
 const fakePlan = "## Plan\n\n1. Add the `404` branch to `handleGet`.\n2. Cover it with a test.\n3. Run the whole suite."
 
-// plan shows a plan and waits until it is approved or sent back.
+// plan shows a plan and waits until it is approved or sent back, the way
+// Claude's plan mode does (AGENT-HOST.md §5.1).
 func (f *fakeAdapter) plan(ctx context.Context, t *fakeTurn) bool {
-	askID := "ask_" + fakeID()
-	content, _ := json.Marshal(map[string]any{"plan": fakePlan, "ask_id": askID})
-	f.out.Emit(Event{Type: TypePart, MessageID: t.msgID, PartID: t.msgID + "_plan", Kind: PartPlan, State: PartDone,
-		Text: fakePlan, Content: content})
-	payload, _ := json.Marshal(map[string]any{"kind": "plan", "title": "Approve the plan", "plan": fakePlan})
+	partID := t.msgID + "_plan"
+	askID := "plan_" + partID
+	emit := func(decision, note string) {
+		content, _ := json.Marshal(map[string]any{"tool": "ExitPlanMode", "tool_use_id": partID,
+			"plan": map[string]any{"ask_id": askID, "decision": decision, "note": note}})
+		f.out.Emit(Event{Type: TypePart, MessageID: t.msgID, PartID: partID, Kind: PartPlan, State: PartDone,
+			Text: fakePlan, Content: content})
+	}
+	emit("pending", "")
+	payload, _ := json.Marshal(map[string]any{"kind": "plan", "title": "Approve the plan", "plan": fakePlan,
+		"part_id": partID, "options": []string{"approve", "keep_planning"}})
 	answer, ok := f.askID(ctx, t, askID, payload)
 	if !ok {
 		return false
 	}
 	var reply struct {
-		Approved bool   `json:"approved"`
+		Decision string `json:"decision"`
 		Note     string `json:"note"`
 	}
 	_ = json.Unmarshal(answer, &reply)
-	if reply.Approved {
+	if reply.Decision == "approve" {
+		emit("approved", "")
 		t.say("The plan is approved; starting on it.")
 	} else {
+		emit("keep_planning", reply.Note)
 		t.say(fmt.Sprintf("Planning on: %s", reply.Note))
 	}
 	return true
