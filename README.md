@@ -41,7 +41,7 @@ script again is safe: it repairs what is missing and updates the rest. Then:
 
 1. **Open it.** Socrates listens on `127.0.0.1:8080`. From your computer:
    `ssh -L 8080:localhost:8080 root@your-server`, then <http://localhost:8080>.
-   Connect the S3 bucket (below) and choose a password.
+   Choose a password - or restore a backup of another machine (below).
 2. **Sign the agents in**, once, in a terminal on the machine or in a Shell
    session: `claude`, `codex login --device-auth`, `opencode auth login`.
    Answer Claude Code's first-run questions too, or a new session opens on them.
@@ -104,8 +104,8 @@ you open it.
 | `socrates.service` | the web server: `systemctl status socrates`, `journalctl -u socrates -f` |
 | `socrates-tmux.scope` | the sessions. `systemctl stop "socrates-tmux*.scope"` ends every one of them |
 | `socrates-update.timer` | the nightly update: `systemctl list-timers socrates-update.timer`, `journalctl -u socrates-update` |
-| `/etc/socrates.env` | the listen address, what is updated, and the bucket if you configure it there |
-| `/var/lib/socrates` | the data directory: the database's working copy, workspaces, profiles, journals, `updates.json` and `updates.log` of the last update |
+| `/etc/socrates.env` | the listen address and what is updated |
+| `/var/lib/socrates` | the data directory: the database, profiles, journals, `backup.json`, `updates.json` and `updates.log` of the last update |
 | `/root` | `HOME`: the agents' own logins, settings and transcripts, Claude Code and Codex |
 | `/usr/local/bin/socrates` | the binary |
 | `/usr/local/lib/socrates` | the updater the timer runs |
@@ -126,47 +126,59 @@ rm -rf /etc/systemd/system/socrates.service /etc/systemd/system/socrates-update.
 find /usr/local/bin -lname '/opt/socrates/*' -delete && apt-mark unhold tmux
 ```
 
-## Storage: an S3 bucket is required
+## Storage: one folder, backed up to S3
 
-Socrates keeps its state in an S3 bucket and will not start without one: until
-a bucket is connected it serves the connect page and nothing else. The data
-directory keeps a working copy, so a page never waits on the bucket; every
-change goes up within about five seconds, and a new machine with an empty data
-directory comes back from the bucket.
+Everything Socrates keeps is in its data directory, `/var/lib/socrates`
+(`SOCRATES_DATA_DIR`): the database with the settings, the password, sign-ins,
+sessions and prepared prompts, and beside it the sessions' files, profiles and
+VS Code's state. It needs nothing else to run, and it never waits on a network.
 
-| in the bucket (encrypted) | stays on the machine |
+**Admin → Backup** backs that folder up to an S3 bucket - Hetzner Object
+Storage, AWS S3, Cloudflare R2, MinIO, anything S3-compatible. Every 10
+minutes (5 at the least) while anything changed, once more when Socrates
+stops, and on **Back up now**. Each backup is a snapshot of the whole folder,
+but only what changed is uploaded: files are cut into 8 MiB chunks, and a
+chunk the bucket already holds is never sent again, so a journal that grew
+costs its last chunk. Every SQLite database in the folder - Socrates' own and
+the agents' - is copied consistently while it is in use, never read half
+written. Snapshots are kept for 48 hours, then one a day for 30 days and one
+a week for 26 weeks; chunks no snapshot needs any more are deleted a day later.
+The card says when the last backup ran, how large it was and what failed; a
+day without a successful one is said on the session page too.
+
+| backed up | left out |
 | --- | --- |
-| settings, the password hash, sign-ins (login cookies), profiles and their order, push keys and subscriptions, unread state, every session row, every prepared session's prompt | the agents' logins, config and transcripts (`HOME`), workspaces, tmux, journals, `plan.json`, VS Code, and the bootstrap file `s3.json` |
+| the database, `sessions/`, `profiles/`, `vscode/`, `vscode-extensions/`, and whatever later versions keep there (chats, agents, accounts) | working directories (the workspace root and the presets, which live in git), `run/`, `cache/`, `bin/`, sockets, the terminals' byte journals, the updater's files, and `backup.json` itself |
 
-Any S3-compatible store works: Hetzner Object Storage, AWS S3, Cloudflare R2,
-MinIO. Connect it on the setup page (step 1, before the password), or set the
-`SOCRATES_S3_*` variables in `/etc/socrates.env` (the file lists them) and
-`systemctl restart socrates` - then the file wins and the admin page shows it
-read-only. `SOCRATES_S3_BUCKET` switches it on; the region defaults to
-`us-east-1`, path-style addressing to on, the prefix to the bucket's root, and
-the endpoint is empty for AWS. Admin → Storage tests the connection, syncs now,
-and changes the endpoint, region, keys or addressing style.
+**Everything in the bucket is encrypted on this machine** (AES-256-GCM, with
+keys derived from your passphrase by PBKDF2-SHA256, 600 000 rounds) before it
+is sent; even the chunks' names say nothing about their content. Only
+`meta.json` (the salt and a check value) is plain. The passphrase never goes
+to the bucket. **If you lose it, nobody can read the backup, you included** -
+write it down somewhere other than the server. It is in `<data>/backup.json`
+(mode 0600) with the bucket's keys, which is why that file is not backed up.
 
-**Everything in the bucket is encrypted on this machine** (AES-256-GCM, with a
-key derived from the passphrase by PBKDF2-SHA256, 600 000 rounds) before it is
-sent; only `meta.json` (the salt and a check value) and `lease.json` (which
-host holds the bucket) are plain. The passphrase never goes to the bucket.
-**If you lose it, the bucket's contents cannot be read by anyone, you
-included** — write it down somewhere other than the server. It is stored in
-`<data>/s3.json` (mode 0600) or `/etc/socrates.env`, so treat those like the
-bucket keys they sit beside.
+**Moving to a new machine:** install Socrates there and open its setup page,
+choose **Restore from a backup**, enter the bucket and the passphrase, pick a
+snapshot, and sign in with the old password once it is back. Over SSH instead:
+put the old `backup.json` into the new data directory, then
 
-**One Socrates per bucket and prefix.** The running one holds a lease
-(`lease.json`, renewed every 30 s, free after 90 s without a renewal and at
-once on a clean stop). A second installation on the same bucket shows who holds
-it and offers **Take over** with the Socrates password; the first one then
-stops uploading and says so in a banner. If the bucket cannot be reached at
-start, a data directory that was synchronised with exactly that bucket starts
-from its copy and catches up later; any other one waits on the connect page and
-retries. If `meta.json` disappears from a bucket that still holds Socrates
-objects, no new installation is created over them: a machine that was
-synchronised with it puts its copy back; any other refuses to start until it is
-restored, or the prefix is emptied.
+```bash
+systemctl stop socrates
+socrates restore -list
+socrates restore -snapshot latest
+systemctl start socrates
+```
+
+A restore only goes into a data directory that holds no installation yet.
+The restored machine keeps backing up into the same bucket, as a machine of
+its own: snapshots are kept apart by machine, and the card says when another
+machine wrote one in the last day.
+
+An installation that had the bucket mirror of earlier versions (`s3.json`, or
+`SOCRATES_S3_*` in `/etc/socrates.env`) is carried over by itself: the backup
+goes into the same bucket under `backup/v1/` inside the old prefix, and the
+mirror's objects are left as they were.
 
 ## More than one account
 
@@ -224,8 +236,8 @@ Switch **PreStart** on in the new-session sheet (Claude Code, Codex and
 OpenCode) and **Prepare** stores the session without starting anything. It
 opens as a panel instead of a terminal: the same settings as the sheet, all
 still changeable, and a large field for the first prompt, which is saved as you
-type (on this device at once, on the server after a pause, then in the bucket —
-the line under the field says which). **Start** (or Ctrl/⌘+Enter) launches it
+type (on this device at once, on the server after a pause - the line under
+the field says which). **Start** (or Ctrl/⌘+Enter) launches it
 exactly as a new session with those settings, and the prompt goes in as the
 program's first message. **Start automatically** takes a date and time instead:
 the server starts it then by itself, even with no browser open, and sends a
@@ -265,8 +277,8 @@ The front end has no build step — edit `internal/web/static`, then
 same smoke test and rollback as an update; set `SOCRATES_AUTO_UPDATE=deps` to
 keep the nightly update from replacing it with the repository's newest commit). Design notes are
 in [docs/design](docs/design). The environment is `SOCRATES_ADDR` (default
-`127.0.0.1:8080`), `SOCRATES_DATA_DIR` (default `/var/lib/socrates`), `HOME`
-and the `SOCRATES_S3_*` variables.
+`127.0.0.1:8080`), `SOCRATES_DATA_DIR` (default `/var/lib/socrates`) and
+`HOME`.
 
 ## License
 

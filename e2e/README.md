@@ -37,20 +37,18 @@ it timed out on every single navigation.
 
 ## The bucket
 
-S3 is mandatory: a Socrates without a bucket serves the connect page and
-nothing else. So `e2e/fakebin/fakes3` — `internal/s3/s3fake`, the in-memory
-store the mirror's unit tests use, with real SigV4 verification and the
-conditional-write behaviour of the Ceph RGW Socrates is deployed against — is
-built and started once per run on a loopback port, and every server is started
-with `SOCRATES_S3_*` pointing at it under a prefix of its own
-(`e2e/<data directory name>/`). A fresh prefix holds no state, so the server
-creates it there and the ordinary password page follows: `setup()` is
-unchanged, and a restart of the same data directory finds its own state again.
-`start({ s3prefix })` puts a second data directory on an existing prefix
-(`s3restore`, `storagebanner`), and `s3prefix: null` starts a server with no
-bucket at all. `/_fakes3/down?status=503` and `/_fakes3/up` on the fake break
-the bucket on purpose (`fakeS3Switch` in the harness); nothing about the fake
-is secret and it dies with the run.
+Socrates runs without a bucket - the data directory is its only store, and S3
+holds a backup of it - so a scenario starts with none, and a server is started
+with `SOCRATES_S3_BUCKET` empty so that the environment the suite runs in can
+never hand it one. The `backup` and `restore` scenarios want one:
+`e2e/fakebin/fakes3` - `internal/s3/s3fake`, the in-memory store the backup's
+unit tests use, with real SigV4 verification - is built and started on a
+loopback port the first time a scenario asks for it (`backupForm(prefix)` in the
+harness), and each scenario backs up under a prefix of its own
+(`e2e/<data directory name>/`). `/_fakes3/down?status=503` and `/_fakes3/up`
+break the bucket on purpose (`fakeS3Switch`); nothing about the fake is secret
+and it dies with the run. `SOCRATES_BACKUP_WARN_AFTER` shortens the day without
+a backup after which the warning shows, for the `backup` scenario.
 
 ## The fake CLIs
 
@@ -287,9 +285,9 @@ gitignored. Deleting `e2e/out/` is always safe.
 | `design` | white surfaces, a mark wherever a program is named, technical strings only in **Info**, and an animation that does not restart when a row re-renders |
 | `folders` | the session list read by project: one folder per working directory, named after it with the whole path on hover, ordered by the project worked in most recently, `More Chats` last for the sessions Socrates housed itself; a folder shuts, says how many are behind it, is found shut after a reload and is opened again by attaching a session inside it; a folder with nothing in it is not drawn, and a row keeps its element across a re-render |
 | `notify` | a session that stops working while nobody is looking: one chime and one notification named after it, a speaker and a bell in the header that each turn one of them off and are remembered on this device, and nothing fired for a handshake replay or for a session that has only just been started |
-| `prestart` | the sheet's PreStart switch (offered for an agent, not a shell) makes a prepared session and nothing runs; its prompt saves itself, reaches the server as typed and becomes **Backed up**; a model picked in the panel is saved; a reload keeps both; **Start** turns the panel into a live terminal whose program got the prompt byte for byte with the chosen model; the prompt stays, read-only; a time picked in the panel is saved and shown as a clock on the row, and a start set five seconds ahead happens by itself and flips the open panel to the terminal |
-| `s3restore` | server A makes a running session and a prepared one and stops; its data directory and tmux are deleted; server B on a new data directory and the same prefix needs no setup, accepts A's sign-in cookie and the same password, lists both sessions under their ids and names (the one whose pane was on A not taken for running), and has the prompt and a setting intact |
-| `storagebanner` | with the bucket down a change is counted as waiting and the page says "Storage unreachable since …"; back up, the queue empties and the banner leaves; a second server on the same prefix waits on the connect page naming the holder, takes the bucket over with the password, and the first server's page then says another Socrates took it over |
+| `prestart` | the sheet's PreStart switch (offered for an agent, not a shell) makes a prepared session and nothing runs; its prompt saves itself, reaches the server as typed and says **Saved**; a model picked in the panel is saved; a reload keeps both; **Start** turns the panel into a live terminal whose program got the prompt byte for byte with the chosen model; the prompt stays, read-only; a time picked in the panel is saved and shown as a clock on the row, and a start set five seconds ahead happens by itself and flips the open panel to the terminal |
+| `backup` | the Backup card: a bucket configured from it (Test connection, the secrets never shown again), **Back up now** ending in "Backed up" with its snapshot listed as this machine's; with the bucket down and something changed, a run that says it failed with the bucket's words behind the "i"; the day without a backup (20 s here) warned about in `/api/state`, on the card and on the session page; the next good run takes the warning away |
+| `restore` | server A is backed up and then lost with its data directory and tmux; server B, a new data directory, offers **Restore from a backup** on its setup page, refuses a wrong passphrase at its field, lists the snapshot, restores it, starts again on it and goes to the sign-in, where A's password works; both sessions are there under their ids and names (the one whose pane was on A not taken for running), with the prompt and a setting intact, and B backs up into the same bucket under a machine id of its own |
 | `home-landing` | every start of the page is Home, a reload of a session's address too; the Home button beside the collapse control (and in the phone's drawer) brings it back and says so with `aria-pressed`; Back and Forward move between `#home` and `#<id>` |
 | `home-live` | sessions made on another device are counted, and one that starts working, one that asks, one that ends and one that finishes unseen move Home's numbers within seconds - with no reload and no terminal socket at all; a card filters the list, a second tap shows everything; unread work is Finished even on a stopped session, and a background session is Ready but still asks |
 | `outcome` | with the outcomes on, a turn's end carries the hourglass and sits under Background tasks while its verdict is read, and the chime and the notification wait; the read is given Claude's instruction and task list; the verdict lands on the row, on Home with what is still open, in the notification and in the header's tag, survives a reload, goes with the next turn, and goes when the outcomes are switched off |
