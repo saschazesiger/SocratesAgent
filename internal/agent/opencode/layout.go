@@ -166,8 +166,11 @@ const migrateStamp = "migrated"
 // once per binary: concurrent first starts of `opencode serve` on a new or
 // older database race on the migrations and some of them die (research/06
 // §3.1), so the migrations run here, under a lock, before any serve. env is
-// the environment to run it with (an account's, see Env).
-func (l Layout) Migrate(ctx context.Context, bin string, env []string) error {
+// the environment to run it with (an account's, see Env), and spawn starts
+// it (StartSpec.Spawn: a host that dies takes the migration with it, and the
+// next one, which takes the free lock, does not race a leftover). When ctx
+// ends, its process group is killed.
+func (l Layout) Migrate(ctx context.Context, spawn func(*exec.Cmd) error, bin string, env []string) error {
 	if err := os.MkdirAll(l.Root, 0o700); err != nil {
 		return err
 	}
@@ -190,11 +193,27 @@ func (l Layout) Migrate(ctx context.Context, bin string, env []string) error {
 	if raw, err := os.ReadFile(stamp); err == nil && string(raw) == id {
 		return nil
 	}
-	cmd := exec.CommandContext(ctx, bin, "db", "select 1")
+	cmd := exec.Command(bin, "db", "select 1")
 	cmd.Env = env
 	cmd.Dir = l.Root
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("migrate the OpenCode database: %v: %s", err, strings.TrimSpace(tail(string(out), 400)))
+	out := &ring{max: 8 << 10}
+	cmd.Stdout, cmd.Stderr = out, out
+	if err := spawn(cmd); err != nil {
+		return fmt.Errorf("migrate the OpenCode database: %w", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("migrate the OpenCode database: %v: %s", err, strings.TrimSpace(tail(out.String(), 400)))
+		}
+	case <-ctx.Done():
+		if syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) != nil {
+			_ = cmd.Process.Kill()
+		}
+		<-done
+		return fmt.Errorf("migrate the OpenCode database: %w", ctx.Err())
 	}
 	tmp := stamp + ".tmp"
 	if err := os.WriteFile(tmp, []byte(id), 0o600); err != nil {

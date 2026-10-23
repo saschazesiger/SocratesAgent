@@ -442,8 +442,8 @@ Park and Stop: abort if a turn runs, SIGTERM to the process group, SIGKILL after
 config/ cache/`, and per account `accounts/<acct>/` as `XDG_DATA_HOME` (its `opencode/auth.json`,
 the shared folders linked in by relative symlinks) with `state/` as `XDG_STATE_HOME`.
 `PrepareAccount(acct)` makes it (idempotent; every start calls it, WP7 calls it on creating an
-account). `Migrate` runs `opencode db "select 1"` once per binary build (stamp `migrated`, under
-`migrate.lock`) before any serve. `StartSpec.Account` empty is `default`.
+account). `Migrate` runs `opencode db "select 1"` through Spawn once per binary build (stamp
+`migrated`, under `migrate.lock`) before any serve. `StartSpec.Account` empty is `default`.
 
 **Session.** New: `POST /session`. Resume: `GET /session/{id}`; 404 (or a malformed id) wraps
 `ErrConversationNotFound`. On resume, an assistant message that never completed (a dead process)

@@ -273,7 +273,7 @@ func (a *Adapter) Start(ctx context.Context, spec agent.StartSpec, out agent.Emi
 	if err := a.layout.PrepareAccount(a.account); err != nil {
 		return err
 	}
-	if err := a.layout.Migrate(ctx, bin, processEnv(spec.Env, a.layout, a.account, "", nil)); err != nil {
+	if err := a.layout.Migrate(ctx, a.spawner(), bin, processEnv(spec.Env, a.layout, a.account, "", nil)); err != nil {
 		return err
 	}
 	if err := a.startProcess(ctx); err != nil {

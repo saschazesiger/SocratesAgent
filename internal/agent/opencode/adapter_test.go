@@ -6,8 +6,10 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -762,8 +764,25 @@ func TestStartRefusesAMissingBinaryAndMigratesOnce(t *testing.T) {
 	if err := (New()).Start(context.Background(), spec, newRecorder()); err == nil {
 		t.Fatal("started without a binary")
 	}
+	// The migration is one of the chat's children: it goes through Spawn.
 	r = newRig(t)
-	r.mustStart("")
+	var mu sync.Mutex
+	var spawned []string
+	spec = r.spec("")
+	spec.Spawn = func(cmd *exec.Cmd) error {
+		mu.Lock()
+		spawned = append(spawned, strings.Join(cmd.Args[1:], " "))
+		mu.Unlock()
+		return spawnPG(cmd)
+	}
+	if err := r.start(spec); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if len(spawned) == 0 || spawned[0] != "db select 1" {
+		t.Fatalf("spawned %q", spawned)
+	}
+	mu.Unlock()
 	layout := NewLayout(r.data)
 	stamp, err := os.Stat(filepath.Join(layout.Root, migrateStamp))
 	if err != nil {
