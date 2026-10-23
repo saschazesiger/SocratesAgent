@@ -241,7 +241,6 @@ async function load() {
   refreshUpdates();
   watchUpdatesCard();
   refreshBackup(true);
-  loadSnapshots();
   if (data.local_url) localURL = data.local_url;
   refreshTunnel();
   if (new URLSearchParams(location.search).get('welcome')) {
@@ -1560,6 +1559,7 @@ async function stopTunnel() {
 
 let backupTimer = null;
 let backupWasRunning = false;
+let snapshotsLoaded = false;
 
 function ago(ms) {
   if (!ms) return 'never';
@@ -1661,8 +1661,9 @@ function renderBackup(status, fillForm) {
     $('backupPathStyle').checked = cfg ? !!cfg.path_style : true;
   }
 
-  // A run that just ended has a new snapshot to list.
-  if (backupWasRunning && !status.running) loadSnapshots();
+  // The list reads the bucket, so it is asked for when the card is first
+  // drawn with a backup configured and after a run, not on every poll.
+  if (cfg && ((backupWasRunning && !status.running) || !snapshotsLoaded)) loadSnapshots();
   backupWasRunning = !!status.running;
   clearTimeout(backupTimer);
   backupTimer = setTimeout(refreshBackup, status.running ? 2000 : 30000);
@@ -1687,6 +1688,7 @@ function snapshotRow(s) {
 // loadSnapshots lists what the bucket holds. It reads the bucket, so it is
 // asked for when the page opens and after a run, not on every poll.
 async function loadSnapshots() {
+  snapshotsLoaded = true;
   try {
     const data = await api('/api/backup/snapshots', { attempts: 1, timeout: 120000 });
     const list = data.snapshots || [];
