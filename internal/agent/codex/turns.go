@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
+	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
 )
 
 // turnKind is what a turn can take while it runs.
@@ -61,6 +62,8 @@ type part struct {
 	text    strings.Builder
 	content json.RawMessage
 	done    bool
+	// asked is set once the questions of an async agent message are an ask.
+	asked bool
 }
 
 // subagent is a thread a collaboration tool spawned: one group part in the
@@ -517,6 +520,23 @@ func (a *adapter) item(p notification, completed bool) {
 		pt.text.WriteString(*m.text)
 	}
 	a.emitPart(t, pt, m.state)
+	if completed && it.Type == "agentMessage" && it.Delivery != nil && *it.Delivery == "async" && !pt.asked {
+		a.asyncQuestions(t, pt, it.Questions)
+	}
+}
+
+// asyncQuestions are what a code-mode model asked with
+// request_user_input_async: the tool returned at once and the turn goes on,
+// so the questions are an ask whose answer arrives as the next user message
+// (REBUILD.md §5.3).
+func (a *adapter) asyncQuestions(t *turn, pt *part, questions json.RawMessage) {
+	payload, ok := askuser.FromAsync(questions)
+	if !ok {
+		return
+	}
+	pt.asked = true
+	payload.PartID = pt.id
+	a.out.Emit(agent.Event{Type: agent.TypeAsk, AskID: newID("ask_"), TurnID: t.id, Payload: payload.JSON(), Via: agent.ViaMessage})
 }
 
 // subAgentActivity opens and closes a subagent's group.

@@ -319,8 +319,19 @@ func TestElicitationRoundTrip(t *testing.T) {
 	if action, _ := ElicitationResult(&p, schema, json.RawMessage(`{"answers":{},"follow_up":"why?"}`)); action != "decline" {
 		t.Fatalf("nothing answered: %s", action)
 	}
-	if _, ok := FromElicitation("lab", "x", json.RawMessage(`{"type":"object","properties":{}}`), nil); ok {
-		t.Fatal("an empty form was taken")
+	empty := json.RawMessage(`{"type":"object","properties":{}}`)
+	yes, ok := FromElicitation("lab", "Deploy now?", empty, nil)
+	if !ok || len(yes.Questions) != 1 || yes.Questions[0].Kind != KindConfirm || yes.Questions[0].Question != "Deploy now?" {
+		t.Fatalf("a form without fields: %+v", yes)
+	}
+	if action, content := ElicitationResult(&yes, empty, json.RawMessage(`{"answers":{"confirm":{"selected":["yes"]}}}`)); action != "accept" || content == nil {
+		t.Fatalf("yes: %s %v", action, content)
+	}
+	if action, _ := ElicitationResult(&yes, empty, json.RawMessage(`{"answers":{"confirm":{"selected":["no"]}}}`)); action != "decline" {
+		t.Fatalf("no: %s", action)
+	}
+	if _, ok := FromElicitation("lab", "x", json.RawMessage(`[1]`), nil); ok {
+		t.Fatal("an unreadable form was taken")
 	}
 }
 

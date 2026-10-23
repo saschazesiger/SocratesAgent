@@ -408,12 +408,11 @@ func TestRequestsAreAnswered(t *testing.T) {
 	if got := lastTurnText(r.projection()); got != "decision: accept" {
 		t.Fatalf("approval %q", got)
 	}
-	_, n = send(t, a, r, "/elicit")
+	_, n = send(t, a, r, "/elicit approval")
 	r.turnEnd(t, n, wait)
-	if got := lastTurnText(r.projection()); got != "action: decline" {
-		t.Fatalf("elicitation %q", got)
+	if got := lastTurnText(r.projection()); got != "action: accept {}" {
+		t.Fatalf("a tool-call approval %q", got)
 	}
-	r.waitFor(t, n, "the notice", isNotice("elicitation_declined"), time.Second)
 	_, n = send(t, a, r, "/tool not_offered")
 	r.turnEnd(t, n, wait)
 	if got := lastTurnText(r.projection()); got != "tool said: The tool not_offered is not available." {

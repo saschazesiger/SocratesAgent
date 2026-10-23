@@ -21,6 +21,12 @@ type Call struct {
 	ThreadID string
 	TurnID   string
 	Turn     string
+	// Model is the model the request's thread runs on, which says whether
+	// it is a code-mode model (REBUILD.md §5.3). PartID is the part of the
+	// item the request belongs to (a dynamic tool call, a request_user_input
+	// call), when the adapter has made one.
+	Model  string
+	PartID string
 
 	a *adapter
 }
@@ -127,15 +133,35 @@ func (a *adapter) serverRequest(fr *frame) {
 	var p struct {
 		ThreadID string `json:"threadId"`
 		TurnID   string `json:"turnId"`
+		CallID   string `json:"callId"`
+		ItemID   string `json:"itemId"`
 	}
 	_ = json.Unmarshal(fr.Params, &p)
 	ctx, cancel := context.WithCancel(context.Background())
 	key := string(fr.ID)
 	c := &Call{Method: fr.Method, Params: fr.Params, ThreadID: p.ThreadID, TurnID: p.TurnID, a: a}
 	a.mu.Lock()
-	t, _ := a.turnFor(p.ThreadID, p.TurnID)
+	c.Model = a.model
+	if c.Model == "" {
+		c.Model = a.threadModel
+	}
+	t, ag := a.turnFor(p.ThreadID, p.TurnID)
+	if ag != nil && ag.model != "" {
+		c.Model = ag.model
+	}
 	if t != nil && !t.ended {
 		c.Turn = t.id
+		item := p.CallID
+		if item == "" {
+			item = p.ItemID
+		}
+		thread := p.ThreadID
+		if thread == "" {
+			thread = a.thread
+		}
+		if pt := t.parts[thread+"/"+item]; pt != nil && item != "" {
+			c.PartID = pt.id
+		}
 	} else {
 		t = nil
 	}
@@ -190,9 +216,9 @@ func (a *adapter) ask(ctx context.Context, turnID string, payload json.RawMessag
 
 // builtin is how the adapter answers codex's requests under the always-allow
 // policy (decision §1). Approvals should not come with approvalPolicy
-// "never"; when one does, it is accepted. Questions to the person are WP6's;
-// until a handler is installed they are declined, with a notice, so that no
-// turn waits for ever.
+// "never"; when one does, it is accepted. Questions to the person have
+// handlers of their own (askuser.go); without one they are declined, with a
+// notice, so that no turn waits for ever.
 var builtin = map[string]Handler{
 	"item/commandExecution/requestApproval": accept(map[string]any{"decision": "accept"}),
 	"item/fileChange/requestApproval":       accept(map[string]any{"decision": "accept"}),

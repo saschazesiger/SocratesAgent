@@ -24,8 +24,16 @@
 //	/crash           a delta, then the process dies
 //	/huge N          one agent message delta of N bytes
 //	/approve         a command approval request; says the decision it got
-//	/elicit          an MCP elicitation form; says the action it got
-//	/tool NAME       calls the dynamic tool NAME (item/tool/call); says its answer
+//	/elicit          an MCP elicitation form of two fields; says the action and
+//	                 content it got
+//	/elicit approval an MCP tool-call approval as an elicitation; the same
+//	/input           Plan mode's request_user_input with two questions; says
+//	                 the answers it got
+//	/async           an agent message delivered "async" with two questions
+//	                 (request_user_input_async), then "asked"
+//	/tool NAME [JSON] calls the dynamic tool NAME (item/tool/call) with the
+//	                 arguments given (for ask_user, a call of two questions
+//	                 when none are); says its answer
 //	/bg S            leaves a background terminal for S seconds
 //	anything else    reasoning, then "you said: <text>"
 //
@@ -799,24 +807,68 @@ func (c *tcx) script(text string) (string, map[string]any) {
 		_ = json.Unmarshal(r.Result, &res)
 		ok = c.say([]string{"decision: " + res.Decision}, 0)
 	case "/elicit":
-		r, err := c.s.ask(c.ctx, "mcpServer/elicitation/request", map[string]any{"threadId": c.th.id, "turnId": c.t.id,
-			"serverName": "lab", "mode": "form", "_meta": nil, "message": "Deploy now?",
-			"requestedSchema": map[string]any{"type": "object", "properties": map[string]any{}}})
+		params := map[string]any{"threadId": c.th.id, "turnId": c.t.id, "serverName": "lab", "mode": "form", "_meta": nil,
+			"message": "Deploy now?", "requestedSchema": map[string]any{"type": "object", "required": []string{"target"},
+				"properties": map[string]any{
+					"target": map[string]any{"type": "string", "title": "Target", "enum": []string{"staging", "production"}},
+					"notes":  map[string]any{"type": "string", "title": "Notes"}}}}
+		if len(fields) > 0 && fields[0] == "approval" {
+			params["message"] = `Allow the lab MCP server to run tool "deploy"?`
+			params["_meta"] = map[string]any{"codex_approval_kind": "mcp_tool_call", "persist": []string{"session", "always"}}
+			params["requestedSchema"] = map[string]any{"type": "object", "properties": map[string]any{}}
+		}
+		r, err := c.s.ask(c.ctx, "mcpServer/elicitation/request", params)
 		if err != nil {
 			return "interrupted", nil
 		}
 		var res struct {
-			Action string `json:"action"`
+			Action  string          `json:"action"`
+			Content json.RawMessage `json:"content"`
 		}
 		_ = json.Unmarshal(r.Result, &res)
-		ok = c.say([]string{"action: " + res.Action}, 0)
+		ok = c.say([]string{"action: " + res.Action + " " + string(res.Content)}, 0)
+	case "/input":
+		callID := c.id("call")
+		r, err := c.s.ask(c.ctx, "item/tool/requestUserInput", c.with(map[string]any{"itemId": callID, "isBlocking": true,
+			"autoResolutionMs": nil, "questions": []any{
+				map[string]any{"id": "color", "header": "Color", "question": "Which color should the button be?",
+					"isOther": true, "isSecret": false, "options": []any{
+						map[string]any{"label": "Blue (Recommended)", "description": "Matches the brand"},
+						map[string]any{"label": "Red", "description": "Stands out"}}},
+				map[string]any{"id": "size", "header": "Size", "question": "How big?", "isOther": false, "isSecret": false,
+					"options": []any{map[string]any{"label": "Small", "description": "s"}, map[string]any{"label": "Large", "description": "l"}}}}}))
+		if err != nil {
+			return "interrupted", nil
+		}
+		if len(r.Error) > 0 {
+			ok = c.say([]string{"input refused: " + string(r.Error)}, 0)
+			break
+		}
+		ok = c.say([]string{"answers: " + string(r.Result)}, 0)
+	case "/async":
+		id := c.id("msg")
+		questions := []any{map[string]any{"title": "Should I also update the docs?", "options": []string{"Yes", "No"}},
+			map[string]any{"title": "Anything else?", "options": nil}}
+		text := "Should I also update the docs?\n- Yes\n- No\n\nAnything else?"
+		item := map[string]any{"type": "agentMessage", "id": id, "text": "", "phase": "final_answer", "delivery": "async", "questions": questions}
+		c.started(item)
+		item["text"] = text
+		c.completed(item)
+		ok = c.say([]string{"asked"}, 0)
 	case "/tool":
 		name := "ask_user"
 		if len(fields) > 0 {
 			name = fields[0]
 		}
 		callID := c.id("call")
-		args := map[string]any{"question": "Deploy now?"}
+		var args any = map[string]any{"question": "Deploy now?"}
+		if _, js, found := strings.Cut(rest, " "); found && strings.TrimSpace(js) != "" {
+			args = json.RawMessage(strings.TrimSpace(js))
+		} else if name == "ask_user" {
+			args = json.RawMessage(`{"title":"Setup","questions":[{"id":"db","header":"Database","question":"Which database?",` +
+				`"kind":"single","options":[{"id":"pg","label":"PostgreSQL"},{"id":"sqlite","label":"SQLite"}]},` +
+				`{"id":"name","question":"What is it called?","kind":"text"}]}`)
+		}
 		item := map[string]any{"type": "dynamicToolCall", "id": callID, "namespace": nil, "tool": name, "arguments": args,
 			"status": "inProgress", "contentItems": nil, "success": nil, "durationMs": nil}
 		c.started(item)

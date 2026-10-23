@@ -227,7 +227,7 @@ type elicitForm struct {
 
 func readForm(schema json.RawMessage, order []string) (elicitForm, bool) {
 	var f elicitForm
-	if json.Unmarshal(schema, &f) != nil || len(f.Properties) == 0 {
+	if len(schema) > 0 && json.Unmarshal(schema, &f) != nil {
 		return f, false
 	}
 	seen := map[string]bool{}
@@ -247,11 +247,16 @@ func readForm(schema json.RawMessage, order []string) (elicitForm, bool) {
 	return f, true
 }
 
+// confirmID is the one question of an elicitation without fields: whether to
+// go ahead at all.
+const confirmID = "confirm"
+
 // FromElicitation converts an MCP elicitation form (a message and a flat
-// JSON Schema of primitive fields) into one question per field. The answer
-// has to be a value the server can check, so delegating is not offered and
-// a field with choices takes only them. It reports false for a form with no
-// fields.
+// JSON Schema of primitive fields) into one question per field; a form with
+// no fields is one yes-or-no question, accept or decline. The answer has to
+// be a value the server can check, so delegating is not offered and a field
+// with choices takes only them. It reports false for a schema it cannot
+// read.
 func FromElicitation(server, message string, schema json.RawMessage, order []string) (Payload, bool) {
 	f, ok := readForm(schema, order)
 	if !ok {
@@ -264,6 +269,12 @@ func FromElicitation(server, message string, schema json.RawMessage, order []str
 	p := Payload{Title: strings.TrimSpace(message), Source: SourceElicitation}
 	if server != "" {
 		p.Context = "Asked by the MCP server " + server + "."
+	}
+	if len(f.Order) == 0 {
+		q := Question{ID: confirmID, Header: "Go ahead?", Question: p.Title, Kind: KindConfirm, Required: true}
+		finish(&q, 1)
+		p.Questions = append(p.Questions, q)
+		return p, true
 	}
 	for i, name := range f.Order {
 		if i == MaxQuestions {
@@ -326,11 +337,17 @@ func constOptions(enum, names []string, titled []constOpt) []Option {
 
 // ElicitationResult is the answer to an elicitation: "accept" with a value
 // for every field the person answered, typed as the form says, or "decline"
-// when they answered none. A form has no place for notes, so they are not
-// passed on.
+// when they answered none (for a form without fields: yes or no). A form has
+// no place for notes, so they are not passed on.
 func ElicitationResult(p *Payload, schema json.RawMessage, raw json.RawMessage) (string, map[string]any) {
 	f, _ := readForm(schema, nil)
 	a := ReadAnswer(p, raw)
+	if len(f.Properties) == 0 {
+		if qa := a.Answers[confirmID]; string(qa.Value) == "true" {
+			return "accept", map[string]any{}
+		}
+		return "decline", nil
+	}
 	content := map[string]any{}
 	for i := range p.Questions {
 		q := &p.Questions[i]
