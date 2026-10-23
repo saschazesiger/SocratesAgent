@@ -487,6 +487,8 @@ const USER_STATE = {
   pending: { word: 'Sent', glyph: 'clock' },
   queued: { word: 'Queued', glyph: 'clock' },
   failed: { word: 'Not sent', glyph: 'alertCircle' },
+  // The agent dropped it unread (a turn that ended before taking it up).
+  cancelled: { word: 'Not taken up', glyph: 'ban' },
 };
 
 function attachmentsHtml(list) {
