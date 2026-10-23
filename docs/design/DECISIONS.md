@@ -190,6 +190,11 @@ Detail: `docs/design/DESIGN.md` §E.2, §E.3, §E.7 and §E.8 (revision 5).
 
 ## Revision 6 — the bucket, prepared sessions and the scheduled start, 2026-10-13
 
+> **Superseded (2026-10-23) by REBUILD.md §6.** S3 is no longer the store of record: the
+> data directory is the only truth, and the bucket holds an encrypted, incremental backup of it
+> (`internal/backup`) that nothing reads while Socrates runs. The mirror, the lease, connect
+> mode and the storage banner are gone. What follows is history.
+
 Binding like the rest. Detail: `docs/design/DESIGN.md` §K and §L.
 
 - **S3 is the store of record, and it is mandatory.** Socrates' own state — settings, the password

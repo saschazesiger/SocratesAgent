@@ -82,7 +82,7 @@ const SHELL = [
   '/static/js/keyboard.js',
   '/static/js/transfer.js',
   '/static/js/prestart.js',
-  '/static/js/storage.js',
+  '/static/js/backup.js',
   '/static/js/events.js',
   '/static/js/home.js',
   '/static/js/question.js',

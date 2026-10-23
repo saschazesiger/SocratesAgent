@@ -32,12 +32,15 @@ var ErrNotFound = errors.New("not found")
 // Version 7 replaces the archive and the flag with a status per session.
 // Version 8 is one migration for two features that landed together: prepared
 // sessions (the drafts table and sessions.start_at) and the bucket mirror
-// (mirror_pending, the local list of what still has to be uploaded).
+// (mirror_pending, the local list of what still had to be uploaded).
 // Version 9 adds the cost ledger (cost_convs, cost_hours) and the local record
 // of which transcripts it was last read from (cost_seen); see costs.go.
 // Version 10 adds chats: sessions.kind tells a chat from a terminal, and
 // chat_outbox holds the commands an agent host has not acknowledged yet.
-const SchemaVersion = 10
+// Version 11 is the end of the bucket as the store of record: the data
+// directory is the only truth and the bucket a backup of it
+// (internal/backup), so mirror_pending and the mirror's kv rows go.
+const SchemaVersion = 11
 
 // Store wraps the database handle.
 type Store struct {
@@ -47,20 +50,6 @@ type Store struct {
 	// to. It is guarded by mu, like every other write.
 	revMark int64
 	mu      sync.Mutex // serialises writes; SQLite has a single writer anyway
-
-	// The change tracking the bucket mirror is built on; see mirror.go.
-	// tracking says whether committed writes are recorded in mirror_pending,
-	// and observer is told about them once the write lock is released.
-	// changed collects the object names of the write in progress, and
-	// pendingAt is the last stamp handed to a pending row - both guarded by
-	// mu.
-	tracking atomic.Bool
-	// fenced is set by a mirror that may no longer upload; nothing is
-	// "backed up" from then on.
-	fenced    atomic.Bool
-	observer  atomic.Pointer[func(objects ...string)]
-	changed   []string
-	pendingAt int64
 }
 
 const schema = `
@@ -107,10 +96,10 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 -- The prompt a prepared session will be started with. It is a table of its
--- own rather than a column because it is written on every pause in typing,
--- and each of those writes is an upload: a draft of a hundred kilobytes must
--- not drag the whole session row to the bucket with it, nor the row the draft.
--- rev is what tells two devices editing one draft apart.
+-- own rather than a column because it is written on every pause in typing:
+-- a draft of a hundred kilobytes must not be rewritten with every change to
+-- the session row, nor the row with every keystroke. rev is what tells two
+-- devices editing one draft apart.
 CREATE TABLE IF NOT EXISTS drafts (
   session_id TEXT PRIMARY KEY,
   text       TEXT NOT NULL DEFAULT '',
@@ -118,17 +107,10 @@ CREATE TABLE IF NOT EXISTS drafts (
   updated_at INTEGER NOT NULL
 );
 
--- What has been written here and not yet uploaded to the bucket, by object
--- name. It is in the database, beside the writes it describes, so that a crash
--- between a write and its upload loses neither.
-CREATE TABLE IF NOT EXISTS mirror_pending (
-  object TEXT PRIMARY KEY,
-  at     INTEGER NOT NULL
-);
 -- The cost ledger: what every conversation any CLI had on this machine cost,
 -- by UTC hour and model (costs.go). It outlives the sessions and the
--- transcripts it was read from, which is why it is a table and an object in
--- the bucket of its own rather than something computed when it is asked for.
+-- transcripts it was read from, which is why it is a table of its own rather
+-- than something computed when it is asked for.
 CREATE TABLE IF NOT EXISTS cost_convs (
   key        TEXT PRIMARY KEY,
   harness    TEXT NOT NULL,
@@ -154,7 +136,7 @@ CREATE TABLE IF NOT EXISTS cost_hours (
   PRIMARY KEY (key, hour, model)
 );
 -- Which state of a conversation's transcripts the ledger was last computed
--- from. It describes files on this disk, so it is never mirrored.
+-- from. It describes files on this disk.
 CREATE TABLE IF NOT EXISTS cost_seen (
   key         TEXT PRIMARY KEY,
   fingerprint TEXT NOT NULL
@@ -164,7 +146,7 @@ CREATE TABLE IF NOT EXISTS cost_seen (
 -- command is written here before it is sent and deleted when the host says it
 -- has journaled it, so a server that crashes in between sends it again, and
 -- the host - idempotent on client_id - acts on it once. It describes this
--- machine's hosts, so it is never mirrored.
+-- machine's hosts.
 CREATE TABLE IF NOT EXISTS chat_outbox (
   chat_id    TEXT NOT NULL,
   client_id  TEXT NOT NULL,
@@ -208,7 +190,6 @@ func Open(path string) (*Store, error) {
 	seed := seedRev(db)
 	st.rev.Store(seed)
 	st.revMark = seed
-	st.pendingAt = seedPendingAt(db)
 	return st, nil
 }
 
@@ -322,6 +303,15 @@ func migrate(db *sql.DB, path string) error {
 	// can reach, including for sessions that were deleted afterwards.
 	if _, err := db.Exec(`DELETE FROM kv WHERE key LIKE 'chat.%'`); err != nil {
 		return fmt.Errorf("drop the old conversations: %w", err)
+	}
+	// The mirror's queue of uploads and its record of the bucket it was
+	// synchronised with describe a bucket that is no longer read. The backup
+	// keeps its own bookkeeping outside the database.
+	if _, err := db.Exec(`DROP TABLE IF EXISTS mirror_pending`); err != nil {
+		return fmt.Errorf("drop the mirror's queue: %w", err)
+	}
+	if _, err := db.Exec(`DELETE FROM kv WHERE key LIKE 'mirror.%'`); err != nil {
+		return fmt.Errorf("drop the mirror's records: %w", err)
 	}
 	// CREATE TABLE IF NOT EXISTS does nothing to a table that is already
 	// there, so a column added to an existing table has to be added by hand.
@@ -461,16 +451,6 @@ func backup(db *sql.DB, dest string) error {
 	}
 	log.Printf("store: migrating to schema %d; the previous database was copied to %s", SchemaVersion, dest)
 	return nil
-}
-
-// Backup writes a consistent copy of the database to dest, replacing a file
-// that is there. It is for a step about to replace the local state wholesale
-// - connecting this data directory to a bucket whose state wins - so that a
-// mistake there can be undone by hand.
-func (s *Store) Backup(dest string) error {
-	s.lock()
-	defer s.unlock()
-	return vacuumInto(s.db, dest)
 }
 
 // vacuumInto copies the database to dest with VACUUM INTO.
@@ -651,39 +631,24 @@ func (s *Store) GetKV(key string) (string, error) {
 
 // SetKV writes a raw value.
 //
-// Writing the value a key already holds changes nothing, and is not a change
-// the bucket hears about: the server writes its normalised settings back on
-// every start, and each of those was otherwise one more upload of the same
-// object.
+// Writing the value a key already holds changes nothing, not even the file:
+// the server writes its normalised settings back on every start, and a
+// database that changed on every start would be a new backup every start.
 func (s *Store) SetKV(key, value string) error {
-	s.lock()
-	defer s.unlock()
-	res, err := s.db.Exec(`INSERT INTO kv(key, value) VALUES(?, ?)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`INSERT INTO kv(key, value) VALUES(?, ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE kv.value IS NOT excluded.value`, key, value)
-	if err != nil {
-		return err
-	}
-	if n, err := res.RowsAffected(); (err != nil || n > 0) && MirroredKV(key) {
-		s.touch(KVObject(key))
-	}
-	return nil
+	return err
 }
 
 // DeleteKV removes a value, and says nothing when there was none: the callers
 // are cleanups after a session that may never have had one.
 func (s *Store) DeleteKV(key string) error {
-	s.lock()
-	defer s.unlock()
-	res, err := s.db.Exec(`DELETE FROM kv WHERE key = ?`, key)
-	if err != nil {
-		return err
-	}
-	// Deleting a key that was never there is the common case for these
-	// cleanups, and it is not a change the bucket has to hear about.
-	if n, err := res.RowsAffected(); (err != nil || n > 0) && MirroredKV(key) {
-		s.touch(KVObject(key))
-	}
-	return nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM kv WHERE key = ?`, key)
+	return err
 }
 
 // GetJSON decodes a JSON value stored under key.

@@ -14,8 +14,8 @@ type OutboxEntry struct {
 // the same client_id is left as it is, and inserted says which happened: a
 // request repeated by a browser is the same command, not a second one.
 func (s *Store) PutOutbox(chatID, clientID string, command json.RawMessage) (inserted bool, err error) {
-	s.lock()
-	defer s.unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	res, err := s.db.Exec(`INSERT OR IGNORE INTO chat_outbox(chat_id, client_id, command, created_at) VALUES(?, ?, ?, ?)`,
 		chatID, clientID, string(command), now())
 	if err != nil {
@@ -49,16 +49,16 @@ func (s *Store) Outbox(chatID string) ([]OutboxEntry, error) {
 
 // DeleteOutbox drops a command the host acknowledged (or refused for good).
 func (s *Store) DeleteOutbox(chatID, clientID string) error {
-	s.lock()
-	defer s.unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	_, err := s.db.Exec(`DELETE FROM chat_outbox WHERE chat_id = ? AND client_id = ?`, chatID, clientID)
 	return err
 }
 
 // ClearOutbox drops every command of a chat, which is what deleting it does.
 func (s *Store) ClearOutbox(chatID string) error {
-	s.lock()
-	defer s.unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	_, err := s.db.Exec(`DELETE FROM chat_outbox WHERE chat_id = ?`, chatID)
 	return err
 }

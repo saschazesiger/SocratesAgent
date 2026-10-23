@@ -1,10 +1,11 @@
 // Package vault encrypts what Socrates puts in its bucket.
 //
-// The bucket is somebody else's computer. It holds the password hash, the
-// login cookies, push keys and every session's settings, and none of that
-// should be readable - or quietly replaceable - by whoever can read the
-// bucket. So every object is sealed on this side with AES-256-GCM under a
-// key derived from a passphrase that is never written to the bucket.
+// The bucket is somebody else's computer. It holds the backup of the whole
+// data directory - the password hash, the login cookies, push keys, every
+// session and every agent's logins and transcripts - and none of that should
+// be readable, or quietly replaceable, by whoever can read the bucket. So
+// every object is sealed on this side with AES-256-GCM under a key derived
+// from a passphrase that is never written to the bucket.
 //
 // Each sealed object binds its own object key as additional authenticated
 // data. Without that, someone with write access to the bucket could not
@@ -24,6 +25,7 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
@@ -97,6 +99,17 @@ func NewSalt() ([]byte, error) {
 // iterations is the count recorded in meta.json (Iterations for a new
 // bucket).
 func DeriveKey(passphrase string, salt []byte, iterations int) (*Key, error) {
+	raw, err := DeriveSecret(passphrase, salt, iterations)
+	if err != nil {
+		return nil, err
+	}
+	return NewKey(raw)
+}
+
+// DeriveSecret is DeriveKey's stretched passphrase as raw bytes, for a caller
+// that derives more than one key from it (Subkey) rather than using it as
+// the sealing key itself.
+func DeriveSecret(passphrase string, salt []byte, iterations int) ([]byte, error) {
 	if passphrase == "" {
 		return nil, errors.New("vault: empty passphrase")
 	}
@@ -110,7 +123,16 @@ func DeriveKey(passphrase string, salt []byte, iterations int) (*Key, error) {
 	if err != nil {
 		return nil, fmt.Errorf("vault: %w", err)
 	}
-	return NewKey(raw)
+	return raw, nil
+}
+
+// Subkey derives an independent key of KeySize bytes from a secret for one
+// purpose, named by label: HMAC-SHA256(secret, label). Two labels give two
+// keys that say nothing about each other or about the secret.
+func Subkey(secret []byte, label string) []byte {
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(label))
+	return mac.Sum(nil)
 }
 
 // NewKey wraps 32 raw key bytes. DeriveKey is the normal way to get a Key;

@@ -18,7 +18,7 @@
  *   .so-row          one session: a drawer item and its ⋮
  *   .so-list-empty   what the list says when it has no rows
  *   .so-menu-heading a group's name inside the row menu
- *   .so-banner       the storage banner (storage.js)
+ *   .so-banner       the backup notice (backup.js)
  *   .so-options      the switches of the options dialog
  *   .so-usage-reading, .so-usage-row  the usage dialog
  *   .so-rename, .so-info-dialog, .so-facts  the row menu's dialogs

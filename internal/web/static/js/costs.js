@@ -6,8 +6,9 @@
 // says it is, and what lets a filter answer at once rather than after a
 // round trip: a year of hourly rows is a few thousand arrays.
 //
-// The ledger lives in the bucket like the sessions do, so the numbers survive
-// a restore on another machine; the transcripts they were read from do not.
+// The ledger lives in the database like the sessions do, so the numbers survive
+// a restore from the backup; and a CLI that prunes its transcripts does not
+// take their cost with it.
 
 import { api, el, errorMessage, onWake } from './api.js';
 import { M, html, raw, icon, morph } from './ui.js';
@@ -653,14 +654,9 @@ function drawState() {
   } else {
     morph(line, data.scanned_at ? html`Updated ${clock.format(new Date(data.scanned_at))}` : '');
   }
-  const backup = !data.mirrored
-    ? 'This Socrates has no bucket, so the ledger is kept on this machine only.'
-    : data.pending
-      ? `${data.pending} ${data.pending === 1 ? 'conversation is' : 'conversations are'} waiting to be backed up to the bucket.`
-      : 'The ledger is backed up to the bucket and comes back with a restore.';
   $('costsNote').textContent = 'Estimated at the published API prices from the transcripts Claude Code, Codex and OpenCode keep '
     + '(OpenCode prices its answers itself). A subscription is billed differently: this is what the same work would cost on the API. '
-    + 'Days are this device\'s days. ' + backup;
+    + 'Days are this device\'s days. The ledger is part of the backup and comes back with a restore.';
   $('costsNoneText').textContent = data.scanning
     ? 'Socrates is reading the transcripts on this machine; what they cost shows up here in a moment.'
     : 'They show up here once Claude Code, Codex or OpenCode has had a conversation on this machine.';

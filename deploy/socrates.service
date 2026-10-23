@@ -14,7 +14,7 @@ After=network-online.target
 # Never give up restarting: the default rate limit parks a unit that crashes a
 # few times in quick succession in "failed" for good, and a Socrates that is
 # down until somebody logs in to the machine is worse than one that keeps
-# trying while, say, the network or the bucket comes back.
+# trying while, say, the network comes back.
 StartLimitIntervalSec=0
 
 [Service]
@@ -42,8 +42,8 @@ LimitNOFILE=65536:524288
 # The kernel's OOM killer taking one child - an editor, the tunnel - is not a
 # reason to stop the whole service, which is what the default does.
 OOMPolicy=continue
-# A stop flushes what is pending to the bucket and lets go of the lease, which
-# is bounded well inside this; the sessions are elsewhere and not waited for.
+# A stop makes one last backup of the data directory, bounded at 40 seconds,
+# well inside this; the sessions are elsewhere and not waited for.
 TimeoutStopSec=60
 
 [Install]

@@ -219,8 +219,8 @@ func (s *Store) CreateSession(sess *Session) error {
 	if len(sess.Options) > 0 && !json.Valid(sess.Options) {
 		return errors.New("session options are not valid JSON")
 	}
-	s.lock()
-	defer s.unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if sess.CreatedAt == 0 {
 		sess.CreatedAt = now()
 	}
@@ -277,7 +277,6 @@ func (s *Store) CreateSession(sess *Session) error {
 		return err
 	}
 	s.bump()
-	s.touch(SessionObject(sess.ID))
 	return nil
 }
 
@@ -331,8 +330,8 @@ func (s *Store) ListSessions() ([]Session, error) {
 // revision, and reports a session that is not there as such. Every write below
 // goes through it, so no write can forget to do those three things.
 func (s *Store) update(id, query string, args ...any) error {
-	s.lock()
-	defer s.unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	args = append(args, now(), id)
 	res, err := s.db.Exec(`UPDATE sessions SET `+query+`, updated_at = ? WHERE id = ?`, args...)
 	if err != nil {
@@ -342,7 +341,6 @@ func (s *Store) update(id, query string, args ...any) error {
 		return ErrNotFound
 	}
 	s.bump()
-	s.touch(SessionObject(id))
 	return nil
 }
 
@@ -372,8 +370,8 @@ func (s *Store) SetAutoSessionTitle(id, title string) error {
 // while the session is still called was: a rename by hand while the model was
 // thinking is the newer wish, and ErrNotFound back means it won.
 func (s *Store) ReplaceSessionTitle(id, was, title string) error {
-	s.lock()
-	defer s.unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	res, err := s.db.Exec(`UPDATE sessions SET title = ?, title_source = ?, updated_at = ? WHERE id = ? AND title = ?`,
 		title, TitleAuto, now(), id, was)
 	if err != nil {
@@ -383,7 +381,6 @@ func (s *Store) ReplaceSessionTitle(id, was, title string) error {
 		return ErrNotFound
 	}
 	s.bump()
-	s.touch(SessionObject(id))
 	return nil
 }
 
@@ -400,8 +397,8 @@ func (s *Store) MarkSessionTitled(id string) error {
 // updateNameless is `update` for the two writes the automatic naming makes: it
 // touches the row only while nothing has named it yet.
 func (s *Store) updateNameless(id, query string, args ...any) error {
-	s.lock()
-	defer s.unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	args = append(args, now(), id)
 	res, err := s.db.Exec(`UPDATE sessions SET `+query+`, updated_at = ? WHERE id = ? AND title_source = ''`, args...)
 	if err != nil {
@@ -411,7 +408,6 @@ func (s *Store) updateNameless(id, query string, args ...any) error {
 		return ErrNotFound
 	}
 	s.bump()
-	s.touch(SessionObject(id))
 	return nil
 }
 
@@ -448,8 +444,8 @@ func (s *Store) SetStartedSessionState(id, state string, exitStatus int, failRea
 }
 
 func (s *Store) setStateWhere(id, cond string, condArg any, state string, exitStatus int, failReason string) error {
-	s.lock()
-	defer s.unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	at := now()
 	res, err := s.db.Exec(`UPDATE sessions SET active_at = CASE WHEN state <> ? THEN ? ELSE active_at END,
 		state = ?, exit_status = ?, fail_reason = ?, updated_at = ? WHERE id = ? AND `+cond,
@@ -461,7 +457,6 @@ func (s *Store) setStateWhere(id, cond string, condArg any, state string, exitSt
 		return ErrNotFound
 	}
 	s.bump()
-	s.touch(SessionObject(id))
 	return nil
 }
 
@@ -522,11 +517,10 @@ func (s *Store) ClearResumedFlag(id string) error {
 // it. Killing the tmux session behind it is the caller's business: the store
 // knows nothing about terminals.
 //
-// The two deletes are one transaction, so a draft can never outlive its row
-// and come back from the bucket as an object that belongs to nothing.
+// The two deletes are one transaction, so a draft can never outlive its row.
 func (s *Store) DeleteSession(id string) error {
-	s.lock()
-	defer s.unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -546,6 +540,5 @@ func (s *Store) DeleteSession(id string) error {
 		return err
 	}
 	s.bump()
-	s.touch(SessionObject(id), DraftObject(id))
 	return nil
 }

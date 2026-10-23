@@ -10,10 +10,13 @@ import (
 	"regexp"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
+	"github.com/saschazesiger/SocratesAgent/internal/paths"
 )
 
-// The files of one chat. The chat's directory is part of the data folder and
-// is backed up with it; the socket is under run/, which is not.
+// The files of one chat, named in internal/paths. The chat's directory is
+// part of the data folder and is backed up with it - all but the lock and the
+// log, and the spec without its environment (paths.Redacted); the socket is
+// under run/, which is not.
 //
 //	<data>/chats/<id>/events.jsonl   the journal (agent.JournalFile)
 //	<data>/chats/<id>/host.json      the launch spec the server writes
@@ -22,12 +25,12 @@ import (
 //	<data>/chats/<id>/agent/         the adapter's own state
 //	<data>/run/chats/<id>.sock       the host's socket
 const (
-	chatsDir  = "chats"
-	specName  = "host.json"
-	lockName  = "host.lock"
-	logName   = "host.log"
+	chatsDir  = paths.Chats
+	specName  = paths.ChatSpec
+	lockName  = paths.ChatLock
+	logName   = paths.ChatLog
 	stateDir  = "agent"
-	socketDir = "run/chats"
+	socketDir = paths.ChatSockets
 )
 
 // sockPathLimit is how long a Unix socket path may be, the terminating NUL

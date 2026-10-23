@@ -11,7 +11,7 @@
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import {
-  binaries, cleanupBuild, ensureFakeS3, freePort, scratchDir, spawnServer, waitForHealth, PASSWORD,
+  binaries, cleanupBuild, freePort, scratchDir, spawnServer, waitForHealth, PASSWORD,
 } from './harness.mjs';
 
 let failures = 0;
@@ -78,7 +78,6 @@ const lastText = (events) => [...events].reverse().find((e) => e.type === 'part'
 
 async function main() {
   binaries();
-  await ensureFakeS3();
   const data = scratchDir('socrates-e2e-chats-');
   const port = await freePort();
   let srv = await boot(data, port);

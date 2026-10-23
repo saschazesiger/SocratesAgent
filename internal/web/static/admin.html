@@ -35,8 +35,8 @@
             aria-label="Sections" aria-expanded="false" aria-controls="adminNav" data-icon="menu"></button>
     <a class="ds-brand" href="/"><img class="so-logo" src="/static/img/logo.png" alt="" width="32" height="32"><span class="ds-brand__name">Socrates</span></a>
     <!-- Save is always in reach: the page is one settings document, and this
-         is what sends it. Profiles, storage credentials, the tunnel and the
-         password have buttons of their own and take effect at once. -->
+         is what sends it. Profiles, the backup, the tunnel and the password
+         have buttons of their own and take effect at once. -->
     <div class="so-admin-bar">
       <button class="ds-btn ds-btn--primary" id="saveTop" type="button">
         <span class="ds-btn__faces">
@@ -59,7 +59,7 @@
         <p class="ds-drawer__heading">This machine</p>
         <a class="ds-drawer__item" href="#tmuxCard" data-section="tmuxCard" data-icon="cpu"><span class="ds-drawer__label">Terminal engine</span></a>
         <a class="ds-drawer__item" href="#updatesCard" data-section="updatesCard" data-icon="download"><span class="ds-drawer__label">Updates</span></a>
-        <a class="ds-drawer__item" href="#storageCard" data-section="storageCard" data-icon="hardDrive"><span class="ds-drawer__label">Storage</span></a>
+        <a class="ds-drawer__item" href="#backupCard" data-section="backupCard" data-icon="history"><span class="ds-drawer__label">Backup</span></a>
         <a class="ds-drawer__item" href="#checksCard" data-section="checksCard" data-icon="activity"><span class="ds-drawer__label">Setup check</span></a>
       </div>
       <div class="ds-drawer__group">
@@ -88,7 +88,7 @@
         <div class="ds-page" id="page">
           <header class="ds-page-head">
             <h1 class="ds-page-head__title" tabindex="-1">Admin</h1>
-            <p class="ds-page-head__lead">Everything about Socrates on this machine. Settings are kept once you save them; profiles, storage, the tunnel and the password take effect at once.</p>
+            <p class="ds-page-head__lead">Everything about Socrates on this machine. Settings are kept once you save them; profiles, the backup, the tunnel and the password take effect at once.</p>
           </header>
 
           <!-- A message about the whole page: the welcome after setup, or a
@@ -145,60 +145,90 @@
             <pre class="so-log" id="updatesLog" tabindex="0" hidden></pre>
           </section>
 
-          <section class="ds-card" id="storageCard" aria-labelledby="storageTitle">
-            <h2 class="ds-card__title" id="storageTitle">Storage</h2>
-            <p class="ds-muted">Socrates keeps its own state in an S3 bucket: the settings, the password, sign-ins, profiles, push subscriptions and every session with its prepared prompt. It is encrypted on this machine with your passphrase before it leaves. The data directory keeps the rest — the programs' own logins and transcripts, the workspaces and tmux.</p>
-            <div class="so-state" id="storageStatus" aria-live="polite">
+          <section class="ds-card" id="backupCard" aria-labelledby="backupTitle">
+            <div class="ds-card__row">
+              <h2 class="ds-card__title" id="backupTitle">Backup</h2>
+              <button class="ds-btn ds-btn--sm" id="backupRun" type="button">
+                <span class="ds-btn__faces">
+                  <span class="ds-btn__face">Back up now</span>
+                  <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Starting</span>
+                </span>
+              </button>
+            </div>
+            <p class="ds-muted">Everything Socrates keeps is in its data directory on this machine. While anything changes, it is backed up to an S3 bucket every few minutes — encrypted here with your passphrase, and only what changed goes up. Working directories are not in the backup; they live in git. A new machine is restored from its setup page.</p>
+            <div class="so-state" id="backupStatus" aria-live="polite">
               <span class="so-state__line"><span class="ds-status"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>Loading</span></span></span>
               <span class="so-state__tip"></span>
             </div>
-            <div class="so-admin-notice" id="storageDetail"></div>
-            <div class="so-admin-actions">
-              <button class="ds-btn ds-btn--sm" id="storageTest" type="button">
-                <span class="ds-btn__faces">
-                  <span class="ds-btn__face">Test connection</span>
-                  <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Testing</span>
-                </span>
-              </button>
-              <button class="ds-btn ds-btn--sm" id="storageSync" type="button">
-                <span class="ds-btn__faces">
-                  <span class="ds-btn__face">Sync now</span>
-                  <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Uploading</span>
-                  <span class="ds-btn__face ds-btn__face--done" aria-hidden="true" data-icon="check" data-icon-size="16">Uploaded</span>
-                </span>
-              </button>
+            <div class="so-admin-notice" id="backupDetail"></div>
+            <div class="ds-table-wrap" id="backupSnapshots" hidden>
+              <table class="ds-table ds-table--dense">
+                <caption class="ds-sr">Snapshots in the bucket</caption>
+                <thead><tr>
+                  <th scope="col">Taken</th>
+                  <th scope="col">Machine</th>
+                  <th scope="col" class="ds-num">Size</th>
+                  <th scope="col" class="ds-num ds-col--secondary">Files</th>
+                </tr></thead>
+                <tbody id="backupSnapshotList"></tbody>
+              </table>
             </div>
+            <p class="ds-meta" id="backupSnapshotsHint"></p>
             <div class="ds-subsection">
-              <h3 class="ds-card__subtitle">Credentials</h3>
+              <h3 class="ds-card__subtitle">Bucket</h3>
               <div class="ds-form">
                 <div class="ds-form-grid ds-form-grid--2">
                   <div class="ds-field">
-                    <label class="ds-field__label" for="storageEndpoint">Endpoint</label>
-                    <input class="ds-input" type="text" id="storageEndpoint" spellcheck="false" placeholder="AWS S3">
+                    <label class="ds-field__label" for="backupEndpoint">Endpoint</label>
+                    <input class="ds-input" type="text" id="backupEndpoint" spellcheck="false" placeholder="AWS S3">
                   </div>
                   <div class="ds-field">
-                    <label class="ds-field__label" for="storageRegion">Region</label>
-                    <input class="ds-input" type="text" id="storageRegion" spellcheck="false">
+                    <label class="ds-field__label" for="backupRegion">Region</label>
+                    <input class="ds-input" type="text" id="backupRegion" spellcheck="false" placeholder="us-east-1">
                   </div>
                   <div class="ds-field">
-                    <label class="ds-field__label" for="storageKey">Access key ID</label>
-                    <input class="ds-input" type="text" id="storageKey" spellcheck="false" autocomplete="off">
+                    <label class="ds-field__label" for="backupBucket">Bucket</label>
+                    <input class="ds-input" type="text" id="backupBucket" spellcheck="false">
                   </div>
                   <div class="ds-field">
-                    <label class="ds-field__label" for="storageSecret">Secret access key</label>
-                    <input class="ds-input" type="password" id="storageSecret" autocomplete="off" placeholder="unchanged">
+                    <label class="ds-field__label" for="backupPrefix">Prefix</label>
+                    <input class="ds-input" type="text" id="backupPrefix" spellcheck="false" placeholder="backup/v1">
+                  </div>
+                  <div class="ds-field">
+                    <label class="ds-field__label" for="backupKey">Access key ID</label>
+                    <input class="ds-input" type="text" id="backupKey" spellcheck="false" autocomplete="off">
+                  </div>
+                  <div class="ds-field">
+                    <label class="ds-field__label" for="backupSecret">Secret access key</label>
+                    <input class="ds-input" type="password" id="backupSecret" autocomplete="off">
+                  </div>
+                  <div class="ds-field">
+                    <label class="ds-field__label" for="backupPassphrase">Encryption passphrase</label>
+                    <input class="ds-input" type="password" id="backupPassphrase" autocomplete="new-password" aria-describedby="backupPassphraseHint">
+                    <small class="ds-field__hint" id="backupPassphraseHint">Everything in the bucket is encrypted with it. Lose it and nobody can read the backup, you included: keep it somewhere other than this machine.</small>
+                  </div>
+                  <div class="ds-field">
+                    <label class="ds-field__label" for="backupInterval">Every (minutes)</label>
+                    <input class="ds-input" type="number" id="backupInterval" min="5" step="1" inputmode="numeric" aria-describedby="backupIntervalHint">
+                    <small class="ds-field__hint" id="backupIntervalHint">At least 5. A backup runs only when something changed, and once more when Socrates stops.</small>
                   </div>
                 </div>
-                <label class="ds-check"><input type="checkbox" id="storagePathStyle"><span>Path-style addressing</span></label>
+                <label class="ds-check"><input type="checkbox" id="backupPathStyle" checked><span>Path-style addressing</span></label>
                 <div class="ds-form-actions">
-                  <button class="ds-btn" id="storageSave" type="button">
+                  <button class="ds-btn" id="backupSave" type="button">
                     <span class="ds-btn__faces">
-                      <span class="ds-btn__face">Save credentials</span>
+                      <span class="ds-btn__face">Save backup settings</span>
                       <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Checking</span>
                       <span class="ds-btn__face ds-btn__face--done" aria-hidden="true" data-icon="check" data-icon-size="16">Saved</span>
                     </span>
                   </button>
-                  <p class="ds-meta" id="storageCredsHint">New credentials are tried against the bucket before they are saved. The bucket, the prefix and the encryption passphrase are the installation itself and cannot be changed here.</p>
+                  <button class="ds-btn ds-btn--text" id="backupTest" type="button">
+                    <span class="ds-btn__faces">
+                      <span class="ds-btn__face">Test connection</span>
+                      <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Testing</span>
+                    </span>
+                  </button>
+                  <p class="ds-meta" id="backupFormHint">The settings are tried against the bucket before they are saved. The secret key and the passphrase are never shown again; leave them empty to keep the saved ones.</p>
                 </div>
               </div>
             </div>

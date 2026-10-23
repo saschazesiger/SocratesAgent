@@ -24,8 +24,8 @@ import (
 //	POST  /api/sessions {"prestart":true, …}   201 {"session":<session>}
 //	PATCH /api/sessions/{id}/prestart          {"session":<session>}
 //	                                           409 once it has started
-//	GET   /api/sessions/{id}/draft             {"text","rev","updated_at","backed_up"}
-//	PUT   /api/sessions/{id}/draft             {"rev","updated_at","backed_up"}
+//	GET   /api/sessions/{id}/draft             {"text","rev","updated_at"}
+//	PUT   /api/sessions/{id}/draft             {"rev","updated_at"}
 //	                                           409 {"conflict":true,"text","rev","updated_at"}
 //	                                           409 {"error","started":true}
 //	                                           413 over maxDraftBytes
@@ -334,7 +334,6 @@ func (s *Server) handleGetDraft(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"text": draft.Text, "rev": draft.Rev, "updated_at": draft.UpdatedAt,
-		"backed_up": s.store.IsBackedUp(store.DraftObject(row.ID)),
 	})
 }
 
@@ -389,7 +388,6 @@ func (s *Server) handlePutDraft(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"rev": draft.Rev, "updated_at": draft.UpdatedAt,
-		"backed_up": s.store.IsBackedUp(store.DraftObject(row.ID)),
 	})
 }
 

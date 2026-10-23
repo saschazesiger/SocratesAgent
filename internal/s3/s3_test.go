@@ -1,9 +1,11 @@
 package s3_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -80,6 +82,33 @@ func TestRoundTrip(t *testing.T) {
 	}
 	if left := srv.Keys("bucket", ""); len(left) != 0 {
 		t.Fatalf("left: %q", left)
+	}
+}
+
+// GetStream hands the body over unread and reports what Head would, and a
+// missing key is ErrNotFound with nothing left open.
+func TestGetStream(t *testing.T) {
+	_, c := startFake(t, s3fake.Options{})
+	ctx := context.Background()
+	body := []byte(strings.Repeat("chunk ", 100000))
+	etag, err := c.Put(ctx, "chunks/a", body, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc, info, err := c.GetStream(ctx, "chunks/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("read %d bytes, %v", len(got), err)
+	}
+	if info.Size != int64(len(body)) || info.ETag != etag || info.LastModified.IsZero() {
+		t.Fatalf("info = %+v", info)
+	}
+	if rc, _, err := c.GetStream(ctx, "chunks/missing"); !errors.Is(err, s3.ErrNotFound) || rc != nil {
+		t.Fatalf("missing: %v %v", rc, err)
 	}
 }
 

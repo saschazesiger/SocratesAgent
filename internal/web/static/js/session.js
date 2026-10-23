@@ -32,7 +32,6 @@ import { mountTransfer } from './transfer.js';
 import { mountKeyBar, keyBarWanted, setKeyBarWanted, followViewport } from './keybar.js';
 import { initKeyboard, guard, watchFrame, dictated, touchScreen, setTouchMode } from './keyboard.js';
 import { mountPrestart, forgetDraft, whenShort } from './prestart.js';
-import { mountStorageBanner } from './storage.js';
 import { mountEvents } from './events.js';
 import { mountHome, questionQueue, connectionLine } from './home.js';
 import { openQuestions, updateQuestions, questionsOpen, closeQuestions } from './question.js';
@@ -43,6 +42,7 @@ import {
   icon, html, raw, morph, flipMorph, showOverlay, hideOverlay, overlayOpen, M,
   faces, iconEl,
 } from './ui.js';
+import { mountBackupNotice } from './backup.js';
 
 /* ------------------------------------------------------------- transport */
 
@@ -3763,8 +3763,8 @@ async function boot() {
     openQuestions: (id) => showQuestions(id),
   });
   followViewport();
-  // Whether the bucket is taking what is done here. Silent while it is.
-  mountStorageBanner(document.getElementById('storageBanner'));
+  // Whether the backup has worked in the last day. Silent while it has.
+  mountBackupNotice(document.getElementById('backupNotice'));
   // Read before anything is fetched. Home is the landing page whatever the
   // address was (HOME.md §2.3), except for the two forms a notification
   // opens a tab with - a question, and a session - and the app's

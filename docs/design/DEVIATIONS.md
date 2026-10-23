@@ -2233,3 +2233,63 @@ now `args`. Adapters also get the data folder (`StartSpec.DataDir`). AGENT-HOST.
 **WP5 — `ask_user` is not wired yet.** The `MCPServers` and `QuestionHandler` hooks are in place;
 until WP6, OpenCode's own question tool stays denied and a question that still arrives is rejected
 with a notice, and `Answer` reports `ErrAskGone`.
+
+**WP1 / REBUILD.md §6.2 — chunks are named by an HMAC of their content, not by its SHA-256.**
+§6.2 says `chunks/<sha256>`. The name is HMAC-SHA256 under a key derived from the passphrase
+(as the work package's brief asked), so equal content is still stored once, but the bucket's
+owner cannot tell which well-known file a chunk is by hashing it. A restore checks every chunk
+against its name on top of the GCM tag.
+
+**WP1 / REBUILD.md §6.2 and §10 — no multipart upload.** §6.2 and the WP1 row ask for one. No
+object is larger than a chunk (8 MiB and its envelope), so a put is one request and multipart
+would be code nothing calls. What was needed is streamed downloads (`s3.Client.GetStream`),
+which a restore uses; the 256 MiB cap stays on responses read into memory only.
+
+**WP1 / REBUILD.md §10 — migration step 1 (§8) is not in WP1.** The WP1 row names it; the
+brief for WP1 defers moving `~/.claude`, `~/.codex` and the OpenCode folders into the new
+layout to the packages that start using it. WP1 defines the layout (`internal/paths`) and
+backs up whatever is in the data directory; `profiles/` and `sessions/` stay where they are.
+
+**WP1 / REBUILD.md §6.1 — `backup.json` holds the interval too, and `SOCRATES_S3_*` is read
+once.** The interval is a field of `backup.json` rather than of the settings document, so the
+Backup card is one form with one save. The `SOCRATES_S3_*` environment no longer configures
+anything at runtime: like `s3.json`, it is carried over into `backup.json` once (the bucket and
+the passphrase, under the prefix `backup/v1/` inside the old one) and the card owns it from
+then on. `s3.json` is left in place for a build that is rolled back.
+
+**WP1 — the snapshot list reads every manifest once.** A listing of the bucket gives a
+snapshot's host and time; its size and number of files are in its sealed manifest. Manifests
+never change, so each is downloaded once (four at a time) and kept under
+`cache/backup/manifests`, which garbage collection also reads. A new machine about to be
+restored reads them all on its first listing.
+
+**WP1 — what else the backup leaves out.** Besides §6.1's `run/`, `cache/` and `backup.json`:
+today's top-level `bin/`, `tmux.sock`, `tmux.conf`, `hook.sock`, `update-state/`,
+`updates.json`, `updates.log`, the schema migration copies `socrates.db.pre-*.bak`, `s3.json`,
+the terminal byte journals `sessions/*/journal.raw*`, code-server's `logs` and caches under
+`vscode/*/`, sockets of any name, the workspace root and preset directories when they lie inside
+the data directory, and SQLite's `-wal`, `-shm` and `-journal` beside a database (which is
+copied consistently instead). The list is `paths.NotBackedUp`.
+
+**WP1 — a notice on the session page.** The brief removes the storage banner and asks for the
+24-hour warning in `/api/state` and on the Backup card; §6.2 also calls for "a notice". The
+banner's slot under the top bar now shows that one warning (`js/backup.js`), with a link to the
+card, and nothing else.
+
+**WP1 — a lock on the data directory.** `socrates` and `socrates restore` take
+`run/socrates.lock` (flock), so a restore cannot write under a running server and two servers
+cannot share one data directory. `reexec_windows.go` went with connect mode: the tree did not
+build for Windows before this change either (`internal/proc`, `internal/termux`).
+
+**WP1 — `SOCRATES_BACKUP_WARN_AFTER`.** A Go duration that shortens the 24 hours before the
+warning, for the browser suite's `backup` scenario; unset in production.
+
+**WP1 — schema 11, not 10.** WP2 took version 10 (sessions.kind, chat_outbox) first; the
+migration that drops `mirror_pending` and the `mirror.*` rows is version 11.
+
+**WP1 — a chat's launch spec is backed up without its environment.** `chats/<id>/host.json`
+will carry the environment built from the chat's account (WP7), which can hold an API key. The
+backup leaves its `env` field out (`paths.Redacted`), and the host's `host.lock`, `host.log`
+and socket (`run/chats/`) entirely; the journal and the adapter's `agent/` state go in whole.
+The server writes the spec again before every launch, so a restored chat loses nothing. WP7:
+credentials should still live in the account folders or the store, not only in the spec.

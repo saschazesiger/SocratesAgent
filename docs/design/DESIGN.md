@@ -103,7 +103,7 @@ Repo: `/root/SocratesAgent`, module `github.com/saschazesiger/SocratesAgent`, Go
 - [H. Testing](#h-testing) — Go tests against real tmux, the PTY fake CLIs, 20 e2e scenarios, CI
 - [I. Work packages](#i-work-packages) — WP1…WP10 (WP9 split into 9a/9b) with scope, acceptance and dependencies
 - [J. Risks and mitigations](#j-risks-and-mitigations)
-- [K. S3 as the store of record](#k-s3-as-the-store-of-record) — the bucket layout, encryption, write-through, start and hydrate, the lease, connect mode, the storage banner
+- [K. S3 as the store of record](#k-s3-as-the-store-of-record) — the bucket layout, encryption, write-through, start and hydrate, the lease, connect mode, the storage banner (superseded by REBUILD.md §6, 2026-10-23)
 - [L. Prepared sessions (PreStart) and the scheduled start](#l-prepared-sessions-prestart-and-the-scheduled-start) — the row, one launch path, the prompt file, the scheduler, the panel
 - [Appendix A: reviewer notes not adopted](#appendix-a-reviewer-notes-not-adopted)
 - [Appendix B: quick reference](#appendix-b-quick-reference-for-an-implementer)
@@ -3276,6 +3276,11 @@ overlay conventions.
 | J20 | **A page reload with frames in flight could dead-lock input.** A client that remembered its own counter would come back ahead of the server, and every subsequent keystroke would be a gap it could not resend from. | The client persists no counter and re-anchors to `hello`'s `input_ack` on every connect, renumbering held frames from there (§D.6). WP5's acceptance includes the reload-with-two-frames-in-flight case explicitly. |
 
 # K. S3 as the store of record
+
+> **Superseded (2026-10-23) by REBUILD.md §6.** S3 is no longer the store of record: the
+> data directory is the only truth, and the bucket holds an encrypted, incremental backup of it
+> (`internal/backup`) that nothing reads while Socrates runs. The mirror, the lease, connect
+> mode and the storage banner are gone. What follows is history.
 
 Added 2026-10-13. Binding like the rest; the decision is DECISIONS.md "Revision 6".
 

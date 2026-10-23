@@ -78,17 +78,6 @@ SOCRATES_BRANCH=$branch
 #SOCRATES_NODE_MAJOR=24
 #SOCRATES_CODE_SERVER_VERSION=4.141.0
 #SOCRATES_CLAUDE_CHANNEL=stable
-
-# The S3 bucket is normally connected on the setup page. To configure it here
-# instead, set these (the admin page then shows it read-only):
-#SOCRATES_S3_ENDPOINT=https://hel1.your-objectstorage.com
-#SOCRATES_S3_REGION=hel1
-#SOCRATES_S3_BUCKET=my-bucket
-#SOCRATES_S3_PREFIX=
-#SOCRATES_S3_ACCESS_KEY_ID=
-#SOCRATES_S3_SECRET_ACCESS_KEY=
-#SOCRATES_S3_PATH_STYLE=true
-#SOCRATES_S3_PASSPHRASE=
 EOF
 	info "wrote $ENV_FILE"
 else
@@ -100,7 +89,7 @@ else
 		grep -Eq "^[[:space:]]*(export[[:space:]]+)?${kv%%=*}=" "$ENV_FILE" || printf '%s\n' "$kv" >>"$ENV_FILE"
 	done
 fi
-# It may hold the bucket's keys and passphrase.
+# It may hold keys.
 chmod 600 "$ENV_FILE"
 
 # Somebody else on the port is a restart loop later; better said now.
