@@ -78,10 +78,17 @@ function draftSync(id, { read, write, onConflict, onStatus }) {
   const dirty = () => st.saved === null || read() !== st.saved;
 
   async function load() {
-    const local = readBuffer(id);
-    if (local) write(local.text);
+    const kept = readBuffer(id);
+    if (kept) {
+      write(kept.text);
+      st.rev = kept.base_rev;
+    }
     const res = await call('GET', path);
     if (st.closed) return;
+    // The buffer is read again: what was typed while the server was being
+    // asked is in it now (changed() writes it at every keystroke), and it is
+    // the person's text, never something the server's answer may replace.
+    const local = readBuffer(id);
     if (res.status !== 200) {
       st.loaded = !!local;
       st.rev = local ? local.base_rev : 0;
@@ -95,14 +102,17 @@ function draftSync(id, { read, write, onConflict, onStatus }) {
     st.rev = server.rev;
     st.saved = server.text;
     st.offline = false;
-    if (local && local.text !== server.text) {
-      // Written on the revision the server still has: simply newer. On an
-      // older one, somebody else saved in between, and the person chooses.
-      if (local.base_rev === server.rev) save();
-      else conflict(server);
-    } else if (!local || local.text === server.text) {
-      if (read() !== server.text && !local) write(server.text);
+    if (!local || local.text === server.text) {
+      if (!local && read() !== server.text) write(server.text);
       forgetBuffer(id);
+    } else if (local.base_rev === server.rev || !server.text) {
+      // Written on the revision the server still has, or over an empty
+      // draft: simply newer, and nothing of anybody else's is lost by it.
+      save();
+    } else {
+      // On an older revision, somebody else saved in between, and the
+      // person chooses.
+      conflict(server);
     }
     onStatus();
   }

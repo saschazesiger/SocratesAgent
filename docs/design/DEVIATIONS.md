@@ -2334,3 +2334,10 @@ and is not kept for later.
 
 **WP8 — an image a tool made is a file chip.** Nothing serves a chat's files to the browser yet, so
 an `image` part shows its name, with the path behind the "i", rather than the picture.
+
+**WP8 / §7.1 — the composer's draft over an empty one is not a conflict.** The composer keeps
+PreStart's revision rule, with one difference: a text this browser wrote on an older revision is
+saved over the server's when the server's draft is empty, rather than asking which to keep. The
+composer's draft is emptied by every message sent, so "changed on another device" against an
+empty text would be asked after most sends from another device, and there is nothing in it to
+lose. A text typed before the saved draft has loaded is this browser's own text, by the same rule.
