@@ -402,6 +402,7 @@ func (a *Adapter) handleError(gen int, session string, e *ocError) {
 		return
 	}
 	if a.turn == nil && a.failedTurn {
+		// The repeat of what the turn that just ended failed with.
 		a.failedTurn = false
 		return
 	}
