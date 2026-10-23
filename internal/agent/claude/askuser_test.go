@@ -125,7 +125,8 @@ func TestABadAskUserCallGoesBackToTheModel(t *testing.T) {
 }
 
 // An interrupt withdraws the call: the ask stays open, and an answer to it
-// is reported gone, so the host sends it as a message.
+// is reported gone from the moment the CLI took the interrupt, before the
+// call's own cancel has come, so the host sends it as a message.
 func TestAnInterruptedAskUserCallIsGone(t *testing.T) {
 	e := newEnv(t)
 	a, r := start(t, e, "")
@@ -133,6 +134,9 @@ func TestAnInterruptedAskUserCallIsGone(t *testing.T) {
 	ask := askEvent(t, r, 1)
 	if err := a.Interrupt(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+	if err := a.Answer(context.Background(), ask.AskID, json.RawMessage(`{"answers":{}}`)); !errors.Is(err, agent.ErrAskGone) {
+		t.Fatalf("the answer right after the interrupt: %v", err)
 	}
 	evs := r.turnsEnded(t, 1)
 	if end := evs[len(evs)-1]; end.Type == agent.TypeTurnEnded && end.Outcome != agent.OutcomeInterrupted {
@@ -226,5 +230,32 @@ func TestAnElicitationIsAskedAndAnsweredAsAForm(t *testing.T) {
 	r.turnsEnded(t, 1)
 	if text := lastText(t, r); text != `elicitation: {"action":"accept","content":{"colour":"green","notes":"from the phone"}}` {
 		t.Fatalf("the server got %q", text)
+	}
+
+	// Words the form has no field for: the form gets its values, and the
+	// answer is reported deferred, so that the host sends it as a message.
+	send(t, a, "m2", "/elicit")
+	ask = askEvent(t, r, 2)
+	err := a.Answer(context.Background(), ask.AskID, json.RawMessage(`{"answers":{"colour":{"selected":["red"],"note":"the dark one"}}}`))
+	if !errors.Is(err, agent.ErrAskDeferred) {
+		t.Fatalf("an answer with a note: %v", err)
+	}
+	r.turnsEnded(t, 2)
+	if text := lastText(t, r); text != `elicitation: {"action":"accept","content":{"colour":"red"}}` {
+		t.Fatalf("the server got %q", text)
+	}
+
+	// A URL cannot be shown: declined, and the chat says so.
+	send(t, a, "m3", "/elicit url")
+	evs := r.turnsEnded(t, 3)
+	if text := lastText(t, r); text != `elicitation: {"action":"decline"}` {
+		t.Fatalf("the server got %q", text)
+	}
+	var notice bool
+	for _, ev := range evs {
+		notice = notice || ev.Type == agent.TypeNotice && ev.Code == "elicitation_declined"
+	}
+	if !notice {
+		t.Fatal("no notice for the declined elicitation")
 	}
 }

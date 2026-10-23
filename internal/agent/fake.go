@@ -77,7 +77,7 @@ type fakeAdapter struct {
 	queue   []Outgoing
 	busy    bool
 	cancel  context.CancelFunc
-	asks    map[string]chan json.RawMessage
+	waits   Waits
 	bg      int
 	child   *exec.Cmd
 	ending  bool
@@ -102,7 +102,6 @@ type fakeHistory struct {
 func (f *fakeAdapter) Start(ctx context.Context, spec StartSpec, out Emitter) error {
 	f.out, f.spec = out, spec
 	f.model, f.effort = spec.Model, spec.Effort
-	f.asks = map[string]chan json.RawMessage{}
 	f.wake, f.quit = make(chan struct{}, 1), make(chan struct{})
 	if spec.ResumeID != "" {
 		raw, err := os.ReadFile(f.statePath(spec.ResumeID))
@@ -229,15 +228,7 @@ func (f *fakeAdapter) Interrupt(context.Context) error {
 }
 
 func (f *fakeAdapter) Answer(_ context.Context, askID string, answer json.RawMessage) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	ch := f.asks[askID]
-	if ch == nil {
-		return ErrAskGone
-	}
-	delete(f.asks, askID)
-	ch <- answer
-	return nil
+	return f.waits.Answer(askID, answer)
 }
 
 func (f *fakeAdapter) SetModel(_ context.Context, model, effort string) error {
@@ -550,22 +541,8 @@ func (f *fakeAdapter) askWith(ctx context.Context, t *fakeTurn, payload json.Raw
 
 // askID is askWith under a given ask id.
 func (f *fakeAdapter) askID(ctx context.Context, t *fakeTurn, id string, payload json.RawMessage) (json.RawMessage, bool) {
-	ch := make(chan json.RawMessage, 1)
-	f.mu.Lock()
-	f.asks[id] = ch
-	f.mu.Unlock()
-	defer func() {
-		f.mu.Lock()
-		delete(f.asks, id)
-		f.mu.Unlock()
-	}()
-	f.out.Emit(Event{Type: TypeAsk, AskID: id, TurnID: t.id, Payload: payload})
-	select {
-	case answer := <-ch:
-		return answer, true
-	case <-ctx.Done():
-		return nil, false
-	}
+	answer, err := f.waits.Wait(ctx, f.out, Event{Type: TypeAsk, AskID: id, TurnID: t.id, Payload: payload}, "")
+	return answer, err == nil
 }
 
 func (f *fakeAdapter) background(d time.Duration) {

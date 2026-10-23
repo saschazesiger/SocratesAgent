@@ -96,7 +96,7 @@ type adapter struct {
 	steered map[string]agent.Outgoing
 	agents  map[string]*subagent
 	running int
-	asks    map[string]*waitingAsk
+	waits   agent.Waits
 	calls   map[string]*call
 	limits  map[string]agent.Event
 	context int64
@@ -112,7 +112,6 @@ func newAdapter() *adapter {
 		turns:   map[string]*turn{},
 		steered: map[string]agent.Outgoing{},
 		agents:  map[string]*subagent{},
-		asks:    map[string]*waitingAsk{},
 		calls:   map[string]*call{},
 		limits:  map[string]agent.Event{},
 	}
@@ -616,6 +615,9 @@ func (a *adapter) flush() {
 
 // ---------------------------------------------------------------- commands
 
+// Interrupt ends the active turn. Once codex has taken the interrupt, the
+// turn's requests are withdrawn at once, as its end would withdraw them: an
+// answer from then on goes as a message, never to a call codex dropped.
 func (a *adapter) Interrupt(ctx context.Context) error {
 	a.mu.Lock()
 	t, thread := a.active, a.thread
@@ -629,22 +631,24 @@ func (a *adapter) Interrupt(ctx context.Context) error {
 		// The turn ended on its own meanwhile.
 		return nil
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	for _, c := range a.calls {
+		if c.turn == t {
+			c.cancel()
+		}
+	}
+	a.mu.Unlock()
+	return nil
 }
 
-// Answer hands an answer to the call waiting on it. A call whose wait ended
-// (its turn ended, codex withdrew it) is gone even before its goroutine has
-// let go of it: the turn's end cancels it first.
+// Answer hands an answer to the call waiting on it (agent.Waits). A call
+// whose wait ended (its turn ended or was interrupted, codex withdrew it) is
+// gone even before its goroutine has let go of it.
 func (a *adapter) Answer(_ context.Context, askID string, answer json.RawMessage) error {
-	a.mu.Lock()
-	w := a.asks[askID]
-	delete(a.asks, askID)
-	a.mu.Unlock()
-	if w == nil || w.ctx.Err() != nil {
-		return agent.ErrAskGone
-	}
-	w.answer <- answer
-	return nil
+	return a.waits.Answer(askID, answer)
 }
 
 func (a *adapter) SetModel(_ context.Context, model, effort string) error {

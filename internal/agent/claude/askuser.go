@@ -5,7 +5,6 @@ package claude
 import (
 	"context"
 	"encoding/json"
-	"sync"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
@@ -34,21 +33,13 @@ var askServerConfig = json.RawMessage(`{"timeout":2147483647,"disableAutoBackgro
 // and blocks until Answer brings the person's answer, which the model gets
 // in the shape of REBUILD.md §5.2.
 type askServer struct {
-	a   *Adapter
-	mcp *askuser.MCP
-
-	mu   sync.Mutex
-	asks map[string]*waitingAsk
-}
-
-// waitingAsk is one call waiting for its answer.
-type waitingAsk struct {
-	ctx    context.Context
-	answer chan json.RawMessage
+	a     *Adapter
+	mcp   *askuser.MCP
+	waits agent.Waits
 }
 
 func newAskServer(a *Adapter) *askServer {
-	s := &askServer{a: a, asks: map[string]*waitingAsk{}}
+	s := &askServer{a: a}
 	s.mcp = &askuser.MCP{Ask: s.ask}
 	return s
 }
@@ -68,65 +59,61 @@ func (s *askServer) ask(ctx context.Context, call askuser.Call) (json.RawMessage
 		id = "ask_" + call.ToolUseID
 		call.Payload.PartID = call.ToolUseID
 	}
-	return s.wait(ctx, id, call.Payload.JSON())
+	return s.wait(ctx, id, call.ToolUseID, call.Payload.JSON())
 }
 
-// wait emits an ask and blocks until its answer or the end of ctx: the CLI
-// withdrew the call (an interrupt, a timeout) or exited.
-func (s *askServer) wait(ctx context.Context, id string, payload json.RawMessage) (json.RawMessage, error) {
-	w := &waitingAsk{ctx: ctx, answer: make(chan json.RawMessage, 1)}
-	s.mu.Lock()
-	s.asks[id] = w
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		if s.asks[id] == w {
-			delete(s.asks, id)
-		}
-		s.mu.Unlock()
-	}()
+// wait emits an ask of the running turn and blocks until its answer or the
+// end of ctx: the CLI withdrew the call (an interrupt, a timeout) or exited.
+// part is the tool part of the call, "" for an elicitation.
+func (s *askServer) wait(ctx context.Context, id, part string, payload json.RawMessage) (json.RawMessage, error) {
 	s.a.mu.Lock()
 	turnID, out := "", s.a.out
 	if s.a.st != nil && s.a.st.turn != nil {
 		turnID = s.a.st.turn.id
 	}
 	s.a.mu.Unlock()
-	out.Emit(agent.Event{Type: agent.TypeAsk, AskID: id, TurnID: turnID, Payload: payload})
-	select {
-	case answer := <-w.answer:
-		return answer, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
+	return s.waits.Wait(ctx, out, agent.Event{Type: agent.TypeAsk, AskID: id, TurnID: turnID, Payload: payload}, part)
 }
 
 // Answer hands an answer to the call waiting on it, and reports
-// agent.ErrAskGone when none is.
+// agent.ErrAskGone when none is (agent.Waits).
 func (s *askServer) Answer(_ context.Context, askID string, answer json.RawMessage) error {
-	s.mu.Lock()
-	w := s.asks[askID]
-	if w != nil {
-		delete(s.asks, askID)
+	return s.waits.Answer(askID, answer)
+}
+
+// withdraw is an interrupt the CLI acknowledged: it has stopped the turn,
+// and with it the main agent's ask_user calls in that turn, even while the
+// cancels of those calls are still on their way. A call a subagent made, or
+// an elicitation, is left to its cancel, because a subagent in the
+// background outlives the turn; a call whose part the turn's end has already
+// dropped was not one of those. The caller holds a.mu.
+func (s *askServer) withdraw(turnID string) {
+	if turnID == "" {
+		return
 	}
-	s.mu.Unlock()
-	if w == nil || w.ctx.Err() != nil {
-		return agent.ErrAskGone
-	}
-	w.answer <- answer
-	return nil
+	s.waits.Withdraw(func(turn, part string) bool {
+		p := s.a.st.parts[part]
+		return turn == turnID && part != "" && (p == nil || p.parent == "")
+	})
 }
 
 // elicit is an MCP elicitation the CLI forwards (a form a server wants the
 // person to fill in), asked as an ask_user payload and answered in the
-// elicitation's own shape.
+// elicitation's own shape. A form it cannot show is declined, and the chat
+// says so.
 func (s *askServer) elicit(ctx context.Context, id string, req controlRequest) map[string]any {
 	var message string
 	_ = json.Unmarshal(req.Message, &message)
 	p, ok := askuser.FromElicitation(req.MCPServerName, message, req.RequestedSchema, req.PropertyOrder)
 	if !ok || req.Mode != "" && req.Mode != "form" {
+		s.a.mu.Lock()
+		out := s.a.out
+		s.a.mu.Unlock()
+		out.Emit(agent.Event{Type: agent.TypeNotice, Code: "elicitation_declined",
+			Text: "The MCP server " + req.MCPServerName + " asked for something Socrates cannot show, so it was declined: " + message})
 		return map[string]any{"action": "decline"}
 	}
-	answer, err := s.wait(ctx, "ask_elicit_"+id, p.JSON())
+	answer, err := s.wait(ctx, "ask_elicit_"+id, "", p.JSON())
 	if err != nil {
 		return nil
 	}

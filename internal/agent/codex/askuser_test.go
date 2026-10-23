@@ -8,7 +8,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
@@ -105,35 +104,17 @@ func TestRequestUserInputIsAskedAndAnswered(t *testing.T) {
 		t.Fatalf("codex got %q", got)
 	}
 
-	// Interrupted while it waits, the request is gone with its turn.
+	// Interrupted while it waits, the request is gone as soon as codex took
+	// the interrupt, before the turn's end has come.
 	_, n = send(t, a, r, "/input")
 	ask = r.waitFor(t, n, "the second ask", isType(agent.TypeAsk), wait)
 	if err := a.Interrupt(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	if err := a.Answer(context.Background(), ask.AskID, json.RawMessage(`{}`)); !errors.Is(err, agent.ErrAskGone) {
+		t.Fatalf("an answer after the interrupt: %v", err)
+	}
 	r.turnEnd(t, n, wait)
-	waitGone(t, a, ask.AskID)
-}
-
-// waitGone waits until an ask's call is no longer there.
-func waitGone(t *testing.T, a *adapter, askID string) {
-	t.Helper()
-	deadline := time.Now().Add(wait)
-	for {
-		a.mu.Lock()
-		_, held := a.asks[askID]
-		a.mu.Unlock()
-		if !held {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the ask outlived its turn")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if err := a.Answer(context.Background(), askID, json.RawMessage(`{}`)); !errors.Is(err, agent.ErrAskGone) {
-		t.Fatalf("an answer to a call that is gone: %v", err)
-	}
 }
 
 // The questions of an async agent message are an ask answered as the next
@@ -179,6 +160,20 @@ func TestAnElicitationFormIsAsked(t *testing.T) {
 	}
 	r.turnEnd(t, n, wait)
 	if got := lastTurnText(r.projection()); got != `action: accept {"notes":"after lunch","target":"staging"}` {
+		t.Fatalf("the server got %q", got)
+	}
+
+	// A question back has no place in the form: the form is declined, and
+	// the answer is reported deferred, so that the host sends it as a
+	// message the model reads.
+	_, n = send(t, a, r, "/elicit")
+	ask = r.waitFor(t, n, "the second ask", isType(agent.TypeAsk), wait)
+	err := a.Answer(context.Background(), ask.AskID, json.RawMessage(`{"answers":{},"follow_up":"Why staging?"}`))
+	if !errors.Is(err, agent.ErrAskDeferred) {
+		t.Fatalf("a question back: %v", err)
+	}
+	r.turnEnd(t, n, wait)
+	if got := lastTurnText(r.projection()); got != `action: decline null` {
 		t.Fatalf("the server got %q", got)
 	}
 }
