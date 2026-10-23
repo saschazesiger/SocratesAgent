@@ -2150,7 +2150,8 @@ a host op of its own; the plan card itself goes through the generic ask path as 
 **WP4 / §4.3 — the stripped retry is a copy under a new thread id.** "Retry with reasoning and
 compaction items stripped from the rollout, on a copy" cannot be done by pointing codex at the
 copy: `thread/fork`/`thread/resume` with `path` refuse a paginated thread ("stale path", verified
-against 0.164). The copy is written next to the original under a fresh UUIDv7 and resumed by that
+against 0.164). The copy, which ends before the refused turn so its message is not replayed twice, is
+written next to the original under a fresh UUIDv7 and resumed by that
 id, so the chat's conversation id changes (a `conversation` event says so). The original is never
 rewritten; codex itself appends the refused turn to it.
 
