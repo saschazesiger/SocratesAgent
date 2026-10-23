@@ -15,12 +15,16 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
+	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
 )
 
 // fakeBin is e2e/fakebin/fakecodex, built once for the package's tests.
 var fakeBin string
 
 func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == "agent-host" {
+		os.Exit(agenthost.Main(os.Args[2:], "test"))
+	}
 	dir, err := os.MkdirTemp("", "socrates-fakecodex-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
