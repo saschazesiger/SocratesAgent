@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
@@ -107,7 +108,8 @@ func (s *Server) createPrestart(w http.ResponseWriter, body createSessionBody) {
 	if harnessID == "" {
 		harnessID = settings.Workspace.DefaultHarness
 	}
-	if !prestartHarness(harnessID) {
+	_, chat := agent.Lookup(harnessID)
+	if !chat && !prestartHarness(harnessID) {
 		writeError(w, http.StatusBadRequest, "only Claude Code, Codex and OpenCode sessions can be prepared")
 		return
 	}
@@ -123,10 +125,22 @@ func (s *Server) createPrestart(w http.ResponseWriter, body createSessionBody) {
 		Harness: harnessID, Model: body.Model, Effort: body.Effort,
 		Profile: body.Profile, Ultracode: body.Ultracode, Options: body.Options, Cols: body.Cols, Rows: body.Rows,
 	}
-	h, refused := s.checkLaunch(&spec, settings)
-	if refused != nil {
-		writeError(w, refused.status, refused.msg)
-		return
+	label, kind := chatLabel(harnessID), store.KindChat
+	if chat {
+		// A chat is bound by its agent, folder, model and effort; profiles and
+		// Ultracode are the terminal's (accounts take the profile's place).
+		if refused := checkChatHarness(harnessID, settings); refused != nil {
+			writeError(w, refused.status, refused.msg)
+			return
+		}
+		spec.Model, spec.Effort, spec.Profile, spec.Ultracode = strings.TrimSpace(spec.Model), strings.TrimSpace(spec.Effort), "", false
+	} else {
+		h, refused := s.checkLaunch(&spec, settings)
+		if refused != nil {
+			writeError(w, refused.status, refused.msg)
+			return
+		}
+		label, kind = h.Label(), store.KindTerminal
 	}
 	mode := strings.TrimSpace(body.WorkdirMode)
 	if mode == "" {
@@ -143,7 +157,7 @@ func (s *Server) createPrestart(w http.ResponseWriter, body createSessionBody) {
 	row := &store.Session{
 		ID:          termux.NewID(),
 		ClientID:    strings.TrimSpace(body.ClientID),
-		Title:       sessionTitle(body.Title, h.Label(), workdir, mode),
+		Title:       sessionTitle(body.Title, label, workdir, mode),
 		TitleSource: titleSource(body.Title),
 		Harness:     spec.Harness,
 		Model:       spec.Model,
@@ -155,6 +169,7 @@ func (s *Server) createPrestart(w http.ResponseWriter, body createSessionBody) {
 		Cols:        spec.Cols,
 		Rows:        spec.Rows,
 		StartAt:     body.StartAt,
+		Kind:        kind,
 	}
 	id := row.ID
 	if err := s.store.CreateSession(row); err != nil {
@@ -263,19 +278,33 @@ func (s *Server) handlePatchPrestart(w http.ResponseWriter, r *http.Request) {
 		startAt = *body.StartAt
 	}
 
-	if !prestartHarness(harnessID) {
-		writeError(w, http.StatusBadRequest, "only Claude Code, Codex and OpenCode sessions can be prepared")
-		return
-	}
 	settings := s.Settings()
 	spec := launchSpec{
 		Harness: harnessID, Model: model, Effort: effort, Profile: profile, Ultracode: ultracode,
 		Options: stripChoices(row.Options),
 	}
-	h, refused := s.checkLaunch(&spec, settings)
-	if refused != nil {
-		writeError(w, refused.status, refused.msg)
-		return
+	var label string
+	if row.IsChat() {
+		// A prepared chat stays a chat: it can change to another agent that
+		// has one, and to nothing else.
+		if refused := checkChatHarness(harnessID, settings); refused != nil {
+			writeError(w, refused.status, refused.msg)
+			return
+		}
+		spec.Model, spec.Effort, spec.Profile, spec.Ultracode = strings.TrimSpace(model), strings.TrimSpace(effort), "", false
+		auto = false
+		label = chatLabel(harnessID)
+	} else {
+		if !prestartHarness(harnessID) {
+			writeError(w, http.StatusBadRequest, "only Claude Code, Codex and OpenCode sessions can be prepared")
+			return
+		}
+		h, refused := s.checkLaunch(&spec, settings)
+		if refused != nil {
+			writeError(w, refused.status, refused.msg)
+			return
+		}
+		label = h.Label()
 	}
 	workdir, err := harnesses.CheckWorkdir(settings, mode, path)
 	if err != nil {
@@ -288,7 +317,7 @@ func (s *Server) handlePatchPrestart(w http.ResponseWriter, r *http.Request) {
 	// given a moment ago from another device.)
 	var title string
 	if row.TitleSource == "" && (spec.Harness != row.Harness || mode != row.WorkdirMode || workdir != row.Workdir) {
-		title = sessionTitle("", h.Label(), workdir, mode)
+		title = sessionTitle("", label, workdir, mode)
 	}
 	err = s.store.UpdatePrestart(id, store.PrestartSettings{
 		Title:   title,
@@ -465,6 +494,10 @@ func (s *Server) startPrepared(ctx context.Context, id string, cols, rows int, s
 		if !claimed || row.StartAt <= 0 {
 			return row, http.StatusConflict, errNotDue
 		}
+	}
+
+	if row.IsChat() {
+		return s.startPreparedChat(ctx, row)
 	}
 
 	failed := func(status int, err error) (*store.Session, int, error) {

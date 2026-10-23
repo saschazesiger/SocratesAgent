@@ -18,7 +18,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -662,17 +661,18 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 	}
 	settings := s.Settings()
 	harness := strings.TrimSpace(body.Harness)
-	if _, ok := agent.Lookup(harness); !ok {
-		writeError(w, http.StatusBadRequest, "there is no chat for "+quoteOr(harness, "no harness")+" yet")
-		return
-	}
-	if entry, known := settings.Harnesses.Entry(harness); known && !entry.Enabled {
-		writeError(w, http.StatusBadRequest, harness+" is switched off in the dashboard")
+	if refused := checkChatHarness(harness, settings); refused != nil {
+		writeError(w, refused.status, refused.msg)
 		return
 	}
 	if body.Message != nil {
 		if status, msg := checkMessage(body.Message); status != 0 {
 			writeError(w, status, msg)
+			return
+		}
+		// A chat that does not exist yet has no uploads a message could name.
+		if len(body.Message.Attachments) > 0 {
+			writeError(w, http.StatusBadRequest, "an attachment has to be uploaded to this chat first")
 			return
 		}
 	}
@@ -686,10 +686,7 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 	if mode == "" {
 		mode = harnesses.WorkdirDynamic
 	}
-	label := harness
-	if h, ok := harnesses.Get(harness); ok {
-		label = h.Label()
-	}
+	label := chatLabel(harness)
 	row := &store.Session{
 		ID: id, ClientID: clientID, Title: sessionTitle(body.Title, label, workdir, mode),
 		TitleSource: titleSource(body.Title), Harness: harness, Model: strings.TrimSpace(body.Model),
@@ -797,14 +794,6 @@ func checkMessage(m *chatMessageBody) (int, string) {
 	if strings.TrimSpace(m.Text) == "" && len(m.Attachments) == 0 {
 		return http.StatusBadRequest, "a message needs text or an attachment"
 	}
-	for _, a := range m.Attachments {
-		if strings.TrimSpace(a.Name) == "" {
-			return http.StatusBadRequest, "an attachment needs a name"
-		}
-		if a.Path != "" && (!filepath.IsAbs(a.Path) || filepath.Clean(a.Path) != a.Path) {
-			return http.StatusBadRequest, "an attachment's path must be absolute and clean"
-		}
-	}
 	return 0, ""
 }
 
@@ -820,6 +809,17 @@ func (s *Server) handleChatMessage(w http.ResponseWriter, r *http.Request) {
 	if status, msg := checkMessage(&body); status != 0 {
 		writeError(w, status, msg)
 		return
+	}
+	// A repeat of a message the journal has is answered from it, before its
+	// attachments are looked at again.
+	p.mu.Lock()
+	_, seen := p.proj.Seen(body.ClientID)
+	p.mu.Unlock()
+	if !seen {
+		if status, msg := s.checkAttachments(p.id, body.Attachments); status != 0 {
+			writeError(w, status, msg)
+			return
+		}
 	}
 	code, answer := s.sendMessage(r.Context(), p, &body)
 	writeJSON(w, code, answer)
