@@ -758,6 +758,7 @@ func TestARunCutShortLeavesNoManifestWithMissingChunks(t *testing.T) {
 	if _, err := e.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	before := len(b.keys(chunkDir))
 	write(t, filepath.Join(src, "agents/codex/big"), random(t, 3*ChunkSize), 0o600)
 	b.failAfter.Store(2)
 	clk.Add(10 * time.Minute)
@@ -788,13 +789,15 @@ func TestARunCutShortLeavesNoManifestWithMissingChunks(t *testing.T) {
 			}
 		}
 	}
-	uploaded := len(b.keys(chunkDir))
+	// The run after uploads exactly the big file's chunks the failed run did
+	// not get to, and makes the second snapshot.
+	uploaded := len(b.keys(chunkDir)) - before
 	info, err := e.Run(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Chunks != 3-(uploaded-2) || len(b.keys(snapshotDir)) != 2 {
-		t.Fatalf("the run after: %+v with %d chunks there before it", info, uploaded)
+	if info.Chunks != 3-uploaded || len(b.keys(snapshotDir)) != 2 {
+		t.Fatalf("the run after: %+v, with %d of the big file's chunks uploaded before it", info, uploaded)
 	}
 	if st := e.Status(); st.LastError != "" {
 		t.Fatalf("the error outlived a good run: %q", st.LastError)
