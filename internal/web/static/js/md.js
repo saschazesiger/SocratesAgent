@@ -25,6 +25,13 @@ const marked = new Marked({
     image({ href, text }) {
       return html`<a href="${href || ''}">${text || href || ''}</a>`.toString();
     },
+    // A task list's box is a mark, not a form field: nothing in an agent's
+    // text is something to fill in.
+    checkbox({ checked }) {
+      return checked
+        ? '<span role="img" aria-label="Done">☑</span> '
+        : '<span role="img" aria-label="To do">☐</span> ';
+    },
   },
 });
 
@@ -58,12 +65,29 @@ export function codeBlock(code, lang = '') {
 
 // A long chat renders the same texts again and again (every re-render of a
 // message that did not change, every part the morph keeps), so the markup of
-// the last few hundred texts is kept.
+// the last few hundred texts is kept - within a budget of characters, so
+// that a handful of very long answers cannot fill a phone's memory.
 const cache = new Map();
 const CACHE_SIZE = 400;
+const CACHE_CHARS = 2 << 20;
+let cachedChars = 0;
 
-/** markdown is a text as safe markup, ready for html``. */
-export function markdown(text) {
+function remember(source, out) {
+  cache.set(source, out);
+  cachedChars += source.length + out.markup.length;
+  while (cache.size > CACHE_SIZE || (cachedChars > CACHE_CHARS && cache.size > 1)) {
+    const [oldest, markup] = cache.entries().next().value;
+    cache.delete(oldest);
+    cachedChars -= oldest.length + markup.markup.length;
+  }
+}
+
+/**
+ * markdown is a text as safe markup, ready for html``. `keep: false` is for
+ * a text that is still being written: each of its states is drawn once and
+ * never again, so none is kept.
+ */
+export function markdown(text, { keep = true } = {}) {
   const source = String(text || '');
   const hit = cache.get(source);
   if (hit) {
@@ -95,7 +119,6 @@ export function markdown(text) {
   } catch {
     out = html`<p>${source}</p>`;
   }
-  cache.set(source, out);
-  if (cache.size > CACHE_SIZE) cache.delete(cache.keys().next().value);
+  if (keep) remember(source, out);
   return out;
 }
