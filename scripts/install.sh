@@ -109,7 +109,7 @@ fi
 
 say "Updater and services"
 mkdir -p "$LIBEXEC" "$OPT" "$DATA" "$CACHE"
-for f in lib.sh deps.sh update.sh install.sh; do
+for f in lib.sh deps.sh update.sh install.sh deploy.sh; do
 	install -m 755 "$HERE/$f" "$LIBEXEC/.$f.new"
 	mv -f "$LIBEXEC/.$f.new" "$LIBEXEC/$f"
 done

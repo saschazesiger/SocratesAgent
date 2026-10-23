@@ -67,6 +67,14 @@ sudo /usr/local/lib/socrates/update.sh --socrates   # only Socrates
 sudo /usr/local/lib/socrates/update.sh --repair     # put back what is missing, update nothing
 ```
 
+**A push can be installed at once.** `sudo scripts/deploy-runner.sh`
+registers a GitHub Actions runner on the machine (it only connects out, so NAT
+is fine). From then on every push to `main` runs `.github/workflows/deploy.yml`:
+GitHub builds the binary and attests where it came from, and the runner hands
+it to `scripts/deploy.sh`, which checks that attestation and installs it the
+way the nightly update would - smoke test, health check, rollback. The runner's
+user may run `deploy.sh` as root and nothing else.
+
 `SOCRATES_AUTO_UPDATE` in `/etc/socrates.env` says what the timer does: `all`
 (the default), `deps` (the tools but not Socrates) or `off` (only repairs).
 `SOCRATES_NODE_MAJOR`, `SOCRATES_CODE_SERVER_VERSION` and

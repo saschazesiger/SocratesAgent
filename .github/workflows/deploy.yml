@@ -1,0 +1,79 @@
+# Every push to main reaches the running Socrates: GitHub builds the binary,
+# attests where it came from, and the self-hosted runner on the server hands it
+# to scripts/deploy.sh, which installs it with update.sh's smoke test, health
+# check and rollback. scripts/deploy-runner.sh sets up that runner once.
+#
+# The test suite is not a gate here: ci.yml runs it on the same push. What
+# stands between a commit and the service is that it builds, starts on a
+# scratch directory and answers its health check in place - or is rolled back.
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write      # sign the attestation
+      attestations: write  # store it
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # git describe needs the history and the tags.
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Built and named exactly as update.sh builds and names a commit, so the
+      # server can tell it is the build of the commit it was asked to install.
+      - name: Build
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          version=$(git describe --tags --always --abbrev=12)
+          go build -trimpath -buildvcs=false -ldflags "-s -w -X main.version=$version" -o socrates .
+          echo "Built Socrates $version" >> "$GITHUB_STEP_SUMMARY"
+
+      # deploy.sh installs nothing without this: it proves the binary was built
+      # by this workflow, from this commit of main, on a GitHub-hosted runner.
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: socrates
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: socrates-linux-amd64
+          path: socrates
+          retention-days: 7
+          if-no-files-found: error
+
+  deploy:
+    needs: build
+    runs-on: [self-hosted, socrates-deploy]
+    # One at a time; a push that lands while one runs replaces any that waits.
+    concurrency:
+      group: deploy-socrates
+      cancel-in-progress: false
+    # update.sh waits for a nightly update that is running and then does a
+    # whole swap; both together stay well inside this.
+    timeout-minutes: 240
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: socrates-linux-amd64
+          path: dist
+      - name: Install on the server
+        run: sudo -n /usr/local/lib/socrates/deploy.sh "$GITHUB_SHA" "$PWD/dist/socrates"

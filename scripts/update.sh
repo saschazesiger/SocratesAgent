@@ -15,6 +15,11 @@
 #                                       worked on; the next nightly update
 #                                       goes back to the repository's newest
 #                                       commit unless SOCRATES_AUTO_UPDATE=deps
+#   sudo scripts/update.sh --commit=SHA --binary=FILE
+#                                       install FILE, a build of commit SHA of
+#                                       the branch, instead of building it
+#                                       here - what scripts/deploy.sh does
+#                                       with the binary CI built on a push
 #
 # socrates-update.timer runs it every night and after every boot with --auto,
 # which does what SOCRATES_AUTO_UPDATE in /etc/socrates.env says: all (the
@@ -37,7 +42,7 @@ HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 . "$HERE/lib.sh"
 . "$HERE/deps.sh"
 
-deps= socrates= mode=update pull=1 foreground= auto= from= trigger=${SOCRATES_UPDATE_TRIGGER:-manual}
+deps= socrates= mode=update pull=1 foreground= auto= from= binary= commit= trigger=${SOCRATES_UPDATE_TRIGGER:-manual}
 args=()
 for arg in "$@"; do
 	args+=("$arg")
@@ -48,6 +53,15 @@ for arg in "$@"; do
 		# The unit the run moves into starts in /, where a relative path
 		# means something else.
 		args[${#args[@]} - 1]="--from=$from"
+		;;
+	--binary=*)
+		binary=$(readlink -f "${arg#--binary=}") && [ -f "$binary" ] || die "${arg#--binary=} is not a file"
+		socrates=1
+		args[${#args[@]} - 1]="--binary=$binary"
+		;;
+	--commit=*)
+		commit=${arg#--commit=}
+		[[ $commit =~ ^[0-9a-f]{40}$ ]] || die "--commit wants a full commit hash"
 		;;
 	--deps | --agents) deps=1 ;;
 	--socrates) socrates=1 ;;
@@ -61,6 +75,10 @@ for arg in "$@"; do
 	esac
 done
 [ -n "$deps$socrates" ] || deps=1 socrates=1
+if [ -n "$binary$commit" ]; then
+	[ -n "$binary" ] && [ -n "$commit" ] || die "--binary and --commit go together"
+	[ -z "$from" ] && [ -n "$pull" ] || die "--binary is for a commit of the repository: not with --from or --no-pull"
+fi
 [ "$(id -u)" = 0 ] || die "run it as root: sudo $0"
 [ -n "$ARCH" ] || die "$(uname -m) is not a supported architecture"
 
@@ -327,7 +345,7 @@ restore_units() {
 install_scripts() {
 	local from=$1 f stage=$LIBEXEC.new
 	rm -rf "$stage" && mkdir -p "$stage" || return 1
-	for f in lib.sh deps.sh update.sh install.sh; do
+	for f in lib.sh deps.sh update.sh install.sh deploy.sh; do
 		install -m 755 "$from/scripts/$f" "$stage/$f" && bash -n "$stage/$f" ||
 			{ warn "scripts/$f does not parse; the installed updater stays"; rm -rf "$stage"; return 1; }
 	done
@@ -337,7 +355,7 @@ install_scripts() {
 		return 1
 	fi
 	mkdir -p "$LIBEXEC/previous"
-	for f in lib.sh deps.sh update.sh install.sh; do
+	for f in lib.sh deps.sh update.sh install.sh deploy.sh; do
 		[ -f "$LIBEXEC/$f" ] && cp -p "$LIBEXEC/$f" "$LIBEXEC/previous/$f"
 		mv -f "$stage/$f" "$LIBEXEC/$f"
 	done
@@ -424,7 +442,7 @@ update_socrates() {
 	repo=$(setting SOCRATES_REPO "$DEFAULT_REPO")
 	branch=$(setting SOCRATES_BRANCH main)
 
-	if ! [ -x "$GO" ]; then
+	if [ -z "$binary" ] && ! [ -x "$GO" ]; then
 		record socrates "$(installed_version)" "" failed "there is no Go to build it with"
 		return 1
 	fi
@@ -469,6 +487,15 @@ update_socrates() {
 				;;
 			esac
 			target=$(git_src rev-parse "refs/remotes/origin/$branch")
+			if [ -n "$commit" ]; then
+				# A push the branch has since moved past is still fine to
+				# install; a commit that is not on the branch at all is not.
+				if ! git_src merge-base --is-ancestor "$commit" "$target" 2>/dev/null; then
+					record socrates "$before" "" failed "commit ${commit:0:12} is not on $branch"
+					return 1
+				fi
+				target=$commit
+			fi
 		else
 			target=$(git_src rev-parse HEAD)
 		fi
@@ -497,29 +524,42 @@ update_socrates() {
 			record socrates "$before" "" failed "could not check out ${target:0:12}"
 			return 1
 		fi
-		version=$(git_src describe --tags --always 2>/dev/null || echo "${target:0:12}")
+		# CI stamps its builds the same way (.github/workflows/ci.yml), and
+		# a fixed length keeps the two equal whatever else either clone holds.
+		version=$(git_src describe --tags --always --abbrev=12 2>/dev/null || echo "${target:0:12}")
 	fi
-	say "Build Socrates $version"
-	if ! (cd "$build" && retry 3 "$GO" mod download); then
-		record socrates "$before" "" failed "could not download the Go modules"
-		return 1
-	fi
-	rc=0
-	out=$(cd "$build" && "$GO" build -trimpath -buildvcs=false -ldflags "-s -w -X main.version=$version" -o "$BIN.new" . 2>&1) || rc=$?
-	if [ "$rc" != 0 ]; then
-		printf '%s\n' "$out"
-		rm -f "$BIN.new"
-		# Only a commit that cannot be built is marked, not a machine that
-		# could not build it this time: a full disk, the OOM killer, a Go
-		# older than go.mod asks for.
-		if [ "$rc" -gt 128 ] || [ "$(free_mb "$CACHE")" -lt 1024 ] 2>/dev/null ||
-			grep -qiE 'no space left|requires go >=|signal: killed|cannot allocate memory|out of memory' <<<"$out"; then
-			record socrates "$before" "" failed "$version could not be built on this machine this time"
-		else
-			mark_bad "$target"
-			record socrates "$before" "" failed "commit ${target:0:12} does not build"
+	if [ -n "$binary" ]; then
+		say "Take Socrates $version as CI built it"
+		install -m 755 "$binary" "$BIN.new"
+		out=$(timeout 30 "$BIN.new" -version 2>/dev/null || true)
+		if [ "$out" != "$version" ]; then
+			rm -f "$BIN.new"
+			record socrates "$before" "" failed "the binary says it is ${out:-nothing}, not $version"
+			return 1
 		fi
-		return 1
+	else
+		say "Build Socrates $version"
+		if ! (cd "$build" && retry 3 "$GO" mod download); then
+			record socrates "$before" "" failed "could not download the Go modules"
+			return 1
+		fi
+		rc=0
+		out=$(cd "$build" && "$GO" build -trimpath -buildvcs=false -ldflags "-s -w -X main.version=$version" -o "$BIN.new" . 2>&1) || rc=$?
+		if [ "$rc" != 0 ]; then
+			printf '%s\n' "$out"
+			rm -f "$BIN.new"
+			# Only a commit that cannot be built is marked, not a machine that
+			# could not build it this time: a full disk, the OOM killer, a Go
+			# older than go.mod asks for.
+			if [ "$rc" -gt 128 ] || [ "$(free_mb "$CACHE")" -lt 1024 ] 2>/dev/null ||
+				grep -qiE 'no space left|requires go >=|signal: killed|cannot allocate memory|out of memory' <<<"$out"; then
+				record socrates "$before" "" failed "$version could not be built on this machine this time"
+			else
+				mark_bad "$target"
+				record socrates "$before" "" failed "commit ${target:0:12} does not build"
+			fi
+			return 1
+		fi
 	fi
 	# Twice before it counts against the commit: a loaded machine can be slow
 	# to start anything.
