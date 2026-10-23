@@ -134,7 +134,48 @@ system/init …  (a turn of the CLI's own reports the result: "apple+pear")
 
 ## 5. A workflow across a server restart, and across a host kill
 
-RESTART_SECTION
+VERIFIED with the real binary end to end (script and result: scratchpad
+`wp3/wfrestart.mjs`, `wp3/wfrestart.json`; transcript
+`shared/projects/…-wp3-runs-wfrestart-1792769897524/41ea1fe2….jsonl`). A test server of this
+branch (`e2e/harness.mjs` `spawnServer`, live build, own data folder and port, fake S3), a chat with
+harness `claude`, model haiku, account `claude-a`; the message asks for a Workflow of four agents
+in two phases, three of them running `sleep 12; echo aN` one after the other (≈ 43 s).
+
+**Server restart (SIGKILL of `socrates serve`, down 15 s, started again).**
+
+- The server was killed while the first workflow agent was running. The agent host (pid 35924)
+  and its claude child stayed up the whole time; nothing in them noticed.
+- The restarted server reconnected to the same host and the stream resumed with `since` = the
+  last seq the phone had: the journal was **contiguous** (seq 1…62, no gap, no duplicate).
+- The workflow finished during and after the outage: phases `Work`, `Join`; all four agent parts
+  `done` (`a1`, `a2`, `a3`, `a1+a2+a3`), each with its Bash call nested in it; workflow status
+  `completed` (39 819 tokens, 42.8 s). The CLI's own report-back turn followed and said
+  `a1+a2+a3`.
+- So a running workflow survives a server restart (or update) unchanged, as S4 proved for a
+  plain turn. Under systemd the host is in its own scope; this run had no systemd (the host was
+  in a session of its own), which is the same separation for `systemctl restart`.
+
+**Host kill (SIGKILL of the agent host while a workflow agent ran).**
+
+- The claude child died with the host (Pdeathsig): no claude process of the chat was left.
+- The workflow is gone: its background run died with the CLI. Nothing finishes it.
+- On the next message the server launched a new host, which resumed the conversation
+  (`--resume`). Claude Code noticed by itself: it queued a task notification for the lost task,
+  `<status>stopped</status><summary>Background workflow "restart-proof-b" (run wf_7e9cda73-a09)
+  didn't finish before the previous session ended</summary>`, and ran it as a turn of its own
+  before the person's message (a turn with no visible output). Asked "Did the last workflow
+  finish?", the model answered that it was reported as stopped.
+- What the chat showed before the fix: the workflow part and its agent part stayed `running` in
+  the journal for ever (no host wrote their end). Since this run the new host closes every part a
+  dead host left running (`part{interrupted}` + `notice{resumed}`, AGENT-HOST.md §6).
+- The run can be continued by the model: the tool result names the script file and
+  `Workflow({scriptPath, resumeFromRunId})`, which replays the agents that finished from the run
+  journal. That is the model's (or the person's) decision; Socrates does not restart workflows.
+
+**Machine reboot** (INFERRED, not run): the host, the CLI and the workflow die together, exactly
+as in the host kill; after the reboot the chat's next message starts a new host, which resumes the
+conversation with the same "stopped" notification and the same closed parts. Parking never hits a
+workflow: a host with a background task is not idle (`Background()` counts it).
 
 ## 6. What this means for the adapter
 
