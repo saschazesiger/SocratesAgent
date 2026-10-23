@@ -42,8 +42,8 @@ func (s *Server) answerCatalog(w http.ResponseWriter, snap catalog.Snapshot) {
 	payload := map[string]any{
 		"harnesses": agents,
 		// The agents a session is a chat with rather than a terminal: the
-		// harnesses with an adapter (REBUILD.md §3).
-		"chats":        agent.Harnesses(),
+		// harnesses with an adapter (REBUILD.md §3), see chatAgent.
+		"chats":        chatAgents(),
 		"refreshed_at": snap.RefreshedAt,
 		"workspace": map[string]any{
 			"root":            settings.Workspace.Root,

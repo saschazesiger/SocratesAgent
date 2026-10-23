@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
@@ -108,7 +107,7 @@ func (s *Server) createPrestart(w http.ResponseWriter, body createSessionBody) {
 	if harnessID == "" {
 		harnessID = settings.Workspace.DefaultHarness
 	}
-	_, chat := agent.Lookup(harnessID)
+	chat := chatAgent(harnessID)
 	if !chat && !prestartHarness(harnessID) {
 		writeError(w, http.StatusBadRequest, "only Claude Code, Codex and OpenCode sessions can be prepared")
 		return

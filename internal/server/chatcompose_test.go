@@ -231,3 +231,28 @@ func TestCatalogNamesTheChats(t *testing.T) {
 		t.Fatalf("chats %v, the scripted agent %v", chats, fake)
 	}
 }
+
+// With the agent terminals kept (the browser suite's switch), Claude Code,
+// Codex and OpenCode are terminals again where a session is made from the
+// sheet or prepared, and the scripted agent is still a chat.
+func TestAgentTerminalsKeepTheThreeTerminals(t *testing.T) {
+	for _, harness := range []string{"claude", "codex", "opencode"} {
+		if !chatAgentOf(harness, true, false) || chatAgentOf(harness, true, true) {
+			t.Fatalf("%s: a chat without the switch, a terminal with it", harness)
+		}
+	}
+	if chatAgentOf("claude", false, false) || !chatAgentOf(agent.FakeHarness, true, true) {
+		t.Fatal("an agent without an adapter is no chat, and the scripted agent is one whatever the switch")
+	}
+	t.Setenv(AgentTerminalsEnv, "1")
+	c := newChatEnv(t, time.Hour)
+	_, body := c.do(t, c.client, "GET", "/api/harnesses", "")
+	if chats, _ := body["chats"].([]any); len(chats) != 1 || chats[0] != agent.FakeHarness {
+		t.Fatalf("chats with the switch: %v", body["chats"])
+	}
+	code, made := c.post(t, "/api/sessions", map[string]any{"prestart": true, "harness": agent.FakeHarness,
+		"workdir_mode": "custom", "workdir": c.data, "prompt": "hello"})
+	if code != http.StatusCreated || made["session"].(map[string]any)["kind"] != store.KindChat {
+		t.Fatalf("a prepared scripted agent with the switch: %d %v", code, made)
+	}
+}

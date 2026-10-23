@@ -289,6 +289,11 @@ export function spawnServer({ data, port, live = false, env = {} }) {
       // does not exist, an exec failure that reads as "claude: no such file or
       // directory".
       SOCRATES_WORKSPACE_ROOT: join(data, 'workspaces'),
+      // The agents on this suite's PATH are faketui, which speaks no
+      // protocol, so Claude Code, Codex and OpenCode stay the terminals the
+      // scenarios were written for (internal/server AgentTerminalsEnv). The
+      // chat scenarios use the scripted agent, which is a chat regardless.
+      SOCRATES_AGENT_TERMINALS: '1',
       // Every CLI's own state goes under the run's data directory, so that a
       // fake run can neither read nor write the machine's real credentials,
       // transcripts or session databases - and so that a scenario can assert
