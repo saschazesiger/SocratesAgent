@@ -953,6 +953,10 @@ type urgentLine struct {
 }
 
 // sendNow writes one line to the client and reports whether it was written.
+// Once the writer has taken the line it always says how the write went, and
+// that is the answer even when the client hangs up the moment it has read
+// the line, as a local tool does with its answer: the connection being gone
+// by then does not unsay the write.
 func (c *hostConn) sendNow(line []byte) bool {
 	u := urgentLine{line: line, done: make(chan bool, 1)}
 	select {
@@ -960,12 +964,7 @@ func (c *hostConn) sendNow(line []byte) bool {
 	case <-c.gone:
 		return false
 	}
-	select {
-	case ok := <-u.done:
-		return ok
-	case <-c.gone:
-		return false
-	}
+	return <-u.done
 }
 
 func (c *hostConn) close() {

@@ -235,7 +235,7 @@ func TestAskUserIsALocalMCPServerThatReachesTheHost(t *testing.T) {
 	}
 	delivered := cn.until("the delivery", func(ev agent.Event) bool { return ev.Type == agent.TypeAskDelivered })
 	if delivered.Via != agent.ViaTool {
-		t.Fatalf("delivered %+v", delivered)
+		t.Fatalf("delivered %+v\n%s", delivered, journalDump(t, h))
 	}
 	text := cn.until("the answer", func(ev agent.Event) bool {
 		return ev.Type == agent.TypePart && ev.State == agent.PartDone && strings.HasPrefix(ev.Text, "ask_user returned:")
