@@ -2329,7 +2329,8 @@ nobody looked at is not counted.
 
 **WP8 / §2.3 — Stop is a request, not an outbox item.** A message or an answer written offline is
 still wanted when the connection is back; a Stop is not (it would interrupt whatever turn runs
-then), so Stop calls `POST /api/chats/{id}/interrupt` once and says when it could not.
+then), so Stop calls `POST /api/chats/{id}/interrupt` when it is pressed, says when that failed,
+and is not kept for later.
 
 **WP8 — an image a tool made is a file chip.** Nothing serves a chat's files to the browser yet, so
 an `image` part shows its name, with the path behind the "i", rather than the picture.
