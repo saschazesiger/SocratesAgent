@@ -2307,7 +2307,7 @@ restart and the sign-in, so the list is where the sessions are: `GET /api/sessio
 whose folder is not on the machine (`workdir_missing`; not a prepared session's typed-in folder,
 which is made when it starts), its ⋮ menu offers **Point to folder**, and
 `PUT /api/sessions/{id}/workdir` takes a folder that exists (a preset, or a typed-in one under the
-new-session rules) and stops a chat's host so its next message starts there. The chat view's
+new-session rules) and parks a chat's host so its next message starts there. The chat view's
 dock says the same with the same action; it shows once WP8 mounts the view.
 
 **WP1 — a backup waits for an installation, and needs the database.** Not in §6.2: a data

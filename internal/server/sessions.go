@@ -542,8 +542,9 @@ func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 // on this machine, because a restore brings the sessions back and not the
 // code they worked on (REBUILD §6.2). A terminal that runs is in its folder
 // already, and a chat in the middle of a turn is left to finish, so both are
-// refused; a chat's host that is up is stopped, and the next message starts
-// the agent in the new folder.
+// refused. A chat's host that is up is asked to park rather than stopped: a
+// turn that started after the look at it finishes in the old folder, and the
+// next host starts the agent in the new one.
 func (s *Server) handleSetWorkdir(w http.ResponseWriter, r *http.Request) {
 	row, ok := s.session(w, r)
 	if !ok {
@@ -586,7 +587,7 @@ func (s *Server) handleSetWorkdir(w http.ResponseWriter, r *http.Request) {
 	if chat != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), chatStopWait+time.Second)
 		defer cancel()
-		chat.stopHost(ctx)
+		chat.parkHost(ctx)
 	}
 	s.answerWithSession(w, row.ID)
 }
