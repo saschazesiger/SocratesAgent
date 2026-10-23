@@ -56,6 +56,11 @@ type state struct {
 	// reading their transcripts.
 	wfAgents map[string]string
 	tails    map[string]*tail
+	// homes is the message and turn of every workflow agent's part, which
+	// its calls go in after the part itself is no longer kept, and wfDone
+	// the agents whose parts are final.
+	homes  map[string]home
+	wfDone map[string]bool
 
 	info         agentInfo
 	terminalOnly map[string]bool
@@ -68,10 +73,13 @@ func newState(spec agent.StartSpec, configDir string) *state {
 		pending: map[string]string{}, delivered: map[string]bool{}, deliveredMsgs: map[string]bool{},
 		seen: map[string]bool{}, parts: map[string]*part{}, tasks: map[string]string{},
 		taskInputs: map[string]json.RawMessage{}, plans: map[string]*planAsk{}, planByReq: map[string]string{},
-		wfAgents: map[string]string{}, tails: map[string]*tail{},
+		wfAgents: map[string]string{}, tails: map[string]*tail{}, homes: map[string]home{}, wfDone: map[string]bool{},
 		terminalOnly: map[string]bool{"doctor": true, "color": true, "focus": true, "heapdump": true},
 	}
 }
+
+// home is where a part lives: its message and turn.
+type home struct{ msgID, turnID string }
 
 // turn is the turn the CLI is on.
 type turn struct {
@@ -558,6 +566,9 @@ func (s *state) newPart(id, kind, parent, st string) *part {
 func (s *state) messageFor(parent string) (msgID, turnID string) {
 	if g := s.parts[parent]; parent != "" && g != nil {
 		return g.msgID, g.turnID
+	}
+	if h, ok := s.homes[parent]; parent != "" && ok {
+		return h.msgID, h.turnID
 	}
 	t := s.ensureTurn()
 	return t.msgID, t.id

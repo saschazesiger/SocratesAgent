@@ -491,6 +491,12 @@ func TestAWorkflowShowsPhasesAgentsAndTheirCalls(t *testing.T) {
 			t.Fatalf("tasks = %d", p.Tasks)
 		}
 	})
+	a.mu.Lock()
+	kept := len(a.st.parts)
+	a.mu.Unlock()
+	if kept != 0 {
+		t.Fatalf("%d finished parts are still kept", kept)
+	}
 }
 
 func TestTheBackgroundTaskReportsBackWithATurnOfItsOwn(t *testing.T) {
