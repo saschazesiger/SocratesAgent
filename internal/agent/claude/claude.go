@@ -110,6 +110,9 @@ type Adapter struct {
 	cmd     *exec.Cmd
 	servers map[string]Server
 	ending  bool
+	// started is set once Start has succeeded: an exit before is Start's error,
+	// not an Exited.
+	started bool
 	exited  chan struct{}
 	stderr  *tailBuffer
 	st      *state
@@ -203,11 +206,19 @@ func (a *Adapter) Start(ctx context.Context, spec agent.StartSpec, out agent.Emi
 	}
 	raw, err := a.request(ctx, init)
 	if err != nil {
+		a.mu.Lock()
+		a.ending = true
+		a.mu.Unlock()
 		a.kill()
-		return fmt.Errorf("claude did not start: %w%s", err, stderr.suffix())
+		tail := stderr.suffix()
+		if strings.Contains(tail, "No conversation found") {
+			return fmt.Errorf("%w%s", agent.ErrConversationNotFound, tail)
+		}
+		return fmt.Errorf("claude did not start: %w%s", err, tail)
 	}
 	a.mu.Lock()
 	st.readInfo(raw)
+	a.started = true
 	a.mu.Unlock()
 	// Thinking arrives without its text unless the display asks for a
 	// summary; a refusal leaves the session as it was.
@@ -410,7 +421,7 @@ func (a *Adapter) read(stdout io.Reader) {
 	a.mu.Unlock()
 	werr := cmd.Wait()
 	a.mu.Lock()
-	ending := a.ending
+	ending := a.ending || !a.started
 	a.st.stopTails()
 	if !ending {
 		a.st.closeLive()
