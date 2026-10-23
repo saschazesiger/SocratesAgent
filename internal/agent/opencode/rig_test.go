@@ -136,6 +136,23 @@ func (r *recorder) first(typ string, match func(agent.Event) bool) (agent.Event,
 	return out, found
 }
 
+// turnOrder is the turns' starts and ends in order: "start <message id>" and
+// "end <outcome>".
+func (r *recorder) turnOrder() []string {
+	var out []string
+	r.view(func(_ *agent.Projection, events []agent.Event) {
+		for _, ev := range events {
+			switch ev.Type {
+			case agent.TypeTurnStarted:
+				out = append(out, "start "+ev.MessageID)
+			case agent.TypeTurnEnded:
+				out = append(out, "end "+ev.Outcome)
+			}
+		}
+	})
+	return out
+}
+
 // turns is the outcomes of the turns that ended, in order.
 func (r *recorder) turns() []string {
 	var out []string
@@ -169,6 +186,8 @@ type rig struct {
 	rec  *recorder
 	a    *Adapter
 	n    int
+	// wait is the adapter's wait for calls that are not long ones.
+	wait time.Duration
 }
 
 func newRig(t *testing.T) *rig {
@@ -197,6 +216,7 @@ func (r *rig) start(spec agent.StartSpec) error {
 	r.t.Helper()
 	r.rec = newRecorder()
 	r.a = New()
+	r.a.wait = r.wait
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	err := r.a.Start(ctx, spec, r.rec)

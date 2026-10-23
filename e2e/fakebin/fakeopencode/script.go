@@ -179,6 +179,8 @@ type turn struct {
 	user string
 	n    int
 	msg  map[string]any
+	// pause is how long a tool runs before its first line.
+	pause time.Duration
 }
 
 var errAborted = errors.New("aborted")
@@ -325,6 +327,9 @@ func (t *turn) tool(name string, input map[string]any, lines []string, meta map[
 	}
 	p["state"] = map[string]any{"status": "running", "input": input, "time": map[string]any{"start": start}}
 	t.part(p)
+	if err := t.wait(t.pause); err != nil {
+		return p, err
+	}
 	out := ""
 	for _, l := range lines {
 		if err := t.wait(20 * time.Millisecond); err != nil {
@@ -540,7 +545,8 @@ func (t *turn) ask(kind string) (string, error) {
 }
 
 // shell runs a "!" line: a user message and a bash tool in an assistant
-// message, answered when it is done. A busy session refuses it.
+// message, answered when it is done. A busy session refuses it. "sleep S"
+// runs for S seconds.
 func (s *srv) shell(w http.ResponseWriter, r *http.Request, sid string) {
 	var body struct {
 		MessageID string `json:"messageID"`
@@ -576,6 +582,10 @@ func (s *srv) shell(w http.ResponseWriter, r *http.Request, sid string) {
 	s.userMessage(sid, id, body.Agent, []map[string]any{{"type": "text", "synthetic": true,
 		"text": "The following tool was executed by the user"}})
 	t := &turn{s: s, sid: sid, run: run, user: id}
+	if secs, ok := strings.CutPrefix(body.Command, "sleep "); ok {
+		f, _ := strconv.ParseFloat(secs, 64)
+		t.pause = time.Duration(f * float64(time.Second))
+	}
 	t.step()
 	if _, err := t.tool("bash", map[string]any{"command": body.Command}, []string{"fake shell: " + body.Command + "\n"}, nil, body.Command); err != nil {
 		t.aborted()

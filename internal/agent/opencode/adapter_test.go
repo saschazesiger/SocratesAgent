@@ -303,6 +303,25 @@ func TestShellLinesCommandsAndCompaction(t *testing.T) {
 	}
 }
 
+// A shell line (like a slash command or a compaction) runs for as long as it
+// takes, past the wait every other call has, and what was sent meanwhile
+// waits for it to end.
+func TestALongShellLineIsNotCutOff(t *testing.T) {
+	r := newRig(t)
+	r.wait = 300 * time.Millisecond
+	r.mustStart("")
+	first := r.send("!sleep 1")
+	second := r.send("after")
+	r.waitTurns(2)
+	want := []string{"start " + first, "end completed", "start " + second, "end completed"}
+	if got := r.rec.turnOrder(); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("turns %q, want %q", got, want)
+	}
+	if !contains(r.lastText(), "you said: after") {
+		t.Fatalf("text %q", r.lastText())
+	}
+}
+
 func TestRevertForkAndPlanMode(t *testing.T) {
 	r := newRig(t)
 	r.mustStart("")

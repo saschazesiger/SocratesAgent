@@ -74,9 +74,12 @@ type Adapter struct {
 	// srv and cl are the running process and its client; gen counts the
 	// processes this adapter started, so that what an old one says after an
 	// account switch is not taken for the new one's.
-	srv     *server
-	cl      *client
-	gen     int
+	srv *server
+	cl  *client
+	gen int
+	// life lasts as long as the process does: cancel ends it when the
+	// process is stopped.
+	life    context.Context
 	cancel  context.CancelFunc
 	session string
 	account string
@@ -109,6 +112,10 @@ type Adapter struct {
 	// commands are the names GET /command listed: what Command posts to
 	// /command.
 	commands map[string]bool
+
+	// wait bounds the calls to OpenCode that are not long ones; zero is
+	// requestWait. Tests shorten it.
+	wait time.Duration
 }
 
 // New is an adapter, unstarted.
@@ -301,6 +308,9 @@ func (a *Adapter) startProcess(ctx context.Context) error {
 		return err
 	}
 	cl := newClient(srv.base, srv.pass, a.spec.Workdir)
+	if a.wait > 0 {
+		cl.wait = a.wait
+	}
 	if err := waitHealthy(ctx, cl, srv); err != nil {
 		srv.stop(stopGrace)
 		return err
@@ -310,7 +320,7 @@ func (a *Adapter) startProcess(ctx context.Context) error {
 	gen := a.gen
 	a.srv, a.cl = srv, cl
 	sctx, cancel := context.WithCancel(context.Background())
-	a.cancel = cancel
+	a.life, a.cancel = sctx, cancel
 	a.mu.Unlock()
 	connected := make(chan struct{})
 	go a.follow(sctx, gen, cl, connected)
@@ -730,16 +740,19 @@ func (a *Adapter) runLocked(ctx context.Context, j job) error {
 		return nil
 	}
 	// A shell line, a command and a compaction answer when they are done, so
-	// they run beside the host's command path; their turn starts now.
+	// they run beside the host's command path, for as long as they take or
+	// until the process is stopped; their turn starts now.
 	a.beginTurnLocked(oc)
-	turnID := a.turn.id
+	turnID, life := a.turn.id, a.life
 	a.mu.Unlock()
 	path := map[string]string{jobShell: "/shell", jobCommand: "/command", jobCompact: "/summarize"}[j.kind]
 	go func() {
-		err := cl.call(context.Background(), http.MethodPost, "/session/"+session+path, body, nil)
+		err := cl.long(life, http.MethodPost, "/session/"+session+path, body, nil)
 		a.mu.Lock()
 		defer a.mu.Unlock()
-		if a.turn == nil || a.turn.id != turnID {
+		if a.turn == nil || a.turn.id != turnID || life.Err() != nil {
+			// The turn ended on its session.idle, or the process is being
+			// stopped, and what stops it ends the turn.
 			return
 		}
 		if err != nil {
