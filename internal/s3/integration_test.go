@@ -17,26 +17,28 @@ import (
 )
 
 // TestIntegration runs against a real bucket. It is opt in: set
-// SOCRATES_S3_IT=1 plus the same SOCRATES_S3_* variables the server reads
-// (ENDPOINT, REGION, BUCKET, ACCESS_KEY_ID, SECRET_ACCESS_KEY, PATH_STYLE).
-// Everything happens under devtest/<random>/ whatever SOCRATES_S3_PREFIX
-// says, and is deleted at the end, so it can be pointed at the production
-// bucket without touching production data.
+// SOCRATES_S3_IT=1 plus SOCRATES_S3_IT_ENDPOINT, _REGION, _BUCKET,
+// _ACCESS_KEY_ID, _SECRET_ACCESS_KEY and _PATH_STYLE. They are names of
+// their own, not the SOCRATES_S3_* a server once read, so that testhome can
+// clear those for every test and keep these (testhome.Main). Everything
+// happens under devtest/<random>/ and is deleted at the end, so it can be
+// pointed at the production bucket without touching production data.
 //
 // Besides checking the basic operations it reports, with -v, how the store
-// treats conditional writes and what its ETags look like - the facts the
-// lease code depends on.
+// treats conditional writes and what its ETags look like: a new backup's
+// meta.json is created with If-None-Match, and read back because a store
+// may ignore the condition.
 func TestIntegration(t *testing.T) {
 	if os.Getenv("SOCRATES_S3_IT") != "1" {
-		t.Skip("set SOCRATES_S3_IT=1 and SOCRATES_S3_* to run against a real bucket")
+		t.Skip("set SOCRATES_S3_IT=1 and SOCRATES_S3_IT_* to run against a real bucket")
 	}
 	c, err := s3.New(s3.Config{
-		Endpoint:        os.Getenv("SOCRATES_S3_ENDPOINT"),
-		Region:          os.Getenv("SOCRATES_S3_REGION"),
-		Bucket:          os.Getenv("SOCRATES_S3_BUCKET"),
-		AccessKeyID:     os.Getenv("SOCRATES_S3_ACCESS_KEY_ID"),
-		SecretAccessKey: os.Getenv("SOCRATES_S3_SECRET_ACCESS_KEY"),
-		PathStyle:       os.Getenv("SOCRATES_S3_PATH_STYLE") != "false",
+		Endpoint:        os.Getenv("SOCRATES_S3_IT_ENDPOINT"),
+		Region:          os.Getenv("SOCRATES_S3_IT_REGION"),
+		Bucket:          os.Getenv("SOCRATES_S3_IT_BUCKET"),
+		AccessKeyID:     os.Getenv("SOCRATES_S3_IT_ACCESS_KEY_ID"),
+		SecretAccessKey: os.Getenv("SOCRATES_S3_IT_SECRET_ACCESS_KEY"),
+		PathStyle:       os.Getenv("SOCRATES_S3_IT_PATH_STYLE") != "false",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -173,12 +175,6 @@ func TestIntegration(t *testing.T) {
 	if string(got.Body) != "v4" {
 		t.Errorf("final body %q, want v4", got.Body)
 	}
-
-	cond, err := s3.ProbeConditional(ctx, c, prefix+"probe")
-	if err != nil {
-		t.Fatalf("ProbeConditional: %v", err)
-	}
-	t.Logf("ProbeConditional: IfNoneMatch=%v IfMatch=%v", cond.IfNoneMatch, cond.IfMatch)
 
 	for _, k := range keys {
 		if err := c.Delete(ctx, prefix+k); err != nil {

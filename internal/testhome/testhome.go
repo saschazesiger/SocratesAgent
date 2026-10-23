@@ -37,6 +37,11 @@ import (
 // cleared are the variables that name a folder of the person's, or a
 // credential, and that are removed so that the defaults derived from the new
 // HOME apply. The prefixes clear every variable that starts with them.
+//
+// kept are let through although a prefix matches them: the real-bucket test
+// of internal/s3 opts in with SOCRATES_S3_IT=1 and reads its bucket from
+// SOCRATES_S3_IT_*, names no server reads, while the SOCRATES_S3_* a server
+// once read - and a backup carries over into backup.json - are cleared.
 var (
 	cleared = []string{
 		"CLAUDE_CONFIG_DIR", "CODEX_HOME",
@@ -44,7 +49,34 @@ var (
 		"SOCRATES_WORKSPACE_ROOT", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
 	}
 	clearedPrefixes = []string{"OPENCODE_", "SOCRATES_S3_", "CLAUDE_CODE_", "ANTHROPIC_"}
+	kept            = []string{"SOCRATES_S3_IT"}
+	keptPrefixes    = []string{"SOCRATES_S3_IT_"}
 )
+
+// clears reports whether Isolate removes the variable name.
+func clears(name string) bool {
+	for _, k := range kept {
+		if name == k {
+			return false
+		}
+	}
+	for _, prefix := range keptPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return false
+		}
+	}
+	for _, c := range cleared {
+		if name == c {
+			return true
+		}
+	}
+	for _, prefix := range clearedPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
 
 // shortTemp is the temporary directory a long one is replaced by.
 const shortTemp = "/tmp"
@@ -96,15 +128,9 @@ func Isolate() (func(), error) {
 		}
 	}
 	for _, kv := range os.Environ() {
-		name, _, _ := strings.Cut(kv, "=")
-		for _, prefix := range clearedPrefixes {
-			if strings.HasPrefix(name, prefix) {
-				_ = os.Unsetenv(name)
-			}
+		if name, _, _ := strings.Cut(kv, "="); clears(name) {
+			_ = os.Unsetenv(name)
 		}
-	}
-	for _, name := range cleared {
-		_ = os.Unsetenv(name)
 	}
 	for name, value := range pinned {
 		_ = os.Setenv(name, value)

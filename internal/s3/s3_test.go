@@ -220,73 +220,42 @@ func TestConditionalPut(t *testing.T) {
 	srv, c := startFake(t, s3fake.Options{})
 	ctx := context.Background()
 
-	etag, err := c.Put(ctx, "lease.json", []byte("a"), &s3.PutOptions{IfNoneMatch: "*"})
+	etag, err := c.Put(ctx, "meta.json", []byte("a"), &s3.PutOptions{IfNoneMatch: "*"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := c.Put(ctx, "lease.json", []byte("b"), &s3.PutOptions{IfNoneMatch: "*"}); !errors.Is(err, s3.ErrPreconditionFailed) {
+	if _, err := c.Put(ctx, "meta.json", []byte("b"), &s3.PutOptions{IfNoneMatch: "*"}); !errors.Is(err, s3.ErrPreconditionFailed) {
 		t.Fatalf("create again: %v", err)
 	}
-	_, err = c.Put(ctx, "lease.json", []byte("c"), &s3.PutOptions{IfMatch: etag})
+	_, err = c.Put(ctx, "meta.json", []byte("c"), &s3.PutOptions{IfMatch: etag})
 	if err != nil {
 		t.Fatalf("replace with current etag: %v", err)
 	}
-	if _, err := c.Put(ctx, "lease.json", []byte("d"), &s3.PutOptions{IfMatch: etag}); !errors.Is(err, s3.ErrPreconditionFailed) {
+	if _, err := c.Put(ctx, "meta.json", []byte("d"), &s3.PutOptions{IfMatch: etag}); !errors.Is(err, s3.ErrPreconditionFailed) {
 		t.Fatalf("replace with stale etag: %v", err)
 	}
 	if _, err := c.Put(ctx, "absent", []byte("d"), &s3.PutOptions{IfMatch: etag}); !errors.Is(err, s3.ErrPreconditionFailed) {
 		t.Fatalf("If-Match on missing: %v", err)
 	}
-	if got, _ := srv.Object("bucket", "lease.json"); string(got) != "c" {
+	if got, _ := srv.Object("bucket", "meta.json"); string(got) != "c" {
 		t.Fatalf("body %q", got)
 	}
 
 	// Ignore: the headers are accepted and do nothing.
 	srv.SetConditional(s3fake.Ignore)
-	if _, err := c.Put(ctx, "lease.json", []byte("e"), &s3.PutOptions{IfMatch: `"stale"`}); err != nil {
+	if _, err := c.Put(ctx, "meta.json", []byte("e"), &s3.PutOptions{IfMatch: `"stale"`}); err != nil {
 		t.Fatalf("ignored If-Match: %v", err)
 	}
-	if got, _ := srv.Object("bucket", "lease.json"); string(got) != "e" {
+	if got, _ := srv.Object("bucket", "meta.json"); string(got) != "e" {
 		t.Fatalf("ignored condition did not overwrite: %q", got)
 	}
 
 	// Reject: the store refuses conditional writes outright.
 	srv.SetConditional(s3fake.Reject)
-	_, err = c.Put(ctx, "lease.json", []byte("f"), &s3.PutOptions{IfNoneMatch: "*"})
+	_, err = c.Put(ctx, "meta.json", []byte("f"), &s3.PutOptions{IfNoneMatch: "*"})
 	var e *s3.Error
 	if !errors.As(err, &e) || e.StatusCode != 501 || errors.Is(err, s3.ErrPreconditionFailed) {
 		t.Fatalf("rejected: %v", err)
-	}
-}
-
-func TestProbeConditional(t *testing.T) {
-	for _, tc := range []struct {
-		mode s3fake.Conditional
-		want s3.Conditional
-	}{
-		{s3fake.Honour, s3.Conditional{IfNoneMatch: true, IfMatch: true}},
-		{s3fake.Ignore, s3.Conditional{}},
-		{s3fake.Reject, s3.Conditional{}},
-	} {
-		srv, c := startFake(t, s3fake.Options{})
-		srv.SetConditional(tc.mode)
-		srv.PutObject("bucket", "probe", []byte("left over from a crash"))
-		got, err := s3.ProbeConditional(context.Background(), c, "probe")
-		if err != nil || got != tc.want {
-			t.Errorf("mode %d: %+v %v, want %+v", tc.mode, got, err, tc.want)
-		}
-		if got.Both() != (tc.mode == s3fake.Honour) {
-			t.Errorf("mode %d: Both %v", tc.mode, got.Both())
-		}
-		if keys := srv.Keys("bucket", ""); len(keys) != 0 {
-			t.Errorf("mode %d: probe left %q", tc.mode, keys)
-		}
-	}
-
-	srv, c := startFake(t, s3fake.Options{})
-	srv.SetDown(503)
-	if _, err := s3.ProbeConditional(context.Background(), c, "probe"); err == nil {
-		t.Error("probe against a down store reported no error")
 	}
 }
 

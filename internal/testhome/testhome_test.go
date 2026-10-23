@@ -91,6 +91,20 @@ func runsThroughMain(t *testing.T, files []string) bool {
 	return false
 }
 
+// The bucket the real-bucket test of internal/s3 opts in with is let
+// through, and the settings a server would take a bucket from are not.
+func TestTheRealBucketTestCanStillBeRun(t *testing.T) {
+	for name, want := range map[string]bool{
+		"SOCRATES_S3_IT": false, "SOCRATES_S3_IT_BUCKET": false, "SOCRATES_S3_IT_SECRET_ACCESS_KEY": false,
+		"SOCRATES_S3_BUCKET": true, "SOCRATES_S3_SECRET_ACCESS_KEY": true, "SOCRATES_S3_ITEMS": true,
+		"OPENCODE_CONFIG": true, "CODEX_HOME": true, "PATH": false,
+	} {
+		if got := clears(name); got != want {
+			t.Errorf("clears(%s) = %v, want %v", name, got, want)
+		}
+	}
+}
+
 // After Isolate nothing points at the real home: HOME, the agents' folders
 // derived from it, the data folder and the workspace root are all inside the
 // temporary one, and Go still finds the caches it had.
@@ -108,7 +122,8 @@ func TestIsolatePointsEverythingAtATemporaryHome(t *testing.T) {
 		}
 	}
 	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "OPENCODE_") || strings.HasPrefix(kv, "SOCRATES_S3_") {
+		name, _, _ := strings.Cut(kv, "=")
+		if strings.HasPrefix(name, "OPENCODE_") || (strings.HasPrefix(name, "SOCRATES_S3_") && clears(name)) {
 			t.Errorf("%s is still set", kv)
 		}
 	}

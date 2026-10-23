@@ -55,7 +55,7 @@ const (
 	// Honour evaluates the conditions (Ceph RGW, current AWS).
 	Honour Conditional = iota
 	// Ignore accepts the headers and overwrites regardless - the dangerous
-	// kind of store, and the one the lease fallback is for.
+	// kind of store, and the reason a new backup reads its meta.json back.
 	Ignore
 	// Reject answers 501 NotImplemented to any conditional PUT.
 	Reject
