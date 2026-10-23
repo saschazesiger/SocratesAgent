@@ -8,6 +8,10 @@
 //	RUN: <command>  an exec_command call (inside `exec` for code-mode models)
 //	PATCH: <file>   an apply_patch that adds <file>
 //	SPAWN: <task>   a collaboration.spawn_agent call whose agent is told "SAY sub"
+//	ASK: [JSON]     an ask_user call (the dynamic tool) with these arguments, or
+//	                a call of two questions
+//	INPUT           a request_user_input call of one question (Plan mode)
+//	ASYNC           a request_user_input_async call of one question (code mode)
 //	LIMIT           a 429 usage_limit_reached
 //	FAIL            a 500
 //
@@ -280,6 +284,23 @@ func (t *turn) answer(text string) {
 	case strings.Contains(text, "SPAWN:"):
 		task := strings.Fields(after(text, "SPAWN:") + " helper")[0]
 		t.call("collaboration.spawn_agent", map[string]any{"task_name": task, "message": "SAY sub done", "fork_turns": "none"})
+	case strings.Contains(text, "ASK:"):
+		args := map[string]any{}
+		if json.Unmarshal([]byte(strings.TrimSpace(after(text, "ASK:"))), &args) != nil || len(args) == 0 {
+			args = map[string]any{"title": "Setup", "questions": []any{
+				map[string]any{"id": "db", "header": "Database", "question": "Which database?", "kind": "single",
+					"options": []any{map[string]any{"id": "pg", "label": "PostgreSQL"}, map[string]any{"id": "sqlite", "label": "SQLite"}}},
+				map[string]any{"id": "name", "question": "What is it called?", "kind": "text"}}}
+		}
+		t.call("ask_user", args)
+	case strings.Contains(text, "INPUT"):
+		t.call("request_user_input", map[string]any{"questions": []any{map[string]any{"id": "color", "header": "Color",
+			"question": "Which color should the button be?", "options": []any{
+				map[string]any{"label": "Blue (Recommended)", "description": "Matches the brand"},
+				map[string]any{"label": "Red", "description": "Stands out"}}}}})
+	case strings.Contains(text, "ASYNC"):
+		t.call("request_user_input_async", map[string]any{"questions": []any{
+			map[string]any{"title": "Should I also update the docs?", "options": []string{"Yes", "No"}}}})
 	case strings.Contains(text, "PROPOSE"):
 		t.message("Here is my plan.\n<proposed_plan>\n# Rename the button\n- Find the usages\n- Rename them\n</proposed_plan>\n")
 	default:
