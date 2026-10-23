@@ -325,7 +325,10 @@ function toolHtml(part, view, { diff = false } = {}) {
   }${diff && files.length ? html`<span class="so-diff__count"><span class="so-diff__added">+${added}</span><span class="so-diff__removed">−${removed}</span></span>` : ''}${
     statusMark(state)
   }<span class="so-tool__time">${seconds(tool.duration)}</span>${chevron()}</summary>${
-    open ? html`<div class="so-tool__body">${infoButton(facts, 'Call details')}${toolBody(part, tool, view, { diff, group })}</div>` : ''
+    open ? html`<div class="so-tool__body">${
+      diff || group ? html`${toolBody(part, tool, view, { diff, group })}${infoButton(facts, 'Call details')}`
+        : html`${infoButton(facts, 'Call details')}${toolBody(part, tool, view, { diff, group })}`
+    }</div>` : ''
   }</details>`;
 }
 
@@ -393,6 +396,8 @@ function planAskOf(part, chat) {
 }
 
 const DECISION_WORDS = { approved: 'Approved', keep_planning: 'Sent back to planning', pending: 'Waiting for you' };
+const DECISION_TONE = { approved: 'ds-status ds-status--ok', keep_planning: 'ds-status', pending: 'ds-status ds-status--warning' };
+const DECISION_GLYPH = { approved: 'check', keep_planning: 'pencil', pending: 'clock' };
 
 function planHtml(part, view) {
   const c = part.content || {};
@@ -407,7 +412,7 @@ function planHtml(part, view) {
   const waiting = !!ask && !ask.answered;
   const noting = view.isOpen('note:' + part.id, false);
   return html`<section class="ds-card so-part so-plan" data-ds-key="${'p:' + part.id}" data-kind="plan" data-decision="${decision || (waiting ? 'pending' : '')}"><div class="ds-card__row"><h3 class="ds-card__title so-plan__title">${raw(icon('flag', 18))}<span>Plan</span></h3>${
-    decision && DECISION_WORDS[decision] ? html`<span class="${decision === 'approved' ? 'ds-status ds-status--ok' : 'ds-status'}">${raw(icon(decision === 'approved' ? 'check' : 'pencil', 16))}<span>${DECISION_WORDS[decision]}</span></span>` : ''
+    decision && DECISION_WORDS[decision] ? html`<span class="${DECISION_TONE[decision]}">${raw(icon(DECISION_GLYPH[decision], 16))}<span>${DECISION_WORDS[decision]}</span></span>` : ''
   }</div><div class="so-plan__text so-md">${markdown(text)}</div>${
     meta.note ? html`<p class="ds-meta so-plan__note">${'Note: ' + meta.note}</p>` : ''
   }${waiting ? html`<div class="so-plan__answer">${

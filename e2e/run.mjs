@@ -13489,7 +13489,7 @@ async function chatphone() {
       };
       return {
         send: box('#chat .so-composer__send'), attach: box('#chat .so-composer__attach'),
-        model: box('#chat .so-composer__model'), dictate: box('#chat .so-composer__dictate'),
+        model: box('#chat .so-composer__model'), speak: box('#micBtn'),
         usage: box('#chat .so-composer__usage'), copy: box('#chat .so-code__copy'),
         tool: box('#chat .so-tool > summary'),
       };

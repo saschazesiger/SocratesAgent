@@ -385,13 +385,6 @@
   text-underline-offset: var(--ds-link-underline-offset);
 }
 
-.so-md :not(pre) > code {
-  padding: 0 var(--ds-space-1);
-  border-radius: var(--ds-radius-xs);
-  background: var(--ds-code-bg);
-  font: var(--ds-font-code);
-}
-
 .so-md blockquote {
   padding-left: var(--ds-space-4);
   border-left: 3px solid var(--ds-line-2);
@@ -466,6 +459,15 @@
   padding: var(--ds-space-3);
 }
 
+/* Inline code wears DS's own chip (base.css); the code of a block is the
+   block's text, not a chip on every line. */
+.so-code__pre > code {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+}
+
 .so-mono {
   padding: var(--ds-space-2) var(--ds-space-3);
   border-radius: var(--ds-radius-md);
@@ -538,14 +540,19 @@
   min-width: 0;
 }
 
-.so-tool__body > .so-info {
+.so-tool__body > .so-info:first-child {
   grid-column: 2;
   grid-row: 1;
 }
 
-.so-tool__body > .so-info + * {
+.so-tool__body > .so-info:first-child + * {
   grid-column: 1;
   grid-row: 1;
+}
+
+/* After a diff or a group, which want the whole width, it closes the body. */
+.so-tool__body > .so-info:last-child {
+  justify-self: end;
 }
 
 .so-tool__out {
@@ -692,6 +699,7 @@
   max-width: 100%;
   overflow-x: auto;
   font: var(--so-font-code);
+  tab-size: 4;
 }
 
 .so-diff__hunk,
@@ -1130,8 +1138,11 @@
     max-width: 100%;
   }
 
-  /* The hint is the first to go: the buttons are what a thumb needs. */
-  .so-composer__hint {
+  /* The hint is the first to go: the buttons are what a thumb needs. And
+     the top bar's Speak writes into the composer, so the composer's own
+     Dictate gives its room to Stop and Send. */
+  .so-composer__hint,
+  .so-composer__dictate {
     display: none;
   }
 
