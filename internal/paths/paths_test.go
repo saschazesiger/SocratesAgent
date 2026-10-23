@@ -24,9 +24,21 @@ func TestExcluded(t *testing.T) {
 		"agents/opencode/cache":     true,
 		"agents/opencode/config":    false,
 		"agents/opencode/accounts":  false,
-		"vscode/ab12/User":          false,
-		"accounts/a1/run":           false,
-		"chats/run":                 false,
+		// An OpenCode account's data and state homes keep only OpenCode's
+		// own folder: the rest is the tools'.
+		"agents/opencode/accounts/a1":                        false,
+		"agents/opencode/accounts/a1/opencode":               false,
+		"agents/opencode/accounts/a1/opencode/auth.json":     false,
+		"agents/opencode/accounts/a1/state":                  false,
+		"agents/opencode/accounts/a1/state/opencode":         false,
+		"agents/opencode/accounts/a1/state/opencode/kv.json": false,
+		"agents/opencode/accounts/a1/uv":                     true,
+		"agents/opencode/accounts/a1/pipx":                   true,
+		"agents/opencode/accounts/a1/state/nvim":             true,
+		"accounts/a1/uv":                                     false,
+		"vscode/ab12/User":                                   false,
+		"accounts/a1/run":                                    false,
+		"chats/run":                                          false,
 	} {
 		if got := Excluded(rel); got != want {
 			t.Errorf("Excluded(%q) = %v, want %v", rel, got, want)

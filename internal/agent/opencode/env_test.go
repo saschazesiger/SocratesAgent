@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
+	"github.com/saschazesiger/SocratesAgent/internal/paths"
 )
 
 // The serve process's environment is the chat's without what would point
@@ -128,5 +129,43 @@ func TestPrepareAccountLinksTheSharedFoldersRelatively(t *testing.T) {
 	}
 	if err := layout.PrepareAccount("../escape"); err == nil {
 		t.Fatal("an account id with a path in it was taken")
+	}
+}
+
+// The backup takes what is OpenCode's and an account's, and leaves out the
+// shared cache and what the tools a chat runs keep in the account's data and
+// state homes, which are theirs too.
+func TestTheBackupKeepsOnlyOpenCodesOwnFolders(t *testing.T) {
+	data := t.TempDir()
+	layout := NewLayout(data)
+	home := layout.AccountHome("a")
+	excluded := func(p string) bool {
+		rel, err := filepath.Rel(data, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The backup walks down from the top: a folder left out takes
+		// everything below it along.
+		for dir := filepath.ToSlash(rel); dir != "."; dir = filepath.ToSlash(filepath.Dir(dir)) {
+			if paths.Excluded(dir) {
+				return true
+			}
+		}
+		return false
+	}
+	kept := []string{layout.DB(), layout.AuthFile("a"), filepath.Join(home, "opencode", "snapshot"),
+		filepath.Join(home, "state", "opencode", "kv.json"), filepath.Join(layout.ConfigHome(), "opencode", "opencode.jsonc"),
+		filepath.Join(layout.Root, "storage", "session_diff")}
+	for _, p := range kept {
+		if excluded(p) {
+			t.Errorf("%s is not backed up", p)
+		}
+	}
+	left := []string{filepath.Join(layout.CacheHome(), "opencode", "models.json"), filepath.Join(home, "uv", "python"),
+		filepath.Join(home, "state", "nvim")}
+	for _, p := range left {
+		if !excluded(p) {
+			t.Errorf("%s is backed up", p)
+		}
 	}
 }

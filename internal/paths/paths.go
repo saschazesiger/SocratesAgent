@@ -27,6 +27,7 @@ package paths
 import (
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -124,7 +125,7 @@ var NotBackedUp = []string{
 	VSCode + "/*/CachedData",
 	VSCode + "/*/CachedProfilesData",
 	// OpenCode's shared XDG_CACHE_HOME, which the tools an OpenCode chat runs
-	// inherit too (Go's build cache, pip's, npm's).
+	// inherit too (Go's build cache, pip's, uv's).
 	Agents + "/opencode/cache",
 	Chats + "/*/" + ChatLock,
 	Chats + "/*/" + ChatLog,
@@ -132,11 +133,30 @@ var NotBackedUp = []string{
 	"lost+found",
 }
 
+// BackedUpOnly are folders of which the backup takes only the entries named,
+// as path.Match patterns of the folder relative to the data directory. An
+// OpenCode account's XDG_DATA_HOME and XDG_STATE_HOME are also those of
+// every tool an OpenCode chat runs (uv's Pythons and tools, pipx's
+// environments), which a new machine installs again; OpenCode keeps what is
+// the account's in its own folder of each.
+var BackedUpOnly = map[string][]string{
+	Agents + "/opencode/accounts/*":       {"opencode", "state"},
+	Agents + "/opencode/accounts/*/state": {"opencode"},
+}
+
 // Excluded reports whether rel - a slash separated path relative to the data
-// directory - is one of NotBackedUp.
+// directory - is one of NotBackedUp, or an entry of a BackedUpOnly folder
+// that it does not name.
 func Excluded(rel string) bool {
 	for _, pattern := range NotBackedUp {
 		if ok, _ := path.Match(pattern, rel); ok {
+			return true
+		}
+	}
+	dir, name := path.Split(rel)
+	dir = strings.TrimSuffix(dir, "/")
+	for pattern, kept := range BackedUpOnly {
+		if ok, _ := path.Match(pattern, dir); ok && !slices.Contains(kept, name) {
 			return true
 		}
 	}

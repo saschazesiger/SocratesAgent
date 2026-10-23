@@ -43,6 +43,10 @@ func ValidAccount(id string) bool { return accountPattern.MatchString(id) }
 //	    opencode/auth.json             that account's credentials (0600)
 //	    opencode/snapshot -> ../../../snapshot   (and the other shared dirs)
 //	    state/                         XDG_STATE_HOME of the account
+//
+// The tools a chat runs inherit the XDG folders. The backup leaves out
+// cache/, and of an account's folder it takes only opencode/ and
+// state/opencode/ (paths.BackedUpOnly): the rest is the tools'.
 type Layout struct {
 	// Root is <data>/agents/opencode.
 	Root string

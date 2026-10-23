@@ -440,7 +440,9 @@ Park and Stop: abort if a turn runs, SIGTERM to the process group, SIGKILL after
 **Layout** (`opencode.Layout`, `NewLayout(dataDir)`): `<data>/agents/opencode/opencode.db`
 (`OPENCODE_DB` of every process), shared `snapshot/ storage/ tool-output/ plans/ worktree/ repos/
 config/ cache/`, and per account `accounts/<acct>/` as `XDG_DATA_HOME` (its `opencode/auth.json`,
-the shared folders linked in by relative symlinks) with `state/` as `XDG_STATE_HOME`.
+the shared folders linked in by relative symlinks) with `state/` as `XDG_STATE_HOME`. The tools a
+chat runs inherit these; the backup leaves out `cache/`, and of an account's folder takes only
+`opencode/` and `state/opencode/` (`paths.BackedUpOnly`).
 `PrepareAccount(acct)` makes it (idempotent; every start calls it, WP7 calls it on creating an
 account). `Migrate` runs `opencode db "select 1"` through Spawn once per binary build (stamp
 `migrated`, under `migrate.lock`) before any serve. `StartSpec.Account` empty is `default`.

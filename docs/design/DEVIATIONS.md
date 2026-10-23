@@ -2243,15 +2243,18 @@ uses (it loads no plugin). The hang is bounded instead: every stop is SIGTERM, t
 5 s (`TestStopKillsAServerThatIgnoresTerm`), and a start after a cut-off install installs again.
 Offline, the install fails and the server works on.
 
-**WP5 / §3.3 — the tools an OpenCode chat runs see the layout's XDG folders.** OpenCode's shell
-and bash tool inherit the server's environment, so `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
-`XDG_STATE_HOME` and `XDG_CACHE_HOME` point into `<data>/agents/opencode` for them too. Caches kept
-there (Go's build cache, pip's, npm's) land in the shared `cache/`, which the backup leaves out
-(`paths.NotBackedUp`). A tool that finds its configuration only through `XDG_CONFIG_HOME` (gh's
-login, git's `~/.config/git/config`) does not see the user's in an OpenCode chat; the variables a
-tool has for that (`GH_CONFIG_DIR`, `GIT_CONFIG_GLOBAL`) pass through, so WP7, which builds the
-chat's environment, can set them. Giving tools the user's XDG values back would take a plugin on
-OpenCode's `shell.env` hook, which was not tried.
+**WP5 / §3.3 — the tools an OpenCode chat runs see the layout's XDG folders.** OpenCode's shell and
+bash tool inherit the server's environment, so `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`
+and `XDG_CACHE_HOME` point into `<data>/agents/opencode` for them too. Caches kept there (Go's
+build cache, pip's, uv's) land in the shared `cache/`, which the backup leaves out
+(`paths.NotBackedUp`); npm keeps its cache in `~/.npm`, not under XDG. What tools keep in the
+account's data and state homes (uv's Pythons and tools, pipx's environments) is left out too: of
+`accounts/<acct>/` the backup takes only `opencode/` and `state/opencode/`, where OpenCode keeps
+the account's own (`paths.BackedUpOnly`). A tool that finds its configuration only through
+`XDG_CONFIG_HOME` (gh's login, git's `~/.config/git/config`) does not see the user's in an OpenCode
+chat; the variables a tool has for that (`GH_CONFIG_DIR`, `GIT_CONFIG_GLOBAL`) pass through, so
+WP7, which builds the chat's environment, can set them. Giving tools the user's XDG values back
+would take a plugin on OpenCode's `shell.env` hook, which was not tried.
 
 **WP1 / REBUILD.md §6.2 — chunks are named by an HMAC of their content, not by its SHA-256.**
 §6.2 says `chunks/<sha256>`. The name is HMAC-SHA256 under a key derived from the passphrase
