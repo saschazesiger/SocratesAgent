@@ -141,6 +141,14 @@ func TestRealOpenCodeModelAsksWithAskUser(t *testing.T) {
 	}
 	end := cn.until("the turn's end", turnEnded)
 	text := journalText(t, h)
+	if !strings.Contains(text, "tool done: "+`{"answers":{"`+q.ID+`":{"selected":["`) {
+		t.Fatalf("the tool did not return the answer:\n%s", text)
+	}
+	if end.Outcome == agent.OutcomeLimited {
+		// The answer reached the model's tool call; the free quota ran out on
+		// the request that would have read it.
+		t.Skipf("the free model %s ran out of quota after the answer (%s)", model, end.Text)
+	}
 	if end.Outcome != agent.OutcomeCompleted || !strings.Contains(text, "BLUE") {
 		t.Fatalf("turn %+v\n%s", end, text)
 	}
