@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -350,14 +351,19 @@ func (e *Engine) backup(ctx context.Context, cfg Config, prog *progress) (*RunIn
 		return nil, err
 	}
 	defer os.RemoveAll(tmp)
-	layout := paths.New(e.opts.DataDir)
+	// The walk starts from where the data directory's path leads. A data
+	// directory moved onto a volume of its own and left behind as a
+	// symbolic link is still the whole installation, and a walk does not
+	// descend into a root that is a link: it would back up nothing, and
+	// report success.
+	root, err := filepath.EvalSymlinks(e.opts.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	layout := paths.New(root)
 	var exclude []string
 	if e.opts.Exclude != nil {
-		for _, p := range e.opts.Exclude() {
-			if rel, ok := layout.Rel(p); ok {
-				exclude = append(exclude, rel)
-			}
-		}
+		exclude = excludedRels(paths.New(e.opts.DataDir), layout, e.opts.Exclude())
 	}
 	prog.setPhase("backing up")
 	snap := &snapshotter{layout: layout, repo: r, idx: idx, exclude: exclude, tmp: tmp, prog: prog}
@@ -424,6 +430,29 @@ func (e *Engine) backup(ctx context.Context, cfg Config, prog *progress) (*RunIn
 		log.Printf("backup: could not list the snapshots: %v", err)
 	}
 	return info, nil
+}
+
+// excludedRels is each of dirs that lies inside the data directory, relative
+// to it. A folder may be named by either spelling of the data directory's
+// path - the configured one, which may run through a symbolic link, or the
+// one it resolves to - or by a link of its own that leads inside.
+func excludedRels(configured, resolved paths.Layout, dirs []string) []string {
+	var out []string
+	for _, p := range dirs {
+		rel, ok := configured.Rel(p)
+		if !ok {
+			rel, ok = resolved.Rel(p)
+		}
+		if !ok {
+			if real, err := filepath.EvalSymlinks(p); err == nil {
+				rel, ok = resolved.Rel(real)
+			}
+		}
+		if ok {
+			out = append(out, rel)
+		}
+	}
+	return out
 }
 
 // manifest is a snapshot's manifest, from the kept copy when there is one.

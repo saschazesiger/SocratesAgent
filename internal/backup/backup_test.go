@@ -310,6 +310,27 @@ func TestFirstSnapshotRestoresByteIdentical(t *testing.T) {
 	}
 
 	dest := restoreInto(t, b, "latest")
+	sameTree(t, src, dest)
+	db := openDB(t, filepath.Join(dest, "agents/opencode/opencode.db"), true)
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM msg`).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("the restored database: %d rows, %v", n, err)
+	}
+	for _, left := range []string{"restore.pending", "agents/opencode/opencode.db-wal"} {
+		if _, err := os.Lstat(filepath.Join(dest, left)); err == nil {
+			t.Errorf("%s is left in the restored directory", left)
+		}
+	}
+	if entries, _ := filepath.Glob(filepath.Join(dest, ".restore-*")); len(entries) != 0 {
+		t.Errorf("staging left behind: %v", entries)
+	}
+}
+
+// sameTree compares a backed up data directory with its restore: every path
+// that is not left out is there, with its mode, content, link target and
+// time, and nothing else is.
+func sameTree(t *testing.T, src, dest string) {
+	t.Helper()
 	want := tree(t, src, notRestored)
 	got := tree(t, dest, func(rel string) bool { return strings.HasPrefix(rel, "agents/opencode/opencode.db") })
 	if len(want) < 15 {
@@ -331,19 +352,30 @@ func TestFirstSnapshotRestoresByteIdentical(t *testing.T) {
 			t.Errorf("%s was restored but is not backed up", rel)
 		}
 	}
-	db := openDB(t, filepath.Join(dest, "agents/opencode/opencode.db"), true)
-	var n int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM msg`).Scan(&n); err != nil || n != 2 {
-		t.Fatalf("the restored database: %d rows, %v", n, err)
+}
+
+// A data directory that is a symbolic link to where it really is - moved
+// onto a volume of its own - is backed up whole rather than as an empty
+// snapshot, and a workspace named through the link is still left out.
+func TestASymlinkedDataDirectoryIsBackedUpWhole(t *testing.T) {
+	clk := newClock()
+	b := newBucket(t, clk)
+	real := t.TempDir()
+	populate(t, real)
+	link := filepath.Join(t.TempDir(), "socrates")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
 	}
-	for _, left := range []string{"restore.pending", "agents/opencode/opencode.db-wal"} {
-		if _, err := os.Lstat(filepath.Join(dest, left)); err == nil {
-			t.Errorf("%s is left in the restored directory", left)
-		}
+	e := engine(t, link, b, clk, "host-a")
+	e.opts.Exclude = excludeWorkspaces(link)
+	info, err := e.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if entries, _ := filepath.Glob(filepath.Join(dest, ".restore-*")); len(entries) != 0 {
-		t.Errorf("staging left behind: %v", entries)
+	if info.Files < 7 {
+		t.Fatalf("the snapshot of a linked data directory holds %d files: %+v", info.Files, info)
 	}
+	sameTree(t, real, restoreInto(t, b, "latest"))
 }
 
 // A second run over an unchanged directory writes nothing; one after a file
