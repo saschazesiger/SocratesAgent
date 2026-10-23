@@ -487,8 +487,12 @@ as `args`) at start. `SetModel`: `provider/model`
 and the effort as `variant`, both sent with every prompt.
 
 **Account switch** (mechanics for WP7): `(*opencode.Adapter).SwitchAccount(ctx, account, env)`
-interrupts a running turn and waits for it, stops the process, and starts one for the other
-account's data home and `env` on the same session; the caller journals `account.switched`. API-key
+interrupts a running turn and waits for it (30 s, then the stop ends it as `interrupted`), stops the
+process, and starts one for the other account's data home and `env` on the same session; the queue
+holds meanwhile, so queued messages and those sent during the switch run on the new account. When the
+new process does not come up, the adapter reports `Exited` and refuses further sends (the host records
+the failure; the next host resumes and re-sends what is undelivered). The caller journals
+`account.switched`. API-key
 accounts may pass `OPENCODE_AUTH_CONTENT` in `env`; OAuth accounts keep `auth.json` in their data
 home (research/06 §3.2).
 

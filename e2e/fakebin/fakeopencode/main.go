@@ -205,6 +205,10 @@ type run struct {
 func (r *run) stop() { r.once.Do(func() { close(r.cancel) }) }
 
 func serve() error {
+	if os.Getenv("FAKEOPENCODE_REFUSE") == "1" {
+		// A server that cannot start for this account.
+		return errors.New("refused to serve")
+	}
 	var migrated bool
 	if err := withStore(func(st *store) error {
 		migrated = st.Migrated

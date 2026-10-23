@@ -36,7 +36,8 @@ const (
 	connectedWait = 10 * time.Second
 	// abortWait bounds the abort a stop starts with.
 	abortWait = 3 * time.Second
-	// idleWait is how long an account switch waits for an interrupted turn.
+	// idleWait is how long an account switch waits for an interrupted turn
+	// before it stops the process under it.
 	idleWait = 30 * time.Second
 	// reconnectMax is the longest pause between two attempts to reopen
 	// /event.
@@ -89,7 +90,7 @@ type Adapter struct {
 	state   persisted
 	ending  bool
 	// switching is an account switch in progress: the old process's exit is
-	// expected.
+	// expected, and the queue waits for the new one.
 	switching bool
 
 	// posting is a prompt on its way to OpenCode; turn the turn running.
@@ -694,10 +695,11 @@ func (a *Adapter) Send(ctx context.Context, msg agent.Outgoing) error {
 	return a.submit(ctx, j)
 }
 
-// submit runs a job now, or queues it behind the running turn.
+// submit runs a job now, or queues it behind the running turn (or the
+// account switch).
 func (a *Adapter) submit(ctx context.Context, j job) error {
 	a.mu.Lock()
-	if a.posting || a.turn != nil || len(a.queue) > 0 {
+	if a.posting || a.turn != nil || a.switching || len(a.queue) > 0 {
 		a.queue = append(a.queue, j)
 		if j.msg.MessageID != "" {
 			a.out.Emit(agent.Event{Type: agent.TypeMessageState, MessageID: j.msg.MessageID, State: agent.MessageQueued})
@@ -711,7 +713,7 @@ func (a *Adapter) submit(ctx context.Context, j job) error {
 // next runs the first queued job, if the adapter is free for it.
 func (a *Adapter) next() {
 	a.mu.Lock()
-	if a.ending || a.posting || a.turn != nil || len(a.queue) == 0 {
+	if a.ending || a.posting || a.turn != nil || a.switching || len(a.queue) == 0 {
 		a.mu.Unlock()
 		return
 	}
@@ -1110,7 +1112,10 @@ func (a *Adapter) PID() int {
 // interrupted and waited for, the server is stopped, and one for the other
 // account's data home and environment continues the same session
 // (research/06 §3.3). Two processes never serve the session at once. The
-// caller (WP7) journals account.switched.
+// queue holds while it switches, so that what was queued or is sent
+// meanwhile runs on the new account. When the new process does not come
+// up, the adapter has none left: it reports Exited, and the host that
+// follows resumes. The caller (WP7) journals account.switched.
 func (a *Adapter) SwitchAccount(ctx context.Context, account string, env []string) error {
 	if account == "" {
 		account = DefaultAccount
@@ -1119,39 +1124,74 @@ func (a *Adapter) SwitchAccount(ctx context.Context, account string, env []strin
 		return err
 	}
 	a.mu.Lock()
+	switch {
+	case a.ending:
+		a.mu.Unlock()
+		return errStopped
+	case a.switching:
+		a.mu.Unlock()
+		return errors.New("opencode: an account switch is already under way")
+	}
+	a.switching = true
 	busy := a.turn != nil || a.posting
 	a.mu.Unlock()
 	if busy {
+		// An abort that fails or does not end the turn in time is not the
+		// end of the switch: the stop below ends the turn either way.
 		if err := a.Interrupt(ctx); err != nil {
-			return err
+			log.Printf("opencode: interrupt for an account switch: %v", err)
 		}
 		deadline := time.Now().Add(idleWait)
-		for {
+		for time.Now().Before(deadline) {
 			a.mu.Lock()
 			busy = a.turn != nil || a.posting
 			a.mu.Unlock()
 			if !busy {
 				break
 			}
-			if time.Now().After(deadline) {
-				return errors.New("the turn did not end after the interrupt")
-			}
 			time.Sleep(50 * time.Millisecond)
 		}
 	}
-	a.mu.Lock()
-	a.switching = true
-	a.mu.Unlock()
 	a.stopProcess(false)
 	a.mu.Lock()
+	if a.turn != nil {
+		a.turn.aborted = true
+		a.endTurnLocked()
+	}
+	if a.ending {
+		// Stopped meanwhile: there is nothing to switch.
+		a.switching = false
+		a.mu.Unlock()
+		return errStopped
+	}
 	a.account, a.spec.Account, a.spec.Env = account, account, env
 	a.mu.Unlock()
-	err := a.startProcess(ctx)
+	if err := a.startProcess(ctx); err != nil {
+		a.mu.Lock()
+		a.ending, a.switching = true, false
+		queue := a.queue
+		a.queue = nil
+		a.mu.Unlock()
+		// A queued message is still undelivered in the journal, and the next
+		// host sends it; a queued command is lost with this one.
+		for _, j := range queue {
+			if j.msg.MessageID == "" {
+				a.out.Emit(agent.Event{Type: agent.TypeError, Code: "command_failed", Text: j.display + ": the account switch failed"})
+			}
+		}
+		err = fmt.Errorf("opencode: start on account %s: %w", account, err)
+		a.out.Exited(err)
+		return err
+	}
 	a.mu.Lock()
 	a.switching = false
+	srv, cancel, stopped := a.srv, a.cancel, a.ending
 	a.mu.Unlock()
-	if err != nil {
-		return err
+	if stopped {
+		// Stopped while the new process came up: it goes too.
+		cancel()
+		srv.stop(stopGrace)
+		return errStopped
 	}
 	go a.next()
 	return nil

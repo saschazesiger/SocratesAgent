@@ -575,8 +575,10 @@ func TestSwitchingAccountKeepsTheSession(t *testing.T) {
 		t.Fatalf("account a: %q", r.lastText())
 	}
 	pidA := r.a.PID()
-	// A switch during a turn interrupts it first.
+	// A switch during a turn interrupts it first, and what was queued behind
+	// it runs on the new account.
 	r.send("/sleep 30")
+	r.send("/whoami")
 	eventually(t, 5*time.Second, "the slow turn", func() bool { return r.rec.count(agent.TypeTurnStarted, nil) == 2 })
 	ctx := context.Background()
 	if err := r.a.SwitchAccount(ctx, "b", append(append([]string{}, r.env...), keyB)); err != nil {
@@ -588,10 +590,9 @@ func TestSwitchingAccountKeepsTheSession(t *testing.T) {
 	if got := r.rec.turns(); got[1] != agent.OutcomeInterrupted {
 		t.Fatalf("the turn the switch cut short: %v", got)
 	}
-	r.send("/whoami")
 	r.waitTurns(3)
 	if r.lastText() != "account: fake:KEY-B (env)" {
-		t.Fatalf("account b: %q", r.lastText())
+		t.Fatalf("the queued message ran as %q", r.lastText())
 	}
 	// An OAuth-style account keeps its credentials in its own data home.
 	layout := NewLayout(r.data)
@@ -628,6 +629,30 @@ func TestSwitchingAccountKeepsTheSession(t *testing.T) {
 	}
 	if n := r.rec.count(agent.TypeConversation, nil); n != 1 {
 		t.Fatalf("%d conversation events", n)
+	}
+}
+
+// A switch whose new process does not come up leaves no chat that only looks
+// alive: the adapter reports its end, and takes nothing more.
+func TestAFailedSwitchEndsTheAdapter(t *testing.T) {
+	r := newRig(t)
+	r.mustStart("")
+	r.send("hello")
+	r.waitTurns(1)
+	ctx := context.Background()
+	if err := r.a.SwitchAccount(ctx, "b", append(append([]string{}, r.env...), "FAKEOPENCODE_REFUSE=1")); err == nil {
+		t.Fatal("the switch succeeded")
+	}
+	select {
+	case err := <-r.rec.exited:
+		if err == nil {
+			t.Fatal("exited without an error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the failed switch was not reported")
+	}
+	if err := r.a.Send(ctx, agent.Outgoing{MessageID: "m_after", Text: "after"}); !errors.Is(err, errStopped) {
+		t.Fatalf("send after the failed switch: %v", err)
 	}
 }
 
