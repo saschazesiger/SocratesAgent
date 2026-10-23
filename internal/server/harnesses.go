@@ -43,8 +43,11 @@ func (s *Server) answerCatalog(w http.ResponseWriter, snap catalog.Snapshot) {
 		"harnesses": agents,
 		// The agents a session is a chat with rather than a terminal: the
 		// harnesses with an adapter (REBUILD.md §3).
-		"chats":        agent.Harnesses(),
-		"refreshed_at": snap.RefreshedAt,
+		"chats": agent.Harnesses(),
+		// Each chat agent's command palette, for the composer's "/" before
+		// a chat has said anything about itself (agent.info).
+		"chat_commands": chatPalettes(),
+		"refreshed_at":  snap.RefreshedAt,
 		"workspace": map[string]any{
 			"root":            settings.Workspace.Root,
 			"default_harness": settings.Workspace.DefaultHarness,
@@ -83,4 +86,15 @@ func fakeCatalogEntry() catalog.Agent {
 			{ID: "fake-large", Label: "Fake large", Efforts: efforts, DefaultEffort: "high"},
 		},
 	}
+}
+
+// chatPalettes is every chat agent's registered command palette, by harness.
+func chatPalettes() map[string][]agent.CommandInfo {
+	out := map[string][]agent.CommandInfo{}
+	for _, h := range agent.Harnesses() {
+		if cmds := agent.Commands(h); len(cmds) > 0 {
+			out[h] = cmds
+		}
+	}
+	return out
 }

@@ -33,7 +33,10 @@ func init() {
 }
 
 // EnableFake registers the scripted agent.
-func EnableFake() { Register(FakeHarness, func() Adapter { return &fakeAdapter{} }) }
+func EnableFake() {
+	Register(FakeHarness, func() Adapter { return &fakeAdapter{} })
+	RegisterCommands(FakeHarness, fakeCommands)
+}
 
 // fakeAdapter is an in-process agent driven by the text of each message, for
 // tests and the e2e suite. It behaves like a real one where durability is
@@ -112,7 +115,7 @@ func (f *fakeAdapter) Start(ctx context.Context, spec StartSpec, out Emitter) er
 	if err := f.startChild(); err != nil {
 		return err
 	}
-	out.Emit(Event{Type: TypeConversation, ConversationID: f.conv}, Event{Type: TypeCommands, Content: fakeCommands})
+	out.Emit(Event{Type: TypeConversation, ConversationID: f.conv}, Event{Type: TypeAgentInfo, Content: fakeInfo})
 	if spec.First != nil {
 		f.queue = append(f.queue, *spec.First)
 	}

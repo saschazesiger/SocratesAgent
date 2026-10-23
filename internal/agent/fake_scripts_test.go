@@ -33,26 +33,15 @@ func TestFakePayloadsAreWholeJSON(t *testing.T) {
 			t.Errorf("the ask has no %s question", kind)
 		}
 	}
-	var commands []struct {
-		Name string `json:"name"`
+	var info struct {
+		Commands []CommandInfo `json:"commands"`
 	}
-	if err := json.Unmarshal(fakeCommands, &commands); err != nil || len(commands) == 0 {
-		t.Fatalf("the commands: %v %v", commands, err)
+	if err := json.Unmarshal(fakeInfo, &info); err != nil || len(info.Commands) != len(fakeCommands) {
+		t.Fatalf("the agent info: %v %v", info, err)
 	}
 	for done := 0; done <= 3; done++ {
 		if !json.Valid(todoContent(done)) {
 			t.Fatalf("the task list after %d", done)
 		}
-	}
-}
-
-// A commands event is kept by the projection, the last one whole.
-func TestTheProjectionKeepsTheCommands(t *testing.T) {
-	p := Fold([]Event{
-		{Seq: 1, Type: TypeCommands, Content: json.RawMessage(`[{"name":"a"}]`)},
-		{Seq: 2, Type: TypeCommands, Content: fakeCommands},
-	})
-	if string(p.Commands) != string(fakeCommands) {
-		t.Fatalf("commands %s", p.Commands)
 	}
 }

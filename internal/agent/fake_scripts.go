@@ -15,10 +15,18 @@ import (
 // end-to-end scenarios can be built and measured before a real adapter emits
 // the same shapes.
 
-// fakeCommands is the agent's slash commands, as the palette shows them.
-var fakeCommands = json.RawMessage(`[` +
-	`{"name":"compact","description":"Summarize the conversation to free up context"},` +
-	`{"name":"context","description":"Show how much of the context window is in use"}]`)
+// fakeCommands is the agent's palette: what the composer offers after "/".
+var fakeCommands = []CommandInfo{
+	{Name: "compact", Description: "Summarize the conversation to free up context"},
+	{Name: "context", Description: "Show how much of the context window is in use"},
+}
+
+// fakeInfo is what the scripted agent says about itself (agent.info).
+var fakeInfo = json.RawMessage(`{"agent":"fake","version":"1.0.0",` +
+	`"commands":[{"name":"compact","description":"Summarize the conversation to free up context"},` +
+	`{"name":"context","description":"Show how much of the context window is in use"}],` +
+	`"models":[{"id":"fake-small","label":"Fake small","efforts":["low","medium","high"]},` +
+	`{"id":"fake-large","label":"Fake large","efforts":["low","medium","high"]}]}`)
 
 // fakeAskPayload is a full ask_user call (REBUILD.md §5.1): a title, a
 // context, and one question of every kind, with options that carry

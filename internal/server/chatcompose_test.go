@@ -146,11 +146,11 @@ func TestChatModelAndCommands(t *testing.T) {
 		t.Fatalf("an unknown command: %d %v", code, body)
 	}
 	p := agent.Fold(c.journal(t, id))
-	var commands []struct {
-		Name string `json:"name"`
+	var info struct {
+		Commands []agent.CommandInfo `json:"commands"`
 	}
-	if err := json.Unmarshal(p.Commands, &commands); err != nil || len(commands) == 0 || commands[0].Name != "compact" {
-		t.Fatalf("the agent's commands: %s %v", p.Commands, err)
+	if err := json.Unmarshal(p.Agent, &info); err != nil || len(info.Commands) == 0 || info.Commands[0].Name != "compact" {
+		t.Fatalf("the agent's commands: %s %v", p.Agent, err)
 	}
 }
 
@@ -229,5 +229,9 @@ func TestCatalogNamesTheChats(t *testing.T) {
 	}
 	if !found || fake == nil || len(fake["models"].([]any)) != 2 {
 		t.Fatalf("chats %v, the scripted agent %v", chats, fake)
+	}
+	palettes, _ := body["chat_commands"].(map[string]any)
+	if list, _ := palettes[agent.FakeHarness].([]any); len(list) != 2 {
+		t.Fatalf("the palettes %v", palettes)
 	}
 }
