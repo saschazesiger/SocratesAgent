@@ -19,7 +19,10 @@ copied from the captures as they were read.
 | R2 | one `Workflow` call: two phases, three agents | 2 turns (the second started by the CLI), ≈ $0.01 |
 | R3, R3b | plan mode (ExitPlanMode denied once, then approved), interrupt, `/model`, `/compact` | $0.13 |
 | live tests | `go test -run TestLive` (tool turn, park/resume, unknown id, plan card, foreground subagent) | ≈ $0.05 |
-| restart proof | §5: a workflow across a server kill, and a workflow whose host was killed | see §5 |
+| restart proof | §5: a workflow across a server kill, and a workflow whose host was killed | 5 turns, $0.007 main loop |
+
+All runs together: $0.145 list price by the transcripts' `cost-state` (nine sessions), Team
+subscription.
 
 ## 1. Task subagents (`Agent` tool) — VERIFIED (R1, live test)
 
