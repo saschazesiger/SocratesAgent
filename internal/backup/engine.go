@@ -860,23 +860,25 @@ func (e *Engine) warningLocked() (string, bool) {
 	default:
 		return "The last successful backup was " + ago(e.now().Sub(since)) + ".", true
 	}
+	// Which databases is Status.Kept, behind the card's "i": a path is not
+	// for the sentence itself.
 	var oldest int64
-	var stale []string
+	stale := 0
 	for _, k := range e.keptLocked() {
 		if e.now().Sub(time.UnixMilli(k.Since)) >= e.opts.WarnAfter {
-			stale = append(stale, k.Path)
+			stale++
 			if oldest == 0 || k.Since < oldest {
 				oldest = k.Since
 			}
 		}
 	}
 	switch {
-	case len(stale) == 1:
-		return "The database " + stale[0] + " has not been copied since " + ago(e.now().Sub(time.UnixMilli(oldest))) +
-			"; the backup holds an older copy of it.", false
-	case len(stale) > 1:
-		return fmt.Sprintf("%d databases have not been copied since %s; the backup holds older copies of them.",
-			len(stale), ago(e.now().Sub(time.UnixMilli(oldest)))), false
+	case stale == 1:
+		return "The backup holds a database as it was " + ago(e.now().Sub(time.UnixMilli(oldest))) +
+			": it could not be copied since.", false
+	case stale > 1:
+		return fmt.Sprintf("The backup holds %d databases as they were %s: they could not be copied since.",
+			stale, ago(e.now().Sub(time.UnixMilli(oldest)))), false
 	}
 	return "", false
 }

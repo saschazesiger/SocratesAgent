@@ -1306,7 +1306,8 @@ func TestWhatARunCouldNotTakeIsSaid(t *testing.T) {
 		}
 	}
 	st = e.Status()
-	if len(st.Kept) != 1 || !strings.Contains(st.Warning, "agents/opencode/opencode.db has not been copied since 25 hours ago") {
+	if len(st.Kept) != 1 || st.Kept[0].Path != "agents/opencode/opencode.db" || st.Overdue ||
+		st.Warning != "The backup holds a database as it was 25 hours ago: it could not be copied since." {
 		t.Fatalf("a day on: %+v", st)
 	}
 

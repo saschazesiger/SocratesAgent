@@ -1651,16 +1651,20 @@ function renderBackup(status, fillForm) {
   renderState($('backupStatus'), { kind, label, state: status.running ? 'running' : kind, facts, tip, tipLabel: 'Backup details' });
 
   const alerts = [];
+  const kept = status.kept || [];
+  const keptTip = kept.map((k) => k.path + ': could not be copied since ' + new Date(k.since).toLocaleString());
   if (status.broken) alerts.push(backupAlert('error', status.warning, [status.broken], 'Why backup.json cannot be read'));
-  else if (status.warning) alerts.push(backupAlert('warning', status.warning));
+  else if (status.warning) {
+    // A warning that is neither of the other two is about the databases
+    // kept as an earlier copy, which its "i" names.
+    alerts.push(backupAlert('warning', status.warning, status.overdue ? [] : keptTip, 'Databases kept as an earlier copy'));
+  }
   if (kind === 'error' && status.last_error && !status.broken) {
     alerts.push(backupAlert('error', firstSentence(status.last_error), [status.last_error], 'What went wrong'));
   }
-  const kept = status.kept || [];
   if (kept.length && !status.warning) {
     alerts.push(backupAlert('warning', (kept.length === 1 ? 'A database' : kept.length + ' databases')
-      + ' could not be copied in the last run; the backup holds an earlier copy.',
-    kept.map((k) => k.path + ': the copy of ' + new Date(k.since).toLocaleString()), 'Databases kept as an earlier copy'));
+      + ' could not be copied in the last run; the backup holds an earlier copy.', keptTip, 'Databases kept as an earlier copy'));
   }
   if (status.skipped && status.skipped.length) {
     alerts.push(backupAlert('warning', (status.skipped.length === 1 ? 'A database' : status.skipped.length + ' databases')
