@@ -127,7 +127,14 @@ fixed (HARNESS-POLICY.md, minus everything TUI-related).
   permission).
 - Shared transcripts: every account's `CLAUDE_CONFIG_DIR/projects` is a relative symlink to
   `<data>/agents/claude/projects` (verified: resume under a second config dir via shared
-  `projects/` works). Same for `todos/`, `plans/`.
+  `projects/` works). Same for `tasks/` (TaskCreate/TaskUpdate state), `plans/`. Per account
+  stay: `.credentials.json`, `.claude.json`, `sessions/`, caches and policy files (spike S1,
+  research/08).
+- Spike S1 (two real subscriptions in different orgs): a conversation moves A → B → A with full
+  context between turns, after an interrupt, after `/compact` and with signed thinking. Claude
+  Code drops the other org's thinking itself (stream warning, no 400s), so no stripping is needed.
+  A switch therefore always **interrupts gracefully** before relaunching: after a SIGKILL the
+  resumed model may repeat the interrupted tool call.
 
 ### 3.2 Codex
 
