@@ -62,7 +62,7 @@ is one `agent.Event`: a flat JSON object, all fields optional except `seq`, `at`
 | `conversation` | `conversation_id` | the CLI's own id, needed to resume |
 | `tasks` | `count` | background tasks still running |
 | `command` | `op` (`interrupt`\|`set_model`\|`command`\|`park`\|`stop`), `client_id`, `model`/`effort`, `text` (command name), `args` | a command the host accepted; recorded so its `client_id` is acted on once |
-| `notice` | `code`, `text`, `ask_id`? | a line of its own. Host codes: `resumed`, `answer_as_message` |
+| `notice` | `code`, `text`, `ask_id`? | a line of its own. Host codes: `resumed`, `answer_as_message`, `conversation_lost` |
 | `error` | `code`, `text`, `message_id`? | a failure that is not a turn's end (e.g. `send_failed`, `rate_limit`) |
 
 **Nesting.** A part with `parent_part_id` belongs inside that part: the parts a subagent or a
@@ -197,8 +197,9 @@ Rules every adapter keeps:
 2. Use `StartSpec.Env` as the CLI's whole environment (WP7 builds it per account; empty today means
    the host's scrubbed environment — the host has already removed `INVOCATION_ID`, `NOTIFY_SOCKET`,
    `WATCHDOG_*`, `JOURNAL_STREAM`, `LISTEN_*`).
-3. Emit `conversation` as soon as the CLI says its id; resume `StartSpec.ResumeID` when set and fail
-   `Start` when the CLI does not know it.
+3. Emit `conversation` as soon as the CLI says its id; resume `StartSpec.ResumeID` when set, and
+   when the CLI does not know it fail `Start` with an error that wraps
+   `agent.ErrConversationNotFound` (the host then starts fresh).
 4. Move each user message through `message.state` `queued`/`delivered` (Claude: `--replay-user-
    messages` echo = delivered; Codex: `turn/started` or the steer; OpenCode: the user message
    event). A message left `pending` or `queued` when a host dies is handed to the next one.
@@ -227,7 +228,8 @@ the environment minus `NOTIFY_SOCKET`/`INVOCATION_ID`/`WATCHDOG_*`. Under system
 (`ServiceScope()`: `INVOCATION_ID` set and parent PID 1, as termux decides for tmux) it is
 `systemd-run --scope --quiet --collect --unit=socrates-agents-<id> --description=… -p
 OOMPolicy=continue`, with termux's fallbacks (no OOMPolicy if refused; `-<unix>` suffix if the name
-is refused). The launcher returns once the socket accepts, or fails with the tail of `host.log`.
+is refused). `Reap`/`Stop` stop exactly `<unit>.scope` and `<unit>-<digits>.scope`, never a
+prefix match that could be another chat's. The launcher returns once the socket accepts, or fails with the tail of `host.log`.
 
 **Host start:** take `host.lock` (wait ≤ 1 s, else exit 0: another host runs) → read the spec →
 open the journal → **recover**: a turn still open in the journal is closed with
@@ -235,9 +237,13 @@ open the journal → **recover**: a turn still open in the journal is closed wit
 new reaches the agent first): `process{starting}`, `Adapter.Start` with `ResumeID =` the
 journal's conversation id (`First` = the first undelivered message when there is no conversation
 yet), `process{ready}`, re-send undelivered messages, deliver unsent answers as messages. A start
-that fails journals `process{failed, detail}` and the host exits 2 s later.
+that fails journals `process{failed, detail}` and the host exits 2 s later. A start that fails
+with an error wrapping `agent.ErrConversationNotFound` (the CLI does not know the conversation to
+resume) is retried once as a new conversation with `notice{conversation_lost}`: the history stays in
+the journal, the model's context starts over.
 
-**Idle and parking:** idle = adapter up, no turn, no open ask, `Background() == 0`. After
+**Idle and parking:** idle = adapter up, no turn, no open ask, `Background() == 0`, and no user
+message the agent has not taken up (one acknowledged a moment ago is still on its way in). After
 `park_after_ms` (setting `chats.park_after_minutes`, default 20) of idle with no event or command,
 or as soon as idle after a `park` command: `Adapter.Park` (graceful), `process{parked}`, then the
 host closes its socket, lets connected clients read to the end (≤ 2 s) and exits. The next command
@@ -260,11 +266,15 @@ retried with backoff (200 ms → 5 s), never replaced.
   pump started for every chat whose host is alive or that needs one (turn running, or outbox
   non-empty). The resume point is the last seq in the journal file it read.
 - The pump connects (launching/recovering), resends the whole outbox in order, applies frames
-  (events only forward: seq ≤ last is ignored, a gap is logged), and stops when the host parked or
-  exited and nothing is pending — or after a host whose agent failed to start, so a broken CLI is
-  retried once per user action, not in a loop.
+  (events only forward: seq ≤ last is ignored, a gap is logged), and reconnects whenever the host
+  is still alive, because a host can start a turn or report a task on its own. It stops when the
+  host is gone and nothing is pending — or after a host whose agent failed to start, so a broken CLI
+  is retried once per user action, not in a loop. A host is launched only for work (a turn the
+  journal says runs, or the outbox) or for a new chat's warm start, never just because the pump
+  runs.
 - **Outbox** (`chat_outbox`, keyed by chat and `client_id`): written before a command is sent,
-  deleted on ack (or a permanent `err`). Exactly-once = durable outbox + resend on every connect +
+  deleted on ack or on an `err`, except a `send` or `answer` refused with `not_running`/`stopping`,
+  which waits for the next host (an interrupt or a model change refused that way is dropped). Exactly-once = durable outbox + resend on every connect +
   host dedupe from the journal. The remaining window (host dies between journaling a message and
   writing it to the CLI) is closed by re-delivering every message still `pending` to the next
   host; for Claude, the replay echo is the receipt (WP3).

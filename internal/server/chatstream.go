@@ -132,7 +132,7 @@ func (s *Server) serveChatStream(conn *websocket.Conn, token string, p *chatPeer
 	}
 	// A chat whose host died with a turn running is recovered the moment it
 	// is opened, if nothing has done it yet.
-	if p.needsHost() {
+	if p.wantsPump() {
 		p.kick()
 	}
 
