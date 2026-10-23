@@ -13765,7 +13765,7 @@ const ALL = [
   ['prestart', 'a prepared session: its prompt kept and backed up, Start, and a start by the clock', prestart],
   ['chat-stream', 'a chat: streaming, Markdown, replay, queued, Stop, the draft, the palette, the model, the lines, PreStart', chatstream],
   ['chat-tools', 'tool rows, the diff viewer, a subagent, a workflow, and the task list pinned while it runs', chattools],
-  ['chat-offline', 'a message written offline, or whose answer was lost, or left across a reload: delivered once', chatoffline],
+  ['chat-offline', 'what a chat is told offline (two tabs, a model, an answer), or whose answer was lost, or left across a reload: delivered once', chatoffline],
   ['chat-ask', 'questions: the card and the dialog, every kind, a plan, a counter-question, Home, two devices', chatask],
   ['chat-attach', 'files from the button, dropped and pasted, at paths the server chose', chatattach],
   ['chat-phone', 'a chat on a phone: touch targets, no sideways scroll, the keyboard, the dialog as the screen', chatphone],
