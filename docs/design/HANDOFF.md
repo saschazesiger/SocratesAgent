@@ -131,6 +131,12 @@ All five branches are 5 commits behind `rebuild`'s tip (the WP4 review fixes).
   - The terminal becomes Shell only.
   - Migration steps REBUILD §8.2–8.4. This is a clean cut: old agent sessions are stopped and
     their rows removed, and Shell sessions stay.
+  - §8.4's offer to delete the old mirror objects (WP1 review): WP1 deleted the code that knew
+    their names. Under the old prefix (`SOCRATES_S3_PREFIX`, often empty) they are exactly
+    `meta.json`, `lease.json`, `logins.json`, `kv/*`, `sessions/*.json`, `drafts/*.json` and
+    `costs/<harness>/<conversation>.json`. The carried-over backup lives **inside** that prefix,
+    under `backup/v1/` (its own `meta.json`, `chunks/`, `snapshots/`): delete by that allow-list
+    only, never everything under the old prefix, and never anything under `backup/`.
   - Fix `TestSavingPresetsWarnsAboutAMissingOne`.
 - **WP11 e2e and docs:**
   - Switch the e2e harness from `faketui` to `fakeclaude` / `fakecodex` / `fakeopencode` for the
