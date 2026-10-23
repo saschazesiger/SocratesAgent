@@ -13066,7 +13066,11 @@ async function chattools() {
 
 // chat-offline: a message written with no network is queued visibly and
 // delivered once when it comes back; a message whose answer was lost on
-// the way back is sent again and still arrives once.
+// the way back is sent again and still arrives once; and so is everything
+// else a chat is told while it cannot be reached: what two tabs wrote, a
+// model chosen offline (before the message after it), an answer to a
+// question. Typing before the saved draft has loaded keeps what was typed,
+// and a command the agent refused says it did not run.
 async function chatoffline() {
   const s = await chatServer();
   const { page } = s;
@@ -13138,8 +13142,162 @@ async function chatoffline() {
     const one = userTexts(await historyOf(s, id)).filter((t) => t === 'kept across a reload').length;
     ok(still.includes('kept across a reload') && later && one === 1,
       'a message still waiting when the page is reloaded goes out after it, once', JSON.stringify({ still, one }));
-    // The connections this scenario cut are its own doing.
-    const cutNoise = new RegExp(OFFLINE_NOISE.source + '|ERR_CONNECTION_RESET');
+
+    // Typing before the saved draft has come back from the server: what
+    // was typed stays in the field, and it is what is saved.
+    await page.route('**/api/sessions/*/draft', async (route) => {
+      if (route.request().method() === 'GET') await wait(2500);
+      await route.continue().catch(() => {});
+    });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#home:not([hidden])', { timeout: 20000 });
+    await openChat(page, id);
+    await page.fill('#chat .so-composer__input', 'typed while the draft was loading');
+    await wait(3500);
+    const typed = await page.$eval('#chat .so-composer__input', (n) => n.value);
+    let early = { text: '' };
+    for (let i = 0; i < 20 && early.text !== 'typed while the draft was loading'; i += 1) {
+      await wait(300);
+      early = await draftOf(s, id);
+    }
+    await page.unroute('**/api/sessions/*/draft');
+    ok(typed === 'typed while the draft was loading' && early.text === typed,
+      'what is typed before the saved draft has loaded stays, and is the draft that is saved',
+      JSON.stringify({ typed, saved: early.text }));
+    await page.fill('#chat .so-composer__input', '');
+
+    // Two tabs of one browser, offline: each one's message is kept in the
+    // one queue, and both go out once, though the tab that wrote first is
+    // closed before the connection is back.
+    const other = await s.context.newPage();
+    await other.goto(s.url + '/#open=' + id, { waitUntil: 'domcontentloaded' });
+    await chatUp(other);
+    await s.context.setOffline(true);
+    for (const tab of [page, other]) await tab.evaluate(() => window.dispatchEvent(new Event('offline')));
+    await say(other, 'from the second tab');
+    await other.waitForSelector('#chat .so-msg[data-role="user"][data-state="local"]', { timeout: 15000 });
+    await say(page, 'from the first tab');
+    await page.waitForSelector('#chat .so-msg[data-role="user"][data-state="local"]', { timeout: 15000 });
+    const queuedTabs = await page.evaluate(() => JSON.parse(localStorage.getItem('socrates.outbox.chats') || '[]')
+      .map((item) => item.payload.text));
+    await other.close();
+    await s.context.setOffline(false);
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    const fromFirst = await awaitLog(page, 'you said: from the first tab', 30000);
+    const fromSecond = await awaitLog(page, 'you said: from the second tab', 30000);
+    await awaitChat(s, id, idle);
+    const tabTexts = userTexts(await historyOf(s, id));
+    ok(queuedTabs.includes('from the second tab') && queuedTabs.includes('from the first tab') && fromFirst && fromSecond
+      && tabTexts.filter((t) => t === 'from the second tab').length === 1 && tabTexts.filter((t) => t === 'from the first tab').length === 1,
+      'two tabs offline share one queue: neither drops the other’s message, and each arrives once', JSON.stringify({ queuedTabs }));
+
+    // A model chosen offline is kept in the queue too, before the message
+    // written after it, and the button shows it at once.
+    const before = await page.$eval('#chat .so-composer__model-text', (n) => n.textContent);
+    const target = /^Fake large/.test(before) ? 'fake-small' : 'fake-large';
+    const targetLabel = target === 'fake-large' ? 'Fake large' : 'Fake small';
+    await s.context.setOffline(true);
+    await page.evaluate(() => window.dispatchEvent(new Event('offline')));
+    await page.click('#chat .so-composer__model');
+    await page.waitForSelector('.so-model-menu:not([hidden]) [data-model="' + target + '"]', { timeout: 5000 });
+    await page.click('.so-model-menu [data-model="' + target + '"]');
+    const shownModel = await page.$eval('#chat .so-composer__model-text', (n) => n.textContent);
+    await say(page, 'after the model');
+    const queuedKinds = await page.evaluate(() => JSON.parse(localStorage.getItem('socrates.outbox.chats') || '[]')
+      .map((item) => item.payload.kind));
+    await s.context.setOffline(false);
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await awaitLog(page, 'you said: after the model', 30000);
+    const modelled = await awaitChat(s, id, (b) => b.chat.model === target && idle(b));
+    const order = await logText(page);
+    ok(shownModel.startsWith(targetLabel) && queuedKinds.join(',') === 'model,message' && modelled.chat.model === target
+      && order.lastIndexOf('Model: ' + targetLabel) < order.lastIndexOf('after the model'),
+      'a model chosen offline is queued before the message after it, and changes it', JSON.stringify({ shownModel, queuedKinds, model: modelled.chat.model }));
+
+    // An answer given offline: its card says it is on its way, not that the
+    // question still waits; the dialog opened again says so as well; and
+    // back online it is delivered once.
+    await say(page, '/ask');
+    const offAsk = await openAskCard(page);
+    await s.context.setOffline(true);
+    await page.evaluate(() => window.dispatchEvent(new Event('offline')));
+    await page.click('#chat .so-ask__open');
+    await page.waitForSelector('dialog.so-askdlg .so-q-option[data-option="a"]', { timeout: 10000 });
+    await page.click('dialog.so-askdlg .so-q-option[data-option="a"]');
+    await page.click('dialog.so-askdlg [data-action="send"]');
+    await page.click('dialog.so-askdlg [data-action="close"]');
+    await page.waitForSelector('dialog.so-askdlg', { state: 'detached', timeout: 5000 });
+    const cardSel = '#chat .so-ask[data-ask="' + offAsk + '"]';
+    const waitingCard = await page.waitForSelector(cardSel + '[data-state="local"]', { timeout: 5000 })
+      .then((n) => n.innerText(), () => '');
+    const askedAgain = !!(await page.$(cardSel + ' .so-ask__open'));
+    // Reloaded with the answer still unable to get out.
+    await page.route('**/api/chats/*/asks/*/answer', (route) => route.abort('internetdisconnected'));
+    await s.context.setOffline(false);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#home:not([hidden])', { timeout: 20000 });
+    await openChat(page, id);
+    const reopened = await page.waitForSelector(cardSel + '[data-state="local"], ' + cardSel + '[data-state="sending"]', { timeout: 15000 })
+      .then((n) => n.getAttribute('data-state'), () => '');
+    await page.unroute('**/api/chats/*/asks/*/answer');
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    const answeredCard = await page.waitForSelector(cardSel + '[data-state="answered"]', { timeout: 30000 }).then(() => true, () => false);
+    await awaitChat(s, id, idle);
+    const given = await askOf(s, id, offAsk);
+    ok(/Not sent yet/.test(waitingCard) && !askedAgain && !!reopened && answeredCard && !!given && given.answered
+      && JSON.stringify(given.answer.answers.q1.selected) === '["a"]',
+      'an answer given offline is on its card as not sent yet - after a reload too - and is delivered once',
+      oneLine(JSON.stringify({ waitingCard, askedAgain, reopened, answeredCard, answer: given && given.answer })));
+
+    // A command the agent refused after the journal had it: the line says
+    // it did not run, and Dismiss lets it go.
+    await page.route('**/api/chats/*/command', async (route) => {
+      await route.fetch().catch(() => null);
+      await route.fulfill({ status: 409, contentType: 'application/json',
+        body: JSON.stringify({ error: 'the agent has no such command', code: 'unsupported' }) });
+    });
+    await say(page, '/context ');
+    const notRun = await page.waitForSelector('#chat .so-line[data-kind="command"][data-state="failed"]', { timeout: 15000 })
+      .then((n) => n.innerText(), () => '');
+    await page.unroute('**/api/chats/*/command');
+    await page.click('#chat .so-line[data-kind="command"][data-state="failed"] [data-action="outbox-drop"]').catch(() => {});
+    const dismissed = await page.waitForSelector('#chat .so-line[data-kind="command"][data-state="failed"]', { state: 'detached', timeout: 5000 })
+      .then(() => true, () => false);
+    const leftOver = await page.evaluate(() => JSON.parse(localStorage.getItem('socrates.outbox.chats') || '[]').length);
+    ok(/Not run/.test(notRun) && dismissed && leftOver === 0, 'a command the agent refused says it did not run, until it is dismissed',
+      oneLine(JSON.stringify({ notRun, dismissed, leftOver })));
+    await awaitChat(s, id, idle);
+
+    // An answer the server refuses for good: the dialog gives the question
+    // back with the reason, the card says it was not sent, and Answer again
+    // opens on what was chosen.
+    await say(page, '/ask');
+    const refusedAsk = await openAskCard(page);
+    const refusedSel = '#chat .so-ask[data-ask="' + refusedAsk + '"]';
+    await page.route('**/api/chats/*/asks/*/answer', (route) => route.fulfill({ status: 404, contentType: 'application/json',
+      body: JSON.stringify({ error: 'this chat never asked that question' }) }));
+    await page.click(refusedSel + ' .so-ask__open');
+    await page.waitForSelector('dialog.so-askdlg .so-q-option[data-option="b"]', { timeout: 10000 });
+    await page.click('dialog.so-askdlg .so-q-option[data-option="b"]');
+    await page.click('dialog.so-askdlg [data-action="send"]');
+    const inDialog = await page.waitForSelector('dialog.so-askdlg .so-refused', { timeout: 10000 }).then((n) => n.innerText(), () => '');
+    await page.unroute('**/api/chats/*/asks/*/answer');
+    await page.click('dialog.so-askdlg [data-action="close"]');
+    await page.waitForSelector('dialog.so-askdlg', { state: 'detached', timeout: 5000 });
+    const onCard = await page.waitForSelector(refusedSel + '[data-state="failed"]', { timeout: 5000 }).then((n) => n.innerText(), () => '');
+    await page.click(refusedSel + ' [data-action="ask-again"]');
+    const keptChoice = await page.waitForSelector('dialog.so-askdlg .so-q-option[data-option="b"][aria-pressed="true"]', { timeout: 10000 })
+      .then(() => true, () => false);
+    await page.click('dialog.so-askdlg [data-action="send"]');
+    const settledCard = await page.waitForSelector(refusedSel + '[data-state="answered"]', { timeout: 20000 }).then(() => true, () => false);
+    await awaitChat(s, id, idle);
+    ok(/never asked that question/.test(inDialog) && /Not sent/.test(onCard) && keptChoice && settledCard,
+      'an answer refused for good says why, in the dialog and on its card, and is answered again from what was chosen',
+      oneLine(JSON.stringify({ inDialog, onCard, keptChoice, settledCard })));
+
+    // The connections this scenario cut, and the refusal it made up, are its
+    // own doing.
+    const cutNoise = new RegExp(OFFLINE_NOISE.source + '|ERR_CONNECTION_RESET|status of 40[49]');
     ok(unexpected(s.errors, cutNoise).length === 0, 'no unexpected console errors',
       unexpected(s.errors, cutNoise).join(' | ') || '0');
   } finally { await s.stop(); }
@@ -13147,7 +13305,8 @@ async function chatoffline() {
 
 // answerAll walks the dialog through the full ask_user call of the scripted
 // agent (/askmany): every kind of question, with a detail opened, a note,
-// Other beside three options, a refused number, and a general note.
+// Other beside two options (beside three it is one too many), a refused
+// number, and a general note.
 async function answerAll(page) {
   // 1. single, PostgreSQL preselected (its default): details, context, then SQLite and a note.
   await page.waitForSelector('dialog.so-askdlg .so-q-text', { timeout: 10000 });
@@ -13169,9 +13328,13 @@ async function answerAll(page) {
   const hint = await page.$eval('dialog.so-askdlg .so-q-detail', (n) => n.textContent);
   for (const one of ['dark', 'search', 'export', 'offline']) await page.click('dialog.so-askdlg .so-q-option[data-option="' + one + '"]');
   const multi = await page.$$eval('dialog.so-askdlg .so-q-option[aria-pressed="true"]', (n) => n.map((one) => one.dataset.option));
-  // And one in the person's own words besides.
+  // One in the person's own words is a fourth as well, until one of the
+  // three is let go.
   await page.click('dialog.so-askdlg [data-action="other"]');
   await page.fill('#ask-features-other', 'an audit log');
+  await page.click('dialog.so-askdlg [data-action="forward"]');
+  const otherCounted = await page.waitForSelector('dialog.so-askdlg .so-ask-problem', { timeout: 5000 }).then((n) => n.innerText(), () => '');
+  await page.click('dialog.so-askdlg .so-q-option[data-option="export"]');
   await page.click('dialog.so-askdlg [data-action="forward"]');
   // 3. text.
   await page.waitForSelector('#ask-name-other', { timeout: 5000 });
@@ -13192,14 +13355,14 @@ async function answerAll(page) {
   await page.click('dialog.so-askdlg [data-action="general"]');
   await page.fill('#ask-all-general', 'ship it on Friday');
   await page.click('dialog.so-askdlg [data-action="send"]');
-  return { first, details, hint, multi, confirmDefault, numberDefault, refused };
+  return { first, details, hint, multi, otherCounted, confirmDefault, numberDefault, refused };
 }
 
 // The answer the walk above gives, exactly as REBUILD.md §5.2 has it.
 const ANSWER_ALL = {
   answers: {
     db: { selected: ['sqlite'], other: null, note: 'keep it small', delegated: false, skipped: false },
-    features: { selected: ['dark', 'search', 'export'], other: 'an audit log', note: null, delegated: false, skipped: false },
+    features: { selected: ['dark', 'search'], other: 'an audit log', note: null, delegated: false, skipped: false },
     name: { selected: [], other: 'Atlas', note: null, delegated: false, skipped: false },
     migrate: { selected: ['no'], other: null, note: null, delegated: false, skipped: false },
     replicas: { selected: [], other: '3', note: null, delegated: false, skipped: false },
@@ -13260,8 +13423,9 @@ async function chatask() {
     ok(walk.first.title === 'Deployment setup' && /Question 1 of 5/.test(walk.first.step) && walk.first.recommended,
       'one question per step, with the batch’s title and the recommended option marked', JSON.stringify(walk.first));
     ok(/JSONB/.test(walk.details), 'an option opens to its details', oneLine(walk.details));
-    ok(walk.hint === 'Choose 1 to 3.' && walk.multi.join(',') === 'dark,search,export',
-      'a multi-select says how many, and takes no more than its maximum', JSON.stringify({ hint: walk.hint, multi: walk.multi }));
+    ok(walk.hint === 'Choose 1 to 3.' && walk.multi.join(',') === 'dark,search,export' && /Choose up to 3/.test(walk.otherCounted),
+      'a multi-select says how many, and takes no more than its maximum, its own words counted as one',
+      JSON.stringify({ hint: walk.hint, multi: walk.multi, other: walk.otherCounted }));
     ok(walk.confirmDefault.join(',') === 'yes' && walk.numberDefault === '2', 'a question’s default is preselected',
       JSON.stringify({ confirm: walk.confirmDefault, number: walk.numberDefault }));
     ok(/largest number it takes is 10/.test(walk.refused), 'a number out of range is refused, and says why', walk.refused);
