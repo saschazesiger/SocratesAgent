@@ -138,7 +138,7 @@ func (a *Adapter) Start(ctx context.Context, spec agent.StartSpec, out agent.Emi
 		}
 		st.conv = spec.ResumeID
 		out.Emit(agent.Event{Type: agent.TypeConversation, ConversationID: spec.ResumeID})
-		st.delivered = transcriptUserUUIDs(path)
+		st.delivered, st.lastCost = transcriptState(path)
 		st.todos = loadTasks(configDir, spec.ResumeID)
 		args = append(args, "--resume", spec.ResumeID)
 	} else {

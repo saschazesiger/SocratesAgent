@@ -242,12 +242,26 @@ func (s *state) result(f *frame) {
 	case f.IsError:
 		outcome, why = agent.OutcomeFailed, resultError(f)
 	}
-	cost := f.TotalCost - s.lastCost
-	if cost < 0 {
-		cost = f.TotalCost
+	s.endTurn(outcome, resultUsage(f), s.turnCost(f), why)
+}
+
+// turnCost is what this turn cost: the result's per-turn model usage when it
+// has one, else the growth of total_cost_usd. That total is cumulative per
+// conversation, not per process - a resume restores it from the transcript's
+// cost-state, which is why lastCost starts there (newState's caller).
+func (s *state) turnCost(f *frame) float64 {
+	defer func() { s.lastCost = f.TotalCost }()
+	if len(f.SinceLast) > 0 {
+		sum := 0.0
+		for _, m := range f.SinceLast {
+			sum += m.CostUSD
+		}
+		return sum
 	}
-	s.lastCost = f.TotalCost
-	s.endTurn(outcome, resultUsage(f), cost, why)
+	if cost := f.TotalCost - s.lastCost; cost >= 0 {
+		return cost
+	}
+	return f.TotalCost
 }
 
 func resultError(f *frame) string {

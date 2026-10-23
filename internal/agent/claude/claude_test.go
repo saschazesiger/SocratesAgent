@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -258,21 +259,45 @@ func TestATextTurnStreamsAndEnds(t *testing.T) {
 	}
 }
 
-func TestCostIsPerTurnNotPerProcess(t *testing.T) {
-	e := newEnv(t)
-	a, r := start(t, e, "")
-	send(t, a, "m1", "one")
-	r.turnsEnded(t, 1)
-	send(t, a, "m2", "two")
-	evs := r.turnsEnded(t, 2)
-	var costs []float64
-	for _, ev := range evs {
-		if ev.Type == agent.TypeTurnEnded {
-			costs = append(costs, ev.CostUSD)
-		}
-	}
-	if len(costs) != 2 || costs[0] < 0.00099 || costs[0] > 0.00101 || costs[1] < 0.00099 || costs[1] > 0.00101 {
-		t.Fatalf("costs = %v, want 0.001 each (total_cost_usd is cumulative)", costs)
+// total_cost_usd is cumulative per conversation, restored on --resume: a
+// turn's cost is model_usage_since_last_result, or the total's growth from
+// the transcript's last cost-state - never the whole history on the first
+// turn after a park.
+func TestCostIsPerTurnAcrossAResume(t *testing.T) {
+	for _, sinceLast := range []bool{true, false} {
+		t.Run(fmt.Sprintf("since_last=%v", sinceLast), func(t *testing.T) {
+			e := newEnv(t)
+			if !sinceLast {
+				e.vars = append(e.vars, "FAKE_NO_SINCE_LAST=1")
+			}
+			a, r := start(t, e, "")
+			send(t, a, "m1", "one")
+			r.turnsEnded(t, 1)
+			send(t, a, "m2", "two")
+			evs := r.turnsEnded(t, 2)
+			var conv string
+			r.view(func(p *agent.Projection) { conv = p.ConversationID })
+			if err := a.Park(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			b, r2 := start(t, e, conv)
+			send(t, b, "m3", "three")
+			evs = append(evs, r2.turnsEnded(t, 1)...)
+			var costs []float64
+			for _, ev := range evs {
+				if ev.Type == agent.TypeTurnEnded {
+					costs = append(costs, ev.CostUSD)
+				}
+			}
+			if len(costs) != 3 {
+				t.Fatalf("costs = %v", costs)
+			}
+			for _, c := range costs {
+				if c < 0.00099 || c > 0.00101 {
+					t.Fatalf("costs = %v, want 0.001 each", costs)
+				}
+			}
+		})
 	}
 }
 

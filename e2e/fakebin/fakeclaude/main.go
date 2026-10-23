@@ -616,7 +616,11 @@ func (t *turnRun) finish() {
 		res["subtype"], res["is_error"], res["api_error_status"] = "error_during_execution", true, 429
 		res["result"] = "Claude AI usage limit reached"
 	}
+	if os.Getenv("FAKE_NO_SINCE_LAST") == "" {
+		res["model_usage_since_last_result"] = map[string]any{f.model: map[string]any{"costUSD": 0.001}}
+	}
 	f.out(res)
+	f.writeRaw(map[string]any{"type": "cost-state", "totalCostUSD": cost})
 	if t.job.uuid != "" {
 		f.out(map[string]any{"type": "command_lifecycle", "command_uuid": t.job.uuid, "state": "completed", "uuid": newUUID(), "session_id": f.session})
 	}
@@ -1030,6 +1034,11 @@ func (f *fake) repairCutOffTurn() {
 			f.lastUUID = id
 		}
 		typ, _ := l["type"].(string)
+		if typ == "cost-state" {
+			// The real CLI restores the conversation's cost on resume:
+			// total_cost_usd goes on from here, not from zero.
+			f.totalCost, _ = l["totalCostUSD"].(float64)
+		}
 		if typ != "user" && typ != "assistant" {
 			continue
 		}

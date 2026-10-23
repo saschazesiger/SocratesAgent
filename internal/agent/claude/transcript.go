@@ -30,6 +30,7 @@ type transcriptLine struct {
 	ToolUseResult    json.RawMessage `json:"toolUseResult"`
 	Timestamp        string          `json:"timestamp"`
 	Content          string          `json:"content"`
+	TotalCostUSD     float64         `json:"totalCostUSD"`
 }
 
 // findTranscript is the transcript of a conversation, empty when there is
@@ -69,17 +70,23 @@ func readTranscript(path string) ([]transcriptLine, error) {
 	}
 }
 
-// transcriptUserUUIDs is the uuid of every user line: the messages the CLI
-// has, which a resumed chat must not send again.
-func transcriptUserUUIDs(path string) map[string]bool {
+// transcriptState is what a resume needs from the transcript: the uuid of
+// every user line (the messages the CLI has, which a resumed chat must not
+// send again), and the conversation's cost so far (the last cost-state),
+// which the resumed CLI's total_cost_usd continues from.
+func transcriptState(path string) (map[string]bool, float64) {
 	lines, _ := readTranscript(path)
 	out := map[string]bool{}
+	cost := 0.0
 	for _, l := range lines {
-		if l.Type == "user" && l.UUID != "" {
+		switch {
+		case l.Type == "user" && l.UUID != "":
 			out[l.UUID] = true
+		case l.Type == "cost-state":
+			cost = l.TotalCostUSD
 		}
 	}
-	return out
+	return out, cost
 }
 
 // loadTasks is the task list of a conversation, <config>/tasks/<id>/<n>.json,
