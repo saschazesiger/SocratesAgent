@@ -134,6 +134,7 @@ func (a *Adapter) Start(ctx context.Context, spec agent.StartSpec, out agent.Emi
 			return fmt.Errorf("%w: no Claude Code conversation %s under %s", agent.ErrConversationNotFound, spec.ResumeID, configDir)
 		}
 		st.conv = spec.ResumeID
+		out.Emit(agent.Event{Type: agent.TypeConversation, ConversationID: spec.ResumeID})
 		st.delivered = transcriptUserUUIDs(path)
 		st.todos = loadTasks(configDir, spec.ResumeID)
 		args = append(args, "--resume", spec.ResumeID)

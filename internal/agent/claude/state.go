@@ -350,7 +350,7 @@ func (s *state) system(f *frame) {
 		s.taskProgress(f)
 	case "task_updated":
 		if f.Patch != nil && f.Patch.Status != "" {
-			s.taskStatus(f.TaskID, f.Patch.Status, "", nil)
+			s.taskUpdated(f.TaskID, f.Patch.Status)
 		}
 	case "task_notification":
 		status := "completed"

@@ -560,6 +560,24 @@ func (s *state) taskProgress(f *frame) {
 	s.emitPart(p)
 }
 
+// taskUpdated is a task's new status. The group stays open until the
+// task's notification, which carries its summary and always follows.
+func (s *state) taskUpdated(taskID, status string) {
+	p := s.parts[s.tasks[taskID]]
+	if p == nil || p.tool == nil {
+		return
+	}
+	switch c := p.tool; {
+	case c.Agent != nil:
+		c.Agent.Status = status
+	case c.Workflow != nil:
+		c.Workflow.Status = status
+	case c.Task != nil:
+		c.Task.Status = status
+	}
+	s.emitPart(p)
+}
+
 // taskStatus is a background task reporting a new status; a final one closes
 // its group.
 func (s *state) taskStatus(taskID, status, summary string, usage *taskUsage) {
