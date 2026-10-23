@@ -22,6 +22,7 @@
 //	/plan            a plan item and a turn/plan/updated list
 //	/limit           the usage limit: rate limits at 100 %, the turn fails as usageLimitExceeded
 //	/crash           a delta, then the process dies
+//	/huge N          one agent message delta of N bytes
 //	/approve         a command approval request; says the decision it got
 //	/elicit          an MCP elicitation form; says the action it got
 //	/tool NAME       calls the dynamic tool NAME (item/tool/call); says its answer
@@ -777,6 +778,8 @@ func (c *tcx) script(text string) (string, map[string]any) {
 	case "/limit":
 		c.rateLimits(100)
 		return "failed", map[string]any{"message": "You've hit your usage limit.", "codexErrorInfo": "usageLimitExceeded"}
+	case "/huge":
+		ok = c.say([]string{strings.Repeat("x", atoi(fields, 0, 1<<20))}, 0)
 	case "/crash":
 		id := c.id("msg")
 		c.started(map[string]any{"type": "agentMessage", "id": id, "text": ""})

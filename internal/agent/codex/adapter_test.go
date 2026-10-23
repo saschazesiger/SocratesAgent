@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -360,6 +361,40 @@ func TestInterruptLimitAndCrash(t *testing.T) {
 	if err := a.Send(context.Background(), userMessage(r, "after")); err == nil {
 		t.Fatal("a send to a dead app-server succeeded")
 	}
+}
+
+// A line too long to read ends the app-server, so the host sees an exit
+// instead of calls that never come back.
+func TestAnUnreadableLineEndsCodex(t *testing.T) {
+	defer func(old int) { maxLine = old }(maxLine)
+	maxLine = 256 << 10
+	lab := newFakeLab(t)
+	r := newRecorder()
+	a := lab.start(lab.spec("a", ""), r)
+	send(t, a, r, "/huge 400000")
+	deadline := time.Now().Add(wait)
+	for {
+		r.mu.Lock()
+		exited := r.exited
+		r.mu.Unlock()
+		if len(exited) == 1 {
+			if !strings.Contains(exited[0].Error(), "could not be read") {
+				t.Fatalf("exit %v", exited[0])
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the unreadable line was not reported")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if a.PID() == 0 || !processGone(a.PID()) {
+		t.Fatal("codex still runs")
+	}
+}
+
+func processGone(pid int) bool {
+	return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
 }
 
 func TestRequestsAreAnswered(t *testing.T) {

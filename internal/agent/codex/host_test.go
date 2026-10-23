@@ -4,7 +4,6 @@ package codex
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -69,10 +68,6 @@ func (h *hostClient) send(clientID, text string) {
 	}
 }
 
-func gone(pid int) bool {
-	return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
-}
-
 func TestThroughTheAgentHost(t *testing.T) {
 	lab := newFakeLab(t)
 	data := filepath.Join(lab.root, "data")
@@ -108,7 +103,7 @@ func TestThroughTheAgentHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
-	for !gone(ready.PID) {
+	for !processGone(ready.PID) {
 		if time.Now().After(deadline) {
 			t.Fatal("codex outlived its host")
 		}

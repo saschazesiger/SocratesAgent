@@ -153,11 +153,17 @@ func (c *conn) write(f frame) error {
 	return err
 }
 
+// maxLine is the longest line the app-server may write: one item can carry a
+// whole diff or a command's output.
+var maxLine = 64 << 20
+
 // read is the reading loop: every frame of r, answers to the waiting calls,
-// the rest to handle. It returns at the end of r.
-func (c *conn) read(r io.Reader, handle func(*frame)) {
+// the rest to handle. It returns at the end of r, or with the error that
+// stopped it (a line longer than maxLine); the conversation cannot go on
+// after one, because the rest of that line is lost.
+func (c *conn) read(r io.Reader, handle func(*frame)) error {
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64<<10), 64<<20)
+	sc.Buffer(make([]byte, 0, 64<<10), maxLine)
 	for sc.Scan() {
 		line := bytes.TrimSpace(sc.Bytes())
 		if len(line) == 0 {
@@ -173,6 +179,7 @@ func (c *conn) read(r io.Reader, handle func(*frame)) {
 		}
 		handle(&fr)
 	}
+	return sc.Err()
 }
 
 func (c *conn) deliver(fr *frame) {

@@ -417,7 +417,14 @@ func (a *adapter) saveState(st state) error {
 
 // read consumes the process's stdout until it ends, then reaps it.
 func (a *adapter) read(stdout io.Reader) {
-	a.rpc.read(stdout, a.handle)
+	broken := a.rpc.read(stdout, a.handle)
+	if broken != nil {
+		// Nothing more can be read, so nothing could be answered: the
+		// app-server goes, and the host sees an exit rather than a chat
+		// that waits for ever.
+		a.rpc.close(errClosed)
+		_ = syscall.Kill(-a.cmd.Process.Pid, syscall.SIGKILL)
+	}
 	err := a.cmd.Wait()
 	a.rpc.close(errClosed)
 	a.mu.Lock()
@@ -432,7 +439,10 @@ func (a *adapter) read(stdout io.Reader) {
 		return
 	}
 	what := "codex exited"
-	if err != nil {
+	switch {
+	case broken != nil:
+		what = "codex was stopped because its output could not be read: " + broken.Error()
+	case err != nil:
 		what += ": " + err.Error()
 	}
 	if last := a.stderr.last(); last != "" {
