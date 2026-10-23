@@ -93,6 +93,10 @@ type StartSpec struct {
 	Effort  string
 	// ResumeID is the CLI conversation to continue, empty for a new one.
 	ResumeID string
+	// Binary is the CLI program the dashboard configured for the harness:
+	// a path, or a name looked up on the PATH of Env. Empty is the CLI's
+	// usual name on that PATH.
+	Binary string
 	// First is a message to deliver as part of starting, for a CLI that takes
 	// its opening prompt at start. An adapter that has no use for that sends
 	// it right after starting.

@@ -120,6 +120,22 @@ func TestLiveTurnToolParkResume(t *testing.T) {
 	b, r2 := liveStart(t, e, conv)
 	send(t, b, "m2", "What word did the command print? Reply with that word only.")
 	evs = liveWait(t, r2, 1, 3*time.Minute)
+	var cost2 float64
+	for _, ev := range evs {
+		if ev.Type == agent.TypeTurnEnded {
+			cost2 = ev.CostUSD
+		}
+	}
+	// total_cost_usd goes on from the first turn's; the resumed turn's cost
+	// must be only its own: the two add up to the transcript's total.
+	if err := b.Park(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, total := transcriptState(findTranscript(e.conf, conv))
+	t.Logf("resumed turn cost $%.5f, conversation total $%.5f", cost2, total)
+	if d := total - cost - cost2; cost2 <= 0 || d > 1e-6 || d < -1e-6 {
+		t.Fatalf("the resumed turn was booked $%.5f after a first turn of $%.5f; total $%.5f", cost2, cost, total)
+	}
 	r2.view(func(p *agent.Projection) {
 		text := partsOf(lastAssistant(p), agent.PartText)
 		if len(text) == 0 || !strings.Contains(text[len(text)-1].Text, "live-ok") {

@@ -248,6 +248,37 @@ func (h *host) rebuild() {
 	}
 }
 
+// stoppedContent is a part's content with every "status": "running" - its
+// own, or that of an object directly in it (a subagent, a workflow, a
+// background task) - turned into "killed", so that what the content says
+// agrees with the interrupted part. Anything else is left as it is.
+func stoppedContent(raw json.RawMessage) json.RawMessage {
+	var doc map[string]any
+	if json.Unmarshal(raw, &doc) != nil {
+		return raw
+	}
+	changed := false
+	stop := func(m map[string]any) {
+		if m["status"] == "running" {
+			m["status"], changed = "killed", true
+		}
+	}
+	stop(doc)
+	for _, v := range doc {
+		if m, ok := v.(map[string]any); ok {
+			stop(m)
+		}
+	}
+	if !changed {
+		return raw
+	}
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
 // recover writes down what the journal says about the host before this one:
 // a turn that was running when it stopped is interrupted, and the chat says
 // that it resumed.
@@ -262,7 +293,7 @@ func (h *host) recover() error {
 			for _, part := range parts {
 				if part.State == agent.PartRunning || part.State == agent.PartStreaming {
 					events = append(events, agent.Event{Type: agent.TypePart, MessageID: part.MessageID, PartID: part.ID,
-						ParentPartID: part.ParentID, Kind: part.Kind, State: agent.PartInterrupted, Text: part.Text, Content: part.Content})
+						ParentPartID: part.ParentID, Kind: part.Kind, State: agent.PartInterrupted, Text: part.Text, Content: stoppedContent(part.Content)})
 				}
 				walk(part.Children)
 			}
@@ -368,7 +399,7 @@ func (h *host) boot() {
 	spec := agent.StartSpec{
 		ChatID: h.opts.ChatID, Workdir: h.spec.Workdir, StateDir: filepath.Join(h.dir, stateDir),
 		Env: env, Account: h.spec.Account, Model: h.spec.Model, Effort: h.spec.Effort,
-		ResumeID: resume, Spawn: h.spawn,
+		ResumeID: resume, Spawn: h.spawn, Binary: h.spec.Binary,
 	}
 	if resume == "" && len(pending) > 0 {
 		spec.First, pending = &pending[0], pending[1:]

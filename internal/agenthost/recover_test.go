@@ -18,7 +18,7 @@ func TestRecoverStopsBackgroundGroupsOfADeadHost(t *testing.T) {
 	if _, err := j.Append(
 		agent.Event{Type: agent.TypeTurnStarted, TurnID: "t1"},
 		agent.Event{Type: agent.TypeMessage, MessageID: "a1", Role: agent.RoleAssistant, State: agent.MessageStreaming},
-		agent.Event{Type: agent.TypePart, MessageID: "a1", PartID: "wf", Kind: agent.PartTool, State: agent.PartRunning, Content: []byte(`{"tool":"Workflow"}`)},
+		agent.Event{Type: agent.TypePart, MessageID: "a1", PartID: "wf", Kind: agent.PartTool, State: agent.PartRunning, Content: []byte(`{"tool":"Workflow","workflow":{"name":"w","status":"running"}}`)},
 		agent.Event{Type: agent.TypePart, MessageID: "a1", PartID: "wf_a1", ParentPartID: "wf", Kind: agent.PartTool, State: agent.PartRunning},
 		agent.Event{Type: agent.TypePart, MessageID: "a1", PartID: "x", Kind: agent.PartText, State: agent.PartDone, Text: "ok"},
 		agent.Event{Type: agent.TypeMessageState, MessageID: "a1", State: agent.MessageDone},
@@ -40,7 +40,7 @@ func TestRecoverStopsBackgroundGroupsOfADeadHost(t *testing.T) {
 	}
 	h.rec.View(func(p *agent.Projection) {
 		wf := p.Part("wf")
-		if wf.State != agent.PartInterrupted || string(wf.Content) != `{"tool":"Workflow"}` {
+		if wf.State != agent.PartInterrupted || string(wf.Content) != `{"tool":"Workflow","workflow":{"name":"w","status":"killed"}}` {
 			t.Fatalf("workflow part = %+v", wf)
 		}
 		if a := p.Part("wf_a1"); a.State != agent.PartInterrupted || a.ParentID != "wf" || len(wf.Children) != 1 {

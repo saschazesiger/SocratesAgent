@@ -30,6 +30,7 @@ type transcriptLine struct {
 	ToolUseResult    json.RawMessage `json:"toolUseResult"`
 	Timestamp        string          `json:"timestamp"`
 	Content          string          `json:"content"`
+	TotalCostUSD     float64         `json:"totalCostUSD"`
 }
 
 // findTranscript is the transcript of a conversation, empty when there is
@@ -69,17 +70,23 @@ func readTranscript(path string) ([]transcriptLine, error) {
 	}
 }
 
-// transcriptUserUUIDs is the uuid of every user line: the messages the CLI
-// has, which a resumed chat must not send again.
-func transcriptUserUUIDs(path string) map[string]bool {
+// transcriptState is what a resume needs from the transcript: the uuid of
+// every user line (the messages the CLI has, which a resumed chat must not
+// send again), and the conversation's cost so far (the last cost-state),
+// which the resumed CLI's total_cost_usd continues from.
+func transcriptState(path string) (map[string]bool, float64) {
 	lines, _ := readTranscript(path)
 	out := map[string]bool{}
+	cost := 0.0
 	for _, l := range lines {
-		if l.Type == "user" && l.UUID != "" {
+		switch {
+		case l.Type == "user" && l.UUID != "":
 			out[l.UUID] = true
+		case l.Type == "cost-state":
+			cost = l.TotalCostUSD
 		}
 	}
-	return out
+	return out, cost
 }
 
 // loadTasks is the task list of a conversation, <config>/tasks/<id>/<n>.json,
@@ -139,24 +146,44 @@ func RebuildTranscript(path, conversation string) ([]agent.Event, error) {
 	}
 	r := &rebuild{dir: strings.TrimSuffix(path, ".jsonl"), tools: map[string]int{}, started: map[string]time.Time{}}
 	r.events = append(r.events, agent.Event{Type: agent.TypeConversation, ConversationID: conversation})
+	// Every event carries the time of the line it came from, so the rebuilt
+	// chat has its real times; the journal keeps an At that is set.
+	at, stamped := int64(0), 0
+	stamp := func() {
+		for ; stamped < len(r.events); stamped++ {
+			if r.events[stamped].At == 0 {
+				r.events[stamped].At = at
+			}
+		}
+	}
 	for _, l := range lines {
 		if l.IsSidechain {
 			continue
 		}
-		switch l.Type {
-		case "user":
-			r.user(l)
-		case "assistant":
-			r.assistant(l, "", "")
-		case "system":
-			if l.Subtype == "compact_boundary" {
-				r.events = append(r.events, agent.Event{Type: agent.TypeNotice, Code: "compacted",
-					Text: "The conversation was compacted."})
-			}
+		if t, err := time.Parse(time.RFC3339Nano, l.Timestamp); err == nil {
+			at = t.UnixMilli()
 		}
+		r.line(l)
+		stamp()
 	}
 	r.endTurn()
+	stamp()
 	return r.events, nil
+}
+
+// line maps one line of the main transcript.
+func (r *rebuild) line(l transcriptLine) {
+	switch l.Type {
+	case "user":
+		r.user(l)
+	case "assistant":
+		r.assistant(l, "", "")
+	case "system":
+		if l.Subtype == "compact_boundary" {
+			r.events = append(r.events, agent.Event{Type: agent.TypeNotice, Code: "compacted",
+				Text: "The conversation was compacted."})
+		}
+	}
 }
 
 type rebuild struct {

@@ -56,6 +56,11 @@ type state struct {
 	// reading their transcripts.
 	wfAgents map[string]string
 	tails    map[string]*tail
+	// homes is the message and turn of every workflow agent's part, which
+	// its calls go in after the part itself is no longer kept, and wfDone
+	// the agents whose parts are final.
+	homes  map[string]home
+	wfDone map[string]bool
 
 	info         agentInfo
 	terminalOnly map[string]bool
@@ -68,10 +73,13 @@ func newState(spec agent.StartSpec, configDir string) *state {
 		pending: map[string]string{}, delivered: map[string]bool{}, deliveredMsgs: map[string]bool{},
 		seen: map[string]bool{}, parts: map[string]*part{}, tasks: map[string]string{},
 		taskInputs: map[string]json.RawMessage{}, plans: map[string]*planAsk{}, planByReq: map[string]string{},
-		wfAgents: map[string]string{}, tails: map[string]*tail{},
+		wfAgents: map[string]string{}, tails: map[string]*tail{}, homes: map[string]home{}, wfDone: map[string]bool{},
 		terminalOnly: map[string]bool{"doctor": true, "color": true, "focus": true, "heapdump": true},
 	}
 }
+
+// home is where a part lives: its message and turn.
+type home struct{ msgID, turnID string }
 
 // turn is the turn the CLI is on.
 type turn struct {
@@ -107,6 +115,22 @@ func (p *part) live() bool {
 		return false
 	}
 	return p.state == agent.PartRunning || (p.tool != nil && p.tool.Task != nil && p.tool.Task.Status == "running")
+}
+
+// inLiveGroup is whether a part is nested in a group that still runs: a
+// background subagent's call outlives the turn as its group does.
+func (s *state) inLiveGroup(p *part) bool {
+	for seen := 0; p.parent != "" && seen < 64; seen++ {
+		g := s.parts[p.parent]
+		if g == nil {
+			return false
+		}
+		if g.live() {
+			return true
+		}
+		p = g
+	}
+	return false
 }
 
 // closeLive ends every group still running when the CLI is gone: what it was
@@ -188,8 +212,9 @@ func (s *state) lifecycle(f *frame) {
 	case "cancelled":
 		if ours && !s.deliveredMsgs[msgID] {
 			delete(s.pending, f.CommandUUID)
-			s.emit(agent.Event{Type: agent.TypeError, Code: "message_dropped", MessageID: msgID,
-				Text: "Claude Code dropped this message before taking it up."})
+			s.emit(agent.Event{Type: agent.TypeMessageState, MessageID: msgID, State: agent.MessageCancelled},
+				agent.Event{Type: agent.TypeError, Code: "message_dropped", MessageID: msgID,
+					Text: "Claude Code dropped this message before taking it up."})
 		}
 	}
 }
@@ -242,12 +267,26 @@ func (s *state) result(f *frame) {
 	case f.IsError:
 		outcome, why = agent.OutcomeFailed, resultError(f)
 	}
-	cost := f.TotalCost - s.lastCost
-	if cost < 0 {
-		cost = f.TotalCost
+	s.endTurn(outcome, resultUsage(f), s.turnCost(f), why)
+}
+
+// turnCost is what this turn cost: the result's per-turn model usage when it
+// has one, else the growth of total_cost_usd. That total is cumulative per
+// conversation, not per process - a resume restores it from the transcript's
+// cost-state, which is why lastCost starts there (newState's caller).
+func (s *state) turnCost(f *frame) float64 {
+	defer func() { s.lastCost = f.TotalCost }()
+	if len(f.SinceLast) > 0 {
+		sum := 0.0
+		for _, m := range f.SinceLast {
+			sum += m.CostUSD
+		}
+		return sum
 	}
-	s.lastCost = f.TotalCost
-	s.endTurn(outcome, resultUsage(f), cost, why)
+	if cost := f.TotalCost - s.lastCost; cost >= 0 {
+		return cost
+	}
+	return f.TotalCost
 }
 
 func resultError(f *frame) string {
@@ -294,7 +333,7 @@ func (s *state) endTurn(outcome string, usage *agent.Usage, cost float64, why st
 	sort.Slice(ids, func(i, j int) bool { return s.parts[ids[i]].started.Before(s.parts[ids[j]].started) })
 	for _, id := range ids {
 		p := s.parts[id]
-		if p.live() {
+		if p.live() || s.inLiveGroup(p) {
 			continue
 		}
 		if p.state == agent.PartStreaming || p.state == agent.PartRunning {
@@ -527,6 +566,9 @@ func (s *state) newPart(id, kind, parent, st string) *part {
 func (s *state) messageFor(parent string) (msgID, turnID string) {
 	if g := s.parts[parent]; parent != "" && g != nil {
 		return g.msgID, g.turnID
+	}
+	if h, ok := s.homes[parent]; parent != "" && ok {
+		return h.msgID, h.turnID
 	}
 	t := s.ensureTurn()
 	return t.msgID, t.id

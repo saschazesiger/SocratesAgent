@@ -413,8 +413,10 @@ func (p *chatPeer) launch(ctx context.Context) error {
 	}
 	lctx, cancel := context.WithTimeout(ctx, chatLaunchWait)
 	defer cancel()
+	entry, _ := p.hub.srv.Settings().Harnesses.Entry(row.Harness)
 	return p.hub.launcher.Launch(lctx, agenthost.Spec{
 		ChatID: p.id, Harness: row.Harness, Workdir: row.Workdir, Model: model, Effort: effort,
+		Binary:       strings.TrimSpace(entry.Binary),
 		Conversation: row.CLISessionID, ParkAfterMS: p.hub.parkAfterFor().Milliseconds(),
 	})
 }

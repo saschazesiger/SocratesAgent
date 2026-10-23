@@ -275,8 +275,19 @@ func (s *state) toolResult(b block, structured json.RawMessage, parent string) {
 			// The call returned at once; the agent works on in the
 			// background, and its group stays open until it reports back.
 			c.Agent.Background, c.Agent.Status, p.state = true, "running", agent.PartRunning
-		} else if p.state == agent.PartDone {
-			c.Agent.Status = "completed"
+		} else {
+			// A foreground agent reports its end before its call returns;
+			// the hand-back keeps what the task said.
+			switch c.Agent.Status {
+			case "failed":
+				p.state = agent.PartError
+			case "killed", "stopped":
+				p.state = agent.PartInterrupted
+			default:
+				if p.state == agent.PartDone {
+					c.Agent.Status = "completed"
+				}
+			}
 		}
 	case c.Tool == "Workflow":
 		var r struct {
@@ -608,6 +619,19 @@ func (s *state) taskStatus(taskID, status, summary string, usage *taskUsage) {
 		}
 		if final {
 			s.stopTail(p.id)
+			// An agent the last progress still showed running ends with its
+			// workflow.
+			for id, ap := range s.parts {
+				if ap.parent == p.id && ap.state == agent.PartRunning {
+					ap.state = state
+					if ap.tool != nil && ap.tool.Agent != nil {
+						ap.tool.Agent.Status = status
+					}
+					s.emitPart(ap)
+					delete(s.parts, id)
+					s.wfDone[id] = true
+				}
+			}
 		}
 	case c.Task != nil:
 		c.Task.Status = status
@@ -683,12 +707,24 @@ func (s *state) workflowAgent(wf *part, e wfEntry) bool {
 	case "skipped", "cancelled", "killed":
 		st, status = agent.PartInterrupted, "killed"
 	}
+	if s.wfDone[id] {
+		// Every progress repeats the whole list; a finished agent's part
+		// was written for the last time and is no longer kept.
+		return true
+	}
 	p := s.parts[id]
 	if p == nil {
 		p = &part{id: id, msgID: wf.msgID, turnID: wf.turnID, kind: agent.PartTool, parent: wf.id,
 			started: time.Now(), group: true, tool: &toolContent{Tool: "WorkflowAgent", ToolUseID: id}}
 		s.parts[id] = p
+		s.homes[id] = home{wf.msgID, wf.turnID}
 	}
+	defer func() {
+		if st != agent.PartRunning {
+			delete(s.parts, id)
+			s.wfDone[id] = true
+		}
+	}()
 	before, _ := json.Marshal(p.tool)
 	beforeState := p.state
 	p.state = st

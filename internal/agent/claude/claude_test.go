@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -258,21 +259,45 @@ func TestATextTurnStreamsAndEnds(t *testing.T) {
 	}
 }
 
-func TestCostIsPerTurnNotPerProcess(t *testing.T) {
-	e := newEnv(t)
-	a, r := start(t, e, "")
-	send(t, a, "m1", "one")
-	r.turnsEnded(t, 1)
-	send(t, a, "m2", "two")
-	evs := r.turnsEnded(t, 2)
-	var costs []float64
-	for _, ev := range evs {
-		if ev.Type == agent.TypeTurnEnded {
-			costs = append(costs, ev.CostUSD)
-		}
-	}
-	if len(costs) != 2 || costs[0] < 0.00099 || costs[0] > 0.00101 || costs[1] < 0.00099 || costs[1] > 0.00101 {
-		t.Fatalf("costs = %v, want 0.001 each (total_cost_usd is cumulative)", costs)
+// total_cost_usd is cumulative per conversation, restored on --resume: a
+// turn's cost is model_usage_since_last_result, or the total's growth from
+// the transcript's last cost-state - never the whole history on the first
+// turn after a park.
+func TestCostIsPerTurnAcrossAResume(t *testing.T) {
+	for _, sinceLast := range []bool{true, false} {
+		t.Run(fmt.Sprintf("since_last=%v", sinceLast), func(t *testing.T) {
+			e := newEnv(t)
+			if !sinceLast {
+				e.vars = append(e.vars, "FAKE_NO_SINCE_LAST=1")
+			}
+			a, r := start(t, e, "")
+			send(t, a, "m1", "one")
+			r.turnsEnded(t, 1)
+			send(t, a, "m2", "two")
+			evs := r.turnsEnded(t, 2)
+			var conv string
+			r.view(func(p *agent.Projection) { conv = p.ConversationID })
+			if err := a.Park(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			b, r2 := start(t, e, conv)
+			send(t, b, "m3", "three")
+			evs = append(evs, r2.turnsEnded(t, 1)...)
+			var costs []float64
+			for _, ev := range evs {
+				if ev.Type == agent.TypeTurnEnded {
+					costs = append(costs, ev.CostUSD)
+				}
+			}
+			if len(costs) != 3 {
+				t.Fatalf("costs = %v", costs)
+			}
+			for _, c := range costs {
+				if c < 0.00099 || c > 0.00101 {
+					t.Fatalf("costs = %v, want 0.001 each", costs)
+				}
+			}
+		})
 	}
 }
 
@@ -466,6 +491,12 @@ func TestAWorkflowShowsPhasesAgentsAndTheirCalls(t *testing.T) {
 			t.Fatalf("tasks = %d", p.Tasks)
 		}
 	})
+	a.mu.Lock()
+	kept := len(a.st.parts)
+	a.mu.Unlock()
+	if kept != 0 {
+		t.Fatalf("%d finished parts are still kept", kept)
+	}
 }
 
 func TestTheBackgroundTaskReportsBackWithATurnOfItsOwn(t *testing.T) {
@@ -718,6 +749,12 @@ func TestRebuildFromTheTranscript(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	began := time.Now().Add(-time.Minute).UnixMilli()
+	for _, ev := range events {
+		if ev.At < began || ev.At > time.Now().UnixMilli() {
+			t.Fatalf("an event without the transcript's time: %+v", ev)
+		}
+	}
 	p := agent.Fold(number(events))
 	var users []string
 	var diffs, notices, groups int
@@ -922,5 +959,60 @@ func TestAConversationMovesToAnotherAccount(t *testing.T) {
 	})
 	if findTranscript(accA, conv) == "" || findTranscript(accB, conv) == "" {
 		t.Fatal("the transcript is not shared between the accounts")
+	}
+}
+
+// A background subagent's call still running when the turn ends belongs to
+// the group, not the turn: it is not interrupted, and its result comes later.
+func TestABackgroundSubagentsCallOutlivesTheTurn(t *testing.T) {
+	e := newEnv(t)
+	a, r := start(t, e, "")
+	send(t, a, "m1", "/subagent bg 0.5")
+	r.turnsEnded(t, 1)
+	r.view(func(p *agent.Projection) {
+		g := partsOf(p.Messages[0], agent.PartTool)[0]
+		if g.State != agent.PartRunning || len(g.Children) != 1 || g.Children[0].State != agent.PartRunning {
+			t.Fatalf("after the turn: group %q, children %+v", g.State, g.Children)
+		}
+	})
+	r.turnsEnded(t, 2)
+	r.view(func(p *agent.Projection) {
+		g := partsOf(p.Messages[0], agent.PartTool)[0]
+		if g.State != agent.PartDone || g.Children[0].State != agent.PartDone || g.Children[0].Text != "late" {
+			t.Fatalf("after the agent: group %q, children %+v", g.State, g.Children[0])
+		}
+	})
+}
+
+func TestAFailedSubagentStaysFailed(t *testing.T) {
+	e := newEnv(t)
+	a, r := start(t, e, "")
+	send(t, a, "m1", "/subagent fail")
+	r.turnsEnded(t, 1)
+	r.view(func(p *agent.Projection) {
+		g := partsOf(lastAssistant(p), agent.PartTool)[0]
+		if c := content(t, g); g.State != agent.PartError || c.Agent.Status != "failed" || c.Agent.Summary != "it broke" {
+			t.Fatalf("group %q %+v", g.State, c.Agent)
+		}
+	})
+}
+
+// The dashboard's binary setting reaches the adapter through the spec.
+func TestTheConfiguredBinaryIsRun(t *testing.T) {
+	e := newEnv(t)
+	e.vars = []string{"PATH=/nonexistent", "HOME=" + filepath.Dir(e.conf), "CLAUDE_CONFIG_DIR=" + e.conf}
+	spec := e.spec("")
+	spec.Binary = fakeBin
+	a := New(Options{})
+	r := newRec()
+	if err := a.Start(context.Background(), spec, r); err != nil {
+		t.Fatalf("start with the configured binary: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Stop() })
+	send(t, a, "m1", "hello")
+	r.turnsEnded(t, 1)
+	spec.Binary = filepath.Join(t.TempDir(), "missing")
+	if err := New(Options{}).Start(context.Background(), spec, newRec()); err == nil {
+		t.Fatal("a missing configured binary started")
 	}
 }
