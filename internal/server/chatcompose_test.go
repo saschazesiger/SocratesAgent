@@ -75,7 +75,7 @@ func TestChatAttachmentsAreTheServersOwn(t *testing.T) {
 	}
 
 	// The browser's name and size are not believed; the file's are.
-	code, body =c.post(t, "/api/chats/"+id+"/messages", map[string]any{"client_id": "m2", "text": "look",
+	code, body = c.post(t, "/api/chats/"+id+"/messages", map[string]any{"client_id": "m2", "text": "look",
 		"attachments": []map[string]any{{"name": "evil", "path": path, "size": 999, "mime": "image/png"}}})
 	if code != http.StatusOK {
 		t.Fatalf("send with the attachment: %d %v", code, body)
