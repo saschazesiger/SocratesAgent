@@ -654,6 +654,21 @@ func TestStopKillsAServerThatIgnoresTerm(t *testing.T) {
 	}
 }
 
+// A server that dies before its event stream opens fails the start; that is
+// not reported as the death of a chat's process as well.
+func TestAServerThatDiesBeforeItsStreamOpensOnlyFailsTheStart(t *testing.T) {
+	r := newRig(t)
+	r.env = append(r.env, "FAKEOPENCODE_EXIT_ON_EVENT=1")
+	if err := r.start(r.spec("")); err == nil {
+		t.Fatal("started")
+	}
+	select {
+	case err := <-r.rec.exited:
+		t.Fatalf("a failed start was also reported as an exit: %v", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
 func TestStartRefusesAMissingBinaryAndMigratesOnce(t *testing.T) {
 	r := newRig(t)
 	r.env = []string{"PATH=" + t.TempDir()}

@@ -295,15 +295,8 @@ func (a *Adapter) startProcess(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	spawn := a.spec.Spawn
-	if spawn == nil {
-		spawn = func(cmd *exec.Cmd) error {
-			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-			return cmd.Start()
-		}
-	}
 	base, account := a.spec.Env, a.account
-	srv, err := startServer(ctx, spawn, a.bin, a.spec.Workdir, func(pass string) []string {
+	srv, err := startServer(ctx, a.spawner(), a.bin, a.spec.Workdir, func(pass string) []string {
 		return processEnv(base, a.layout, account, pass, config)
 	})
 	if err != nil {
@@ -326,17 +319,34 @@ func (a *Adapter) startProcess(ctx context.Context) error {
 	a.mu.Unlock()
 	connected := make(chan struct{})
 	go a.follow(sctx, gen, cl, connected)
-	go a.watch(gen, srv)
 	select {
 	case <-connected:
 	case <-time.After(connectedWait):
-		a.stopProcess(true)
+		cancel()
+		srv.stop(stopGrace)
 		return errors.New("opencode: the event stream did not open")
 	case <-srv.exited():
+		cancel()
+		srv.stop(0)
 		return fmt.Errorf("opencode serve exited: %v: %s", srv.err, srv.out.String())
 	}
+	// From here on, an end nobody asked for is the chat's process dying; one
+	// before it is this start failing, which the caller reports.
+	go a.watch(gen, srv)
 	a.loadWindows(ctx, cl)
 	return nil
+}
+
+// spawner is StartSpec.Spawn, or, for a spec without one, a plain start in a
+// process group of its own.
+func (a *Adapter) spawner() func(*exec.Cmd) error {
+	if a.spec.Spawn != nil {
+		return a.spec.Spawn
+	}
+	return func(cmd *exec.Cmd) error {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		return cmd.Start()
+	}
 }
 
 func waitHealthy(ctx context.Context, cl *client, srv *server) error {

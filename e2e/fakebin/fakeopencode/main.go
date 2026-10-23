@@ -322,6 +322,10 @@ func (s *srv) resolve(w http.ResponseWriter, id, answer string) {
 }
 
 func (s *srv) events(w http.ResponseWriter, r *http.Request) {
+	if os.Getenv("FAKEOPENCODE_EXIT_ON_EVENT") == "1" {
+		// A server that dies before its event stream opens.
+		os.Exit(4)
+	}
 	fl, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "no streaming", 500)
