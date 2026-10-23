@@ -201,7 +201,7 @@ const LINE_WORDS = { add: 'Added', del: 'Removed' };
 function diffFileHtml(file, key, open) {
   const name = file.path || 'the file';
   const status = file.status === 'added' ? 'New file' : file.status === 'deleted' ? 'Deleted' : '';
-  return html`<details class="ds-collapsible so-diff__file" data-ds-key="${key}" data-open-key="${key}"${open ? html` open` : ''}><summary class="so-diff__head"><span class="so-diff__path so-break">${name}</span>${status ? html`<span class="so-diff__status">${status}</span>` : ''}<span class="so-diff__count"><span class="so-diff__added" aria-label="${file.added + ' added'}">+${file.added}</span><span class="so-diff__removed" aria-label="${file.removed + ' removed'}">−${file.removed}</span></span>${chevron()}</summary>${
+  return html`<details class="so-diff__file" data-ds-key="${key}" data-open-key="${key}"${open ? html` open` : ''}><summary class="so-diff__head"><span class="so-diff__path so-break">${name}</span>${status ? html`<span class="so-diff__status">${status}</span>` : ''}<span class="so-diff__count"><span class="so-diff__added" aria-label="${file.added + ' added'}">+${file.added}</span><span class="so-diff__removed" aria-label="${file.removed + ' removed'}">−${file.removed}</span></span>${chevron()}</summary>${
     open ? html`<div class="so-diff__body" role="table" aria-label="${'Changes to ' + name}">${file.hunks.map((hunk) => html`<div class="so-diff__hunk" role="row"><span class="so-diff__hunk-head" role="cell">${hunk.header}</span></div>${
       hunk.lines.map((line) => html`<div class="so-diff__line" data-type="${line.type}" role="row"><span class="so-diff__no" role="cell" aria-hidden="true">${line.oldNo ?? ''}</span><span class="so-diff__no" role="cell" aria-hidden="true">${line.newNo ?? ''}</span><span class="so-diff__sign" role="cell"${LINE_WORDS[line.type] ? html` aria-label="${LINE_WORDS[line.type]}"` : ''}>${SIGN[line.type]}</span><span class="so-diff__code" role="cell">${line.text}</span></div>`)
     }`)}</div>` : ''
@@ -317,7 +317,7 @@ function toolHtml(part, view, { diff = false } = {}) {
     typeof tool.content.exit_code === 'number' ? 'exit status ' + tool.content.exit_code : '',
     tool.content.cwd ? tool.content.cwd : '',
   ];
-  return html`<details class="ds-collapsible so-part so-tool" data-ds-key="${key}" data-open-key="${key}" data-kind="${part.kind}" data-state="${state}"${group ? html` data-group` : ''}${open ? html` open` : ''}><summary class="so-tool__head"><span class="so-tool__icon" aria-hidden="true">${raw(icon(toolGlyph(tool.name), 18))}</span><span class="so-tool__name">${tool.name}</span><span class="so-tool__summary so-ellipsis">${tool.summary}</span>${
+  return html`<details class="so-part so-tool" data-ds-key="${key}" data-open-key="${key}" data-kind="${part.kind}" data-state="${state}"${group ? html` data-group` : ''}${open ? html` open` : ''}><summary class="so-tool__head"><span class="so-tool__icon" aria-hidden="true">${raw(icon(toolGlyph(tool.name), 18))}</span><span class="so-tool__name">${tool.name}</span><span class="so-tool__summary so-ellipsis">${tool.summary}</span>${
     progress ? html`<span class="so-tool__progress so-ellipsis">${progress}</span>` : ''
   }${diff && files.length ? html`<span class="so-diff__count"><span class="so-diff__added">+${added}</span><span class="so-diff__removed">−${removed}</span></span>` : ''}${
     statusMark(state)
@@ -376,10 +376,17 @@ function workflowBody(part, tool, view) {
 
 /* -------------------------------------------------------------- the plan */
 
+// planAskOf is the ask a plan part waits on: the one its content names
+// (Claude's and the scripted agent's plan.ask_id), else the plan ask that
+// names the part.
 function planAskOf(part, chat) {
   const c = part.content || {};
-  const id = (c.plan && c.plan.ask_id) || c.ask_id || '';
-  return id ? chat.asks.get(id) || null : null;
+  const id = (c.plan && typeof c.plan === 'object' && c.plan.ask_id) || c.ask_id || '';
+  if (id) return chat.asks.get(id) || null;
+  for (const ask of chat.asks.values()) {
+    if (ask.payload && ask.payload.kind === 'plan' && ask.payload.part_id === part.id) return ask;
+  }
+  return null;
 }
 
 const DECISION_WORDS = { approved: 'Approved', keep_planning: 'Sent back to planning', pending: 'Waiting for you' };
@@ -459,7 +466,6 @@ function answerSummary(ask) {
       return option ? option.label : String(id);
     });
     if (a.other) labels.push(a.other);
-    if (a.value !== undefined && a.value !== null && a.value !== '') labels.push(String(a.value));
     return labels.length ? (q.header || q.id) + ': ' + labels.join(', ') : '';
   }).filter(Boolean);
   return words.join(' · ');
@@ -513,9 +519,13 @@ export function turnFacts(message) {
 /** assistantMessage is an answer: its parts in order, and what it cost. */
 export function assistantMessage(message, view) {
   const facts = turnFacts(message);
+  // An answer that has said nothing yet is working - unless it waits for the
+  // person, which its question card says.
+  const asking = [...view.chat.asks.values()].some((ask) => !ask.answered && ask.turnId && ask.turnId === message.turnId);
+  const working = message.state === 'streaming' && !message.parts.length && !asking;
   return html`<article class="so-msg" data-ds-key="${'m:' + message.id}" data-role="assistant" data-state="${message.state}">${
     message.parts.map((part) => partHtml(part, view))
-  }${message.state === 'streaming' && !message.parts.length ? html`<p class="so-msg__wait ds-meta"><span class="ds-spinner" aria-hidden="true"></span><span>Working…</span></p>` : ''}${
+  }${working ? html`<p class="so-msg__wait ds-meta"><span class="ds-spinner" aria-hidden="true"></span><span>Working…</span></p>` : ''}${
     message.state === 'interrupted' || facts.length ? html`<div class="so-msg__foot">${
       message.state === 'interrupted' ? html`<span class="ds-status">${raw(icon('ban', 16))}<span>Interrupted</span></span>` : ''
     }${infoButton(facts, 'Usage of this answer')}</div>` : ''
@@ -524,12 +534,38 @@ export function assistantMessage(message, view) {
 
 /* --------------------------------------------------------------- the lines */
 
+// What a notice says when the event brings no words of its own, by its code
+// (AGENT-HOST.md §2 and §5: the host's, every adapter's rebuild, the
+// adapters' own). A code nobody wrote words for is said in general terms,
+// the code itself behind the "i".
 const NOTICE_WORDS = {
   resumed: 'Resumed after a restart.',
   compacted: 'The conversation was compacted.',
   conversation_lost: 'The agent could not resume the conversation. It starts fresh; the history here is kept.',
   answer_as_message: 'The answer went to the agent as a message.',
-  history_rebuilt: 'The history was rebuilt from the agent’s own record.',
+  rebuilt: 'The history was rebuilt from the agent’s own record.',
+  history_unavailable: 'The agent’s own record of this conversation could not be read.',
+  api_retry: 'The agent’s service did not answer; it tries again.',
+  retrying: 'The agent’s service did not answer; it tries again.',
+  retry: 'The agent’s service did not answer; it tries again.',
+  plan_mode: 'Plan mode changed.',
+  review_started: 'A review started.',
+  codex_reasoning_dropped: 'The agent’s earlier reasoning was left behind to go on with another account.',
+  codex_handoff: 'The conversation went on in a new thread, with the transcript handed over.',
+  elicitation_declined: 'A request of a tool was declined.',
+  question_declined: 'A question the agent asked its own way was declined.',
+  question_rejected: 'A question the agent asked its own way was declined.',
+  permission_allowed: 'A permission the agent asked for was allowed.',
+  reverted: 'The conversation was rewound.',
+  unreverted: 'The rewind was undone.',
+  forked: 'The conversation was forked.',
+  agent: 'The agent’s mode changed.',
+};
+
+// The glyph a line between messages leads with, by its notice code.
+const NOTICE_GLYPH = {
+  compacted: 'archive', resumed: 'history', rebuilt: 'history', conversation_lost: 'alert', history_unavailable: 'alert',
+  api_retry: 'sync', retrying: 'sync', retry: 'sync',
 };
 
 /** renewsIn is a reset moment as "2 h 10 min", from now. */
@@ -549,8 +585,10 @@ export function lineHtml(entry, view) {
   const key = entry.key;
   switch (l.kind) {
     case 'notice': {
-      const words = l.text || NOTICE_WORDS[l.code] || l.code;
-      return html`<div class="so-line" data-ds-key="${key}" data-kind="notice" data-code="${l.code}">${raw(icon(l.code === 'compacted' ? 'archive' : l.code === 'resumed' ? 'history' : 'info', 16))}<span class="so-line__text">${words}</span></div>`;
+      const words = l.text || NOTICE_WORDS[l.code] || 'A notice from the agent.';
+      return html`<div class="so-line" data-ds-key="${key}" data-kind="notice" data-code="${l.code}">${raw(icon(NOTICE_GLYPH[l.code] || 'info', 16))}<span class="so-line__text">${words}</span>${
+        !l.text && !NOTICE_WORDS[l.code] && l.code ? infoButton(['code ' + l.code], 'Notice details') : ''
+      }</div>`;
     }
     case 'command':
       return html`<div class="so-line" data-ds-key="${key}" data-kind="command">${raw(icon('chevronRight', 16))}<span class="so-line__text so-line__command">${l.text}</span></div>`;
@@ -563,7 +601,7 @@ export function lineHtml(entry, view) {
     case 'turn': {
       if (l.outcome === 'limited') {
         const renew = view.renewal();
-        return html`<div class="ds-alert ds-alert--warning so-line-alert" data-ds-key="${key}" data-kind="limit" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text">${'Limit reached' + (renew ? ' — renews in ' + renew : '')}</span></div>`;
+        return html`<div class="ds-alert ds-alert--warning so-line-alert" data-ds-key="${key}" data-kind="limit" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text">${'Limit reached' + (renew ? ' — renews in ' + renew : '')}</span>${infoButton([l.text], 'About the limit')}</div>`;
       }
       if (l.outcome === 'failed') {
         return html`<div class="ds-alert ds-alert--error so-line-alert" data-ds-key="${key}" data-kind="failed" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${'The turn failed.' + (l.text ? ' ' + l.text : '')}</span></div>`;

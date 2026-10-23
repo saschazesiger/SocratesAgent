@@ -31,6 +31,7 @@
 <link rel="stylesheet" href="/static/css/so-question.css">
 <link rel="stylesheet" href="/static/css/so-prestart.css">
 <link rel="stylesheet" href="/static/css/so-sheet.css">
+<link rel="stylesheet" href="/static/css/so-chat.css">
 <script src="/static/vendor/dashboard-style/ds.js" defer></script>
 </head>
 <body>
@@ -175,6 +176,9 @@
           <!-- A prepared session (PreStart) has no terminal yet; its panel takes
                the pane's place. prestart.js draws it. -->
           <section class="so-prestart" id="prestart" aria-label="Prepared session" hidden></section>
+          <!-- A chat: an agent session the page draws itself, its conversation
+               above and its composer below. chatview.js draws it. -->
+          <section class="so-chat" id="chat" aria-label="Chat" hidden></section>
           <!-- Home: what every session is doing, live. The landing page, and
                what the stage shows when no session is open. home.js draws it. -->
           <section class="so-home" id="home" aria-label="Home" hidden></section>

@@ -14,10 +14,10 @@
 //     connection is back, exactly once, and is on screen as "Not sent yet"
 //     until then.
 
-import { api, toast, errorMessage, clientKey, onWake } from './api.js';
+import { api, toast, errorMessage, clientKey, onWake, alertDialog } from './api.js';
 import { html, raw, icon, morph, faces, showOverlay, hideOverlay } from './ui.js';
 import * as harnesses from './harnesses.js';
-import { guard, touchScreen } from './keyboard.js';
+import { guard, touchScreen, micButton } from './keyboard.js';
 import { queueMessage, queueCommand } from './chatoutbox.js';
 
 const DRAFT_DEBOUNCE = 600;
@@ -200,6 +200,18 @@ function draftSync(id, { read, write, onConflict, onStatus }) {
   };
 }
 
+/* ----------------------------------------------------------- the account */
+
+// The account picker is WP7's (REBUILD.md §4.3): the account a chat runs on,
+// next to its model, with each account's usage. Until it exists the slot in
+// the composer's bar stays empty and hidden. WP7 hands its drawing here:
+// draw(slot, { session, chat }) fills the slot and answers whether it shows
+// anything.
+let accountPicker = null;
+
+/** useAccountPicker is the hook the account picker plugs into. */
+export function useAccountPicker(draw) { accountPicker = draw; }
+
 /* -------------------------------------------------------------- composer */
 
 /**
@@ -226,6 +238,7 @@ export function paletteOf(harness, info) {
  *   chat()        the chat's fold (chatfold.js)
  *   busy()        whether a turn is running
  *   live()        whether the chat stream is live
+ *   usage()       the chat's usage and cost, as lines for its "i"
  *   sent()        a message or command was put on its way
  *   changed()     something the dock shows changed size
  */
@@ -249,8 +262,10 @@ export function mountComposer(host, ctx) {
       <button class="ds-btn ds-btn--quiet ds-btn--icon so-composer__attach" type="button" data-action="attach" aria-label="Attach files" data-tip="Attach files">${raw(icon('plus', 20))}</button>
       <input class="so-composer__picker" type="file" multiple hidden tabindex="-1" aria-hidden="true">
       <button class="ds-btn ds-btn--quiet ds-btn--sm so-composer__model" type="button" data-action="model" aria-haspopup="menu" aria-expanded="false"><span class="so-composer__model-text so-ellipsis"></span>${raw(icon('chevronDown', 16))}</button>
-      <span class="so-composer__account" hidden></span>
+      <span class="so-composer__account" data-slot="account" hidden></span>
+      <button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-info so-composer__usage" type="button" data-action="usage" aria-label="Usage of this chat" data-tip="Usage of this chat" hidden>${raw(icon('info', 18))}</button>
       <span class="so-composer__hint ds-meta" id="${'composer-hint-' + id}" role="status"></span>
+      <span class="so-composer__mic"></span>
       <button class="ds-btn ds-btn--tonal so-composer__stop" type="button" data-action="stop" hidden>${faces('Stop', 'Stopping')}</button>
       <button class="ds-btn ds-btn--primary ds-btn--icon so-composer__send" type="button" data-action="send" aria-label="Send" data-tip="Send">${raw(icon('arrowUp', 20))}</button>
     </div>
@@ -267,6 +282,10 @@ export function mountComposer(host, ctx) {
   const modelBtn = $('.so-composer__model');
   guard(input);
   input.placeholder = 'Message ' + harnesses.label(ctx.session().harness);
+  // Dictation lands where the cursor is, like typing would (dictate.js).
+  const mic = micButton((text) => insert(text));
+  mic.classList.add('so-composer__dictate');
+  $('.so-composer__mic').replaceWith(mic);
 
   const draft = draftSync(id, {
     read: () => input.value,
@@ -490,12 +509,21 @@ export function mountComposer(host, ctx) {
 
   /* --------------------------------------------------------- the account */
 
-  // The account picker is WP7's. It is drawn only when the catalogue lists
-  // accounts for this agent; until then the slot stays empty.
+  // drawAccount hands the slot to the account picker when there is one.
   function drawAccount() {
     const slot = $('.so-composer__account');
-    const accounts = (harnesses.snapshot().accounts || []).filter((a) => a.agent === ctx.session().harness);
-    slot.hidden = !accounts.length;
+    const shown = accountPicker ? !!accountPicker(slot, { session: ctx.session(), chat: ctx.chat() }) : false;
+    slot.hidden = !shown;
+  }
+
+  /* ----------------------------------------------------------- the usage */
+
+  function drawUsage() {
+    const button = $('.so-composer__usage');
+    const lines = ctx.usage ? ctx.usage() : [];
+    button.hidden = !lines.length;
+    const tip = lines.join('\n');
+    if (button.dataset.tip !== tip && lines.length) button.dataset.tip = tip;
   }
 
   /* --------------------------------------------------------- send, stop */
@@ -553,6 +581,9 @@ export function mountComposer(host, ctx) {
       case 'stop': stop(); break;
       case 'attach': picker.click(); break;
       case 'model': openModels(); break;
+      case 'usage':
+        alertDialog({ title: 'Usage of this chat', lines: String(target.dataset.tip || '').split('\n'), confirmLabel: 'Close', opener: target });
+        break;
       case 'file-remove': {
         const at = files.findIndex((entry) => entry.key === target.dataset.key);
         if (at >= 0) files.splice(at, 1);
@@ -607,6 +638,24 @@ export function mountComposer(host, ctx) {
     else if (!ctx.live()) said = 'Offline: what you send goes out when the connection is back';
     if (hint.textContent !== said) hint.textContent = said;
     drawAccount();
+    drawUsage();
+  }
+
+  // insert puts words where the cursor is, as if they had been typed.
+  function insert(text) {
+    const words = String(text || '').trim();
+    if (!words) return;
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? input.value.length;
+    const before = input.value.slice(0, start);
+    const join = before && !/\s$/.test(before) ? ' ' : '';
+    input.value = before + join + words + input.value.slice(end);
+    const at = (before + join + words).length;
+    input.setSelectionRange(at, at);
+    grow();
+    draft.changed();
+    paint();
+    input.focus({ preventScroll: true });
   }
 
   grow();
@@ -616,21 +665,7 @@ export function mountComposer(host, ctx) {
     paint,
     focus() { input.focus({ preventScroll: true }); },
     field: () => input,
-    insert(text) {
-      const words = String(text || '').trim();
-      if (!words) return;
-      const start = input.selectionStart ?? input.value.length;
-      const end = input.selectionEnd ?? input.value.length;
-      const before = input.value.slice(0, start);
-      const join = before && !/\s$/.test(before) ? ' ' : '';
-      input.value = before + join + words + input.value.slice(end);
-      const at = (before + join + words).length;
-      input.setSelectionRange(at, at);
-      grow();
-      draft.changed();
-      paint();
-      input.focus({ preventScroll: true });
-    },
+    insert,
     addFiles,
     destroy() {
       draft.close();

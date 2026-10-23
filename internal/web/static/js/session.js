@@ -43,6 +43,9 @@ import {
   faces, iconEl,
 } from './ui.js';
 import { mountBackupNotice } from './backup.js';
+import { mountChat } from './chatview.js';
+import { chatOutbox, queueCommand } from './chatoutbox.js';
+import { openChatAsks, askDialogOpen, closeAskDialog } from './askdialog.js';
 
 /* ------------------------------------------------------------- transport */
 
@@ -693,6 +696,9 @@ const state = {
   // The panel a prepared session is shown in instead of a terminal,
   // mounted once in boot().
   prestart: null,
+  // The chat view, which stands where the pane does for a session that is a
+  // chat (chatview.js), mounted once in boot().
+  chat: null,
   // Home, the page the stage shows when no session is open, and the event
   // stream that keeps it - and the sidebar - live whatever is on the stage.
   // Both mounted once in boot().
@@ -732,7 +738,7 @@ const ids = ['sidebar', 'navScrim', 'menuBtn', 'blankIDE', 'homeBtn', 'sideColla
   'termTicker', 'tickerWindow',
   'micBtn', 'micText',
   'recSheet', 'recMeter', 'recTime', 'recSend', 'recCancel',
-  'keybar', 'logout', 'prestart', 'home'];
+  'keybar', 'logout', 'prestart', 'chat', 'home'];
 for (const id of ids) dom[id] = document.getElementById(id);
 // The frame's own parts: the app, the bar's contents, the line the usage
 // strip takes on a phone, the row menu and the two dialogs of the bar.
@@ -828,6 +834,16 @@ function deleteWords(session) {
 }
 
 function sessionOf(id) { return state.sessions.find((s) => s.id === id) || null; }
+
+/**
+ * isChat says whether a session is a chat that has started: an agent driven
+ * through its protocol and drawn by the chat view, not a terminal. A
+ * prepared chat is still its PreStart panel.
+ */
+function isChat(session) { return !!session && session.kind === 'chat' && !isPrepared(session); }
+
+// chatShown says whether the chat view is what the stage shows.
+function chatShown() { return !!state.chat && !!state.chat.shownId(); }
 
 /* -------------------------------------------------------- the session list */
 
@@ -1297,6 +1313,7 @@ let notifier = null;
 function mergeActivity(sessions, { full = false } = {}) {
   if (!sessions) return;
   let changed = false;
+  const readHere = [];
   for (const [id, picture] of Object.entries(sessions)) {
     if (!picture || typeof picture !== 'object') continue;
     const prev = state.activity.get(id) || null;
@@ -1308,6 +1325,9 @@ function mergeActivity(sessions, { full = false } = {}) {
     // An `unknown` from a session that is running is not known yet: see heldOver.
     const next = heldOver(id, picture, prev);
     state.activity.set(id, next);
+    // A chat on screen is read as it is written: the turn it finished there
+    // is not news to come back to later.
+    if (next.unread && chatOnScreen(id)) readHere.push(id);
     if (prev && prev.state === next.state && prev.unread === next.unread && prev.note === next.note) continue;
     changed = true;
     const session = sessionOf(id);
@@ -1332,6 +1352,12 @@ function mergeActivity(sessions, { full = false } = {}) {
     if (heldLine.has(id)) followAnnounce(id, next);
   }
   if (changed) renderList();
+  for (const id of readHere) markRead(id);
+}
+
+// chatOnScreen says whether a chat is what the person is looking at now.
+function chatOnScreen(id) {
+  return chatShown() && state.chat.shownId() === id && document.visibilityState === 'visible';
 }
 
 /**
@@ -1531,10 +1557,12 @@ function applyList(rows, { rev, source = 'hello' } = {}) {
   if (state.current) {
     const fresh = sessionOf(state.current.id);
     if (fresh) applySession(fresh);
-    else if (state.prestart && state.prestart.shownId() === state.current.id) {
-      // A prepared session deleted on another device. A terminal finds
-      // out through its socket; a panel has none, and would otherwise go
-      // on saving into a session that is not there.
+    else if ((state.prestart && state.prestart.shownId() === state.current.id)
+      || (state.chat && state.chat.shownId() === state.current.id)) {
+      // A prepared session or a chat deleted on another device. A terminal
+      // finds out through its socket; a panel has none, and would otherwise
+      // go on saving into a session that is not there - nor does a chat,
+      // whose stream would go on asking for one.
       detach();
       showHome({ replace: true });
     }
@@ -1715,7 +1743,7 @@ function mountStream() {
       state.reachable = false;
       renderList();
     },
-    fast: () => homeShown() || questionsOpen(),
+    fast: () => homeShown() || questionsOpen() || askDialogOpen(),
   });
 }
 
@@ -1736,7 +1764,9 @@ function streamConnection() {
 // questionsCtx is what the question dialog is drawn from: the same queue
 // the Questions card counts, and the maps the stream keeps current.
 const questionsCtx = {
-  queue: () => questionQueue(homeCtx()),
+  // A chat's questions are its own dialog's (askdialog.js); this one walks
+  // the terminals'.
+  queue: () => questionQueue(homeCtx()).filter((session) => !isChat(session)),
   sessionOf,
   activityOf,
   digestOf: (id) => state.digests.get(id) || null,
@@ -1775,8 +1805,17 @@ function homeCtx() {
   };
 }
 
-/** showQuestions opens the question dialog, at one session or the oldest. */
+/**
+ * showQuestions opens the question dialog, at one session or the oldest. A
+ * chat's question is a structured ask, answered in the chat's own dialog;
+ * a terminal's is read off its screen, in the terminals' one.
+ */
 function showQuestions(id) {
+  const target = id ? sessionOf(id) : questionQueue(homeCtx())[0];
+  if (isChat(target)) {
+    showChatQuestions(target.id);
+    return;
+  }
   openQuestions(questionsCtx, id || '');
   if (state.events) {
     state.events.refresh();
@@ -1785,6 +1824,25 @@ function showQuestions(id) {
     // it is live may be a socket that died quietly: it is asked now.
     if (id) state.events.confirm();
   }
+}
+
+/**
+ * showChatQuestions opens the chats' question dialog over every chat that is
+ * asking, oldest question first, at the one asked for. `only` keeps it to
+ * that chat - the Answer of a card in the chat itself.
+ */
+function showChatQuestions(chatId, { askId = '', only = false } = {}) {
+  const asking = only ? [] : questionQueue(homeCtx()).filter((session) => isChat(session));
+  const wanted = sessionOf(chatId);
+  if (wanted && !asking.some((session) => session.id === chatId)) asking.unshift(wanted);
+  openChatAsks({
+    sessions: asking,
+    chatId,
+    askId,
+    view: state.chat,
+    // "Open chat": the dialog has closed itself, and the chat takes the stage.
+    openChat: (id) => selectSession(id),
+  });
 }
 
 /**
@@ -1814,6 +1872,7 @@ function questionOnHome(id, { replace = false } = {}) {
 // inert behind it.
 function openOnNews(id) {
   closeQuestions();
+  closeAskDialog();
   state.wanted = id;
   if (!state.current || state.current.id !== id) selectSession(id);
 }
@@ -1836,7 +1895,7 @@ function questionsWhenKnown() {
   if (!state.questionsWanted) return;
   // Gone from Home in the meantime, or opened some other way: the person
   // has moved on, and the dialog is not put in front of what they went to.
-  if (!homeShown() || questionsOpen()) { state.questionsWanted = false; return; }
+  if (!homeShown() || questionsOpen() || askDialogOpen()) { state.questionsWanted = false; return; }
   if (!knownCurrent() || !state.digestsHeard) return;
   state.questionsWanted = false;
   if (questionQueue(homeCtx()).length) showQuestions('');
@@ -2009,9 +2068,12 @@ async function setStatus(session, status) {
       method: 'POST', body: { status },
     });
     const open = state.current && state.current.id === session.id;
-    if (status === 'done' && open) detach();
+    if (status === 'done' && open && !isChat(session)) detach();
     replaceSession(data.session);
-    if (status === 'done') toast('Done. Its terminal was closed; the session is deleted in 24 hours.');
+    if (status === 'done') {
+      toast(isChat(session) ? 'Done. Its agent was put to rest; the chat is deleted in 24 hours.'
+        : 'Done. Its terminal was closed; the session is deleted in 24 hours.');
+    }
     else if (isDone(session) && open) attach(data.session);
   } catch (err) { toast(actionFailed(err, 'That session could not be refiled.'), 'error'); }
 }
@@ -2024,7 +2086,9 @@ async function deleteSession(session) {
       ? 'The editor is stopped. What it remembers - open files, unsaved changes, layout - is kept for this folder and comes back the next time it is opened.'
       : isPrepared(session)
         ? 'The prepared session and its prompt are removed. Nothing was started.'
-        : 'The terminal is closed and the session is removed. The working directory and everything in it are kept.',
+        : isChat(session)
+          ? 'The agent is stopped and the conversation is removed. The working directory and everything in it are kept.'
+          : 'The terminal is closed and the session is removed. The working directory and everything in it are kept.',
     confirmLabel: editor ? 'Close' : 'Delete',
     danger: true,
   });
@@ -2050,6 +2114,19 @@ async function deleteSession(session) {
 
 function downloadJournal(session) {
   window.open('/api/sessions/' + encodeURIComponent(session.id) + '/journal', '_blank');
+}
+
+// compactChat asks a chat's agent to compact its conversation: the palette's
+// /compact, sent once by its client_id like everything a chat is told.
+function compactChat(session) {
+  queueCommand(session.id, 'compact', '', '/compact');
+  toast('Compacting the conversation.');
+}
+
+// exportChat opens the whole conversation as the server holds it: every
+// message, part and question, as JSON.
+function exportChat(session) {
+  window.open('/api/chats/' + encodeURIComponent(session.id) + '?history=1', '_blank');
 }
 
 function replaceSession(next) {
@@ -2093,6 +2170,9 @@ async function openRowMenu(anchor, id) {
   // A prepared session has no terminal, so no keys, no scrollback and no
   // status to file it under yet: it can be looked at, named and deleted.
   const prepared = isPrepared(session);
+  // A chat has no scrollback either: its conversation is its history, and
+  // compacting it is something to ask of its agent.
+  const chat = isChat(session);
   menuActions.clear();
   const items = [];
   const add = (action, label, glyph, run, checked) => {
@@ -2109,7 +2189,12 @@ async function openRowMenu(anchor, id) {
   }
   items.push(html`<div class="ds-menu__divider" role="separator"></div>`);
   if (editor && state.current?.id === session.id) add('reload', 'Reload editor', 'sync', () => attach(session));
-  if (!prepared) add('journal', editor ? 'Download server log' : 'Download scrollback', 'download', () => downloadJournal(session));
+  if (chat) {
+    add('compact', 'Compact the conversation', 'archive', () => compactChat(session));
+    add('export', 'Download the conversation', 'download', () => exportChat(session));
+  } else if (!prepared) {
+    add('journal', editor ? 'Download server log' : 'Download scrollback', 'download', () => downloadJournal(session));
+  }
   add('delete', editor ? 'Close VS Code' : 'Delete', editor ? 'close' : 'trash', () => deleteSession(session));
   morph(menu, html`${items}`);
   showOverlay(menu, anchor);
@@ -2253,6 +2338,12 @@ function applySession(session) {
     attach(session);
     return;
   }
+  // A row that changed what it is under the view showing it - a chat that is
+  // prepared again after a start that failed - is drawn as what it is now.
+  if (state.chat && state.chat.shownId() === session.id && !isChat(session)) {
+    attach(session);
+    return;
+  }
   // And the other way: a start this page saw as "starting" - and so opened
   // a terminal for - that failed before anything ran, and was put back to
   // prepared with the reason. The terminal has nothing to show (the server
@@ -2278,6 +2369,11 @@ function applySession(session) {
   if (isPrepared(session)) {
     stopUsage();
     if (state.prestart) state.prestart.update(session);
+  } else if (isChat(session)) {
+    // A chat says what it used under its own "i" (chatview.js); the strip's
+    // limits are a profile's, and a chat runs on an account (WP7).
+    stopUsage();
+    if (state.chat) state.chat.update(session);
   } else {
     startUsage(session);
   }
@@ -2536,6 +2632,8 @@ function wireCover() {
 // coverMarkup is what the cover says for a session, or null when the pane is
 // free.
 function coverMarkup(session) {
+  // A chat has no pane to cover: it says how it is in its own dock.
+  if (isChat(session)) return null;
   const title = (words) => html`<h2 class="ds-dialog__title" id="termOverlayTitle">${words}</h2>`;
   const actions = (...buttons) => html`<div class="ds-dialog__actions">${buttons}</div>`;
   // The way out is where the focus lands when the cover comes up.
@@ -2722,8 +2820,10 @@ function detach() {
   state.resuming = false;
   if (state.transfer) state.transfer.attached();
   // A prepared session's panel stands where the pane does; whatever comes
-  // next - a terminal, another panel, nothing - starts from the pane.
+  // next - a terminal, another panel, nothing - starts from the pane. So
+  // does a chat.
   if (state.prestart) state.prestart.hide();
+  if (state.chat) state.chat.hide();
   dom.termWrap.hidden = false;
 }
 
@@ -2747,6 +2847,17 @@ function attach(session) {
   if (isPrepared(session)) {
     dom.termWrap.hidden = true;
     state.prestart.show(session);
+    if (state.assist) state.assist.attached();
+    if (state.transfer) state.transfer.attached();
+    return;
+  }
+  // A chat is drawn by the page: its conversation and its composer stand
+  // where the pane would, whatever it is filed as - a done chat's agent is
+  // put to rest, and its conversation is still there to read.
+  if (isChat(session)) {
+    dom.termWrap.hidden = true;
+    if (notifier) notifier.hush(session.id);
+    state.chat.show(session);
     if (state.assist) state.assist.attached();
     if (state.transfer) state.transfer.attached();
     return;
@@ -3210,7 +3321,9 @@ function onStatus(status) {
 
 function updateStale() {
   if (state.assist) state.assist.live();
-  const stale = !state.live
+  // A chat keeps its own reckoning of its stream (chatview.js), by the same
+  // grace.
+  const stale = chatShown() ? state.chat.stale() : !state.live
     && (navigator.onLine === false || Date.now() - (state.lostAt || Date.now()) >= CONNECTION_GRACE);
   document.body.toggleAttribute('data-stale', stale);
   dom.termWrap.toggleAttribute('data-stale', stale);
@@ -3228,7 +3341,8 @@ function selectSession(id) {
   // Already open - unless it is a prepared session showing something other
   // than its panel, which a click is the way back from.
   const panelShown = state.prestart && state.prestart.shownId() === id;
-  if (state.current && state.current.id === id && (panelShown
+  const chatOpen = !!state.chat && state.chat.shownId() === id;
+  if (state.current && state.current.id === id && (panelShown || chatOpen
     || (!isPrepared(session) && (state.socket || dom.stage.hasAttribute('data-ide'))))) return;
   markRead(id);
   state.wanted = id;
@@ -3353,6 +3467,10 @@ async function newSession() {
     await prepareSession(pick);
     return;
   }
+  if (pick.chat) {
+    await startChat(pick);
+    return;
+  }
   const size = measureForStart();
   try {
     const data = await api('/api/sessions', {
@@ -3377,6 +3495,35 @@ async function newSession() {
     state.wanted = data.session.id;
     location.hash = '#' + data.session.id;
     attach(data.session);
+  } catch (err) {
+    toast(errorMessage(err), 'error');
+  }
+}
+
+// startChat makes a chat (AGENT-HOST.md §7): its host comes up at once, so
+// the first message finds the agent warm, and the chat takes the stage with
+// the cursor in its composer. The client_id makes a create retried over a
+// link that dropped the same chat.
+async function startChat(pick) {
+  try {
+    const data = await api('/api/chats', {
+      method: 'POST',
+      attempts: 2,
+      timeout: 30000,
+      body: {
+        client_id: clientKey(),
+        harness: pick.harness,
+        model: pick.model,
+        effort: pick.effort,
+        workdir_mode: pick.workdir_mode,
+        workdir: pick.workdir,
+      },
+    });
+    replaceSession(data.session);
+    state.wanted = data.session.id;
+    location.hash = '#' + data.session.id;
+    attach(data.session);
+    if (state.chat) state.chat.focus();
   } catch (err) {
     toast(errorMessage(err), 'error');
   }
@@ -3588,6 +3735,7 @@ function wire() {
   // A prepared session has no pane; its prompt is the field there is.
   initKeyboard(dom.kbBtn, () => {
     if (state.term) return state.term.term.textarea;
+    if (chatShown()) return state.chat.field();
     return state.prestart ? state.prestart.field() : null;
   });
   dom.logout.addEventListener('click', async () => {
@@ -3626,6 +3774,8 @@ function wire() {
   const back = () => {
     if (document.visibilityState !== 'visible') return;
     badgeWrittenElsewhere();
+    // A chat that finished a turn while the page was away is read now.
+    if (chatShown()) markRead(state.chat.shownId());
   };
   document.addEventListener('visibilitychange', back);
   window.addEventListener('pageshow', back);
@@ -3692,10 +3842,11 @@ async function boot() {
     dom,
     notice,
     // A prepared session has nothing to summarize and no terminal to speak
-    // into; its prompt field carries a microphone of its own.
+    // into; its prompt field carries a microphone of its own. A chat is
+    // spoken into through its composer.
     current: () => (isPrepared(state.current) ? null : state.current),
-    live: () => state.live,
-    insert: (text) => insertIntoTerm(text),
+    live: () => (chatShown() ? state.chat.live() : state.live),
+    insert: (text) => (chatShown() ? state.chat.insert(text) : insertIntoTerm(text)),
   });
   // Copy, paste and upload, for whichever terminal is on screen.
   state.transfer = mountTransfer({
@@ -3749,6 +3900,15 @@ async function boot() {
     measure: () => measureForStart(),
     nameFromPrompt: (session, prompt) => retitleSession(session, { unnamed: true, prompt }),
   });
+  // The chat view, for every session that is a chat. What a chat was told
+  // while it was not on screen - or before a reload - is on its way from the
+  // first moment, whatever is on the stage.
+  state.chat = mountChat({
+    host: dom.chat,
+    status: () => updateStale(),
+    openAsk: (chatId, askId) => showChatQuestions(chatId, { askId, only: true }),
+  });
+  chatOutbox().pump();
   // Home, drawn from the sidebar's own state and tests.
   state.home = mountHome({
     host: dom.home,
