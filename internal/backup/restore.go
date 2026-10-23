@@ -51,7 +51,7 @@ type Progress struct {
 type RestoreOptions struct {
 	Config Config
 	// Snapshot is a snapshot id, or "latest" (or empty) for the newest of
-	// every machine.
+	// every machine that holds an installation.
 	Snapshot string
 	DataDir  string
 	// Progress, when set, is told after every file.
@@ -95,13 +95,27 @@ func Restore(ctx context.Context, opts RestoreOptions) (Summary, error) {
 	if err != nil {
 		return Summary{}, err
 	}
-	ref, err := resolve(refs, opts.Snapshot)
+	candidates, err := resolve(refs, opts.Snapshot)
 	if err != nil {
 		return Summary{}, err
 	}
-	m, err := r.getManifest(ctx, ref.ID)
-	if err != nil {
-		return Summary{}, err
+	var m *Manifest
+	for _, ref := range candidates {
+		if m, err = r.getManifest(ctx, ref.ID); err != nil {
+			return Summary{}, err
+		}
+		if installation(m.Entries) {
+			break
+		}
+		// A snapshot without the database would leave a machine with no
+		// password and nothing in it, as though nothing had been restored.
+		if len(candidates) == 1 {
+			return Summary{}, fmt.Errorf("snapshot %s holds no database: it is not an installation to restore", m.ID)
+		}
+		m = nil
+	}
+	if m == nil {
+		return Summary{}, fmt.Errorf("%w: no snapshot in it holds a database", ErrNoBackup)
 	}
 	if err := m.validate(); err != nil {
 		return Summary{}, err

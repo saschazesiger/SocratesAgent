@@ -44,7 +44,7 @@ func TestBackupCardAndRestoreFromTheSetupPage(t *testing.T) {
 	fake := s3fake.Start(s3fake.Options{})
 	t.Cleanup(fake.Close)
 
-	a := newEnv(t)
+	a := newEnvWith(t, true)
 	withBackup(t, a)
 	signIn(t, a)
 	if err := os.MkdirAll(filepath.Join(a.srv.dataDir, "chats/c1"), 0o700); err != nil {

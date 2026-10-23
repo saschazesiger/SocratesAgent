@@ -90,9 +90,28 @@ func (b *bucket) keys(prefix string) []string {
 	return b.fake.Keys("backups", "socrates/backup/v1/"+prefix)
 }
 
-// engine is an Engine on dataDir backing up into b.
+// install makes dataDir an installation, as a server that has been set up
+// leaves it: a database with a password. A backup leaves a data directory
+// without one alone.
+func install(t *testing.T, dataDir string) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(dataDir, paths.DB)); err == nil {
+		return
+	}
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	db := openDB(t, filepath.Join(dataDir, paths.DB), false)
+	if _, err := db.Exec(`CREATE TABLE kv(key TEXT PRIMARY KEY, value TEXT); CREATE TABLE sessions(id TEXT);
+		INSERT INTO kv VALUES ('password_hash', 'pbkdf2-sha256$1$a$b')`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// engine is an Engine on dataDir, an installation, backing up into b.
 func engine(t *testing.T, dataDir string, b *bucket, clk *clock, host string) *Engine {
 	t.Helper()
+	install(t, dataDir)
 	if err := SaveConfig(dataDir, b.config(host)); err != nil {
 		t.Fatal(err)
 	}
@@ -269,9 +288,15 @@ func tree(t *testing.T, root string, skip func(rel string) bool) map[string]node
 	return out
 }
 
+// copiedDB is a database the backup copies rather than reads, and which
+// therefore does not come back byte for byte; it is checked by its rows.
+func copiedDB(rel string) bool {
+	return strings.HasPrefix(rel, "agents/opencode/opencode.db") || strings.HasPrefix(rel, paths.DB)
+}
+
 func notRestored(rel string) bool {
 	return paths.Excluded(rel) || rel == "hook.sock" || rel == "workspaces" || strings.HasPrefix(rel, "workspaces/") ||
-		strings.HasPrefix(rel, "agents/opencode/opencode.db")
+		copiedDB(rel)
 }
 
 // The first snapshot holds everything that is not left out, and a restore of
@@ -332,7 +357,7 @@ func TestFirstSnapshotRestoresByteIdentical(t *testing.T) {
 func sameTree(t *testing.T, src, dest string) {
 	t.Helper()
 	want := tree(t, src, notRestored)
-	got := tree(t, dest, func(rel string) bool { return strings.HasPrefix(rel, "agents/opencode/opencode.db") })
+	got := tree(t, dest, copiedDB)
 	if len(want) < 15 {
 		t.Fatalf("only %d paths to compare: %v", len(want), want)
 	}
@@ -376,6 +401,121 @@ func TestASymlinkedDataDirectoryIsBackedUpWhole(t *testing.T) {
 		t.Fatalf("the snapshot of a linked data directory holds %d files: %+v", info.Files, info)
 	}
 	sameTree(t, real, restoreInto(t, b, "latest"))
+}
+
+// A machine that holds no installation yet - new, with the old machine's
+// backup.json copied over to restore from, or with a restore waiting to be
+// moved into place - writes nothing into the bucket, fails no run, and takes
+// a host id of its own; once it is set up it backs up under that id.
+func TestNothingIsBackedUpBeforeTheMachineIsSetUp(t *testing.T) {
+	clk := newClock()
+	b := newBucket(t, clk)
+	fresh := t.TempDir()
+	if err := SaveConfig(fresh, b.config("old-machine")); err != nil {
+		t.Fatal(err)
+	}
+	e, err := New(Options{DataDir: fresh, Now: clk.Now, Iterations: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := e.Config().HostID
+	if host == "old-machine" || host == "" {
+		t.Fatalf("a machine with nothing installed kept the host id %q", host)
+	}
+	if saved, _ := LoadConfig(fresh); saved == nil || saved.HostID != host {
+		t.Fatalf("the new host id was not saved: %+v", saved)
+	}
+	if _, err := e.Run(context.Background()); !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("a run on a machine with nothing installed: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := e.Close(ctx); !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("the last run at a stop: %v", err)
+	}
+	if n := b.puts.Load(); n != 0 {
+		t.Fatalf("%d objects were written for a machine with nothing installed", n)
+	}
+	if st := e.Status(); st.LastError != "" || st.LastAttempt != 0 || st.LastSuccess != nil {
+		t.Fatalf("a run that waits for an installation is recorded: %+v", st)
+	}
+
+	install(t, fresh)
+	write(t, paths.New(fresh).Path(paths.RestorePending), []byte(`{"staging":".restore-x"}`), 0o600)
+	if _, err := e.Run(context.Background()); !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("a run while a restore waits to be moved into place: %v", err)
+	}
+	if err := os.Remove(paths.New(fresh).Path(paths.RestorePending)); err != nil {
+		t.Fatal(err)
+	}
+	info, err := e.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(info.ID, host+"/") {
+		t.Fatalf("the set up machine's snapshot is %s, not under %s", info.ID, host)
+	}
+	if again, err := New(Options{DataDir: fresh, Now: clk.Now, Iterations: 1000}); err != nil || again.Config().HostID != host {
+		t.Fatalf("an installed machine's host id changed: %v %v", again.Config(), err)
+	}
+}
+
+// A snapshot without the database is no installation: a run that would
+// write one fails instead, and a restore of "latest" passes over one an
+// earlier build wrote for the newest real snapshot; asked for by name, it is
+// refused.
+func TestASnapshotWithoutTheDatabaseIsNeitherWrittenNorRestored(t *testing.T) {
+	clk := newClock()
+	b := newBucket(t, clk)
+	src := t.TempDir()
+	write(t, filepath.Join(src, "chats/c1/events.jsonl"), []byte("real\n"), 0o600)
+	e := engine(t, src, b, clk, "host-a")
+	real, err := e.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clk.Add(10 * time.Minute)
+	write(t, filepath.Join(src, "chats/c1/events.jsonl"), []byte("real, and more\n"), 0o600)
+	e.opts.Exclude = func() []string { return []string{filepath.Join(src, paths.DB)} }
+	if _, err := e.Run(context.Background()); !errors.Is(err, ErrNoDatabase) {
+		t.Fatalf("a run that did not take the database: %v", err)
+	}
+	if got := b.keys(snapshotDir); len(got) != 1 {
+		t.Fatalf("snapshots after a run without the database: %v", got)
+	}
+	if st := e.Status(); !strings.Contains(st.LastError, "database") {
+		t.Fatalf("the failed run says %q", st.LastError)
+	}
+
+	r, err := openRepo(context.Background(), b.config(""), false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty := &Manifest{Format: manifestFormat, ID: snapshotID("host-new", clk.Now().Add(time.Hour)), Host: "host-new",
+		CreatedAt: clk.Now().Add(time.Hour).UnixMilli(), Entries: []Entry{}}
+	if err := r.putManifest(context.Background(), empty); err != nil {
+		t.Fatal(err)
+	}
+	list, err := List(context.Background(), b.config(""), t.TempDir())
+	if err != nil || len(list) != 2 || list[0].ID != empty.ID || !list[0].Empty || list[1].Empty {
+		t.Fatalf("the list: %+v %v", list, err)
+	}
+	dest := restoreInto(t, b, "latest")
+	if raw, err := os.ReadFile(filepath.Join(dest, "chats/c1/events.jsonl")); err != nil || string(raw) != "real\n" {
+		t.Fatalf("latest restored %q %v, not the snapshot %s", raw, err, real.ID)
+	}
+	if _, err := os.Stat(filepath.Join(dest, paths.DB)); err != nil {
+		t.Fatalf("latest restored no database: %v", err)
+	}
+	other := t.TempDir()
+	if _, err := Restore(context.Background(), RestoreOptions{Config: b.config(""), Snapshot: empty.ID, DataDir: other}); err == nil ||
+		!strings.Contains(err.Error(), "holds no database") {
+		t.Fatalf("a restore of the empty snapshot by name: %v", err)
+	}
+	if RestorePending(other) {
+		t.Fatal("the refused restore left a marker")
+	}
 }
 
 // A second run over an unchanged directory writes nothing; one after a file
@@ -530,6 +670,7 @@ func TestAWrongPassphraseIsRefused(t *testing.T) {
 
 	before := b.puts.Load()
 	other := t.TempDir()
+	install(t, other)
 	if err := SaveConfig(other, wrong); err != nil {
 		t.Fatal(err)
 	}
@@ -775,6 +916,74 @@ func TestRestoreIsRefusedIntoAStore(t *testing.T) {
 	}
 	if raw, err := os.ReadFile(filepath.Join(fresh, "chats/c1/events.jsonl")); err != nil || string(raw) != "x" {
 		t.Fatalf("restored: %q %v", raw, err)
+	}
+}
+
+// A start that died while it moved a staged restore into place finishes the
+// move the next time: what had been moved stays, the rest follows, the new
+// server's own files (its socket, run/, backup.json) are left alone, and a
+// third start has nothing left to do.
+func TestApplyPendingFinishesAMoveCutShort(t *testing.T) {
+	clk := newClock()
+	b := newBucket(t, clk)
+	src := t.TempDir()
+	write(t, filepath.Join(src, "chats/c1/events.jsonl"), []byte("one"), 0o600)
+	write(t, filepath.Join(src, "chats/c2/events.jsonl"), []byte("two"), 0o600)
+	write(t, filepath.Join(src, "agents/claude/projects/p.jsonl"), []byte("claude"), 0o600)
+	write(t, filepath.Join(src, "agents/codex/history.jsonl"), []byte("codex"), 0o600)
+	e := engine(t, src, b, clk, "host-a")
+	if _, err := e.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	dest := t.TempDir()
+	write(t, filepath.Join(dest, paths.TmuxSocket), []byte("socket"), 0o600)
+	write(t, filepath.Join(dest, "run/socrates.lock"), []byte("1"), 0o600)
+	if err := SaveConfig(dest, b.config("")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Restore(context.Background(), RestoreOptions{Config: b.config(""), DataDir: dest}); err != nil {
+		t.Fatal(err)
+	}
+	stages, _ := filepath.Glob(filepath.Join(dest, paths.RestoreStagingPrefix+"*"))
+	if len(stages) != 1 {
+		t.Fatalf("staging directories: %v", stages)
+	}
+	// The first start moved chats/ whole and agents/claude into a fresh
+	// agents/, and died.
+	if err := os.Rename(filepath.Join(stages[0], "chats"), filepath.Join(dest, "chats")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dest, "agents"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(stages[0], "agents/claude"), filepath.Join(dest, "agents/claude")); err != nil {
+		t.Fatal(err)
+	}
+
+	id, err := ApplyPending(dest)
+	if err != nil || id == "" {
+		t.Fatalf("the second start: %q %v", id, err)
+	}
+	for rel, want := range map[string]string{
+		"chats/c1/events.jsonl": "one", "chats/c2/events.jsonl": "two", "agents/claude/projects/p.jsonl": "claude",
+		"agents/codex/history.jsonl": "codex", paths.TmuxSocket: "socket", "run/socrates.lock": "1",
+	} {
+		if raw, err := os.ReadFile(filepath.Join(dest, rel)); err != nil || string(raw) != want {
+			t.Errorf("%s: %q %v, want %q", rel, raw, err, want)
+		}
+	}
+	if cfg, err := LoadConfig(dest); err != nil || cfg == nil || cfg.Bucket != "backups" {
+		t.Errorf("backup.json after the move: %+v %v", cfg, err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, paths.DB)); err != nil {
+		t.Errorf("the database was not moved: %v", err)
+	}
+	if left, _ := filepath.Glob(filepath.Join(dest, paths.RestoreStagingPrefix+"*")); len(left) != 0 || RestorePending(dest) {
+		t.Fatalf("left behind: %v, marker %v", left, RestorePending(dest))
+	}
+	if id, err := ApplyPending(dest); err != nil || id != "" {
+		t.Fatalf("a third start: %q %v", id, err)
 	}
 }
 

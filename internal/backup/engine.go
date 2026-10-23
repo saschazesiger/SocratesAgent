@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -29,6 +30,16 @@ var (
 	ErrBusy = errors.New("a backup is already running")
 	// ErrNotConfigured is a run asked for with no backup configured.
 	ErrNotConfigured = errors.New("no backup is configured")
+	// ErrNotInstalled is a run asked for on a data directory that holds no
+	// installation yet: a new machine neither set up nor restored, or one
+	// whose restore waits to be moved into place. Its snapshot would be an
+	// empty one, newer than every real snapshot in the bucket and so the
+	// one "latest" restores; a run waits until there is something to back
+	// up, and is not a failure.
+	ErrNotInstalled = errors.New("this data directory holds no installation yet, so there is nothing to back up")
+	// ErrNoDatabase is a walk that did not take the database. A snapshot
+	// without it restores no installation, and is not written.
+	ErrNoDatabase = errors.New("the snapshot would not hold the database, so it was not written")
 )
 
 // Options configure an Engine.
@@ -121,6 +132,16 @@ func New(opts Options) (*Engine, error) {
 		e.st.LastError, e.st.LastErrorAt = err.Error(), opts.Now().UnixMilli()
 		return e, nil
 	}
+	// A backup.json on a data directory that holds no installation was
+	// brought from another machine, to restore from: its host id is that
+	// machine's. Whatever this one becomes - restored, or set up afresh - it
+	// backs up as a machine of its own, and never into the other's
+	// snapshots and their retention.
+	if cfg != nil && cfg.HostID != "" {
+		if ok, err := installed(opts.DataDir); err == nil && !ok {
+			cfg.HostID = ""
+		}
+	}
 	if cfg != nil && cfg.HostID == "" {
 		cfg.HostID = NewHostID()
 		if err := SaveConfig(opts.DataDir, *cfg); err != nil {
@@ -166,7 +187,7 @@ func (e *Engine) Start(ctx context.Context) {
 			if e.Config() == nil {
 				continue
 			}
-			if _, err := e.Run(ctx); err != nil && !errors.Is(err, ErrBusy) && ctx.Err() == nil {
+			if _, err := e.Run(ctx); err != nil && !errors.Is(err, ErrBusy) && !errors.Is(err, ErrNotInstalled) && ctx.Err() == nil {
 				log.Printf("backup: %v", err)
 			}
 		}
@@ -262,22 +283,30 @@ func (e *Engine) begin() *progress {
 	return prog
 }
 
-// runLocked is a run, with the run lock held.
+// runLocked is a run, with the run lock held. A data directory without an
+// installation is ErrNotInstalled, and leaves the state as it was.
 func (e *Engine) runLocked(ctx context.Context, cfg Config, prog *progress) (*RunInfo, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	e.mu.Lock()
-	e.cancel = cancel
-	e.st.LastAttempt = e.now().UnixMilli()
-	e.mu.Unlock()
 	defer func() {
 		e.mu.Lock()
 		e.running, e.cancel = nil, nil
 		e.mu.Unlock()
 		e.poke()
 	}()
+	ok, err := installed(e.opts.DataDir)
+	if err == nil && !ok {
+		return nil, ErrNotInstalled
+	}
+	e.mu.Lock()
+	e.cancel = cancel
+	e.st.LastAttempt = e.now().UnixMilli()
+	e.mu.Unlock()
 
-	info, err := e.backup(ctx, cfg, prog)
+	var info *RunInfo
+	if err == nil {
+		info, err = e.backup(ctx, cfg, prog)
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if err != nil {
@@ -375,6 +404,13 @@ func (e *Engine) backup(ctx context.Context, cfg Config, prog *progress) (*RunIn
 		return nil, walkErr
 	}
 	idx.Files = snap.files
+	if !installation(snap.entries) {
+		_ = idx.save(e.opts.DataDir)
+		if slices.Contains(snap.skipped, paths.DB) {
+			return nil, fmt.Errorf("%w: %s could not be copied", ErrNoDatabase, paths.DB)
+		}
+		return nil, ErrNoDatabase
+	}
 
 	hostname, _ := os.Hostname()
 	e.mu.Lock()
@@ -430,6 +466,17 @@ func (e *Engine) backup(ctx context.Context, cfg Config, prog *progress) (*RunIn
 		log.Printf("backup: could not list the snapshots: %v", err)
 	}
 	return info, nil
+}
+
+// installed reports whether a data directory holds an installation to back
+// up: one that is set up or restored (HoldsStore), and not about to be
+// replaced by a restore that is staged.
+func installed(dataDir string) (bool, error) {
+	if RestorePending(dataDir) {
+		return false, nil
+	}
+	holds, _, err := HoldsStore(dataDir)
+	return holds, err
 }
 
 // excludedRels is each of dirs that lies inside the data directory, relative
@@ -758,7 +805,8 @@ func Explain(err error) string {
 	case err == nil:
 		return ""
 	case errors.Is(err, ErrWrongPassphrase), errors.Is(err, ErrMetaMissing), errors.Is(err, ErrNoBackup),
-		errors.Is(err, ErrNotEmpty), errors.Is(err, ErrBusy), errors.Is(err, ErrNotConfigured):
+		errors.Is(err, ErrNotEmpty), errors.Is(err, ErrBusy), errors.Is(err, ErrNotConfigured),
+		errors.Is(err, ErrNotInstalled), errors.Is(err, ErrNoDatabase):
 		return err.Error()
 	case errors.Is(err, s3.ErrAccessDenied):
 		return "the bucket refused these credentials: " + err.Error()

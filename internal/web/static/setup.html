@@ -425,10 +425,14 @@ function bytes(n) {
   return (i ? n.toFixed(n < 10 ? 1 : 0) : n) + ' ' + units[i];
 }
 
-function snapshotRow(s, i) {
+// snapshotRow is one snapshot to choose. One without the database - an
+// earlier build could write it for a machine that was never set up - would
+// restore nothing, so it is listed but cannot be chosen.
+function snapshotRow(s, chosen) {
   const host = s.hostname || s.host;
-  const facts = s.files ? host + ' · ' + bytes(s.size) + ' · ' + s.files + (s.files === 1 ? ' file' : ' files') : host;
-  return html`<label class="ds-radio" data-ds-key="${s.id}"><input type="radio" name="snapshot" value="${s.id}"${raw(i === 0 ? ' checked' : '')}>
+  const facts = s.empty ? host + ' · holds no installation'
+    : s.files ? host + ' · ' + bytes(s.size) + ' · ' + s.files + (s.files === 1 ? ' file' : ' files') : host;
+  return html`<label class="ds-radio" data-ds-key="${s.id}"><input type="radio" name="snapshot" value="${s.id}"${raw(s.id === chosen ? ' checked' : '')}${raw(s.empty ? ' disabled' : '')}>
     <span><strong>${when(s.at)}</strong><small>${facts}</small></span></label>`;
 }
 
@@ -448,11 +452,13 @@ $('restoreForm').addEventListener('submit', async (event) => {
     return;
   }
   snapshots = r.data.snapshots || [];
-  if (!snapshots.length) {
-    notice($('restoreNotice'), 'The bucket holds this backup, but no snapshot of it yet.', 'info');
+  const first = snapshots.find((s) => !s.empty);
+  if (!first) {
+    notice($('restoreNotice'), snapshots.length ? 'The bucket holds this backup, but none of its snapshots holds an installation.'
+      : 'The bucket holds this backup, but no snapshot of it yet.', 'info');
     return;
   }
-  morph($('snapshotList'), html`${snapshots.map(snapshotRow)}`);
+  morph($('snapshotList'), html`${snapshots.map((s) => snapshotRow(s, first.id))}`);
   $('snapshotBox').hidden = false;
   $('findBtn').classList.remove('ds-btn--primary');
   $('restoreBtn').focus();
