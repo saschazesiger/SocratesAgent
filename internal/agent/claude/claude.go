@@ -144,12 +144,9 @@ func (a *Adapter) Start(ctx context.Context, spec agent.StartSpec, out agent.Emi
 	} else {
 		args = append(args, "--session-id", uuid.NewString())
 	}
-	bin := a.opts.Binary
-	if bin == "" {
-		var err error
-		if bin, err = lookPath("claude", env); err != nil {
-			return err
-		}
+	bin, err := a.binary(spec, env)
+	if err != nil {
+		return err
 	}
 	cmd := exec.Command(bin, args...)
 	cmd.Dir, cmd.Env = spec.Workdir, env
@@ -327,6 +324,26 @@ func configDirOf(env []string) string {
 		home, _ = os.UserHomeDir()
 	}
 	return filepath.Join(home, ".claude")
+}
+
+// binary is the program to run: the adapter's own option (tests), the
+// dashboard's binary setting, or claude on the PATH of the CLI's
+// environment. A setting without a slash is a name looked up on that PATH.
+func (a *Adapter) binary(spec agent.StartSpec, env []string) (string, error) {
+	name := strings.TrimSpace(a.opts.Binary)
+	if name == "" {
+		name = strings.TrimSpace(spec.Binary)
+	}
+	if name == "" {
+		name = "claude"
+	}
+	if strings.ContainsRune(name, '/') {
+		if _, err := os.Stat(name); err != nil {
+			return "", fmt.Errorf("the configured Claude Code binary: %w", err)
+		}
+		return name, nil
+	}
+	return lookPath(name, env)
 }
 
 // lookPath finds name on the PATH of env.

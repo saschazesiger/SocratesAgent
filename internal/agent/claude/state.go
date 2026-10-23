@@ -214,7 +214,7 @@ func (s *state) lifecycle(f *frame) {
 			delete(s.pending, f.CommandUUID)
 			s.emit(agent.Event{Type: agent.TypeMessageState, MessageID: msgID, State: agent.MessageCancelled},
 				agent.Event{Type: agent.TypeError, Code: "message_dropped", MessageID: msgID,
-				Text: "Claude Code dropped this message before taking it up."})
+					Text: "Claude Code dropped this message before taking it up."})
 		}
 	}
 }

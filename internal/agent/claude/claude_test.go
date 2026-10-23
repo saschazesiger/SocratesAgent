@@ -996,3 +996,23 @@ func TestAFailedSubagentStaysFailed(t *testing.T) {
 		}
 	})
 }
+
+// The dashboard's binary setting reaches the adapter through the spec.
+func TestTheConfiguredBinaryIsRun(t *testing.T) {
+	e := newEnv(t)
+	e.vars = []string{"PATH=/nonexistent", "HOME=" + filepath.Dir(e.conf), "CLAUDE_CONFIG_DIR=" + e.conf}
+	spec := e.spec("")
+	spec.Binary = fakeBin
+	a := New(Options{})
+	r := newRec()
+	if err := a.Start(context.Background(), spec, r); err != nil {
+		t.Fatalf("start with the configured binary: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Stop() })
+	send(t, a, "m1", "hello")
+	r.turnsEnded(t, 1)
+	spec.Binary = filepath.Join(t.TempDir(), "missing")
+	if err := New(Options{}).Start(context.Background(), spec, newRec()); err == nil {
+		t.Fatal("a missing configured binary started")
+	}
+}
