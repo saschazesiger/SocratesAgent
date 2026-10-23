@@ -2304,7 +2304,8 @@ credentials should still live in the account folders or the store, not only in t
 **WP1 / REBUILD.md §6.2 — "point to folder" is on the session's menu, not on the restore page.**
 §6.2 lists the missing working directories per chat after a restore. The restore page ends in a
 restart and the sign-in, so the list is where the sessions are: `GET /api/sessions` marks a row
-whose folder is not on the machine (`workdir_missing`), its ⋮ menu offers **Point to folder**, and
+whose folder is not on the machine (`workdir_missing`; not a prepared session's typed-in folder,
+which is made when it starts), its ⋮ menu offers **Point to folder**, and
 `PUT /api/sessions/{id}/workdir` takes a folder that exists (a preset, or a typed-in one under the
 new-session rules) and stops a chat's host so its next message starts there. The chat view's
 dock says the same with the same action; it shows once WP8 mounts the view.

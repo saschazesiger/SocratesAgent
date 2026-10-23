@@ -295,6 +295,32 @@ func TestStartRunsThePreparedSessionWithItsPrompt(t *testing.T) {
 	}
 }
 
+// A prepared session's typed-in folder is made when it starts, so one that is
+// not there yet is not a folder the session is missing; a preset is never
+// made, so a prepared session whose preset is gone is.
+func TestAPreparedSessionMissesOnlyAFolderNothingWillMake(t *testing.T) {
+	e := preparedEnv(t)
+	later := filepath.Join(e.home, "new-project")
+	typed := sessionID(t, e.prepare(fmt.Sprintf(`{"prestart":true,"harness":"claude","workdir_mode":"custom","workdir":%q}`, later)))
+	preset := filepath.Join(e.home, "preset")
+	gone := sessionID(t, e.prepare(fmt.Sprintf(`{"prestart":true,"harness":"codex","workdir_mode":"preset","workdir":%q}`, preset)))
+	if err := os.RemoveAll(preset); err != nil {
+		t.Fatal(err)
+	}
+	_, payload := e.do(t, e.client, "GET", "/api/sessions", "")
+	missing := map[string]any{}
+	for _, one := range payload["sessions"].([]any) {
+		session := one.(map[string]any)
+		missing[session["id"].(string)] = session["workdir_missing"]
+	}
+	if missing[typed] != nil || missing[gone] != true {
+		t.Fatalf("workdir_missing of the typed-in folder %v, of the gone preset %v", missing[typed], missing[gone])
+	}
+	if _, err := os.Stat(later); !os.IsNotExist(err) {
+		t.Fatalf("listing the sessions made the typed-in folder: %v", err)
+	}
+}
+
 // A start whose settings no longer work leaves the session prepared, with the
 // reason and the draft, and creates nothing.
 func TestAFailedStartKeepsTheSessionPrepared(t *testing.T) {

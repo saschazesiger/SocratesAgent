@@ -131,11 +131,7 @@ func (s *Server) viewWith(row *store.Session, drafts map[string]store.DraftMeta)
 		v.DraftRev, v.DraftPreview = meta.Rev, meta.Preview
 	}
 	v.Activity = s.manager.ActivityOf(row.ID)
-	if row.Workdir != "" {
-		if info, err := os.Stat(row.Workdir); err != nil || !info.IsDir() {
-			v.WorkdirMissing = true
-		}
-	}
+	v.WorkdirMissing = workdirMissing(row)
 	if row.Status == store.StatusDone {
 		v.DeleteAt = row.StatusAt + DoneRetention.Milliseconds()
 	}
@@ -145,6 +141,18 @@ func (s *Server) viewWith(row *store.Session, drafts map[string]store.DraftMeta)
 		}
 	}
 	return v
+}
+
+// workdirMissing is whether a session's folder is not on this machine. A
+// prepared session's typed-in folder is only made when it starts, so it is not
+// missing before then; a preset one is never made, and a prepared session
+// whose preset is gone would fail to start.
+func workdirMissing(row *store.Session) bool {
+	if row.Workdir == "" || (row.State == store.StatePrestart && row.WorkdirMode != harnesses.WorkdirPreset) {
+		return false
+	}
+	info, err := os.Stat(row.Workdir)
+	return err != nil || !info.IsDir()
 }
 
 func (s *Server) views(rows []store.Session) []sessionView {
