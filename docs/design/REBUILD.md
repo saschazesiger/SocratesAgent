@@ -173,15 +173,35 @@ fixed (HARNESS-POLICY.md, minus everything TUI-related).
 
 ### 3.3 OpenCode
 
-- One `opencode serve --hostname 127.0.0.1 --port <p>` per active chat, child of the host,
+- One `opencode serve` per active chat, child of the host,
   `OPENCODE_SERVER_PASSWORD`, `OPENCODE_CONFIG_CONTENT` (share disabled, autoupdate off,
   `permission: allow` incl. `external_directory`/`doom_loop`/`.env` reads, `question: deny`, MCP
   `socrates` = local command `socrates mcp-ask --socket <host sock>` with a 24 h timeout and
   progress notifications), skills import off.
-- Shared data dir `<data>/agents/opencode` (sessions in `opencode.db`), account credentials passed
-  per process (`OPENCODE_AUTH_CONTENT`). **Spike S3** must confirm that several serve processes on
-  one data dir are safe and that OAuth refreshes do not leak between accounts; fallback: one serve
-  per account with `PUT /auth` + `instance/dispose` only while the chat is idle.
+- Spike S3 (research/06) settled the layout:
+  - **One `opencode serve` per active chat, child of the agent host**, started with `--hostname 127.0.0.1 --port 0` (replaces the fixed-port argv above). The adapter reads the port from the `listening on` stdout line. Env: `OPENCODE_SERVER_PASSWORD`, `OPENCODE_CONFIG_CONTENT` as planned, `OPENCODE_DISABLE_AUTOUPDATE=1`, `OPENCODE_DISABLE_MODELS_FETCH=1`.
+  - **Store layout:**
+    - One shared DB, `OPENCODE_DB=<data>/agents/opencode/opencode.db` (an absolute path), for every process.
+    - **Per account,** `XDG_DATA_HOME=<data>/agents/opencode/accounts/<acct>`, holding that account's own `opencode/auth.json` (0600).
+    - `snapshot`, `storage`, `tool-output`, `plans`, `worktree` and `repos` inside it are relative symlinks to `<data>/agents/opencode/…`.
+    - One shared `XDG_CONFIG_HOME`/`XDG_CACHE_HOME` for OpenCode, with `node_modules/@opencode-ai/plugin` pre-installed.
+    - Verified: there were no lock errors under 4 × concurrent writers, credentials stayed isolated, writes stayed in the account's own file, and handover kept history, context, events and revert.
+  - **Credentials:**
+    - OAuth accounts **must** live in the account's `auth.json`. **Never** put them in `OPENCODE_AUTH_CONTENT`: it is read-only, so refreshed tokens would be lost and leak into the data root.
+    - API-key accounts may use `OPENCODE_AUTH_CONTENT` to keep the key off disk (verified isolated). Socrates must then never call `PUT /auth` on that process.
+    - Sign-in through `/provider/{id}/oauth/*` runs on a process of the target account, so the result is written to its file.
+  - **Account switch** = park and resume on the same session ID:
+    1. If the chat is busy: interrupt or wait for the turn (`abort` → `session.idle`).
+    2. Stop the process: SIGTERM, then SIGKILL after 5 s.
+    3. Start the new account's process and continue the session there.
+    - Never run two processes on one session. A live loop in the old process picks up messages written through the new one (verified).
+    - No `PUT /auth` or dispose dance, and no export/import.
+  - **Install/update step:** run `opencode db "select 1"` once with the shared `OPENCODE_DB` before any serve starts (concurrent first starts race on migrations, verified).
+  - **Sizing:** ~2 s per start, ~0.4 GB PSS per active chat. Parking stays mandatory.
+  - **Adapter details:**
+    - Render a dangling `running` tool part on an incomplete assistant message as interrupted.
+    - Map `session.status retry` with a limit `action.reason` to the limit-reached flow (§4.3).
+    - Tell the person when a second chat on the same OAuth account hits a refresh conflict ("sign in again").
 - Events from `/event`; recovery after reconnect via `GET …/message`, `/session/status`.
 - Commands: `prompt_async` (queues while busy), `abort`, `command`, `summarize`, `revert`, `fork`,
   model + variant + agent per prompt.
@@ -195,7 +215,7 @@ An **account** belongs to one agent and is one of:
 | Kind | Claude Code | Codex | OpenCode |
 |---|---|---|---|
 | Subscription login | own `CLAUDE_CONFIG_DIR`, signed in through Claude's own flow | own `CODEX_HOME`, ChatGPT device-code login | provider OAuth (e.g. ChatGPT, Anthropic) via `/provider/{id}/oauth/*` |
-| API key | key stored encrypted in the store, passed as `ANTHROPIC_API_KEY` | `account/login/start {type: apiKey}` into its `CODEX_HOME` | `PUT /auth/{provider}` content per process |
+| API key | key stored encrypted in the store, passed as `ANTHROPIC_API_KEY` | `account/login/start {type: apiKey}` into its `CODEX_HOME` | `OPENCODE_AUTH_CONTENT` per process (never `PUT /auth`) |
 
 Accounts replace today's profiles (a profile was one directory per agent; an account is one agent
 each, which is what switching needs). Fields: id, agent, label, kind, created, order, last known
@@ -223,9 +243,10 @@ plan/email (read from the agent, shown behind the info tip), limits snapshot.
   conversation (`--resume` / `thread/resume` / same OpenCode session). The journal gets an
   `account.switched` divider in the chat.
 - **Codex caveat:** encrypted reasoning items may be rejected under another ChatGPT account
-  (openai/codex #25290, #36704). Spike S2 decides between (a) stripping reasoning/compaction items
-  from the resumed rollout and (b) a fresh thread seeded with a handoff summary. The UI tells the
-  person when (b) happens.
+  (openai/codex #25290, #36704). Spike S2 was waived by the product owner ("nice if it works, fine
+  if not"): WP4 tries the switch with a real resume first; on `invalid_encrypted_content` it
+  retries once with reasoning/compaction items stripped from the rollout, and only if that fails
+  starts a fresh thread seeded with a handoff summary, telling the person.
 - When an account hits its limit mid-turn (`rate_limit` event / error):
   - **Auto-switch on** (per-chat option in the chat's ⋮ and in the new-session sheet, default
     off): the host switches to the recommended account of the same agent that still has headroom
@@ -466,7 +487,6 @@ WP1 and WP2 run in parallel; WP3–5 run in parallel.
 
 ## 12. Open questions
 
-All questions of 2026-10-23 are answered and recorded in §1. Still open, to be settled by WP0:
-the Codex cross-account mechanism (S2) and the OpenCode multi-process layout (S3). S2 needs two
-working ChatGPT logins on this host (both existing ones are expired) — the product owner signs in
-when WP0 starts.
+All questions of 2026-10-23 are answered and recorded in §1. WP0 is done: S1 (research/08),
+S3 (research/06) and S4 (research/07) passed and are folded into §2.1, §3.1 and §3.3; S2 (Codex
+across accounts) was waived, see §4.3.
