@@ -228,6 +228,18 @@ func TestSteeringQueueingAndShellLines(t *testing.T) {
 		t.Fatalf("%d turns for a steered message", starts)
 	}
 
+	// A steered message the turn ended without taking up gets a turn of its
+	// own instead of staying queued.
+	_, n = send(t, a, r, "/deaf 0.2")
+	missed, _ := send(t, a, r, "missed")
+	r.waitFor(t, n, "the missed message's turn", func(ev agent.Event) bool {
+		return ev.Type == agent.TypeTurnStarted && ev.MessageID == missed.MessageID
+	}, wait)
+	r.turnEnd(t, len(r.all())-1, wait)
+	if p := r.projection(); messageState(p, missed.MessageID) != agent.MessageDelivered || lastTurnText(p) != "you said: missed" {
+		t.Fatalf("missed steer\n%s", dump(r.since(n)))
+	}
+
 	// Behind a compaction, which cannot be steered: held, then a turn of
 	// its own.
 	n = len(r.all())

@@ -206,6 +206,16 @@ func (a *adapter) closeTurnLocked(t *turn, outcome, why string) {
 		agent.Event{Type: agent.TypeMessageState, MessageID: t.msgID, State: msgState},
 		agent.Event{Type: agent.TypeTurnEnded, TurnID: t.id, Outcome: outcome, Usage: &usage, Text: why})
 	a.out.Emit(events...)
+	// A message steered into the turn that codex never took up (the turn
+	// ended first) gets a turn of its own rather than staying queued.
+	var untaken []agent.Outgoing
+	for _, msg := range t.input {
+		if _, ok := a.steered[msg.MessageID]; ok {
+			delete(a.steered, msg.MessageID)
+			untaken = append(untaken, msg)
+		}
+	}
+	a.queue = append(untaken, a.queue...)
 	if len(a.queue) > 0 {
 		go a.flush()
 	}

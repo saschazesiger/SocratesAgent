@@ -14,6 +14,7 @@
 //
 //	/stream N [ms]   N agent message deltas "wI ", ms apart (default 20 × 10 ms)
 //	/sleep S         a turn that works for S seconds, then says "slept"
+//	/deaf S          the same, but ends without taking up steered messages
 //	/run CMD         a commandExecution of CMD: three output lines, exit 0 (exit 1 for "fail")
 //	/patch FILE      a fileChange adding FILE, with its diff and the turn diff
 //	/subagent        a subagent thread that answers "sub done", nested in the turn
@@ -511,6 +512,8 @@ type tcx struct {
 	t   *fturn
 	ctx context.Context
 	n   int
+	// deaf turns leave steered input where it is.
+	deaf bool
 }
 
 func (c *tcx) base() map[string]any {
@@ -556,7 +559,7 @@ func (c *tcx) wait(d time.Duration, answer *strings.Builder) bool {
 }
 
 func (c *tcx) takeSteered(answer *strings.Builder) {
-	for {
+	for !c.deaf {
 		select {
 		case in := <-c.t.steer:
 			c.user(in)
@@ -727,6 +730,12 @@ func (c *tcx) script(text string) (string, map[string]any) {
 			return "interrupted", nil
 		}
 		ok = c.say([]string{"slept"}, 0)
+	case "/deaf":
+		c.deaf = true
+		if !c.wait(time.Duration(atof(fields, 0, 1)*float64(time.Second)), nil) {
+			return "interrupted", nil
+		}
+		ok = c.say([]string{"did not listen"}, 0)
 	case "/run":
 		ok = c.command(rest) && c.say([]string{"ran it"}, 0)
 	case "/patch":

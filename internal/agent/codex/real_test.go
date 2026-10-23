@@ -345,3 +345,19 @@ func TestRealSubagentsNest(t *testing.T) {
 		t.Fatalf("background %d", a.Background())
 	}
 }
+
+// A message steered while the final answer streams: codex cuts the answer
+// short and takes the message up in the same turn (0.164).
+func TestRealSteerDuringTheFinalAnswer(t *testing.T) {
+	lab := newRealLab(t)
+	r := newRecorder()
+	a := lab.start(lab.spec(lab.home("a", "", "gpt-5.5"), filepath.Join(lab.root, "state"), ""), r)
+	_, n := send(t, a, r, "SLOW 10 100")
+	r.waitFor(t, n, "streaming", isType(agent.TypePart), 10*time.Second)
+	steer, _ := send(t, a, r, "SAY late steer")
+	r.turnEnd(t, n, 30*time.Second)
+	p := r.projection()
+	if messageState(p, steer.MessageID) != agent.MessageDelivered || !strings.Contains(lastTurnText(p), "late steer") {
+		t.Fatalf("late steer: %s\n%s", messageState(p, steer.MessageID), dump(r.since(n)))
+	}
+}
