@@ -29,6 +29,8 @@ type Projection struct {
 	LastTurn *Turn `json:"last_turn,omitempty"`
 	// Tasks is how many background tasks the agent reported running.
 	Tasks int `json:"tasks,omitempty"`
+	// Agent is the content of the newest agent.info event.
+	Agent json.RawMessage `json:"agent,omitempty"`
 
 	Messages []*Message `json:"messages"`
 	Asks     []*Ask     `json:"asks,omitempty"`
@@ -211,6 +213,8 @@ func (p *Projection) Apply(ev Event) {
 		p.ConversationID = ev.ConversationID
 	case TypeTasks:
 		p.Tasks = ev.Count
+	case TypeAgentInfo:
+		p.Agent = ev.Content
 	}
 }
 

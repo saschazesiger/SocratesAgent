@@ -125,6 +125,14 @@ type Emitter interface {
 	Exited(err error)
 }
 
+// Rebuilder is an adapter that can read a chat's history back from its CLI's
+// own record of the conversation spec.ResumeID (REBUILD.md §2.2), for a
+// chat whose journal is gone. The events come without seq and time; the host
+// journals them before anything else.
+type Rebuilder interface {
+	Rebuild(spec StartSpec) ([]Event, error)
+}
+
 // ErrAskGone is Answer's "there is no call waiting for this any more".
 var ErrAskGone = errors.New("the question is no longer being waited on")
 

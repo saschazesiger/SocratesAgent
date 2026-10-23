@@ -415,7 +415,7 @@ func (p *chatPeer) launch(ctx context.Context) error {
 	defer cancel()
 	return p.hub.launcher.Launch(lctx, agenthost.Spec{
 		ChatID: p.id, Harness: row.Harness, Workdir: row.Workdir, Model: model, Effort: effort,
-		ParkAfterMS: p.hub.parkAfterFor().Milliseconds(),
+		Conversation: row.CLISessionID, ParkAfterMS: p.hub.parkAfterFor().Milliseconds(),
 	})
 }
 
