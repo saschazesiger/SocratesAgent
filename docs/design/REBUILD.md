@@ -140,6 +140,8 @@ fixed (HARNESS-POLICY.md, minus everything TUI-related).
   the adapter maps subagent and workflow progress to nested parts (one group per agent with its
   own tool rows and status), a background task that finishes may start a turn by itself, and the
   session option "Ultracode" stays. WP3 captures the exact event shapes of a real workflow run.
+  WP3 also proves a running workflow survives `systemctl restart socrates` (S4 proved it for a
+  plain streamed turn only) and records what a machine reboot does to one in flight.
 - Plan mode: `ExitPlanMode` arrives as a permission request carrying the plan → rendered as a plan
   card with Approve / Keep planning (the one approval that stays, because it is a question, not a
   permission).
