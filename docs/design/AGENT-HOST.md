@@ -28,7 +28,7 @@ rows; the terminal-only routes (`…/ws`, `…/journal`, `…/resume`, `…/rest
 | Path | Written by | What |
 |---|---|---|
 | `<data>/chats/<id>/events.jsonl` | host | the journal (§3); the chat history Socrates renders and backs up |
-| `<data>/chats/<id>/host.json` | server, before every launch | launch spec: harness, workdir, model, effort, account, env, `park_after_ms` |
+| `<data>/chats/<id>/host.json` | server, before every launch | launch spec: harness, workdir, model, effort, account, env, `conversation` (the row's `cli_session_id`, for a rebuild), `park_after_ms` |
 | `<data>/chats/<id>/host.lock` | host | `flock`ed for the host's whole life: **the** evidence a host is alive |
 | `<data>/chats/<id>/host.log` | host (and `systemd-run`) | the host's stdout/stderr; a file, never a pipe |
 | `<data>/chats/<id>/agent/` | adapter | the adapter's own state (the fake keeps its conversations here) |
@@ -61,6 +61,7 @@ is one `agent.Event`: a flat JSON object, all fields optional except `seq`, `at`
 | `process` | `state` (`starting`\|`ready`\|`parked`\|`exited`\|`failed`), `detail`, `pid`, `version` | host/CLI life. `starting` carries the host pid, `ready` the CLI pid |
 | `conversation` | `conversation_id` | the CLI's own id, needed to resume |
 | `tasks` | `count` | background tasks still running |
+| `agent.info` | `content` (the adapter's shape; Claude's in §5.1) | what the CLI says about itself: version, account, slash commands, models, permission mode. The newest wins (`Projection.Agent`) |
 | `command` | `op` (`interrupt`\|`set_model`\|`command`\|`park`\|`stop`), `client_id`, `model`/`effort`, `text` (command name), `args` | a command the host accepted; recorded so its `client_id` is acted on once |
 | `notice` | `code`, `text`, `ask_id`? | a line of its own. Host codes: `resumed`, `answer_as_message`, `conversation_lost` |
 | `error` | `code`, `text`, `message_id`? | a failure that is not a turn's end (e.g. `send_failed`, `rate_limit`) |
@@ -220,6 +221,96 @@ Rules every adapter keeps:
 | limits | `rate_limit_event` → `rate_limit` | `account/rateLimits/updated` | assistant `info.error` / headers |
 | usage | `result.usage`, `total_cost_usd` delta | `thread/tokenUsage/updated` | `step-finish` tokens/cost |
 
+An adapter that can read a chat's history back from its CLI implements `agent.Rebuilder`
+(`Rebuild(spec) ([]Event, error)`, `spec.ResumeID` = the conversation). A host that opens an empty
+journal while `host.json` names a `conversation` journals the rebuilt events first, then
+`notice{rebuilt}` (REBUILD §2.2).
+
+### 5.1 Claude Code (`internal/agent/claude`)
+
+One `claude -p` per chat, protocol facts in research/03 and research/09 (subagents and workflows,
+verified against 2.1.309). Fixed argv: `--input-format stream-json --output-format stream-json
+--verbose --include-partial-messages --replay-user-messages --forward-subagent-text
+--permission-prompt-tool stdio --setting-sources project,local --strict-mcp-config
+--dangerously-skip-permissions --disallowedTools AskUserQuestion --settings
+{skipDangerousModePermissionPrompt, disableRemoteControl, cleanupPeriodDays: 90, ultracode}`,
+`--model`, `--effort`, and `--session-id <new uuid>` or `--resume <id>`.
+
+**Environment.** `StartSpec.Env` minus every `CLAUDE*`/`ANTHROPIC*`/`IS_SANDBOX` variable except
+`CLAUDE_CONFIG_DIR`; plus `IS_SANDBOX=1` as root and `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`. Two
+variables of the spec are instructions to the adapter, not passed on: `SOCRATES_CLAUDE_API_KEY`
+(an API-key account; becomes `ANTHROPIC_API_KEY`) and `SOCRATES_CLAUDE_ULTRACODE=1` (the session
+option). `claude.PrepareConfigDir(accountDir, <data>/agents/claude)` links `projects/`, `tasks/`,
+`plans/`, `todos/` of an account's config dir into the shared folder (relative symlinks); WP7 calls
+it before an account's first run. An account switch is `Interrupt` (when busy), `Park`, `Start`
+with the other account's env and the same `ResumeID` (tested against fakeclaude).
+
+**Start.** `--resume` of an id with no transcript under the config dir fails before spawning, with
+`agent.ErrConversationNotFound`. `initialize` (with `sdkMcpServers` when `Options.Servers` gives
+any: the WP6 hook) is the readiness signal; then `set_max_thinking_tokens{thinking_display:
+"summarized"}`, without which thinking arrives with no text. The conversation id is emitted on the
+first `system/init` (a new chat) or at start (a resume); `/clear` changes it, and the next init
+says so.
+
+**Delivery.** A message's CLI uuid is `uuidv5(message_id)`. `command_lifecycle started` or the
+replay echo = `delivered`; a send during a turn = `queued`. On resume, a pending message whose
+uuid the transcript already has is reported delivered and not sent again: the receipt that closes
+the last delivery window (§6).
+
+**Turns.** Every `system/init` without a running turn opens one, bound to the message the CLI
+last said it started, or to none (a background task reporting back starts a turn of the CLI's
+own: `turn.started` without `message_id`). One assistant message per turn. `result` ends it:
+`completed`; `interrupted` for `terminal_reason aborted_*`; `limited` after a rejected
+`rate_limit_event`, an assistant `error: rate_limit` or `api_error_status 429`; else `failed`.
+`cost_usd` = this result's `total_cost_usd` minus the previous one of the process (it is
+cumulative per process). `usage.context` = the last request's prompt + answer, `window` =
+`modelUsage[*].contextWindow`.
+
+**Parts and content** (all `content` JSON):
+
+| part | id | kind | content |
+|---|---|---|---|
+| text / thinking block | `t_<api msg>_<index>` / `r_…` (streamed); `t_<frame uuid>_<i>` (subagent) | `text` / `reasoning` | reasoning: `{duration_ms, redacted?}` |
+| tool call | `tool_use` id | `tool`; `diff` for Edit/Write/MultiEdit; `plan` for ExitPlanMode | `{tool, tool_use_id, input, summary, command?, path?, diff?, added?, removed?, is_error?, duration_ms, result?, task?, agent?, workflow?, plan?}`; the output is the part's `text` |
+| subagent (Task/Agent) | its `tool_use` id | `tool`, stays `running` until `task_notification` | `agent: {id, type, description, prompt, model, status: running\|completed\|failed\|killed, background, tokens, tool_uses, duration_ms, last_tool, activity, summary}`; its blocks are parts with `parent_part_id` = this part |
+| workflow (Workflow) | its `tool_use` id | `tool`, `running` until `task_notification` | `workflow: {name, description, task_id, run_id, status, phases: [{index, title}], agents, agents_done, tokens, duration_ms, summary}` |
+| workflow agent | `<workflow part>_a<index>` | `tool` (`tool: "WorkflowAgent"`), nested in the workflow | `agent: {…, label, phase}`; its calls (read from `<transcriptDir>/agent-<id>.jsonl`) are nested in it |
+| background shell | the Bash call | `tool` | `task: {id, status}` |
+| task list | `todo_<assistant message>` | `todo` | `{items: [{id, subject, description, active_form, status}]}`, the whole list; TaskCreate/TaskUpdate make no rows of their own |
+| image from a tool | `<call>_img<n>`, nested in the call | `image` | `{mime, path, size}`; the file is under `chats/<id>/agent/images/` |
+| local command output, API error text | `n_<uuid>` | `notice` | `{code: command_output\|<error>\|claude}` |
+
+**Plan card.** In plan mode (`Command("plan")`, `Command("plan", "off")`), `ExitPlanMode` arrives
+as `can_use_tool`. The adapter emits the plan part and `ask{ask_id: "plan_<tool_use_id>", payload:
+{kind: "plan", title, plan, plan_file, part_id, options: ["approve", "keep_planning"]}}` and holds
+the request. The answer `{"decision":"approve"}` allows it; `{"decision":"keep_planning","note":
+"…"}` denies it with the note as the model's message (`plan.decision`, `plan.note` on the part). An
+interrupt withdraws the request (`control_cancel_request`); a later answer is `ErrAskGone`. Every
+other `can_use_tool` is allowed at once.
+
+**Events of its own.** `notice` codes `compacted` (`compact_boundary`, a divider with the token
+counts), `api_retry`, `informational` (warnings such as "can't use thinking from another
+organization"); `error` codes `rate_limit`, `message_dropped` (the CLI cancelled a message it never
+started), `claude` (a result error outside a turn). `Command(name, args)` sends `/name args` as user
+text, except the terminal-only commands (`doctor`, `color`, `focus`, `heapdump` and the init's
+`terminal_slash_commands`): `ErrUnknownCommand`. `SetModel` is `set_model` plus
+`apply_flag_settings{effortLevel}`.
+
+**agent.info content:** `{agent: "claude", version, account: {email, organization, plan,
+api_provider, token_source}, commands: [{name, description, argument_hint}], models: [{id, label,
+description, efforts}], tools, permission_mode}` (from `initialize`, kept current from every init).
+
+**Rebuild** (`Adapter.Rebuild`, `claude.RebuildTranscript`): the main transcript in file order (a
+compaction restarts the parentUuid chain); each user text opens a turn; `<command-name>` wrappers
+become the command as the user's text; `<task-notification>` opens a turn of the CLI's own;
+`<local-command-stdout>` becomes a notice part; the compaction summary is dropped and its boundary
+becomes `notice{compacted}`; the synthetic "No response requested." and "[Request interrupted…"
+mark the turn interrupted, and "[Tool call interrupted…" results mark the call interrupted; a
+subagent's calls come from `subagents/agent-<id>.jsonl`, a workflow's agents from its run journal.
+
+**fakeclaude** (`e2e/fakebin/fakeclaude`): the stand-in for tests and e2e; its script is in its
+package comment.
+
 ## 6. Lifecycle
 
 **Launch** (server, `agenthost.Launcher.Launch`): writes `host.json`, then starts
@@ -358,4 +449,6 @@ Script, by message text:
 - `StartSpec.Env`/`Account` are passed through but nothing fills them until WP7.
 - Titles, Home's question text, push wording and outcomes do not read the journal yet (WP9); a chat
   gets the generic "Finished"/"needs you" from activity alone.
-- A Claude adapter must add the replay-echo receipt (§6) to close the last delivery window.
+- The Claude adapter's replay receipt is in (§5.1). Ultracode and an API-key account reach it
+  only through `StartSpec.Env` (`SOCRATES_CLAUDE_ULTRACODE`, `SOCRATES_CLAUDE_API_KEY`); the server
+  sets neither yet (WP7, WP9).
