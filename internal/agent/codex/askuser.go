@@ -27,12 +27,16 @@ func init() {
 // next turn.
 const DeferredText = "Questions delivered. End your turn now; the answers arrive as the next message."
 
-// askToolSpec is ask_user as a DynamicToolSpec. The guidance goes with the
-// description, because a dynamic tool's description is what codex hands the
-// model; there is no system prompt of ours in a codex thread.
+// askGuidance begins the developer instructions of every thread the adapter
+// starts: codex's equivalent of the system prompt (REBUILD.md §5.3). A thread
+// started before has only the tool's description, which says the same in
+// short.
+var askGuidance = askuser.Guidance(askuser.Name)
+
+// askToolSpec is ask_user as a DynamicToolSpec.
 func askToolSpec() json.RawMessage {
 	raw, _ := json.Marshal(map[string]any{"type": "function", "name": askuser.Name,
-		"description": askuser.Description + " " + askuser.Guidance(askuser.Name), "inputSchema": askuser.Schema()})
+		"description": askuser.Description, "inputSchema": askuser.Schema()})
 	return raw
 }
 

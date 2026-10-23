@@ -27,8 +27,9 @@ func TestRealAskUserBlocksUntilTheAnswer(t *testing.T) {
 	if p == nil || len(p.Questions) != 2 || ask.Via != "" || p.PartID == "" {
 		t.Fatalf("ask %+v\n%s", ask, dump(r.since(n)))
 	}
-	if !strings.Contains(lab.modelLog(t), `"name":"ask_user"`) {
-		t.Fatal("the model was not offered ask_user")
+	if log := lab.modelLog(t); !strings.Contains(log, `"name":"ask_user"`) ||
+		!strings.Contains(log, "When you need a decision or any information from the person, call the ask_user tool") {
+		t.Fatal("the model was not offered ask_user, or not told to use it")
 	}
 	time.Sleep(time.Second)
 	for _, ev := range r.since(n) {

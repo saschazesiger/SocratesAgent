@@ -315,7 +315,8 @@ func (a *adapter) policy(params map[string]any) map[string]any {
 }
 
 // startThread starts a new thread. instructions, when set, are developer
-// instructions for it (a handoff summary).
+// instructions for it (a handoff summary), after the ask_user guidance that
+// every thread's developer instructions begin with.
 func (a *adapter) startThread(ctx context.Context, instructions string) error {
 	params := a.policy(map[string]any{})
 	a.mu.Lock()
@@ -330,9 +331,11 @@ func (a *adapter) startThread(ctx context.Context, instructions string) error {
 	if tools := dynamicToolSpecs(); len(tools) > 0 {
 		params["dynamicTools"] = tools
 	}
+	developer := askGuidance
 	if instructions != "" {
-		params["developerInstructions"] = instructions
+		developer += "\n\n" + instructions
 	}
+	params["developerInstructions"] = developer
 	var res threadResult
 	if err := a.rpc.call(ctx, "thread/start", params, &res); err != nil {
 		return a.startErr("codex could not start a thread", err)
