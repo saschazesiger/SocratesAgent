@@ -203,7 +203,7 @@ Rules every adapter keeps:
    `agent.ErrConversationNotFound` (the host then starts fresh).
 4. Move each user message through `message.state` `queued`/`delivered` (Claude: `--replay-user-
    messages` echo = delivered; Codex: the `turn/start` answer, or for a steered message its
-   `userMessage` item, §5.1; OpenCode: the user message
+   `userMessage` item, §5.2; OpenCode: the user message
    event). A message left `pending` or `queued` when a host dies is handed to the next one.
 5. For every turn: `turn.started` (with the user `message_id`), an assistant `message`, parts, and
    `turn.ended`. End every part with a full `part` event. Tool output streams as `part.delta`.
