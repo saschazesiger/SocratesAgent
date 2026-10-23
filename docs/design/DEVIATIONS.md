@@ -2059,3 +2059,53 @@ handshake ceiling - is in HOME.md itself now, not here.
 - **§3 — `/tasks [done]`** in the faketui works through a three-task list and records it as
   Claude Code 2.1 does; the `outcome` scenario reads the verdict from it.
 
+
+## Rebuild
+
+Deviations from REBUILD.md (binding plan of 2026-10-23), per work package.
+
+**WP2 / §2.2 — more event types than the list, and user messages carry their text inline.**
+§2.2 lists the types a UI needs; driving three CLIs and keeping exactly-once needs a few more:
+`message.state` (pending → queued → delivered, which is how "queued" chips and re-delivery after a
+dead host work), `part.delta` (coalesced appends; without it a streaming part would be rewritten
+whole four times a second, quadratic in its length), `ask.delivered` (whether an answer reached
+the agent, so a host that died in between delivers it as a message), `conversation`, `tasks`,
+`usage`, `command` (so the `client_id` of an interrupt or a model change is in the journal and
+acted on once) and `notice`. A user message is one `message` event with `text` and `attachments`
+rather than a message plus parts, so it can never be journaled half. AGENT-HOST.md §2 is the full
+list.
+
+**WP2 / §2.2 — delta offsets are UTF-16 code units.** Live deltas and the coalesced journal lines
+overlap; both carry the offset they start at, so a client applies them idempotently. The unit is
+the one a browser's string length counts in.
+
+**WP2 / §2.1 — a dead host is proven by its lock, not its PID.** The spike proposed "socket refuses
+and the host PID is gone". The host holds `flock` on `chats/<id>/host.lock` for its whole life;
+the kernel releases it however the host ends, and a PID can be reused. The server stops a chat's
+scope only when it can take that lock.
+
+**WP2 / §2.1 — the server keeps no copy of the journal on disk.** The spike's server kept its own
+`recv.jsonl` as its resume point. Here host and server share the data folder, so the server's
+resume point is the host's journal as the server read it at start; it never writes the file.
+
+**WP2 / §2.1 — a CLI that exits on its own ends its host.** The host records the failed turn and
+`process{failed}` and exits; the next command starts a new host that resumes the conversation.
+Restarting the CLI inside the same host would be a second resume path next to the one parking
+already needs.
+
+**WP2 / §2.1 — `compact` is `command{name: "compact"}`, and `switch_account` is not implemented.**
+Compacting is one of the agent's commands, so it goes through the one command op. Switching
+accounts needs accounts (WP7); the op name is reserved in AGENT-HOST.md §4.3.
+
+**WP2 / spike S4 §8.8 — the socket fallback is under the temporary directory.** When
+`<data>/run/chats/<id>.sock` is too long for `sun_path`, the socket is
+`$TMPDIR/socrates-<uid>/<hash of the data folder>/<id>.sock` rather than `/run/socrates/chats/`,
+which a non-root server could not create. Both sides compute the same path.
+
+**WP2 / §7 — filing a chat as done parks its host.** A done terminal has its pane closed; a done
+chat has its host parked (when idle) and resumes on the next message. Deleting a chat stops its
+host and scope and removes `chats/<id>/`; the working directory is kept as for every session.
+
+**WP2 — the "chat routes are gone" test lost `/api/chats`.** `TestTheChatRoutesAreGone` asserted
+that nothing answers there; the rebuild's chats do (`POST /api/chats`). The other old paths are
+still asserted absent.
