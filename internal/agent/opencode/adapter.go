@@ -198,13 +198,15 @@ type turnState struct {
 }
 
 // persisted is what the adapter keeps beside the journal: the session, the
-// agent the chat runs as, and which OpenCode message each journaled message
+// agent the chat runs as, which OpenCode message each journaled message
 // became - for a revert or a fork to a message, and to recognise a message
-// the previous host already handed over.
+// the previous host already handed over - and the assistant messages a dead
+// process left incomplete that were already interrupted (dangling).
 type persisted struct {
-	Session  string            `json:"session,omitempty"`
-	Agent    string            `json:"agent,omitempty"`
-	Messages map[string]string `json:"messages,omitempty"`
+	Session     string            `json:"session,omitempty"`
+	Agent       string            `json:"agent,omitempty"`
+	Messages    map[string]string `json:"messages,omitempty"`
+	Interrupted []string          `json:"interrupted,omitempty"`
 }
 
 func (a *Adapter) statePath() string { return filepath.Join(a.spec.StateDir, "opencode.json") }
@@ -439,22 +441,36 @@ func (a *Adapter) messages(ctx context.Context, cl *client, session string) ([]o
 
 // dangling is what a process that died mid-turn left: an assistant message
 // that never completed, with tool parts still running for ever (research/06
-// §3.3). They are interrupted now. Called with mu held.
+// §3.3). They are interrupted now, once: OpenCode never completes such a
+// message, and every later start would write the same again. Text and
+// reasoning are left to the journal, whose streamed text OpenCode does not
+// have (it stores a part's text when the part ends), and whose parts the
+// host interrupts itself; a tool part's output OpenCode stores as it
+// streams. Called with mu held.
 func (a *Adapter) dangling(msgs []ocMessageWithParts) []agent.Event {
+	done := map[string]bool{}
+	for _, id := range a.state.Interrupted {
+		done[id] = true
+	}
 	var events []agent.Event
 	for _, m := range msgs {
-		if m.Info.Role != "assistant" || m.Info.Time.Completed > 0 {
+		if m.Info.Role != "assistant" || m.Info.Time.Completed > 0 || done[m.Info.ID] {
 			continue
 		}
 		for _, p := range m.Parts {
 			c, ok := convertPart(p)
-			if !ok || (c.state != agent.PartRunning && c.state != agent.PartStreaming) {
+			if !ok || c.kind == agent.PartText || c.kind == agent.PartReasoning ||
+				(c.state != agent.PartRunning && c.state != agent.PartStreaming) {
 				continue
 			}
 			events = append(events, agent.Event{Type: agent.TypePart, MessageID: m.Info.ID, PartID: p.ID,
 				Kind: c.kind, State: agent.PartInterrupted, Text: c.text, Content: c.content})
 		}
 		events = append(events, agent.Event{Type: agent.TypeMessageState, MessageID: m.Info.ID, State: agent.MessageInterrupted})
+		a.state.Interrupted = append(a.state.Interrupted, m.Info.ID)
+	}
+	if len(events) > 0 {
+		a.saveState()
 	}
 	return events
 }

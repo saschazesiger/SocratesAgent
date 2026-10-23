@@ -254,9 +254,11 @@ func (r *rig) waitTurns(n int) []string {
 }
 
 // lastText is the text of the last text part of the chat.
-func (r *rig) lastText() string {
+func (r *rig) lastText() string { return r.rec.lastText() }
+
+func (r *recorder) lastText() string {
 	text := ""
-	r.rec.view(func(p *agent.Projection, _ []agent.Event) {
+	r.view(func(p *agent.Projection, _ []agent.Event) {
 		for _, m := range p.Messages {
 			for _, part := range m.Parts {
 				if part.Kind == agent.PartText {

@@ -33,6 +33,8 @@ import (
 //	/question        question.asked; the answers go into the answer
 //	/sleep S         text, then S seconds of work
 //	/crash           a running bash tool, and the process exits on the spot
+//	/crashtext       a text part streams "partial answer", and the process
+//	                 exits before the part ends (so its stored text is "")
 //	/dropstream      text, every /event stream is closed, then more text that
 //	                 only a reader of GET …/message sees
 //	/whoami          "account: <identity>"
@@ -458,6 +460,14 @@ func (t *turn) play(text string) error {
 			"state": map[string]any{"status": "running", "input": map[string]any{"command": "sleep 100"},
 				"time": map[string]any{"start": time.Now().UnixMilli()}}})
 		_ = p
+		os.Exit(3)
+	case "/crashtext":
+		p := t.part(map[string]any{"type": "text", "text": "", "time": map[string]any{"start": time.Now().UnixMilli()}})
+		for _, c := range []string{"partial ", "answer"} {
+			t.s.publish("message.part.delta", map[string]any{"sessionID": t.sid, "messageID": t.msg["id"],
+				"partID": p["id"], "field": "text", "delta": c})
+		}
+		time.Sleep(200 * time.Millisecond)
 		os.Exit(3)
 	case "/dropstream":
 		if err := t.say([]string{"before the drop"}, 5*time.Millisecond); err != nil {

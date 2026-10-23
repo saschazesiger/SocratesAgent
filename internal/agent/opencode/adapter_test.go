@@ -500,6 +500,40 @@ func TestACrashIsReportedAndItsRunningToolInterrupted(t *testing.T) {
 	}
 }
 
+// A process that dies while text streams leaves OpenCode without that text;
+// the next start interrupts the message and keeps the journal's text, and
+// the start after it writes nothing again.
+func TestACrashKeepsTheStreamedTextAndIsInterruptedOnce(t *testing.T) {
+	r := newRig(t)
+	r.mustStart("")
+	sid := r.conversation()
+	r.send("/crashtext")
+	select {
+	case <-r.rec.exited:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the crash was not reported")
+	}
+	journal := r.rec
+	if got := journal.lastText(); got != "partial answer" {
+		t.Fatalf("streamed %q before the crash", got)
+	}
+	r.mustStart(sid)
+	interrupted := func(ev agent.Event) bool { return ev.State == agent.MessageInterrupted }
+	if n := r.rec.count(agent.TypeMessageState, interrupted); n != 1 {
+		t.Fatalf("%d messages interrupted after the crash", n)
+	}
+	// The resume's events, applied to the journal the crash left.
+	r.rec.view(func(_ *agent.Projection, events []agent.Event) { journal.Emit(events...) })
+	if got := journal.lastText(); got != "partial answer" {
+		t.Fatalf("text after the resume %q", got)
+	}
+	_ = r.a.Park(context.Background())
+	r.mustStart(sid)
+	if n := r.rec.count(agent.TypeMessageState, interrupted); n != 0 {
+		t.Fatalf("a second start interrupted %d messages again", n)
+	}
+}
+
 func TestAClosedEventStreamIsCaughtUp(t *testing.T) {
 	r := newRig(t)
 	r.mustStart("")

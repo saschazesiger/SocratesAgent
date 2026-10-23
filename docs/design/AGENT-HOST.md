@@ -447,7 +447,9 @@ account). `Migrate` runs `opencode db "select 1"` once per binary build (stamp `
 
 **Session.** New: `POST /session`. Resume: `GET /session/{id}`; 404 (or a malformed id) wraps
 `ErrConversationNotFound`. On resume, an assistant message that never completed (a dead process)
-has its streaming/running parts written as `interrupted`. `Rebuild` reads the whole history
+has its running tool parts and itself written as `interrupted`, once (`agent/opencode.json` keeps
+which); its text and reasoning stay as the journal streamed them (OpenCode stores a part's text only
+when the part ends), and the host's recovery interrupts them. `Rebuild` reads the whole history
 from `GET /session/{id}/message` (and the task children's).
 
 **Turns.** A message is posted with `prompt_async` and a message id of OpenCode's own form chosen by
