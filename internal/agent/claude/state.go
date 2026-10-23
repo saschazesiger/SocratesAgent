@@ -95,6 +95,9 @@ type part struct {
 	started                                time.Time
 	// group is a subagent or workflow that may outlive its turn.
 	group bool
+	// resulted is whether the call's tool_result has come: a foreground
+	// subagent reports its end before its call returns.
+	resulted bool
 }
 
 // live is a group whose agent, workflow or background shell still runs: it

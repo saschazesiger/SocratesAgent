@@ -224,6 +224,7 @@ func (s *state) toolResult(b block, structured json.RawMessage, parent string) {
 		p = s.toolUse(block{Type: "tool_use", ID: b.ToolUseID, Name: "tool"}, parent)
 	}
 	c := p.tool
+	p.resulted = true
 	text, images := resultText(b.Content)
 	p.text = text
 	c.IsError = b.IsError
@@ -619,7 +620,9 @@ func (s *state) taskStatus(taskID, status, summary string, usage *taskUsage) {
 		p.state = state
 	}
 	s.emitPart(p)
-	delete(s.parts, p.id)
+	if p.resulted || c.Task != nil {
+		delete(s.parts, p.id)
+	}
 	delete(s.tasks, taskID)
 }
 
