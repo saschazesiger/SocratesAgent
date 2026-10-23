@@ -457,7 +457,9 @@ so that a host that dies while it reads leaves a journal the next host rebuilds 
 the adapter (`msg_` + 48-bit ms×4096+counter + 14 base-62), kept in `agent/opencode.json` (journal
 id → OpenCode id) so that revert/fork can name it and a message the previous host already handed
 over is recognised (`delivered` without a second turn). `delivered` + `turn.started` when the post
-is accepted; one turn per user message; every step is an assistant `message`. **While a turn runs,
+is accepted; one turn per user message; every step is an assistant `message`. `turn.ended`'s usage
+and cost add up the turn's steps and its subagents' (OpenCode keeps those with the child session),
+live and in a rebuild. **While a turn runs,
 messages wait in the adapter (`queued`) and go one by one after `session.idle`** (DEVIATIONS).
 A `!line` is `POST /shell`. Turn outcome: `limited` (a `retry` status with `action.reason`, which is
 then aborted, or a 429), else `interrupted` (`MessageAbortedError`), else `failed` (any other error;

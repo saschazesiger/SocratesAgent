@@ -5,6 +5,7 @@ package opencode
 import (
 	"context"
 	"errors"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -153,6 +154,25 @@ func TestASubagentIsNestedInItsTaskPart(t *testing.T) {
 			t.Fatalf("children %+v", task.Children)
 		}
 	})
+	// The subagent's model call is the turn's too: 0.001 each, 50 + 5 tokens
+	// for the subagent's.
+	wantCost := func(rec *recorder, what string) {
+		rec.view(func(p *agent.Projection, _ []agent.Event) {
+			if lt := p.LastTurn; lt == nil || math.Abs(lt.CostUSD-0.002) > 1e-9 || lt.Usage == nil || lt.Usage.Input != 1001+50 {
+				t.Fatalf("%s turn %+v usage %+v", what, lt, lt.Usage)
+			}
+		})
+	}
+	wantCost(r.rec, "the live")
+	sid := r.conversation()
+	_ = r.a.Park(context.Background())
+	spec := r.spec(sid)
+	spec.Rebuild = true
+	spec.StateDir = filepath.Join(r.data, "chats", "c2", "agent")
+	if err := r.start(spec); err != nil {
+		t.Fatal(err)
+	}
+	wantCost(r.rec, "the rebuilt")
 }
 
 func TestMessagesSentDuringATurnWaitAndRunInOrder(t *testing.T) {

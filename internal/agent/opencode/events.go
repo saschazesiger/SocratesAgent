@@ -101,9 +101,14 @@ func (a *Adapter) handleMessage(gen int, m ocMessage) {
 		return
 	}
 	if m.SessionID != a.session {
-		if _, child := a.children[m.SessionID]; child && m.Role == "user" {
-			// The task's prompt to the subagent: the task part shows it.
-			a.childPrompts[m.ID] = true
+		if _, child := a.children[m.SessionID]; child {
+			switch m.Role {
+			case "user":
+				// The task's prompt to the subagent: the task part shows it.
+				a.childPrompts[m.ID] = true
+			case "assistant":
+				a.childStepLocked(m)
+			}
 		}
 		return
 	}
@@ -188,6 +193,21 @@ func (a *Adapter) assistantLocked(m ocMessage) {
 		state = agent.MessageInterrupted
 	}
 	a.out.Emit(agent.Event{Type: agent.TypeMessageState, MessageID: m.ID, State: state})
+}
+
+// childStepLocked counts a subagent's model call into the running turn:
+// OpenCode keeps what a subagent used and cost with its own session.
+func (a *Adapter) childStepLocked(m ocMessage) {
+	if a.turn == nil {
+		return
+	}
+	as := a.assistants[m.ID]
+	if as == nil {
+		as = &asstMsg{parent: m.ParentID, child: true}
+		a.assistants[m.ID] = as
+		a.turn.assistants = append(a.turn.assistants, m.ID)
+	}
+	as.tokens, as.cost = m.Tokens, m.Cost
 }
 
 func (a *Adapter) handlePart(gen int, p ocPart) {
@@ -454,7 +474,7 @@ func (a *Adapter) endTurnLocked() {
 		usage.CacheRead += as.tokens.Cache.Read
 		usage.CacheWrite += as.tokens.Cache.Write
 		cost += as.cost
-		if !as.done {
+		if !as.done && !as.child {
 			as.done = true
 			state := agent.MessageDone
 			if outcome != agent.OutcomeCompleted {
@@ -463,9 +483,11 @@ func (a *Adapter) endTurnLocked() {
 			events = append(events, agent.Event{Type: agent.TypeMessageState, MessageID: id, State: state})
 		}
 	}
-	if usage.Context == 0 && len(t.assistants) > 0 {
-		if as := a.assistants[t.assistants[len(t.assistants)-1]]; as != nil {
+	for i := len(t.assistants) - 1; i >= 0 && usage.Context == 0; i-- {
+		// The context is the chat's own, not a subagent's.
+		if as := a.assistants[t.assistants[i]]; as != nil && !as.child {
 			usage.Context = as.tokens.context()
+			break
 		}
 	}
 	text := ""

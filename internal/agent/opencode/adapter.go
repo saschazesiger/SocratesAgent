@@ -163,9 +163,12 @@ type userMsg struct {
 	adopt bool
 }
 
+// asstMsg is an assistant message of the session, or of a subagent's
+// (child), whose usage and cost count into the turn that ran it.
 type asstMsg struct {
 	parent string
 	done   bool
+	child  bool
 	tokens ocTokens
 	cost   float64
 }
