@@ -209,6 +209,29 @@ func TestInterruptEndsTheTurnAndTheQueueRuns(t *testing.T) {
 	}
 }
 
+// An answer an interrupt cut short is interrupted, not done.
+func TestAnInterruptedAnswerIsNotDone(t *testing.T) {
+	r := newRig(t)
+	r.mustStart("")
+	r.send("/stream 200 20")
+	eventually(t, 5*time.Second, "the answer to stream", func() bool { return r.rec.count(agent.TypePartDelta, nil) >= 3 })
+	if err := r.a.Interrupt(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.waitTurns(1); got[0] != agent.OutcomeInterrupted {
+		t.Fatalf("outcome %v", got)
+	}
+	r.rec.view(func(p *agent.Projection, _ []agent.Event) {
+		for _, m := range p.Messages {
+			for _, part := range m.Parts {
+				if part.Kind == agent.PartText && part.State != agent.PartInterrupted {
+					t.Fatalf("the cut-short answer is %s: %q", part.State, part.Text)
+				}
+			}
+		}
+	})
+}
+
 func TestALimitRetryStopsTheTurnAsLimited(t *testing.T) {
 	r := newRig(t)
 	r.mustStart("")

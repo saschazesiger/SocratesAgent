@@ -172,9 +172,15 @@ func (a *Adapter) assistantLocked(m ocMessage) {
 		return
 	}
 	as.done = true
+	// What still streams ends with the message: complete, or cut short by
+	// the abort or the error the message ended with.
+	end := agent.PartDone
+	if m.Error != nil {
+		end = agent.PartInterrupted
+	}
 	for id, sp := range a.parts {
 		if sp.msg == m.ID && sp.parent == "" && sp.state == agent.PartStreaming {
-			a.emitPartLocked(id, sp.msg, sp.parent, converted{kind: sp.kind, state: agent.PartDone, text: sp.text, content: sp.content})
+			a.emitPartLocked(id, sp.msg, sp.parent, converted{kind: sp.kind, state: end, text: sp.text, content: sp.content})
 		}
 	}
 	state := agent.MessageDone
