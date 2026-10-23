@@ -12868,6 +12868,27 @@ async function chatstream() {
     const back = await page.waitForFunction(() => document.querySelector('#chat .so-composer__input').value === 'half a thought, not sent',
       null, { timeout: 10000 }).then(() => true, () => false);
     ok(back, 'and it is back in the composer after a reload', await page.$eval('#chat .so-composer__input', (n) => n.value));
+
+    // Two devices writing the same draft: the second save is refused, and
+    // the person chooses, as with a prepared session's prompt.
+    await page.fill('#chat .so-composer__input', '');
+    for (let i = 0; i < 20 && draft.text !== ''; i += 1) {
+      await wait(300);
+      draft = await draftOf(s, id);
+    }
+    const phone = await s.context.request.put(s.url + '/api/sessions/' + id + '/draft',
+      { data: { text: 'written on the phone', base_rev: draft.rev } });
+    await page.fill('#chat .so-composer__input', 'written at the desk');
+    const conflict = await page.waitForSelector('#chat .so-composer__conflict:not([hidden])', { timeout: 10000 })
+      .then((n) => n.innerText(), () => '');
+    ok(phone.ok() && /changed on another device/.test(conflict) && /written on the phone/.test(conflict),
+      'a draft changed on another device in between is not overwritten: both texts are shown', oneLine(conflict));
+    await page.click('#chat [data-action="keep-mine"]');
+    for (let i = 0; i < 20 && draft.text !== 'written at the desk'; i += 1) {
+      await wait(300);
+      draft = await draftOf(s, id);
+    }
+    ok(draft.text === 'written at the desk', 'and Keep mine saves this one over it', JSON.stringify(draft.text));
     await page.fill('#chat .so-composer__input', '');
 
     // The palette: the commands the agent reported, and one run from it.
@@ -12936,7 +12957,9 @@ async function chatstream() {
       'Start turns the panel into the chat, its draft the first message, sent once, and the composer empty',
       JSON.stringify({ started, users: userTexts(history), composer }));
     await shot(page, 'chat-stream');
-    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+    // The refused draft is the browser's own report of the conflict above.
+    const refusedDraft = /status of 409 \(Conflict\) @ \S+\/draft$/;
+    ok(unexpected(s.errors, refusedDraft).length === 0, 'no console errors', unexpected(s.errors, refusedDraft).join(' | ') || '0');
   } finally { await s.stop(); }
 }
 
@@ -13124,7 +13147,7 @@ async function chatoffline() {
 
 // answerAll walks the dialog through the full ask_user call of the scripted
 // agent (/askmany): every kind of question, with a detail opened, a note,
-// Other, a refused number, and a general note.
+// Other beside three options, a refused number, and a general note.
 async function answerAll(page) {
   // 1. single, PostgreSQL preselected (its default): details, context, then SQLite and a note.
   await page.waitForSelector('dialog.so-askdlg .so-q-text', { timeout: 10000 });
@@ -13146,6 +13169,9 @@ async function answerAll(page) {
   const hint = await page.$eval('dialog.so-askdlg .so-q-detail', (n) => n.textContent);
   for (const one of ['dark', 'search', 'export', 'offline']) await page.click('dialog.so-askdlg .so-q-option[data-option="' + one + '"]');
   const multi = await page.$$eval('dialog.so-askdlg .so-q-option[aria-pressed="true"]', (n) => n.map((one) => one.dataset.option));
+  // And one in the person's own words besides.
+  await page.click('dialog.so-askdlg [data-action="other"]');
+  await page.fill('#ask-features-other', 'an audit log');
   await page.click('dialog.so-askdlg [data-action="forward"]');
   // 3. text.
   await page.waitForSelector('#ask-name-other', { timeout: 5000 });
@@ -13173,7 +13199,7 @@ async function answerAll(page) {
 const ANSWER_ALL = {
   answers: {
     db: { selected: ['sqlite'], other: null, note: 'keep it small', delegated: false, skipped: false },
-    features: { selected: ['dark', 'search', 'export'], other: null, note: null, delegated: false, skipped: false },
+    features: { selected: ['dark', 'search', 'export'], other: 'an audit log', note: null, delegated: false, skipped: false },
     name: { selected: [], other: 'Atlas', note: null, delegated: false, skipped: false },
     migrate: { selected: ['no'], other: null, note: null, delegated: false, skipped: false },
     replicas: { selected: [], other: '3', note: null, delegated: false, skipped: false },
