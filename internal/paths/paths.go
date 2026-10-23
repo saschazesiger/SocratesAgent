@@ -134,6 +134,23 @@ var NotBackedUp = []string{
 	"lost+found",
 }
 
+// own are the parts of the data directory that are Socrates' state: a folder
+// inside one of them is never a working directory to leave out of a backup,
+// whatever a session row says.
+var own = []string{DB, Chats, Agents, Accounts, Terminals, Sessions, Profiles, VSCode, VSCodeExtensions}
+
+// Own reports whether rel - a slash separated path relative to the data
+// directory - is one of Socrates' own parts or inside one.
+func Own(rel string) bool {
+	first, _, _ := strings.Cut(rel, "/")
+	for _, name := range own {
+		if first == name {
+			return true
+		}
+	}
+	return false
+}
+
 // Excluded reports whether rel - a slash separated path relative to the data
 // directory - is one of NotBackedUp.
 func Excluded(rel string) bool {

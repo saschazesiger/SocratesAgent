@@ -10,6 +10,7 @@ import (
 
 	"github.com/saschazesiger/SocratesAgent/internal/backup"
 	"github.com/saschazesiger/SocratesAgent/internal/s3/s3fake"
+	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
 
 // backupForm is the Backup card's form for a bucket on the fake.
@@ -167,5 +168,42 @@ func TestBackupCardAndRestoreFromTheSetupPage(t *testing.T) {
 	if err != nil || restoredCfg == nil || restoredCfg.Bucket != "backups" || restoredCfg.HostID == "" ||
 		restoredCfg.HostID == cfg["host_id"] {
 		t.Fatalf("the restored machine's backup.json: %+v %v (the first machine is %v)", restoredCfg, err, cfg["host_id"])
+	}
+}
+
+// Every working directory is left out of the backup, not only the current
+// workspace root: the dynamic directories made under the default root before
+// the root moved elsewhere, and a session's own directory inside the data
+// directory. A row whose directory is one of Socrates' own parts takes
+// nothing out of the backup.
+func TestEveryWorkingDirectoryIsLeftOutOfTheBackup(t *testing.T) {
+	env := newEnv(t)
+	data := env.srv.dataDir
+	next := env.srv.Settings()
+	next.Workspace.Root = t.TempDir()
+	if err := env.srv.saveSettings(next); err != nil {
+		t.Fatal(err)
+	}
+	rows := map[string]string{
+		"old": filepath.Join(data, "workspaces", "old"), "own": filepath.Join(data, "projects", "own"),
+		"odd": filepath.Join(data, "chats"), "far": filepath.Join(t.TempDir(), "far"),
+	}
+	for id, dir := range rows {
+		if err := env.store.CreateSession(&store.Session{ID: id, Title: id, Harness: "claude", Workdir: dir,
+			WorkdirMode: "custom", TmuxName: "t-" + id, State: store.StateExited}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := map[string]bool{}
+	for _, p := range env.srv.BackupExclusions() {
+		got[p] = true
+	}
+	for _, want := range []string{next.Workspace.Root, filepath.Join(data, "workspaces"), rows["own"]} {
+		if !got[want] {
+			t.Errorf("%s is not left out: %v", want, got)
+		}
+	}
+	if got[rows["odd"]] {
+		t.Errorf("a row's directory took the chats out of the backup: %v", got)
 	}
 }

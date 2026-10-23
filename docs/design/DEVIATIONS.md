@@ -2271,9 +2271,12 @@ restored reads them all on its first listing.
 today's top-level `bin/`, `tmux.sock`, `tmux.conf`, `hook.sock`, `update-state/`,
 `updates.json`, `updates.log`, the schema migration copies `socrates.db.pre-*.bak`, `s3.json`,
 the terminal byte journals `sessions/*/journal.raw*`, code-server's `logs` and caches under
-`vscode/*/`, sockets of any name, the workspace root and preset directories when they lie inside
-the data directory, and SQLite's `-wal`, `-shm` and `-journal` beside a database (which is
-copied consistently instead). The list is `paths.NotBackedUp`.
+`vscode/*/`, sockets of any name, `backup.migrated`, the working directories inside the data
+directory (the workspace root, the preset directories, the default `workspaces/` that keeps a
+moved root's older dynamic directories, and every session's and chat's own directory, but never
+one of Socrates' own parts, `paths.Own`), and SQLite's `-wal`, `-shm` and `-journal` beside a
+database (which is copied consistently instead). The list is `paths.NotBackedUp` and
+`server.BackupExclusions`.
 
 **WP1 — a notice on the session page.** The brief removes the storage banner and asks for the
 24-hour warning in `/api/state` and on the Backup card; §6.2 also calls for "a notice". The

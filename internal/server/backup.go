@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/backup"
+	"github.com/saschazesiger/SocratesAgent/internal/paths"
 )
 
 // The backup: the admin page's Backup card, and the restore the setup page
@@ -48,16 +49,39 @@ func (s *Server) SetBackup(e *backup.Engine) { s.backup = e }
 func (s *Server) SetRestart(restart func()) { s.restart = restart }
 
 // BackupExclusions are the folders inside the data directory the backup
-// leaves out besides its own rules: the workspace root and the preset
-// directories, where the code is - which lives in git, not in a backup.
+// leaves out besides its own rules: working directories, where the code is -
+// which lives in git, not in a backup. They are the workspace root and the
+// preset directories, the default root inside the data directory (whose
+// dynamic directories stay where they are when the root moves elsewhere),
+// and every session's and chat's own directory. A folder that is one of
+// Socrates' own parts (paths.Own) is never left out, whatever a row says:
+// a working directory set to the chats folder must not take the chats out of
+// the backup.
 func (s *Server) BackupExclusions() []string {
 	settings := s.Settings()
-	out := []string{settings.Workspace.Root}
+	layout := paths.New(s.dataDir)
+	candidates := []string{settings.Workspace.Root, layout.Path(paths.Workspaces)}
 	for _, p := range settings.Workspace.Presets {
-		out = append(out, p.Path)
+		candidates = append(candidates, p.Path)
 	}
-	for i, p := range out {
-		out[i] = filepath.Clean(p)
+	if rows, err := s.store.ListSessions(); err == nil {
+		for _, row := range rows {
+			if row.Workdir != "" {
+				candidates = append(candidates, row.Workdir)
+			}
+		}
+	} else {
+		log.Printf("backup: the sessions' working directories could not be read: %v", err)
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, p := range candidates {
+		p = filepath.Clean(p)
+		if rel, ok := layout.Rel(p); ok && paths.Own(rel) || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
 	}
 	return out
 }
