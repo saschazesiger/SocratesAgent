@@ -419,11 +419,17 @@ func (a *Adapter) openSession(ctx context.Context) error {
 	a.state.Session = id
 	a.saveState()
 	a.mu.Unlock()
-	a.out.Emit(agent.Event{Type: agent.TypeConversation, ConversationID: id})
+	// A rebuilt history is written before the conversation it belongs to:
+	// a host that dies while it reads leaves a journal that still names no
+	// conversation, and the next one rebuilds again.
+	conversation := agent.Event{Type: agent.TypeConversation, ConversationID: id}
+	if !a.spec.Rebuild {
+		a.out.Emit(conversation)
+	}
 	msgs, err := a.messages(ctx, cl, id)
 	if err != nil && a.spec.Rebuild {
 		a.out.Emit(agent.Event{Type: agent.TypeNotice, Code: agent.NoticeHistoryUnavailable,
-			Text: "The earlier history of this chat could not be read back from OpenCode: " + err.Error()})
+			Text: "The earlier history of this chat could not be read back from OpenCode: " + err.Error()}, conversation)
 		return nil
 	}
 	if err != nil {
@@ -435,7 +441,7 @@ func (a *Adapter) openSession(ctx context.Context) error {
 		a.seed(msgs)
 		a.mu.Unlock()
 		events = append(events, agent.Event{Type: agent.TypeNotice, Code: agent.NoticeRebuilt,
-			Text: "The chat history was read back from OpenCode's session."})
+			Text: "The chat history was read back from OpenCode's session."}, conversation)
 		a.out.Emit(events...)
 		return nil
 	}

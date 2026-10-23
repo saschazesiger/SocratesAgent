@@ -654,6 +654,24 @@ func TestAnEmptyEnvironmentIsRefused(t *testing.T) {
 	}
 }
 
+// A rebuild of a thread with no turn yet still says that it was rebuilt.
+func TestARebuildWithoutTurnsSaysSo(t *testing.T) {
+	lab := newFakeLab(t)
+	r := newRecorder()
+	a := lab.start(lab.spec("a", ""), r)
+	thread := r.waitFor(t, 0, "conversation", isType(agent.TypeConversation), wait).ConversationID
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	if err := a.Park(ctx); err != nil {
+		t.Fatal(err)
+	}
+	r2 := newRecorder()
+	spec := lab.spec("a", thread)
+	spec.Rebuild = true
+	lab.start(spec, r2)
+	r2.waitFor(t, 0, "the rebuilt notice", isNotice(agent.NoticeRebuilt), wait)
+}
+
 // The dashboard's binary setting reaches the adapter through the spec, and
 // wins over the environment's override.
 func TestTheConfiguredBinaryIsRun(t *testing.T) {

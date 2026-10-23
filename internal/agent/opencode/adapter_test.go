@@ -467,6 +467,22 @@ func TestParkResumeRebuildAndRedelivery(t *testing.T) {
 	if strings.Join(users, "|") != "/tool|hello|again" || len(outcomes) != 3 {
 		t.Fatalf("rebuilt users %q outcomes %v", users, outcomes)
 	}
+	// The conversation is written after its history: until then, a new host
+	// would rebuild again.
+	r.rec.view(func(_ *agent.Projection, events []agent.Event) {
+		conv, rebuilt := -1, -1
+		for i, ev := range events {
+			switch {
+			case ev.Type == agent.TypeConversation:
+				conv = i
+			case ev.Type == agent.TypeNotice && ev.Code == agent.NoticeRebuilt:
+				rebuilt = i
+			}
+		}
+		if rebuilt < 0 || conv < rebuilt {
+			t.Fatalf("the conversation is event %d, the rebuilt notice %d", conv, rebuilt)
+		}
+	})
 	if len(texts) != 3 || texts[0] != "The tool finished." {
 		t.Fatalf("rebuilt texts %q", texts)
 	}
