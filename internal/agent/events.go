@@ -57,6 +57,10 @@ const (
 	// TypeCommand records a command the host accepted (interrupt, model,
 	// slash command, park), so that its client_id is never acted on twice.
 	TypeCommand = "command"
+	// TypeCommands is the list of slash commands the agent offers, in Content
+	// as [{"name","description","args"}]: what the composer's palette shows.
+	// A later one replaces it whole.
+	TypeCommands = "commands"
 	// TypeNotice is something the chat should say in a line of its own.
 	TypeNotice = "notice"
 	// TypeError is a failure worth showing that is not a turn's end.

@@ -47,7 +47,14 @@ func EnableFake() { Register(FakeHarness, func() Adapter { return &fakeAdapter{}
 //	/stream N [ms]   N text deltas, ms apart (default 10)
 //	/tool            a tool call with streamed output, then a line of text
 //	/ask             an ask; the turn waits for the answer
-//	/asknext         an ask whose answer comes as the next message; the turn ends
+//	/askmany         an ask with five questions of every kind (REBUILD §5.1)
+//	/asknext         the same, answered as the next message; the turn ends
+//	/plan            a plan, and an ask to approve it; the turn waits
+//	/md [ms]         reasoning, then a long Markdown answer streamed in chunks
+//	/tools           tool calls: a read, a command, an edit with its diff, an error
+//	/todo [ms]       a task list worked through step by step
+//	/workflow [ms]   a workflow of phases with agents nested in it
+//	/dividers        a notice, an account switch, a model change and an error
 //	/subagent        a subagent tool part with parts nested inside it
 //	/sleep S         a turn that works for S seconds
 //	/bg S            a turn that leaves a background task running for S seconds
@@ -105,7 +112,7 @@ func (f *fakeAdapter) Start(ctx context.Context, spec StartSpec, out Emitter) er
 	if err := f.startChild(); err != nil {
 		return err
 	}
-	out.Emit(Event{Type: TypeConversation, ConversationID: f.conv})
+	out.Emit(Event{Type: TypeConversation, ConversationID: f.conv}, Event{Type: TypeCommands, Content: fakeCommands})
 	if spec.First != nil {
 		f.queue = append(f.queue, *spec.First)
 	}
@@ -206,10 +213,15 @@ func (f *fakeAdapter) SetModel(_ context.Context, model, effort string) error {
 }
 
 func (f *fakeAdapter) Command(_ context.Context, name, _ string) error {
-	if name != "compact" {
+	switch name {
+	case "compact":
+		f.out.Emit(Event{Type: TypeNotice, Code: "compacted", Text: "The conversation was compacted."})
+	case "context":
+		f.out.Emit(Event{Type: TypeUsage, Usage: &Usage{Context: 12000, Window: 200000}},
+			Event{Type: TypeNotice, Code: "context", Text: "6% of the context window is in use."})
+	default:
 		return ErrUnknownCommand
 	}
-	f.out.Emit(Event{Type: TypeNotice, Code: "compacted", Text: "The conversation was compacted."})
 	return nil
 }
 
@@ -296,9 +308,17 @@ type fakeTurn struct {
 	partID string
 	text   strings.Builder
 	usage  Usage
+	// opened is whether the text part exists yet: it is made by the first
+	// thing the turn says, so that parts the turn makes before it (reasoning,
+	// tools) come first in the message.
+	opened bool
 }
 
 func (t *fakeTurn) say(s string) {
+	if !t.opened {
+		t.opened = true
+		t.f.out.Emit(Event{Type: TypePart, MessageID: t.msgID, PartID: t.partID, Kind: PartText, State: PartStreaming})
+	}
 	t.text.WriteString(s)
 	t.f.out.Delta(t.msgID, t.partID, s)
 }
@@ -309,6 +329,7 @@ func (t *fakeTurn) end(outcome, detail string) {
 		state, msgState = PartInterrupted, MessageInterrupted
 	}
 	t.usage.Output = int64(len(t.text.String()))
+	t.usage.Context, t.usage.Window = 12000+t.usage.Input+t.usage.Output, 200000
 	t.f.out.Emit(
 		Event{Type: TypePart, MessageID: t.msgID, PartID: t.partID, Kind: PartText, State: state, Text: t.text.String()},
 		Event{Type: TypeMessageState, MessageID: t.msgID, State: msgState},
@@ -323,7 +344,6 @@ func (f *fakeAdapter) turn(ctx context.Context, msg Outgoing, n int) {
 		Event{Type: TypeMessageState, MessageID: msg.MessageID, State: MessageDelivered},
 		Event{Type: TypeTurnStarted, TurnID: t.id, MessageID: msg.MessageID},
 		Event{Type: TypeMessage, MessageID: t.msgID, Role: RoleAssistant, State: MessageStreaming, TurnID: t.id, Model: f.model},
-		Event{Type: TypePart, MessageID: t.msgID, PartID: t.partID, Kind: PartText, State: PartStreaming},
 	)
 	word, args, _ := strings.Cut(strings.TrimSpace(msg.Text), " ")
 	fields := strings.Fields(args)
@@ -351,9 +371,46 @@ func (f *fakeAdapter) turn(ctx context.Context, msg Outgoing, n int) {
 		}
 		t.say("you answered: " + string(answer))
 	case "/asknext":
-		f.out.Emit(Event{Type: TypeAsk, AskID: "ask_" + fakeID(), TurnID: t.id, Via: ViaMessage,
-			Payload: json.RawMessage(`{"title":"Fake question","questions":[{"id":"q1","question":"Pick one","kind":"text"}]}`)})
+		f.out.Emit(Event{Type: TypeAsk, AskID: "ask_" + fakeID(), TurnID: t.id, Via: ViaMessage, Payload: fakeAskPayload})
 		t.say("Questions delivered; the answers arrive as the next message.")
+	case "/askmany":
+		answer, ok := f.askWith(ctx, t, fakeAskPayload)
+		if !ok {
+			t.end(OutcomeInterrupted, "")
+			return
+		}
+		t.say("you answered: " + string(answer))
+	case "/plan":
+		if !f.plan(ctx, t) {
+			t.end(OutcomeInterrupted, "")
+			return
+		}
+	case "/md":
+		if !f.markdown(ctx, t, time.Duration(fakeInt(fields, 0, 12))*time.Millisecond) {
+			t.end(OutcomeInterrupted, "")
+			return
+		}
+	case "/tools":
+		if !f.tools(ctx, t) {
+			t.end(OutcomeInterrupted, "")
+			return
+		}
+		t.say("Done with the tools.")
+	case "/todo":
+		if !f.todo(ctx, t, time.Duration(fakeInt(fields, 0, 700))*time.Millisecond) {
+			t.end(OutcomeInterrupted, "")
+			return
+		}
+		t.say("All three tasks are done.")
+	case "/workflow":
+		if !f.workflow(ctx, t, time.Duration(fakeInt(fields, 0, 400))*time.Millisecond) {
+			t.end(OutcomeInterrupted, "")
+			return
+		}
+		t.say("The workflow finished.")
+	case "/dividers":
+		f.dividers(t)
+		t.say("Every kind of line was written.")
 	case "/subagent":
 		f.subagent(t)
 		t.say("The subagent finished.")
@@ -387,6 +444,13 @@ func (f *fakeAdapter) turn(ctx context.Context, msg Outgoing, n int) {
 		}
 	default:
 		reply := fmt.Sprintf("you said: %s (turn %d of %s)", msg.Text, n, f.conv)
+		if len(msg.Attachments) > 0 {
+			names := make([]string, 0, len(msg.Attachments))
+			for _, a := range msg.Attachments {
+				names = append(names, a.Name)
+			}
+			reply += fmt.Sprintf(" with %d attachment(s): %s", len(names), strings.Join(names, ", "))
+		}
 		for _, chunk := range fakeChunks(reply, 6) {
 			if !fakeWait(ctx, 5*time.Millisecond) {
 				t.end(OutcomeInterrupted, "")
@@ -433,7 +497,18 @@ func (f *fakeAdapter) subagent(t *fakeTurn) {
 
 // ask blocks the turn on a question until it is answered or interrupted.
 func (f *fakeAdapter) ask(ctx context.Context, t *fakeTurn) (json.RawMessage, bool) {
-	id := "ask_" + fakeID()
+	payload := json.RawMessage(`{"title":"Fake question","questions":[{"id":"q1","question":"Pick one",` +
+		`"kind":"single","options":[{"id":"a","label":"A"},{"id":"b","label":"B"}]}]}`)
+	return f.askWith(ctx, t, payload)
+}
+
+// askWith blocks the turn on an ask with this payload.
+func (f *fakeAdapter) askWith(ctx context.Context, t *fakeTurn, payload json.RawMessage) (json.RawMessage, bool) {
+	return f.askID(ctx, t, "ask_"+fakeID(), payload)
+}
+
+// askID is askWith under a given ask id.
+func (f *fakeAdapter) askID(ctx context.Context, t *fakeTurn, id string, payload json.RawMessage) (json.RawMessage, bool) {
 	ch := make(chan json.RawMessage, 1)
 	f.mu.Lock()
 	f.asks[id] = ch
@@ -443,8 +518,6 @@ func (f *fakeAdapter) ask(ctx context.Context, t *fakeTurn) (json.RawMessage, bo
 		delete(f.asks, id)
 		f.mu.Unlock()
 	}()
-	payload := json.RawMessage(`{"title":"Fake question","questions":[{"id":"q1","question":"Pick one",` +
-		`"kind":"single","options":[{"id":"a","label":"A"},{"id":"b","label":"B"}]}]}`)
 	f.out.Emit(Event{Type: TypeAsk, AskID: id, TurnID: t.id, Payload: payload})
 	select {
 	case answer := <-ch:
