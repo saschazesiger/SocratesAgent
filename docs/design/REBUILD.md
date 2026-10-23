@@ -45,7 +45,7 @@ browser ── /api/events (WS, as today: list, activity, home, push badge)
 socrates serve (systemd: socrates.service)  ── store (SQLite), backup, accounts, push, voice, ...
    │  unix socket per chat, versioned JSON protocol
    ▼
-socrates agent-host --chat <id>   (one per *active* chat; systemd scope socrates-agents.scope,
+socrates agent-host --chat <id>   (one per *active* chat; own systemd scope socrates-agents-<id>,
    │                               survives service restarts and updates, like tmux today)
    │  owns: the CLI child, the adapter, the chat's event journal, ask_user
    ▼
@@ -66,8 +66,20 @@ chat gets a small holder process, `socrates agent-host` (same binary, new subcom
   from the journal, then live events; commands: `send`, `interrupt`, `answer`, `set_model`,
   `switch_account`, `compact`, `command`, `park`, `stop`. Commands carry a `client_id`; the host is
   idempotent on it (exactly-once sends across reconnects).
-- Host protocol is versioned. After an update an idle host re-execs itself into the new binary;
-  a busy one finishes the turn first.
+- Host protocol is versioned. After an update an idle host is **parked** (CLI stopped cleanly,
+  resumed on the next message, +0.2–0.5 s); a busy one finishes first. "Idle" excludes a pending
+  `ask_user` and CLI background tasks, so a host of the previous protocol version can live for
+  about a day and the server keeps speaking that version (spike S4: re-exec keeping the child
+  works but does not pay off yet).
+- Process hygiene (spike S4, research/07): one scope per chat; the CLI is started from a locked
+  OS thread with `Pdeathsig=SIGKILL` in its own process group, so a killed host takes the CLI
+  along; tool children that escape are ended by stopping that chat's scope — only after the host
+  is confirmed dead (stopping a "stale" scope would kill a live host). Dead-host recovery: confirm
+  dead → stop scope → record the turn as interrupted → resume.
+- Exactly-once (verified across server restarts and a new host): the server keeps an outbox of
+  unacknowledged commands, the host journals each `client_id` before acting and rebuilds its
+  dedupe set from the journal; Claude's `--replay-user-messages` serves as the delivery receipt
+  for the remaining window (host dies between journaling and writing to the CLI).
 - **Parking:** a chat idle for 20 min (setting) stops its CLI child and then the host. The next
   message starts a host again and resumes the CLI conversation (`--resume`, `thread/resume`,
   OpenCode session id). This keeps process count proportional to *active* chats and makes "resume
