@@ -57,6 +57,7 @@ is one `agent.Event`: a flat JSON object, all fields optional except `seq`, `at`
 | `ask` | `ask_id`, `turn_id`, `payload` (an `ask_user` payload, below, or Claude's plan card, §5.1), `via`? | a question the agent waits for. `via: "message"`: the call already returned by design (Codex code mode, REBUILD §5.3) and the answer is to be sent as the next user message (§4.4) |
 | `ask.answered` | `ask_id`, `answer`, `by_device`, `client_id` | the first answer; later ones are refused (§4.4) |
 | `ask.delivered` | `ask_id`, `via` (`tool`\|`message`) | how the answer reached the agent |
+| `ask.closed` | `ask_id` | nobody waits for the answer any more: the person sent a message after the call was gone (§4.4). It is no longer open, and can still be answered (as a message) |
 | `account.switched` | `from`, `to`, `reason` | divider (WP7) |
 | `model.changed` | `model`, `effort` | for the turns that follow |
 | `rate_limit` | `window`, `used` (0..1), `resets_at` (Unix s) | one usage window |
@@ -93,20 +94,33 @@ same in all three agents. The `ask` payload is the call normalised (`askuser.Pay
 question, context?, kind: single|multi|text|confirm|number, options?: [{id, label, description?,
 details?, recommended?}], min?, max?, allow_other, allow_delegate, default?, required, secret?}],
 part_id?, source?}`. Defaults are applied (`allow_other`, `allow_delegate`, `required`: true), ids
-filled in (`q<n>`, an option's from its label), the kind inferred from the options, a `default`
-that fits nothing dropped. `part_id` is the tool part the call belongs to, when the adapter knows
-it. `source` is set when the questions came from one of the agent's own mechanisms, converted into
-the same shape: `request_user_input` (Codex Plan mode), `async_question` (Codex code mode),
-`elicitation` (an MCP elicitation form: one question per field, no delegating; a form without
-fields is one `confirm`), `question` (OpenCode's own tool). The `answer` of `ask.answered` is what
+filled in (`q<n>` by place, never an id the model gave another question; an option's from its
+label), the kind inferred from the options, a `default` that fits nothing dropped. `part_id` is the
+tool part the call belongs to, when the adapter knows it. `source` is set when the questions came
+from one of the agent's own mechanisms, converted into the same shape: `request_user_input` (Codex
+Plan mode), `async_question` (Codex code mode), `elicitation` (an MCP elicitation form: one
+question per field, no delegating; a form without fields is one `confirm`), `question` (OpenCode's
+own tool). A converted payload keeps every question and option its mechanism sent: the limits of
+§5.1 (20 questions, 12 options) bind the model's calls only. The `answer` of `ask.answered` is what
 the browser sends; the shape is REBUILD §5.2, `{answers: {<id>: {selected, other, note, delegated,
 skipped, value?}}, general_note, follow_up}` (`askuser.ReadAnswer` normalises it: every question
 gets an entry, selections name only the question's options, a confirm is `selected: ["yes"|"no"]`
 with `value: true|false`, a number its `value`; a bare JSON string is taken as the general note).
 The model gets that JSON as the tool's result, followed by a line for a follow-up, delegated or
 skipped questions (`askuser.ToolResult`); a converted question's answer goes back in its
-mechanism's own shape. An answer that arrives as a message (§4.4) is `askuser.MessageText`: the
-questions and the answers in words, then the same JSON.
+mechanism's own shape. An elicitation form has no place for the person's own words: when the
+answer has a note, a general note, a question back, a choice in their own words or a delegation
+(`askuser.SaysMore`), the form gets the values it takes and `Answer` reports `ErrAskDeferred`, so
+that the whole answer also goes as a message (§4.4). An answer that arrives as a message is
+`askuser.MessageText`: the questions and the answers in words, then the same JSON.
+
+**Waiting calls** (`agent.Waits`). The Claude, Codex and fake adapters keep the calls that wait on
+the person in one `agent.Waits`: `Wait` emits the call's `ask` and blocks until the answer or the
+end of its context (the CLI withdrew the call, or exited); `Answer` hands the answer over. The
+waiting call alone decides: `Answer` reports success only when the call took the answer while its
+context still ran, otherwise `ErrAskGone`, so an answer is never journaled as delivered through
+the tool and then dropped. `Withdraw` marks calls gone before their context ends (an interrupt the
+CLI acknowledged); a call withdrawn before it waited asks nothing.
 
 ## 3. Journal, coalescing, projection
 
@@ -144,8 +158,15 @@ host's dedupe set). Rules:
 - `Undelivered()`: user messages not `delivered`. `UnsentAnswers()`: answered asks with no
   `ask.delivered`. A new host hands both to the agent (§6).
 
-**Summary / activity** (`Projection.Summary()`): `activity` is `waiting` while any ask is
-unanswered, else `busy` while a turn runs, else `tasks` while background tasks run, else `idle`.
+**Asks** in the projection: `OpenAsks()` are the asks neither answered nor closed. `Unwaited()` are
+the open asks no call waits on: the asks of a turn that has ended (an interrupt, a host that died)
+and those with `via: "message"`; an ask without a `turn_id` is never among them, because a call
+may still wait on it.
+
+**Summary / activity** (`Projection.Summary()`): `activity` is `waiting` while an open ask belongs
+to the running turn (or has no turn), or while any ask is open and no turn runs; else `busy` while
+a turn runs (an open ask of an earlier turn does not hide it), else `tasks` while background tasks
+run, else `idle`. `open_asks` counts every open ask.
 The server reports it to the terminal detector with `termux.ReportActivity` (committed exactly, no
 debounce; note `question` for waiting; `asked` = the chat has a user message). The unread mark, row
 ordering (`MovesRow`), refiling into in-progress, the `activity` frames and push are the terminals'.
@@ -163,8 +184,8 @@ below the host's minimum. The server accepts hosts speaking `MinProtocol..Protoc
 1..2); when the protocol changes, keep the old version readable for a day (a busy host of the
 previous build lives on, REBUILD §2.1). Version 2 (WP6) added the `ask` op of a local tool and its
 `answer` frame; the server's own ops are those of version 1, so a server and a host of either
-version understand each other. A connection asks for no events with a `since` beyond any journal
-(`1<<62`), which is what a tool's connection does.
+version understand each other. A connection asks for no events with `since` = `NoEvents`
+(`1<<62`, beyond any journal), which is what a tool's connection does; it gets no deltas either.
 
 ### 4.2 Host → client
 
@@ -187,14 +208,14 @@ version understand each other. A connection asks for no events with a `since` be
 
 | op | fields | host does |
 |---|---|---|
-| `send` | `client_id` (required), `text`, `attachments` | journals `message{user, pending}`, hands it to the adapter, acks |
+| `send` | `client_id` (required), `text`, `attachments` | journals `message{user, pending}` and, in the same batch, `ask.closed` for every `Unwaited()` ask (§4.4), hands it to the adapter, acks with the message's seq |
 | `interrupt` | `client_id`? | journals `command`, `Adapter.Interrupt` |
 | `answer` | `client_id`, `ask_id`, `answer` (JSON), `device` | §4.4 |
 | `set_model` | `client_id`?, `model`, `effort` | journals `command`, `Adapter.SetModel` (which emits `model.changed`) |
 | `command` | `client_id`?, `name`, `args` | journals `command`, `Adapter.Command` (`compact`, or a slash command); unknown → `unsupported` |
 | `park` | `client_id`? | parks as soon as idle (§6) |
 | `stop` | `client_id`? | stops the CLI now, records an interrupted turn, exits |
-| `ask` (version 2) | `payload` (an `ask_user` payload) | a local tool's question (`socrates mcp-ask`, §5.3): journals `ask{turn_id: the running turn}` and acks with its `ask_id`; the answer comes back on this connection as an `answer` frame (§4.4). Refused (`bad_request`) on a connection that said hello with protocol 1 or without a payload, `not_running` without an agent |
+| `ask` (version 2) | `payload` (an `ask_user` payload) | a local tool's question (`socrates mcp-ask`, §5.3): journals `ask{turn_id: the running turn}` and acks with its `ask_id`; the answer comes back on this connection as an `answer` frame (§4.4). Refused (`bad_request`) on a connection that said hello with protocol 1, without a payload, or while no turn runs (the CLI calls tools only inside a turn, so such a question comes from a call already withdrawn), `not_running` without an agent |
 
 Reserved for WP7: `switch_account` (park + relaunch with the other account's env, `account.switched`).
 
@@ -220,6 +241,14 @@ Unknown `ask_id` → `unknown_ask`. Already answered with another `client_id` �
   error) → the same message plus `notice{answer_as_message}`, because the call was lost. An open ask never
 expires; it survives parks, host deaths and reboots, and an answer to it after any of those arrives
 as a message.
+
+**Closing.** Interrupts and recovery leave asks open. A user message (`send`) closes every ask no
+call waits on any more (`Unwaited()`, journaled as `ask.closed` with the message): the person moved
+on, having pressed Stop and written something else, or written instead of answering a question
+meant for the next message. A message sent while the call still waits closes nothing (it queues
+behind the turn). A closed ask is no longer open — not `waiting`, not on the badge or Home — but it
+takes an answer as before (§4.4: as a message, with the notice where the call was lost); nothing
+the person typed is refused.
 
 ## 5. Adapters (WP3–WP5)
 
@@ -250,8 +279,10 @@ Rules every adapter keeps:
    whose answer is meant to start the next turn. Set `parent_part_id` on everything a subagent or
    workflow produces. Report `ErrAskGone` from `Answer` when the blocking call is not there — and
    once the CLI has withdrawn it (an interrupt, a timeout, its exit), even if a goroutine of the
-   adapter still holds it; report CLI death through `Emitter.Exited` (not for exits Park/Stop
-   caused).
+   adapter still holds it (`agent.Waits` does this); a carrier of MCP calls ends a call's context
+   when `notifications/cancelled` names it, in the order it reads them, so that a cancel right
+   behind its call is never missed. Report CLI death through `Emitter.Exited` (not for exits
+   Park/Stop caused).
 7. `Background()` counts what parking would kill (Claude `task_*`, Codex background terminals).
 
 | | Claude Code (WP3) | Codex (WP4) | OpenCode (WP5) |
@@ -349,10 +380,16 @@ after `initialize`; a `tools/call` is answered by `askuser.MCP` on a goroutine o
 `Answer`, and the model gets REBUILD §5.2 (`askuser.ToolResult`). Every handler of the CLI's
 requests runs under a context that ends when the CLI withdraws the request
 (`control_cancel_request`) and when the CLI exits (WP3 review); MCP notifications, among them
-`notifications/cancelled` (an interrupt, a timeout), are handled in order with the stream, so a
-call the CLI withdrew is gone before the turn's end that follows is read: an answer after it is
-`ErrAskGone` and goes as a message. An MCP elicitation (`control_request{subtype: elicitation}`) is
-asked as a form (`source: elicitation`) and answered `{action, content}`.
+`notifications/cancelled` (an interrupt, a timeout), are handled in order with the stream: the
+adapter ends the context of the call they name (by server and JSON-RPC id, registered before the
+next frame is read), so a call the CLI withdrew is gone before the turn's end that follows is read,
+even one withdrawn right behind its `tools/call`: an answer after it is `ErrAskGone` and goes as a
+message. Once the CLI has acknowledged an `interrupt`, the main agent's ask_user calls of that turn
+are withdrawn (`agent.Waits.Withdraw`) without waiting for their cancels; a subagent's call is left
+to its own cancel, because a background subagent outlives the turn. An MCP elicitation
+(`control_request{subtype: elicitation}`) is asked as a form (`source: elicitation`) and answered
+`{action, content}`; one that is not a form, or cannot be read, is declined with
+`notice{elicitation_declined}`.
 
 **Events of its own.** `notice` codes `compacted` (`compact_boundary`, a divider with the token
 counts), `api_retry`, `informational` (warnings such as "can't use thinking from another
@@ -451,10 +488,12 @@ the requested permissions, for the session; an MCP elicitation that is a tool-ca
 thread (codex keeps it with the thread) and routes its `item/tool/call` to `Handle`;
 `codex.HandleRequest(method, handler)` replaces a built-in answer. A handler gets a `*codex.Call`
 with `Model` (the thread's model, a subagent's own), `PartID` (the part of the item it is about),
-`Ask(ctx, payload)` (emits `ask`, blocks until `Answer`; `ErrAskGone` when the turn ends, codex
-withdraws the request (`serverRequest/resolved`) or the app-server goes — `Answer` reports it gone
-as soon as the turn's end cancelled it), `Defer(payload)` (emits `ask{via:"message"}`) and
-`Notice`.
+`Ask(ctx, payload)` (emits `ask`, blocks until `Answer`, through `agent.Waits`; `ErrAskGone` when
+the turn ends, codex withdraws the request (`serverRequest/resolved`) or the app-server goes —
+`Answer` reports it gone as soon as the turn's end cancelled it, and as soon as codex has taken a
+`turn/interrupt`, which cancels the turn's requests at once), `Defer(payload)` (emits
+`ask{via:"message"}`) and `Notice`. An elicitation answer with words the form has no place for is
+answered in the form's shape and reported `ErrAskDeferred` (§2, Asks).
 
 **Questions** (`askuser.go`, registered by the package's `init`, so before any `Start`):
 
@@ -538,18 +577,22 @@ retries: `notice{retry}` per attempt. `permission.asked` → replied `always` + 
 per question (`askuser.OpenCodeAnswers`); `question.replied`/`question.rejected`, a reply OpenCode
 refuses and a process started since make it `ErrAskGone`; one it cannot read is rejected +
 `notice{question_rejected}`. After `/event` drops, it is reopened and caught up from
-`GET …/message` and `/session/status`.
+`GET …/message`, `GET /question` (a question asked meanwhile is asked then; each question is asked
+once, however often the event and the list bring it) and `/session/status`.
 
 **ask_user.** The config's `mcp.socrates = {type: "local", command: StartSpec.AskCommand, timeout:
 86400000}`: the host's `<socrates> mcp-ask --socket <its socket>` (`agenthost.MCPAskMain`, the same
 binary; empty outside a host, and then there is no such server). OpenCode starts it with the serve
 and does the handshake (protocol 2025-11-25, verified against 1.19.4); the model knows the tool as
 `socrates_ask_user`, and the server's `instructions` (the guidance) go into the system prompt.
-`mcp-ask` serves `askuser.MCP` on stdio: a bad call goes back to the model; a good one opens a
-connection to the host (`hello{proto: 2, since: 1<<62}`, then the `ask` op, §4.3) and waits for
-its `answer` frame, sending `notifications/progress` every 30 s for a call with a progress token
-(each resets OpenCode's timeout); `notifications/cancelled` (an abort) or the end of its stdin
-closes the connection, and the ask is answered as a message from then on. The adapter itself never
+`mcp-ask` serves `askuser.MCP` on stdio (`serverInfo.version` is the Socrates version): a bad call
+goes back to the model; a good one opens a connection to the host (`hello{proto: 2, since:
+NoEvents}`, then the `ask` op, §4.3) and waits for its `answer` frame, sending
+`notifications/progress` every 30 s for a call with a progress token (each resets OpenCode's
+timeout; none after the call's response); `notifications/cancelled` (an abort; each request's
+context is registered by JSON-RPC id before the next line is read, so a cancel right behind its
+call finds it) or the end of its stdin closes the connection, and the ask is answered as a message
+from then on. The adapter itself never
 sees an ask_user answer: the host routes it (§4.4).
 
 **Parts and content** (exported types in `convert.go`):
@@ -606,11 +649,11 @@ with an error wrapping `agent.ErrConversationNotFound` (the CLI does not know th
 resume) is retried once as a new conversation (no rebuild) with `notice{conversation_lost}`: the history stays in
 the journal, the model's context starts over.
 
-**Idle and parking:** idle = adapter up, no turn, no local tool waiting on an ask (`ask` op),
-`Background() == 0`, and no user message the agent has not taken up (one acknowledged a moment ago
-is still on its way in). A call that waits on the person is always inside a running turn (or a
-background task, which `Background()` counts), so that is what keeps a host while a question is
-being waited on. An open ask **outside** a running turn does not: its call is gone (the turn was
+**Idle and parking:** idle = adapter up, no turn, `Background() == 0`, and no user message the
+agent has not taken up (one acknowledged a moment ago is still on its way in). A call that waits on
+the person is always inside a running turn (or a background task, which `Background()` counts) —
+a local tool's (`ask` op) too, whose call does not outlive its turn — so that is what keeps a host
+while a question is being waited on. An open ask **outside** a running turn does not: its call is gone (the turn was
 interrupted, or the host before this one died) or never waited (`via: "message"`), so its answer
 goes to the agent as a message whenever it comes, through whichever host is up then (WP6; the WP2
 review found that such an ask kept its host alive for ever). After
@@ -723,20 +766,28 @@ palette is `compact`. Script, by message text:
   answers, the session list.
 - ask_user (WP6): `internal/agent/askuser` (schema limits, the checks and their messages, the
   shorthands, answers read back, the message text, every converter both ways, the MCP server:
-  handshake, a blocking call, cancellation, progress); each adapter against its fake
-  (`fakeclaude` `/askuser` `/elicit` `/mcp`; `fakecodex` `/tool ask_user`, `/input`, `/async`,
-  `/elicit`; `fakeopencode` starts the config's local MCP servers, `/askuser` `/mcp`): the ask,
-  the answer back as §5.2, a bad call sent back, an interrupt or a CLI exit making it
-  `ErrAskGone`, Codex code mode deferred; `internal/agenthost` through real hosts: two devices, an
-  ask left by an interrupted turn lets the host park and is answered as a message by the next one,
-  an ask survives a SIGKILL of its host, the `ask` op of a local tool (its turn, its answer frame,
-  no park while it waits, refused on protocol 1), and `ServeMCPAsk` end to end; OpenCode in a real
+  handshake, a blocking call, cancellation, progress never after the response, converted forms
+  beyond the limits, `SaysMore`); `internal/agent`: `agent.Waits` (an answer racing the call's
+  end decided once, withdrawn calls, an elicitation answer deferred), `Unwaited` and the activity
+  of an ask of another turn; each adapter against its fake (`fakeclaude` `/askuser` `/askdrop`
+  `/elicit [url]` `/mcp`; `fakecodex` `/tool ask_user`, `/input`, `/async`, `/elicit`;
+  `fakeopencode` starts the config's local MCP servers, `/askuser` `/mcp` `/question unseen`): the
+  ask, the answer back as §5.2, a bad call sent back, an interrupt (at once, before the call's own
+  cancel) or a CLI exit making it `ErrAskGone`, a call withdrawn right behind its `tools/call`,
+  Codex code mode deferred, an elicitation answer with a note or a question back deferred, an
+  OpenCode question asked while `/event` was down; `internal/agenthost` through real hosts: two
+  devices, an ask left by an interrupted turn lets the host park and is answered as a message by
+  the next one, an ask survives a SIGKILL of its host, a message after the call is gone closes the
+  ask (one sent while it waits does not), the `ask` op of a local tool (its turn, its answer
+  frame, an interrupted call that does not keep the host, refused outside a turn and on protocol
+  1, no events or deltas on its connection), and `ServeMCPAsk` end to end; OpenCode in a real
   host: `mcp-ask` answered through the host, and an aborted call answered as a message.
   `e2e/asks.mjs`: the real binary with the three fakes as the CLIs, the answer route with the
   dialog's §5.2 body for each agent, a second device, the answer after an interrupt, Codex code
   mode. Real binaries: `SOCRATES_REAL_CODEX=1` (ask_user blocking, code mode deferred, Plan mode
   `request_user_input`, `request_user_input_async`, an MCP server's elicitation through the
-  granular policy, the guidance in the developer instructions), `SOCRATES_OPENCODE_REAL=1` (serve
+  granular policy, the guidance in the developer instructions, kept once by a thread resumed
+  twice), `SOCRATES_OPENCODE_REAL=1` (serve
   starts `mcp-ask` and lists ask_user with its instructions; a free model of the `opencode`
   provider asks in a real host and goes on from the answer; skipped when its quota is used up).
 - `internal/agent/codex` against `e2e/fakebin/fakecodex` (built by the tests; a scripted app-server
@@ -758,11 +809,15 @@ palette is `compact`. Script, by message text:
 - ask_user (WP6) for the views (WP8): an `ask` payload is `askuser.Payload` (§2, Asks) or Claude's
   plan card (`kind: "plan"`); `source` says when the questions came from one of the agent's own
   mechanisms (an elicitation offers no "You decide", `allow_delegate: false`); `part_id` names the
-  tool part the call belongs to, which the view can fold into the ask card. For the feeds (WP9):
-  an open ask outside a running turn still makes the chat `waiting` (Summary), by design.
+  tool part the call belongs to, which the view can fold into the ask card; an ask with `closed`
+  (`ask.closed`) is shown as not answered, and can still be answered. For the feeds (WP9): read
+  `OpenAsks()` and `Summary()` — an open ask outside a running turn keeps the chat `waiting` while
+  no turn runs, until it is answered or the person sends a message, which closes it (§4.4).
   Claude's ask_user is unverified against a real CLI here (no Claude login for tests): the
   in-process MCP path is research/03 §4.1, and the cancel on an interrupt is taken from
-  `notifications/cancelled` and `control_cancel_request`, both handled.
+  `notifications/cancelled` and `control_cancel_request`, both handled. `TestLiveAskUser`
+  (`SOCRATES_CLAUDE_LIVE=1`) checks the handshake, `_meta claudecode/toolUseId`, the blocking call
+  and the cancel on an interrupt against the real binary; it has not run yet.
 - The Claude adapter's replay receipt is in (§5.1). Ultracode and an API-key account reach it
   only through `StartSpec.Env` (`SOCRATES_CLAUDE_ULTRACODE`, `SOCRATES_CLAUDE_API_KEY`); the server
   sets neither yet (WP7, WP9).
