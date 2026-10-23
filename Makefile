@@ -2,7 +2,7 @@ BINARY  ?= socrates
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: build test race fmt fmt-check vet tidy-check check e2e vendor-ds ds-check clean
+.PHONY: build test race fmt fmt-check vet tidy-check check e2e vendor-ds vendor-markdown ds-check clean
 
 ## build: compile the single binary into ./socrates, for the tests and a quick
 ## compile check. scripts/install.sh and scripts/update.sh build the installed
@@ -62,6 +62,12 @@ e2e: build
 ## for an upgrade and never for a build: CI never runs it.
 vendor-xterm: ## re-download the pinned xterm.js bundle set
 	@bash scripts/vendor-xterm.sh
+
+## vendor-markdown re-downloads the pinned Markdown renderer and sanitizer the
+## chat view uses into internal/web/static/vendor/markdown. Committed and
+## checksummed like the terminal; CI never runs it.
+vendor-markdown: ## re-download the pinned marked and DOMPurify
+	@bash scripts/vendor-markdown.sh
 
 ## vendor-ds replaces the vendored Dashboard-Style with the latest main of
 ## github.com/saschazesiger/Dashboard-Style, through that commit's own
