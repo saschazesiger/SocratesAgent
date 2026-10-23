@@ -654,8 +654,13 @@ func (a *Adapter) next() {
 	a.queue = a.queue[1:]
 	ctx, cancel := context.WithTimeout(context.Background(), requestWait)
 	defer cancel()
-	if err := a.runLocked(ctx, j); err != nil && j.msg.MessageID != "" {
+	err := a.runLocked(ctx, j)
+	switch {
+	case err == nil:
+	case j.msg.MessageID != "":
 		a.out.Emit(agent.Event{Type: agent.TypeError, Code: "send_failed", MessageID: j.msg.MessageID, Text: err.Error()})
+	default:
+		a.out.Emit(agent.Event{Type: agent.TypeError, Code: "command_failed", Text: j.display + ": " + err.Error()})
 	}
 }
 
