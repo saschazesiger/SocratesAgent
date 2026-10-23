@@ -12,12 +12,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/saschazesiger/SocratesAgent/internal/backup"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
+	"github.com/saschazesiger/SocratesAgent/internal/paths"
 	"github.com/saschazesiger/SocratesAgent/internal/sdnotify"
 	"github.com/saschazesiger/SocratesAgent/internal/server"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
@@ -28,10 +30,11 @@ import (
 var version = "dev"
 
 // startupGrace is how long systemd's watchdog is fed before the listener
-// serves, with nothing to prove it. It is a few bucket connects long: a start
-// that reaches neither the server nor the connect page in that time is not
-// slow, it is stuck, and the watchdog restarting it is the way out.
-const startupGrace = 3 * connectTimeout
+// serves, with nothing to prove it. A start opens the database, migrates it
+// and reconciles with tmux, none of which takes minutes: a start that has not
+// reached its listener in this time is not slow, it is stuck, and the
+// watchdog restarting it is the way out.
+const startupGrace = 15 * time.Minute
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime)
@@ -47,6 +50,9 @@ func main() {
 		case "tmux-hook":
 			tmuxHook(args[1:])
 			return
+		case "restore":
+			restoreCommand(args[1:])
+			return
 		}
 	}
 
@@ -56,7 +62,8 @@ func main() {
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Socrates %s - a terminal harness for Shell, Claude Code, Codex and OpenCode\n\n", version)
-		fmt.Fprintf(os.Stderr, "Usage:\n  socrates [flags]        start the web server\n\nFlags:\n")
+		fmt.Fprintf(os.Stderr, "Usage:\n  socrates [flags]        start the web server\n"+
+			"  socrates restore ...    restore a backup onto this machine (socrates restore -h)\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -79,75 +86,57 @@ func main() {
 	server.Version = version
 
 	// The watchdog comes first, before anything that can hang, so a hung
-	// start is restarted like a crashed one. A re-exec starts here again in
-	// the same process, so the new image takes over the pinging at once.
-	// Its loop is not tied to life: a shutdown is fed too, for a while.
+	// start is restarted like a crashed one. Its loop is not tied to life: a
+	// shutdown is fed too, for a while.
 	watchdog := sdnotify.NewWatchdog(startupGrace)
 	watchdog.Start(context.Background())
 
 	if err := os.MkdirAll(*dataDir, 0o700); err != nil {
 		log.Fatalf("could not create the data directory %s: %v", *dataDir, err)
 	}
-	dbPath := filepath.Join(*dataDir, "socrates.db")
-	st, err := store.Open(dbPath)
+	unlock, err := lockDataDir(*dataDir)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	// A restore that was staged before this start - from the setup page,
+	// which restarts the process into this - is moved into place before
+	// anything opens the database it brings.
+	if id, err := backup.ApplyPending(*dataDir); err != nil {
+		log.Fatalf("could not finish the restore: %v", err)
+	} else if id != "" {
+		log.Printf("restore: snapshot %s is in place", id)
+	}
+	st, err := store.Open(paths.New(*dataDir).DB())
 	if err != nil {
 		log.Fatalf("could not open the database: %v", err)
 	}
-	defer st.Close()
 
-	// One context for the life of the process: SIGTERM ends it, whether the
-	// server got as far as serving sessions or is still waiting on the
-	// connect page.
+	// life ends with SIGTERM, and with a finished restore, which is a stop
+	// followed by a start of the same binary.
 	life, stopLife := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopLife()
-
-	// The listener is opened late on an ordinary start - after the bucket
-	// has been read and the sessions reconciled, so the first request is
-	// answered by a server that knows the whole state - and early when the
-	// bucket cannot be used, because then the connect page is the only
-	// thing there is to serve. front is the handler the listener serves in
-	// both cases; it is switched from the connect page to the server once
-	// the storage is there.
-	front := &frontHandler{}
-	httpServer := &http.Server{
-		Handler:           front,
-		ReadHeaderTimeout: 20 * time.Second,
-		// No write timeout: a terminal connection stays open for a long time.
-	}
-	var listener net.Listener
-	serve := func() {
-		ln, err := listen(*addr)
-		if err != nil {
-			log.Fatalf("could not listen on %s: %v", *addr, err)
-		}
-		listener = ln
-		go func() {
-			if err := httpServer.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Fatalf("server error: %v", err)
-			}
-		}()
-		// From here a ping has to be earned: the connect page answers
-		// /api/health as the server does, so the probe is the same in
-		// both, and the switch from one to the other is not a gap.
-		watchdog.Serving(sdnotify.HTTPProbe(ln.Addr(), "/api/health"))
-	}
-
-	// The bucket comes first: it is the store of record, and the database
-	// the server is about to read has to have been made equal to it.
-	m := openStorage(life, st, *dataDir, front, serve)
-	if m == nil {
-		log.Print("shutting down")
-		watchdog.Stopping()
-		shutdownHTTP(httpServer)
-		return
-	}
+	life, restartForRestore := context.WithCancel(life)
+	var restarting atomic.Bool
 
 	srv, err := server.New(st, *dataDir)
 	if err != nil {
 		log.Fatalf("could not start: %v", err)
 	}
-	srv.SetMirror(m)
-	m.Start(context.Background())
+	srv.SetRestart(func() {
+		restarting.Store(true)
+		restartForRestore()
+	})
+	// The backup runs beside the server and never in its way: a bucket that
+	// is not configured or cannot be reached changes nothing here.
+	backups, err := backup.New(backup.Options{
+		DataDir: *dataDir, Version: version, Exclude: srv.BackupExclusions, WarnAfter: warnAfter(),
+	})
+	if err != nil {
+		log.Printf("backup: %v; backups are off until it is fixed in Admin", err)
+	} else {
+		srv.SetBackup(backups)
+		backups.Start(context.Background())
+	}
 
 	// The terminal substrate comes up before the listener accepts, so that the
 	// very first session list is answered by a Socrates that has already
@@ -159,11 +148,24 @@ func main() {
 		log.Printf("terminal sessions are unavailable: %v", err)
 	}
 
-	if listener == nil {
-		serve()
+	listener, err := listen(*addr)
+	if err != nil {
+		log.Fatalf("could not listen on %s: %v", *addr, err)
 	}
+	httpServer := &http.Server{
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 20 * time.Second,
+		// No write timeout: a terminal connection stays open for a long time.
+	}
+	go func() {
+		if err := httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("server error: %v", err)
+		}
+	}()
+	// From here a ping has to be earned: it is fed only while the server
+	// answers its own health check.
+	watchdog.Serving(sdnotify.HTTPProbe(listener.Addr(), "/api/health"))
 	srv.SetLocalURL(localBaseURL(listener.Addr()))
-	front.set(srv.Handler())
 
 	log.Printf("Socrates %s", version)
 	log.Printf("data directory: %s", *dataDir)
@@ -185,16 +187,45 @@ func main() {
 	stopSessions()
 	srv.StopSessions()
 	shutdownHTTP(httpServer)
-	// Last, once nothing can write any more: what is still pending goes up,
-	// and the lease is let go so the next start - here or elsewhere - takes
-	// it at once. Bounded, because a bucket that does not answer must not
-	// hold the service's stop for ever; what does not make it stays pending
-	// in the database for the next start.
-	flushCtx, cancelFlush := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancelFlush()
-	if err := m.Close(flushCtx); err != nil {
-		log.Printf("storage: %v", err)
+	if restarting.Load() {
+		// The data directory is about to be replaced by the restore: what
+		// is here is not worth a backup, and must not become the newest
+		// snapshot in the bucket it came from.
+		_ = st.Close()
+		unlock()
+		log.Print("restore: starting again on the restored data directory")
+		if err := reexec(); err != nil {
+			log.Fatalf("the restore is staged, but Socrates could not restart itself (%v): start it again", err)
+		}
+		return
 	}
+	// Last, once nothing writes any more: one more backup, bounded, because
+	// a bucket that does not answer must not hold the service's stop for
+	// ever. What does not make it is backed up by the next start.
+	if backups != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownBackup)
+		if err := backups.Close(ctx); err != nil && !errors.Is(err, backup.ErrNotConfigured) {
+			log.Printf("backup: the last backup before the stop: %v", err)
+		}
+		cancel()
+	}
+	_ = st.Close()
+	unlock()
+}
+
+// shutdownBackup bounds the backup a stop makes. socrates.service gives a
+// stop 60 seconds in all.
+const shutdownBackup = 40 * time.Second
+
+// warnAfter is how long without a successful backup before the admin page
+// and /api/state say so. SOCRATES_BACKUP_WARN_AFTER (a Go duration) moves
+// it, for the browser suite; zero is the backup package's day.
+func warnAfter() time.Duration {
+	d, err := time.ParseDuration(strings.TrimSpace(os.Getenv("SOCRATES_BACKUP_WARN_AFTER")))
+	if err != nil {
+		return 0
+	}
+	return d
 }
 
 func shutdownHTTP(httpServer *http.Server) {

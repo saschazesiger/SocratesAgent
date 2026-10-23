@@ -1,21 +1,19 @@
-// fakes3 is the bucket the browser suite runs against.
+// fakes3 is the bucket the browser suite backs up into.
 //
-// S3 is mandatory: a Socrates without a bucket serves the connect page and
-// nothing else, so every scenario needs one. A real bucket would make the
-// suite depend on the network, on credentials and on somebody cleaning up
-// after it, so e2e/run.mjs starts this program once per run instead and hands
-// every scenario its own prefix on it.
+// A real bucket would make the suite depend on the network, on credentials and
+// on somebody cleaning up after it, so the harness starts this program the
+// first time a scenario wants a bucket - the backup and restore scenarios -
+// and hands each of them a prefix of its own on it.
 //
-// It is internal/s3/s3fake - the same in-memory store the mirror's unit tests
-// use, with real SigV4 verification and the conditional-PUT behaviour of the
-// Ceph RGW Socrates is deployed against - served on a real port. Everything
-// lives in memory and dies with the process: a run's state is meant to be
-// thrown away, and a store that outlived the run would only be one more thing
-// that can leak into the next.
+// It is internal/s3/s3fake - the same in-memory store the backup's unit tests
+// use, with real SigV4 verification - served on a real port. Everything lives
+// in memory and dies with the process: a run's state is meant to be thrown
+// away, and a store that outlived the run would only be one more thing that
+// can leak into the next.
 //
 // One thing a store never offers is a way to break it on purpose, and that is
-// what the storage banner scenario needs: /_fakes3/down?status=503 makes every
-// S3 request fail with that status until /_fakes3/up. These two paths are not
+// what the backup scenario needs: /_fakes3/down?status=503 makes every S3
+// request fail with that status until /_fakes3/up. These two paths are not
 // signed - nothing about the fake is secret - and cannot collide with S3,
 // because a bucket name never starts with an underscore.
 //

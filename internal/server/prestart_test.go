@@ -135,7 +135,7 @@ func TestPreparedSettingsAndDraft(t *testing.T) {
 
 	// The draft: revision checked, conflicts handed back, size bounded.
 	res, payload = e.do(t, e.client, "GET", "/api/sessions/"+id+"/draft", "")
-	if res.StatusCode != http.StatusOK || payload["text"] != "" || payload["rev"] != float64(0) || payload["backed_up"] != false {
+	if res.StatusCode != http.StatusOK || payload["text"] != "" || payload["rev"] != float64(0) {
 		t.Fatalf("empty draft: %d %#v", res.StatusCode, payload)
 	}
 	if res, payload = e.putDraft(id, "one", 0); res.StatusCode != http.StatusOK || payload["rev"] != float64(1) {
@@ -367,7 +367,7 @@ func nextPush(t *testing.T, sent <-chan sentPush) pushNote {
 
 // The scheduler, on a clock of the test's choosing: nothing before its time,
 // the due session at its time and the other one not, a failure reported once
-// and never retried, and nothing at all while the gate is shut.
+// and never retried.
 func TestSchedulerStartsWhatIsDue(t *testing.T) {
 	e := newSessionEnv(t)
 	sent := subscribe(t, e)
@@ -398,16 +398,6 @@ func TestSchedulerStartsWhatIsDue(t *testing.T) {
 	if row, _ := e.store.GetSession(later); row.State != store.StatePrestart || row.StartAt == 0 {
 		t.Fatalf("the later session = %#v", row)
 	}
-
-	// The gate shut - a fenced mirror - starts nothing and keeps the schedule.
-	e.srv.SetAutoStartGate(func() error { return errors.New("another Socrates holds the bucket") })
-	if n := e.srv.sched.runDue(ctx, now.Add(4*time.Hour)); n != 0 {
-		t.Fatalf("%d sessions started through a shut gate", n)
-	}
-	if row, _ := e.store.GetSession(later); row.State != store.StatePrestart || row.StartAt != now.UnixMilli()+3*hour {
-		t.Fatalf("a shut gate touched the schedule: %#v", row)
-	}
-	e.srv.SetAutoStartGate(nil)
 
 	// A start that fails is reported, keeps the session prepared with the
 	// reason, clears the schedule and is not tried again.

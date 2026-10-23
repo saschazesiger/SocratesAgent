@@ -188,8 +188,6 @@ func (c *costLedger) pass() {
 type costsView struct {
 	Scanning  bool              `json:"scanning"`
 	ScannedAt int64             `json:"scanned_at"`
-	Mirrored  bool              `json:"mirrored"`
-	Pending   int               `json:"pending"`
 	Profiles  map[string]string `json:"profiles"`
 	Convs     []costConvView    `json:"conversations"`
 	Models    []string          `json:"models"`
@@ -238,7 +236,6 @@ func (s *Server) handleCosts(w http.ResponseWriter, r *http.Request) {
 	view := costsView{
 		Scanning:  s.costs.running.Load() || s.costs.lastPass.Load() == 0,
 		ScannedAt: s.costs.lastPass.Load(),
-		Mirrored:  s.store.MirrorTracking(),
 		Profiles:  map[string]string{"": defaultProfileName},
 		Convs:     []costConvView{},
 		Models:    []string{},
@@ -247,13 +244,6 @@ func (s *Server) handleCosts(w http.ResponseWriter, r *http.Request) {
 	if list, err := s.loadProfiles(); err == nil {
 		for _, p := range list {
 			view.Profiles[p.ID] = p.Name
-		}
-	}
-	if pending, err := s.store.ListPending(); err == nil {
-		for _, p := range pending {
-			if strings.HasPrefix(p.Object, "costs/") {
-				view.Pending++
-			}
 		}
 	}
 

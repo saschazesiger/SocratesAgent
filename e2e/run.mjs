@@ -10,7 +10,7 @@
 
 import {
   start, setup, shot, ok, scenario, skipScenario, finish, ensureNav, wait,
-  readFakeLog, killTmux, openRouterStub, fakeS3Switch, sessionsOn, windowSize, scratchDir, PASSWORD, LIVE, SHOTS,
+  readFakeLog, killTmux, openRouterStub, fakeS3Switch, backupForm, prefixFor, sessionsOn, windowSize, scratchDir, PASSWORD, LIVE, SHOTS,
   tmuxSock, DIGEST_MARKER, freePort, spawnServer, waitForHealth,
 } from './harness.mjs';
 import http from 'node:http';
@@ -6523,17 +6523,14 @@ async function prestart() {
     ok(group.shelf === 'prestart' && group.open && group.first && group.folder,
       'its row is on its folder\'s PreStart shelf, open, above the folder\'s sessions', JSON.stringify(group));
 
-    // The prompt saves itself, and the bucket takes it.
+    // The prompt saves itself.
     await page.waitForFunction(() => !document.getElementById('psPrompt').disabled, null, { timeout: 10000 });
     await page.fill('#psPrompt', PREPARED_PROMPT);
-    await page.waitForFunction(() => /Saved|Backed up/.test(document.getElementById('psSave').textContent),
-      null, { timeout: 10000 });
+    const saved = await page.waitForFunction(() => /^Saved$/.test(document.getElementById('psSave').textContent.trim()),
+      null, { timeout: 10000 }).then(() => true, () => false);
     let draft = await draftOf(s, id);
     ok(draft.text === PREPARED_PROMPT, 'the prompt reached the server as typed', JSON.stringify(draft.text));
-    const backed = await page.waitForFunction(() => /Backed up/.test(document.getElementById('psSave').textContent),
-      null, { timeout: 40000 }).then(() => true, () => false);
-    ok(backed, 'and the panel says it is backed up once the bucket has it',
-      await page.$eval('#psSave', (n) => n.textContent.trim()));
+    ok(saved, 'and the panel says it is saved', await page.$eval('#psSave', (n) => n.textContent.trim()));
 
     // A setting changed in the panel is saved on its own.
     await page.waitForSelector('#psModel .ds-combo__input', { timeout: 10000 });
@@ -6635,13 +6632,112 @@ async function prestart() {
   } finally { await s.stop(); }
 }
 
-// s3restore is the reason the bucket exists: a machine that is gone, and a
-// new one with an empty data directory that comes back with everything.
-async function s3restore() {
+// backupStatus is GET /api/backup.
+async function backupStatus(s) {
+  return (await s.context.request.get(s.url + '/api/backup')).json();
+}
+
+// awaitBackup polls the status until `test` holds, and answers with the last
+// one either way.
+async function awaitBackup(s, test, timeout = 30000) {
+  let st = await backupStatus(s);
+  const until = Date.now() + timeout;
+  while (!test(st) && Date.now() < until) {
+    await wait(300);
+    st = await backupStatus(s);
+  }
+  return st;
+}
+
+// chipOf is what the Backup card's status line says.
+const chipOf = (page) => page.$eval('#backupStatus .so-state__line', (n) => n.textContent.replace(/\s+/g, ' ').trim()).catch(() => '');
+
+// backup is the Backup card: a bucket configured from it, a backup on demand
+// that lists its snapshot, a run that fails while the bucket is down and says
+// so, the day-without-a-backup warning (shortened for the suite) on the card,
+// in /api/state and on the session page, and the warning gone after the
+// next good run.
+async function backup() {
+  const s = await start({ viewport: { width: 1280, height: 800 }, env: { SOCRATES_BACKUP_WARN_AFTER: '20s' } });
+  try {
+    await setup(s.page, s.url);
+    await s.page.goto(s.url + '/admin#backupCard', { waitUntil: 'domcontentloaded' });
+    await s.page.waitForFunction(() => /Not configured/.test(document.querySelector('#backupStatus').textContent), null, { timeout: 15000 });
+    ok(true, 'the card says backups are not configured', await chipOf(s.page));
+    const before = await (await s.context.request.get(s.url + '/api/state')).json();
+    ok(before.backup && !before.backup.warning, 'and an unconfigured backup warns nobody', JSON.stringify(before.backup));
+
+    const form = await backupForm(prefixFor(s.data));
+    await s.page.fill('#backupEndpoint', form.endpoint);
+    await s.page.fill('#backupRegion', form.region);
+    await s.page.fill('#backupBucket', form.bucket);
+    await s.page.fill('#backupPrefix', form.prefix);
+    await s.page.fill('#backupKey', form.access_key_id);
+    await s.page.fill('#backupSecret', form.secret_access_key);
+    await s.page.fill('#backupPassphrase', form.passphrase);
+    await s.page.click('#backupTest');
+    const tested = await s.page.waitForSelector('.ds-toast', { timeout: 15000 }).then((n) => n.textContent()).catch(() => '');
+    ok(/answers/.test(tested), 'Test connection reaches the bucket', oneLine(tested));
+    await s.page.click('#backupSave');
+    await s.page.waitForFunction(() => /No backup yet/.test(document.querySelector('#backupStatus').textContent), null, { timeout: 20000 });
+    ok(true, 'saved, it waits for its first backup', await chipOf(s.page));
+    const secretShown = await s.page.$eval('#backupSecret', (n) => ({ value: n.value, placeholder: n.placeholder }));
+    ok(secretShown.value === '' && secretShown.placeholder === 'Unchanged', 'the secret is never shown again', JSON.stringify(secretShown));
+
+    await s.page.click('#backupRun');
+    const done = await s.page.waitForFunction(() => /Backed up/.test(document.querySelector('#backupStatus').textContent), null, { timeout: 30000 })
+      .then(() => true, () => false);
+    ok(done, 'Back up now ends in "Backed up"', await chipOf(s.page));
+    const rows = await s.page.waitForFunction(() => document.querySelectorAll('#backupSnapshotList tr').length > 0, null, { timeout: 20000 })
+      .then(() => s.page.$$eval('#backupSnapshotList tr', (trs) => trs.map((tr) => tr.textContent.replace(/\s+/g, ' ').trim())), () => []);
+    ok(rows.length === 1 && /this one/.test(rows[0]), 'and the snapshot is listed, as this machine\'s', JSON.stringify(rows));
+
+    // The bucket goes away, and something changes.
+    await fakeS3Switch('down?status=503');
+    try {
+      await useDomRenderer(s);
+      await s.page.click('#backupRun');
+      const failed = await s.page.waitForFunction(() => /Last backup failed/.test(document.querySelector('#backupStatus').textContent)
+        && document.querySelector('#backupDetail .ds-alert--error'), null, { timeout: 30000 }).then(() => true, () => false);
+      ok(failed, 'a run against a bucket that is down says it failed, and why', await chipOf(s.page));
+      const tip = await s.page.$eval('#backupStatus .so-info', (n) => n.getAttribute('data-tip')).catch(() => '');
+      ok(/503|ServiceUnavailable/.test(tip), 'with what the bucket said behind the "i"', oneLine(tip || ''));
+
+      // A day is twenty seconds in this suite.
+      const warned = await awaitBackup(s, (st) => !!st.warning, 40000);
+      ok(/last successful backup/.test(warned.warning || ''), 'the status warns once the last good backup is too old', warned.warning);
+      const state = await (await s.context.request.get(s.url + '/api/state')).json();
+      ok(state.backup && /last successful backup/.test(state.backup.warning || ''), 'and so does /api/state', JSON.stringify(state.backup));
+      await s.page.reload({ waitUntil: 'domcontentloaded' });
+      const cardWarns = await s.page.waitForSelector('#backupDetail .ds-alert--warning', { timeout: 15000 }).then((n) => n.textContent(), () => '');
+      ok(/last successful backup/.test(cardWarns), 'and the card', oneLine(cardWarns));
+      await s.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
+      const notice = await s.page.waitForSelector('#backupNotice:not([hidden])', { timeout: 15000 }).then((n) => n.textContent(), () => '');
+      ok(/last successful backup/.test(notice), 'and the session page, with a way to the card', oneLine(notice));
+    } finally {
+      await fakeS3Switch('up');
+    }
+
+    await s.page.goto(s.url + '/admin#backupCard', { waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#backupRun:not([disabled])', { timeout: 15000 });
+    await s.page.click('#backupRun');
+    const healed = await awaitBackup(s, (st) => !st.running && !st.warning && !st.last_error, 30000);
+    ok(!healed.warning && !healed.last_error, 'the next good run takes the warning and the error away', JSON.stringify({ warning: healed.warning, error: healed.last_error }));
+    const snaps = ((await (await s.context.request.get(s.url + '/api/backup/snapshots')).json()).snapshots) || [];
+    ok(snaps.length === 2, 'and there are two snapshots now', String(snaps.length));
+    ok(unexpected(s.errors, /503|502|409/).length === 0, 'no console errors', unexpected(s.errors, /503|502|409/).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+// restore is the reason the backup exists: machine A is backed up and lost,
+// and machine B - a new data directory - is restored from the setup page and
+// signs in with A's password to A's sessions, prompt and settings.
+async function restore() {
   const a = await start({ viewport: { width: 1280, height: 720 } });
   let aStopped = false;
   let ids = {};
-  let cookie = '';
+  let snapshot = '';
+  const form = await backupForm(prefixFor(a.data));
   try {
     await setup(a.page, a.url);
     await useDomRenderer(a);
@@ -6653,70 +6749,69 @@ async function s3restore() {
     })).json();
     ids = { shell: shell.session && shell.session.id, prepared: prepared.session && prepared.session.id };
     ok(!!ids.shell && !!ids.prepared, 'server A has a running session and a prepared one', JSON.stringify(ids));
+    const saved = await a.context.request.put(a.url + '/api/backup/config', { data: form });
+    ok(saved.ok(), 'its backup is configured', String(saved.status()));
+    await a.context.request.post(a.url + '/api/backup/run', { data: {} });
+    const st = await awaitBackup(a, (x) => !x.running && !!x.last_success, 30000);
+    snapshot = st.last_success && st.last_success.id;
+    ok(!!snapshot && !st.last_error, 'and it is backed up', JSON.stringify({ id: snapshot, error: st.last_error }));
 
-    // Wait for the mirror to have nothing left to upload, so what is being
-    // tested is the restore and not a race with the flusher.
-    let status = {};
-    const until = Date.now() + 20000;
-    while (Date.now() < until) {
-      status = await (await a.context.request.get(a.url + '/api/storage')).json();
-      if (status.state === 'ok' && status.pending === 0) break;
-      await wait(400);
-    }
-    ok(status.state === 'ok' && status.pending === 0, 'and the bucket holds all of it',
-      JSON.stringify({ state: status.state, pending: status.pending, prefix: status.storage && status.storage.prefix }));
-    const cookies = await a.context.cookies(a.url);
-    cookie = cookies.map((c) => c.name + '=' + c.value).join('; ');
-
-    // Machine A goes away: the server is stopped the way systemd stops it,
-    // and then everything it had on its disk is gone - data directory, tmux
-    // server, the panes in it.
+    // Machine A goes away with everything on its disk: data directory, tmux
+    // server, the panes in it. Killed, not stopped, so the snapshot taken
+    // above is the one there is.
     await a.context.close().catch(() => {});
     await a.browser.close().catch(() => {});
-    a.server.kill('SIGTERM');
-    const outcome = await Promise.race([a.exited, wait(15000).then(() => 'timeout')]);
-    if (outcome === 'timeout') a.server.kill('SIGKILL');
-    ok(outcome !== 'timeout', 'server A stopped cleanly, letting go of the bucket', JSON.stringify(outcome));
-    const released = a.log.join('');
+    a.server.kill('SIGKILL');
+    await a.exited;
     killTmux(a.data);
     rmSync(a.data, { recursive: true, force: true });
     aStopped = true;
-    ok(!/storage: .*(failed|error)/i.test(released), 'and said nothing about failing to flush',
-      oneLine((released.match(/storage: [^\n]*/g) || []).join(' | ') || 'no storage lines'));
   } catch (err) {
     ok(false, 'server A set the scene', String(err && err.stack || err));
   } finally {
     if (!aStopped) {
-      // Something went wrong before A was taken down on purpose: tidy it the
-      // usual way so nothing leaks, and leave B out of it.
       await a.stop();
       return;
     }
   }
 
-  // Machine B: a new data directory, the same bucket and prefix.
-  const b = await start({ viewport: { width: 1280, height: 720 }, s3prefix: a.s3prefix });
+  const b = await start({ viewport: { width: 1280, height: 720 } });
   try {
-    ok(b.data !== a.data, 'server B runs on a data directory of its own', b.data);
-    const state = await (await fetch(b.url + '/api/state')).json();
-    ok(state.mode === 'normal' && state.setup_required === false,
-      'it starts from the bucket, with no setup to do', JSON.stringify({ mode: state.mode, setup_required: state.setup_required }));
-    const carried = await (await fetch(b.url + '/api/state', { headers: { cookie } })).json();
-    ok(carried.authenticated === true, 'the sign-in made on server A is still valid on server B', String(carried.authenticated));
+    await b.page.goto(b.url + '/setup', { waitUntil: 'domcontentloaded' });
+    await b.page.waitForSelector('#restoreOffer:not([hidden])', { timeout: 15000 });
+    ok(true, 'a new machine\'s setup page offers a restore');
+    await b.page.click('#restoreOpen');
+    await b.page.fill('#rEndpoint', form.endpoint);
+    await b.page.fill('#rRegion', form.region);
+    await b.page.fill('#rBucket', form.bucket);
+    await b.page.fill('#rPrefix', form.prefix);
+    await b.page.fill('#rKey', form.access_key_id);
+    await b.page.fill('#rSecret', form.secret_access_key);
+    await b.page.fill('#rPassphrase', 'not the passphrase');
+    await b.page.click('#findBtn');
+    const refused = await b.page.waitForSelector('#rPassphraseError:not([hidden])', { timeout: 20000 }).then((n) => n.textContent(), () => '');
+    ok(/passphrase/i.test(refused), 'a wrong passphrase is refused at the field', oneLine(refused));
+    await b.page.fill('#rPassphrase', form.passphrase);
+    await b.page.click('#findBtn');
+    await b.page.waitForSelector('#snapshotBox:not([hidden])', { timeout: 20000 });
+    const listed = await b.page.$$eval('#snapshotList .ds-radio', (n) => n.map((x) => x.textContent.replace(/\s+/g, ' ').trim()));
+    ok(listed.length === 1 && /files/.test(listed[0]), 'it lists the snapshot with its machine, size and files', JSON.stringify(listed));
+    await b.page.check('#snapshotList input[value="' + snapshot + '"]');
+    await b.page.click('#restoreBtn');
+    const back = await b.page.waitForFunction(() => location.pathname === '/login', null, { timeout: 90000 }).then(() => true, () => false);
+    ok(back, 'the restore runs, Socrates starts again on it, and the page goes to the sign-in', b.page.url());
 
-    await b.page.goto(b.url + '/login', { waitUntil: 'domcontentloaded' });
     await b.page.fill('#password', PASSWORD);
     await b.page.click('#submit');
     await b.page.waitForFunction(() => location.pathname === '/', null, { timeout: 15000 }).catch(() => {});
-    await b.page.waitForSelector('#newSession', { timeout: 15000 });
-    ok(true, 'the same password signs in');
+    await b.page.waitForSelector('#newSession', { state: 'attached', timeout: 15000 });
+    ok(true, 'machine A\'s password signs in');
 
-    const listed = ((await (await b.context.request.get(b.url + '/api/sessions')).json()).sessions || []);
-    const byId = Object.fromEntries(listed.map((x) => [x.id, x]));
+    const sessions = ((await (await b.context.request.get(b.url + '/api/sessions')).json()).sessions || []);
+    const byId = Object.fromEntries(sessions.map((x) => [x.id, x]));
     ok(byId[ids.shell] && byId[ids.shell].title === 'restore shell'
       && byId[ids.prepared] && byId[ids.prepared].title === 'restore draft',
-      'both sessions are listed, under the same ids and names',
-      listed.map((x) => x.title + ':' + x.state).join(', '));
+      'both sessions are listed, under the same ids and names', sessions.map((x) => x.title + ':' + x.state).join(', '));
     ok(byId[ids.prepared] && byId[ids.prepared].state === 'prestart', 'the prepared one is still prepared',
       byId[ids.prepared] && byId[ids.prepared].state);
     ok(byId[ids.shell] && byId[ids.shell].state !== 'running', 'and the one whose pane was on machine A is not taken for running',
@@ -6725,124 +6820,15 @@ async function s3restore() {
     ok(draft.text === PREPARED_PROMPT, 'the prepared prompt is intact', JSON.stringify(draft.text));
     const settings = await (await b.context.request.get(b.url + '/api/settings')).json();
     const webgl = settings && settings.settings && settings.settings.terminal && settings.settings.terminal.webgl;
-    ok(webgl === false, 'and so is a setting made on server A', JSON.stringify(webgl));
-
-    // Every start of the page lands on Home (HOME.md §2.3), so an address set
-    // before the page has started is put back to #home; the row is opened the
-    // way a person opens it, once Home and the list are up.
-    await b.page.waitForSelector('#home:not([hidden])', { timeout: 20000 });
-    await b.page.waitForSelector('#sessionList .so-row[data-id="' + ids.prepared + '"]', { state: 'attached', timeout: 20000 });
-    await b.page.evaluate((target) => { location.hash = '#' + target; }, ids.prepared);
-    await panelUp(b.page);
-    const shown = await b.page.waitForFunction((want) => document.getElementById('psPrompt').value === want,
-      PREPARED_PROMPT, { timeout: 10000 }).then(() => true, () => false);
-    ok(shown, 'the panel on server B shows it');
-    ok(unexpected(b.errors).length === 0, 'no console errors', unexpected(b.errors).join(' | ') || '0');
+    ok(webgl === false, 'and so is a setting made on machine A', JSON.stringify(webgl));
+    const st = await backupStatus(b);
+    ok(st.configured && st.config && st.config.prefix === form.prefix && st.config.host_id
+      && !snapshot.startsWith(st.config.host_id + '/'),
+      'machine B goes on backing up into the same bucket, as a machine of its own',
+      JSON.stringify({ prefix: st.config && st.config.prefix, host: st.config && st.config.host_id, from: snapshot }));
+    ok(unexpected(b.errors, /401|503|ERR_CONNECTION_REFUSED|Failed to fetch/).length === 0, 'no console errors',
+      unexpected(b.errors, /401|503|ERR_CONNECTION_REFUSED|Failed to fetch/).join(' | ') || '0');
   } finally { await b.stop(); }
-}
-
-// storageOf is the short storage summary a signed-in page is given.
-async function storageOf(s) {
-  const state = await (await s.context.request.get(s.url + '/api/state')).json();
-  return state.storage || {};
-}
-
-// awaitStorage polls the summary until `test` holds, and answers with the
-// last one either way.
-async function awaitStorage(s, test, timeout) {
-  const until = Date.now() + timeout;
-  let st = await storageOf(s);
-  while (Date.now() < until && !test(st)) {
-    await wait(500);
-    st = await storageOf(s);
-  }
-  return st;
-}
-
-// bannerOf is what the storage banner shows, read off the page after it has
-// been told to look again - the page reads the state on a wake, which is
-// what a person coming back to the tab does.
-async function bannerOf(page, test, timeout = 15000) {
-  const read = () => page.evaluate(() => {
-    const node = document.getElementById('storageBanner');
-    return { shown: !!node && !node.hidden, kind: node ? node.dataset.kind || '' : '', text: node ? node.textContent.trim() : '' };
-  });
-  const until = Date.now() + timeout;
-  let seen = await read();
-  while (Date.now() < until && !test(seen)) {
-    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-    await wait(700);
-    seen = await read();
-  }
-  return seen;
-}
-
-async function storagebanner() {
-  const a = await start({ viewport: { width: 1280, height: 720 } });
-  let b = null;
-  try {
-    await setup(a.page, a.url);
-    await open(a);
-    let banner = await bannerOf(a.page, (x) => !x.shown, 3000);
-    ok(!banner.shown, 'with the bucket answering there is no storage banner', JSON.stringify(banner));
-
-    // The bucket goes away. A change made now is kept here and queued.
-    await fakeS3Switch('down?status=503');
-    try {
-      await a.context.request.post(a.url + '/api/sessions', {
-        data: { prestart: true, harness: 'claude', title: 'written while offline', prompt: 'kept here' },
-      });
-      const st = await awaitStorage(a, (x) => x.state === 'offline', 20000);
-      ok(st.state === 'offline' && st.pending > 0, 'the server notices and counts what is waiting',
-        JSON.stringify({ state: st.state, pending: st.pending, error: st.last_error }));
-      banner = await bannerOf(a.page, (x) => x.shown && x.kind === 'offline');
-      ok(banner.shown && /^Storage unreachable since \d\d:\d\d\. \d+ changes? (is|are) waiting to be backed up\./.test(banner.text),
-        'the page says the storage is unreachable, since when, and how much is waiting', banner.text);
-    } finally {
-      await fakeS3Switch('up');
-    }
-    const back = await awaitStorage(a, (x) => x.state === 'ok' && x.pending === 0, 90000);
-    ok(back.state === 'ok' && back.pending === 0, 'once the bucket answers again the queue goes up by itself',
-      JSON.stringify({ state: back.state, pending: back.pending }));
-    banner = await bannerOf(a.page, (x) => !x.shown);
-    ok(!banner.shown, 'and the banner leaves', JSON.stringify(banner));
-
-    // A second Socrates on the same bucket: it may not start while this one
-    // holds it, it says who does, and it can take it over with the password.
-    b = await start({ viewport: { width: 1280, height: 720 }, s3prefix: a.s3prefix });
-    const waiting = await (await fetch(b.url + '/api/state')).json();
-    const connect = waiting.connect || {};
-    ok(waiting.mode === 'connect' && connect.reason === 'leased' && !!(connect.lease && connect.lease.host),
-      'a second server on the same bucket waits on the connect page, naming the holder',
-      JSON.stringify({ mode: waiting.mode, reason: connect.reason, host: connect.lease && connect.lease.host }));
-    await b.page.goto(b.url + '/setup', { waitUntil: 'domcontentloaded' });
-    await b.page.waitForSelector('#takeoverBox:not([hidden])', { timeout: 10000 });
-    const says = await b.page.$eval('#storageReason', (n) => n.textContent.trim()).catch(() => '');
-    ok(/in use by/.test(says), 'its page says the bucket is in use, and by whom', says);
-    await b.page.fill('#takeoverPassword', PASSWORD);
-    await b.page.click('#takeoverBtn');
-    const until = Date.now() + 60000;
-    let mode = 'connect';
-    while (Date.now() < until && mode !== 'normal') {
-      await wait(500);
-      try { mode = (await (await fetch(b.url + '/api/state')).json()).mode; } catch { /* restarting */ }
-    }
-    ok(mode === 'normal', 'the password takes the bucket over, and the second server starts', mode);
-
-    // The first one finds out the next time it writes, and stops writing.
-    await a.context.request.put(a.url + '/api/settings', { data: { settings: { terminal: { webgl: false } } } });
-    const fenced = await awaitStorage(a, (x) => x.fenced, 45000);
-    ok(fenced.fenced && fenced.state === 'fenced', 'the first server sees the lease is no longer its own',
-      JSON.stringify({ state: fenced.state, holder: fenced.lease && fenced.lease.host }));
-    banner = await bannerOf(a.page, (x) => x.shown && x.kind === 'fenced');
-    ok(banner.shown && /^Another Socrates( \([^)]+\))? took over this bucket\. Changes made here are no longer backed up\./.test(banner.text),
-      'and its page says another Socrates took the bucket over', banner.text);
-    const bad = unexpected(a.errors, RESTART_NOISE);
-    ok(bad.length === 0, 'no console errors', bad.join(' | ') || '0');
-  } finally {
-    if (b) await b.stop();
-    await a.stop();
-  }
 }
 
 /* ------------------------------------------------------------- options */
@@ -9953,7 +9939,7 @@ async function homequiet() {
       JSON.stringify({ controlled, lines }));
     await new Promise((resolve) => holder.close(resolve));
     holder = null;
-    const again = spawnServer({ data: s.data, port: s.port, s3prefix: s.s3prefix });
+    const again = spawnServer({ data: s.data, port: s.port });
     s.server = again.server; s.log = again.log; s.exited = again.exited;
     await waitForHealth(s.url);
     const recovered = await awaitHome(s.page, (h) => h.conn === 'live', 45000);
@@ -12630,8 +12616,8 @@ const ALL = [
   ['touchcopy', 'a finger held on the pane selects, grows and copies', touchcopy],
   ['transfer', 'copy, paste and upload buttons, a pasted image, and the phone layout', transfer],
   ['prestart', 'a prepared session: its prompt kept and backed up, Start, and a start by the clock', prestart],
-  ['s3restore', 'a machine that is gone, and a new data directory that comes back from the bucket', s3restore],
-  ['storagebanner', 'the bucket unreachable, then taken over: what the page says, and that it leaves', storagebanner],
+  ['backup', 'the Backup card: a bucket configured, a backup on demand, a failure and the warning, and the next good run', backup],
+  ['restore', 'a machine that is gone, and a new one restored from its backup on the setup page', restore],
   ['home-landing', 'every start of the page is Home, and the button and the address go back to it', homelanding],
   ['home-live', 'the numbers on Home move by themselves, with no terminal attached', homelive],
   ['outcome', 'a turn\'s end is judged: the hourglass while it is read, then the verdict everywhere', outcome],

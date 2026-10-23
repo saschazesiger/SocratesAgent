@@ -356,7 +356,7 @@ func HoldsStore(dataDir string) (bool, string, error) {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return false, "", err
 	}
-	for _, dir := range []string{paths.Chats, paths.Agents, paths.Accounts, paths.Terminals, paths.Sessions, "profiles"} {
+	for _, dir := range []string{paths.Chats, paths.Agents, paths.Accounts, paths.Terminals, paths.Sessions, paths.Profiles} {
 		entries, err := os.ReadDir(layout.Path(dir))
 		if err == nil && len(entries) > 0 {
 			return true, dir + "/ is not empty", nil

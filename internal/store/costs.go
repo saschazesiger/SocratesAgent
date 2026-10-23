@@ -2,11 +2,8 @@ package store
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"math"
-	"net/url"
 	"reflect"
 	"sort"
 	"strings"
@@ -14,43 +11,11 @@ import (
 
 // The cost ledger is what every conversation a CLI had on this machine cost:
 // one row per conversation (cost_convs) and its spend by UTC hour and model
-// (cost_hours). The transcripts it is read from belong to the CLIs, live in
-// the data directory and are not in the bucket, so the ledger is: a restore on
-// another machine brings every cost back, although none of the transcripts.
-//
-// A conversation is one object, costs/<harness>/<conversation id>.json, which
-// holds its row and all its hours. A busy conversation is rewritten every few
-// minutes, a finished one never again, and the bucket holds one object per
-// conversation, the way it holds one per session.
-
-const costPrefix = "costs/"
+// (cost_hours). It outlives the transcripts it was read from: a CLI that
+// prunes its old sessions does not take their cost with it.
 
 // CostKey is the ledger's name for one conversation of one CLI.
 func CostKey(harness, convID string) string { return harness + "/" + convID }
-
-// CostObject is the object a conversation's ledger is stored as.
-func CostObject(key string) string {
-	harness, conv, _ := strings.Cut(key, "/")
-	return costPrefix + url.PathEscape(harness) + "/" + url.PathEscape(conv) + objectSuffix
-}
-
-// parseCostObject is ParseObject's half for the ledger.
-func parseCostObject(name string) (string, bool) {
-	rest, ok := strings.CutPrefix(name, costPrefix)
-	if !ok || !strings.HasSuffix(rest, objectSuffix) {
-		return "", false
-	}
-	harness, conv, ok := strings.Cut(strings.TrimSuffix(rest, objectSuffix), "/")
-	if !ok {
-		return "", false
-	}
-	h, err1 := url.PathUnescape(harness)
-	c, err2 := url.PathUnescape(conv)
-	if err1 != nil || err2 != nil || h == "" || c == "" || strings.Contains(h, "/") {
-		return "", false
-	}
-	return CostKey(h, c), true
-}
 
 // CostConversation is one conversation's row: which CLI, which account, which
 // folder, and the session it ran in if Socrates started it.
@@ -83,8 +48,7 @@ type CostRow struct {
 	Unpriced   int64   `json:"unpriced,omitempty"`
 }
 
-// CostLedger is a conversation with its hours, which is also the shape of the
-// object in the bucket.
+// CostLedger is a conversation with its hours.
 type CostLedger struct {
 	CostConversation
 	Rows []CostRow `json:"rows"`
@@ -98,7 +62,7 @@ func (l *CostLedger) normalise() {
 		return l.Rows[i].Model < l.Rows[j].Model
 	})
 	for i := range l.Rows {
-		// Sub-microdollar noise is not a change worth an upload.
+		// Sub-microdollar noise is not a change worth a write.
 		l.Rows[i].CostUSD = math.Round(l.Rows[i].CostUSD*1e6) / 1e6
 	}
 	if l.Rows == nil {
@@ -147,14 +111,14 @@ func getCostLedger(q queryer, key string) (CostLedger, error) {
 
 // PutCostLedger replaces a conversation's ledger with l, and reports whether
 // that changed anything. An unchanged ledger is not written, so a scan that
-// finds nothing new uploads nothing.
+// finds nothing new changes nothing.
 func (s *Store) PutCostLedger(l CostLedger) (bool, error) {
 	if l.Harness == "" || l.ConvID == "" || strings.Contains(l.Harness, "/") {
 		return false, errors.New("a cost ledger needs a harness and a conversation id")
 	}
 	l.normalise()
-	s.lock()
-	defer s.unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	key := l.Key()
 	before, err := getCostLedger(s.db, key)
 	if err == nil && reflect.DeepEqual(before, l) {
@@ -166,7 +130,6 @@ func (s *Store) PutCostLedger(l CostLedger) (bool, error) {
 	if err := writeCostLedger(s.db, l); err != nil {
 		return false, err
 	}
-	s.touch(CostObject(key))
 	return true, nil
 }
 
@@ -266,48 +229,21 @@ func (s *Store) CostFingerprints() (map[string]string, error) {
 }
 
 // SetCostFingerprint records the transcripts a ledger was computed from. It is
-// about this disk only: no upload, no revision.
+// about this disk only: no revision.
 func (s *Store) SetCostFingerprint(key, fingerprint string) error {
-	s.lock()
-	defer s.unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	_, err := s.db.Exec(`INSERT INTO cost_seen(key, fingerprint) VALUES(?, ?)
 		ON CONFLICT(key) DO UPDATE SET fingerprint = excluded.fingerprint`, key, fingerprint)
 	return err
-}
-
-func (s *Store) importCostLedger(key string, data []byte) error {
-	var l CostLedger
-	if err := json.Unmarshal(data, &l); err != nil {
-		return err
-	}
-	if l.Key() != key {
-		return fmt.Errorf("the object holds the ledger of %q", l.Key())
-	}
-	l.normalise()
-	if err := writeCostLedger(s.db, l); err != nil {
-		return err
-	}
-	// What the bucket holds was computed elsewhere; the next scan here reads
-	// the transcripts again if this disk has them.
-	_, err := s.db.Exec(`DELETE FROM cost_seen WHERE key = ?`, key)
-	return err
-}
-
-func (s *Store) deleteCostLedger(key string) error {
-	for _, q := range []string{`DELETE FROM cost_hours WHERE key = ?`, `DELETE FROM cost_convs WHERE key = ?`, `DELETE FROM cost_seen WHERE key = ?`} {
-		if _, err := s.db.Exec(q, key); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // SetCostMeta brings a conversation's folder, title and session up to date
 // with the session it ran in, and reports whether that changed anything. A
 // conversation the ledger does not have is left alone.
 func (s *Store) SetCostMeta(key, workdir, title, sessionID string) (bool, error) {
-	s.lock()
-	defer s.unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	res, err := s.db.Exec(`UPDATE cost_convs SET workdir = ?, title = ?, session_id = ?
 		WHERE key = ? AND (workdir <> ? OR title <> ? OR session_id <> ?)`,
 		workdir, title, sessionID, key, workdir, title, sessionID)
@@ -318,6 +254,5 @@ func (s *Store) SetCostMeta(key, workdir, title, sessionID string) (bool, error)
 	if err != nil || n == 0 {
 		return false, err
 	}
-	s.touch(CostObject(key))
 	return true, nil
 }

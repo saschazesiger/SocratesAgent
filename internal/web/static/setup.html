@@ -30,143 +30,7 @@
   <div class="ds-card so-auth__card">
     <img class="so-logo" src="/static/img/logo.png" alt="" width="32" height="32">
 
-    <!-- Where setup is. The waiting view of a configured bucket is not a
-         step of anything, so it goes without. -->
-    <ol class="so-steps" id="steps" aria-label="Setup steps" hidden>
-      <li id="stepStorage">Storage</li>
-      <li id="stepPassword">Password</li>
-    </ol>
-
-    <!-- Step 1: where the state is kept. Shown while the server is in
-         connect mode: either nothing is configured yet (the form), or a
-         configured bucket cannot be used right now (the status). -->
-    <section id="storageStep" aria-labelledby="storageTitle" hidden>
-      <header class="ds-page-head">
-        <h1 class="ds-page-head__title" id="storageTitle">Connect storage</h1>
-        <p class="ds-page-head__lead" id="storageSub">Socrates keeps its settings, password, sign-ins and session list in an S3 bucket, encrypted on this machine before anything leaves it. A new machine pointed at the same bucket comes back exactly where you left off.</p>
-      </header>
-
-      <div class="so-status" id="storageStatus" hidden>
-        <div class="so-status__row">
-          <span id="storageState"><span class="ds-status ds-status--running"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>Checking</span></span></span>
-          <span id="storageWhere"></span>
-        </div>
-        <div id="storageReason"></div>
-        <div class="ds-subsection" id="takeoverBox" hidden>
-          <div class="ds-field">
-            <label class="ds-field__label" for="takeoverPassword">Socrates password</label>
-            <input class="ds-input" type="password" id="takeoverPassword" autocomplete="current-password" aria-describedby="takeoverPasswordError takeoverPasswordHint">
-            <small class="ds-field__hint ds-field__hint--error" id="takeoverPasswordError" hidden></small>
-            <small class="ds-field__hint" id="takeoverPasswordHint">Taking over stops the other Socrates from writing to the bucket. It keeps running, but nothing it does is saved any more. Use this when that machine is gone or you are moving away from it.</small>
-          </div>
-          <button class="ds-btn ds-btn--primary so-auth__submit" type="button" id="takeoverBtn">
-            <span class="ds-btn__faces">
-              <span class="ds-btn__face">Take over this bucket</span>
-              <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Taking over</span>
-            </span>
-          </button>
-        </div>
-        <div class="so-status__row">
-          <button class="ds-btn" type="button" id="retryBtn" data-icon="sync" data-icon-size="16">
-            <span class="ds-btn__faces">
-              <span class="ds-btn__face">Retry now</span>
-              <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Retrying</span>
-            </span>
-          </button>
-          <p class="ds-meta" id="retryHint" aria-live="polite"></p>
-        </div>
-      </div>
-
-      <form class="ds-form" id="storageForm" hidden autocomplete="off" novalidate>
-        <div class="ds-field">
-          <label class="ds-field__label" for="s3Endpoint">Endpoint</label>
-          <input class="ds-input" type="text" id="s3Endpoint" spellcheck="false" placeholder="https://hel1.your-objectstorage.com" aria-describedby="s3EndpointHint">
-          <small class="ds-field__hint" id="s3EndpointHint">Any S3-compatible store: Hetzner Object Storage (https://&lt;location&gt;.your-objectstorage.com), Cloudflare R2 (https://&lt;account&gt;.r2.cloudflarestorage.com), MinIO, or leave it empty for AWS S3.</small>
-        </div>
-        <div class="ds-form-grid ds-form-grid--2">
-          <div class="ds-field">
-            <label class="ds-field__label" for="s3Region">Region</label>
-            <input class="ds-input" type="text" id="s3Region" spellcheck="false" placeholder="us-east-1" aria-describedby="s3RegionHint">
-            <small class="ds-field__hint" id="s3RegionHint">hel1, eu-central-1, auto for R2.</small>
-          </div>
-          <div class="ds-field">
-            <label class="ds-field__label" for="s3Bucket">Bucket</label>
-            <input class="ds-input" type="text" id="s3Bucket" spellcheck="false" required aria-describedby="s3BucketError">
-            <small class="ds-field__hint ds-field__hint--error" id="s3BucketError" hidden></small>
-          </div>
-        </div>
-        <div class="ds-field">
-          <label class="ds-field__label" for="s3Prefix">Prefix <span class="so-optional">· optional</span></label>
-          <input class="ds-input" type="text" id="s3Prefix" spellcheck="false" placeholder="socrates/" aria-describedby="s3PrefixHint">
-          <small class="ds-field__hint" id="s3PrefixHint">A folder inside the bucket, to share one bucket between installations. Empty uses the bucket root.</small>
-        </div>
-        <div class="ds-field">
-          <label class="ds-field__label" for="s3Key">Access key ID</label>
-          <input class="ds-input" type="text" id="s3Key" spellcheck="false" required aria-describedby="s3KeyError">
-          <small class="ds-field__hint ds-field__hint--error" id="s3KeyError" hidden></small>
-        </div>
-        <div class="ds-field">
-          <label class="ds-field__label" for="s3Secret">Secret access key</label>
-          <input class="ds-input" type="password" id="s3Secret" autocomplete="off" required aria-describedby="s3SecretError">
-          <small class="ds-field__hint ds-field__hint--error" id="s3SecretError" hidden></small>
-        </div>
-        <div class="ds-field">
-          <label class="ds-check"><input type="checkbox" id="s3PathStyle" checked aria-describedby="s3PathStyleHint"><span>Path-style addressing</span></label>
-          <small class="ds-field__hint" id="s3PathStyleHint">On for Hetzner, MinIO and most self-hosted stores. AWS works either way.</small>
-        </div>
-
-        <div class="ds-subsection">
-          <div class="ds-field">
-            <label class="ds-field__label" for="s3Passphrase">Encryption passphrase</label>
-            <input class="ds-input" type="password" id="s3Passphrase" autocomplete="new-password" required aria-describedby="s3PassphraseError s3PassphraseHint">
-            <small class="ds-field__hint ds-field__hint--error" id="s3PassphraseError" hidden></small>
-            <small class="ds-field__hint" id="s3PassphraseHint">Everything in the bucket is encrypted with a key made from this passphrase. It stays on this machine; the bucket only ever sees ciphertext. <strong>Lose it and the bucket cannot be read by anyone</strong> — keep it somewhere safe. For an existing bucket, enter the passphrase it was set up with.</small>
-          </div>
-
-          <div class="ds-field" id="confirmBox" hidden>
-            <label class="ds-field__label" for="s3Confirm">Repeat the passphrase</label>
-            <input class="ds-input" type="password" id="s3Confirm" autocomplete="new-password" aria-describedby="s3ConfirmError s3ConfirmHint">
-            <small class="ds-field__hint ds-field__hint--error" id="s3ConfirmError" hidden></small>
-            <small class="ds-field__hint" id="s3ConfirmHint">This bucket holds no Socrates state yet, so the passphrase is about to be used for the first time. It cannot be changed or recovered later.</small>
-          </div>
-
-          <div class="ds-field" id="localPasswordBox" hidden>
-            <label class="ds-field__label" for="s3LocalPassword">Socrates password of this machine</label>
-            <input class="ds-input" type="password" id="s3LocalPassword" autocomplete="current-password" aria-describedby="s3LocalPasswordError s3LocalPasswordHint">
-            <small class="ds-field__hint ds-field__hint--error" id="s3LocalPasswordError" hidden></small>
-            <small class="ds-field__hint" id="s3LocalPasswordHint">This machine already has a Socrates installation with a password. Connecting it to a bucket uploads it there, or replaces it with what the bucket holds, so it takes that password.</small>
-          </div>
-        </div>
-
-        <div class="ds-card ds-card--filled so-choice" id="conflictBox" hidden>
-          <p id="conflictText"></p>
-          <button class="ds-btn" type="button" id="useBucket">Keep the bucket's installation</button>
-          <button class="ds-btn" type="button" id="overwriteBucket">Overwrite the bucket</button>
-        </div>
-
-        <div class="ds-card ds-card--filled so-choice" id="leaseBox" hidden>
-          <p id="leaseText"></p>
-          <div class="ds-field">
-            <label class="ds-field__label" for="s3TakeoverPassword">Socrates password</label>
-            <input class="ds-input" type="password" id="s3TakeoverPassword" autocomplete="current-password" aria-describedby="s3TakeoverPasswordError s3TakeoverPasswordHint">
-            <small class="ds-field__hint ds-field__hint--error" id="s3TakeoverPasswordError" hidden></small>
-            <small class="ds-field__hint" id="s3TakeoverPasswordHint">The password of the installation in the bucket. Taking over stops the other Socrates from writing to it.</small>
-          </div>
-        </div>
-
-        <div id="storageNotice"></div>
-        <button class="ds-btn ds-btn--primary so-auth__submit" type="submit" id="connectBtn">
-          <span class="ds-btn__faces">
-            <span class="ds-btn__face">Connect</span>
-            <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Connecting</span>
-          </span>
-        </button>
-      </form>
-      <div id="restartNotice"></div>
-    </section>
-
-    <!-- Step 2: the password. Shown by a server that has its storage and no
-         password yet - a new bucket. -->
+    <!-- A new installation: the password. -->
     <section id="passwordStep" aria-labelledby="passwordTitle" hidden>
       <header class="ds-page-head">
         <h1 class="ds-page-head__title" id="passwordTitle">Set up Socrates</h1>
@@ -220,43 +84,137 @@
           </span>
         </button>
       </form>
+      <!-- Offered only while this machine holds nothing a restore would
+           overwrite. -->
+      <div class="ds-subsection so-restore-offer" id="restoreOffer" hidden>
+        <p class="ds-muted">Moving Socrates to this machine? Restore it from its backup instead: the settings, the password, the sessions and the agents' sign-ins come back with it.</p>
+        <button class="ds-btn" type="button" id="restoreOpen" data-icon="history" data-icon-size="16">Restore from a backup</button>
+      </div>
+    </section>
+
+    <!-- A moved installation: from its backup. -->
+    <section id="restoreStep" aria-labelledby="restoreTitle" hidden>
+      <header class="ds-page-head">
+        <h1 class="ds-page-head__title" id="restoreTitle">Restore from a backup</h1>
+        <p class="ds-page-head__lead">Socrates comes back as it was when the backup was taken: settings, password, sign-ins, sessions, and the agents' logins and transcripts. Working directories are not in a backup; they live in git.</p>
+      </header>
+      <form class="ds-form" id="restoreForm" autocomplete="off" novalidate>
+        <div class="ds-field">
+          <label class="ds-field__label" for="rEndpoint">Endpoint</label>
+          <input class="ds-input" type="text" id="rEndpoint" spellcheck="false" placeholder="https://hel1.your-objectstorage.com" aria-describedby="rEndpointHint">
+          <small class="ds-field__hint" id="rEndpointHint">Any S3-compatible store. Empty is AWS S3.</small>
+        </div>
+        <div class="ds-form-grid ds-form-grid--2">
+          <div class="ds-field">
+            <label class="ds-field__label" for="rRegion">Region</label>
+            <input class="ds-input" type="text" id="rRegion" spellcheck="false" placeholder="us-east-1">
+          </div>
+          <div class="ds-field">
+            <label class="ds-field__label" for="rBucket">Bucket</label>
+            <input class="ds-input" type="text" id="rBucket" spellcheck="false" required aria-describedby="rBucketError">
+            <small class="ds-field__hint ds-field__hint--error" id="rBucketError" hidden></small>
+          </div>
+        </div>
+        <div class="ds-field">
+          <label class="ds-field__label" for="rPrefix">Prefix <span class="so-optional">· optional</span></label>
+          <input class="ds-input" type="text" id="rPrefix" spellcheck="false" placeholder="backup/v1" aria-describedby="rPrefixHint">
+          <small class="ds-field__hint" id="rPrefixHint">The folder in the bucket the backup was written to, as Admin → Backup showed it.</small>
+        </div>
+        <div class="ds-form-grid ds-form-grid--2">
+          <div class="ds-field">
+            <label class="ds-field__label" for="rKey">Access key ID</label>
+            <input class="ds-input" type="text" id="rKey" spellcheck="false" required aria-describedby="rKeyError">
+            <small class="ds-field__hint ds-field__hint--error" id="rKeyError" hidden></small>
+          </div>
+          <div class="ds-field">
+            <label class="ds-field__label" for="rSecret">Secret access key</label>
+            <input class="ds-input" type="password" id="rSecret" autocomplete="off" required aria-describedby="rSecretError">
+            <small class="ds-field__hint ds-field__hint--error" id="rSecretError" hidden></small>
+          </div>
+        </div>
+        <label class="ds-check"><input type="checkbox" id="rPathStyle" checked><span>Path-style addressing</span></label>
+        <div class="ds-field">
+          <label class="ds-field__label" for="rPassphrase">Encryption passphrase</label>
+          <input class="ds-input" type="password" id="rPassphrase" autocomplete="off" required aria-describedby="rPassphraseError rPassphraseHint">
+          <small class="ds-field__hint ds-field__hint--error" id="rPassphraseError" hidden></small>
+          <small class="ds-field__hint" id="rPassphraseHint">The passphrase the backup was made with. Nothing is written before it is proved right.</small>
+        </div>
+        <div id="restoreNotice"></div>
+        <button class="ds-btn ds-btn--primary so-auth__submit" type="submit" id="findBtn">
+          <span class="ds-btn__faces">
+            <span class="ds-btn__face">Find backups</span>
+            <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Looking</span>
+          </span>
+        </button>
+      </form>
+
+      <!-- The snapshots in the bucket, newest first. -->
+      <div class="so-restore-pick" id="snapshotBox" hidden>
+        <fieldset class="ds-field">
+          <legend class="ds-field__label">Snapshot</legend>
+          <div class="ds-radios" role="radiogroup" aria-label="Snapshot" id="snapshotList"></div>
+        </fieldset>
+        <div id="pickNotice"></div>
+        <button class="ds-btn ds-btn--primary so-auth__submit" type="button" id="restoreBtn">
+          <span class="ds-btn__faces">
+            <span class="ds-btn__face">Restore this snapshot</span>
+            <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Starting</span>
+          </span>
+        </button>
+      </div>
+
+      <!-- The restore as it goes. -->
+      <div class="ds-progress ds-progress--indeterminate" id="restoreProgress" hidden>
+        <div class="ds-progress__track" role="progressbar" aria-label="Restore" aria-valuemin="0" aria-valuemax="100" aria-valuetext="Preparing">
+          <div class="ds-progress__bar"></div>
+        </div>
+        <p class="ds-progress__label" id="restoreLabel">Preparing</p>
+        <p class="ds-progress__detail" id="restoreDetail"></p>
+      </div>
+      <div id="restoreDone"></div>
+
+      <button class="ds-btn ds-btn--text" type="button" id="restoreBack" data-icon="arrowLeft" data-icon-size="16">Set up a new installation instead</button>
     </section>
   </div>
 </main>
 <div class="ds-toasts" id="toasts"></div>
 <script type="module">
-import { api, errorMessage, infoTip, confirmDialog } from '/static/js/api.js';
-import { M, icon, html, raw, morph, setFaceLabel } from '/static/js/ui.js';
+import { api, errorMessage, infoTip } from '/static/js/api.js';
+import { M, icon, html, raw, morph } from '/static/js/ui.js';
 
 const $ = (id) => document.getElementById(id);
 
-// The page has two steps and serves both from one URL, because the server
-// decides which one applies: in connect mode it has no bucket yet (step 1),
-// and once it has one and no password, it is step 2. A finished setup
+// The page sets up a new installation: with a password (the form), or from
+// the backup of one that is moving here, which the server offers only while
+// this data directory holds nothing it would overwrite. A finished setup
 // redirects /setup to /login on the server side.
 
-// state reads /api/state with a plain fetch: during a restart there is no
-// server for a moment, and that is an ordinary answer here, not an error to
-// retry noisily.
+// readState reads /api/state with a plain fetch: during the restart after a
+// restore there is no server for a moment, and that is an ordinary answer
+// here, not an error to retry noisily.
 async function readState() {
   const res = await fetch('/api/state', { cache: 'no-store', credentials: 'same-origin' });
   if (!res.ok) throw new Error('HTTP ' + res.status);
   return res.json();
 }
 
-// post sends a storage action and keeps the body of a refusal, which carries
-// what the page has to ask next (a conflict, a lease, a new bucket).
+// post sends a restore request and keeps the body of a refusal, whose error
+// is what the page says.
 async function post(path, body) {
-  const res = await fetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body || {}),
-    credentials: 'same-origin',
-    cache: 'no-store',
-  });
-  let data = {};
-  try { data = await res.json(); } catch { /* an empty answer */ }
-  return { ok: res.ok, status: res.status, data: data || {} };
+  try {
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+      credentials: 'same-origin',
+      cache: 'no-store',
+    });
+    let data = {};
+    try { data = await res.json(); } catch { /* an empty answer */ }
+    return { ok: res.ok, status: res.status, data: data || {} };
+  } catch {
+    return { ok: false, status: 0, data: { error: 'Could not reach Socrates.' } };
+  }
 }
 
 // notice puts one alert into a slot, or empties it: 'error' for what went
@@ -266,25 +224,20 @@ const ALERTS = {
   ok: ['ds-alert ds-alert--success', 'status', 'checkCircle'],
   info: ['ds-alert', 'status', 'info'],
 };
-const noticed = new WeakMap();
 function notice(node, text, kind = 'error') {
-  const [words, detail] = !text ? ['', ''] : Array.isArray(text) ? text : kind === 'error' ? explain(text) : [text, ''];
-  // The status view says the same thing every poll: only a change is drawn.
-  const key = words ? kind + '\n' + words + '\n' + detail : '';
-  if (noticed.get(node) === key) return;
-  noticed.set(node, key);
-  if (!words) { morph(node, ''); return; }
+  if (!text) { morph(node, ''); return; }
+  const [words, detail] = kind === 'error' ? explain(text) : [text, ''];
   const [cls, role, glyph] = ALERTS[kind] || ALERTS.error;
   morph(node, html`<div class="${cls}" role="${role}">${raw(icon(glyph, 20))}<span class="ds-alert__text">${words}</span></div>`);
   if (detail) node.firstElementChild.append(infoTip(detail, { label: 'What the bucket said', code: true }));
 }
 
-// explain splits a server's "could not reach the bucket: s3: GET ..." into
-// the sentence a person reads and the technical rest, which goes behind
-// the "i".
+// explain splits a server's "the bucket refused these credentials: s3: GET
+// ..." into the sentence a person reads and the technical rest, which goes
+// behind the "i".
 function explain(text) {
   const at = text.indexOf(': ');
-  const head = at > 0 && at < 80 ? text.slice(0, at) : text;
+  const head = at > 0 && at < 90 ? text.slice(0, at) : text;
   const rest = head === text ? '' : text.slice(at + 2);
   const sentence = head.charAt(0).toUpperCase() + head.slice(1);
   return [/[.!?…]$/.test(sentence) ? sentence : sentence + '.', rest];
@@ -313,36 +266,6 @@ document.querySelectorAll('.ds-field__hint--error').forEach((slot) => {
   if (input) input.addEventListener('input', () => fieldError(input.id, ''));
 });
 
-// busyFace changes what a busy button says while it works.
-function busyFace(button, text) {
-  const face = button.querySelector('.ds-btn__face--busy');
-  for (const node of [...face.childNodes]) if (node.nodeType === 3) node.remove();
-  face.append(text);
-}
-
-// steps shows where setup is; null hides the indicator.
-function steps(current) {
-  $('steps').hidden = !current;
-  const order = ['storage', 'password'];
-  for (const [i, name] of order.entries()) {
-    const li = $('step' + name[0].toUpperCase() + name.slice(1));
-    const at = order.indexOf(current);
-    if (name === current) li.setAttribute('aria-current', 'step');
-    else li.removeAttribute('aria-current');
-    if (current && i < at) li.dataset.state = 'done';
-    else delete li.dataset.state;
-  }
-}
-
-function ago(ms) {
-  if (!ms) return 'never';
-  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
-  if (s < 60) return s + ' s ago';
-  if (s < 3600) return Math.round(s / 60) + ' min ago';
-  if (s < 86400) return Math.round(s / 3600) + ' h ago';
-  return new Date(ms).toLocaleString();
-}
-
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
 boot();
@@ -352,311 +275,20 @@ async function boot() {
   for (let attempt = 1; ; attempt++) {
     try { state = await readState(); break; } catch { await sleep(Math.min(5000, 800 * attempt)); }
   }
-  if (state.mode === 'connect') {
-    showStorage(state.connect || {});
-    return;
-  }
   if (!state.setup_required) {
     location.href = '/login';
+    return;
+  }
+  const restore = state.restore || {};
+  if (restore.state === 'running' || restore.state === 'done') {
+    showRestore();
+    following(restore);
     return;
   }
   showPassword(state);
 }
 
-/* ------------------------------------------------------- step 1: storage */
-
-let statusTimer = null;
-
-function showStorage(connect) {
-  $('passwordStep').hidden = true;
-  $('storageStep').hidden = false;
-  if (connect.configured) {
-    steps(null);
-    $('storageForm').hidden = true;
-    $('storageStatus').hidden = false;
-    $('storageTitle').textContent = 'Waiting for storage';
-    $('storageSub').textContent = 'This Socrates has a bucket configured but cannot use it right now. It keeps trying on its own; nothing else is served until it can.';
-    renderStatus(connect);
-    pollStatus();
-  } else {
-    steps('storage');
-    $('storageStatus').hidden = true;
-    $('storageForm').hidden = false;
-    $('localPasswordBox').hidden = !connect.password_required;
-    $('s3Endpoint').focus();
-  }
-}
-
-// What a reason looks like: the status chip's kind, its glyph and its words.
-const REASONS = {
-  unreachable: ['error', 'wifiOff', 'The bucket cannot be reached'],
-  leased: ['warning', 'lock', 'In use by another Socrates'],
-  wrong_passphrase: ['error', 'key', 'The passphrase does not open this bucket'],
-  config: ['error', 'alertCircle', 'The storage configuration cannot be read'],
-  error: ['error', 'alertCircle', 'The bucket refused this Socrates'],
-};
-
-// chip is a status chip: always an icon or the spinner, and the words.
-function chip(kind, glyph, label) {
-  if (kind === 'running') {
-    return html`<span class="ds-status ds-status--running"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>${label}</span></span>`;
-  }
-  return html`<span class="ds-status ds-status--${kind}">${raw(icon(glyph, 16))}<span>${label}</span></span>`;
-}
-
-let whereShown = null;
-
-function renderStatus(c) {
-  if (c.restarting) {
-    morph($('storageState'), chip('running', '', 'Socrates is restarting'));
-    $('takeoverBox').hidden = true;
-    return;
-  }
-  const [kind, glyph, label] = c.retrying ? ['running', '', 'Trying the bucket'] : (REASONS[c.reason] || ['error', 'alertCircle', c.reason || 'Waiting']);
-  morph($('storageState'), chip(kind, glyph, label));
-
-  // Where the bucket is, and where that was read from, is detail for the "i".
-  const s = c.storage || {};
-  const where = s.bucket
-    ? [(s.endpoint || 'AWS S3'), 'Bucket ' + s.bucket + (s.prefix ? '/' + s.prefix.replace(/\/$/, '') : ''),
-        c.source === 'env' ? 'From the SOCRATES_S3_* environment' : 'From s3.json']
-    : [];
-  const key = where.join('\n');
-  if (key !== whereShown) {
-    whereShown = key;
-    $('storageWhere').replaceChildren(...(where.length ? [infoTip(where, { label: 'Where the bucket is' })] : []));
-  }
-
-  let reason = c.error ? explain(c.error) : '';
-  if (c.reason === 'leased' && c.lease) {
-    reason = 'This bucket is in use by ' + (c.lease.host || 'another Socrates') + ' (last seen ' + ago(c.lease.heartbeat_at) + '). '
-      + 'It becomes free by itself when that Socrates stops or has not been seen for 90 seconds.';
-  } else if (c.reason === 'wrong_passphrase') {
-    const [words, detail] = reason || ['', ''];
-    reason = [(words + (c.source === 'env'
-      ? ' Set SOCRATES_S3_PASSPHRASE to the passphrase this bucket was set up with in /etc/socrates.env and restart Socrates.'
-      : ' Put the right passphrase into s3.json in the data directory; it is read again on the next attempt.')).trim(), detail];
-  }
-  notice($('storageReason'), reason, c.reason === 'leased' ? 'info' : 'error');
-  $('takeoverBox').hidden = c.reason !== 'leased';
-  if (c.retrying) $('retryHint').textContent = 'Trying now…';
-  else if (c.next_retry_at) $('retryHint').textContent = 'Next attempt in ' + Math.max(0, Math.round((c.next_retry_at - Date.now()) / 1000)) + ' s.';
-  else $('retryHint').textContent = '';
-}
-
-// pollStatus follows the waiting server until it is out of connect mode,
-// which is when it has started from the bucket.
-function pollStatus() {
-  clearTimeout(statusTimer);
-  statusTimer = setTimeout(async () => {
-    try {
-      const state = await readState();
-      if (state.mode !== 'connect') { boot(); return; }
-      renderStatus(state.connect || {});
-    } catch { /* restarting, or a blip: ask again */ }
-    pollStatus();
-  }, 2000);
-}
-
-$('retryBtn').addEventListener('click', async () => {
-  const button = $('retryBtn');
-  const r = await M.busy(button, () => post('/api/storage/retry').catch(() => null), { done: false });
-  if (r && r.data && r.data.connect) renderStatus(r.data.connect);
-});
-
-$('takeoverBtn').addEventListener('click', async () => {
-  const button = $('takeoverBtn');
-  const password = $('takeoverPassword').value;
-  if (!password) { fieldError('takeoverPassword', 'Enter the Socrates password of the installation in the bucket.'); return; }
-  fieldError('takeoverPassword', '');
-  notice($('storageReason'), 'Taking the bucket over takes about 15 seconds.', 'info');
-  const r = await M.busy(button,
-    () => post('/api/storage/takeover', { password }).catch(() => ({ ok: false, data: { error: 'Could not reach Socrates.' } })),
-    { done: false });
-  if (r.ok && r.data.restarting) { restarting('Took the bucket over. Socrates is restarting…'); return; }
-  const why = (r.data && r.data.error) || 'The takeover failed.';
-  if (r.status === 401 || r.status === 403) fieldError('takeoverPassword', why);
-  else notice($('storageReason'), why);
-});
-
-// What the last answer asked for, and what the next submit therefore sends.
-const pending = { confirm: false, resolve: '', takeover: false };
-
-function resetPending() {
-  pending.confirm = false;
-  pending.resolve = '';
-  pending.takeover = false;
-  $('confirmBox').hidden = true;
-  $('conflictBox').hidden = true;
-  $('leaseBox').hidden = true;
-  setFaceLabel($('connectBtn'), 'Connect');
-}
-
-// Changing where the bucket is undoes whatever the last answer was about.
-for (const id of ['s3Endpoint', 's3Region', 's3Bucket', 's3Prefix', 's3Key', 's3Secret', 's3PathStyle']) {
-  $(id).addEventListener('input', () => { resetPending(); notice($('storageNotice'), ''); });
-}
-
-function storageBody() {
-  const body = {
-    endpoint: $('s3Endpoint').value.trim(),
-    region: $('s3Region').value.trim(),
-    bucket: $('s3Bucket').value.trim(),
-    prefix: $('s3Prefix').value.trim(),
-    access_key_id: $('s3Key').value.trim(),
-    secret_access_key: $('s3Secret').value.trim(),
-    path_style: $('s3PathStyle').checked,
-    passphrase: $('s3Passphrase').value,
-  };
-  if (pending.confirm) body.passphrase_confirm = $('s3Confirm').value;
-  if (pending.resolve) body.resolve = pending.resolve;
-  if (pending.takeover) body.password = $('s3TakeoverPassword').value;
-  if (!$('localPasswordBox').hidden) body.local_password = $('s3LocalPassword').value;
-  return body;
-}
-
-$('storageForm').addEventListener('submit', (event) => {
-  event.preventDefault();
-  connect();
-});
-$('useBucket').addEventListener('click', () => { pending.resolve = 'bucket'; connect(); });
-$('overwriteBucket').addEventListener('click', async () => {
-  const yes = await confirmDialog({
-    title: 'Overwrite the bucket?',
-    body: 'Everything in the bucket is replaced with this installation. The bucket\'s sessions and settings are deleted.',
-    confirmLabel: 'Overwrite the bucket',
-    danger: true,
-    opener: $('overwriteBucket'),
-  });
-  if (!yes) return;
-  pending.resolve = 'overwrite';
-  connect();
-});
-
-// missing names the first required field of the form that is empty.
-function missing() {
-  const required = [['s3Bucket', 'Enter the name of the bucket.'], ['s3Key', 'Enter the access key ID.'],
-    ['s3Secret', 'Enter the secret access key.'], ['s3Passphrase', 'Choose the encryption passphrase.']];
-  for (const [id, text] of required) {
-    if (!$(id).value.trim()) { fieldError(id, text); return true; }
-  }
-  return false;
-}
-
-async function connect() {
-  const button = $('connectBtn');
-  const status = $('storageNotice');
-  if (missing()) return;
-  if (pending.confirm && $('s3Confirm').value !== $('s3Passphrase').value) {
-    fieldError('s3Confirm', 'The two passphrases do not match.');
-    return;
-  }
-  if (pending.takeover && !$('s3TakeoverPassword').value) {
-    fieldError('s3TakeoverPassword', 'Enter the Socrates password to take the bucket over.');
-    return;
-  }
-  if (!$('localPasswordBox').hidden && !$('s3LocalPassword').value) {
-    fieldError('s3LocalPassword', 'Enter the Socrates password of this machine.');
-    return;
-  }
-  busyFace(button, pending.takeover ? 'Taking over' : 'Connecting');
-  notice(status, pending.takeover ? 'Taking the bucket over takes about 15 seconds.' : '', 'info');
-  const r = await M.busy(button, () => post('/api/storage/connect', storageBody())
-    .catch(() => ({ ok: false, status: 0, data: { error: 'Could not reach Socrates.' } })), { done: false });
-  notice(status, '');
-  const data = r.data || {};
-
-  if (r.ok && data.restarting) {
-    restarting(data.created
-      ? 'The bucket is set up. Socrates is restarting…'
-      : 'Connected. Socrates is restarting from the bucket…');
-    return;
-  }
-  if (r.ok && data.new_bucket) {
-    pending.confirm = true;
-    $('confirmBox').hidden = false;
-    setFaceLabel(button, 'Create and connect');
-    $('s3Confirm').focus();
-    notice(status, 'This bucket holds no Socrates state yet. Repeat the passphrase to set it up.', 'info');
-    return;
-  }
-  if ((r.status === 401 || r.status === 403) && data.password_required) {
-    // This machine already holds an installation: connecting it takes its
-    // own password (a page that loaded before it had one does not know).
-    $('localPasswordBox').hidden = false;
-    fieldError('s3LocalPassword', data.error || 'Enter the Socrates password of this machine.');
-    return;
-  }
-  if ((r.status === 401 || r.status === 403) && pending.takeover) {
-    fieldError('s3TakeoverPassword', data.error || 'Wrong password.');
-    return;
-  }
-  if (r.status === 409 && data.meta_missing) {
-    // Objects without their meta.json: never a new installation by itself,
-    // because a new one would make those objects unreadable for good. Only
-    // an explicit overwrite replaces them.
-    $('conflictBox').hidden = false;
-    $('useBucket').hidden = true;
-    $('conflictText').textContent = data.error + ' Overwriting deletes those objects and stores this installation there instead.';
-    return;
-  }
-  if (r.status === 409 && data.conflict) {
-    $('useBucket').hidden = false;
-    $('conflictBox').hidden = false;
-    $('conflictText').textContent = 'The bucket already holds a Socrates installation (' + data.bucket_sessions
-      + ' sessions), and this machine has one of its own (' + data.local_sessions
-      + ' sessions). Which one should Socrates keep? The other one is replaced.';
-    return;
-  }
-  if (r.status === 409 && data.leased) {
-    pending.takeover = true;
-    $('leaseBox').hidden = false;
-    const lease = data.lease || {};
-    $('leaseText').textContent = 'This bucket is in use by ' + (lease.host || 'another Socrates')
-      + ' (last seen ' + ago(lease.heartbeat_at) + '). You can take it over with its Socrates password.';
-    setFaceLabel(button, 'Take over and connect');
-    $('s3TakeoverPassword').focus();
-    return;
-  }
-  notice(status, data.error || 'Connecting failed (HTTP ' + r.status + ').');
-}
-
-// restarting waits for the server to come back out of connect mode and moves
-// on to whatever it asks for next: the password for a new bucket, the login
-// for a restored one.
-async function restarting(message) {
-  clearTimeout(statusTimer);
-  const slot = $('restartNotice');
-  notice(slot, message, 'ok');
-  $('storageForm').hidden = true;
-  $('storageStatus').hidden = true;
-  await sleep(1200);
-  for (let attempt = 0; attempt < 400; attempt++) {
-    try {
-      const state = await readState();
-      if (state.mode !== 'connect') {
-        notice(slot, '');
-        if (state.setup_required) { showPassword(state); return; }
-        location.href = '/login';
-        return;
-      }
-      // Back, but in connect mode again with its new configuration: the
-      // bucket cannot be used after all (unreachable, taken again by the
-      // other machine, a takeover that did not settle). Say why, and offer
-      // what the status view offers, rather than wait here for nothing.
-      const c = state.connect || {};
-      if (c.configured && !c.restarting) {
-        notice(slot, '');
-        showStorage(c);
-        return;
-      }
-    } catch { /* not back yet */ }
-    await sleep(1500);
-  }
-  notice(slot, 'Socrates has not come back. Look at its log, and reload this page.');
-}
-
-/* ------------------------------------------------------ step 2: password */
+/* ------------------------------------------------------------- password */
 
 const form = $('form');
 const submit = $('submit');
@@ -668,12 +300,11 @@ let cloudflared = { installed: false };
 let localURL = 'http://localhost:8080';
 
 function showPassword(state) {
-  clearTimeout(statusTimer);
-  steps('password');
-  $('storageStep').hidden = true;
+  $('restoreStep').hidden = true;
   $('passwordStep').hidden = false;
   cloudflared = (state && state.cloudflared) || cloudflared;
   if (state && state.local_url) localURL = state.local_url;
+  $('restoreOffer').hidden = !(state && state.restore_available);
   showLocalURL();
   renderTunnel();
   $('password').focus();
@@ -738,6 +369,160 @@ form.addEventListener('submit', async (e) => {
   }
   location.href = '/admin?welcome=1';
 });
+
+/* -------------------------------------------------------------- restore */
+
+let snapshots = [];
+
+function showRestore() {
+  $('passwordStep').hidden = true;
+  $('restoreStep').hidden = false;
+}
+
+$('restoreOpen').addEventListener('click', () => {
+  showRestore();
+  $('rEndpoint').focus();
+});
+
+$('restoreBack').addEventListener('click', async () => {
+  try { showPassword(await readState()); } catch { showPassword(null); }
+});
+
+function bucketBody() {
+  return {
+    endpoint: $('rEndpoint').value.trim(),
+    region: $('rRegion').value.trim(),
+    bucket: $('rBucket').value.trim(),
+    prefix: $('rPrefix').value.trim(),
+    access_key_id: $('rKey').value.trim(),
+    secret_access_key: $('rSecret').value.trim(),
+    path_style: $('rPathStyle').checked,
+    passphrase: $('rPassphrase').value,
+  };
+}
+
+// Changing where the backup is takes the list of its snapshots away.
+for (const id of ['rEndpoint', 'rRegion', 'rBucket', 'rPrefix', 'rKey', 'rSecret', 'rPathStyle', 'rPassphrase']) {
+  $(id).addEventListener('input', () => {
+    $('snapshotBox').hidden = true;
+    $('findBtn').classList.add('ds-btn--primary');
+    notice($('restoreNotice'), '');
+  });
+}
+
+const two = (n) => String(n).padStart(2, '0');
+
+function when(ms) {
+  const d = new Date(ms);
+  return d.getFullYear() + '-' + two(d.getMonth() + 1) + '-' + two(d.getDate()) + ' ' + two(d.getHours()) + ':' + two(d.getMinutes());
+}
+
+function bytes(n) {
+  if (!n) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return (i ? n.toFixed(n < 10 ? 1 : 0) : n) + ' ' + units[i];
+}
+
+function snapshotRow(s, i) {
+  const host = s.hostname || s.host;
+  const facts = s.files ? host + ' · ' + bytes(s.size) + ' · ' + s.files + (s.files === 1 ? ' file' : ' files') : host;
+  return html`<label class="ds-radio" data-ds-key="${s.id}"><input type="radio" name="snapshot" value="${s.id}"${raw(i === 0 ? ' checked' : '')}>
+    <span><strong>${when(s.at)}</strong><small>${facts}</small></span></label>`;
+}
+
+$('restoreForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const body = bucketBody();
+  for (const [id, field, text] of [['rBucket', 'bucket', 'Enter the name of the bucket.'],
+    ['rKey', 'access_key_id', 'Enter the access key ID.'], ['rSecret', 'secret_access_key', 'Enter the secret access key.'],
+    ['rPassphrase', 'passphrase', 'Enter the passphrase of the backup.']]) {
+    if (!body[field]) { fieldError(id, text); return; }
+  }
+  notice($('restoreNotice'), '');
+  const r = await M.busy($('findBtn'), () => post('/api/restore/snapshots', body), { done: false });
+  if (!r.ok) {
+    if (r.status === 401) fieldError('rPassphrase', r.data.error || 'The passphrase does not open this backup.');
+    else notice($('restoreNotice'), r.data.error || 'Looking for backups failed (HTTP ' + r.status + ').');
+    return;
+  }
+  snapshots = r.data.snapshots || [];
+  if (!snapshots.length) {
+    notice($('restoreNotice'), 'The bucket holds this backup, but no snapshot of it yet.', 'info');
+    return;
+  }
+  morph($('snapshotList'), html`${snapshots.map(snapshotRow)}`);
+  $('snapshotBox').hidden = false;
+  $('findBtn').classList.remove('ds-btn--primary');
+  $('restoreBtn').focus();
+});
+
+$('restoreBtn').addEventListener('click', async () => {
+  const chosen = document.querySelector('input[name="snapshot"]:checked');
+  if (!chosen) return;
+  notice($('pickNotice'), '');
+  const r = await M.busy($('restoreBtn'), () => post('/api/restore', { ...bucketBody(), snapshot: chosen.value }), { done: false });
+  if (!r.ok) {
+    notice($('pickNotice'), r.data.error || 'The restore did not start (HTTP ' + r.status + ').');
+    return;
+  }
+  following(r.data.restore || { state: 'running' });
+});
+
+// following shows the restore as it goes, then waits for Socrates to come
+// back on the restored data directory and goes to the sign-in, with the
+// password the backup brought.
+async function following(restore) {
+  $('restoreForm').hidden = true;
+  $('snapshotBox').hidden = true;
+  $('restoreBack').hidden = true;
+  $('restoreProgress').hidden = false;
+  let state = restore;
+  for (;;) {
+    drawProgress(state);
+    if (state.state === 'failed') {
+      $('restoreProgress').hidden = true;
+      $('restoreForm').hidden = false;
+      $('restoreBack').hidden = false;
+      notice($('restoreNotice'), state.error || 'The restore failed.');
+      return;
+    }
+    if (state.state === 'done') break;
+    await sleep(700);
+    try {
+      const res = await fetch('/api/restore', { cache: 'no-store', credentials: 'same-origin' });
+      state = (await res.json()).restore || state;
+    } catch { /* a blip: ask again */ }
+  }
+  notice($('restoreDone'), 'Restored. Socrates is starting again on the restored data…', 'ok');
+  for (let attempt = 0; attempt < 400; attempt++) {
+    await sleep(1500);
+    try {
+      const s = await readState();
+      if (!s.setup_required) { location.href = '/login'; return; }
+    } catch { /* not back yet */ }
+  }
+  notice($('restoreDone'), 'Socrates has not come back. Look at its log, and reload this page.');
+}
+
+function drawProgress(state) {
+  const p = state.progress || {};
+  const box = $('restoreProgress');
+  const track = box.querySelector('.ds-progress__track');
+  if (!p.bytes && !p.files) {
+    $('restoreLabel').textContent = 'Preparing';
+    return;
+  }
+  const share = p.bytes ? p.bytes_done / p.bytes : p.files_done / Math.max(1, p.files);
+  box.classList.remove('ds-progress--indeterminate');
+  box.style.setProperty('--ds-progress', String(Math.min(1, share)));
+  track.setAttribute('aria-valuenow', String(Math.round(share * 100)));
+  track.removeAttribute('aria-valuetext');
+  $('restoreLabel').textContent = Math.round(share * 100) + '%';
+  $('restoreDetail').textContent = p.files_done + ' of ' + p.files + ' files · ' + bytes(p.bytes_done) + ' of ' + bytes(p.bytes);
+}
+
 </script>
 </body>
 </html>

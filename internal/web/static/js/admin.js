@@ -23,7 +23,7 @@
 import {
   api, el, toast, isOffline, errorMessage, onWake, infoTip, confirmDialog,
 } from './api.js';
-import { DS, M, html, raw, icon, iconEl, morph, watchScrolled, ms, setFaceLabel, faces } from './ui.js';
+import { DS, M, html, raw, icon, iconEl, morph, flipMorph, watchScrolled, ms, setFaceLabel, faces } from './ui.js';
 import { agentMark } from './logos.js';
 import { speak, speechKind } from './voice.js';
 import { combobox } from './combobox.js';
@@ -240,7 +240,8 @@ async function load() {
   refreshTmux();
   refreshUpdates();
   watchUpdatesCard();
-  refreshStorage(true);
+  refreshBackup(true);
+  loadSnapshots();
   if (data.local_url) localURL = data.local_url;
   refreshTunnel();
   if (new URLSearchParams(location.search).get('welcome')) {
@@ -1271,9 +1272,9 @@ function bind() {
   $('updatesRun').addEventListener('click', runUpdates);
   $('updatesLogToggle').addEventListener('click', () => toggleLog('updatesLogToggle', 'updatesLog', refreshUpdates));
   $('checkVoiceKey').addEventListener('click', checkVoiceKey);
-  $('storageTest').addEventListener('click', testStorage);
-  $('storageSync').addEventListener('click', syncStorage);
-  $('storageSave').addEventListener('click', saveStorageCredentials);
+  $('backupTest').addEventListener('click', testBackup);
+  $('backupRun').addEventListener('click', runBackup);
+  $('backupSave').addEventListener('click', saveBackup);
   $('testVoice').addEventListener('click', testVoice);
   for (const summary of document.querySelectorAll('.so-disclosure > summary')) {
     if (!summary.querySelector('.ds-chevron')) summary.append(iconEl('chevronDown', 20, 'ds-chevron'));
@@ -1479,7 +1480,7 @@ onWake(() => {
   refreshTunnel();
   refreshTmux();
   refreshUpdates();
-  refreshStorage();
+  refreshBackup();
 });
 
 async function refreshTunnel() {
@@ -1550,155 +1551,204 @@ async function stopTunnel() {
   }
 }
 
-/* --------------------------------------------------------------- storage */
+/* ---------------------------------------------------------------- backup */
 
-// The bucket the state is kept in. The card reads GET /api/storage; the
-// credentials are a small form of their own, separate from the settings
-// document, because they are proved against the bucket before they are saved
-// and live in s3.json rather than in the bucket they open.
+// The backup of the data directory. The card reads GET /api/backup; its form
+// is separate from the settings document, because it is proved against the
+// bucket before it is saved and lives in backup.json, the one file the
+// backup leaves out.
 
-let storageTimer = null;
+let backupTimer = null;
+let backupWasRunning = false;
 
-function storageAgo(ms) {
+function ago(ms) {
   if (!ms) return 'never';
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
-  if (s < 60) return s + ' s ago';
+  if (s < 60) return 'just now';
   if (s < 3600) return Math.round(s / 60) + ' min ago';
   if (s < 86400) return Math.round(s / 3600) + ' h ago';
   return new Date(ms).toLocaleString();
 }
 
-function storageWhere(storage) {
-  if (!storage || !storage.bucket) return '';
-  return (storage.endpoint || 'AWS S3') + ' · ' + storage.bucket
-    + (storage.prefix ? '/' + storage.prefix.replace(/\/$/, '') : '');
+function inTime(ms) {
+  const s = Math.max(0, Math.round((ms - Date.now()) / 1000));
+  if (s < 60) return 'in under a minute';
+  if (s < 3600) return 'in ' + Math.round(s / 60) + ' min';
+  return 'at ' + new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-// storageTrouble is the alert under the line when the bucket is in trouble.
-function storageTrouble(text) {
-  return html`<div class="ds-alert ds-alert--error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${text}</span></div>`;
+function bytes(n) {
+  if (!n) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return (i ? n.toFixed(n < 10 ? 1 : 0) : n) + ' ' + units[i];
 }
 
-function renderStorage(status, fillForm) {
+function backupAlert(kind, text) {
+  const [cls, glyph, role] = kind === 'error' ? ['ds-alert ds-alert--error', 'alertCircle', 'alert']
+    : kind === 'warning' ? ['ds-alert ds-alert--warning', 'alert', 'alert'] : ['ds-alert', 'info', 'status'];
+  return html`<div class="${cls}" role="${role}">${raw(icon(glyph, 20))}<span class="ds-alert__text">${text}</span></div>`;
+}
+
+// firstSentence is a server error without its technical rest, which goes
+// behind the "i".
+function firstSentence(text) {
+  const at = text.indexOf(': ');
+  const head = at > 0 && at < 90 ? text.slice(0, at) : text;
+  const sentence = head.charAt(0).toUpperCase() + head.slice(1);
+  return /[.!?…]$/.test(sentence) ? sentence : sentence + '.';
+}
+
+function renderBackup(status, fillForm) {
+  const cfg = status.config || null;
+  const last = status.last_success;
   let kind = 'off';
   let label = 'Not configured';
-  let trouble = '';
-  if (status.state === 'fenced') {
-    kind = 'error';
-    label = 'Taken over';
-    trouble = 'Another Socrates took over this bucket.';
-  } else if (status.state === 'offline') {
-    kind = 'error';
-    label = status.error_since ? 'Unreachable' : 'Not reached yet';
-    trouble = status.error_since
-      ? 'The bucket is unreachable since ' + new Date(status.error_since).toLocaleTimeString() + '.'
-      : 'The bucket has not been reached yet.';
-  } else if (status.state === 'ok' && status.pending > 0) {
+  const facts = [];
+  if (status.running) {
     kind = 'running';
-    label = status.pending === 1 ? '1 change uploading' : status.pending + ' changes uploading';
-  } else if (status.state === 'ok') {
-    kind = 'ok';
+    label = status.phase ? status.phase.charAt(0).toUpperCase() + status.phase.slice(1) : 'Backing up';
+    if (status.files) facts.push(status.files + ' files read', bytes(status.uploaded) + ' sent');
+  } else if (cfg && status.last_error && (!last || status.last_error_at > last.at)) {
+    kind = 'error';
+    label = 'Last backup failed';
+    facts.push(ago(status.last_error_at));
+  } else if (cfg && (last || status.checked_at)) {
+    kind = status.warning ? 'error' : 'ok';
     label = 'Backed up';
+    facts.push(ago(Math.max(last ? last.at : 0, status.checked_at || 0)));
+    if (last) facts.push(bytes(last.size), last.files + ' files');
+  } else if (cfg) {
+    kind = 'waiting';
+    label = 'No backup yet';
+  }
+  if (cfg && !status.running && status.next_run) facts.push('next ' + inTime(status.next_run));
+  const tip = [];
+  if (cfg) {
+    tip.push((cfg.endpoint || 'AWS S3') + ' · ' + cfg.bucket + '/' + (cfg.prefix || '').replace(/\/$/, ''));
+    tip.push('This machine: ' + cfg.host_id);
+  }
+  if (last) tip.push('Last snapshot ' + last.id + ', ' + bytes(last.uploaded) + ' sent in ' + last.chunks + ' chunks');
+  if (status.last_error) tip.push(status.last_error);
+  renderState($('backupStatus'), { kind, label, state: status.running ? 'running' : kind, facts, tip, tipLabel: 'Backup details' });
+
+  const alerts = [];
+  if (status.warning) alerts.push(backupAlert('warning', status.warning));
+  if (kind === 'error' && status.last_error) alerts.push(backupAlert('error', firstSentence(status.last_error)));
+  if (last && last.skipped && last.skipped.length) {
+    alerts.push(backupAlert('warning', 'Some databases could not be copied and are not in the last snapshot: ' + last.skipped.join(', ') + '.'));
+  }
+  if (status.other_hosts && status.other_hosts.length) {
+    alerts.push(backupAlert('info', 'Another machine backed up into this bucket in the last day: ' + status.other_hosts.join(', ')
+      + '. Each machine keeps snapshots of its own.'));
+  }
+  morph($('backupDetail'), html`${alerts}`);
+
+  $('backupRun').disabled = !cfg || status.running;
+  $('backupTest').disabled = false;
+  if (fillForm) {
+    $('backupEndpoint').value = cfg ? cfg.endpoint || '' : '';
+    $('backupRegion').value = cfg ? cfg.region || '' : '';
+    $('backupBucket').value = cfg ? cfg.bucket || '' : '';
+    $('backupPrefix').value = cfg ? (cfg.prefix || '').replace(/\/$/, '') : '';
+    $('backupKey').value = cfg ? cfg.access_key_id || '' : '';
+    $('backupSecret').value = '';
+    $('backupPassphrase').value = '';
+    $('backupSecret').placeholder = cfg && cfg.has_secret ? 'Unchanged' : '';
+    $('backupPassphrase').placeholder = cfg && cfg.has_passphrase ? 'Unchanged' : '';
+    $('backupInterval').value = cfg ? cfg.interval_minutes : 10;
+    $('backupPathStyle').checked = cfg ? !!cfg.path_style : true;
   }
 
-  const facts = [storageWhere(status.storage)];
-  if (status.state !== 'ok' && status.pending > 0) facts.push(status.pending + ' waiting');
-  if (status.configured) facts.push('last upload ' + storageAgo(status.last_flush_at));
-  renderState($('storageStatus'), { kind, label, state: status.state || '', facts });
-
-  // The details are technical state, and live under the verdict rather than
-  // in it: the error, who holds the lease, how it is held. Trouble is an
-  // alert; the rest is a quiet line.
-  const detail = [];
-  if (status.last_error) detail.push(status.last_error);
-  if (status.state === 'fenced' && status.lease) {
-    detail.push('The bucket is held by ' + (status.lease.host || 'another machine') + ' since '
-      + storageAgo(status.lease.acquired_at) + '. Nothing done here is saved to it any more; '
-      + 'restart this Socrates to see the bucket\'s state, or stop the other one.');
-  } else if (status.lease && status.lease.own) {
-    detail.push('This Socrates holds the bucket (lease renewed ' + storageAgo(status.lease.heartbeat_at) + ').');
-  }
-  if (status.configured) {
-    detail.push(status.conditional_writes
-      ? 'The store enforces conditional writes.'
-      : 'The store does not enforce conditional writes; the lease is checked by reading it back.');
-  }
-  if (trouble) morph($('storageDetail'), storageTrouble([trouble, ...detail].join(' ')));
-  else morph($('storageDetail'), detail.length ? html`<p class="ds-meta so-break">${detail.join(' ')}</p>` : '');
-
-  const env = status.storage && status.storage.source === 'env';
-  for (const id of ['storageEndpoint', 'storageRegion', 'storageKey', 'storageSecret', 'storagePathStyle', 'storageSave']) {
-    $(id).disabled = env || !status.configured;
-  }
-  $('storageSync').disabled = !status.configured || status.state === 'fenced';
-  $('storageTest').disabled = !status.configured;
-  $('storageCredsHint').textContent = env
-    ? 'Configured by the SOCRATES_S3_* environment variables, so it is shown read-only here: change them in /etc/socrates.env and restart Socrates.'
-    : 'New credentials are tried against the bucket before they are saved. The bucket, the prefix and the encryption passphrase are the installation itself and cannot be changed here.';
-  if (fillForm && status.storage) {
-    $('storageEndpoint').value = status.storage.endpoint || '';
-    $('storageRegion').value = status.storage.region || '';
-    $('storageKey').value = status.storage.access_key_id || '';
-    $('storageSecret').value = '';
-    $('storagePathStyle').checked = !!status.storage.path_style;
-  }
-
-  clearTimeout(storageTimer);
-  storageTimer = setTimeout(refreshStorage, status.state === 'ok' && !status.pending ? 15000 : 4000);
+  // A run that just ended has a new snapshot to list.
+  if (backupWasRunning && !status.running) loadSnapshots();
+  backupWasRunning = !!status.running;
+  clearTimeout(backupTimer);
+  backupTimer = setTimeout(refreshBackup, status.running ? 2000 : 30000);
 }
 
-async function refreshStorage(fillForm = false) {
+async function refreshBackup(fillForm = false) {
   try {
-    renderStorage(await api('/api/storage'), fillForm);
+    renderBackup(await api('/api/backup'), fillForm);
   } catch (err) {
-    if (!isOffline(err)) morph($('storageDetail'), storageTrouble(errorMessage(err)));
-    clearTimeout(storageTimer);
-    storageTimer = setTimeout(refreshStorage, 10000);
+    if (!isOffline(err)) morph($('backupDetail'), backupAlert('error', errorMessage(err)));
+    clearTimeout(backupTimer);
+    backupTimer = setTimeout(refreshBackup, 10000);
   }
 }
 
-async function testStorage() {
+function snapshotRow(s) {
+  const machine = (s.hostname || s.host) + (s.own ? ' (this one)' : '');
+  return html`<tr data-ds-key="${s.id}"><td class="ds-nowrap">${new Date(s.at).toLocaleString()}</td><td>${machine}</td>
+    <td class="ds-num">${s.files ? bytes(s.size) : '–'}</td><td class="ds-num ds-col--secondary">${s.files || '–'}</td></tr>`;
+}
+
+// loadSnapshots lists what the bucket holds. It reads the bucket, so it is
+// asked for when the page opens and after a run, not on every poll.
+async function loadSnapshots() {
   try {
-    const data = await busy($('storageTest'), api('/api/storage/test', { method: 'POST', body: {} }));
+    const data = await api('/api/backup/snapshots', { attempts: 1, timeout: 120000 });
+    const list = data.snapshots || [];
+    $('backupSnapshots').hidden = !list.length;
+    flipMorph($('backupSnapshotList'), html`${list.slice(0, 20).map(snapshotRow)}`, { items: 'tr', live: true });
+    $('backupSnapshotsHint').textContent = !list.length ? 'The bucket holds no snapshot yet.'
+      : list.length > 20 ? 'The newest 20 of ' + list.length + ' snapshots.' : list.length + (list.length === 1 ? ' snapshot.' : ' snapshots.');
+  } catch (err) {
+    if (err && err.status === 409) { $('backupSnapshotsHint').textContent = ''; return; }
+    $('backupSnapshotsHint').textContent = 'The snapshots could not be listed: ' + firstSentence(errorMessage(err));
+  }
+}
+
+function backupBody() {
+  return {
+    endpoint: $('backupEndpoint').value.trim(),
+    region: $('backupRegion').value.trim(),
+    bucket: $('backupBucket').value.trim(),
+    prefix: $('backupPrefix').value.trim(),
+    access_key_id: $('backupKey').value.trim(),
+    secret_access_key: $('backupSecret').value.trim(),
+    passphrase: $('backupPassphrase').value,
+    interval_minutes: Number($('backupInterval').value) || 0,
+    path_style: $('backupPathStyle').checked,
+  };
+}
+
+async function testBackup() {
+  try {
+    const data = await busy($('backupTest'), api('/api/backup/test', { method: 'POST', body: backupBody() }));
     const result = data.result || {};
-    if (result.ok) {
-      toast('The bucket answers (' + result.latency_ms + ' ms)', 'success');
-    } else {
-      toast(result.error || 'The bucket did not answer.', 'error');
-    }
-    if (data.status) renderStorage(data.status);
+    if (!result.ok) toast(firstSentence(result.error || 'The bucket did not answer.'), 'error');
+    else toast(result.found ? 'The bucket answers and the passphrase opens its backup (' + result.latency_ms + ' ms)'
+      : 'The bucket answers; there is no backup there yet (' + result.latency_ms + ' ms)', 'success');
   } catch (err) {
     toast(errorMessage(err), 'error');
   }
 }
 
-async function syncStorage() {
+async function saveBackup() {
+  const body = backupBody();
+  if (body.interval_minutes && body.interval_minutes < 5) {
+    toast('A backup runs at most every 5 minutes.', 'error');
+    return;
+  }
   try {
-    const data = await busy($('storageSync'), api('/api/storage/sync', { method: 'POST', body: {} }));
-    toast('Everything is uploaded', 'success');
-    if (data.status) renderStorage(data.status);
+    const data = await busy($('backupSave'), api('/api/backup/config', { method: 'PUT', body }));
+    toast('Backup settings saved', 'success');
+    if (data.status) renderBackup(data.status, true);
+    loadSnapshots();
   } catch (err) {
-    toast(errorMessage(err), 'error');
-    refreshStorage();
+    toast(firstSentence(errorMessage(err)), 'error');
   }
 }
 
-async function saveStorageCredentials() {
+async function runBackup() {
   try {
-    const data = await busy($('storageSave'), api('/api/storage/credentials', {
-      method: 'PUT',
-      body: {
-        endpoint: $('storageEndpoint').value.trim(),
-        region: $('storageRegion').value.trim(),
-        access_key_id: $('storageKey').value.trim(),
-        secret_access_key: $('storageSecret').value.trim(),
-        path_style: $('storagePathStyle').checked,
-      },
-    }));
-    toast('Credentials saved', 'success');
-    if (data.status) renderStorage(data.status, true);
+    const data = await busy($('backupRun'), api('/api/backup/run', { method: 'POST', body: {} }));
+    if (data.status) renderBackup(data.status);
   } catch (err) {
     toast(errorMessage(err), 'error');
+    refreshBackup();
   }
 }
 

@@ -21,8 +21,7 @@ import (
 )
 
 const (
-	// PasswordKey holds the PBKDF2 hash of the password. It is exported so
-	// that a test can hold internal/mirror to the same spelling.
+	// PasswordKey holds the PBKDF2 hash of the password.
 	PasswordKey    = "password_hash"
 	sessionCookie  = "socrates_session"
 	sessionTTL     = 30 * 24 * time.Hour
@@ -204,15 +203,18 @@ func (s *Server) noteLogin(ip string, ok bool) {
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	setupRequired := !s.hasPassword()
 	payload := map[string]any{
-		// "normal" here; a server still waiting for its bucket answers
-		// "connect" from connect.go, which is what the setup page polls for.
-		"mode":           "normal",
 		"setup_required": setupRequired,
 		"authenticated":  s.authenticated(r),
 		"version":        Version,
 	}
 	if s.authenticated(r) {
-		payload["storage"] = s.storageSummary()
+		payload["backup"] = s.backupSummary()
+	}
+	if setupRequired {
+		// A new machine is set up with a password or from a backup; the
+		// second only while nothing here would be overwritten.
+		payload["restore_available"] = s.restoreAvailable()
+		payload["restore"] = s.restoreJob.snapshot()
 	}
 	if setupRequired || s.authenticated(r) {
 		// The setup wizard asks two things about cloudflared: is it here, and
@@ -236,6 +238,10 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	if !sameOrigin(r) {
 		writeError(w, http.StatusForbidden, "cross origin request rejected")
+		return
+	}
+	if s.restoreJob.restoring() {
+		writeError(w, http.StatusConflict, "a backup is being restored onto this Socrates; its password is the backup's")
 		return
 	}
 	var body struct {

@@ -222,15 +222,9 @@ git_src() { git -c safe.directory="$SRC" -c gc.autoDetach=false -c maintenance.a
 
 installed_version() { timeout 30 "$BIN" -version 2>/dev/null || true; }
 
-# bucket_configured: is this installation meant to serve more than the
-# connect page? Then a Socrates that serves only that page is not healthy.
-bucket_configured() { [ -f "$DATA/s3.json" ] || [ -n "$(setting SOCRATES_S3_BUCKET "")" ]; }
-
 # wait_healthy VERSION [SECONDS]: does the service answer /api/health with
-# VERSION? The listener opens only once the bucket has been read and the
-# sessions reconciled, which on a slow bucket takes minutes; a service that
-# keeps restarting is given up on early. HEALTH_MODE is what it said its mode
-# was: empty when it serves, connect for the connect page.
+# VERSION? The listener opens only once the database is migrated and the
+# sessions reconciled; a service that keeps restarting is given up on early.
 wait_healthy() {
 	local want=$1 limit=${2:-420} start restarts body
 	start=$(date +%s)
@@ -238,7 +232,6 @@ wait_healthy() {
 	while [ $(($(date +%s) - start)) -lt "$limit" ]; do
 		body=$(health_json || true)
 		if [ -n "$body" ] && [ "$(json_field version <<<"$body")" = "$want" ]; then
-			HEALTH_MODE=$(json_field mode <<<"$body")
 			return 0
 		fi
 		if [ $(($(systemctl show -p NRestarts --value socrates 2>/dev/null || echo 0) - restarts)) -ge 3 ]; then
@@ -250,14 +243,9 @@ wait_healthy() {
 	return 1
 }
 
-# serving_as_before: after wait_healthy, is the mode no worse than PREV_MODE?
-# A Socrates that served and now answers only with its connect page has lost
-# its bucket or its state, which is not healthy however fast it answers.
-serving_as_before() { ! { [ "$PREV_MODE" = serving ] && [ "$HEALTH_MODE" = connect ]; }; }
-
 # smoke BINARY VERSION starts BINARY on a scratch data directory and a port
-# of its own, with no bucket, and waits for it to answer with VERSION. A
-# build that cannot get as far as its connect page never reaches the service.
+# of its own, and waits for it to answer with VERSION. A build that cannot
+# get as far as serving never reaches the service.
 smoke() {
 	local bin=$1 want=$2 dir port pid body ok=1 i
 	dir=$(mktemp -d)
@@ -391,10 +379,8 @@ recover_swap() {
 	pending=$(cat "$STATE/swap-pending" 2>/dev/null || true)
 	[ -n "$pending" ] || return 0
 	version=$(installed_version)
-	PREV_MODE=$(cat "$STATE/swap-pending.mode" 2>/dev/null || true)
 	say "The last update stopped part-way: checking Socrates $version"
-	HEALTH_MODE=
-	if [ -n "$version" ] && wait_healthy "$version" 300 && serving_as_before; then
+	if [ -n "$version" ] && wait_healthy "$version" 300; then
 		echo "$pending" >"$STATE/socrates.commit"
 		info "it answers; keeping it"
 	else
@@ -402,7 +388,7 @@ recover_swap() {
 		rollback
 		mark_bad "$pending"
 	fi
-	rm -f "$STATE/swap-pending" "$STATE/swap-pending.mode"
+	rm -f "$STATE/swap-pending"
 }
 
 # clone_src makes /opt/socrates/src afresh. A clone that failed half-way
@@ -545,13 +531,10 @@ update_socrates() {
 	fi
 
 	say "Swap in Socrates $version"
-	PREV_MODE=$(health_json | json_field mode || true)
-	[ -n "$(health_json || true)" ] && [ -z "$PREV_MODE" ] && PREV_MODE=serving
 	install_units "$build"
 	# From here until it is healthy, the binary in place is unproven; a run
 	# that stops in between leaves this for the next one (recover_swap).
 	echo "$target" >"$STATE/swap-pending"
-	printf '%s\n' "$PREV_MODE" >"$STATE/swap-pending.mode"
 	# Stopped while the database is copied, so the copy is whole. The
 	# sessions are not in the service and do not notice.
 	systemctl stop socrates 2>/dev/null || true
@@ -560,7 +543,7 @@ update_socrates() {
 	for f in socrates.db socrates.db-wal socrates.db-shm; do
 		[ -f "$DATA/$f" ] || continue
 		if ! cp -p "$DATA/$f" "$backup.new/"; then
-			rm -rf "$backup.new" "$BIN.new" "$STATE/swap-pending" "$STATE/swap-pending.mode"
+			rm -rf "$backup.new" "$BIN.new" "$STATE/swap-pending"
 			restore_units
 			systemctl start socrates || true
 			record socrates "$before" "" failed "could not back up the database; nothing was changed"
@@ -578,14 +561,13 @@ update_socrates() {
 	systemctl reset-failed socrates >/dev/null 2>&1 || true
 	systemctl start socrates || true
 
-	HEALTH_MODE=
-	if wait_healthy "$version" && serving_as_before; then
+	if wait_healthy "$version"; then
 		# Twenty seconds more, against a build that answers once and then
 		# falls over.
 		sleep 20
-		if wait_healthy "$version" 30 && serving_as_before; then
+		if wait_healthy "$version" 30; then
 			echo "$target" >"$STATE/socrates.commit"
-			rm -f "$STATE/swap-pending" "$STATE/swap-pending.mode"
+			rm -f "$STATE/swap-pending"
 			install_scripts "$build" || true
 			record socrates "$version" "$before" "$(outcome socrates "$before" "$version")" ""
 			return 0
@@ -595,15 +577,14 @@ update_socrates() {
 	say "Socrates $version is not healthy: back to ${before:-nothing}"
 	journalctl -u socrates -n 30 --no-pager || true
 	if ! [ -x "$BIN.previous" ] || [ -z "$before" ]; then
-		rm -f "$STATE/swap-pending" "$STATE/swap-pending.mode"
+		rm -f "$STATE/swap-pending"
 		record socrates "$version" "$before" failed "$version is not healthy and there is no previous build to go back to"
 		return 1
 	fi
 	rollback
-	rm -f "$STATE/swap-pending" "$STATE/swap-pending.mode"
-	HEALTH_MODE=
-	if wait_healthy "$before" && serving_as_before; then
-		# The previous build works on the same machine and bucket, as it did
+	rm -f "$STATE/swap-pending"
+	if wait_healthy "$before"; then
+		# The previous build works on the same machine, as it did
 		# before, so it is this commit, and it is not tried again until
 		# there is a newer one.
 		mark_bad "$target"
@@ -644,13 +625,10 @@ if [ -f "$UNIT_DIR/socrates.service" ] && [ -x "$BIN" ]; then
 		systemctl reset-failed socrates >/dev/null 2>&1 || true
 		systemctl start socrates 9>&- || true
 	fi
-	HEALTH_MODE=
 	if ! wait_healthy "$(installed_version)" 420; then
 		record service "$(installed_version)" "" failed "socrates.service does not answer $(health_url)"
-	elif [ "$HEALTH_MODE" = connect ] && bucket_configured; then
-		record service "$(installed_version)" "" failed "Socrates serves only its connect page although a bucket is configured: see Admin or journalctl -u socrates"
 	else
-		info "Socrates $(installed_version) answers${HEALTH_MODE:+ ($HEALTH_MODE)}"
+		info "Socrates $(installed_version) answers"
 	fi
 fi
 

@@ -41,10 +41,6 @@ const SETTINGS_DEBOUNCE = 400;
 const RETRY_MIN = 2000;
 const RETRY_MAX = 60000;
 
-// How often, after a save the bucket had not taken yet, the panel asks
-// whether it has - so that "Saved" becomes "Backed up" without a keystroke.
-const BACKUP_CHECKS = [3000, 7000, 15000, 30000];
-
 // The largest prompt the server keeps (maxDraftBytes in
 // internal/server/prestart.go). Checked here too, so that a prompt that is
 // too long says so while it is being written rather than failing to save.
@@ -243,7 +239,6 @@ function openPanel(ctx, first) {
     loadError: '',
     rev: 0,
     saved: null,
-    backedUp: false,
     saving: null,
     again: false,
     offline: false,
@@ -253,7 +248,6 @@ function openPanel(ctx, first) {
     saveTimer: null,
     retryTimer: null,
     retryDelay: 0,
-    backupTimer: null,
     // The settings: what is waiting to be sent, and what is on its way.
     patch: {},
     patchTimer: null,
@@ -481,7 +475,6 @@ function openPanel(ctx, first) {
       st.loaded = true;
       st.rev = server.rev;
       st.saved = server.text;
-      st.backedUp = !!res.data.backed_up;
       st.retryDelay = 0;
       textarea.disabled = false;
       textarea.readOnly = false;
@@ -495,7 +488,6 @@ function openPanel(ctx, first) {
       } else {
         setText(server.text);
         forgetDraft(id);
-        if (!st.backedUp) watchBackup();
       }
       drawStatus();
       return;
@@ -545,11 +537,11 @@ function openPanel(ctx, first) {
       const res = await call('PUT', path + '/draft', { text, base_rev: st.rev });
       st.saving = null;
       if (res.status === 200) {
-        acknowledged(text, Number(res.data.rev) || st.rev + 1, !!res.data.backed_up);
+        acknowledged(text, Number(res.data.rev) || st.rev + 1);
       } else if (res.status === 409 && res.data.conflict) {
         const theirs = { text: String(res.data.text || ''), rev: Number(res.data.rev) || 0 };
         // Two devices that typed the same thing do not disagree.
-        if (theirs.text === text) acknowledged(text, theirs.rev, false);
+        if (theirs.text === text) acknowledged(text, theirs.rev);
         else if (!st.closed) enterConflict(theirs);
       } else if (res.status === 409 || res.status === 404) {
         // Started, from here or anywhere else, or deleted: its prompt is the
@@ -586,17 +578,15 @@ function openPanel(ctx, first) {
     return st.saving;
   }
 
-  function acknowledged(text, rev, backedUp) {
+  function acknowledged(text, rev) {
     st.rev = rev;
     st.saved = text;
-    st.backedUp = backedUp;
     st.offline = false;
     st.error = '';
     st.retryDelay = 0;
     clearTimeout(st.retryTimer);
     if (textarea.value === text) {
       forgetDraft(id);
-      if (!backedUp) watchBackup();
     } else {
       // Typed on while it was on its way: the copy here is now based on the
       // revision just made, and the rest follows.
@@ -621,24 +611,6 @@ function openPanel(ctx, first) {
     if (st.patchOffline && Object.keys(st.patch).length) sendPatch();
   }
 
-  // watchBackup asks a few times whether the bucket has the saved text yet,
-  // so that the line under the field can say so. It is a courtesy: a page
-  // that never hears it still has the text saved on the server.
-  function watchBackup(step = 0) {
-    clearTimeout(st.backupTimer);
-    if (step >= BACKUP_CHECKS.length) return;
-    st.backupTimer = setTimeout(async () => {
-      if (st.closed || dirty() || st.saving || st.conflict) return;
-      const res = await call('GET', path + '/draft');
-      if (st.closed || res.status !== 200) return;
-      const rev = Number(res.data.rev) || 0;
-      if (rev !== st.rev) { refetched(res.data); return; }
-      st.backedUp = !!res.data.backed_up;
-      drawStatus();
-      if (!st.backedUp) watchBackup(step + 1);
-    }, BACKUP_CHECKS[step]);
-  }
-
   // refetch reads the draft again because the list says another device
   // saved a newer one. Only a panel with nothing unsaved takes it: one that
   // has is about to find out by its own save, and to ask.
@@ -657,7 +629,6 @@ function openPanel(ctx, first) {
     if (rev < st.rev) return;
     st.rev = rev;
     st.saved = String(data.text || '');
-    st.backedUp = !!data.backed_up;
     setText(st.saved);
     drawStatus();
   }
@@ -727,9 +698,6 @@ function openPanel(ctx, first) {
       kind = 'error';
     } else if (dirty()) {
       text = 'Saving…';
-    } else if (st.backedUp) {
-      text = 'Backed up';
-      kind = 'ok';
     } else {
       text = 'Saved';
       kind = 'ok';
@@ -967,7 +935,6 @@ function openPanel(ctx, first) {
     st.closed = true;
     clearTimeout(st.saveTimer);
     clearTimeout(st.retryTimer);
-    clearTimeout(st.backupTimer);
     clearTimeout(st.patchTimer);
     clearInterval(st.tick);
     for (const timer of st.dueTimers) clearTimeout(timer);

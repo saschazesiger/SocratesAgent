@@ -16,9 +16,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/saschazesiger/SocratesAgent/internal/backup"
 	"github.com/saschazesiger/SocratesAgent/internal/catalog"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
-	"github.com/saschazesiger/SocratesAgent/internal/mirror"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 	"github.com/saschazesiger/SocratesAgent/internal/tunnel"
@@ -96,9 +96,12 @@ type Server struct {
 	starts keyedLocks
 	sched  *scheduler
 
-	// mirror is the bucket the state is kept in (storage.go). It is set once,
-	// after New, by main; a server without one is a test.
-	mirror atomic.Pointer[mirror.Mirror]
+	// backup is the engine that backs the data directory up (backup.go),
+	// set once after New by main; restart starts Socrates again after a
+	// restore, and restoreJob is that restore.
+	backup     *backup.Engine
+	restart    func()
+	restoreJob restoreJob
 
 	// usage holds the short-lived account limit reading shared by every tab.
 	// Session costs are read from each CLI's own transcript and are not cached
@@ -449,11 +452,17 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/push/unsubscribe", s.auth(s.handlePushUnsubscribe))
 	mux.HandleFunc("POST /api/push/test", s.auth(s.handlePushTest))
 
-	// Storage: the bucket that is the store of record (storage.go).
-	mux.HandleFunc("GET /api/storage", s.auth(s.handleStorageStatus))
-	mux.HandleFunc("POST /api/storage/test", s.auth(s.handleStorageTest))
-	mux.HandleFunc("POST /api/storage/sync", s.auth(s.handleStorageSync))
-	mux.HandleFunc("PUT /api/storage/credentials", s.auth(s.handleStorageCredentials))
+	// Backup: the Backup card (backup.go).
+	mux.HandleFunc("GET /api/backup", s.auth(s.handleBackupStatus))
+	mux.HandleFunc("POST /api/backup/run", s.auth(s.handleBackupRun))
+	mux.HandleFunc("GET /api/backup/snapshots", s.auth(s.handleBackupSnapshots))
+	mux.HandleFunc("POST /api/backup/test", s.auth(s.handleBackupTest))
+	mux.HandleFunc("PUT /api/backup/config", s.auth(s.handleBackupConfig))
+	// Restore: a new machine, from the setup page, before there is a
+	// password (backup.go says when it is allowed).
+	mux.HandleFunc("POST /api/restore/snapshots", s.handleRestoreSnapshots)
+	mux.HandleFunc("POST /api/restore", s.handleRestoreStart)
+	mux.HandleFunc("GET /api/restore", s.handleRestoreStatus)
 
 	// Liveness, and the one endpoint nothing in the browser calls:
 	// scripts/update.sh asks it after a restart, because a process that is

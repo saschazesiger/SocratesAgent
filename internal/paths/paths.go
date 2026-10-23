@@ -11,6 +11,7 @@
 //	accounts/<id>/            one account's CLAUDE_CONFIG_DIR, CODEX_HOME or OpenCode auth
 //	terminals/<id>/           a Shell terminal's journal
 //	sessions/<id>/            today's per-session files (plan.json, journal.raw, ...)
+//	profiles/<id>/            today's per-profile CLI state, until accounts replace it
 //	vscode/, vscode-extensions/  the editor's state per folder and its extensions
 //	backup.json               where the backup goes and its passphrase (not backed up)
 //	run/                      sockets, locks, pids (not backed up)
@@ -37,6 +38,7 @@ const (
 	Accounts         = "accounts"
 	Terminals        = "terminals"
 	Sessions         = "sessions"
+	Profiles         = "profiles"
 	VSCode           = "vscode"
 	VSCodeExtensions = "vscode-extensions"
 	Workspaces       = "workspaces"
