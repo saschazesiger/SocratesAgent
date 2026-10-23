@@ -319,8 +319,14 @@ is what the composer offers after "/" (WP8). Each name is what `Adapter.Command`
 
 **Process.** `codex app-server --listen stdio:// -c check_for_update_on_startup=false
 -c projects={"<resolved workdir>"={trust_level="trusted"}}`, started through Spawn with
-`StartSpec.Env` as its environment (`CODEX_HOME` = the account's home; `SOCRATES_CODEX_BIN` in that
-environment names another binary, else `codex` on its `PATH`). `initialize` with
+`StartSpec.Env` as its whole environment. An empty `Env` is refused (exec would otherwise pass
+the host's own); until WP7 the host fills it with its scrubbed environment, so codex uses
+`~/.codex`. What WP7 puts in it per account: `PATH` (and `SOCRATES_CODEX_BIN` for a binary
+that is not the first `codex` on it), `HOME`, `LANG`/`LC_*` and `TZ` as the host has them,
+`CODEX_HOME` = the account's home prepared with `codex.PrepareHome` (its `auth.json` is the
+login; an API-key account is logged in there with `account/login/start {type: apiKey}`, so no
+`OPENAI_API_KEY` is needed), and nothing of the service's (`INVOCATION_ID`, `NOTIFY_SOCKET`,
+other accounts' keys). `initialize` with
 `capabilities.experimentalApi`, then `thread/resume {excludeTurns: true}` or `thread/start`, both with
 `approvalPolicy: "never"`, `sandbox: "danger-full-access"`, `cwd`; `thread/start` also carries
 `model`, `config.model_reasoning_effort`, the registered dynamic tools and (handoff only)
@@ -402,10 +408,11 @@ shared folder (an account's own sessions are moved in first); a switch is a rela
 other account's environment on the same thread. When a turn fails with `invalid_encrypted_content`
 (another account's encrypted reasoning, REBUILD §4.3) the same journal turn goes on: (1)
 `codex.StripRollout` copies the rollout under a new thread id (UUIDv7) without `reasoning` and
-`compaction` items (also inside a compaction's replacement history), the copy is resumed,
+`compaction` items (also inside a compaction's replacement history) and ending before the refused
+turn (codex records a turn's user message before it calls the model), the copy is resumed,
 `conversation{new id}` + `notice{codex_reasoning_dropped}`, and the turn's messages are sent again;
 (2) if that is refused too, a new thread whose developer instructions carry the visible transcript
-(≤ 24 000 characters, newest kept), `conversation` + `notice{codex_handoff}`, messages again; (3) a
+(≤ 24 000 bytes, newest kept, cut on a whole character), `conversation` + `notice{codex_handoff}`, messages again; (3) a
 third refusal in the same process fails the turn. The original rollout is never rewritten.
 
 **Pin.** `testdata/schema` is the generated schema of codex-cli 0.164.0; `TestPinnedSchema` checks

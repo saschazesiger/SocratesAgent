@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 )
@@ -31,7 +32,8 @@ const (
 	NoticeHandoff         = "codex_handoff"
 )
 
-// handoffLimit is how much transcript a handoff carries, from the end.
+// handoffLimit is how much transcript a handoff carries, in bytes, from the
+// end.
 const handoffLimit = 24000
 
 // beginRecoveryLocked takes over a turn the model refused for its encrypted
@@ -189,8 +191,18 @@ func (a *adapter) transcript(ctx context.Context, thread string) (string, error)
 		}
 	}
 	s := strings.TrimSpace(b.String())
-	if len(s) > handoffLimit {
-		s = "…" + s[len(s)-handoffLimit:]
+	return keepEnd(s, handoffLimit), nil
+}
+
+// keepEnd is the last n bytes of s at most, starting on a whole character,
+// marked as cut.
+func keepEnd(s string, n int) string {
+	if len(s) <= n {
+		return s
 	}
-	return s, nil
+	cut := len(s) - n
+	for cut < len(s) && !utf8.RuneStart(s[cut]) {
+		cut++
+	}
+	return "…" + s[cut:]
 }

@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
@@ -644,6 +645,24 @@ func TestModelAndEffortGoWithEveryTurn(t *testing.T) {
 	}, time.Second)
 	if m.Model != "gpt-other" {
 		t.Fatalf("model %q", m.Model)
+	}
+}
+
+func TestHandoffKeepsWholeCharacters(t *testing.T) {
+	s := strings.Repeat("ä", 10) // two bytes each
+	got := keepEnd(s, 5)
+	if !utf8.ValidString(got) || got != "…ää" {
+		t.Fatalf("%q", got)
+	}
+	if keepEnd("short", 10) != "short" {
+		t.Fatal("a short transcript was cut")
+	}
+}
+
+func TestAnEmptyEnvironmentIsRefused(t *testing.T) {
+	err := newAdapter().Start(context.Background(), agent.StartSpec{Workdir: t.TempDir()}, newRecorder())
+	if err == nil || !strings.Contains(err.Error(), "environment") {
+		t.Fatalf("start without an environment: %v", err)
 	}
 }
 

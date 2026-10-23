@@ -141,6 +141,11 @@ func (a *adapter) Start(ctx context.Context, spec agent.StartSpec, out agent.Emi
 
 // launch starts `codex app-server` on stdio with the fixed policy.
 func (a *adapter) launch() error {
+	if len(a.spec.Env) == 0 {
+		// exec would hand codex the host's whole environment; the chat's
+		// environment is always explicit (AGENT-HOST.md §5.2).
+		return errors.New("codex needs the chat's environment, and the launch spec has none")
+	}
 	bin, err := codexBinary(a.spec.Env)
 	if err != nil {
 		return err
@@ -699,6 +704,11 @@ func (a *adapter) SetModel(_ context.Context, model, effort string) error {
 }
 
 func (a *adapter) Command(ctx context.Context, name, args string) error {
+	// One at a time with sends and the recovery chain: a compaction asked
+	// for while a refused turn is being retried waits for the retry, so its
+	// turn is never taken for the retried one.
+	a.sendMu.Lock()
+	defer a.sendMu.Unlock()
 	a.mu.Lock()
 	thread := a.thread
 	a.mu.Unlock()
