@@ -1,5 +1,6 @@
-// The backup notice: one line under the top bar once no backup has succeeded
-// for a day.
+// The backup notice: one line under the top bar once the backup needs a
+// person - no backup has succeeded for a day, backup.json cannot be read, or
+// a database has stood in with an old copy for a day (backup.Status.Warning).
 //
 // The data directory on this machine is the only store; the bucket holds a
 // backup of it and nothing the page does waits on it. A backup that keeps
