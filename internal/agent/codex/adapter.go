@@ -98,6 +98,7 @@ type adapter struct {
 	calls   map[string]*call
 	limits  map[string]agent.Event
 	context int64
+	window  int64
 	// recovered is how far the invalid_encrypted_content fallback chain got
 	// in this process (§4.3): 0 none, 1 stripped, 2 handed off.
 	recovered int
@@ -553,7 +554,7 @@ func (a *adapter) startTurn(ctx context.Context, msg agent.Outgoing) error {
 		return err
 	}
 	a.mu.Lock()
-	t := a.openTurnLocked(res.Turn.ID, msg.MessageID, turnNormal, true)
+	t := a.openTurnLocked(res.Turn.ID, msg.MessageID, turnNormal)
 	t.input = append(t.input, msg)
 	a.mu.Unlock()
 	return nil

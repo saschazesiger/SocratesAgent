@@ -34,6 +34,7 @@ type turn struct {
 	// input is every message the turn was given, for a recovery to send again.
 	input []agent.Outgoing
 	parts map[string]*part
+	order []*part
 	n     int
 	usage agent.Usage
 	err   *turnError
@@ -125,7 +126,7 @@ func (e *turnError) text() string {
 // openTurnLocked is the journal turn for a root codex turn, opened with its
 // events the first time it is seen. A turn a recovery started continues the
 // journal turn it retries.
-func (a *adapter) openTurnLocked(codexID, userMsg string, kind turnKind, fromStart bool) *turn {
+func (a *adapter) openTurnLocked(codexID, userMsg string, kind turnKind) *turn {
 	if t := a.turns[codexID]; t != nil {
 		return t
 	}
@@ -154,7 +155,6 @@ func (a *adapter) openTurnLocked(codexID, userMsg string, kind turnKind, fromSta
 		agent.Event{Type: agent.TypeMessage, MessageID: t.msgID, Role: agent.RoleAssistant, State: agent.MessageStreaming,
 			TurnID: t.id, Model: model})
 	a.out.Emit(events...)
-	_ = fromStart
 	return t
 }
 
@@ -183,13 +183,12 @@ func (a *adapter) closeTurnLocked(t *turn, outcome, why string) {
 	if t.diff.id != "" {
 		events = append(events, a.diffEvent(t, agent.PartDone))
 	}
-	for _, p := range t.ordered() {
+	for _, p := range t.order {
 		if p.done {
 			continue
 		}
 		p.done = true
-		events = append(events, agent.Event{Type: agent.TypePart, MessageID: t.msgID, PartID: p.id, Kind: p.kind,
-			State: state, Text: p.text.String(), Content: p.content})
+		events = append(events, partEvent(t.msgID, p, state))
 	}
 	for _, c := range a.calls {
 		if c.turn == t {
@@ -197,7 +196,7 @@ func (a *adapter) closeTurnLocked(t *turn, outcome, why string) {
 		}
 	}
 	usage := t.usage
-	usage.Context, usage.Window = a.context, a.windowLocked()
+	usage.Context, usage.Window = a.context, a.window
 	if outcome == agent.OutcomeLimited {
 		events = append(events, agent.Event{Type: agent.TypeError, Code: "rate_limit", Text: why})
 	}
@@ -210,16 +209,13 @@ func (a *adapter) closeTurnLocked(t *turn, outcome, why string) {
 	}
 }
 
-func (t *turn) ordered() []*part {
-	out := make([]*part, 0, len(t.parts))
-	for i := 1; i <= t.n; i++ {
-		for _, p := range t.parts {
-			if p.id == fmt.Sprintf("%s_p%d", t.msgID, i) {
-				out = append(out, p)
-			}
-		}
-	}
-	return out
+// newPart adds a part to the turn under key.
+func (t *turn) newPart(key, kind, parent string) *part {
+	t.n++
+	p := &part{id: fmt.Sprintf("%s_p%d", t.msgID, t.n), kind: kind, parent: parent}
+	t.parts[key] = p
+	t.order = append(t.order, p)
+	return p
 }
 
 // ------------------------------------------------------------- dispatch
@@ -327,7 +323,7 @@ func (a *adapter) turnStarted(p notification) {
 		}
 	}
 	a.expect = turnNormal
-	t := a.openTurnLocked(p.Turn.ID, userMsg, kind, false)
+	t := a.openTurnLocked(p.Turn.ID, userMsg, kind)
 	if a.starting != nil && len(t.input) == 0 {
 		t.input = append(t.input, *a.starting)
 	}
@@ -429,13 +425,11 @@ func (a *adapter) partFor(t *turn, ag *subagent, threadID, itemID, kind string) 
 	if p := t.parts[key]; p != nil {
 		return p
 	}
-	t.n++
-	p := &part{id: fmt.Sprintf("%s_p%d", t.msgID, t.n), kind: kind}
+	parent := ""
 	if ag != nil {
-		p.parent = ag.group
+		parent = ag.group
 	}
-	t.parts[key] = p
-	return p
+	return t.newPart(key, kind, parent)
 }
 
 func (a *adapter) emitPart(t *turn, p *part, state string) {
@@ -444,39 +438,22 @@ func (a *adapter) emitPart(t *turn, p *part, state string) {
 }
 
 func partEvent(msgID string, p *part, state string) agent.Event {
-	return agent.Event{Type: agent.TypePart, MessageID: msgID, PartID: p.id, Kind: p.kind, State: state,
-		Text: p.text.String(), Content: withParent(p.content, p.parent)}
-}
-
-// withParent puts the nesting into a part's content: "parent" is the group
-// part (a subagent) the part belongs to.
-func withParent(content json.RawMessage, parent string) json.RawMessage {
-	if parent == "" {
-		return content
-	}
-	var m map[string]any
-	if json.Unmarshal(content, &m) != nil || m == nil {
-		m = map[string]any{}
-	}
-	m["parent"] = parent
-	raw, _ := json.Marshal(m)
-	return raw
+	return agent.Event{Type: agent.TypePart, MessageID: msgID, PartID: p.id, ParentPartID: p.parent, Kind: p.kind,
+		State: state, Text: p.text.String(), Content: p.content}
 }
 
 func (a *adapter) delta(p notification, text string) {
 	if text == "" {
 		return
 	}
-	t, ag := a.turnFor(p.ThreadID, p.TurnID)
+	t, _ := a.turnFor(p.ThreadID, p.TurnID)
 	if t == nil {
 		return
 	}
-	key := p.ThreadID + "/" + p.ItemID
-	pt := t.parts[key]
+	pt := t.parts[p.ThreadID+"/"+p.ItemID]
 	if pt == nil || pt.done {
 		return
 	}
-	_ = ag
 	pt.text.WriteString(text)
 	a.out.Delta(t.msgID, pt.id, text)
 }
@@ -501,7 +478,7 @@ func (a *adapter) item(p notification, completed bool) {
 	m := mapItem(it, p.Item, completed)
 	if m.skip {
 		if it.Type == "subAgentActivity" {
-			a.subAgentActivity(t, ag, it, p.ThreadID)
+			a.subAgentActivity(t, ag, it)
 		}
 		return
 	}
@@ -511,20 +488,11 @@ func (a *adapter) item(p notification, completed bool) {
 		pt.text.Reset()
 		pt.text.WriteString(*m.text)
 	}
-	state := m.state
-	if !completed {
-		if pt.text.Len() > 0 || len(pt.content) > 0 || state != agent.PartStreaming {
-			a.emitPart(t, pt, state)
-		} else {
-			a.emitPart(t, pt, state)
-		}
-		return
-	}
-	a.emitPart(t, pt, state)
+	a.emitPart(t, pt, m.state)
 }
 
 // subAgentActivity opens and closes a subagent's group.
-func (a *adapter) subAgentActivity(t *turn, parent *subagent, it item, threadID string) {
+func (a *adapter) subAgentActivity(t *turn, parent *subagent, it item) {
 	switch it.Kind {
 	case "started":
 		if a.agents[it.AgentThreadID] != nil {
@@ -541,14 +509,11 @@ func (a *adapter) subAgentActivity(t *turn, parent *subagent, it item, threadID 
 			a.agentBusy(ag, false)
 		}
 	}
-	_ = threadID
 }
 
 func (a *adapter) newAgentLocked(thread, path, model, effort string, t *turn, parentGroup string) *subagent {
 	ag := &subagent{thread: thread, path: path, model: model, effort: effort, turn: t, parent: parentGroup, status: "started"}
-	t.n++
-	ag.group = fmt.Sprintf("%s_p%d", t.msgID, t.n)
-	t.parts["agent/"+thread] = &part{id: ag.group, kind: agent.PartTool, parent: parentGroup}
+	ag.group = t.newPart("agent/"+thread, agent.PartTool, parentGroup).id
 	a.agents[thread] = ag
 	a.emitAgent(ag)
 	return ag
@@ -664,16 +629,14 @@ func (a *adapter) tokenUsage(p notification) {
 		return
 	}
 	if w := p.TokenUsage.ModelContextWindow; w > 0 {
-		a.limits["window"] = agent.Event{Count: int(w)}
+		a.window = w
 	}
 	ctx := last.InputTokens + last.OutputTokens
 	if ctx > 0 && ctx != a.context {
 		a.context = ctx
-		a.out.Emit(agent.Event{Type: agent.TypeUsage, Usage: &agent.Usage{Context: ctx, Window: a.windowLocked()}})
+		a.out.Emit(agent.Event{Type: agent.TypeUsage, Usage: &agent.Usage{Context: ctx, Window: a.window}})
 	}
 }
-
-func (a *adapter) windowLocked() int64 { return int64(a.limits["window"].Count) }
 
 // rateLimits maps the account's windows onto rate_limit events, one per
 // window whose reading changed.
