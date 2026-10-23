@@ -164,7 +164,12 @@ func TestViewerAnswersTheAttachQueriesItself(t *testing.T) {
 	row := l.create(shellSpec(t.TempDir()))
 	v := l.attach(row.ID, 100, 30)
 	// The prompt means the attach is done and tmux has asked whatever it asks.
-	waitForRing(t, v, 10*time.Second, "#")
+	// It is "#" for root and "$" for anybody else, and CI runs as somebody
+	// else.
+	waitFor(t, 10*time.Second, "the shell's prompt", func() bool {
+		out, _ := v.Ring().Since(v.Ring().Base())
+		return bytes.Contains(out, []byte("# ")) || bytes.Contains(out, []byte("$ "))
+	})
 	time.Sleep(300 * time.Millisecond)
 	seen, _ := v.Ring().Since(0)
 
