@@ -269,7 +269,9 @@ func TestAnAbortedAskUserCallIsAnsweredAsAMessage(t *testing.T) {
 	if ev := cn.until("the delivery", func(ev agent.Event) bool { return ev.Type == agent.TypeAskDelivered }); ev.Via != agent.ViaMessage {
 		t.Fatalf("delivered %+v", ev)
 	}
-	cn.until("the notice", func(ev agent.Event) bool { return ev.Type == agent.TypeNotice && ev.Code == agent.NoticeAnswerAsMessage })
+	cn.until("the notice", func(ev agent.Event) bool {
+		return ev.Type == agent.TypeNotice && ev.Code == agent.NoticeAnswerAsMessage
+	})
 	reply := cn.until("the answer's turn", func(ev agent.Event) bool {
 		return ev.Type == agent.TypePart && ev.State == agent.PartDone && strings.HasPrefix(ev.Text, "you said: Answer to your earlier question (Setup)")
 	})
