@@ -485,6 +485,22 @@ func TestParkResumeRebuildAndBackground(t *testing.T) {
 	if !errors.Is(err, agent.ErrConversationNotFound) {
 		t.Fatalf("unknown thread: %v", err)
 	}
+	t.Cleanup(func() { _ = c.Stop() })
+
+	// The host's fresh start after that: the state still names the lost
+	// thread, which is not insisted on.
+	spec := lab.spec("a", "")
+	if err := os.WriteFile(filepath.Join(spec.StateDir, "codex", "thread.json"), []byte(`{"thread_id":"`+newThreadID()+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r4 := newRecorder()
+	fresh := lab.start(spec, r4)
+	conv := r4.waitFor(t, 0, "conversation", isType(agent.TypeConversation), wait).ConversationID
+	_, n = send(t, fresh, r4, "anew")
+	r4.turnEnd(t, n, wait)
+	if conv == thread || lastTurnText(r4.projection()) != "you said: anew" {
+		t.Fatalf("fresh start\n%s", dump(r4.all()))
+	}
 }
 
 func TestAccountSwitchChain(t *testing.T) {

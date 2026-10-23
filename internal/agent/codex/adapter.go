@@ -244,21 +244,29 @@ func (a *adapter) handshake(ctx context.Context) error {
 		return err
 	}
 	resume := a.spec.ResumeID
-	rebuild := false
-	if resume == "" && a.spec.First == nil {
+	fromState := false
+	if resume == "" {
 		// The journal knows no conversation, but this chat had one: the
-		// journal was lost, and the thread is where its history still is.
+		// journal was lost, and the thread is where the model's context and
+		// the history still are. A thread codex no longer has is not one to
+		// insist on: that start is the host's fresh one.
 		if st, err := a.loadState(); err == nil && st.ThreadID != "" {
-			resume, rebuild = st.ThreadID, true
+			resume, fromState = st.ThreadID, true
 		}
 	}
-	if resume != "" {
-		if err := a.resume(ctx, resume); err != nil {
+	switch err := a.resumeOrStart(ctx, resume); {
+	case fromState && errors.Is(err, agent.ErrConversationNotFound):
+		fromState = false
+		if err := a.startThread(ctx, ""); err != nil {
 			return err
 		}
-	} else if err := a.startThread(ctx, ""); err != nil {
+	case err != nil:
 		return err
 	}
+	// The history goes back into the journal only when the journal holds no
+	// message at all; a message waiting to be delivered (First) may be the
+	// one codex took up just before the journal lost the conversation.
+	rebuild := fromState && a.spec.First == nil
 	if rebuild {
 		if err := a.rebuild(ctx, resume); err != nil {
 			a.out.Emit(agent.Event{Type: agent.TypeNotice, Code: "history_unavailable",
@@ -280,6 +288,13 @@ func (a *adapter) startErr(what string, err error) error {
 		}
 	}
 	return fmt.Errorf("%s: %w", what, err)
+}
+
+func (a *adapter) resumeOrStart(ctx context.Context, id string) error {
+	if id == "" {
+		return a.startThread(ctx, "")
+	}
+	return a.resume(ctx, id)
 }
 
 // threadResult is the part of thread/start's and thread/resume's answer the
