@@ -221,6 +221,25 @@ func (a *adapter) closeTurnLocked(t *turn, outcome, why string) {
 	}
 }
 
+// addInput records a message the turn was given, once.
+func (t *turn) addInput(msg agent.Outgoing) {
+	for _, m := range t.input {
+		if m.MessageID == msg.MessageID {
+			return
+		}
+	}
+	t.input = append(t.input, msg)
+}
+
+func (t *turn) removeInput(id string) {
+	for i, m := range t.input {
+		if m.MessageID == id {
+			t.input = append(t.input[:i], t.input[i+1:]...)
+			return
+		}
+	}
+}
+
 // newPart adds a part to the turn under key.
 func (t *turn) newPart(key, kind, parent string) *part {
 	t.n++
@@ -332,8 +351,8 @@ func (a *adapter) turnStarted(p notification) {
 	}
 	a.expect, a.expectMsg = turnNormal, ""
 	t := a.openTurnLocked(p.Turn.ID, userMsg, kind)
-	if a.starting != nil && len(t.input) == 0 {
-		t.input = append(t.input, *a.starting)
+	if a.starting != nil {
+		t.addInput(*a.starting)
 	}
 }
 

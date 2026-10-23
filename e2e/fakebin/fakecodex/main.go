@@ -15,6 +15,7 @@
 //	/stream N [ms]   N agent message deltas "wI ", ms apart (default 20 × 10 ms)
 //	/sleep S         a turn that works for S seconds, then says "slept"
 //	/deaf S          the same, but ends without taking up steered messages
+//	/eager S         the same, but takes a steered message up before answering the steer
 //	/run CMD         a commandExecution of CMD: three output lines, exit 0 (exit 1 for "fail")
 //	/patch FILE      a fileChange adding FILE, with its diff and the turn diff
 //	/subagent        a subagent thread that answers "sub done", nested in the turn
@@ -119,6 +120,8 @@ type fturn struct {
 	steer   chan userInput
 	cancel  context.CancelFunc
 	errText string
+	// eager takes steered input up at once, inside turn/steer.
+	eager func(userInput)
 }
 
 type userInput struct {
@@ -500,7 +503,14 @@ func (s *server) turnSteer(fr frame, threadID, expected, clientID string, input 
 		s.fail(fr.ID, -32600, "cannot steer a compact turn", map[string]any{"message": "cannot steer a compact turn",
 			"codexErrorInfo": map[string]any{"activeTurnNotSteerable": map[string]any{"turnKind": "compact"}}})
 	default:
-		t.steer <- parseInput(input, clientID)
+		s.mu.Lock()
+		eager := t.eager
+		s.mu.Unlock()
+		if eager != nil {
+			eager(parseInput(input, clientID))
+		} else {
+			t.steer <- parseInput(input, clientID)
+		}
 		s.respond(fr.ID, map[string]any{"turnId": t.id})
 	}
 }
@@ -730,6 +740,14 @@ func (c *tcx) script(text string) (string, map[string]any) {
 			return "interrupted", nil
 		}
 		ok = c.say([]string{"slept"}, 0)
+	case "/eager":
+		c.s.mu.Lock()
+		c.t.eager = c.user
+		c.s.mu.Unlock()
+		if !c.wait(time.Duration(atof(fields, 0, 1)*float64(time.Second)), nil) {
+			return "interrupted", nil
+		}
+		ok = c.say([]string{"took it at once"}, 0)
 	case "/deaf":
 		c.deaf = true
 		if !c.wait(time.Duration(atof(fields, 0, 1)*float64(time.Second)), nil) {

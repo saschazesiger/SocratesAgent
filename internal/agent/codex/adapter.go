@@ -577,7 +577,7 @@ func (a *adapter) startTurn(ctx context.Context, msg agent.Outgoing) error {
 	}
 	a.mu.Lock()
 	t := a.openTurnLocked(res.Turn.ID, msg.MessageID, turnNormal)
-	t.input = append(t.input, msg)
+	t.addInput(msg)
 	a.mu.Unlock()
 	return nil
 }
@@ -585,19 +585,34 @@ func (a *adapter) startTurn(ctx context.Context, msg agent.Outgoing) error {
 // steer adds msg to the running turn. It is queued until codex takes it up at
 // its next step, which the userMessage item carrying its id says.
 func (a *adapter) steer(ctx context.Context, t *turn, msg agent.Outgoing) error {
+	// Registered before the call: codex may take the message up, and send
+	// its userMessage item, before it answers the steer.
 	a.mu.Lock()
 	thread := a.thread
+	a.steered[msg.MessageID] = msg
+	t.addInput(msg)
 	a.mu.Unlock()
 	err := a.rpc.call(ctx, "turn/steer", map[string]any{"threadId": thread, "expectedTurnId": t.codexID,
 		"input": input(msg), "clientUserMessageId": msg.MessageID}, nil)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	_, waiting := a.steered[msg.MessageID]
 	if err != nil {
+		// Not steered: whatever took it meanwhile (a turn that ended and
+		// held it for the next one) lets go, so the caller decides once.
+		delete(a.steered, msg.MessageID)
+		t.removeInput(msg.MessageID)
+		for i, q := range a.queue {
+			if q.MessageID == msg.MessageID {
+				a.queue = append(a.queue[:i], a.queue[i+1:]...)
+				break
+			}
+		}
 		return err
 	}
-	a.mu.Lock()
-	a.steered[msg.MessageID] = msg
-	t.input = append(t.input, msg)
-	a.mu.Unlock()
-	a.out.Emit(agent.Event{Type: agent.TypeMessageState, MessageID: msg.MessageID, State: agent.MessageQueued})
+	if waiting {
+		a.out.Emit(agent.Event{Type: agent.TypeMessageState, MessageID: msg.MessageID, State: agent.MessageQueued})
+	}
 	return nil
 }
 

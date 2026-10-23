@@ -240,6 +240,22 @@ func TestSteeringQueueingAndShellLines(t *testing.T) {
 		t.Fatalf("missed steer\n%s", dump(r.since(n)))
 	}
 
+	// Codex may take a steered message up before it answers the steer: the
+	// receipt still counts, and the message gets no second turn.
+	_, n = send(t, a, r, "/eager 0.3")
+	time.Sleep(100 * time.Millisecond)
+	eager, _ := send(t, a, r, "taken early")
+	r.turnEnd(t, n, wait)
+	time.Sleep(200 * time.Millisecond)
+	if p := r.projection(); messageState(p, eager.MessageID) != agent.MessageDelivered {
+		t.Fatalf("early receipt: %s\n%s", messageState(p, eager.MessageID), dump(r.since(n)))
+	}
+	for _, ev := range r.since(n) {
+		if ev.Type == agent.TypeTurnStarted && ev.MessageID == eager.MessageID {
+			t.Fatalf("the early-taken message got a turn of its own\n%s", dump(r.since(n)))
+		}
+	}
+
 	// Behind a compaction, which cannot be steered: held, then a turn of
 	// its own.
 	n = len(r.all())
