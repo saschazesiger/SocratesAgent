@@ -48,9 +48,15 @@ type Layout struct {
 	Root string
 }
 
-// NewLayout is the layout in a Socrates data folder.
+// NewLayout is the layout in a Socrates data folder. Its paths are absolute
+// even for a relative data folder: serve runs in the chat's working
+// directory, where a relative OPENCODE_DB would be another database.
 func NewLayout(dataDir string) Layout {
-	return Layout{Root: filepath.Join(dataDir, "agents", "opencode")}
+	root := filepath.Join(dataDir, "agents", "opencode")
+	if abs, err := filepath.Abs(root); err == nil {
+		root = abs
+	}
+	return Layout{Root: root}
 }
 
 // DB is the database every process shares.

@@ -57,6 +57,18 @@ func TestTheServerEnvironmentIsTheChatsOnTheLayout(t *testing.T) {
 	}
 }
 
+// A relative data folder still gives every process the same database.
+func TestTheLayoutIsAbsoluteForARelativeDataFolder(t *testing.T) {
+	layout := NewLayout(filepath.Join("data", "dir"))
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(wd, "data", "dir", "agents", "opencode"); layout.Root != want || layout.DB() != filepath.Join(want, "opencode.db") {
+		t.Fatalf("root %q db %q, want under %q", layout.Root, layout.DB(), want)
+	}
+}
+
 // The config allows what OpenCode would ask about, denies its question tool,
 // and never adds a "*" that would lift plan mode's edit deny.
 func TestTheConfigAllowsEverythingButQuestions(t *testing.T) {

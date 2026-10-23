@@ -2234,6 +2234,25 @@ now `args`. Adapters also get the data folder (`StartSpec.DataDir`). AGENT-HOST.
 until WP6, OpenCode's own question tool stays denied and a question that still arrives is rejected
 with a notice, and `Answer` reports `ErrAskGone`.
 
+**WP5 / §3.3 — `@opencode-ai/plugin` is not pre-installed.** The plan asks for the shared config
+folder's `node_modules/@opencode-ai/plugin` to exist before the first serve, because a stop that
+caught OpenCode's own first-start install hung (research/06 §3.5). OpenCode 1.19.4 installs it with
+its embedded npm, in the background, on the first start in a fresh data folder; doing that ahead
+would mean driving that installer from the install step, with network, for a package Socrates never
+uses (it loads no plugin). The hang is bounded instead: every stop is SIGTERM, then SIGKILL after
+5 s (`TestStopKillsAServerThatIgnoresTerm`), and a start after a cut-off install installs again.
+Offline, the install fails and the server works on.
+
+**WP5 / §3.3 — the tools an OpenCode chat runs see the layout's XDG folders.** OpenCode's shell
+and bash tool inherit the server's environment, so `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
+`XDG_STATE_HOME` and `XDG_CACHE_HOME` point into `<data>/agents/opencode` for them too. Caches kept
+there (Go's build cache, pip's, npm's) land in the shared `cache/`, which the backup leaves out
+(`paths.NotBackedUp`). A tool that finds its configuration only through `XDG_CONFIG_HOME` (gh's
+login, git's `~/.config/git/config`) does not see the user's in an OpenCode chat; the variables a
+tool has for that (`GH_CONFIG_DIR`, `GIT_CONFIG_GLOBAL`) pass through, so WP7, which builds the
+chat's environment, can set them. Giving tools the user's XDG values back would take a plugin on
+OpenCode's `shell.env` hook, which was not tried.
+
 **WP1 / REBUILD.md §6.2 — chunks are named by an HMAC of their content, not by its SHA-256.**
 §6.2 says `chunks/<sha256>`. The name is HMAC-SHA256 under a key derived from the passphrase
 (as the work package's brief asked), so equal content is still stored once, but the bucket's

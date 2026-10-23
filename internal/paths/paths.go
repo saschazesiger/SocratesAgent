@@ -123,6 +123,9 @@ var NotBackedUp = []string{
 	VSCode + "/*/logs",
 	VSCode + "/*/CachedData",
 	VSCode + "/*/CachedProfilesData",
+	// OpenCode's shared XDG_CACHE_HOME, which the tools an OpenCode chat runs
+	// inherit too (Go's build cache, pip's, npm's).
+	Agents + "/opencode/cache",
 	Chats + "/*/" + ChatLock,
 	Chats + "/*/" + ChatLog,
 	Chats + "/*/" + ChatSpec + ".tmp",
