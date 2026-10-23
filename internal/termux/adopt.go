@@ -110,7 +110,7 @@ func (m *Manager) Adopt(ctx context.Context) error {
 	for i := range rows {
 		row := &rows[i]
 		known[row.TmuxName] = true
-		if row.State != store.StateRunning && row.State != store.StateStarting {
+		if row.IsChat() || (row.State != store.StateRunning && row.State != store.StateStarting) {
 			continue
 		}
 		p, ok := panes[row.TmuxName]
@@ -206,7 +206,7 @@ func (m *Manager) recover(ctx context.Context, tmuxName string, p pane) {
 func (m *Manager) markLost(rows []store.Session) {
 	for i := range rows {
 		row := &rows[i]
-		if row.State == store.StateRunning || row.State == store.StateStarting {
+		if !row.IsChat() && (row.State == store.StateRunning || row.State == store.StateStarting) {
 			_ = m.st.SetSessionStateFrom(row.ID, row.State, store.StateNeedsResume, row.ExitStatus, "")
 		}
 	}
@@ -283,8 +283,8 @@ func (m *Manager) notePollSuccess() {
 func (m *Manager) applyPanes(rows []store.Session, panes map[string]pane) {
 	for i := range rows {
 		row := &rows[i]
-		if row.State != store.StateRunning && row.State != store.StateStarting &&
-			row.State != store.StateExited {
+		if row.IsChat() || (row.State != store.StateRunning && row.State != store.StateStarting &&
+			row.State != store.StateExited) {
 			continue
 		}
 		p, ok := panes[row.TmuxName]
