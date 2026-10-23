@@ -306,6 +306,13 @@ export function apply(chat, ev) {
     case 'notice':
       line(chat, ev, { kind: 'notice', code: ev.code || '', text: ev.text || '', askId: ev.ask_id || '' });
       break;
+    case 'command':
+      // A slash command the person ran is a line of its own; the other
+      // commands (interrupt, model, park) say what they did by their effects.
+      if (ev.op === 'command') {
+        line(chat, ev, { kind: 'command', text: '/' + (ev.text || '') + (ev.args ? ' ' + ev.args : ''), clientId: ev.client_id || '' });
+      }
+      break;
     case 'error':
       line(chat, ev, { kind: 'error', code: ev.code || '', text: ev.text || '' });
       break;

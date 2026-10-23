@@ -552,6 +552,8 @@ export function lineHtml(entry, view) {
       const words = l.text || NOTICE_WORDS[l.code] || l.code;
       return html`<div class="so-line" data-ds-key="${key}" data-kind="notice" data-code="${l.code}">${raw(icon(l.code === 'compacted' ? 'archive' : l.code === 'resumed' ? 'history' : 'info', 16))}<span class="so-line__text">${words}</span></div>`;
     }
+    case 'command':
+      return html`<div class="so-line" data-ds-key="${key}" data-kind="command">${raw(icon('chevronRight', 16))}<span class="so-line__text so-line__command">${l.text}</span></div>`;
     case 'account':
       return html`<div class="so-line" data-ds-key="${key}" data-kind="account">${raw(icon('user', 16))}<span class="so-line__text">${'Switched from ' + (l.from || 'one account') + ' to ' + (l.to || 'another')}</span>${infoButton([l.reason], 'Why the account changed')}</div>`;
     case 'model':

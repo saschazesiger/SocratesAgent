@@ -39,7 +39,7 @@ const HIDDEN_GRACE = 30000;
  *   onStatus(status) 'connecting' | 'live' | 'offline', whenever it moves
  */
 export class ChatStream {
-  constructor({ chatId, since, onFrame, onStatus }) {
+  constructor({ chatId, since, onFrame, onStatus, global = true }) {
     this.chatId = chatId;
     this.since = since;
     this.onFrame = onFrame;
@@ -51,7 +51,9 @@ export class ChatStream {
     this.heardAt = 0;
     this.pingId = 0;
     this.timers = {};
-    this.conn = connectionSource({ global: true });
+    // A stream a dialog keeps for a question is not what the page is
+    // showing, and does not speak for the connection bar (global false).
+    this.conn = connectionSource({ global });
     this.conn.onOffline(() => { if (!this.stopped) this.reconnect(0); });
     this.unwake = null;
     this.onVisible = () => this.visibility();
