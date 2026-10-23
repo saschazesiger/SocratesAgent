@@ -28,7 +28,7 @@ rows; the terminal-only routes (`…/ws`, `…/journal`, `…/resume`, `…/rest
 | Path | Written by | What |
 |---|---|---|
 | `<data>/chats/<id>/events.jsonl` | host | the journal (§3); the chat history Socrates renders and backs up |
-| `<data>/chats/<id>/host.json` | server, before every launch | launch spec: harness, workdir, model, effort, account, env, `park_after_ms` |
+| `<data>/chats/<id>/host.json` | server, before every launch | launch spec: harness, workdir, model, effort, account, env, `resume_id`, `park_after_ms` |
 | `<data>/chats/<id>/host.lock` | host | `flock`ed for the host's whole life: **the** evidence a host is alive |
 | `<data>/chats/<id>/host.log` | host (and `systemd-run`) | the host's stdout/stderr; a file, never a pipe |
 | `<data>/chats/<id>/agent/` | adapter | the adapter's own state (the fake keeps its conversations here) |
@@ -64,6 +64,7 @@ is one `agent.Event`: a flat JSON object, all fields optional except `seq`, `at`
 | `command` | `op` (`interrupt`\|`set_model`\|`command`\|`park`\|`stop`), `client_id`, `model`/`effort`, `text` (command name), `args` | a command the host accepted; recorded so its `client_id` is acted on once |
 | `notice` | `code`, `text`, `ask_id`? | a line of its own. Host codes: `resumed`, `answer_as_message`, `conversation_lost` |
 | `error` | `code`, `text`, `message_id`? | a failure that is not a turn's end (e.g. `send_failed`, `rate_limit`) |
+| `commands` | `content`: `[{name, description?, source?, hints?}]` | the agent's slash commands for the composer's palette; a later one replaces the list (projection: `commands`) |
 
 **Nesting.** A part with `parent_part_id` belongs inside that part: the parts a subagent or a
 workflow produced go inside the tool part that started it (Claude `Task`/`Agent` and
@@ -215,10 +216,78 @@ Rules every adapter keeps:
 |---|---|---|---|
 | text / reasoning | `stream_event` `text_delta` / `thinking_delta` → `part.delta`; `assistant` block → `part` done | `item/agentMessage/delta`, `item/reasoning/*Delta` → `part.delta`; `item/completed` → `part` | `message.part.delta` → `part.delta`; `message.part.updated` → `part` |
 | tool | `tool_use` → `part{tool, running}`; `tool_result` + `tool_use_result` → `part{done}` | `commandExecution` / `fileChange` / `mcpToolCall` items; `outputDelta` → `part.delta` | `tool` part state pending→running→completed\|error |
-| diff / plan / todo | Edit `structuredPatch` → `diff`; `ExitPlanMode` → `plan`; Task* → `todo` | `turn/diff/updated` → `diff`; `plan` item | `edit` metadata diff; `todo.updated` |
-| turn end | `result` (`is_error`, `terminal_reason`) | `turn/completed` status | `session.idle` / `session.error` |
-| limits | `rate_limit_event` → `rate_limit` | `account/rateLimits/updated` | assistant `info.error` / headers |
-| usage | `result.usage`, `total_cost_usd` delta | `thread/tokenUsage/updated` | `step-finish` tokens/cost |
+| diff / plan / todo | Edit `structuredPatch` → `diff`; `ExitPlanMode` → `plan`; Task* → `todo` | `turn/diff/updated` → `diff`; `plan` item | edit/apply_patch/write metadata → `diff`; `todowrite` → `todo` |
+| turn end | `result` (`is_error`, `terminal_reason`) | `turn/completed` status | `session.idle` (outcome from `session.error` / `info.error` / the limit) |
+| limits | `rate_limit_event` → `rate_limit` | `account/rateLimits/updated` | `session.status retry` with `action.reason`, or a 429 error |
+| usage | `result.usage`, `total_cost_usd` delta | `thread/tokenUsage/updated` | `step-finish` → `usage`; assistant `info.tokens`/`cost` summed per turn |
+
+### 5.1 The OpenCode adapter (WP5)
+
+`internal/agent/opencode`, registered as `opencode` (imported by `main.go`). Research: research/05
+(API), research/06 (layout, spike S3).
+
+**Process.** One `opencode serve --hostname 127.0.0.1 --port 0` per host, started through Spawn in
+the workdir; the URL is read from its `listening on` line (`--port 0` tries 4096 first). The binary
+is `SOCRATES_OPENCODE_BIN` from `StartSpec.Env`, else `opencode` on that environment's `PATH`. Its
+environment is `StartSpec.Env` without `OPENCODE_*`/`XDG_*` (except `OPENCODE_AUTH_CONTENT`), plus
+the layout, `OPENCODE_SERVER_USERNAME/PASSWORD` (32 random bytes per process),
+`OPENCODE_CONFIG_CONTENT` (share disabled, autoupdate off, `permission`: `external_directory`,
+`doom_loop`, `read` allow and `question` deny over OpenCode's own `"*": allow` — no `"*"` of ours,
+which would also lift plan mode's edit deny — plus the `mcp` servers of the `MCPServers` hook),
+`OPENCODE_DISABLE_AUTOUPDATE`, `OPENCODE_DISABLE_MODELS_FETCH`, `OPENCODE_DISABLE_EXTERNAL_SKILLS`.
+Park and Stop: abort if a turn runs, SIGTERM to the process group, SIGKILL after 5 s.
+
+**Layout** (`opencode.Layout`, `NewLayout(dataDir)`): `<data>/agents/opencode/opencode.db`
+(`OPENCODE_DB` of every process), shared `snapshot/ storage/ tool-output/ plans/ worktree/ repos/
+config/ cache/`, and per account `accounts/<acct>/` as `XDG_DATA_HOME` (its `opencode/auth.json`,
+the shared folders linked in by relative symlinks) with `state/` as `XDG_STATE_HOME`.
+`PrepareAccount(acct)` makes it (idempotent; every start calls it, WP7 calls it on creating an
+account). `Migrate` runs `opencode db "select 1"` once per binary build (stamp `migrated`, under
+`migrate.lock`) before any serve. `StartSpec.Account` empty is `default`.
+
+**Session.** New: `POST /session`. Resume: `GET /session/{id}`; 404 (or a malformed id) wraps
+`ErrConversationNotFound`. On resume, an assistant message that never completed (a dead process)
+has its streaming/running parts written as `interrupted`. `StartSpec.Rebuild` writes the whole
+history from `GET /session/{id}/message` (and the task children's) first.
+
+**Turns.** A message is posted with `prompt_async` and a message id of OpenCode's own form chosen by
+the adapter (`msg_` + 48-bit ms×4096+counter + 14 base-62), kept in `agent/opencode.json` (journal
+id → OpenCode id) so that revert/fork can name it and a message the previous host already handed
+over is recognised (`delivered` without a second turn). `delivered` + `turn.started` when the post
+is accepted; one turn per user message; every step is an assistant `message`. **While a turn runs,
+messages wait in the adapter (`queued`) and go one by one after `session.idle`** (DEVIATIONS).
+A `!line` is `POST /shell`. Turn outcome: `limited` (a `retry` status with `action.reason`, which is
+then aborted, or a 429), else `interrupted` (`MessageAbortedError`), else `failed` (any other error;
+`error{code: auth}` for 401/ProviderAuthError with "sign in again"), else `completed`. Other
+retries: `notice{retry}` per attempt. `permission.asked` → replied `always` + `notice{permission_allowed}`.
+`question.asked` → the `QuestionHandler` hook (WP6), else rejected + `notice{question_rejected}`.
+`Answer` returns `ErrAskGone` until WP6. After `/event` drops, it is reopened and caught up from
+`GET …/message` and `/session/status`.
+
+**Parts and content** (exported types in `convert.go`):
+
+| OpenCode part | kind | text | content |
+|---|---|---|---|
+| `text`, `reasoning` (not synthetic) | `text`, `reasoning` | the text (deltas) | – |
+| `tool` | `tool` | output (bash streams `metadata.output`), or the error | `ToolContent{tool, call_id, title, input, error, started_at, ended_at, duration_ms, exit, session_id, agent}` |
+| `tool` todowrite | `todo` | – | `TodoContent{todos:[{content, status, priority}]}` |
+| completed edit / apply_patch / write of a new file | `diff`, id `<tool part>-diff` | – | `DiffContent{tool_part, files:[{path, patch, additions, deletions, status}]}` |
+| `file` | `image` / `file` | – | `FileContent{mime, filename, url (file:// only)}` |
+| a task child session's parts | as above | | with `parent_part_id` = the task part |
+
+**Commands** (`Command(name, args)`): `compact` (`/summarize`, a turn), `shell <cmd>`, `agent
+build|plan` (for every following prompt, kept across hosts; `notice{agent}`), `revert <message>`
+(`notice{reverted, message_id}`), `unrevert` (`notice{unreverted}`), `fork [<message>]`
+(`notice{forked, conversation_id}` — a new chat would resume it with `resume_id`, rebuilding its
+history), and any name from `GET /command` (a turn whose user message is `/name args`). The
+`commands` event lists `compact` and OpenCode's commands at start. `SetModel`: `provider/model`
+and the effort as `variant`, both sent with every prompt.
+
+**Account switch** (mechanics for WP7): `(*opencode.Adapter).SwitchAccount(ctx, account, env)`
+interrupts a running turn and waits for it, stops the process, and starts one for the other
+account's data home and `env` on the same session; the caller journals `account.switched`. API-key
+accounts may pass `OPENCODE_AUTH_CONTENT` in `env`; OAuth accounts keep `auth.json` in their data
+home (research/06 §3.2).
 
 ## 6. Lifecycle
 
@@ -231,7 +300,10 @@ OOMPolicy=continue`, with termux's fallbacks (no OOMPolicy if refused; `-<unix>`
 is refused). `Reap`/`Stop` stop exactly `<unit>.scope` and `<unit>-<digits>.scope`, never a
 prefix match that could be another chat's. The launcher returns once the socket accepts, or fails with the tail of `host.log`.
 
-**Host start:** take `host.lock` (wait ≤ 1 s, else exit 0: another host runs) → read the spec →
+**Host start** (`resume_id`: a chat row that knows its CLI conversation while the journal does not
+— lost, or a fork — is launched with it; the host resumes it with `StartSpec.Rebuild`, and the
+adapter writes the history from the CLI's transcript first. `StartSpec.DataDir` is the data folder):
+take `host.lock` (wait ≤ 1 s, else exit 0: another host runs) → read the spec →
 open the journal → **recover**: a turn still open in the journal is closed with
 `turn.ended{interrupted}` + `notice{resumed}` → listen → boot (holding the command lock, so nothing
 new reaches the agent first): `process{starting}`, `Adapter.Start` with `ResumeID =` the

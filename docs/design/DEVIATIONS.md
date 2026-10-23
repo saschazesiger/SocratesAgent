@@ -2109,3 +2109,34 @@ host and scope and removes `chats/<id>/`; the working directory is kept as for e
 **WP2 — the "chat routes are gone" test lost `/api/chats`.** `TestTheChatRoutesAreGone` asserted
 that nothing answers there; the rebuild's chats do (`POST /api/chats`). The other old paths are
 still asserted absent.
+
+**WP5 / §2.2 — queued messages wait in the OpenCode adapter, not in OpenCode.** A `prompt_async`
+sent during a turn is stored by OpenCode at once and taken into the running turn at its next step,
+and `abort` leaves such messages unanswered (verified against 1.19.4). The adapter therefore holds a
+message sent during a turn (`queued`) and posts it after `session.idle`, one turn per message. An
+interrupt ends the running turn; the queue then runs.
+
+**WP5 / §3.3 — the adapter chooses OpenCode's message ids.** Every prompt carries a `messageID` of
+OpenCode's own ascending form, which is how a journal message is matched to OpenCode's (revert and
+fork by journal id, and recognising a message a dead host had already handed over). The mapping is
+kept in `chats/<id>/agent/opencode.json`.
+
+**WP5 / §3.3 — diffs come from the edit tools.** `session.diff` was always empty in research/05,
+so a diff part is made per completed edit/apply_patch tool (its `metadata`), and for `write` only
+when it created the file (OpenCode keeps no diff for an overwrite).
+
+**WP5 / §3.3 — account switching is an adapter method.** `SwitchAccount(ctx, account, env)` does the
+park-and-resume of research/06 inside one host; the `switch_account` host op, the
+`account.switched` event and the UI are WP7's. Two API-key accounts (environment) and one
+OAuth-style account (its own `auth.json`) were tested on the fake; the real binary was tested with
+a real and a bogus OpenRouter key.
+
+**WP5 — host spec `resume_id` and `StartSpec.Rebuild`/`DataDir`, and a `commands` event.** Shared
+additions: the server passes the row's CLI conversation when the journal names none, so a lost
+journal or a forked chat is rebuilt from the CLI's transcript; adapters get the data folder; the
+composer's palette gets the agent's commands. AGENT-HOST.md §2, §5.1, §6.
+
+**WP5 — `ask_user` is not wired yet.** The `MCPServers` and `QuestionHandler` hooks are in place;
+until WP6, OpenCode's own question tool stays denied and a question that still arrives is rejected
+with a notice, and `Answer` reports `ErrAskGone`.
+
