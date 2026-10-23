@@ -109,8 +109,11 @@ type Adapter struct {
 	// commands are the names GET /command listed: what Command posts to
 	// /command.
 	commands map[string]bool
-	// questions are OpenCode's own questions being asked, by ask id.
-	questions map[string]*question
+	// questions are OpenCode's own questions being asked, by ask id;
+	// questionsSeen every one ever asked, so that a question the event and a
+	// reconcile both bring is asked once.
+	questions     map[string]*question
+	questionsSeen map[string]bool
 }
 
 // New is an adapter, unstarted.
@@ -118,7 +121,7 @@ func New() *Adapter {
 	return &Adapter{
 		users: map[string]*userMsg{}, assistants: map[string]*asstMsg{}, parts: map[string]*seenPart{},
 		children: map[string]childSession{}, childPrompts: map[string]bool{}, windows: map[string]int64{},
-		questions: map[string]*question{},
+		questions: map[string]*question{}, questionsSeen: map[string]bool{},
 	}
 }
 
@@ -592,7 +595,9 @@ func (a *Adapter) follow(ctx context.Context, gen int, cl *client, connected cha
 }
 
 // reconcile writes what happened while /event was closed: the session's
-// messages as OpenCode stored them, and whether it is still busy.
+// messages as OpenCode stored them, the questions of its own it asked
+// meanwhile (research/05 §2: a session waiting on one still reports busy),
+// and whether it is still busy.
 func (a *Adapter) reconcile(ctx context.Context, gen int, cl *client) {
 	a.mu.Lock()
 	session := a.session
@@ -614,6 +619,12 @@ func (a *Adapter) reconcile(ctx context.Context, gen int, cl *client) {
 			for _, p := range m.Parts {
 				a.handlePart(gen, p)
 			}
+		}
+	}
+	var pending []Question
+	if err := cl.call(ctx, http.MethodGet, "/question", nil, &pending); err == nil {
+		for _, q := range pending {
+			a.handleQuestion(gen, q)
 		}
 	}
 	var status map[string]ocStatus

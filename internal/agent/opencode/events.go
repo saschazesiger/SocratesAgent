@@ -503,23 +503,34 @@ type question struct {
 	payload askuser.Payload
 }
 
-// handleQuestion asks one of OpenCode's own questions. A question it cannot
-// read is dismissed, with a notice, so that the turn does not wait for ever.
+// handleQuestion asks one of OpenCode's own questions, once: the event and a
+// reconcile after a reconnect may both bring it. A question it cannot read
+// is dismissed, with a notice, so that the turn does not wait for ever.
 func (a *Adapter) handleQuestion(gen int, q Question) {
+	if !validID(q.ID, "que") {
+		return
+	}
+	askID := "ask_" + q.ID
+	payload, readable := askuser.FromOpenCode(q.Questions)
 	a.mu.Lock()
 	_, child := a.children[q.SessionID]
-	ours := a.gen == gen && (q.SessionID == a.session || child)
+	ours := a.gen == gen && (q.SessionID == a.session || child) && !a.questionsSeen[q.ID]
 	cl := a.cl
 	turnID := ""
 	if a.turn != nil {
 		turnID = a.turn.id
 	}
+	if ours {
+		a.questionsSeen[q.ID] = true
+		if readable {
+			a.questions[askID] = &question{id: q.ID, gen: gen, payload: payload}
+		}
+	}
 	a.mu.Unlock()
-	if !ours || !validID(q.ID, "que") {
+	if !ours {
 		return
 	}
-	payload, ok := askuser.FromOpenCode(q.Questions)
-	if !ok {
+	if !readable {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), requestWait)
 			defer cancel()
@@ -531,10 +542,6 @@ func (a *Adapter) handleQuestion(gen int, q Question) {
 			Text: "OpenCode asked a question with its own tool that could not be read; it was dismissed."})
 		return
 	}
-	askID := "ask_" + q.ID
-	a.mu.Lock()
-	a.questions[askID] = &question{id: q.ID, gen: gen, payload: payload}
-	a.mu.Unlock()
 	a.out.Emit(agent.Event{Type: agent.TypeAsk, AskID: askID, TurnID: turnID, Payload: payload.JSON()})
 }
 

@@ -30,7 +30,9 @@ import (
 //	/retry           one plain retry, then a normal answer
 //	/error           an APIError 401 on the message and session.error
 //	/perm            permission.asked; the reply goes into the answer
-//	/question        question.asked; the answers go into the answer
+//	/question [unseen]  question.asked; the answers go into the answer.
+//	                 unseen: every /event stream is closed first, so that only
+//	                 a reader of GET /question learns of it
 //	/sleep S         text, then S seconds of work
 //	/crash           a running bash tool, and the process exits on the spot
 //	/dropstream      text, every /event stream is closed, then more text that
@@ -437,7 +439,7 @@ func (t *turn) play(text string) error {
 		t.s.publish("session.error", map[string]any{"sessionID": t.sid, "error": e})
 		return nil
 	case "/perm", "/question":
-		answer, err := t.ask(word)
+		answer, err := t.ask(word, firstOr(fields, "") == "unseen")
 		if err != nil {
 			return err
 		}
@@ -528,8 +530,9 @@ func (t *turn) subagent() error {
 	return t.say([]string{"the subagent is done"}, 5*time.Millisecond)
 }
 
-// ask raises a permission or a question and waits for its answer.
-func (t *turn) ask(kind string) (string, error) {
+// ask raises a permission or a question and waits for its answer. unseen
+// drops the event streams before a question is asked.
+func (t *turn) ask(kind string, unseen bool) (string, error) {
 	ch := make(chan string, 1)
 	if kind == "/perm" {
 		id := newID("per")
@@ -540,11 +543,16 @@ func (t *turn) ask(kind string) (string, error) {
 			"patterns": []string{"rm -rf build"}, "always": []string{"rm *"}, "metadata": map[string]any{}})
 	} else {
 		id := newID("que")
+		props := map[string]any{"id": id, "sessionID": t.sid, "questions": []map[string]any{{
+			"question": "Which colour?", "header": "Colour", "options": []map[string]any{{"label": "Red"}, {"label": "Blue"}}}}}
+		if unseen {
+			t.s.dropStreams()
+		}
 		t.s.mu.Lock()
 		t.s.pending[id] = ch
+		t.s.questions[id] = props
 		t.s.mu.Unlock()
-		t.s.publish("question.asked", map[string]any{"id": id, "sessionID": t.sid, "questions": []map[string]any{{
-			"question": "Which colour?", "header": "Colour", "options": []map[string]any{{"label": "Red"}, {"label": "Blue"}}}}})
+		t.s.publish("question.asked", props)
 	}
 	select {
 	case a := <-ch:

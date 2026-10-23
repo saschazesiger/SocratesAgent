@@ -509,6 +509,37 @@ func TestAClosedEventStreamIsCaughtUp(t *testing.T) {
 	}
 }
 
+// A question OpenCode asked while /event was closed is found by the
+// reconcile after the reconnect (GET /question), and asked once.
+func TestAQuestionAskedWhileTheStreamWasClosed(t *testing.T) {
+	r := newRig(t)
+	r.mustStart("")
+	r.send("/question unseen")
+	var ask agent.Event
+	eventually(t, 10*time.Second, "the question", func() bool {
+		var ok bool
+		ask, ok = r.rec.first(agent.TypeAsk, nil)
+		return ok
+	})
+	if err := r.a.Answer(context.Background(), ask.AskID, json.RawMessage(`{"answers":{"q1":{"selected":["Red"]}}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.waitTurns(1); got[0] != agent.OutcomeCompleted || !contains(r.lastText(), `question: [["Red"]]`) {
+		t.Fatalf("outcomes %v, text %q", got, r.lastText())
+	}
+	asks := 0
+	r.rec.view(func(_ *agent.Projection, events []agent.Event) {
+		for _, ev := range events {
+			if ev.Type == agent.TypeAsk {
+				asks++
+			}
+		}
+	})
+	if asks != 1 {
+		t.Fatalf("%d asks", asks)
+	}
+}
+
 func TestSwitchingAccountKeepsTheSession(t *testing.T) {
 	r := newRig(t)
 	keyA := `OPENCODE_AUTH_CONTENT={"fake":{"type":"api","key":"KEY-A"}}`

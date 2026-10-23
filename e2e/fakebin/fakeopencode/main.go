@@ -192,6 +192,9 @@ type srv struct {
 	subs     map[chan []byte]chan struct{}
 	runs     map[string]*run
 	pending  map[string]chan string
+	// questions are the questions waiting for an answer, as GET /question
+	// lists them.
+	questions map[string]map[string]any
 	// mcp are the local MCP servers that started, mcpConfig every one the
 	// config names.
 	mcp       map[string]*mcpClient
@@ -218,7 +221,7 @@ func serve() error {
 		return errors.New("Failed query: CREATE TABLE workspace (the database was never migrated)")
 	}
 	s := &srv{password: os.Getenv("OPENCODE_SERVER_PASSWORD"), subs: map[chan []byte]chan struct{}{},
-		runs: map[string]*run{}, pending: map[string]chan string{}}
+		runs: map[string]*run{}, pending: map[string]chan string{}, questions: map[string]map[string]any{}}
 	s.startMCP()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -282,6 +285,14 @@ func (s *srv) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"model": map[string]any{"limit": map[string]any{"context": 100000}}}}}, "default": map[string]any{"fake": "model"}})
 	case r.Method == http.MethodGet && path == "session/status":
 		s.status(w)
+	case r.Method == http.MethodGet && path == "question":
+		s.mu.Lock()
+		list := []map[string]any{}
+		for _, q := range s.questions {
+			list = append(list, q)
+		}
+		s.mu.Unlock()
+		writeJSON(w, 200, list)
 	case r.Method == http.MethodPost && path == "session":
 		s.create(w, r)
 	case len(parts) >= 2 && parts[0] == "session":
@@ -315,6 +326,7 @@ func (s *srv) resolve(w http.ResponseWriter, id, answer string) {
 	s.mu.Lock()
 	ch := s.pending[id]
 	delete(s.pending, id)
+	delete(s.questions, id)
 	s.mu.Unlock()
 	if ch == nil {
 		notFound(w, "request "+id)
