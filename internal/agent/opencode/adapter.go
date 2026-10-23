@@ -181,15 +181,21 @@ type seenPart struct {
 	text    string
 	content []byte
 	diff    bool
+	// child is the subagent session a task part named.
+	child string
 }
 
 // childSession is a subagent's session: its parts go inside the task tool
-// part that runs it. A seeded one ran before this process (seed), and the
-// journal has what it did.
+// part that runs it, the newest one to name it (a task can resume an
+// earlier task's subagent). A seeded one ran before this process (seed),
+// and the journal has what it did. since is when the task part started: the
+// session's messages from before it are an earlier task part's, which the
+// journal has too.
 type childSession struct {
 	msg    string
 	parent string
 	seeded bool
+	since  int64
 }
 
 type turnState struct {
@@ -518,7 +524,8 @@ func (a *Adapter) seed(msgs []ocMessageWithParts) {
 				if !ok {
 					continue
 				}
-				a.parts[p.ID] = &seenPart{msg: m.Info.ID, kind: c.kind, state: c.state, text: c.text, content: c.content, diff: c.diff != nil}
+				a.parts[p.ID] = &seenPart{msg: m.Info.ID, kind: c.kind, state: c.state, text: c.text, content: c.content,
+					diff: c.diff != nil, child: c.child}
 				if c.child != "" {
 					a.children[c.child] = childSession{msg: m.Info.ID, parent: p.ID, seeded: true}
 				}
@@ -673,19 +680,20 @@ func (a *Adapter) reconcile(ctx context.Context, gen int, cl *client) {
 	if session == "" {
 		return
 	}
-	a.catchUp(ctx, gen, cl, session)
+	a.catchUp(ctx, gen, cl, session, 0)
 	// The subagents this process ran, the ones the session's parts just
-	// named among them; a seeded one's history is the journal's already.
+	// named among them; a seeded one's history is the journal's already,
+	// and so is what a resumed one did before this process resumed it.
 	a.mu.Lock()
-	var children []string
+	children := map[string]int64{}
 	for id, c := range a.children {
 		if !c.seeded {
-			children = append(children, id)
+			children[id] = c.since
 		}
 	}
 	a.mu.Unlock()
-	for _, sid := range children {
-		a.catchUp(ctx, gen, cl, sid)
+	for sid, since := range children {
+		a.catchUp(ctx, gen, cl, sid, since)
 	}
 	// A permission asked while no stream was open would wait for an answer
 	// for ever.
@@ -708,13 +716,17 @@ func (a *Adapter) reconcile(ctx context.Context, gen int, cl *client) {
 	}
 }
 
-// catchUp maps one session's stored messages as if /event had said them.
-func (a *Adapter) catchUp(ctx context.Context, gen int, cl *client, session string) {
+// catchUp maps one session's stored messages as if /event had said them,
+// those created since then.
+func (a *Adapter) catchUp(ctx context.Context, gen int, cl *client, session string, since int64) {
 	msgs, err := a.messages(ctx, cl, session)
 	if err != nil {
 		return
 	}
 	for _, m := range msgs {
+		if m.Info.Time.Created < since {
+			continue
+		}
 		a.handleMessage(gen, m.Info)
 		for _, p := range m.Parts {
 			a.handlePart(gen, p)

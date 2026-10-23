@@ -467,7 +467,7 @@ then aborted, or a 429), else `interrupted` (`MessageAbortedError`), else `faile
 retries: `notice{retry}` per attempt. `permission.asked` → replied `always` + `notice{permission_allowed}`.
 `question.asked` → the `QuestionHandler` hook (WP6), else rejected + `notice{question_rejected}`.
 `Answer` returns `ErrAskGone` until WP6. After `/event` drops, it is reopened and caught up from
-`GET …/message` (the session's, and its subagents' since this process started), `GET /permission`
+`GET …/message` (the session's, and its subagents' since this process started or resumed them), `GET /permission`
 (each still pending is answered `always`) and `/session/status`. A catch-up never takes a part back
 from its end, and never replaces streamed text with the shorter text OpenCode stored; a part always
 ends with the part whole, never a delta.
@@ -481,7 +481,7 @@ ends with the part whole, never a delta.
 | `tool` todowrite | `todo` | – | `TodoContent{todos:[{content, status, priority}]}` |
 | completed edit / apply_patch / write of a new file | `diff`, id `<tool part>-diff` | – | `DiffContent{tool_part, files:[{path, patch, additions, deletions, status}]}` |
 | `file` | `image` / `file` | – | `FileContent{mime, filename, url (file:// only)}` |
-| a task child session's parts | as above | | with `parent_part_id` = the task part |
+| a task child session's parts | as above | | with `parent_part_id` = the task part running it (the newest to name the child: a task with `task_id` resumes an earlier task's) |
 
 **Commands** (`Command(name, args)`): `compact` (`/summarize`, a turn), `shell <cmd>`, `agent
 build|plan` (for every following prompt, kept across hosts; `notice{agent}`), `revert <message>`

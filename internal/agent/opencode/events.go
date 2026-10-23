@@ -240,10 +240,20 @@ func (a *Adapter) handlePart(gen int, p ocPart) {
 	if !ok {
 		return
 	}
-	if _, known := a.children[c.child]; c.child != "" && !known {
-		a.children[c.child] = childSession{msg: msg, parent: p.ID}
+	// A task part that names a subagent for the first time runs it from
+	// now on, a new one or one it resumes. A part that named it before (one
+	// a catch-up repeats, or one of the history) leaves it where it is.
+	if sp := a.parts[p.ID]; c.child != "" && (sp == nil || sp.child != c.child) {
+		var since int64
+		if p.State != nil {
+			since = p.State.Time.Start
+		}
+		a.children[c.child] = childSession{msg: msg, parent: p.ID, since: since}
 	}
 	a.emitPartLocked(p.ID, msg, parent, c)
+	if c.child != "" {
+		a.parts[p.ID].child = c.child
+	}
 	if c.diff != nil {
 		if sp := a.parts[p.ID]; sp != nil && !sp.diff {
 			sp.diff = true
