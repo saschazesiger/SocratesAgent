@@ -12615,7 +12615,7 @@ const ALL = [
   ['clipboard', 'copy and paste: the keys, a plain drag, a click, a middle click, and OSC 52', clipboard],
   ['touchcopy', 'a finger held on the pane selects, grows and copies', touchcopy],
   ['transfer', 'copy, paste and upload buttons, a pasted image, and the phone layout', transfer],
-  ['prestart', 'a prepared session: its prompt kept and backed up, Start, and a start by the clock', prestart],
+  ['prestart', 'a prepared session: its prompt kept, Start, and a start by the clock', prestart],
   ['backup', 'the Backup card: a bucket configured, a backup on demand, a failure and the warning, and the next good run', backup],
   ['restore', 'a machine that is gone, and a new one restored from its backup on the setup page', restore],
   ['home-landing', 'every start of the page is Home, and the button and the address go back to it', homelanding],

@@ -656,7 +656,7 @@ function drawState() {
   }
   $('costsNote').textContent = 'Estimated at the published API prices from the transcripts Claude Code, Codex and OpenCode keep '
     + '(OpenCode prices its answers itself). A subscription is billed differently: this is what the same work would cost on the API. '
-    + 'Days are this device\'s days. The ledger is part of the backup and comes back with a restore.';
+    + 'Days are this device\'s days. The ledger is part of the data directory, and of its backup when one is set up.';
   $('costsNoneText').textContent = data.scanning
     ? 'Socrates is reading the transcripts on this machine; what they cost shows up here in a moment.'
     : 'They show up here once Claude Code, Codex or OpenCode has had a conversation on this machine.';
