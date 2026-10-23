@@ -39,7 +39,7 @@ func (h *hostRig) launch(resume string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	err := h.l.Launch(ctx, agenthost.Spec{ChatID: h.chat, Harness: Harness, Workdir: h.r.work, Model: "fake/model",
-		Env: h.r.env, ResumeID: resume, ParkAfterMS: time.Hour.Milliseconds()})
+		Env: h.r.env, Conversation: resume, ParkAfterMS: time.Hour.Milliseconds()})
 	if err != nil {
 		h.t.Fatalf("launch: %v", err)
 	}

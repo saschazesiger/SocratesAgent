@@ -57,14 +57,15 @@ const (
 	// TypeCommand records a command the host accepted (interrupt, model,
 	// slash command, park), so that its client_id is never acted on twice.
 	TypeCommand = "command"
+	// TypeAgentInfo is what the CLI says about itself, in Content: an
+	// AgentInfo (agent, version, the slash commands that are the composer's
+	// palette) with whatever else the adapter adds (account, models). The
+	// newest one wins.
+	TypeAgentInfo = "agent.info"
 	// TypeNotice is something the chat should say in a line of its own.
 	TypeNotice = "notice"
 	// TypeError is a failure worth showing that is not a turn's end.
 	TypeError = "error"
-	// TypeCommands is the agent's slash commands, for the composer's palette:
-	// Content is a JSON array of {name, description, source, hints}. A later
-	// one replaces the list.
-	TypeCommands = "commands"
 )
 
 // Message roles.
@@ -138,6 +139,12 @@ const (
 	// resume, and a new one was started. The journal keeps the history; the
 	// model's context does not.
 	NoticeConversationLost = "conversation_lost"
+	// NoticeRebuilt: the journal was missing, and the history was rebuilt
+	// from the CLI's own transcript.
+	NoticeRebuilt = "rebuilt"
+	// NoticeHistoryUnavailable: the journal was missing, and the CLI's own
+	// transcript could not be read back either; the conversation goes on.
+	NoticeHistoryUnavailable = "history_unavailable"
 )
 
 // Delivery routes of an answer (ask.delivered's Via).

@@ -97,9 +97,10 @@ type StartSpec struct {
 	// ResumeID is the CLI conversation to continue, empty for a new one.
 	ResumeID string
 	// Rebuild says the journal does not have ResumeID's history (it was lost,
-	// or the chat was made from a conversation the CLI already had): the
-	// adapter emits that history, read from the CLI's own transcript, before
-	// anything else.
+	// or the chat was made from a conversation the CLI already had): Start
+	// emits that history, read from the CLI's own transcript, followed by
+	// notice{rebuilt} - or notice{history_unavailable} when it cannot be
+	// read, and goes on. Every turn in it is closed.
 	Rebuild bool
 	// First is a message to deliver as part of starting, for a CLI that takes
 	// its opening prompt at start. An adapter that has no use for that sends

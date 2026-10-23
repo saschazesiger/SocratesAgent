@@ -77,11 +77,10 @@ type Spec struct {
 	// for it (WP7). Env empty is the host's own environment, scrubbed.
 	Account string   `json:"account,omitempty"`
 	Env     []string `json:"env,omitempty"`
-	// ResumeID is the CLI conversation to continue when the journal does not
-	// name one: the chat row still knows it although the journal was lost,
-	// or the chat was made from an existing conversation (a fork). The
-	// adapter then rebuilds the history from the CLI's transcript.
-	ResumeID string `json:"resume_id,omitempty"`
+	// Conversation is the CLI conversation the server knows for the chat. A
+	// host whose journal names none resumes it, and an empty journal gets
+	// the history back from it (StartSpec.Rebuild, REBUILD.md §2.2).
+	Conversation string `json:"conversation,omitempty"`
 	// ParkAfterMS is how long the host may be idle before it parks.
 	ParkAfterMS int64 `json:"park_after_ms"`
 }

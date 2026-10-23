@@ -106,7 +106,9 @@ type Adapter struct {
 	windows      map[string]int64
 	lastModel    string
 	retries      int
-	commands     []Command
+	// commands are the names GET /command listed: what Command posts to
+	// /command.
+	commands map[string]bool
 }
 
 // New is an adapter, unstarted.
@@ -389,6 +391,11 @@ func (a *Adapter) openSession(ctx context.Context) error {
 	a.mu.Unlock()
 	a.out.Emit(agent.Event{Type: agent.TypeConversation, ConversationID: id})
 	msgs, err := a.messages(ctx, cl, id)
+	if err != nil && a.spec.Rebuild {
+		a.out.Emit(agent.Event{Type: agent.TypeNotice, Code: agent.NoticeHistoryUnavailable,
+			Text: "The earlier history of this chat could not be read back from OpenCode: " + err.Error()})
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("opencode: read session %s: %w", id, err)
 	}
@@ -397,6 +404,8 @@ func (a *Adapter) openSession(ctx context.Context) error {
 		a.mu.Lock()
 		a.seed(msgs)
 		a.mu.Unlock()
+		events = append(events, agent.Event{Type: agent.TypeNotice, Code: agent.NoticeRebuilt,
+			Text: "The chat history was read back from OpenCode's session."})
 		a.out.Emit(events...)
 		return nil
 	}
@@ -486,22 +495,40 @@ func (a *Adapter) loadWindows(ctx context.Context, cl *client) {
 	}
 }
 
-// loadCommands reads OpenCode's commands and tells the chat, for the
-// composer's palette. compact is the adapter's own.
+// ownCommands are the commands the adapter implements itself, at the top
+// of the palette.
+var ownCommands = []agent.CommandInfo{
+	{Name: "compact", Description: "Summarize the conversation to free context"},
+	{Name: "shell", Args: "<command>", Description: "Run a shell command in the working directory (same as a line starting with !)"},
+	{Name: "agent", Args: "build|plan", Description: "Plan without editing files, or build"},
+}
+
+// loadCommands reads OpenCode's version and commands and tells the chat
+// (agent.info: the composer's palette).
 func (a *Adapter) loadCommands(ctx context.Context) {
-	var list []Command
-	if err := a.client().call(ctx, http.MethodGet, "/command", nil, &list); err != nil {
+	cl := a.client()
+	var health struct {
+		Version string `json:"version"`
+	}
+	_ = cl.call(ctx, http.MethodGet, "/global/health", nil, &health)
+	var list []ocCommand
+	if err := cl.call(ctx, http.MethodGet, "/command", nil, &list); err != nil {
 		log.Printf("opencode: list the commands: %v", err)
 	}
-	all := append([]Command{{Name: "compact", Description: "Summarize the conversation to free context", Source: "socrates"}}, list...)
-	for i := range all {
-		all[i] = Command{Name: all[i].Name, Description: all[i].Description, Source: all[i].Source, Hints: all[i].Hints}
+	info := agent.AgentInfo{Agent: Harness, Version: health.Version, Commands: append([]agent.CommandInfo{}, ownCommands...)}
+	names := map[string]bool{}
+	for _, c := range list {
+		if c.Name == "" || names[c.Name] {
+			continue
+		}
+		names[c.Name] = true
+		info.Commands = append(info.Commands, agent.CommandInfo{Name: c.Name, Args: strings.Join(c.Hints, " "), Description: c.Description})
 	}
 	a.mu.Lock()
-	a.commands = all
+	a.commands = names
 	a.mu.Unlock()
-	raw, _ := json.Marshal(all)
-	a.out.Emit(agent.Event{Type: agent.TypeCommands, Content: raw})
+	raw, _ := json.Marshal(info)
+	a.out.Emit(agent.Event{Type: agent.TypeAgentInfo, Content: raw})
 }
 
 func (a *Adapter) client() *client {
@@ -896,12 +923,7 @@ func (a *Adapter) Command(ctx context.Context, name, args string) error {
 		return a.fork(ctx, args)
 	}
 	a.mu.Lock()
-	known := false
-	for _, c := range a.commands {
-		if c.Name == name && c.Source != "socrates" {
-			known = true
-		}
-	}
+	known := a.commands[name]
 	a.mu.Unlock()
 	if !known {
 		return agent.ErrUnknownCommand

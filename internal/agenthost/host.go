@@ -222,7 +222,27 @@ func scrubEnv() {
 func (h *host) recover() error {
 	var events []agent.Event
 	h.rec.View(func(p *agent.Projection) {
+		// A part still running belongs to work that died with the host's
+		// CLI: the turn below, or a subagent or workflow that outlived its
+		// turn (WP3), whose group would otherwise run for ever.
+		var walk func(parts []*agent.Part)
+		walk = func(parts []*agent.Part) {
+			for _, part := range parts {
+				if part.State == agent.PartRunning || part.State == agent.PartStreaming {
+					events = append(events, agent.Event{Type: agent.TypePart, MessageID: part.MessageID, PartID: part.ID,
+						ParentPartID: part.ParentID, Kind: part.Kind, State: agent.PartInterrupted, Text: part.Text, Content: part.Content})
+				}
+				walk(part.Children)
+			}
+		}
+		for _, m := range p.Messages {
+			walk(m.Parts)
+		}
 		if p.Turn == nil {
+			if len(events) > 0 {
+				events = append(events, agent.Event{Type: agent.TypeNotice, Code: agent.NoticeResumed,
+					Text: "Resumed after a restart. Background work that was running was stopped."})
+			}
 			return
 		}
 		events = append(events,
@@ -300,8 +320,9 @@ func (h *host) boot() {
 	var resume string
 	var pending []agent.Outgoing
 	var unsent []agent.Ask
+	empty := false
 	h.rec.View(func(p *agent.Projection) {
-		resume = p.ConversationID
+		resume, empty = p.ConversationID, len(p.Messages) == 0
 		for _, m := range p.Undelivered() {
 			pending = append(pending, outgoing(m))
 		}
@@ -309,9 +330,13 @@ func (h *host) boot() {
 			unsent = append(unsent, *a)
 		}
 	})
+	// A journal that names no conversation while the server knows one was
+	// lost (or the chat was made from an existing conversation, a fork): the
+	// conversation is resumed, and an empty journal gets its history back
+	// from the CLI's own transcript (REBUILD.md §2.2).
 	rebuild := false
-	if resume == "" && h.spec.ResumeID != "" {
-		resume, rebuild = h.spec.ResumeID, true
+	if resume == "" && h.spec.Conversation != "" {
+		resume, rebuild = h.spec.Conversation, empty
 	}
 	env := h.spec.Env
 	if len(env) == 0 {
@@ -338,7 +363,7 @@ func (h *host) boot() {
 		h.record(agent.Event{Type: agent.TypeNotice, Code: agent.NoticeConversationLost,
 			Text: "The agent no longer has this conversation, so a new one was started. " +
 				"The messages above stay here, but the agent does not remember them."})
-		spec.ResumeID = ""
+		spec.ResumeID, spec.Rebuild = "", false
 		if spec.First == nil && len(pending) > 0 {
 			spec.First, pending = &pending[0], pending[1:]
 		}

@@ -39,10 +39,10 @@ func TestATurnStreamsAndEnds(t *testing.T) {
 			t.Fatalf("window %d", p.LastTurn.Usage.Window)
 		}
 		var names []string
-		for _, c := range decode[[]Command](t, p.Commands) {
+		for _, c := range p.Palette() {
 			names = append(names, c.Name)
 		}
-		if strings.Join(names, ",") != "compact,init,review,hello" {
+		if strings.Join(names, ",") != "compact,shell,agent,init,review,hello" {
 			t.Fatalf("commands %v", names)
 		}
 	})

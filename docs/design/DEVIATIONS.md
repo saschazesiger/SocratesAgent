@@ -2110,6 +2110,94 @@ host and scope and removes `chats/<id>/`; the working directory is kept as for e
 that nothing answers there; the rebuild's chats do (`POST /api/chats`). The other old paths are
 still asserted absent.
 
+**WP3 / §3.1 — more flags than the plan's argv.** `--replay-user-messages` (the delivery receipt
+§2.1 already relies on), `--forward-subagent-text` (a subagent's text and thinking reach the
+stream, so its group shows what it said), `--settings` with the terminal launcher's policy keys
+(`disableRemoteControl`, `cleanupPeriodDays: 90`, `skipDangerousModePermissionPrompt`,
+`ultracode`), and `--session-id <uuid>` for a new conversation. `--append-system-prompt` is wired
+(`Options.AppendSystemPrompt`) but empty until WP6 writes the ask_user guidance.
+
+**WP3 / §3.1 — thinking is asked for as a summary.** Claude Code streams thinking blocks with no
+text by default (`thinking.display: "updates"`); a reasoning part would always be empty. The
+adapter sends `set_max_thinking_tokens{thinking_display: "summarized"}` after `initialize`;
+verified live, reasoning parts then carry the summary.
+
+**WP3 / §2.2 — one more event type, `agent.info`.** The composer's slash-command palette, the
+model picker and the account divider need what the CLI says about itself (`initialize`'s
+commands, models and account, the init's version and permission mode). That is chat state, not a
+part of any message, so it is an event of its own (`Projection.Agent`).
+
+**WP3 / §2.2 — the rebuild is wired through host.json.** A host does not know a chat's
+conversation when its journal is gone, so the server writes the row's `cli_session_id` into
+`host.json` (`conversation`). Since the WP5 integration a host whose journal names no conversation
+resumes that one, and with an empty journal asks `Start` to rebuild (`StartSpec.Rebuild`) — one
+mechanism for all three adapters (below).
+
+**WP3 / §3.1 — workflow agents' calls come from their transcripts.** The stream carries a
+workflow's phases and each agent's state and last tool (`task_progress.workflow_progress`), but not
+the agents' calls (research/09 §3). To give every agent its own tool rows, the adapter reads
+`<transcriptDir>/agent-<id>.jsonl` every 500 ms while the workflow runs. Task subagents need no
+such reading: their frames are streamed with `parent_tool_use_id`.
+
+**WP3 / §3.1 — API key and ultracode arrive as adapter variables in the environment.**
+`StartSpec` has no field for either, and the Claude adapter builds the CLI environment from
+scratch, so an ambient `ANTHROPIC_API_KEY` must never pass. An API-key account puts its key in
+`SOCRATES_CLAUDE_API_KEY`, and the ultracode session option is `SOCRATES_CLAUDE_ULTRACODE=1`; the
+adapter turns them into `ANTHROPIC_API_KEY` and the `ultracode` setting and passes neither on.
+
+**WP3 / §3.1 — plan mode is a command.** Switching plan mode on is `Command("plan")` (off:
+`Command("plan", "off")`, back to `bypassPermissions`), through `set_permission_mode`, rather than
+a host op of its own; the plan card itself goes through the generic ask path as planned.
+**WP4 / §4.3 — the stripped retry is a copy under a new thread id.** "Retry with reasoning and
+compaction items stripped from the rollout, on a copy" cannot be done by pointing codex at the
+copy: `thread/fork`/`thread/resume` with `path` refuse a paginated thread ("stale path", verified
+against 0.164). The copy is written next to the original under a fresh UUIDv7 and resumed by that
+id, so the chat's conversation id changes (a `conversation` event says so). The original is never
+rewritten; codex itself appends the refused turn to it.
+
+**WP4 / §4.3 — the chain runs on any `invalid_encrypted_content`, not only after a switch.** The
+error can only come from replayed reasoning, so the adapter does not need to know a switch
+happened. Each step runs at most once per app-server process and continues the same journal turn
+(the failed attempt is not shown as a turn of its own). Verified against the real binary with a
+scripted model that binds its encrypted reasoning to an account; spike S2 stays waived, so real
+ChatGPT accounts were not tried.
+
+**WP4 / §3.2 — messages during a turn are steered, and "queued" until codex takes them up.** The
+host's semantics ("queued by the agent") map onto `turn/steer`: the message is `queued` when codex
+accepts it and `delivered` when its `userMessage` item (our id as `clientUserMessageId`) shows up,
+which 0.164 does at the next step, even cutting a streaming answer short. A turn that cannot be
+steered (compaction, review) holds messages and sends them when it ends, and so does a turn that
+ended without taking one up. A one-line message starting with `!` runs `thread/shellCommand`
+(REBUILD lists it as a command; this lets the composer need no special case).
+
+**WP4 / §3.2 — `thread/fork` is not wired; `/plan` is.** Nothing in the UI forks a chat yet. Plan
+mode (`collaborationMode: plan`) is a palette command because Codex's `request_user_input` only
+exists there.
+
+**WP4 / §5.3 — Codex's own questions are declined until WP6.** Approvals are accepted (always
+allow). `item/tool/requestUserInput` gets a JSON-RPC error and an MCP elicitation a `decline`, each
+with a notice, so no turn waits for ever; WP6 replaces them through `codex.HandleRequest` and adds
+`ask_user` through `codex.RegisterTool`.
+
+**WP4 / §2.2 — a rebuilt Codex history leaves out subagent threads.** The history comes back from
+`thread/turns/list` + `thread/items/list` (the WP5 integration replaced the adapter's own
+`thread.json` with the host's `conversation`, so a chat whose whole folder is gone is rebuilt too).
+
+**WP4 / HARNESS-POLICY — the app-server runs without `--strict-config` and with a per-process trust
+override.** `--strict-config` would refuse to start on a `config.toml` written by a newer or older
+codex, which for a chat is a host that never comes up; the two `-c` keys the adapter passes are
+covered by the real-binary tests. With `approvalPolicy: never` and `danger-full-access`,
+`thread/start` writes no trust entry into `config.toml` (verified, contrary to research/04 §1.4,
+which used other policies), so the working directory is trusted by the same inline-table `-c`
+override the TUI used.
+
+**WP4 — token usage counts cached input apart, and there is no cost.** Codex's `inputTokens`
+include the cached ones; the journal's `input` excludes them (`cache_read` has them), as Claude
+reports it. Codex reports no price, so `cost_usd` stays 0 (the cost ledger keeps reading rollouts).
+
+**WP4 — shared code.** `internal/agent/palette.go` holds `CommandInfo`, the palette entry; `main.go`
+imports the adapter so that both the server and its hosts register `codex`.
+
 **WP5 / §2.2 — queued messages wait in the OpenCode adapter, not in OpenCode.** A `prompt_async`
 sent during a turn is stored by OpenCode at once and taken into the running turn at its next step,
 and `abort` leaves such messages unanswered (verified against 1.19.4). The adapter therefore holds a
@@ -2131,12 +2219,16 @@ park-and-resume of research/06 inside one host; the `switch_account` host op, th
 OAuth-style account (its own `auth.json`) were tested on the fake; the real binary was tested with
 a real and a bogus OpenRouter key.
 
-**WP5 — host spec `resume_id` and `StartSpec.Rebuild`/`DataDir`, and a `commands` event.** Shared
-additions: the server passes the row's CLI conversation when the journal names none, so a lost
-journal or a forked chat is rebuilt from the CLI's transcript; adapters get the data folder; the
-composer's palette gets the agent's commands. AGENT-HOST.md §2, §5.1, §6.
+**WP5 / integration — one rebuild, one palette.** WP3 (host-side `agent.Rebuilder` before boot),
+WP4 (Codex's own `thread.json`) and WP5 (`Start` with a flag) each wired the lost-journal rebuild;
+they are now one: host.json's `conversation` (the row's `cli_session_id`), resumed when the journal
+names none, with `StartSpec.Rebuild` when the journal has no message, and `Start` writes the
+history (OpenCode and Codex need their live CLI to read it, Claude reads its files) followed by
+`notice{rebuilt}` or `notice{history_unavailable}`. Likewise the palette: `agent.info`'s `commands`
+(`agent.AgentInfo`, `Projection.Palette()`) for every adapter, the fake included, replacing
+WP4's static `RegisterCommands` registry and WP5's `commands` event; Claude's `argument_hint` is
+now `args`. Adapters also get the data folder (`StartSpec.DataDir`). AGENT-HOST.md §2, §5, §6.
 
 **WP5 — `ask_user` is not wired yet.** The `MCPServers` and `QuestionHandler` hooks are in place;
 until WP6, OpenCode's own question tool stays denied and a question that still arrives is rejected
 with a notice, and `Answer` reports `ErrAskGone`.
-

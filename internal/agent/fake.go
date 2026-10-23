@@ -56,28 +56,38 @@ func EnableFake() { Register(FakeHarness, func() Adapter { return &fakeAdapter{}
 //	/orphan          a tool process that escapes the CLI's process group
 //	anything else    "you said: …" with the turn number of the conversation
 type fakeAdapter struct {
-	mu     sync.Mutex
-	out    Emitter
-	spec   StartSpec
-	conv   string
-	turns  int
-	model  string
-	effort string
-	queue  []Outgoing
-	busy   bool
-	cancel context.CancelFunc
-	asks   map[string]chan json.RawMessage
-	bg     int
-	child  *exec.Cmd
-	ending bool
-	wake   chan struct{}
-	quit   chan struct{}
+	mu    sync.Mutex
+	out   Emitter
+	spec  StartSpec
+	conv  string
+	turns int
+	// history is the conversation's transcript, for a rebuild.
+	history []fakeHistory
+	model   string
+	effort  string
+	queue   []Outgoing
+	busy    bool
+	cancel  context.CancelFunc
+	asks    map[string]chan json.RawMessage
+	bg      int
+	child   *exec.Cmd
+	ending  bool
+	wake    chan struct{}
+	quit    chan struct{}
 }
 
 // fakeState is the conversation the fake keeps on disk, its stand-in for a
 // CLI's own transcript.
 type fakeState struct {
-	Turns int `json:"turns"`
+	Turns   int           `json:"turns"`
+	History []fakeHistory `json:"history,omitempty"`
+}
+
+// fakeHistory is one turn of the fake's transcript, what a rebuild reads.
+type fakeHistory struct {
+	User    string `json:"user"`
+	Reply   string `json:"reply"`
+	Outcome string `json:"outcome"`
 }
 
 func (f *fakeAdapter) Start(ctx context.Context, spec StartSpec, out Emitter) error {
@@ -95,7 +105,10 @@ func (f *fakeAdapter) Start(ctx context.Context, spec StartSpec, out Emitter) er
 		if err := json.Unmarshal(raw, &st); err != nil {
 			return fmt.Errorf("the conversation %s is damaged: %w", spec.ResumeID, err)
 		}
-		f.conv, f.turns = spec.ResumeID, st.Turns
+		f.conv, f.turns, f.history = spec.ResumeID, st.Turns, st.History
+		if spec.Rebuild {
+			out.Emit(f.rebuilt()...)
+		}
 	} else {
 		f.conv = "fake-" + fakeID()
 		if err := f.save(); err != nil {
@@ -105,7 +118,8 @@ func (f *fakeAdapter) Start(ctx context.Context, spec StartSpec, out Emitter) er
 	if err := f.startChild(); err != nil {
 		return err
 	}
-	out.Emit(Event{Type: TypeConversation, ConversationID: f.conv})
+	info, _ := json.Marshal(AgentInfo{Agent: FakeHarness, Commands: []CommandInfo{{Name: "compact", Description: "Compact the conversation"}}})
+	out.Emit(Event{Type: TypeConversation, ConversationID: f.conv}, Event{Type: TypeAgentInfo, Content: info})
 	if spec.First != nil {
 		f.queue = append(f.queue, *spec.First)
 	}
@@ -146,8 +160,29 @@ func (f *fakeAdapter) statePath(conv string) string {
 	return filepath.Join(f.spec.StateDir, "fake", conv+".json")
 }
 
+// rebuilt is the transcript as journal events, closed with notice{rebuilt}.
+func (f *fakeAdapter) rebuilt() []Event {
+	var events []Event
+	for i, h := range f.history {
+		id := fmt.Sprintf("%s_%d", f.conv, i)
+		state, msgState := PartDone, MessageDone
+		if h.Outcome != OutcomeCompleted {
+			state, msgState = PartInterrupted, MessageInterrupted
+		}
+		events = append(events,
+			Event{Type: TypeMessage, MessageID: "u_" + id, Role: RoleUser, State: MessageDelivered, Text: h.User},
+			Event{Type: TypeTurnStarted, TurnID: "t_" + id, MessageID: "u_" + id},
+			Event{Type: TypeMessage, MessageID: "a_" + id, Role: RoleAssistant, State: MessageStreaming, TurnID: "t_" + id},
+			Event{Type: TypePart, MessageID: "a_" + id, PartID: "p_" + id, Kind: PartText, State: state, Text: h.Reply},
+			Event{Type: TypeMessageState, MessageID: "a_" + id, State: msgState},
+			Event{Type: TypeTurnEnded, TurnID: "t_" + id, Outcome: h.Outcome})
+	}
+	return append(events, Event{Type: TypeNotice, Code: NoticeRebuilt,
+		Text: fmt.Sprintf("The chat history was rebuilt from the fake's transcript (%d turns).", len(f.history))})
+}
+
 func (f *fakeAdapter) save() error {
-	raw, _ := json.Marshal(fakeState{Turns: f.turns})
+	raw, _ := json.Marshal(fakeState{Turns: f.turns, History: f.history})
 	path := f.statePath(f.conv)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
@@ -294,6 +329,7 @@ type fakeTurn struct {
 	id     string
 	msgID  string
 	partID string
+	user   string
 	text   strings.Builder
 	usage  Usage
 }
@@ -309,6 +345,10 @@ func (t *fakeTurn) end(outcome, detail string) {
 		state, msgState = PartInterrupted, MessageInterrupted
 	}
 	t.usage.Output = int64(len(t.text.String()))
+	t.f.mu.Lock()
+	t.f.history = append(t.f.history, fakeHistory{User: t.user, Reply: t.text.String(), Outcome: outcome})
+	_ = t.f.save()
+	t.f.mu.Unlock()
 	t.f.out.Emit(
 		Event{Type: TypePart, MessageID: t.msgID, PartID: t.partID, Kind: PartText, State: state, Text: t.text.String()},
 		Event{Type: TypeMessageState, MessageID: t.msgID, State: msgState},
@@ -317,7 +357,7 @@ func (t *fakeTurn) end(outcome, detail string) {
 }
 
 func (f *fakeAdapter) turn(ctx context.Context, msg Outgoing, n int) {
-	t := &fakeTurn{f: f, id: "t_" + fakeID(), msgID: "a_" + fakeID(), usage: Usage{Input: int64(len(msg.Text))}}
+	t := &fakeTurn{f: f, id: "t_" + fakeID(), msgID: "a_" + fakeID(), user: msg.Text, usage: Usage{Input: int64(len(msg.Text))}}
 	t.partID = t.msgID + "_text"
 	f.out.Emit(
 		Event{Type: TypeMessageState, MessageID: msg.MessageID, State: MessageDelivered},

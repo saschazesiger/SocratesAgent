@@ -86,7 +86,7 @@ func TestRealOpenCode(t *testing.T) {
 		if p.LastTurn.Usage == nil || p.LastTurn.Usage.Input == 0 {
 			t.Fatalf("no usage: %+v", p.LastTurn)
 		}
-		t.Logf("turn 1 usage %+v cost %v; %d commands", *p.LastTurn.Usage, p.LastTurn.CostUSD, len(decode[[]Command](t, p.Commands)))
+		t.Logf("turn 1 usage %+v cost %v; %d commands", *p.LastTurn.Usage, p.LastTurn.CostUSD, len(p.Palette()))
 	})
 
 	// 2. A tool, and a message queued behind it.

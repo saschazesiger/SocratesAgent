@@ -202,9 +202,8 @@ type Question struct {
 	} `json:"tool"`
 }
 
-// Command is one of OpenCode's commands, as GET /command lists them and as
-// the composer's palette gets them (the content of a TypeCommands event).
-type Command struct {
+// ocCommand is one of OpenCode's commands, as GET /command lists them.
+type ocCommand struct {
 	Name        string   `json:"name"`
 	Description string   `json:"description,omitempty"`
 	Source      string   `json:"source,omitempty"`

@@ -18,6 +18,9 @@ import (
 	"syscall"
 	"time"
 
+	// The chat adapters register themselves for the server and the hosts.
+	_ "github.com/saschazesiger/SocratesAgent/internal/agent/claude"
+	_ "github.com/saschazesiger/SocratesAgent/internal/agent/codex"
 	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
 	// The OpenCode chat adapter registers itself with the agent host.
 	_ "github.com/saschazesiger/SocratesAgent/internal/agent/opencode"
