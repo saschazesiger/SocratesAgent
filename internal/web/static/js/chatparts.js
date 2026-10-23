@@ -35,7 +35,8 @@ export function statusMark(state) {
 /** seconds is a duration the way the rows say it: 0.4 s, 12 s, 3 min 5 s. */
 export function seconds(ms) {
   const value = Number(ms) || 0;
-  if (value <= 0) return '';
+  // Less than a tenth of a second is not worth a number.
+  if (value < 100) return '';
   if (value < 10000) return (value / 1000).toFixed(1).replace(/\.0$/, '') + ' s';
   const s = Math.round(value / 1000);
   if (s < 60) return s + ' s';
@@ -78,6 +79,8 @@ export function toolOf(part) {
   else if (c.tool === 'collab') name = 'Agents';
   else if (c.tool === 'file_change') name = 'Edit';
   else if (c.tool === 'turn_diff') name = 'Changes';
+  // A workflow's agent is one of its agents, under its label.
+  else if (c.tool === 'WorkflowAgent') name = 'Agent';
   const agent = c.agent && typeof c.agent === 'object' ? c.agent : null;
   const summary = c.summary || c.command || field('command') || c.path || field('file_path') || field('pattern')
     || field('description') || field('url') || field('query') || (agent && (agent.label || agent.description))
@@ -322,7 +325,7 @@ function toolHtml(part, view, { diff = false } = {}) {
   }${diff && files.length ? html`<span class="so-diff__count"><span class="so-diff__added">+${added}</span><span class="so-diff__removed">−${removed}</span></span>` : ''}${
     statusMark(state)
   }<span class="so-tool__time">${seconds(tool.duration)}</span>${chevron()}</summary>${
-    open ? html`<div class="so-tool__body">${toolBody(part, tool, view, { diff, group })}${infoButton(facts, 'Call details')}</div>` : ''
+    open ? html`<div class="so-tool__body">${infoButton(facts, 'Call details')}${toolBody(part, tool, view, { diff, group })}</div>` : ''
   }</details>`;
 }
 

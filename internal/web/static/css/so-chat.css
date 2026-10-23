@@ -523,11 +523,29 @@
   display: none;
 }
 
+/* The call's "i" stands at the end of the body's first line, beside what
+   the call was given; everything else takes the whole width. */
 .so-tool__body {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
   gap: var(--ds-space-2);
   padding: 0 var(--ds-space-3) var(--ds-space-3);
+}
+
+.so-tool__body > * {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.so-tool__body > .so-info {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.so-tool__body > .so-info + * {
+  grid-column: 1;
+  grid-row: 1;
 }
 
 .so-tool__out {
@@ -546,10 +564,6 @@
 .so-tool__prompt,
 .so-tool__result {
   color: var(--ds-text-2);
-}
-
-.so-tool__body > .so-info {
-  align-self: flex-end;
 }
 
 /* A subagent or a workflow: what it did, nested under its row. */
