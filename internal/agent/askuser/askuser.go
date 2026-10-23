@@ -269,6 +269,18 @@ func Parse(args json.RawMessage) (Payload, error) {
 		}
 		p.Questions = append(p.Questions, q)
 	}
+	// A question without an id is called by its place, q<n>, unless the
+	// model gave another question that id.
+	for i := range p.Questions {
+		if p.Questions[i].ID != "" {
+			continue
+		}
+		id := fmt.Sprintf("q%d", i+1)
+		for n := 2; seen[id]; n++ {
+			id = fmt.Sprintf("q%d_%d", i+1, n)
+		}
+		p.Questions[i].ID, seen[id] = id, true
+	}
 	if err := probs.err(); err != nil {
 		return Payload{}, err
 	}
@@ -349,9 +361,6 @@ func parseQuestion(i int, raw json.RawMessage, probs *problems) Question {
 	q.AllowOther = flag(rq.AllowOther, true, at+": allow_other", probs)
 	q.AllowDelegate = flag(rq.AllowDelegate, true, at+": allow_delegate", probs)
 	q.Required = flag(rq.Required, true, at+": required", probs)
-	if q.ID == "" {
-		q.ID = fmt.Sprintf("q%d", i+1)
-	}
 	if q.Question == "" {
 		if q.Header == "" {
 			probs.add("%s has no question text", at)

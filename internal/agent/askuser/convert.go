@@ -12,6 +12,10 @@ import (
 // that the person sees one kind of question (REBUILD.md §5.3), and the answer
 // converted back into what each mechanism expects. Options keep their label
 // as their id, because every one of these mechanisms answers with labels.
+// A converted payload keeps every question and choice its mechanism sent:
+// the limits of a call (MaxQuestions, MaxOptions) are what the model is held
+// to, and a question cut short could not be answered the way its mechanism
+// requires (a required field, a value beyond the twelfth).
 
 // delegatedText is what a delegated question becomes where an answer can
 // only be text.
@@ -67,9 +71,6 @@ func labelOptions(list []labelled) []Option {
 		seen[label] = true
 		out = append(out, Option{ID: label, Label: label, Description: strings.TrimSpace(l.Description),
 			Recommended: strings.Contains(strings.ToLower(label), "(recommended)")})
-	}
-	if len(out) > MaxOptions {
-		out = out[:MaxOptions]
 	}
 	return out
 }
@@ -129,9 +130,6 @@ func FromUserInput(params json.RawMessage) (Payload, bool) {
 		finish(&q, i+1)
 		p.Questions = append(p.Questions, q)
 	}
-	if len(p.Questions) > MaxQuestions {
-		p.Questions = p.Questions[:MaxQuestions]
-	}
 	return p, true
 }
 
@@ -183,9 +181,6 @@ func FromAsync(questions json.RawMessage) (Payload, bool) {
 		q := Question{Question: text, Options: labelOptions(opts), AllowOther: true, AllowDelegate: true, Required: true}
 		finish(&q, i+1)
 		p.Questions = append(p.Questions, q)
-	}
-	if len(p.Questions) > MaxQuestions {
-		p.Questions = p.Questions[:MaxQuestions]
 	}
 	return p, true
 }
@@ -277,9 +272,6 @@ func FromElicitation(server, message string, schema json.RawMessage, order []str
 		return p, true
 	}
 	for i, name := range f.Order {
-		if i == MaxQuestions {
-			break
-		}
 		fd := f.Properties[name]
 		q := Question{ID: name, Header: fd.Title, Question: fd.Description, Required: required[name]}
 		if q.Header == "" {
@@ -329,16 +321,14 @@ func constOptions(enum, names []string, titled []constOpt) []Option {
 		}
 		out = append(out, Option{ID: v, Label: label})
 	}
-	if len(out) > MaxOptions {
-		out = out[:MaxOptions]
-	}
 	return out
 }
 
 // ElicitationResult is the answer to an elicitation: "accept" with a value
 // for every field the person answered, typed as the form says, or "decline"
 // when they answered none (for a form without fields: yes or no). A form has
-// no place for notes, so they are not passed on.
+// no place for the person's own words; SaysMore tells when they wrote some,
+// which then reach the agent as a message.
 func ElicitationResult(p *Payload, schema json.RawMessage, raw json.RawMessage) (string, map[string]any) {
 	f, _ := readForm(schema, nil)
 	a := ReadAnswer(p, raw)
@@ -388,6 +378,31 @@ func ElicitationResult(p *Payload, schema json.RawMessage, raw json.RawMessage) 
 	return "accept", content
 }
 
+// SaysMore reports whether an answer says more than the mechanism its payload
+// was converted from can carry back. An MCP elicitation's form takes only
+// its fields' values, so a note, a general note, a question back, a choice
+// in the person's own words or a "You decide" would be lost in it: the form
+// gets what it can take, and the whole answer goes to the agent as a message
+// as well (AGENT-HOST.md §4.4). Every other mechanism carries all of it.
+func SaysMore(payload, raw json.RawMessage) bool {
+	p := Decode(payload)
+	if p == nil || p.Source != SourceElicitation {
+		return false
+	}
+	a := ReadAnswer(p, raw)
+	if a.GeneralNote != nil || a.FollowUp != nil {
+		return true
+	}
+	for i := range p.Questions {
+		q := &p.Questions[i]
+		qa := a.Answers[q.ID]
+		if qa.Note != nil || qa.Delegated || qa.Other != nil && q.Kind != KindText {
+			return true
+		}
+	}
+	return false
+}
+
 // ------------------------------------------------------ OpenCode question tool
 
 // FromOpenCode converts the questions of OpenCode's own question tool
@@ -414,9 +429,6 @@ func FromOpenCode(questions json.RawMessage) (Payload, bool) {
 		}
 		finish(&q, i+1)
 		p.Questions = append(p.Questions, q)
-	}
-	if len(p.Questions) > MaxQuestions {
-		p.Questions = p.Questions[:MaxQuestions]
 	}
 	return p, true
 }

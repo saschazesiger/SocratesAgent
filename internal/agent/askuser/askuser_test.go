@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -96,6 +97,19 @@ func TestParseTakesTheShorthandsModelsWrite(t *testing.T) {
 	}
 	if q[3].Kind != KindText || q[3].AllowOther {
 		t.Fatalf("q4 %+v", q[3])
+	}
+}
+
+// A question without an id is called by its place, but never by an id the
+// model gave another question.
+func TestAnIdLeftOutNeverTakesOneGiven(t *testing.T) {
+	p := mustParse(t, `{"questions":[{"question":"A"},{"id":"q1","question":"B"},{"question":"C"}]}`)
+	var ids []string
+	for _, q := range p.Questions {
+		ids = append(ids, q.ID)
+	}
+	if strings.Join(ids, ",") != "q1_2,q1,q3" {
+		t.Fatalf("ids %v", ids)
 	}
 }
 
@@ -332,6 +346,59 @@ func TestElicitationRoundTrip(t *testing.T) {
 	}
 	if _, ok := FromElicitation("lab", "x", json.RawMessage(`[1]`), nil); ok {
 		t.Fatal("an unreadable form was taken")
+	}
+}
+
+// A converted form is not held to the limits of a call: every field and
+// every choice can be answered, the way the server requires.
+func TestAConvertedFormKeepsEveryFieldAndChoice(t *testing.T) {
+	var fields, enum []string
+	for i := range MaxQuestions + 5 {
+		fields = append(fields, fmt.Sprintf(`"f%02d":{"type":"string"}`, i))
+	}
+	for i := range MaxOptions + 3 {
+		enum = append(enum, fmt.Sprintf(`"v%d"`, i))
+	}
+	fields = append(fields, `"pick":{"type":"string","enum":[`+strings.Join(enum, ",")+`]}`)
+	schema := json.RawMessage(`{"type":"object","properties":{` + strings.Join(fields, ",") + `},"required":["pick"]}`)
+	p, ok := FromElicitation("lab", "Many", schema, nil)
+	if !ok || len(p.Questions) != MaxQuestions+6 {
+		t.Fatalf("%d questions", len(p.Questions))
+	}
+	pick := p.Questions[len(p.Questions)-1]
+	if pick.ID != "pick" || len(pick.Options) != MaxOptions+3 {
+		t.Fatalf("pick %+v", pick)
+	}
+	last := fmt.Sprintf("v%d", MaxOptions+2)
+	_, content := ElicitationResult(&p, schema, json.RawMessage(`{"answers":{"pick":{"selected":["`+last+`"]}}}`))
+	if content["pick"] != last {
+		t.Fatalf("content %v", content)
+	}
+}
+
+// What a form has no field for says more than the form can carry: the
+// answer then has to reach the agent as a message as well. ask_user's own
+// payloads, and the other mechanisms, carry everything.
+func TestSaysMoreIsWhatAFormCannotCarry(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{
+	  "colour":{"type":"string","enum":["red","green"]},"notes":{"type":"string"}}}`)
+	p, _ := FromElicitation("lab", "Pick", schema, nil)
+	form := p.JSON()
+	for answer, want := range map[string]bool{
+		`{"answers":{"colour":{"selected":["red"]},"notes":{"other":"fine"}}}`: false,
+		`{"answers":{"colour":{"selected":["red"]}},"general_note":"hurry"}`:   true,
+		`{"answers":{"colour":{"selected":["red"],"note":"dark"}}}`:            true,
+		`{"answers":{},"follow_up":"why red?"}`:                                true,
+		`{"answers":{"colour":{"other":"purple"}}}`:                            true,
+		`"just do it"`: true,
+	} {
+		if got := SaysMore(form, json.RawMessage(answer)); got != want {
+			t.Errorf("%s: %v", answer, got)
+		}
+	}
+	own := mustParse(t, `{"questions":[{"id":"db","question":"Which?","options":["pg"]}]}`)
+	if SaysMore(own.JSON(), json.RawMessage(`{"answers":{"db":{"selected":["pg"],"note":"16"}},"general_note":"x"}`)) {
+		t.Fatal("ask_user's own answer said more than it carries")
 	}
 }
 
