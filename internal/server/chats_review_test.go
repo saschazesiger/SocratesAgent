@@ -58,8 +58,13 @@ func TestTheServerStaysWithALiveHost(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if a := c.srv.manager.ActivityOf(id); a.State != "idle" {
-		t.Fatalf("activity %+v", a)
+	// The detector hears of it as soon as the event is applied, not in the
+	// same instant the projection shows it.
+	for a := c.srv.manager.ActivityOf(id); a.State != "idle"; a = c.srv.manager.ActivityOf(id) {
+		if time.Now().After(deadline) {
+			t.Fatalf("activity %+v", a)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if s := p.summary(); s.Activity != agent.ActivityIdle {
 		t.Fatalf("summary %+v", s)

@@ -224,6 +224,10 @@ type chatPeer struct {
 	conn    *agenthost.Conn
 	pumping bool
 	waiters map[string][]chan chatReply
+	// reportMu orders the hand-overs of report: two of them racing could
+	// otherwise reach the detector in the wrong order and leave it with the
+	// older state.
+	reportMu sync.Mutex
 	// reported is the activity last handed to the detector, so that a
 	// stream of deltas is not a stream of reports.
 	reported string
@@ -509,6 +513,8 @@ func (p *chatPeer) apply(ev agent.Event) {
 // report hands the chat's activity to the detector when it has changed:
 // busy while a turn runs, waiting while a question is open, idle otherwise.
 func (p *chatPeer) report() {
+	p.reportMu.Lock()
+	defer p.reportMu.Unlock()
 	p.mu.Lock()
 	s := p.proj.Summary()
 	if s.Activity == p.reported && s.Asked == p.asked {
