@@ -19,13 +19,6 @@ import (
 	"time"
 )
 
-// FakeHarness is the name the scripted agent is registered under.
-const FakeHarness = "fake"
-
-// FakeEnv switches the scripted agent on: it is registered only in a process
-// whose environment has FakeEnv=1, so a production server never offers it.
-const FakeEnv = "SOCRATES_FAKE_AGENT"
-
 func init() {
 	if os.Getenv(FakeEnv) == "1" {
 		EnableFake()

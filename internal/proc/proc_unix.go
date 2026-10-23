@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Package proc holds the child process handling the coding agents and the
 // Cloudflare tunnel need: a process group of their own, so that stopping one
 // stops what it started.

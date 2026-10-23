@@ -93,6 +93,11 @@ type schemaDoc struct {
 
 type schema map[string]schemaDoc
 
+// RealEnv runs the tests against the installed codex binary, with the
+// scripted model of package fakemodel standing in for OpenAI. They are
+// skipped otherwise: they need codex on the PATH and take a while.
+const RealEnv = "SOCRATES_REAL_CODEX"
+
 func loadPinned(t *testing.T) schema {
 	t.Helper()
 	s := schema{}

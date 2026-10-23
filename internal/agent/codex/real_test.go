@@ -18,11 +18,6 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/agent/codex/fakemodel"
 )
 
-// RealEnv runs the tests against the installed codex binary, with the
-// scripted model of package fakemodel standing in for OpenAI. They are
-// skipped otherwise: they need codex on the PATH and take a while.
-const RealEnv = "SOCRATES_REAL_CODEX"
-
 // realLab is a fake model and a data folder of CODEX_HOMEs sharing their
 // sessions, the way accounts share them.
 type realLab struct {
