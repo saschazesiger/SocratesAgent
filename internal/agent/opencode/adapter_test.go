@@ -179,6 +179,20 @@ func TestMessagesSentDuringATurnWaitAndRunInOrder(t *testing.T) {
 	}
 }
 
+// A turn that is over before OpenCode answers its post does not hold up the
+// messages queued behind it.
+func TestATurnThatEndsBeforeItsPostIsAnsweredLetsTheQueueRun(t *testing.T) {
+	r := newRig(t)
+	r.mustStart("")
+	r.send("/sleep 0.3")
+	r.send("/beforeack")
+	last := r.send("after")
+	r.waitTurns(3)
+	if order := r.rec.turnOrder(); order[len(order)-2] != "start "+last {
+		t.Fatalf("turns %q", order)
+	}
+}
+
 func TestInterruptEndsTheTurnAndTheQueueRuns(t *testing.T) {
 	r := newRig(t)
 	r.mustStart("")

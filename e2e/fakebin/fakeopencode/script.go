@@ -36,6 +36,8 @@ import (
 //	/dropstream      text, every /event stream is closed, then more text that
 //	                 only a reader of GET …/message sees
 //	/whoami          "account: <identity>"
+//	/beforeack       an answer, and prompt_async answers only once the turn
+//	                 is over
 //	anything else    "you said: <text> (turn N of <session>)"
 
 var commands = []map[string]any{
@@ -83,7 +85,7 @@ func (s *srv) userMessage(sid, id, agent string, parts []map[string]any) {
 	}
 }
 
-func (s *srv) prompt(sid string, body promptBody) {
+func (s *srv) prompt(sid string, body promptBody) *run {
 	var parts []map[string]any
 	for _, p := range body.Parts {
 		switch p.Type {
@@ -94,7 +96,7 @@ func (s *srv) prompt(sid string, body promptBody) {
 		}
 	}
 	s.userMessage(sid, body.MessageID, body.Agent, parts)
-	s.ensureRun(sid)
+	return s.ensureRun(sid)
 }
 
 // ensureRun starts the session's loop unless it runs.
@@ -104,7 +106,7 @@ func (s *srv) ensureRun(sid string) *run {
 		s.mu.Unlock()
 		return r
 	}
-	r := &run{cancel: make(chan struct{})}
+	r := &run{cancel: make(chan struct{}), done: make(chan struct{})}
 	s.runs[sid] = r
 	s.mu.Unlock()
 	s.publish("session.status", map[string]any{"sessionID": sid, "status": map[string]any{"type": "busy"}})
@@ -121,6 +123,7 @@ func (s *srv) loop(sid string, r *run) {
 		s.mu.Unlock()
 		s.publish("session.status", map[string]any{"sessionID": sid, "status": map[string]any{"type": "idle"}})
 		s.publish("session.idle", map[string]any{"sessionID": sid})
+		close(r.done)
 	}()
 	for {
 		sess, _ := loadSession(sid)

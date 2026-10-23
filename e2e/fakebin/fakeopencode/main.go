@@ -198,6 +198,8 @@ type srv struct {
 type run struct {
 	cancel chan struct{}
 	once   sync.Once
+	// done is closed once a prompt's loop has ended and said so.
+	done chan struct{}
 }
 
 func (r *run) stop() { r.once.Do(func() { close(r.cancel) }) }
@@ -442,7 +444,13 @@ func (s *srv) sessionRoute(w http.ResponseWriter, r *http.Request, id string, re
 			writeJSON(w, 400, map[string]any{"name": "BadRequest", "data": map[string]any{"message": err.Error()}})
 			return
 		}
-		s.prompt(id, body)
+		r := s.prompt(id, body)
+		if len(body.Parts) > 0 && body.Parts[0].Text == "/beforeack" && r.done != nil {
+			// The turn is over, and said so on /event, before the post is
+			// answered.
+			<-r.done
+			time.Sleep(300 * time.Millisecond)
+		}
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodPost && op == "abort":
 		s.mu.Lock()

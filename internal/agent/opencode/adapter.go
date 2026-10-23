@@ -737,6 +737,10 @@ func (a *Adapter) runLocked(ctx context.Context, j job) error {
 		}
 		a.beginTurnLocked(oc)
 		a.mu.Unlock()
+		// The turn may be over already: one that fails at once can end
+		// on /event before the post is answered, and the next() its end
+		// started found the post still on its way.
+		go a.next()
 		return nil
 	}
 	// A shell line, a command and a compaction answer when they are done, so
