@@ -255,11 +255,27 @@ export async function freePort() {
     + ' is in use; something from an earlier run is still listening');
 }
 
+// ambient is the suite's own environment without what names an agent's
+// folders or carries a credential: a fake run must never find the machine's
+// real Claude Code, Codex or OpenCode state through a variable the scenario
+// did not set, and must never hand one of this machine's keys to a child.
+function ambient(live) {
+  const out = { ...process.env };
+  if (live) return out;
+  for (const name of Object.keys(out)) {
+    if (/^(ANTHROPIC_|CLAUDE_CODE_|OPENCODE_|SOCRATES_S3_)/.test(name)
+      || ['OPENAI_API_KEY', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME'].includes(name)) {
+      delete out[name];
+    }
+  }
+  return out;
+}
+
 export function spawnServer({ data, port, live = false, env = {} }) {
   const { exe, bin } = binaries(live);
   const server = spawn(exe, ['-addr', '127.0.0.1:' + port, '-data', data], {
     env: {
-      ...process.env,
+      ...ambient(live),
       // The environment the suite was started from must not hand a server
       // the bucket of the mirror Socrates once had, which a start would
       // carry over into its backup.json.

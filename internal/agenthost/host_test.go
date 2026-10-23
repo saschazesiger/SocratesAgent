@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
+	"github.com/saschazesiger/SocratesAgent/internal/testhome"
 )
 
 // init and TestMain make the test binary stand in for `socrates agent-host`:
@@ -34,7 +35,7 @@ func TestMain(m *testing.M) {
 	}
 	os.Setenv(agent.FakeEnv, "1")
 	agent.EnableFake()
-	os.Exit(m.Run())
+	os.Exit(testhome.Main(m))
 }
 
 // rig is one chat with a real host process.

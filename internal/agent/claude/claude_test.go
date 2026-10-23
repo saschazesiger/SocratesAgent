@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
+	"github.com/saschazesiger/SocratesAgent/internal/testhome"
 )
 
 var fakeBin string
@@ -34,7 +35,7 @@ func TestMain(m *testing.M) {
 	if out, err := build.CombinedOutput(); err != nil {
 		panic("build fakeclaude: " + err.Error() + "\n" + string(out))
 	}
-	code := m.Run()
+	code := testhome.Main(m)
 	os.RemoveAll(dir)
 	os.Exit(code)
 }

@@ -18,6 +18,7 @@ import (
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
+	"github.com/saschazesiger/SocratesAgent/internal/testhome"
 )
 
 // fakeBin is the directory with the fake `opencode` the tests run, built
@@ -48,7 +49,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	fakeBin = dir
-	code := m.Run()
+	code := testhome.Main(m)
 	os.RemoveAll(dir)
 	os.Exit(code)
 }

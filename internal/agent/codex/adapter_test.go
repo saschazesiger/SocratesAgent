@@ -18,6 +18,7 @@ import (
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
+	"github.com/saschazesiger/SocratesAgent/internal/testhome"
 )
 
 // fakeBin is e2e/fakebin/fakecodex, built once for the package's tests.
@@ -39,7 +40,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "build fakecodex: %v\n%s", err, out)
 		os.Exit(1)
 	}
-	code := m.Run()
+	code := testhome.Main(m)
 	os.RemoveAll(dir)
 	os.Exit(code)
 }

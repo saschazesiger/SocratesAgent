@@ -16,6 +16,7 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
+	"github.com/saschazesiger/SocratesAgent/internal/testhome"
 )
 
 // TestMain dispatches the subcommands the terminal substrate calls this
@@ -35,7 +36,7 @@ func TestMain(m *testing.M) {
 			os.Exit(agenthost.Main(os.Args[2:], "test"))
 		}
 	}
-	code := m.Run()
+	code := testhome.Main(m)
 	// The fake CLI directory is shared by every test through a sync.Once, so
 	// no single test owns it and t.TempDir cannot remove it. Here is the one
 	// point at which the last test that needed it has finished.
