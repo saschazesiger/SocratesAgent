@@ -74,14 +74,6 @@ func (m *Manager) ensureLocked(ctx context.Context, sessionID string) (*store.Se
 // its own - used to leave a perfectly healthy terminal recorded as failed, in
 // a state nothing polls out of again.
 func (m *Manager) Restart(ctx context.Context, sessionID string) (*store.Session, error) {
-	return m.RestartAfter(ctx, sessionID, nil)
-}
-
-// RestartAfter is Restart with something to do once the restart is certain to
-// happen - every refusal is behind it - and before the program is launched:
-// what was driving the old program is stopped there, and only there. A
-// restart that is refused leaves it running.
-func (m *Manager) RestartAfter(ctx context.Context, sessionID string, before func()) (*store.Session, error) {
 	unlock := m.lockSession(sessionID)
 	defer unlock()
 	row, err := m.st.GetSession(sessionID)
@@ -98,9 +90,6 @@ func (m *Manager) RestartAfter(ctx context.Context, sessionID string, before fun
 	}
 	if m.Available() == nil && row.TmuxName != "" && !m.paneIsDead(row.TmuxName) {
 		return nil, fmt.Errorf("%w: %s", ErrStillRunning, row.TmuxName)
-	}
-	if before != nil {
-		before()
 	}
 	if err := m.st.SetSessionState(row.ID, store.StateNeedsResume, -1, ""); err != nil {
 		return nil, err
@@ -182,9 +171,6 @@ func (m *Manager) resume(ctx context.Context, row *store.Session) (*store.Sessio
 		}
 		return current, err
 	}
-	// A terminal has no conversation to lose, so its resume is never a fresh
-	// start in the sense the note means: it says when, and nothing else.
-	m.noteResume(row.ID, ResumeNote{At: time.Now().UnixMilli()})
 	if err := m.st.NoteResume(row.ID); err != nil {
 		m.logf("could not record the resume of session %s: %v", row.ID, err)
 	}
@@ -197,50 +183,6 @@ func (m *Manager) resume(ctx context.Context, row *store.Session) (*store.Sessio
 func (m *Manager) planFailed(row *store.Session, err error) (*store.Session, error) {
 	_ = m.st.SetSessionState(row.ID, store.StateFailed, -1, err.Error())
 	return nil, err
-}
-
-// ---------------------------------------------------------- resume notes
-
-// ResumeNote is what the last resume of a session did. It is the terminal
-// protocol's resume notice (socrates.term.v1): a terminal has no conversation
-// to lose, so Fresh is false and From empty for every resume this package
-// makes, and the fields stay because the notice carries them.
-//
-// It lives in the key/value table rather than in a column: it is unread-notice
-// state with the same life as the `resumed` flag, it is cleared by the same
-// acknowledgement, and it goes with the session when it is deleted.
-type ResumeNote struct {
-	// Fresh is true when a conversation was lost and a new one was started.
-	Fresh bool `json:"fresh"`
-	// From is the conversation id the resume was meant to continue.
-	From string `json:"resumed_from,omitempty"`
-	At   int64  `json:"at"`
-}
-
-// resumeNoteKey is where one session's note lives.
-func resumeNoteKey(id string) string { return "resume_note:" + id }
-
-func (m *Manager) noteResume(id string, note ResumeNote) {
-	if err := m.st.SetJSON(resumeNoteKey(id), note); err != nil {
-		m.logf("could not record what the resume of session %s did: %v", id, err)
-	}
-}
-
-// ResumeNoteOf returns what the last resume of a session did, and whether
-// there is one to tell about.
-func (m *Manager) ResumeNoteOf(id string) (ResumeNote, bool) {
-	var note ResumeNote
-	if err := m.st.GetJSON(resumeNoteKey(id), &note); err != nil || note.At == 0 {
-		return ResumeNote{}, false
-	}
-	return note, true
-}
-
-// ClearResumeNote drops it, which is what acknowledging the banner does.
-func (m *Manager) ClearResumeNote(id string) {
-	if err := m.st.SetJSON(resumeNoteKey(id), ResumeNote{}); err != nil {
-		m.logf("could not clear the resume note of session %s: %v", id, err)
-	}
 }
 
 // ---------------------------------------------------------- serialisation
@@ -267,7 +209,6 @@ func (m *Manager) forgetSession(id string) {
 	delete(m.locks, id)
 	delete(m.plans, id)
 	m.mu.Unlock()
-	m.ClearResumeNote(id)
 	// The unread mark of a session that no longer exists is not news; it is
 	// clutter in a key nobody prunes.
 	m.act.forget(id)

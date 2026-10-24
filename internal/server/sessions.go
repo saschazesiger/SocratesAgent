@@ -53,12 +53,10 @@ const journalDownloadMax = 16 << 20
 //	                                    for on a session that is still running,
 //	                                    or a resume on a session that is done
 //	GET    …/journal                the raw bytes, as an attachment
-//	GET    …/usage                  {"windows":[…],"cost_usd":…}
 //	every route                     4xx/5xx {"error":"…"}
 //
 // <session> is store.Session as it serialises, plus the fields sessionView
-// adds: cli_session_state, activity, and after a resume resume_fresh and
-// resumed_from.
+// adds: cli_session_state and activity, among others.
 //
 // handleListSessions answers the session list: every session, whatever its
 // status, because the list files them itself.
@@ -83,15 +81,10 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 // what the browser needs and the row does not serialise.
 //
 // cli_session_state is here because "this conversation is gone" is something
-// the session list shows in its technical detail, and resume_fresh because a
-// resume that had to start a new conversation is otherwise byte for byte a
-// resume that continued the old one - and §C.8 requires the banner to tell
-// them apart.
+// the session list shows in its technical detail.
 type sessionView struct {
 	*store.Session
 	CLISessionState string `json:"cli_session_state"`
-	ResumeFresh     bool   `json:"resume_fresh,omitempty"`
-	ResumedFrom     string `json:"resumed_from,omitempty"`
 	// Activity is busy/idle/waiting and the unread mark. It is here as well as
 	// on the WebSocket because a browser with no socket open - the list on
 	// first load, a tab that has been asleep - has to see the sidebar the same
@@ -134,11 +127,6 @@ func (s *Server) viewWith(row *store.Session, drafts map[string]store.DraftMeta)
 	v.WorkdirMissing = workdirMissing(row)
 	if row.Status == store.StatusDone {
 		v.DeleteAt = row.StatusAt + DoneRetention.Milliseconds()
-	}
-	if row.Resumed {
-		if note, ok := s.manager.ResumeNoteOf(row.ID); ok {
-			v.ResumeFresh, v.ResumedFrom = note.Fresh, note.From
-		}
 	}
 	return v
 }
@@ -683,8 +671,6 @@ func (s *Server) handleAckResume(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// The banner and what it said go together.
-	s.manager.ClearResumeNote(row.ID)
 	s.answerWithSession(w, row.ID)
 }
 

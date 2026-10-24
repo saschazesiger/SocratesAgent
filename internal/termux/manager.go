@@ -198,13 +198,6 @@ func New(st *store.Store, cfg Config) (*Manager, error) {
 	return m, nil
 }
 
-// TmuxPath is the binary the manager runs.
-func (m *Manager) TmuxPath() string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.tmuxPath
-}
-
 // TmuxVersion is what that binary reported.
 func (m *Manager) TmuxVersion() Version {
 	m.mu.Lock()

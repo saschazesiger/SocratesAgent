@@ -1,6 +1,5 @@
 # build output
 /socrates
-/faketui
 *.exe
 
 # local data

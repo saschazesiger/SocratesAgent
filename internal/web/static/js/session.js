@@ -3109,13 +3109,13 @@ function onControl(sessionId, frame) {
       break;
     case 'notice':
       if (frame.kind === 'resumed') {
-        const text = 'Resumed after a restart.'
-          + (frame.fresh ? ' The previous conversation could not be resumed, so this one starts fresh.' : '');
-        notice('resumed', text, () => {
+        // A terminal has no conversation to lose: its resume is a new shell
+        // in the same folder, and that is all the banner has to say.
+        notice('resumed', 'Resumed after a restart.', () => {
           api('/api/sessions/' + encodeURIComponent(sessionId) + '/ack-resume', { method: 'POST' })
             .then((data) => replaceSession(data.session))
             .catch(() => { /* the flag stays up and the banner comes back */ });
-        }, frame.resumed_from ? ['conversation ' + frame.resumed_from] : null);
+        });
       }
       break;
     case 'input_lost':
