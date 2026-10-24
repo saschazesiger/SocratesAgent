@@ -84,7 +84,7 @@ func main() {
 	dataDir := fs.String("data", config.DataDir(), "directory for the database and workspaces")
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Socrates %s - a terminal harness for Shell, Claude Code, Codex and OpenCode\n\n", version)
+		fmt.Fprintf(os.Stderr, "Socrates %s - chats with Claude Code, Codex and OpenCode, and a terminal for your shell\n\n", version)
 		fmt.Fprintf(os.Stderr, "Usage:\n  socrates [flags]        start the web server\n"+
 			"  socrates restore ...    restore a backup onto this machine (socrates restore -h)\n\nFlags:\n")
 		fs.PrintDefaults()
