@@ -40,8 +40,9 @@
 // A message steered into a running turn is taken up at its next step: its
 // userMessage item (with the client id) and "steered: <text>" in the answer.
 //
-// Accounts: the encrypted reasoning it writes is bound to FAKECODEX_ACCOUNT
-// (default "default"). A turn on a thread whose history holds another
+// Accounts: the encrypted reasoning it writes is bound to FAKECODEX_ACCOUNT,
+// else to the login in $CODEX_HOME/auth.json (account.go, which also answers
+// the sign-in and limit methods), else to "default". A turn on a thread whose history holds another
 // account's fails with invalid_encrypted_content, as the real model does;
 // with FAKECODEX_STRICT=1 any assistant message in the history fails it too.
 package main
@@ -81,6 +82,9 @@ func main() {
 		os.Exit(2)
 	}
 	account := os.Getenv("FAKECODEX_ACCOUNT")
+	if account == "" {
+		account = accountOf(home)
+	}
 	if account == "" {
 		account = "default"
 	}
@@ -284,6 +288,9 @@ func (s *server) request(fr frame) {
 	case "model/list":
 		s.respond(fr.ID, map[string]any{"data": []any{map[string]any{"id": "gpt-fake", "displayName": "GPT Fake"}}})
 	default:
+		if s.accountMethod(fr, p) {
+			return
+		}
 		s.fail(fr.ID, -32601, "fakecodex does not implement "+fr.Method, nil)
 	}
 }

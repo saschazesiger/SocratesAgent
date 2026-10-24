@@ -40,6 +40,8 @@ func TestExcluded(t *testing.T) {
 		"vscode/ab12/User":                                   false,
 		"accounts/a1/run":                                    false,
 		"accounts/a1/log":                                    true,
+		"accounts/a1/logs_2.sqlite":                          true,
+		"accounts/a1/state_5.sqlite":                         false,
 		"accounts/a1/.credentials.json":                      false,
 		"secrets.key":                                        false,
 		"accounts.migrated":                                  false,

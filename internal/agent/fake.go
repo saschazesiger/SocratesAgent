@@ -129,10 +129,6 @@ func (f *fakeAdapter) Start(ctx context.Context, spec StartSpec, out Emitter) er
 	return nil
 }
 
-// FakeKeyEnv is where an API-key account's key reaches the scripted agent's
-// CLI, the way SOCRATES_CLAUDE_API_KEY reaches Claude Code's adapter.
-const FakeKeyEnv = "SOCRATES_FAKE_API_KEY"
-
 // accountLine says which account the CLI was started on, and whether a key
 // came with it - its length, never the key itself.
 func (f *fakeAdapter) accountLine() string {

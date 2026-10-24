@@ -151,9 +151,10 @@ var NotBackedUp = []string{
 	Chats + "/*/" + ChatLock,
 	Chats + "/*/" + ChatLog,
 	Chats + "/*/" + ChatSpec + ".tmp",
-	// Codex's own log of an account (codex-tui.log and the like), the "codex
-	// logs" of REBUILD.md §6.1.
+	// Codex's own logs of an account (log/ and its logs database), the
+	// "codex logs" of REBUILD.md §6.1.
 	Accounts + "/*/log",
+	Accounts + "/*/logs_*.sqlite*",
 	"lost+found",
 }
 
