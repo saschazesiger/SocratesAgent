@@ -3274,16 +3274,15 @@ async function design() {
     // whole of the motion is that one arc: an arc nobody can see turning is
     // the same thing as not turning at all.
     //
-    // It takes an agent session: a shell and an editor are the two programs
-    // nothing is asked of and nothing is reported back by, so their rows carry
-    // no status at all and there is no ring on them to look at. The shell is
-    // stepped back onto afterwards, because the rest of this scenario is about
-    // the pane it owns.
-    const working = await startSession(s.page, 'claude');
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    // It takes a chat: a shell and an editor are the two programs nothing is
+    // asked of and nothing is reported back by, so their rows carry no status
+    // at all and there is no ring on them to look at. The shell is stepped
+    // back onto afterwards, because the rest of this scenario is about the
+    // pane it owns.
+    const working = await startChat(s.page, 'claude');
     await awaitRow(s.page, working, (r) => !r.busy, 20000);
     const workingRow = await sessionRow(s, working);
-    await typeLine(s.page, '/busy 20000');
+    await keepBusy(s.page, 30000);
     await clickRow(s.page, id);
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
     const spinning = await awaitRow(s.page, working, (r) => r.busy, 10000);
@@ -3545,6 +3544,92 @@ async function design() {
     ok(closes, 'and it puts itself away without being dismissed',
       closes ? 'gone' : 'still up after 9 s');
     await other.close();
+
+    /* --------------------------------------------- Home's chat cards */
+
+    // Home draws every session as a card: on the white panel too, each with
+    // its agent's mark, the working chat's mark turning on DS's spinner beat,
+    // and a card that is drawn again - a rename - is the same card, its ring
+    // never started again.
+    await goHome(s.page);
+    await s.page.click('#home [data-action="seg"][data-filter="all"]');
+    await s.page.waitForSelector('#home .so-home__card[data-id="' + working + '"]', { timeout: 15000 });
+    const cards = await s.page.evaluate(() => ({
+      home: getComputedStyle(document.getElementById('home')).backgroundColor,
+      cards: [...document.querySelectorAll('#home .so-home__card')].map((card) => ({
+        id: card.dataset.id, fill: getComputedStyle(card).backgroundColor,
+        mark: (card.querySelector('.so-agent') || { dataset: {} }).dataset.agent || 'none',
+        ring: (card.querySelector('.so-mark') || { dataset: {} }).dataset.ring || '',
+      })),
+    }));
+    const byId = Object.fromEntries(cards.cards.map((c) => [c.id, c]));
+    ok(white(cards.home) && cards.cards.every((c) => white(c.fill)), 'Home and its cards are white', JSON.stringify(cards));
+    ok(byId[working] && byId[working].mark === 'claude' && byId[chatId] && byId[chatId].mark === 'fake' && byId[id].mark === 'shell',
+      'and every card wears the mark of what it runs', JSON.stringify(cards.cards.map((c) => c.mark)));
+    const homeRing = (one) => s.page.evaluate((cid) => {
+      const card = document.querySelector('#home .so-home__card[data-id="' + cid + '"]');
+      const mark = card && card.querySelector('.so-mark');
+      const anim = mark ? mark.getAnimations({ subtree: true })[0] : null;
+      return { ring: mark ? mark.dataset.ring || '' : '', at: anim ? Number(anim.currentTime) : -1, start: anim ? Number(anim.startTime) : NaN };
+    }, one);
+    // The ring is read once it is turning: an animation that has not had its
+    // first frame has no start time yet.
+    await s.page.waitForFunction((cid) => {
+      const mark = document.querySelector('#home .so-home__card[data-id="' + cid + '"] .so-mark');
+      const anim = mark ? mark.getAnimations({ subtree: true })[0] : null;
+      return !!anim && anim.startTime !== null && Number(anim.currentTime) > 0;
+    }, working, { timeout: 10000 }).catch(() => {});
+    const cardBefore = await homeRing(working);
+    await s.page.evaluate((cid) => { document.querySelector('#home .so-home__card[data-id="' + cid + '"]').wp11Stamp = 'drawn once'; }, working);
+    const cardName = workingRow.title + ' on Home';
+    await s.context.request.patch(s.url + '/api/sessions/' + working, { data: { title: cardName } });
+    await s.page.waitForFunction((arg) => {
+      const card = document.querySelector('#home .so-home__card[data-id="' + arg.cid + '"]');
+      return !!card && card.querySelector('.so-home__card-title').textContent === arg.name;
+    }, { cid: working, name: cardName }, { timeout: 20000 });
+    const cardAfter = await homeRing(working);
+    const sameCard = await s.page.evaluate((cid) => document.querySelector('#home .so-home__card[data-id="' + cid + '"]').wp11Stamp === 'drawn once', working);
+    ok(cardBefore.ring === 'busy' && sameCard && cardAfter.start === cardBefore.start && cardAfter.at > cardBefore.at,
+      'the working chat’s card turns, and a rename is drawn into the same card without starting it again',
+      JSON.stringify({ before: cardBefore, after: cardAfter, sameCard }));
+    await shot(s.page, 'design-home');
+    await clickRow(s.page, id);
+
+    /* ------------------------------------------------- the accounts */
+
+    // The Accounts card holds to the same rules: white, a group per agent
+    // under that agent's mark, and what is technical - the e-mail, the plan,
+    // a key - behind the "i" or nowhere.
+    const key = 'sk-design-' + 'd'.repeat(20);
+    await s.context.request.post(s.url + '/api/accounts', { data: { agent: 'fake', kind: 'api_key', label: 'Design key', key } });
+    await s.page.goto(s.url + '/admin#accountsCard', { waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#accountList .so-account-group[data-agent="fake"] .so-account', { timeout: 20000 });
+    const accountsLook = await s.page.evaluate(() => {
+      const card = document.getElementById('accountList').closest('.ds-card');
+      return {
+        fill: card ? getComputedStyle(card).backgroundColor : 'missing',
+        groups: [...document.querySelectorAll('#accountList .so-account-group')].map((g) => ({
+          agent: g.dataset.agent, mark: (g.querySelector('.so-account-group__title .so-agent') || { dataset: {} }).dataset.agent || 'none',
+          fill: getComputedStyle(g).backgroundColor,
+        })),
+      };
+    });
+    ok(white(accountsLook.fill) && accountsLook.groups.every((g) => white(g.fill)), 'the Accounts card is white',
+      JSON.stringify({ card: accountsLook.fill, groups: accountsLook.groups.map((g) => g.fill) }));
+    ok(accountsLook.groups.length >= 4 && accountsLook.groups.every((g) => g.mark === g.agent),
+      'and every agent’s group wears its mark', JSON.stringify(accountsLook.groups.map((g) => g.agent + ':' + g.mark)));
+    const accountWords = await s.page.evaluate(() => {
+      const walker = document.createTreeWalker(document.getElementById('accountList'), NodeFilter.SHOW_TEXT);
+      const parts = [];
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const host = node.parentElement;
+        if (!host || host.closest('.ds-tooltip') || !host.checkVisibility()) continue;
+        parts.push(node.textContent);
+      }
+      return parts.join(' ');
+    });
+    ok(!accountWords.includes(key) && !/\/(tmp|root|home|var)\//.test(accountWords) && !/\ba-[0-9a-f]{12}\b/.test(accountWords),
+      'and no key, folder or account id is written on it in words', oneLine(accountWords).slice(0, 200));
 
     // Rule 1 again, on the other page, and rule 2 on the admin cards.
     await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
@@ -9480,7 +9565,7 @@ async function homequiet() {
     holder = null;
     const again = spawnServer({ data: s.data, port: s.port });
     s.server = again.server; s.log = again.log; s.exited = again.exited;
-    await waitForHealth(s.url);
+    await waitForHealth(s.url, 25000, again);
     const recovered = await awaitHome(s.page, (h) => h.conn === 'live', 45000);
     ok(recovered.ok, 'and it is Live once the server is back', recovered.seen && recovered.seen.connText);
     ok(unexpected(s.errors, RESTART_NOISE).filter((e) => e.startsWith('pageerror')).length === 0, 'no page errors',

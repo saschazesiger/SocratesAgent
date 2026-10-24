@@ -212,13 +212,31 @@ export async function backupForm(prefix) {
 // prefixFor is the backup prefix of a data directory.
 export const prefixFor = (data) => 'e2e/' + basename(data) + '/';
 
-export async function waitForHealth(url, deadlineMs = 25000) {
+/**
+ * waitForHealth waits until the server at url answers its health check.
+ *
+ * Handed the server it started (`spawned`), it also waits until that server
+ * says it is listening there, and gives up as soon as it has exited: another
+ * suite on this machine - another worktree's, say - may hold the port, and
+ * then a healthy answer is that suite's server, not this one. An error for a
+ * port that was taken says so (`taken`), so a start can try another one.
+ */
+export async function waitForHealth(url, deadlineMs = 25000, spawned = null) {
   const until = Date.now() + deadlineMs;
+  const mine = spawned ? 'open ' + url + ' in your browser' : '';
   while (Date.now() < until) {
-    try {
-      const res = await fetch(url + '/api/health');
-      if (res.ok) return;
-    } catch { /* not up yet */ }
+    if (spawned && (spawned.server.exitCode !== null || spawned.server.signalCode !== null)) {
+      const said = oneLog(spawned.log);
+      const err = new Error('the server at ' + url + ' exited before it served: ' + said);
+      err.taken = /address already in use/.test(said);
+      throw err;
+    }
+    if (!spawned || spawned.log.join('').includes(mine)) {
+      try {
+        const res = await fetch(url + '/api/health');
+        if (res.ok) return;
+      } catch { /* not up yet */ }
+    }
     await new Promise((r) => setTimeout(r, 120));
   }
   throw new Error('the server never became healthy at ' + url);
@@ -232,6 +250,11 @@ export async function waitForHealth(url, deadlineMs = 25000) {
 const PORT_LOW = 5000;
 const PORT_HIGH = 5099;
 const claimed = new Set();
+// Where this run starts looking. Another suite on the machine walks the same
+// range, and two that both start at the bottom take the same ports at the
+// same moments; one that loses the race finds out from its server's own log
+// (waitForHealth) and moves on.
+const PORT_FIRST = process.pid % (PORT_HIGH - PORT_LOW + 1);
 
 function canListen(port) {
   return new Promise((resolve) => {
@@ -242,7 +265,8 @@ function canListen(port) {
 }
 
 export async function freePort() {
-  for (let port = PORT_LOW; port <= PORT_HIGH; port += 1) {
+  for (let i = 0; i <= PORT_HIGH - PORT_LOW; i += 1) {
+    const port = PORT_LOW + ((PORT_FIRST + i) % (PORT_HIGH - PORT_LOW + 1));
     if (claimed.has(port)) continue;
     if (await canListen(port)) {
       claimed.add(port);
@@ -480,16 +504,25 @@ export async function start(options = {}) {
   const live = !!options.live;
   const data = scratchDir('socrates-data-');
   mkdirSync(join(data, 'workspaces'), { recursive: true });
-  const port = options.port || await freePort();
-  const url = 'http://127.0.0.1:' + port;
-  const spawned = spawnServer({ data, port, live, env: options.env });
-  await waitForHealth(url).catch(async (err) => {
+  let port = options.port || await freePort();
+  let url = 'http://127.0.0.1:' + port;
+  let spawned = null;
+  for (let attempt = 1; ; attempt += 1) {
+    spawned = spawnServer({ data, port, live, env: options.env });
+    const failed = await waitForHealth(url, 25000, spawned).then(() => null, (err) => err);
+    if (!failed) break;
+    // A server that never served is not left running for the rest of the
+    // run, where its pipes would keep the run from ever ending.
+    spawned.server.kill('SIGKILL');
+    if (failed.taken && !options.port && attempt < 5) {
+      port = await freePort();
+      url = 'http://127.0.0.1:' + port;
+      continue;
+    }
     // A server that never answered says why in its own log, and the run is
     // the only place that log is ever seen.
-    const exited = await Promise.race([spawned.exited, wait(500).then(() => null)]);
-    throw new Error(err.message + (exited ? ' (it exited: ' + JSON.stringify(exited) + ')' : '')
-      + '; its log ends: ' + oneLog(spawned.log));
-  });
+    throw new Error(failed.message + '; its log ends: ' + oneLog(spawned.log));
+  }
 
   const browser = await chromium.launch({
     executablePath: CHROME,
@@ -537,7 +570,7 @@ export async function start(options = {}) {
     if (between) await between();
     const again = spawnServer({ data, port, live, env: { ...(options.env || {}), ...env } });
     s.server = again.server; s.log = again.log; s.exited = again.exited;
-    await waitForHealth(url);
+    await waitForHealth(url, 25000, again);
     return outcome;
   };
 
@@ -677,6 +710,12 @@ export function skipScenario(name, title, why) {
 
 /** finish sweeps anything the assertions did not catch and prints the totals. */
 export function finish() {
+  // A server still running here belongs to a scenario that is over; left
+  // alone, its pipes would keep the run from ending.
+  for (const child of servers) {
+    console.log('NOTE a server was still running at the end of the run (' + child.spawnargs.slice(1).join(' ') + ')');
+    try { child.kill('SIGKILL'); } catch { /* already gone */ }
+  }
   cleanupBuild();
   console.log('\n' + '-'.repeat(66));
   for (const sc of totals.scenarios) {
