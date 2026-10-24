@@ -237,14 +237,16 @@ export async function waitForHealth(url, deadlineMs = STARTUP, spawned = null) {
       throw err;
     }
     if (!spawned || spawned.log.join('').includes(mine)) {
+      // Each look is bounded: one request that hangs must not spend the
+      // whole wait.
       try {
-        const res = await fetch(url + '/api/health');
+        const res = await fetch(url + '/api/health', { signal: AbortSignal.timeout(3000) });
         if (res.ok) return;
       } catch { /* not up yet */ }
     }
     await new Promise((r) => setTimeout(r, 120));
   }
-  throw new Error('the server never became healthy at ' + url);
+  throw new Error('the server never became healthy at ' + url + ' in ' + Math.round(deadlineMs / 1000) + ' s');
 }
 
 // Ports 5000-5099 are this machine's budget for browser runs. Which of them
