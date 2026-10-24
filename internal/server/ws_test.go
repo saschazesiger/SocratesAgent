@@ -881,43 +881,86 @@ func TestTerminalSlowReaderStaysFlat(t *testing.T) {
 	e := newSessionEnv(t)
 	id := e.shellSession(100, 30)
 
-	slow := e.dialWSRaw(id, "viewer=tab-slow&cols=100&rows=30", nil) // Never read.
-	_ = slow
+	// Never read, and on a socket that holds almost nothing: its writer is
+	// stuck within a frame or two, and from then on the ring is the only
+	// place this viewer's bytes can go.
+	narrow := e.narrowServer()
+	conn, _, err := websocket.Dial(context.Background(),
+		"ws"+strings.TrimPrefix(narrow.URL, "http")+"/api/sessions/"+id+"/ws?viewer=tab-slow&cols=100&rows=30",
+		e.dialOptions(nil))
+	if err != nil {
+		t.Fatalf("dial the slow viewer: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.CloseNow() })
 	fast := e.dialWS(id, "viewer=tab-fast&cols=100&rows=30")
 	fast.hello()
 
-	// Rather more than the ring holds, as fast as the shell can print it.
-	// The marker is split in the command line so that the shell's echo of what
-	// was typed cannot satisfy the wait: only the loop's own output can.
-	fast.send(1, "i=0; while [ $i -lt 40000 ]; do echo \"line $i xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"; i=$((i+1)); done; echo spin-d''one\r")
-	fast.waitFor("spin-done")
-	e.waitForPane(id, "spin-done")
-
-	// The slow viewer's terminal is still attached and its ring is still one
-	// megabyte: it fell behind in a fixed allocation instead of in the heap.
-	var ring *termViewer
-	for _, tv := range e.srv.hub.forSession(id) {
-		if tv.viewerID == "tab-slow" {
-			ring = tv
+	var slow *termViewer
+	var viewer *termux.Viewer
+	for wait := time.Now().Add(10 * time.Second); viewer == nil && time.Now().Before(wait); time.Sleep(20 * time.Millisecond) {
+		for _, tv := range e.srv.hub.forSession(id) {
+			if tv.viewerID == "tab-slow" {
+				slow = tv
+			}
+		}
+		if slow != nil {
+			viewer = slow.current()
 		}
 	}
-	if ring == nil {
-		t.Fatal("the slow viewer was forgotten")
-	}
-	viewer := ring.current()
 	if viewer == nil {
-		t.Fatal("the slow viewer lost its terminal")
+		t.Fatal("the slow viewer never got its terminal")
 	}
-	head, base := viewer.Ring().Head(), viewer.Ring().Base()
-	if head-base > 1<<20 {
+
+	// More than the ring holds has to reach this viewer's terminal, and a
+	// flood from the pane cannot be relied on for that. tmux stops sending a
+	// client that falls behind and repaints it once the flood is over, so
+	// what a burst of forty thousand lines gives a viewer depends on how fast
+	// the machine runs the shell against this process: some 800 KB at best,
+	// which is less than the ring, and under 100 KB on a busy runner, reading
+	// and stalled viewer alike. A repaint tmux always sends whole. So the
+	// screen is made dear to paint, every cell its own two colours, and the
+	// slow viewer's terminal is repainted until its ring has had more than it
+	// holds - which a reader that waited for the socket would never let it
+	// have.
+	var paint strings.Builder
+	paint.WriteString("\x1b[H\x1b[2J")
+	for cell := 0; cell < 28*100; cell++ {
+		fmt.Fprintf(&paint, "\x1b[38;5;%dm\x1b[48;5;%dm%c", 16+cell%216, 16+(cell*7+100)%216, 'A'+cell%26)
+		if cell%100 == 99 {
+			paint.WriteString("\x1b[0m\r\n")
+		}
+	}
+	painted := filepath.Join(t.TempDir(), "paint")
+	if err := os.WriteFile(painted, []byte(paint.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fast.send(1, "cat '"+painted+"'; echo paint''ed\r")
+	fast.waitFor("painted")
+
+	ring := viewer.Ring()
+	repaints := 0
+	for deadline := time.Now().Add(20 * time.Second); ring.Base() == 0 && time.Now().Before(deadline); repaints++ {
+		if out, err := e.tmux("refresh-client", "-t", viewer.TTY()); err != nil {
+			t.Fatalf("repaint the slow viewer: %v: %s", err, out)
+		}
+	}
+	head, base := ring.Head(), ring.Base()
+	if base == 0 {
+		t.Fatalf("the slow viewer's terminal took only %d bytes in %d repaints; its reader waited for a socket nobody reads",
+			head, repaints)
+	}
+	// It fell behind in a fixed allocation instead of in the heap.
+	if head-base > termux.RingSize {
 		t.Fatalf("the ring holds %d bytes, which is more than it was given", head-base)
 	}
-	// The pane went on producing while nobody read that socket, which is the
-	// point: the reader's only job is to append, and it never waits for a
-	// viewer. How much tmux renders for a client that is behind is tmux's
-	// business, so the assertion is that it kept going and stayed bounded.
-	if head < 100000 {
-		t.Fatalf("the pane produced only %d bytes; the stalled viewer held it up", head)
+
+	// Neither the pane nor the other viewer was held up, and the slow viewer
+	// still has its terminal.
+	fast.send(2, "echo still-f''ine\r")
+	fast.waitFor("still-fine")
+	e.waitForPane(id, "still-fine")
+	if slow.current() == nil {
+		t.Fatal("the slow viewer lost its terminal")
 	}
 }
 
