@@ -1331,10 +1331,7 @@ function stubMachine() {
 
 async function tmuxcard() {
   const stub = stubMachine();
-  const s = await start({
-    viewport: { width: 1280, height: 900 },
-    env: { PATH: stub + ':' + process.env.PATH },
-  });
+  const s = await start({ viewport: { width: 1280, height: 900 }, pathFirst: stub });
   try {
     await setup(s.page, s.url);
     await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });

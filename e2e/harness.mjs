@@ -303,7 +303,11 @@ function ambient(live) {
   return out;
 }
 
-export function spawnServer({ data, port, live = false, env = {} }) {
+// pathFirst is a directory a scenario puts in front of the fakes - a stub
+// tmux - and never instead of them: a PATH of its own in env would hand the
+// server the machine's real CLIs, which a fake run must never find.
+export function spawnServer({ data, port, live = false, env = {}, pathFirst = '' }) {
+  if ('PATH' in env) throw new Error('a scenario puts a directory on PATH with pathFirst, never a PATH of its own');
   const { exe, bin } = binaries(live);
   const server = spawn(exe, ['-addr', '127.0.0.1:' + port, '-data', data], {
     env: {
@@ -313,7 +317,7 @@ export function spawnServer({ data, port, live = false, env = {} }) {
       // carry over into its backup.json.
       SOCRATES_S3_BUCKET: '',
       // A live run must find the real CLIs, so the fakes stay off its PATH.
-      PATH: (bin ? bin + ':' : '') + process.env.PATH,
+      PATH: [pathFirst, bin, process.env.PATH].filter(Boolean).join(':'),
       // Sessions get their working directory under the run's own data
       // directory. Without this the workspace root is derived from HOME, which
       // a live run does not override - and a real agent turned loose in
@@ -481,7 +485,7 @@ export async function start(options = {}) {
   let url = 'http://127.0.0.1:' + port;
   let spawned = null;
   for (let attempt = 1; ; attempt += 1) {
-    spawned = spawnServer({ data, port, live, env: options.env });
+    spawned = spawnServer({ data, port, live, env: options.env, pathFirst: options.pathFirst });
     const failed = await waitForHealth(url, STARTUP, spawned).then(() => null, (err) => err);
     if (!failed) break;
     // A server that never served is not left running for the rest of the
@@ -541,7 +545,7 @@ export async function start(options = {}) {
     const outcome = await Promise.race([s.exited, wait(9000).then(() => 'timeout')]);
     if (outcome === 'timeout') { s.server.kill('SIGKILL'); await s.exited; }
     if (between) await between();
-    const again = spawnServer({ data, port, live, env: { ...(options.env || {}), ...env } });
+    const again = spawnServer({ data, port, live, env: { ...(options.env || {}), ...env }, pathFirst: options.pathFirst });
     s.server = again.server; s.log = again.log; s.exited = again.exited;
     await waitForHealth(url, STARTUP, again);
     return outcome;
