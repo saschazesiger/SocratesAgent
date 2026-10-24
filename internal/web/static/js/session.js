@@ -1266,7 +1266,13 @@ function rowFacts(session) {
       facts.push('Open: ' + outcome.todos.join(' · '));
     }
   }
-  if (session.model) facts.push(session.model + (session.effort ? ' · ' + session.effort : ''));
+  // The model and effort by the names the sheet and the composer give them
+  // ("Sonnet · High"), not the ids the CLI was started with.
+  if (session.model) {
+    const model = harnesses.modelOf(session.harness, session.model);
+    facts.push((model ? model.label || model.id : session.model)
+      + (session.effort ? ' · ' + harnesses.effortLabel(session.effort) : ''));
+  }
   if (session.cli_session_state && session.cli_session_state !== 'none') {
     facts.push('conversation ' + session.cli_session_state);
   }
@@ -2973,17 +2979,20 @@ function applyKeyBar() {
 // message lying over Esc and Ctrl is a key bar a thumb cannot use, and an
 // error stays until it is closed (DS --ds-toast-bottom, "to stay above a
 // bar pinned there"). Only what this set is taken back.
-let toastsLifted = false;
+// The chat view lifts them above its dock the same way (chatview.js), so
+// what this gave is remembered by value: a chat shown after a Shell keeps
+// the lift it set itself.
+let toastsLifted = '';
 function placeToasts() {
   const region = document.getElementById('toasts');
   if (!region) return;
   const height = dom.keybar.hidden ? 0 : dom.keybar.offsetHeight;
   if (height) {
-    region.style.setProperty('--ds-toast-bottom', 'calc(' + height + 'px + var(--ds-space-3))');
-    toastsLifted = true;
+    toastsLifted = 'calc(' + height + 'px + var(--ds-space-3))';
+    region.style.setProperty('--ds-toast-bottom', toastsLifted);
   } else if (toastsLifted) {
-    region.style.removeProperty('--ds-toast-bottom');
-    toastsLifted = false;
+    if (region.style.getPropertyValue('--ds-toast-bottom') === toastsLifted) region.style.removeProperty('--ds-toast-bottom');
+    toastsLifted = '';
   }
 }
 

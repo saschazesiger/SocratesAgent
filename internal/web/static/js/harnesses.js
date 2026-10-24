@@ -11,7 +11,7 @@
 // server, which is the real boundary: a stale copy degrades to "the server
 // refuses that directory", never to a session in the wrong place.
 
-import { api, el, toast } from './api.js';
+import { api, el, infoTip, toast } from './api.js';
 import * as accounts from './accounts.js';
 import { combobox, dropdown } from './combobox.js';
 import { dictated } from './keyboard.js';
@@ -398,7 +398,7 @@ export function settingsForm(options = {}) {
   const dirPath = el('input', {
     class: 'ds-input', type: 'text', id: id('DirPath'), spellcheck: 'false', 'aria-label': 'Directory path',
     autocorrect: 'off', autocapitalize: 'none', placeholder: '/srv/projects/socrates',
-    'aria-describedby': id('DirHint'),
+    'aria-describedby': id('DirHint'), enterkeyhint: 'go',
   });
   const dirHint = el('small', { class: 'ds-field__hint so-break', id: id('DirHint') });
   const dirField = el('div', { class: 'ds-field', id: id('DirField') },
@@ -614,8 +614,12 @@ export function settingsForm(options = {}) {
   function renderDir() {
     // `false`: the field is being told what was chosen, not told to choose.
     dirPicker.setValue(dirValue(pick.mode, pick.workdir), false);
-    if (pick.mode === DYNAMIC) dirHint.textContent = dynamicPreview(pick.harness);
-    else if (pick.mode === PRESET) dirHint.textContent = pick.workdir;
+    // Where a dynamic session's folder will be is a path nobody reads on the
+    // way to a chat: the line says what it is, its "i" the path.
+    if (pick.mode === DYNAMIC) {
+      dirHint.replaceChildren('A new folder of its own, made when it starts.',
+        infoTip([dynamicPreview(pick.harness)], { label: 'The folder it will get' }));
+    } else if (pick.mode === PRESET) dirHint.textContent = pick.workdir;
     // The path is in the field right above: the hint says what it has to be.
     else dirHint.textContent = 'An absolute path on this machine.';
   }
@@ -773,13 +777,25 @@ export function settingsForm(options = {}) {
       }
       const entry = harness(pick.harness);
       if (entry) {
-        if (entry.error) parts.push(entry.error);
+        // The program's own error is detail (details() below); the line
+        // says what it means here.
+        if (entry.error) {
+          parts.push(entry.installed
+            ? entry.label + ' could not list its models. You can still type a model’s id.'
+            : entry.label + ' is not installed on this machine.');
+        }
         if (entry.installed && !entry.static && !defaultModelFor(entry.id) && !pick.model && !modelField.hidden) {
           parts.push('Pick a model - ' + entry.label + ' does not name a default.');
         }
       }
       if (stale()) parts.push('Showing the programs from your last visit.');
       return parts;
+    },
+
+    /** details is the technical side of notes(): what goes behind its "i". */
+    details() {
+      const entry = harness(pick.harness);
+      return entry && entry.error ? [entry.error] : [];
     },
 
     /**
@@ -906,7 +922,8 @@ export async function openNewSessionSheet() {
     if (blocked && snap.sessions_error) parts.push(snap.sessions_error);
     parts.push(...form.notes());
     const words = parts.join(' ');
-    if (hintText) hintText.textContent = words;
+    const detail = form.details();
+    if (hintText) hintText.replaceChildren(words, ...(words && detail.length ? [infoTip(detail, { label: 'Details' })] : []));
     hint.hidden = !words;
     start.disabled = !!form.missing() || blocked;
   }
