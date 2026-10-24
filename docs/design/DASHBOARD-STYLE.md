@@ -68,10 +68,10 @@ shows it. `embed_test.go` fails on a page that asks for it again.
 
 | WP | Area | Files |
 |---|---|---|
-| 1 | Frame: top bar, drawer, session list, folders, banners, options and usage dialogs | `session.js` (frame parts), `storage.js`, `so-frame.css`, `index.html` |
+| 1 | Frame: top bar, drawer, session list, folders, banners, options and usage dialogs | `session.js` (frame parts), `backup.js` (the backup notice), `so-frame.css`, `index.html` |
 | 2 | Stage: pane, cover, notice, ticker, key bar, transfer, recording, copy, IDE pane | `term.js`, `keybar.js`, `keyboard.js`, `transfer.js`, `dictate.js`, `assist.js`, `session.js` (stage parts), `so-stage.css` |
 | 3 | Home | `home.js`, `so-home.css` |
-| 4 | Question dialog | `question.js`, `so-question.css` |
+| 4 | Question dialog | `askdialog.js`, `so-question.css` |
 | 5 | PreStart | `prestart.js`, `so-prestart.css` |
 | 6 | New-session sheet and settings form | `harnesses.js`, `combobox.js`, `so-sheet.css` |
 | 7 | Admin | `admin.html`, `admin.js`, `so-admin.css` |
@@ -88,5 +88,5 @@ front end:
   stylesheet, from tokens only.
 - Every view of the package looks right at 1280×800 and 390×844, in touch mode too, with no console error.
 - `go test ./internal/web/... ./internal/server/...` and the package's e2e scenarios pass
-  (`SOCRATES_E2E_CHROME=/opt/google/chrome/chrome node e2e/run.mjs <scenario>`).
+  (`node e2e/run.mjs <scenario>`; set `SOCRATES_E2E_CHROME` only to use another Chromium, e2e/README.md).
 - After a visible change the README pictures are taken again (`node e2e/shots.mjs`).
