@@ -378,6 +378,23 @@ func TestChatSurvivesAServerRestartMidTurn(t *testing.T) {
 	}
 }
 
+// A turn nobody saw is still unread after a restart: the chat's host reports
+// the moment it is reattached, before the detector would have read back the
+// marks the last run left.
+func TestAFinishedChatIsStillUnreadAfterARestart(t *testing.T) {
+	c := newChatEnv(t, time.Hour)
+	id := c.create(t)
+	c.send(t, id, "m1", "hello")
+	c.waitJournal(t, id, 10*time.Second, "the reply", turnsEnded(1))
+	if a := c.waitActivity(t, id, termux.StateIdle); !a.Unread {
+		t.Fatalf("a finished turn nobody looked at: %+v", a)
+	}
+	c.restart(t, 100*time.Millisecond, nil)
+	if a := c.waitActivity(t, id, termux.StateIdle); !a.Unread {
+		t.Fatalf("after the restart the turn reads as seen: %+v", a)
+	}
+}
+
 // The server is down for thirty seconds while a turn finishes without it.
 func TestChatTurnFinishesWhileTheServerIsDown(t *testing.T) {
 	if testing.Short() {

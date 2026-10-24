@@ -154,6 +154,10 @@ func TestALostChatFolderIsRebuiltFromTheTranscript(t *testing.T) {
 				}
 				time.Sleep(20 * time.Millisecond)
 			}
+			// The first turn is read, so that an unread mark after the
+			// rebuild is one the rebuild made: a mark from before a restart
+			// is kept, as work nobody has seen.
+			c.srv.manager.MarkRead(id)
 			c.restart(t, 0, func() {
 				c.stopHosts(t)
 				if err := os.RemoveAll(agenthost.ChatDir(c.data, id)); err != nil {

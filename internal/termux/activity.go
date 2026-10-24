@@ -433,6 +433,11 @@ func (m *Manager) ReportActivity(id string, state State, note string, asked bool
 		return
 	}
 	a := m.act
+	// A chat reports from the moment its host is reattached, which is before
+	// the detector is started (StartSessions). The marks the last run left
+	// come back first: a track made without them would call a turn nobody
+	// saw read, and the first mark saved would write over all the others.
+	a.load()
 	a.mu.Lock()
 	now := a.now()
 	tr := a.trackOf(id)
