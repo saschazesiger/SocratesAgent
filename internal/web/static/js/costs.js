@@ -45,6 +45,7 @@ const state = {
   filters: { harness: '', profile: '', profileSet: false, project: '', model: '' },
   slot: new Map(), // model -> series slot, by all-time cost
   names: new Map(), // model id -> how the page names it (modelNames)
+  accounts: new Map(), // account id -> how the page names it (accountNames)
   timer: null,
   loading: false,
   expanded: new Set(),
@@ -65,6 +66,16 @@ function moneyAxis(v) {
   if (v >= 1000) return '$' + (v / 1000).toFixed(v >= 10000 ? 0 : 1).replace(/\.0$/, '') + 'K';
   if (v >= 10 || v === 0) return '$' + Math.round(v);
   return '$' + v.toFixed(v < 1 ? 2 : 1).replace(/\.0+$/, '');
+}
+
+// axisMoney is a tick's label: below a dollar a step, as many decimals as
+// the step needs, so that a chart whose biggest day is a cent does not say
+// "$0.01" at three ticks (moneyAxis rounds to cents).
+function axisMoney(v, step) {
+  if (step >= 1 || v === 0) return moneyAxis(v);
+  let digits = 2;
+  while (digits < 6 && Math.abs(Math.round(step * 10 ** digits) - step * 10 ** digits) > 1e-6) digits += 1;
+  return '$' + v.toFixed(digits).replace(/(\.\d\d\d*?)0+$/, '$1');
 }
 
 // tokens is the compact count: 950, 12.3K, 4.1M, 13.6B.
@@ -145,6 +156,29 @@ function modelNames(rows) {
 
 function modelName(model) {
   return state.names.get(model) || model;
+}
+
+// accountNames names each account with the program it belongs to ("Claude
+// Code · Default"): every agent has a Default account, and three rows and
+// three filter entries that all said "Default" could not be told apart. A
+// key that spans programs - the conversations from before accounts, filed
+// under the profile they ran in - keeps its plain name.
+function accountNames(rows) {
+  const agents = new Map();
+  for (const r of rows) {
+    if (!agents.has(r.conv.profile)) agents.set(r.conv.profile, new Set());
+    agents.get(r.conv.profile).add(r.conv.harness);
+  }
+  const named = new Map();
+  for (const [id, set] of agents) {
+    const one = set.size === 1 ? [...set][0] : '';
+    named.set(id, (one ? (HARNESS[one] || one) + ' · ' : '') + profileLabel(id));
+  }
+  return named;
+}
+
+function accountName(id) {
+  return state.accounts.get(id) || profileLabel(id);
 }
 
 function convLabel(conv) {
@@ -313,7 +347,7 @@ function drawFilters() {
   fillSelect($('fHarness'), 'harness',
     seen((r) => r.conv.harness).sort(byCost((r) => r.conv.harness)).map((h) => [h, HARNESS[h] || h]), 'All programs');
   fillSelect($('fProfile'), 'profile',
-    seen((r) => r.conv.profile).sort(byCost((r) => r.conv.profile)).map((p) => [p, profileLabel(p)]), 'All accounts');
+    seen((r) => r.conv.profile).sort(byCost((r) => r.conv.profile)).map((p) => [p, accountName(p)]), 'All accounts');
   fillSelect($('fProject'), 'project',
     seen((r) => r.conv.project).sort(byCost((r) => r.conv.project)).map((p) => [p, projectLabel(p)]), 'All projects');
   fillSelect($('fModel'), 'model',
@@ -363,7 +397,9 @@ function drawTiles(filtered, days) {
   figure('tToday', todayCost);
   $('tTodayNote').textContent = dayShort.format(now);
   figure('tMonth', monthCost);
-  $('tMonthNote').textContent = pace ? 'on pace for ' + moneyAxis(pace) : monthLong.format(now);
+  // Under a dollar in cents, as the tiles say it: "on pace for $0" beside a
+  // month of <$0.01 read as nothing spent.
+  $('tMonthNote').textContent = pace ? 'on pace for ' + (pace < 1 ? money(pace) : moneyAxis(pace)) : monthLong.format(now);
 }
 
 // ------------------------------------------------------------------ chart
@@ -450,10 +486,15 @@ function drawChart(filtered, range) {
   const height = px(box, '--so-chart-height', 240);
   const gapPx = px(box, '--so-chart-gap', 2);
   const radius = px(box, '--ds-radius-xs', 4);
-  const m = { top: 12, right: 8, bottom: 26, left: 52 };
+  const { top, step } = niceTicks(peak);
+  const ticks = [];
+  for (let v = 0; v <= top + step / 2; v += step) ticks.push(v);
+  // The labels' column is as wide as its longest label: a step of a
+  // twentieth of a cent ("$0.0005") is wider than one of dollars.
+  const widest = Math.max(...ticks.map((v) => axisMoney(v, step).length));
+  const m = { top: 12, right: 8, bottom: 26, left: Math.max(52, 12 + Math.ceil(widest * 6.5)) };
   const plotW = width - m.left - m.right;
   const plotH = height - m.top - m.bottom;
-  const { top, step } = niceTicks(peak);
   const y = (v) => m.top + plotH - (v / top) * plotH;
   const band = plotW / Math.max(1, list.length);
   const barW = Math.max(2, Math.min(24, band - 2));
@@ -462,11 +503,11 @@ function drawChart(filtered, range) {
     'aria-label': `${$('chartTitle').textContent}: ${$('chartSub').textContent}` });
   const hover = svg('rect', { x: 0, y: m.top, width: band, height: plotH, class: 'so-chart__hover', visibility: 'hidden' });
   root.append(hover);
-  for (let v = 0; v <= top + step / 2; v += step) {
+  for (const v of ticks) {
     const yy = Math.round(y(v)) + 0.5;
     root.append(svg('line', { x1: m.left, x2: width - m.right, y1: yy, y2: yy, class: v === 0 ? 'so-chart__base' : 'so-chart__grid' }));
     const label = svg('text', { x: m.left - 8, y: yy + 4, 'text-anchor': 'end', class: 'so-chart__axis' });
-    label.textContent = moneyAxis(v);
+    label.textContent = axisMoney(v, step);
     root.append(label);
   }
 
@@ -640,7 +681,7 @@ function drawTables(filtered) {
   });
   table('tProfile', groupBy(filtered, (r) => r.conv.profile), {
     column: 'Account',
-    name: (g) => profileLabel(g.key),
+    name: (g) => accountName(g.key),
     onPick: (g) => toggleFilter('profile', g.key), picked: (g) => f.profileSet && f.profile === g.key,
   });
   table('tConv', groupBy(filtered, (r) => r.conv.key), {
@@ -662,6 +703,7 @@ function drawTables(filtered) {
 function render() {
   if (!state.data) return;
   state.names = modelNames(state.rows);
+  state.accounts = accountNames(state.rows);
   $('costsLoading').hidden = true;
   const none = state.rows.length === 0;
   $('costsNone').hidden = !none;
