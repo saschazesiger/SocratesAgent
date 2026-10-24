@@ -804,8 +804,18 @@ export function lineHtml(entry, view) {
         l.from ? 'The next reply may take longer: the new account starts without the cached conversation.' : ''];
       return html`<div class="so-line" data-ds-key="${key}" data-kind="account" data-from="${l.from}" data-to="${l.to}">${raw(icon('user', 16))}<span class="so-line__text">${words}</span>${infoButton(about, 'About the switch')}</div>`;
     }
-    case 'model':
+    case 'model': {
+      // Only a change is a line: the same model by its name (an alias and
+      // its full id read the same) at the same effort says nothing. The
+      // chat's first event is measured against what it was started on.
+      const before = l.was ? { model: l.was, effort: l.wasEffort || '' } : (view.started ? view.started() : null);
+      const sameModel = !!before && !!before.model && view.modelLabel(before.model) === view.modelLabel(l.model);
+      // A chat started on its CLI's default effort is not changed by the
+      // CLI naming it.
+      const sameEffort = l.was ? (l.wasEffort || '') === (l.effort || '') : (!before || !before.effort || before.effort === l.effort);
+      if (sameModel && sameEffort) return '';
       return html`<div class="so-line" data-ds-key="${key}" data-kind="model">${raw(icon('cpu', 16))}<span class="so-line__text">${'Model: ' + view.modelLabel(l.model) + (l.effort ? ' · ' + view.effortLabel(l.effort) : '')}</span></div>`;
+    }
     case 'error':
       return html`<div class="ds-alert ds-alert--error so-line-alert" data-ds-key="${key}" data-kind="error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${l.text || 'Something went wrong.'}</span>${infoButton([l.code ? 'code ' + l.code : ''], 'Error details')}</div>`;
     case 'turn': {

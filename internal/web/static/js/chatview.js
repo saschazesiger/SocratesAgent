@@ -207,6 +207,8 @@ export function mountChat(ctx) {
       return listed ? (listed.label || listed.id) : model;
     },
     effortLabel: (effort) => harnesses.effortLabel(effort),
+    // What the chat was started on, for the first model line (lineHtml).
+    started: () => (session ? { model: session.model || '', effort: session.effort || '' } : null),
     // where is a path as the chat's folder sees it: relative to it when it
     // is inside it - an agent names files by their whole path, which on a
     // phone is mostly the folder's own name over and over - and whole
@@ -416,7 +418,9 @@ export function mountChat(ctx) {
     // the end, and was put back at it at every update (measured: a drag of
     // 8 or 25 px a move never got away from the end).
     const follow = stuck && !held;
-    const entries = chat.timeline.map((entry) => ({ key: entry.key, markup: entryMarkup(entry) }));
+    // A line with nothing to say (a model "change" to the same model) is
+    // no entry at all.
+    const entries = chat.timeline.map((entry) => ({ key: entry.key, markup: entryMarkup(entry) })).filter((one) => one.markup);
     const local = localEntries();
     if (synced && !chat.timeline.length && !local.length) {
       entries.push({ key: 'empty', markup: String(html`<div class="ds-empty so-chat__empty"><span class="ds-empty__disc" aria-hidden="true">${raw(agentMarkHtml(session.harness, 24))}</span><p class="ds-empty__title">${'Ask ' + harnesses.label(session.harness)}</p><p class="ds-empty__text">Write the first message below.</p></div>`) });

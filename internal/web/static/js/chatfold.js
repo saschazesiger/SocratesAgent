@@ -318,11 +318,19 @@ export function apply(chat, ev) {
       chat.pendingSwitch = null;
       line(chat, ev, { kind: 'account', from: ev.from || '', to: ev.to || '', reason: ev.reason || '' });
       break;
-    case 'model.changed':
+    case 'model.changed': {
+      // What the chat had before goes with the line: an event that only
+      // names the same model again - the CLI resolving the alias the chat
+      // started on ("sonnet" to its full id) at its first turn, and again
+      // after an account switch starts it anew - is no change to show
+      // (chatparts.js lineHtml).
+      const was = chat.model;
+      const wasEffort = chat.effort;
       if (ev.model) chat.model = ev.model;
       chat.effort = ev.effort || '';
-      line(chat, ev, { kind: 'model', model: ev.model || '', effort: ev.effort || '' });
+      line(chat, ev, { kind: 'model', model: ev.model || '', effort: ev.effort || '', was, wasEffort });
       break;
+    }
     case 'rate_limit':
       chat.rateLimits[ev.window || ''] = { used: Number(ev.used) || 0, resetsAt: Number(ev.resets_at) || 0, at: ev.at };
       chat.rev += 1;
