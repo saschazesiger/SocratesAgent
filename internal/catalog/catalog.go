@@ -123,8 +123,8 @@ var notes = map[string]string{
 	config.HarnessVSCode:   "VS Code in your browser, powered by code-server. Install code-server to enable it.",
 	config.HarnessShell:    "A plain login shell in the session's working directory.",
 	config.HarnessClaude:   "Anthropic's Claude Code, resumed by the session id Socrates chooses for it.",
-	config.HarnessCodex:    "OpenAI's Codex TUI, launched with its workspace already trusted.",
-	config.HarnessOpenCode: "The OpenCode TUI, with its own HTTP server password-protected per session.",
+	config.HarnessCodex:    "OpenAI's Codex, run as a chat over its app server.",
+	config.HarnessOpenCode: "OpenCode, run as a chat over its own password-protected server.",
 }
 
 // Store is the little of the database this package needs.

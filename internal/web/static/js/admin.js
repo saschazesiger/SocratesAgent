@@ -248,7 +248,7 @@ async function load() {
   refreshTunnel();
   if (new URLSearchParams(location.search).get('welcome')) {
     showNotice('Welcome. Check the terminal engine below, add your OpenRouter key if you want to '
-      + 'dictate, then head back to the sessions.', 'ok');
+      + 'dictate, sign the agents in under Accounts, then head back to the sessions.', 'ok');
   }
   const tunnelError = sessionStorage.getItem('socrates.tunnel_error');
   if (tunnelError) {
@@ -1060,11 +1060,20 @@ function optionValue(id, key) {
   return getPath(defaults, optionPath(id, key));
 }
 
-// alertEl is a DS alert built in script: '' is the neutral one.
-function alertEl(kind, text) {
+// alertEl is a DS alert built in script: '' is the neutral one. `details`,
+// the technical side (a program's own error), goes behind its "i".
+function alertEl(kind, text, details = []) {
   const glyph = kind === 'error' ? 'alertCircle' : kind === 'warning' ? 'alert' : 'info';
   return el('div', { class: 'ds-alert' + (kind ? ' ds-alert--' + kind : ''), role: kind === 'error' ? 'alert' : 'status' },
-    iconEl(glyph, 20), el('span', { class: 'ds-alert__text', text }));
+    iconEl(glyph, 20), el('span', { class: 'ds-alert__text', text }),
+    details.length ? infoTip(details, { label: 'Details' }) : null);
+}
+
+// programTrouble is what a program's error means here, in words; its own
+// message ("codex would not list its models: exit status 2") is the detail.
+function programTrouble(harness) {
+  if (!harness.installed) return harness.label + ' is not installed on this machine.';
+  return harness.label + ' could not list its models. The sheet takes a model’s id typed in, or starts it on its own default.';
 }
 
 function renderHarnesses(status) {
@@ -1143,7 +1152,7 @@ function harnessCard(harness) {
       el('span', { class: 'so-program__state' },
         harness.installed ? null : chipEl('warning', 'Not installed', 'missing'),
         facts.length ? infoTip(facts, { label: harness.label + ' details' }) : null)),
-    harness.error ? alertEl('error', harness.error) : null,
+    harness.error ? alertEl(harness.installed ? 'warning' : 'error', programTrouble(harness), [harness.error]) : null,
     harness.notes ? el('p', { class: 'ds-muted', text: harness.notes }) : null,
     el('label', { class: 'ds-check' }, toggle,
       el('span', { text: 'Offer ' + harness.label + ' in the new-session sheet' })),
