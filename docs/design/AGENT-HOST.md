@@ -909,11 +909,13 @@ Opening the stream of a chat whose host died with a turn running starts the reco
 
 **The chat view** (WP8, `internal/web/static/js/chat*.js`, `composer.js`, `askdialog.js`) folds
 the stream with the projection's rules (`chatfold.js`) and sends everything through one `Outbox`
-(`chatoutbox.js`, localStorage `socrates.outbox.chats`) with a fresh `client_id` per message,
-command, model change and answer, strictly in order (a model chosen offline is the model of the
-message written after it). Every tab of a browser shares that queue: each change is made to the
-queue as storage holds it at that moment and other tabs take it in on `storage`, so two tabs may
-both send an item, which its `client_id` makes one. Stop is the one action sent directly
+(`chatoutbox.js`, localStorage `socrates.outbox.chats.<id>`, one key per item) with a fresh
+`client_id` per message, command, model change and answer, strictly in order (a model chosen
+offline is the model of the message written after it). Every tab of a browser shares that queue:
+a tab writes only the item it adds or changes and removes only the one it sent - never the queue
+as a whole, which a tab whose view of storage lagged another's write would write back without
+that tab's item - and other tabs take it in on `storage`, so two tabs may both send an item,
+which its `client_id` makes one. Stop is the one action sent directly
 (DEVIATIONS, WP8). What the Outbox holds is on screen until the journal has it: a message as "Not
 sent yet" / "Sending", an answer on its question's card (and in the dialog) instead of a new
 "Answer", a plan answer on the plan card with its buttons held; an item the server refused for

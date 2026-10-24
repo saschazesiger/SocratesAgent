@@ -9830,6 +9830,13 @@ async function historyOf(s, id) {
 
 const userTexts = (history) => (history.messages || []).filter((m) => m.role === 'user').map((m) => m.text);
 
+// outboxOf is the chats' Outbox as this browser's storage holds it - one key
+// per item (net.js) - in the order its items go out.
+const outboxOf = (page) => page.evaluate(() => Object.keys(localStorage)
+  .filter((key) => key.startsWith('socrates.outbox.chats.'))
+  .map((key) => JSON.parse(localStorage.getItem(key)))
+  .sort((a, b) => (a.seq - b.seq) || (a.createdAt - b.createdAt)));
+
 // awaitChat polls the summary until `test` holds, and answers the last one
 // either way.
 async function awaitChat(s, id, test, timeout = 20000) {
@@ -10300,8 +10307,8 @@ async function chatoffline() {
     await say(page, 'written in a tunnel');
     const local = await page.waitForSelector('#chat .so-msg[data-role="user"][data-state="local"] .so-msg__chip', { timeout: 15000 })
       .then((n) => n.innerText(), () => '');
-    const kept = await page.evaluate(() => JSON.parse(localStorage.getItem('socrates.outbox.chats') || '[]')
-      .map((item) => item.payload.text));
+    const kept = (await outboxOf(page))
+      .map((item) => item.payload.text);
     ok(/Not sent yet/.test(local) && kept.includes('written in a tunnel'),
       'a message written offline is on screen as not sent yet, and kept in this browser', JSON.stringify({ local, kept }));
     const said = await page.$eval('#chat .so-chat__state', (n) => n.innerText).catch(() => '');
@@ -10312,7 +10319,7 @@ async function chatoffline() {
     const arrived = await awaitLog(page, 'you said: written in a tunnel', 30000);
     await awaitChat(s, id, idle);
     const once = userTexts(await historyOf(s, id)).filter((t) => t === 'written in a tunnel').length;
-    const empty = await page.evaluate(() => JSON.parse(localStorage.getItem('socrates.outbox.chats') || '[]').length);
+    const empty = (await outboxOf(page)).length;
     ok(arrived && once === 1 && empty === 0, 'back online it is delivered, exactly once, and the outbox is empty',
       JSON.stringify({ arrived, once, empty }));
 
@@ -10348,8 +10355,8 @@ async function chatoffline() {
     await page.route('**/api/chats/*/messages', (route) => route.abort('internetdisconnected'));
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#home:not([hidden])', { timeout: 20000 });
-    const still = await page.evaluate(() => JSON.parse(localStorage.getItem('socrates.outbox.chats') || '[]')
-      .map((item) => item.payload.text));
+    const still = (await outboxOf(page))
+      .map((item) => item.payload.text);
     await page.unroute('**/api/chats/*/messages');
     await openChat(page, id);
     await page.evaluate(() => window.dispatchEvent(new Event('online')));
@@ -10394,8 +10401,8 @@ async function chatoffline() {
     await other.waitForSelector('#chat .so-msg[data-role="user"][data-state="local"]', { timeout: 15000 });
     await say(page, 'from the first tab');
     await page.waitForSelector('#chat .so-msg[data-role="user"][data-state="local"]', { timeout: 15000 });
-    const queuedTabs = await page.evaluate(() => JSON.parse(localStorage.getItem('socrates.outbox.chats') || '[]')
-      .map((item) => item.payload.text));
+    const queuedTabs = (await outboxOf(page))
+      .map((item) => item.payload.text);
     await other.close();
     await s.context.setOffline(false);
     await page.evaluate(() => window.dispatchEvent(new Event('online')));
@@ -10419,8 +10426,8 @@ async function chatoffline() {
     await page.click('.so-model-menu [data-model="' + target + '"]');
     const shownModel = await page.$eval('#chat .so-composer__model-text', (n) => n.textContent);
     await say(page, 'after the model');
-    const queuedKinds = await page.evaluate(() => JSON.parse(localStorage.getItem('socrates.outbox.chats') || '[]')
-      .map((item) => item.payload.kind));
+    const queuedKinds = (await outboxOf(page))
+      .map((item) => item.payload.kind);
     await s.context.setOffline(false);
     await page.evaluate(() => window.dispatchEvent(new Event('online')));
     await awaitLog(page, 'you said: after the model', 30000);
@@ -10479,7 +10486,7 @@ async function chatoffline() {
     await page.click('#chat .so-line[data-kind="command"][data-state="failed"] [data-action="outbox-drop"]').catch(() => {});
     const dismissed = await page.waitForSelector('#chat .so-line[data-kind="command"][data-state="failed"]', { state: 'detached', timeout: 5000 })
       .then(() => true, () => false);
-    const leftOver = await page.evaluate(() => JSON.parse(localStorage.getItem('socrates.outbox.chats') || '[]').length);
+    const leftOver = (await outboxOf(page)).length;
     ok(/Not run/.test(notRun) && dismissed && leftOver === 0, 'a command the agent refused says it did not run, until it is dismissed',
       oneLine(JSON.stringify({ notRun, dismissed, leftOver })));
     await awaitChat(s, id, idle);

@@ -748,15 +748,26 @@ export class LiveStream {
 // idempotency key, so a retry that turns out to be a duplicate is a no-op
 // rather than a second message.
 //
-// Every tab of the browser shares the one queue in storage. A change is made
-// to the queue as storage holds it at that moment, never by writing a tab's
-// own copy over it, which would drop what another tab had just added; and
-// what another tab writes is taken in when the browser says so (`storage`).
-// Two tabs may then both send the same item, which its idempotency key makes
-// one.
+// Every tab of the browser shares the queue in storage, one key per item
+// (`socrates.outbox.<name>.<id>`). One array under one key was a
+// read-modify-write, and a tab's view of local storage can lag a write
+// another tab has just made: a tab whose send had just failed wrote its copy
+// of the queue back with the attempt counted, over a message the other tab
+// had queued a moment before, and that message was gone (2 of 20 messages
+// queued from two tabs at once). Now a tab writes only the item it adds or
+// changes and removes only the one it sent, so nothing it writes can take
+// another tab's item with it. What another tab writes is taken in when the
+// browser says so (`storage`). Two tabs may both send the same item, which
+// its idempotency key makes one - and one of them may then put back an item
+// the other has just sent, which goes out once more as the same no-op.
+//
+// The items go out in the order they were queued: `seq` is one more than the
+// highest a tab can see when it adds one, so a tab's own items keep their
+// order, and two tabs' items that were queued at the same moment go in the
+// order of their times.
 export class Outbox {
   constructor(name, send) {
-    this.key = 'socrates.outbox.' + name;
+    this.prefix = 'socrates.outbox.' + name + '.';
     this.send = send;
     this.items = this.load() || [];
     this.listeners = new Set();
@@ -764,7 +775,7 @@ export class Outbox {
     this.running = false;
     onWake(() => this.pump());
     window.addEventListener('storage', (event) => {
-      if (event.key !== null && event.key !== this.key) return;
+      if (event.key !== null && !event.key.startsWith(this.prefix)) return;
       const stored = this.load();
       if (!stored) return;
       this.items = stored;
@@ -773,24 +784,51 @@ export class Outbox {
     });
   }
 
-  // load is the queue as storage holds it, or null when storage cannot be
-  // read at all (a private window): this tab's own copy is all there is then.
+  // load is the queue as storage holds it, in order, or null when storage
+  // cannot be read at all (a private window): this tab's own copy is all there
+  // is then.
   load() {
-    let raw;
-    try { raw = localStorage.getItem(this.key); } catch { return null; }
+    let store;
     try {
-      const parsed = raw ? JSON.parse(raw) : [];
-      return Array.isArray(parsed) ? parsed : [];
-    } catch { return []; }
+      store = window.localStorage;
+      if (!store) return null;
+    } catch { return null; }
+    try {
+      const keys = [];
+      for (let i = 0; i < store.length; i += 1) {
+        const key = store.key(i);
+        if (key && key.startsWith(this.prefix)) keys.push(key);
+      }
+      const items = [];
+      for (const key of keys) {
+        try {
+          const item = JSON.parse(store.getItem(key));
+          if (item && item.id) items.push(item);
+        } catch { /* a damaged entry is not an item */ }
+      }
+      return items.sort(inOrder);
+    } catch { return null; }
   }
 
-  // change applies one edit to the queue as storage holds it now, writes it
-  // back and tells the listeners.
-  change(edit) {
+  // read is one item as storage holds it now, or null when it is not there
+  // any more - sent, or dropped, from this tab or another.
+  read(id) {
     const stored = this.load();
-    this.items = edit(stored || this.items);
-    if (!this.items.length) storageRemove(this.key);
-    else storageSet(this.key, JSON.stringify(this.items));
+    return (stored || this.items).find((item) => item.id === id) || null;
+  }
+
+  // write puts one item into storage (or takes it out, for null), then takes
+  // in the queue as storage holds it and tells the listeners.
+  write(id, item) {
+    const key = this.prefix + id;
+    if (item) storageSet(key, JSON.stringify(item));
+    else storageRemove(key);
+    const stored = this.load();
+    if (stored) this.items = stored;
+    else {
+      const rest = this.items.filter((one) => one.id !== id);
+      this.items = item ? [...rest, item].sort(inOrder) : rest;
+    }
     this.tell();
   }
 
@@ -808,29 +846,31 @@ export class Outbox {
   }
 
   add(payload) {
+    const queued = this.load() || this.items;
     const item = {
       id: clientKey(),
+      seq: queued.reduce((high, one) => Math.max(high, Number(one.seq) || 0), 0) + 1,
       payload,
       attempts: 0,
       state: 'pending',
       error: '',
       createdAt: Date.now(),
     };
-    this.change((items) => [...items, item]);
+    this.write(item.id, item);
     this.pump();
     return item;
   }
 
   drop(id) {
-    this.change((items) => items.filter((item) => item.id !== id));
+    this.write(id, null);
   }
 
   // retry puts a failed item back in the queue, either one of them or all.
   retry(id) {
-    this.change((items) => items.map((item) => {
-      if ((id && item.id !== id) || item.state !== 'failed') return item;
-      return { ...item, state: 'pending', attempts: 0, error: '' };
-    }));
+    for (const item of this.load() || this.items) {
+      if ((id && item.id !== id) || item.state !== 'failed') continue;
+      this.write(item.id, { ...item, state: 'pending', attempts: 0, error: '' });
+    }
     this.pump();
   }
 
@@ -853,14 +893,16 @@ export class Outbox {
     }
     this.running = false;
     if (!failure) {
-      this.change((items) => items.filter((item) => item.id !== next.id));
+      this.write(next.id, null);
       this.pump();
       return;
     }
     const permanent = failure instanceof HttpError && !shouldRetry(failure);
     const error = failure.message || 'Could not send.';
-    this.change((items) => items.map((item) => (item.id === next.id
-      ? { ...item, attempts, error, state: permanent ? 'failed' : item.state } : item)));
+    // Counted on the item as it is now: another tab may have sent it, or the
+    // person dropped it, while this attempt was on its way.
+    const now = this.read(next.id);
+    if (now) this.write(next.id, { ...now, attempts, error, state: permanent ? 'failed' : now.state });
     if (permanent) {
       this.pump();
       return;
@@ -874,4 +916,11 @@ export class Outbox {
       : backoffDelay(attempts, { base: 900, max: 20000 });
     this.timer = setTimeout(() => this.pump(), delay);
   }
+}
+
+// inOrder is the order an Outbox sends in: the order the items were queued.
+function inOrder(a, b) {
+  return ((Number(a.seq) || 0) - (Number(b.seq) || 0))
+    || ((Number(a.createdAt) || 0) - (Number(b.createdAt) || 0))
+    || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
