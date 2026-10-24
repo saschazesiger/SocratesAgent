@@ -1830,9 +1830,11 @@ async function loadLegacy() {
       + '. This machine has a snapshot in the backup now, so they are not needed any more.'
     : 'The bucket still holds the ' + what + ' the mirror of the build before wrote ' + legacyWhere(legacy)
       + '. They stay until this machine has its first snapshot in the backup.';
-  morph(host, html`<div class="ds-alert" role="status">${raw(icon('info', 20))}<span class="ds-alert__text">${text}</span>${
+  // The button goes under the sentence, as a limit card's does: beside it,
+  // it left the sentence a column of 120px at 360.
+  morph(host, html`<div class="ds-alert" role="status">${raw(icon('info', 20))}<span class="ds-alert__text so-admin-stack"><span>${text}</span>${
     legacy.snapshot ? html`<button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-action="delete-legacy" data-objects="${legacy.objects}" data-where="${legacyWhere(legacy)}">${faces('Delete them', 'Deleting')}</button>` : ''
-  }</div>`);
+  }</span></div>`);
 }
 
 // deleteLegacy deletes the mirror's objects, after asking: they are the old

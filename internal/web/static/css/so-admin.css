@@ -52,6 +52,16 @@
   gap: var(--ds-space-3);
 }
 
+/* A notice whose button stands under its sentence (the old mirror's
+   "Delete them"), as a limit card's does, not beside it in a column of its
+   own. */
+.so-admin-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--ds-space-2);
+}
+
 .so-admin-notice:empty {
   display: none;
 }
