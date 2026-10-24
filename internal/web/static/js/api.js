@@ -339,12 +339,14 @@ function reserveToasts() {
 // the layout (offsets and the region's own bottom), without the room and
 // without the transforms of an entrance. A dialog on its way out keeps the
 // room until it has gone: its box would drop under the messages as it fades.
+// Messages a page has put out of sight (a phone on its side with its
+// keyboard up, so-shared.css) need no room.
 export function keepDialogRoom() {
   const node = document.getElementById('toasts');
   const host = node && !node.closest('.ds-sheet') ? node.closest('dialog.ds-dialog[open]') : null;
   const box = host ? host.querySelector('.ds-dialog__box') : null;
   let room = '';
-  if (box && node.querySelector('.ds-toast') && node.offsetHeight) {
+  if (box && node.querySelector('.ds-toast') && node.offsetHeight && getComputedStyle(node).visibility !== 'hidden') {
     host.removeAttribute('data-so-toast-room');
     const look = getComputedStyle(node);
     const edge = (parseFloat(look.bottom) || 0) + (parseFloat(look.marginBottom) || 0);

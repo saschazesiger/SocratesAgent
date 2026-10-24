@@ -304,3 +304,12 @@ body[data-stale] .so-mark[data-ring="busy"]::after {
 .ds-theme dialog.ds-dialog[data-so-toast-room] {
   padding-bottom: var(--so-toast-room);
 }
+
+/* A phone on its side with its keyboard up (keybar.js data-so-short) has a
+   strip of screen for the dialog being typed into, and a message standing
+   in it - or the room kept for one - left no room for the question (at
+   844x200, 41px for the field). The messages wait out of sight until the
+   keyboard goes: one that stays is still there then. */
+.ds-theme.so-touch[data-so-short] dialog.ds-dialog[open] > .ds-toasts {
+  visibility: hidden;
+}
