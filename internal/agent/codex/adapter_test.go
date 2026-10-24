@@ -451,6 +451,56 @@ func TestALimitHoldsAMessageWrittenBeforeItsEnd(t *testing.T) {
 	}
 }
 
+// Codex lets a turn go before its turn/completed comes, so a message steered
+// into a turn the limit is ending can be told there is no active turn while
+// the adapter still runs that turn. The message was written before the
+// limited end, and it is held with what the limit holds, not started as a
+// turn of its own into the same limit (AGENT-HOST.md §5.2).
+func TestALimitHoldsAMessageWhoseSteerFindsTheTurnGone(t *testing.T) {
+	lab := newFakeLab(t)
+	r := newRecorder()
+	a := lab.start(lab.spec("a", "", "FAKECODEX_COMPLETED_LAG_MS=1500"), r)
+
+	_, n := send(t, a, r, "hello")
+	r.turnEnd(t, n, wait)
+	_, n = send(t, a, r, "/limit")
+	// The limit is read just before the turn goes; its end comes 1.5 s later.
+	r.waitFor(t, n, "the limit", func(ev agent.Event) bool { return ev.Type == agent.TypeRateLimit && ev.Used >= 1 }, wait)
+	time.Sleep(300 * time.Millisecond)
+	if p := r.projection(); p.Turn == nil {
+		t.Fatalf("the limited turn ended before the steer\n%s", dump(r.since(n)))
+	}
+	late := userMessage(r, "written while the limited turn ran")
+	m := len(r.all())
+	if err := a.Send(context.Background(), late); err != nil {
+		t.Fatal(err)
+	}
+	if end := r.turnEnd(t, n, wait); end.Outcome != agent.OutcomeLimited {
+		t.Fatalf("the turn ended %s\n%s", end.Outcome, dump(r.since(n)))
+	}
+	time.Sleep(500 * time.Millisecond)
+	for _, ev := range r.since(m) {
+		if ev.Type == agent.TypeTurnStarted && ev.MessageID == late.MessageID {
+			t.Fatalf("the message whose steer found the turn gone ran into the limit\n%s", dump(r.since(m)))
+		}
+	}
+	if s := messageState(r.projection(), late.MessageID); s != agent.MessageQueued {
+		t.Fatalf("the held message is %q\n%s", s, dump(r.since(m)))
+	}
+
+	after, k := send(t, a, r, "going on")
+	r.waitFor(t, k, "the held message's turn", func(ev agent.Event) bool {
+		return ev.Type == agent.TypeTurnStarted && ev.MessageID == late.MessageID
+	}, wait)
+	deadline := time.Now().Add(wait)
+	for messageState(r.projection(), after.MessageID) != agent.MessageDelivered {
+		if time.Now().After(deadline) {
+			t.Fatalf("the message that let the queue go was not delivered\n%s", dump(r.since(k)))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // A line too long to read ends the app-server, so the host sees an exit
 // instead of calls that never come back.
 func TestAnUnreadableLineEndsCodex(t *testing.T) {
