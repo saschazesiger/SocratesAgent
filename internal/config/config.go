@@ -26,18 +26,10 @@ const (
 	// and it is the family that already transcribes here.
 	DefaultStatusModel = "google/gemini-2.5-flash"
 
-	// DefaultHomeModel reads the screen of every coding session for Home: a
-	// one line summary, and the question a waiting session is asking. It
-	// runs on every turn of every session, so fast and cheap comes first, and
-	// what it reads out of a menu is checked by a person before anything is
-	// typed.
+	// DefaultHomeModel judges how a chat's turn left the work, for Home
+	// (Outcomes). It runs on every turn of every chat, so fast and cheap
+	// comes first.
 	DefaultHomeModel = "google/gemini-3.5-flash"
-
-	// DefaultOperatorModel types a person's answer into a terminal. Knowing
-	// which key moves where in a TUI menu is the part a cheap model gets
-	// wrong, and a wrong key in somebody's coding session is the expensive
-	// mistake, so this one is capable on purpose.
-	DefaultOperatorModel = "anthropic/claude-sonnet-5.5"
 )
 
 // Settings is the full configuration document.
@@ -80,18 +72,16 @@ type OpenRouterSettings struct {
 	// text and a model that does not exist is only found out when OpenRouter
 	// refuses it.
 	StatusModel string `json:"status_model"`
-	// HomeModel writes the digests Home shows - what each session is doing
-	// and what it is asking - and OperatorModel is the one that types an
-	// answer to that question into the terminal. Both are new names on
-	// purpose: the model of the operator that was removed must not come back
-	// with whatever value an old document still carries for it.
-	HomeModel     string `json:"home_model"`
-	OperatorModel string `json:"operator_model"`
-	// Outcomes has the digest that a turn's end starts also judge how the
-	// turn left the work - complete, partly done, waiting on the person or
-	// blocked - with HomeModel. It is off until somebody turns it on: it
-	// sends more of a session than the screen (Claude's last instruction,
-	// answer and task list), and notifications wait for its answer.
+	// HomeModel judges a chat's turn for Home when Outcomes is on. A document
+	// from before the chats still carries operator_model, the model of the
+	// answer operator that went with the agent terminals; it decodes into
+	// nothing and is dropped on the next save.
+	HomeModel string `json:"home_model"`
+	// Outcomes has the end of every chat's turn judged - complete, partly
+	// done, waiting on the person or blocked - with HomeModel. It is off
+	// until somebody turns it on: it sends the chat's last instruction,
+	// answer, calls and task list to OpenRouter, and notifications wait for
+	// its answer.
 	Outcomes bool `json:"outcomes"`
 }
 
@@ -296,7 +286,6 @@ func Default() Settings {
 			TitleModel:      DefaultTitleModel,
 			StatusModel:     DefaultStatusModel,
 			HomeModel:       DefaultHomeModel,
-			OperatorModel:   DefaultOperatorModel,
 		},
 		Voice: VoiceSettings{
 			Language:      DefaultLanguage,
@@ -356,9 +345,6 @@ func (s *Settings) Normalize() {
 	// wherever there is a key, so neither may need a model picked first.
 	if strings.TrimSpace(s.OpenRouter.HomeModel) == "" {
 		s.OpenRouter.HomeModel = d.OpenRouter.HomeModel
-	}
-	if strings.TrimSpace(s.OpenRouter.OperatorModel) == "" {
-		s.OpenRouter.OperatorModel = d.OpenRouter.OperatorModel
 	}
 	if s.Chats.ParkAfterMinutes <= 0 {
 		s.Chats.ParkAfterMinutes = DefaultParkAfterMinutes

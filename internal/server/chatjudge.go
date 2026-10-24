@@ -1,11 +1,9 @@
 package server
 
-// The verdict on a chat's turn (outcome.go): a terminal's comes with the read
-// of its screen that a turn's end starts, and a chat has no screen to read.
-// So a chat's ended turn is judged by a call of its own, from its journal -
-// the person's instruction, the answer, the calls and how they went, the task
-// list - into the same outcome, with the same hourglass while it is read and
-// the same verdict on Home, in the sidebar and in the push once it is in.
+// The verdict on a chat's turn (outcome.go): a chat's ended turn is judged by
+// the home model from its journal - the person's instruction, the answer, the
+// calls and how they went, the task list - with an hourglass while it is
+// read and the verdict on Home, in the sidebar and in the push once it is in.
 
 import (
 	"context"
@@ -46,7 +44,7 @@ func (d *digester) judgeChat(id string, in termux.Activity) {
 	answer, why := d.askChatJudge(id, settings, model)
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.judgedLocked(id, in, answer, nil, model, why)
+	d.judgedLocked(id, in, answer, model, why)
 }
 
 // askChatJudge is the call: the turn read from the journal, the model asked
@@ -62,11 +60,10 @@ func (d *digester) askChatJudge(id string, settings config.Settings, model strin
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), digestQueueWait)
 	defer cancel()
-	// A verdict a notification waits for is a read somebody waits on.
-	if !d.slot(ctx, true) {
-		return nil, "the turn was not judged in time: too many sessions were being read at once"
+	if !d.slot(ctx) {
+		return nil, "the turn was not judged in time: too many turns were being judged at once"
 	}
-	defer d.release(true)
+	defer d.release()
 	ctx, stop := context.WithTimeout(ctx, digestTimeout)
 	defer stop()
 	client := openrouter.New(settings.OpenRouter.BaseURL, key)
@@ -89,7 +86,7 @@ func (d *digester) askChatJudge(id string, settings config.Settings, model strin
 }
 
 // rejudgeChat is a person asking for a chat's verdict to be read again: the
-// verdict on the idle the chat is at, as rejudgeLocked does for a terminal.
+// verdict on the idle the chat is at.
 func (d *digester) rejudgeChat(id string) {
 	d.mu.Lock()
 	a := d.seen[id]

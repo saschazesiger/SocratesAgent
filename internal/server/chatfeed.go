@@ -428,10 +428,19 @@ func turnNews(p *agent.Projection) (string, bool) {
 // the agent answered, the calls it made and how they went, and its task
 // list as the turn left it.
 type chatTurn struct {
-	claudeTurn
+	Prompt  string
+	Answer  string
+	Tasks   []chatTask
 	Tools   []string
 	Outcome string
 	Error   string
+}
+
+// chatTask is one entry of a chat's task list: what it is, and pending,
+// in_progress or completed.
+type chatTask struct {
+	Subject string
+	Status  string
 }
 
 // readChatTurn is the turn t of a chat, read from its projection.
@@ -520,7 +529,7 @@ func lastLine(text string) string {
 // todoState is the chat's task list as its newest todo part has it, in the
 // three adapters' shapes: Claude's items, Codex's plan steps and OpenCode's
 // todos, with their statuses in Claude's words.
-func todoState(p *agent.Projection) []claudeTask {
+func todoState(p *agent.Projection) []chatTask {
 	var newest *agent.Part
 	var walk func(parts []*agent.Part)
 	walk = func(parts []*agent.Part) {
@@ -554,10 +563,10 @@ func todoState(p *agent.Projection) []claudeTask {
 	if json.Unmarshal(newest.Content, &c) != nil {
 		return nil
 	}
-	var out []claudeTask
+	var out []chatTask
 	add := func(subject, status string) {
 		if subject = oneLine(subject, turnTaskRunes); subject != "" && status != "deleted" && status != "cancelled" {
-			out = append(out, claudeTask{Subject: subject, Status: taskStatus(status)})
+			out = append(out, chatTask{Subject: subject, Status: taskStatus(status)})
 		}
 	}
 	for _, it := range c.Items {
@@ -575,7 +584,7 @@ func todoState(p *agent.Projection) []claudeTask {
 	return out
 }
 
-// taskStatus is a task's status in the words turnPrompt marks.
+// taskStatus is a task's status in the words chatTurnPrompt marks.
 func taskStatus(status string) string {
 	switch strings.ToLower(strings.ReplaceAll(status, "_", "")) {
 	case "completed", "done":
@@ -586,11 +595,29 @@ func taskStatus(status string) string {
 	return "pending"
 }
 
-// chatTurnPrompt is a chat's turn handed to a model: turnPrompt's
-// instruction, answer and task list, with the calls and how the turn ended.
+// chatTurnPrompt is a chat's turn handed to a model: the instruction, the
+// answer and the task list, with the calls and how the turn ended.
 func chatTurnPrompt(t chatTurn) string {
 	var b strings.Builder
-	b.WriteString(turnPrompt(t.claudeTurn))
+	if t.Prompt != "" {
+		b.WriteString("The last instruction the person gave the program:\n" + t.Prompt + "\n")
+	}
+	if t.Answer != "" {
+		b.WriteString("The program's answer to it, as it recorded it:\n" + t.Answer + "\n")
+	}
+	if len(t.Tasks) > 0 {
+		b.WriteString("The program's task list:\n")
+		for _, task := range t.Tasks {
+			mark := "[ ]"
+			switch task.Status {
+			case "completed":
+				mark = "[x]"
+			case "in_progress":
+				mark = "[~]"
+			}
+			b.WriteString(mark + " " + task.Subject + "\n")
+		}
+	}
 	if len(t.Tools) > 0 {
 		b.WriteString("The calls the program made, in order:\n")
 		for _, line := range t.Tools {

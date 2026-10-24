@@ -68,11 +68,9 @@ type Server struct {
 	// not running.
 	push *pusher
 	// events is the event stream every page without a terminal listens on,
-	// digests are Home's reading of every coding session, and answers is the
-	// operator that types a person's answer to a question into one (HOME.md).
+	// and digests the verdicts on the chats' turns that Home shows (HOME.md).
 	events  *eventHub
 	digests *digester
-	answers *operatorDriver
 
 	mux *http.ServeMux
 
@@ -178,7 +176,6 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	s.digests = newDigester(s)
 	// A turn's end waits for its outcome before it is pushed.
 	s.push.checking = s.digests.outcomePending
-	s.answers = newOperatorDriver(s)
 	s.sched = newScheduler(s)
 	s.costs = newCostLedger(s)
 	s.chats = newChatHub(s)
@@ -243,8 +240,6 @@ func (s *Server) StartSessions(ctx context.Context) error {
 	// sessions that survived the last run rather than an empty server.
 	s.manager.StartActivity(ctx)
 	s.startSweep(ctx)
-	// The look at waiting screens Home's questions are kept current by.
-	s.digests.start(ctx)
 	// Last, once every session that survived is adopted: a scheduled start
 	// that fell due while the server was down is started by its first pass.
 	s.sched.start(ctx)
@@ -283,26 +278,12 @@ func (s *Server) saveSettings(next config.Settings) error {
 	s.settings = next
 	s.mu.Unlock()
 	s.reconcileTunnel(previous, next.Tunnel)
-	// A key saved while Home is open - from this page or another device -
-	// is a key the digests that could only say "no key" have been waiting
-	// for; nothing else would read an idle session again before its next
-	// turn.
-	if s.digests != nil && !sameHomeReader(before.OpenRouter, next.OpenRouter) {
-		go s.digests.settingsChanged()
-	}
 	// The outcomes switched off: the verdicts there are go with them, and a
 	// notification waiting for one goes out without it.
 	if s.digests != nil && before.OpenRouter.Outcomes && !next.OpenRouter.Outcomes {
 		s.digests.clearOutcomes()
 	}
 	return nil
-}
-
-// sameHomeReader is whether two settings read Home's digests the same way:
-// the same key, gateway and model.
-func sameHomeReader(a, b config.OpenRouterSettings) bool {
-	return strings.TrimSpace(a.APIKey) == strings.TrimSpace(b.APIKey) && a.BaseURL == b.BaseURL &&
-		strings.TrimSpace(a.HomeModel) == strings.TrimSpace(b.HomeModel)
 }
 
 // reconcileTunnel applies a settings change to the running tunnel.
@@ -415,14 +396,11 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/costs", s.auth(s.handleCosts))
 	// What a terminal is doing, said out loud.
 	mux.HandleFunc("POST /api/sessions/{id}/status", s.auth(s.handleSessionStatus))
-	// Home: the event stream, its hello as a poll, the reading of a session's
-	// screen, and the operator that answers the question it found there.
+	// Home: the event stream, its hello as a poll, and a chat's verdict read
+	// again.
 	mux.HandleFunc("GET /api/events", s.auth(s.handleEvents))
 	mux.HandleFunc("GET /api/home", s.auth(s.handleHome))
 	mux.HandleFunc("POST /api/sessions/{id}/digest", s.auth(s.handleDigestNow))
-	mux.HandleFunc("POST /api/sessions/{id}/answer", s.auth(s.handleAnswer))
-	mux.HandleFunc("GET /api/sessions/{id}/answer", s.auth(s.handleAnswerRun))
-	mux.HandleFunc("POST /api/sessions/{id}/answer/cancel", s.auth(s.handleAnswerCancel))
 	mux.HandleFunc("GET /api/sessions/{id}/journal", s.auth(s.terminal(s.started(s.handleJournal))))
 	mux.HandleFunc("POST /api/sessions/{id}/upload", s.auth(s.started(s.handleUpload)))
 	mux.HandleFunc("GET /api/sessions/{id}/ws", s.auth(s.terminal(s.started(s.handleSessionWS))))
@@ -612,6 +590,18 @@ func acceptsGzip(r *http.Request) bool {
 
 func writeError(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]any{"error": msg})
+}
+
+// sleepFor waits d, or less when ctx ends first, which it then answers with.
+func sleepFor(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func readJSON(w http.ResponseWriter, r *http.Request, dst any) bool {

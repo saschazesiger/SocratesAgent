@@ -341,9 +341,9 @@ func (h *eventHub) sendList() {
 }
 
 // homeState is everything a page needs to draw Home and the sidebar from
-// nothing: the list, every digest and every operator run there is. It is the
-// hello of the stream and the answer of GET /api/home, so a page whose socket
-// is down polls the same thing it would have been told.
+// nothing: the list, every chat's reading and every verdict there is. It is
+// the hello of the stream and the answer of GET /api/home, so a page whose
+// socket is down polls the same thing it would have been told.
 func (s *Server) homeState() (map[string]any, error) {
 	// The revision before the rows, for the reason sendList gives.
 	rev := s.store.Rev()
@@ -351,18 +351,13 @@ func (s *Server) homeState() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	// A chat's reading is made from its journal (chatbrief.go), and sits
-	// beside the terminals' digests where a page looks for a session's line.
-	digests := s.digests.all()
-	for id, d := range s.chats.readings() {
-		digests[id] = d
-	}
+	// A chat's reading is made from its journal (chatbrief.go), and is where
+	// a page looks for a session's line.
 	return map[string]any{
 		"sessions": s.views(rows),
 		"rev":      rev,
-		"digests":  digests,
+		"digests":  s.chats.readings(),
 		"outcomes": s.digests.outcomesAll(),
-		"answers":  s.answers.all(),
 		"now":      time.Now().UnixMilli(),
 	}, nil
 }
@@ -370,12 +365,8 @@ func (s *Server) homeState() (map[string]any, error) {
 /* ------------------------------------------------------------- the routes */
 
 // handleHome is the stream's hello as a plain request: the fallback a page
-// polls while its socket is down. It is a hello in what it starts, too: the
-// sessions nobody has read are read, and the summaries are kept current for
-// it as for a stream - a page behind a proxy that refuses the upgrade would
-// otherwise never see a digest made after a restart.
+// polls while its socket is down.
 func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
-	s.digests.polledHome()
 	state, err := s.homeState()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -464,11 +455,6 @@ func (s *Server) serveEvents(conn *websocket.Conn, token string) error {
 		_ = conn.CloseNow()
 		return nil
 	}
-	// A page that has just connected is a page that wants a line for every
-	// session it is about to draw, and the ones nobody has read yet are read
-	// now - on the server's time, not this socket's.
-	go s.digests.fillMissing()
-
 	replies := make(chan []byte, eventsRepliesBuffer)
 	go s.readEvents(ctx, cancel, conn, replies)
 	go s.pingEvents(ctx, cancel, conn)

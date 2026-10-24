@@ -683,21 +683,10 @@ func (s *Server) ensure(w http.ResponseWriter, r *http.Request, restart bool) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), createTimeout)
 	defer cancel()
-	// A relaunch is a new program under the same tmux name, and a key of an
-	// answer run that was on its way to the old one would be typed into it
-	// as input nobody gave. So the run is stopped - and waited for - before
-	// the relaunch, not after it: for a restart once the manager has taken it
-	// on (a restart of a live pane is refused, and the answer being typed into
-	// that pane goes on), and for an ensure when the old terminal is gone,
-	// which is the only time an ensure starts one.
-	stop := func() { s.answers.stop(row.ID, "the session was restarted") }
-	if !restart && s.answers.terminalGone(row.ID) {
-		stop()
-	}
 	var next *store.Session
 	var err error
 	if restart {
-		next, err = s.manager.RestartAfter(ctx, row.ID, stop)
+		next, err = s.manager.Restart(ctx, row.ID)
 	} else {
 		next, err = s.manager.Ensure(ctx, row.ID)
 	}

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
@@ -44,10 +45,10 @@ func TestPushNewsIsTheChimeRule(t *testing.T) {
 	}
 }
 
-// A question is every new prompt somebody who typed at the session is
-// stopped on: after work, after background work, and opened from the prompt
-// - but not one that came back after a tick of unknown, and not a harness's
-// own menu at startup, which nobody has typed at.
+// A question is every new question a chat somebody sent something is
+// stopped on: after work, after background work, and asked from rest - but
+// not one that came back after a tick of unknown, and not one of an agent's
+// start-up, which nobody has asked anything.
 func TestPushAsksRule(t *testing.T) {
 	act := func(s termux.State, unread bool) termux.Activity {
 		return termux.Activity{State: s, Unread: unread}
@@ -70,13 +71,6 @@ func TestPushAsksRule(t *testing.T) {
 			t.Errorf("%s: asks = %v, want %v", c.name, got, c.want)
 		}
 	}
-}
-
-// setWait shortens how long a question waits for its words.
-func (p *pusher) setWait(d time.Duration) {
-	p.mu.Lock()
-	p.wait = d
-	p.mu.Unlock()
 }
 
 type sentPush struct {
@@ -122,7 +116,7 @@ func TestPushReachesEverySubscriberAndForgetsTheGone(t *testing.T) {
 		}
 	}
 	for _, row := range []*store.Session{
-		{ID: "s-agent", Title: "Claude Code · tests", Harness: "claude", Workdir: t.TempDir(), TmuxName: "t1"},
+		{ID: "s-agent", Title: "Claude Code · tests", Harness: "claude", Workdir: t.TempDir(), Kind: store.KindChat},
 		{ID: "s-shell", Title: "Shell", Harness: "shell", Workdir: t.TempDir(), TmuxName: "t2"},
 	} {
 		if err := env.store.CreateSession(row); err != nil {
@@ -228,20 +222,18 @@ func TestPushEndpoints(t *testing.T) {
 	}
 }
 
-// What a tap on a notification opens is in the payload: a session that needs
-// an answer opens its question, anything else opens the session.
+// What a tap on a notification opens is in the payload: a chat that needs
+// an answer opens its question, anything else opens the chat. A chat with no
+// journal to take words from is told in the generic ones.
 func TestPushSaysWhatATapOpens(t *testing.T) {
 	env := newEnv(t)
 	p := env.srv.push
-	// Nothing reads this session's screen, so its question goes out with
-	// the generic words when the wait is over.
-	p.setWait(20 * time.Millisecond)
 	sent := catch(p)
 	if err := p.add(pushSub{Subscription: testSubscription("https://push.example.net/a")}); err != nil {
 		t.Fatal(err)
 	}
 	if err := env.store.CreateSession(&store.Session{ID: "s-ask", Title: "Asks", Harness: "codex",
-		Workdir: t.TempDir(), TmuxName: "t1"}); err != nil {
+		Workdir: t.TempDir(), Kind: store.KindChat}); err != nil {
 		t.Fatal(err)
 	}
 	next := func() sentPush {
@@ -258,8 +250,17 @@ func TestPushSaysWhatATapOpens(t *testing.T) {
 	p.observe("s-ask", termux.Activity{State: termux.StateIdle})
 	p.observe("s-ask", termux.Activity{State: termux.StateBusy})
 	p.observe("s-ask", termux.Activity{State: termux.StateWaiting, Unread: true})
-	if one := next(); one.note.Body != "Needs an answer" || one.note.Kind != pushQuestion || one.msg.Urgency != "high" {
+	one := next()
+	if one.note.Body != "Needs an answer" || one.note.Kind != pushQuestion || one.msg.Urgency != "high" {
 		t.Fatalf("a question = %+v %+v", one.note, one.msg)
+	}
+	// Raw, the payload says the same: badge and asking are always there.
+	var raw map[string]any
+	if err := json.Unmarshal(one.msg.Payload, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if at, _ := raw["at"].(float64); raw["kind"] != "question" || at <= 0 {
+		t.Fatalf("payload = %s", one.msg.Payload)
 	}
 
 	p.observe("s-ask", termux.Activity{State: termux.StateBusy})
@@ -274,136 +275,27 @@ func TestPushSaysWhatATapOpens(t *testing.T) {
 	}
 }
 
-// A turn that ends by asking in prose is "Finished" to the detector and a
-// question to Home. Once its digest has read the question, the phone is told
-// the same as Home: the question, kind question, on the topic of the
-// "Finished" it replaces. A turn that ends without a question stays finished,
-// and so does one somebody has looked at since.
-func TestAQuestionInProseIsPushedAsAQuestion(t *testing.T) {
-	e := newDigestEnv(t)
-	sent := catch(e.srv.push)
-	if err := e.srv.push.add(pushSub{Subscription: testSubscription("https://push.example.net/a")}); err != nil {
-		t.Fatal(err)
-	}
-	next := func(what string) sentPush {
-		t.Helper()
-		select {
-		case one := <-sent:
-			return one
-		case <-time.After(10 * time.Second):
-			t.Fatalf("no push was sent for %s", what)
-		}
-		return sentPush{}
-	}
-	none := func(what string) {
-		t.Helper()
-		select {
-		case one := <-sent:
-			t.Fatalf("%s pushed %+v", what, one.note)
-		case <-time.After(time.Second):
-		}
-	}
-	e.session("p1", config.HarnessClaude, "● Which color should the button be? Red, green or blue?\n❯ \n")
-	turn := func(since int64, unread bool) {
-		e.srv.onSessionActivity("p1", termux.Activity{State: termux.StateBusy, Since: since})
-		e.srv.onSessionActivity("p1", termux.Activity{State: termux.StateIdle, Unread: unread, Since: since + 1})
-	}
-
-	e.gw.digestAlways(textQuestionJSON)
-	turn(1, true)
-	finished := next("the end of the turn")
-	if finished.note.Body != "Finished" || finished.note.Kind != pushFinished {
-		t.Fatalf("the end of the turn = %+v", finished.note)
-	}
-	e.digestOf("p1", "a question in prose", func(d digest) bool {
-		return ready(d) && d.Question != nil && d.Question.Source == questionText
-	})
-	asked := next("the question in prose")
-	if asked.note.Body != "Which color should the button be?" || asked.note.Kind != pushQuestion || asked.note.ID != "p1" ||
-		asked.msg.Urgency != "high" || asked.msg.Topic != finished.msg.Topic {
-		t.Fatalf("the question in prose = %+v %+v; the finished turn was on topic %q", asked.note, asked.msg, finished.msg.Topic)
-	}
-	if asked.note.Badge == nil || *asked.note.Badge != 1 || len(asked.note.Asking) != 1 || asked.note.Asking[0] != "p1" {
-		t.Fatalf("the question in prose counts %v %v", asked.note.Badge, asked.note.Asking)
-	}
-
-	e.gw.digestAlways(`{"summary":"Done.","context":"","question":null}`)
-	turn(10, true)
-	if one := next("a turn without a question"); one.note.Kind != pushFinished {
-		t.Fatalf("a turn without a question = %+v", one.note)
-	}
-	e.digestOf("p1", "read without a question", func(d digest) bool { return ready(d) && d.Question == nil && d.State == "idle" })
-	none("a turn without a question")
-
-	// Read by somebody before its digest came back: they have seen it.
-	e.gw.digestBlock()
-	e.gw.digestAlways(textQuestionJSON)
-	turn(20, true)
-	next("the end of the third turn")
-	e.srv.onSessionActivity("p1", termux.Activity{State: termux.StateIdle, Since: 21})
-	e.gw.digestRelease()
-	e.digestOf("p1", "the third question", func(d digest) bool { return ready(d) && d.Question != nil })
-	none("a question somebody has seen")
-}
-
 // A service filed background finishes turns so as not to interrupt anyone
 // (DEVIATIONS.md: no chime, no notification): neither the end of its turn nor
-// a question it asks, in prose or on a menu, reaches the phone. Filed
-// background after its turn was announced, the question read afterwards is
-// not announced either.
+// a question it asks reaches the phone.
 func TestABackgroundSessionIsNotPushed(t *testing.T) {
-	e := newDigestEnv(t)
-	sent := catch(e.srv.push)
-	if err := e.srv.push.add(pushSub{Subscription: testSubscription("https://push.example.net/a")}); err != nil {
+	env := newEnv(t)
+	p := env.srv.push
+	pe := newPushEnv(t, p)
+	if err := env.store.CreateSession(&store.Session{ID: "bg", Title: "Service", Harness: config.HarnessClaude,
+		Workdir: t.TempDir(), State: store.StateRunning, Kind: store.KindChat}); err != nil {
 		t.Fatal(err)
 	}
-	none := func(what string) {
-		t.Helper()
-		select {
-		case one := <-sent:
-			t.Fatalf("%s pushed %+v", what, one.note)
-		case <-time.After(time.Second):
-		}
-	}
-	e.session("bg", config.HarnessClaude, "● Which color should the button be? Red, green or blue?\n❯ \n")
-	if err := e.store.SetSessionStatus("bg", store.StatusBackground); err != nil {
+	if err := env.store.SetSessionStatus("bg", store.StatusBackground); err != nil {
 		t.Fatal(err)
 	}
-	e.gw.digestAlways(textQuestionJSON)
-	e.srv.onSessionActivity("bg", termux.Activity{State: termux.StateBusy, Since: 1})
-	e.srv.onSessionActivity("bg", termux.Activity{State: termux.StateIdle, Unread: true, Since: 2})
-	e.digestOf("bg", "a question in prose", func(d digest) bool {
-		return ready(d) && d.Question != nil && d.Question.Source == questionText
-	})
-	none("a background session's turn ending on a question in prose")
-	e.srv.onSessionActivity("bg", termux.Activity{State: termux.StateBusy, Since: 3})
-	e.srv.onSessionActivity("bg", termux.Activity{State: termux.StateWaiting, Unread: true, Since: 4})
-	none("a background session's prompt")
-
-	// Announced while it was in progress, and filed background before the
-	// question was read.
-	if err := e.store.SetSessionStatus("bg", store.StatusInProgress); err != nil {
-		t.Fatal(err)
-	}
-	e.gw.digestBlock()
-	e.srv.onSessionActivity("bg", termux.Activity{State: termux.StateBusy, Since: 5})
-	e.srv.onSessionActivity("bg", termux.Activity{State: termux.StateIdle, Unread: true, Since: 6})
-	select {
-	case one := <-sent:
-		if one.note.Kind != pushFinished {
-			t.Fatalf("the end of the turn = %+v", one.note)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the end of an in-progress session's turn was not pushed")
-	}
-	if err := e.store.SetSessionStatus("bg", store.StatusBackground); err != nil {
-		t.Fatal(err)
-	}
-	e.gw.digestRelease()
-	e.digestOf("bg", "the second question in prose", func(d digest) bool {
-		return ready(d) && d.Question != nil && d.State == "idle"
-	})
-	none("a question read after the session was filed background")
+	p.observe("bg", termux.Activity{State: termux.StateIdle, Since: 1})
+	p.observe("bg", termux.Activity{State: termux.StateBusy, Since: 2})
+	p.observe("bg", termux.Activity{State: termux.StateIdle, Unread: true, Since: 3})
+	pe.none("a background chat's turn ending", 300*time.Millisecond)
+	p.observe("bg", termux.Activity{State: termux.StateBusy, Since: 4})
+	p.observe("bg", termux.Activity{State: termux.StateWaiting, Unread: true, Since: 5})
+	pe.none("a background chat's question", 300*time.Millisecond)
 }
 
 // pushEnv is a pusher with one subscription and a channel of what it sent.
@@ -441,25 +333,22 @@ func (e *pushEnv) none(what string, within time.Duration) {
 	}
 }
 
-// When a question is news. A prompt opened from the prompt is, as one after
-// work is; one that comes back after a tick of unknown is the same prompt and
-// is told once; the next prompt after a moment of work is a new one. A first
-// sighting, a prompt nobody typed at, a session filed background and a tool
+// When a question is news. One asked from rest is, as one after work is; one
+// that comes back after a tick of unknown is the same question and is told
+// once; the next question after a moment of work is a new one. A first
+// sighting, a question nobody asked for, a chat filed background and a tool
 // are never a question to push.
 func TestPushQuestionRule(t *testing.T) {
 	env := newEnv(t)
 	p := env.srv.push
-	// Nothing reads these screens: every question goes out when the wait is
-	// over, with the generic words.
-	p.setWait(10 * time.Millisecond)
 	pe := newPushEnv(t, p)
 	for _, row := range []*store.Session{
-		{ID: "q", Title: "Asks", Harness: config.HarnessClaude},
-		{ID: "bg", Title: "Service", Harness: config.HarnessClaude},
-		{ID: "sh", Title: "Shell", Harness: config.HarnessShell},
-		{ID: "ide", Title: "Editor", Harness: config.HarnessVSCode},
+		{ID: "q", Title: "Asks", Harness: config.HarnessClaude, Kind: store.KindChat},
+		{ID: "bg", Title: "Service", Harness: config.HarnessClaude, Kind: store.KindChat},
+		{ID: "sh", Title: "Shell", Harness: config.HarnessShell, TmuxName: "t-sh"},
+		{ID: "ide", Title: "Editor", Harness: config.HarnessVSCode, TmuxName: "t-ide"},
 	} {
-		row.Workdir, row.TmuxName, row.State = t.TempDir(), "t-"+row.ID, store.StateRunning
+		row.Workdir, row.State = t.TempDir(), store.StateRunning
 		if err := env.store.CreateSession(row); err != nil {
 			t.Fatal(err)
 		}
@@ -472,82 +361,44 @@ func TestPushQuestionRule(t *testing.T) {
 	}
 	quiet := 150 * time.Millisecond
 
-	// A first sighting after a restart, already on a prompt: no edge.
+	// A first sighting after a restart, already asking: no edge.
 	p.observe("q", at(termux.StateWaiting, true, 1))
-	pe.none("a prompt seen first", quiet)
+	pe.none("a question seen first", quiet)
 
 	p.observe("q", at(termux.StateIdle, false, 2))
 	p.observe("q", at(termux.StateWaiting, true, 3))
-	if one := pe.next("a prompt opened from the prompt", 5*time.Second); one.note.Kind != pushQuestion ||
+	if one := pe.next("a question asked from rest", 5*time.Second); one.note.Kind != pushQuestion ||
 		one.note.Body != "Needs an answer" || one.note.ID != "q" || one.msg.Urgency != "high" {
-		t.Fatalf("a prompt opened from the prompt = %+v %+v", one.note, one.msg)
+		t.Fatalf("a question asked from rest = %+v %+v", one.note, one.msg)
 	}
 
-	// Out of sight for a tick and back: the same prompt.
+	// Out of sight for a tick and back: the same question.
 	p.observe("q", at(termux.StateUnknown, true, 4))
 	p.observe("q", at(termux.StateWaiting, true, 5))
-	pe.none("a prompt that flickered", quiet)
+	pe.none("a question that flickered", quiet)
 
-	// Approved, a moment of work, and the next permission prompt: news.
+	// Answered, a moment of work, and the next question: news.
 	p.observe("q", at(termux.StateBusy, false, 6))
-	p.observe("q", termux.Activity{State: termux.StateWaiting, Unread: true, Since: 7, Note: "permission prompt"})
-	if one := pe.next("the next permission prompt", 5*time.Second); one.note.Body != "Needs your permission" {
-		t.Fatalf("the next permission prompt = %+v", one.note)
+	p.observe("q", at(termux.StateWaiting, true, 7))
+	if one := pe.next("the next question", 5*time.Second); one.note.Kind != pushQuestion {
+		t.Fatalf("the next question = %+v", one.note)
 	}
 
 	// From unknown it is the detector finding its footing.
 	p.observe("q", at(termux.StateIdle, false, 8))
 	p.observe("q", at(termux.StateUnknown, false, 9))
 	p.observe("q", at(termux.StateWaiting, true, 10))
-	pe.none("a prompt reached from unknown", quiet)
+	pe.none("a question reached from unknown", quiet)
 
-	// A harness's own menu at startup: nobody typed at it.
+	// An agent's own start-up: nobody asked it anything.
 	p.observe("q", at(termux.StateBusy, false, 11))
 	p.observe("q", at(termux.StateWaiting, false, 12))
-	pe.none("a startup menu", quiet)
+	pe.none("a start-up question", quiet)
 
 	for _, id := range []string{"bg", "sh", "ide"} {
 		p.observe(id, at(termux.StateBusy, false, 1))
 		p.observe(id, at(termux.StateWaiting, true, 2))
-		pe.none(id+"'s prompt", quiet)
-	}
-}
-
-// A question waits for its digest to have read it, and says what it asks.
-// It carries the asking set at the moment it went out: this session, which
-// is on a prompt, and nothing that is not.
-func TestAQuestionIsPushedWithItsWords(t *testing.T) {
-	e := newDigestEnv(t)
-	// Longer than any read: a push that came without the words came from
-	// the wait being over, which is not what is tested.
-	e.srv.push.setWait(time.Minute)
-	pe := newPushEnv(t, e.srv.push)
-	e.session("w1", "claude", "Which database should we use?\n❯ 1. Postgres\n  2. SQLite\n  3. Type something.")
-	e.session("w2", "codex", "Done.\n❯ \n")
-	e.srv.onSessionActivity("w2", termux.Activity{State: termux.StateIdle, Since: 1})
-
-	e.gw.digestAlways(askedJSON)
-	e.srv.onSessionActivity("w1", termux.Activity{State: termux.StateIdle, Since: 1})
-	e.srv.onSessionActivity("w1", termux.Activity{State: termux.StateWaiting, Unread: true, Since: 2})
-	one := pe.next("the question", 20*time.Second)
-	if one.note.Body != "Which database should we use?" || one.note.Kind != pushQuestion || one.note.ID != "w1" ||
-		one.note.Title != "Session w1" || one.msg.Topic != pushTopic("w1") {
-		t.Fatalf("the question = %+v %+v", one.note, one.msg)
-	}
-	if one.note.Badge == nil || *one.note.Badge != 1 || len(one.note.Asking) != 1 || one.note.Asking[0] != "w1" {
-		t.Fatalf("the question counts %v %v", one.note.Badge, one.note.Asking)
-	}
-	// The look at a waiting screen reads it again; it is the same question.
-	e.srv.digests.lookAround(context.Background())
-	pe.none("a question read again", 300*time.Millisecond)
-
-	// Raw, the payload says the same: badge and asking are always there.
-	var raw map[string]any
-	if err := json.Unmarshal(one.msg.Payload, &raw); err != nil {
-		t.Fatal(err)
-	}
-	if at, _ := raw["at"].(float64); raw["badge"] != float64(1) || raw["kind"] != "question" || at <= 0 {
-		t.Fatalf("payload = %s", one.msg.Payload)
+		pe.none(id+"'s question", quiet)
 	}
 }
 
@@ -580,182 +431,44 @@ func TestPushCountsAreStampedInOrder(t *testing.T) {
 	}
 }
 
-// A question whose words cannot be had is pushed without them - at once
-// when the read fails or there is no key to read with, and when the wait is
-// over when the read is slow - and a question answered at the machine
-// before anything went out is never pushed.
-func TestAQuestionWithoutItsWords(t *testing.T) {
-	e := newDigestEnv(t)
-	pe := newPushEnv(t, e.srv.push)
-	e.session("f1", "claude", "Do you want to proceed?\n❯ 1. Yes\n  2. No")
-	ask := func(since int64, note string) {
-		e.srv.onSessionActivity("f1", termux.Activity{State: termux.StateBusy, Since: since})
-		e.srv.onSessionActivity("f1", termux.Activity{State: termux.StateWaiting, Unread: true, Since: since + 1, Note: note})
-	}
-
-	// A read that fails: the generic words, long before the wait is over.
-	e.srv.push.setWait(time.Minute)
-	e.gw.digestRefuse(http.StatusNotFound, "test/home-model is not a valid model ID")
-	ask(1, "permission prompt")
-	if one := pe.next("a question whose read failed", 20*time.Second); one.note.Body != "Needs your permission" ||
-		one.note.Kind != pushQuestion {
-		t.Fatalf("a question whose read failed = %+v", one.note)
-	}
-
-	// No key: the same, at once.
-	e.configureOpenRouter(t, map[string]any{"api_key": ""})
-	ask(10, "")
-	if one := pe.next("a question with no key to read it", 20*time.Second); one.note.Body != "Needs an answer" {
-		t.Fatalf("a question with no key = %+v", one.note)
-	}
-
-	// A read slower than the wait: the generic words when it is over, and
-	// nothing more when the read comes in.
-	e.configureOpenRouter(t, map[string]any{"api_key": "k"})
-	e.gw.digestRefuse(0, "")
-	e.gw.digestAlways(askedJSON)
-	e.gw.digestBlock()
-	e.srv.push.setWait(100 * time.Millisecond)
-	ask(20, "")
-	if one := pe.next("a question whose read was slow", 20*time.Second); one.note.Body != "Needs an answer" {
-		t.Fatalf("a question whose read was slow = %+v", one.note)
-	}
-	e.gw.digestRelease()
-	e.digestOf("f1", "the slow question", func(d digest) bool { return ready(d) && d.Question != nil })
-	pe.none("the words of a question already pushed", 300*time.Millisecond)
-
-	// Answered at the machine while it was being read: nothing at all.
-	e.gw.digestBlock()
-	e.srv.push.setWait(200 * time.Millisecond)
-	ask(30, "")
-	e.srv.onSessionActivity("f1", termux.Activity{State: termux.StateBusy, Since: 32})
-	pe.none("a question answered before it was pushed", time.Second)
-	e.gw.digestRelease()
-
-	// Deleted while it was being read: nothing either, and no timer left.
-	e.gw.digestBlock()
-	ask(40, "")
-	e.srv.push.forget("f1")
-	pe.none("a question of a deleted session", time.Second)
-	e.gw.digestRelease()
-	e.srv.push.mu.Lock()
-	left := len(e.srv.push.pending)
-	e.srv.push.mu.Unlock()
-	if left != 0 {
-		t.Fatalf("%d questions are still waiting", left)
-	}
-}
-
-// A wait that runs out while the detector cannot say what the session is
-// doing is held until it can: the prompt seen again is pushed then, and a
-// session seen working instead is not pushed at all.
-func TestAQuestionOverdueThroughUnknown(t *testing.T) {
-	env := newEnv(t)
-	p := env.srv.push
-	p.setWait(time.Minute)
-	pe := newPushEnv(t, p)
-	if err := env.store.CreateSession(&store.Session{ID: "u", Title: "Asks", Harness: config.HarnessCodex,
-		Workdir: t.TempDir(), TmuxName: "t-u", State: store.StateRunning}); err != nil {
-		t.Fatal(err)
-	}
-	// runOut is the wait running out now, rather than in a minute.
-	runOut := func() {
-		t.Helper()
-		p.mu.Lock()
-		rec := p.pending["u"]
-		if rec == nil {
-			p.mu.Unlock()
-			t.Fatal("no question is waiting")
-		}
-		rec.timer.Stop()
-		p.mu.Unlock()
-		p.expire("u", rec)
-	}
-	ask := func(since int64) {
-		p.observe("u", termux.Activity{State: termux.StateBusy, Since: since})
-		p.observe("u", termux.Activity{State: termux.StateWaiting, Unread: true, Since: since + 1})
-		p.observe("u", termux.Activity{State: termux.StateUnknown, Unread: true, Since: since + 2})
-		runOut()
-	}
-
-	ask(1)
-	pe.none("a question whose session cannot be read", 200*time.Millisecond)
-	p.observe("u", termux.Activity{State: termux.StateWaiting, Unread: true, Since: 4})
-	if one := pe.next("the prompt seen again", 5*time.Second); one.note.Kind != pushQuestion || one.note.ID != "u" {
-		t.Fatalf("the prompt seen again = %+v", one.note)
-	}
-
-	ask(10)
-	p.observe("u", termux.Activity{State: termux.StateBusy, Since: 13})
-	p.observe("u", termux.Activity{State: termux.StateIdle, Since: 14})
-	pe.none("a question answered while its session could not be read", 200*time.Millisecond)
-
-	// The pane died: the program that asked is gone, and the menu the next
-	// one opens on - relaunched, or resumed - is not its question.
-	ask(20)
-	p.observe("u", termux.Activity{State: termux.StateUnknown, Unread: true, Since: 23, Source: activitySourcePane})
-	p.observe("u", termux.Activity{State: termux.StateWaiting, Unread: true, Since: 24})
-	pe.none("a question whose program ended", 200*time.Millisecond)
-	p.mu.Lock()
-	rec, asked := p.pending["u"], p.asked["u"]
-	p.mu.Unlock()
-	if rec != nil || asked {
-		t.Fatalf("a question whose pane died is still held (%v) or asked (%v)", rec != nil, asked)
-	}
-	// Also when its wait has not run out yet: it never will.
-	p.observe("u", termux.Activity{State: termux.StateBusy, Since: 30})
-	p.observe("u", termux.Activity{State: termux.StateWaiting, Unread: true, Since: 31})
-	p.observe("u", termux.Activity{State: termux.StateUnknown, Unread: true, Since: 32, Source: activitySourcePane})
-	p.mu.Lock()
-	rec, asked = p.pending["u"], p.asked["u"]
-	p.mu.Unlock()
-	if rec != nil || asked {
-		t.Fatalf("a held question whose pane died is still held (%v) or asked (%v)", rec != nil, asked)
-	}
-}
-
-// The asking set is Home's Questions card (home.js cardsOf): live sessions
-// that are not tools, not prepared and not done, on a prompt or idle with a
-// question asked in prose. A session filed background is counted - it is
-// only kept from notifying.
+// The asking set is Home's Questions card (home.js cardsOf): live chats that
+// are not prepared and not done, waiting on a question in their journal. A
+// chat filed background is counted - it is only kept from notifying - and a
+// terminal never asks.
 func TestAskingSetIsHomesQuestions(t *testing.T) {
 	env := newEnv(t)
-	d := env.srv.digests
 	type one struct {
 		id, harness, state, status string
-		act                        termux.State
-		prose, menu, silent        bool
+		activity                   string
 		want                       bool
 	}
 	cases := []one{
-		{id: "waiting", act: termux.StateWaiting, want: true},
-		{id: "prose", harness: config.HarnessCodex, act: termux.StateIdle, prose: true, want: true},
-		{id: "idle", act: termux.StateIdle},
-		{id: "idle-menu", act: termux.StateIdle, menu: true},
-		{id: "busy", act: termux.StateBusy},
-		{id: "busy-prose", act: termux.StateBusy, prose: true},
-		{id: "unknown", act: termux.StateUnknown},
-		{id: "done", status: store.StatusDone, act: termux.StateWaiting},
-		{id: "background", status: store.StatusBackground, act: termux.StateWaiting, want: true},
-		{id: "review", status: store.StatusReview, act: termux.StateWaiting, want: true},
-		{id: "shell", harness: config.HarnessShell, act: termux.StateWaiting},
-		{id: "vscode", harness: config.HarnessVSCode, act: termux.StateWaiting},
-		{id: "prepared", state: store.StatePrestart, act: termux.StateWaiting},
-		{id: "exited", state: store.StateExited, act: termux.StateWaiting},
-		{id: "starting", state: store.StateStarting, act: termux.StateWaiting, want: true},
-		{id: "no-activity", silent: true},
+		{id: "waiting", activity: agent.ActivityWaiting, want: true},
+		{id: "idle", activity: agent.ActivityIdle},
+		{id: "busy", activity: agent.ActivityBusy},
+		{id: "done", status: store.StatusDone, activity: agent.ActivityWaiting},
+		{id: "background", status: store.StatusBackground, activity: agent.ActivityWaiting, want: true},
+		{id: "review", status: store.StatusReview, activity: agent.ActivityWaiting, want: true},
+		{id: "shell", harness: config.HarnessShell, activity: agent.ActivityWaiting},
+		{id: "prepared", state: store.StatePrestart, activity: agent.ActivityWaiting},
+		{id: "exited", state: store.StateExited, activity: agent.ActivityWaiting},
+		{id: "starting", state: store.StateStarting, activity: agent.ActivityWaiting, want: true},
+		{id: "no-brief"},
 	}
 	var want []string
 	for _, c := range cases {
-		harness, state := c.harness, c.state
+		harness, state, kind := c.harness, c.state, store.KindChat
 		if harness == "" {
 			harness = config.HarnessClaude
+		}
+		if harness == config.HarnessShell {
+			kind = store.KindTerminal
 		}
 		if state == "" {
 			state = store.StateRunning
 		}
 		if err := env.store.CreateSession(&store.Session{ID: c.id, Harness: harness, State: state,
-			Workdir: t.TempDir(), TmuxName: "t-" + c.id}); err != nil {
+			Workdir: t.TempDir(), Kind: kind}); err != nil {
 			t.Fatal(err)
 		}
 		if c.status != "" {
@@ -763,19 +476,12 @@ func TestAskingSetIsHomesQuestions(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		d.mu.Lock()
-		if !c.silent {
-			d.seen[c.id] = termux.Activity{State: c.act, Since: 1}
+		if c.activity != "" {
+			env.srv.chats.mu.Lock()
+			env.srv.chats.chats[c.id] = &chatPeer{id: c.id, hub: env.srv.chats,
+				brief: chatBrief{Summary: agent.Summary{Activity: c.activity}}}
+			env.srv.chats.mu.Unlock()
 		}
-		if c.prose || c.menu {
-			source := questionText
-			if c.menu {
-				source = questionMenu
-			}
-			d.entries[c.id] = &digestEntry{published: true, d: digest{SessionID: c.id, Phase: digestReady,
-				Question: &digestQuestion{Source: source, Kind: "text", Items: []digestItem{{Text: "Which?"}}}}}
-		}
-		d.mu.Unlock()
 		if c.want {
 			want = append(want, c.id)
 		}
