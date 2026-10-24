@@ -207,8 +207,21 @@ export function modelItems(id) {
   }));
 }
 
+// modelOf is a model's entry in what the sheet offers. Claude Code names
+// the model an alias resolved to ("claude-sonnet-5-5" for "sonnet") in what
+// it reports, which is what a chat's journal holds: that is the alias's
+// entry, so a chat says "Sonnet" rather than the id.
 export function modelOf(id, modelId) {
-  return offered(id).find((m) => m.id === modelId) || null;
+  const list = offered(id);
+  const exact = list.find((m) => m.id === modelId);
+  if (exact || !/^claude-/i.test(String(modelId || ''))) return exact || null;
+  const wide = /\[1m\]$/i.test(modelId) ? '[1m]' : '';
+  const words = String(modelId).toLowerCase().replace(/\[1m\]$/, '').split(/[-_.]/).slice(1);
+  for (const word of words) {
+    const alias = list.find((m) => m.id === word + wide);
+    if (alias) return alias;
+  }
+  return null;
 }
 
 // defaultModelFor is what the picker starts on: the first of the dashboard's
