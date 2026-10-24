@@ -75,13 +75,16 @@ Binding documents, in order:
   made; an account whose sign-in was lost says "Sign in again". The tar beside the data folder
   (`<data>.pre-rebuild.tar`) is the way back: its `data/` is the data folder as the build before
   had it (its database at that build's schema, `s3.json`, the agent terminals' journals) and its
-  `home/` the agents' folders as they were. To go back, stop Socrates, install the build before,
-  move the data folder aside, remove the links the migration left in HOME (`~/.claude`,
-  `~/.claude.json`, `~/.codex`, `~/.local/share/opencode`, `~/.config/opencode`), and extract the
-  tar into an empty folder and move its `data/` and `home/` entries into place. A login refreshed
-  since the migration is newer in the moved folder than in the tar. Reload every page that was
-  open across the update (a phone's home-screen app too): a page loaded from the build before keeps
-  its interface - PreStart with a profile, agent terminals - which the new server refuses.
+  `home/` the agents' folders as they were; the working directories (`workspaces/` and any
+  session's folder in the data folder) are not in it, since the migration does not touch them.
+  To go back, stop Socrates, install the build before, move the data folder aside, remove the
+  links the migration left in HOME (`~/.claude`, `~/.claude.json`, `~/.codex`,
+  `~/.local/share/opencode`, `~/.config/opencode`), extract the tar into an empty folder and move
+  its `data/` and `home/` entries into place, and move `workspaces/` (and any other working
+  directory) back from the folder set aside. A login refreshed since the migration is newer in
+  the moved folder than in the tar. Reload every page that was open across the update (a phone's
+  home-screen app too): a page loaded from the build before keeps its interface - PreStart with
+  a profile, agent terminals - which the new server refuses.
 - **A rollback across the migration**: the first deploy of this build is run by the updater the
   build before installed (`/usr/local/lib/socrates`; the new scripts go in only once the new
   build is healthy), so if this build migrates and then fails its health check, that updater's

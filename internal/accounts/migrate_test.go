@@ -681,6 +681,61 @@ func TestAMigrationRolledBackWithItsDatabaseIsFinishedByTheNextBuild(t *testing.
 	}
 }
 
+// The working directories in the data folder - workspaces/, the folders a
+// workspace root or a preset there names, and any session's own - stay out of
+// the tar. The migration does not touch them, so neither build needs them
+// back from it, and they are what makes a data folder big: a copy of them
+// at the first start needs that much free disk, and holds the listener (and
+// the updater's health check) for as long as writing it takes. The deploy
+// rehearsal measured 1 GB of workspaces as a 1.05 GB tar.
+func TestTheTarLeavesTheWorkingDirectoriesOut(t *testing.T) {
+	data, home := fixture(t)
+	for _, rel := range []string{"workspaces/shell-1/node_modules/x.js", "work/repo/main.go", "roots/one/a.txt", "preset/b.txt"} {
+		write(t, filepath.Join(data, rel), "work")
+	}
+	write(t, filepath.Join(data, "sessions/s3/plan.json"), `{"argv":["/bin/sh"]}`)
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(data, "socrates.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`INSERT INTO sessions(id, harness, workdir, workdir_mode, options, created_at, updated_at)
+		 VALUES('s3', 'shell', '` + filepath.Join(data, "work/repo") + `', 'custom', '{}', 1, 1)`,
+		`INSERT INTO sessions(id, harness, workdir, workdir_mode, options, created_at, updated_at)
+		 VALUES('s4', 'shell', '` + filepath.Join(data, "sessions/s3") + `', 'custom', '{}', 1, 1)`,
+		`INSERT INTO kv(key, value) VALUES('settings', '{"workspace":{"root":"` + filepath.Join(data, "roots") +
+			`","presets":[{"label":"P","path":"` + filepath.Join(data, "preset") + `"},{"label":"D","path":"` + data + `"}]}}')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	db.Close()
+	if err := migrateOnce(t, data, home, ""); err != nil {
+		t.Fatal(err)
+	}
+	entries := tarEntries(t, data+".pre-rebuild.tar")
+	for name := range entries {
+		for _, out := range []string{"data/workspaces/", "data/work/repo", "data/roots/", "data/preset/"} {
+			if strings.HasPrefix(name+"/", out) || strings.HasPrefix(name, out) {
+				t.Fatalf("the tar has the working directory's %s", name)
+			}
+		}
+	}
+	// A working directory that is one of Socrates' own folders, or the data
+	// folder itself, is not one to leave out.
+	for _, name := range []string{"data/sessions/s3/plan.json", "data/socrates.db", "data/profiles/p-bbbbbbbbbbbb/claude/.credentials.json"} {
+		if _, ok := entries[name]; !ok {
+			t.Fatalf("the tar has no %s", name)
+		}
+	}
+	for _, rel := range []string{"workspaces/shell-1/node_modules/x.js", "work/repo/main.go", "roots/one/a.txt", "preset/b.txt"} {
+		if raw, err := os.ReadFile(filepath.Join(data, rel)); err != nil || string(raw) != "work" {
+			t.Fatalf("the migration changed the working directory's %s: %q %v", rel, raw, err)
+		}
+	}
+}
+
 // A data directory this build makes - a new installation, a trial with
 // -data /tmp/x, an e2e run - never takes the agents' folders out of HOME,
 // however many there are: only a database of the build before accounts is
