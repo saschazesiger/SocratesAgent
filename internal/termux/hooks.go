@@ -143,8 +143,25 @@ func (m *Manager) serveHooks(ln net.Listener) {
 		if err != nil {
 			return
 		}
+		// Counted under the lock Close marks the manager closed under, so a
+		// connection is either one Close waits for or one it turns away.
+		m.mu.Lock()
+		if m.closed {
+			m.mu.Unlock()
+			conn.Close()
+			return
+		}
+		m.hookConns[conn] = true
+		m.hookWG.Add(1)
+		m.mu.Unlock()
 		go func() {
-			defer conn.Close()
+			defer m.hookWG.Done()
+			defer func() {
+				m.mu.Lock()
+				delete(m.hookConns, conn)
+				m.mu.Unlock()
+				conn.Close()
+			}()
 			scanner := bufio.NewScanner(conn)
 			for scanner.Scan() {
 				var h Hook

@@ -104,7 +104,11 @@ type Manager struct {
 	// like to the poll; see Poll.
 	creating map[string]bool
 	hookLn   net.Listener
-	closed   bool
+	// hookConns and hookWG are the hook connections being read and the
+	// goroutines reading them, which Close ends and waits for.
+	hookConns map[net.Conn]bool
+	hookWG    sync.WaitGroup
+	closed    bool
 
 	// locks serialises everything that relaunches one session.
 	locks map[string]*sync.Mutex
@@ -146,11 +150,12 @@ func New(st *store.Store, cfg Config) (*Manager, error) {
 	}
 	m := &Manager{
 		st: st, cfg: cfg,
-		live:     map[string]*liveSession{},
-		missed:   map[string]int{},
-		creating: map[string]bool{},
-		locks:    map[string]*sync.Mutex{},
-		plans:    map[string]harnesses.LaunchPlan{},
+		live:      map[string]*liveSession{},
+		missed:    map[string]int{},
+		creating:  map[string]bool{},
+		hookConns: map[net.Conn]bool{},
+		locks:     map[string]*sync.Mutex{},
+		plans:     map[string]harnesses.LaunchPlan{},
 	}
 	m.act = newActivity(m)
 
@@ -278,15 +283,29 @@ func (m *Manager) Close() error {
 	for _, live := range m.live {
 		viewers = append(viewers, live.viewers...)
 	}
+	conns := make([]net.Conn, 0, len(m.hookConns))
+	for conn := range m.hookConns {
+		conns = append(conns, conn)
+	}
 	m.mu.Unlock()
 
 	for _, v := range viewers {
 		_ = v.Close()
 	}
+	var err error
 	if ln != nil {
-		return ln.Close()
+		err = ln.Close()
 	}
-	return nil
+	// A hook being applied when Close is called finishes before it returns:
+	// what comes after a Close - the last backup, the store closed - is told
+	// that nothing writes any more, and a hook that went on would write into
+	// a closed database. One still on its way is dropped; the next start's
+	// Adopt reads the same thing from tmux.
+	for _, conn := range conns {
+		_ = conn.Close()
+	}
+	m.hookWG.Wait()
+	return err
 }
 
 // ---------------------------------------------------------------- creating
