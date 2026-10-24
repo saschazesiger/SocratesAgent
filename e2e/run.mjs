@@ -11,11 +11,11 @@
 import {
   start, setup, shot, ok, scenario, skipScenario, finish, ensureNav, wait,
   readFakeLog, killTmux, openRouterStub, fakeS3Switch, backupForm, prefixFor, sessionsOn, windowSize, scratchDir, PASSWORD, LIVE, SHOTS,
-  tmuxSock, DIGEST_MARKER, freePort, spawnServer, waitForHealth,
+  tmuxSock, DIGEST_MARKER, freePort, spawnServer, waitForHealth, REPO,
 } from './harness.mjs';
 import http from 'node:http';
 import net from 'node:net';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 // The one thing the harness cannot hand over: when a session was last used is
@@ -2347,22 +2347,20 @@ async function createclaude() {
 // by the sheet with the account each choice means, and reaches the launched
 // program as the directory its CLI keeps the account in - and it cannot be
 // deleted while a session still runs in it.
+// The dashboard's Profiles card is gone with the accounts (WP7): a chat runs
+// on an account, and a terminal's profile is made through the API until the
+// terminal-only plumbing goes too (WP10).
 async function profiles() {
   const s = await start({ viewport: { width: 1280, height: 900 } });
   try {
     await setup(s.page, s.url);
     await useDomRenderer(s);
-    await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('#profileList .so-profile', { timeout: 20000 });
-    await s.page.fill('#profileName', 'Business');
-    await s.page.click('#profileAdd');
-    await s.page.waitForFunction(() => document.querySelectorAll('#profileList .so-profile').length === 2,
-      null, { timeout: 10000 });
+    const made0 = await s.context.request.post(s.url + '/api/profiles', { data: { name: 'Business' } });
+    ok(made0.status() === 201, 'the profile is added', String(made0.status()));
     const listed = await (await s.context.request.get(s.url + '/api/profiles')).json();
     const business = (listed.profiles || []).find((p) => p.name === 'Business');
-    ok(!!business && /^p-[0-9a-f]{12}$/.test(business.id), 'the dashboard added the profile',
+    ok(!!business && /^p-[0-9a-f]{12}$/.test(business.id), 'with an id of the server\'s choosing',
       JSON.stringify(listed.profiles));
-    await shot(s.page, 'profiles-admin');
 
     await open(s);
     await ensureNav(s.page);
@@ -2497,32 +2495,6 @@ async function profiles() {
     ok(alone.face === 'Business' && alone.here.length === 0,
       'a done session is not joined: the sheet starts on the last profile again', JSON.stringify(alone));
     await s.page.click('#nsCancel');
-
-    // The dashboard's order is the sheet's: a row moves by its grip, with the
-    // arrow keys or dragged, and the order is saved as soon as it is let go.
-    const order = async () => ((await (await s.context.request.get(s.url + '/api/profiles')).json()).profiles || [])
-      .map((p) => p.name).join(',');
-    await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
-    await s.page.waitForFunction(() => document.querySelectorAll('#profileList .so-profile').length === 2,
-      null, { timeout: 20000 });
-    await s.page.focus('#profileList .so-profile[data-id="' + business.id + '"] .so-grip');
-    await s.page.keyboard.press('ArrowUp');
-    let moved = '';
-    for (let i = 0; i < 40 && moved !== 'Business,Default'; i++) { await s.page.waitForTimeout(100); moved = await order(); }
-    ok(moved === 'Business,Default', 'the arrow keys move a profile up the list', moved);
-    const grip = await s.page.$eval('#profileList .so-profile[data-id="' + business.id + '"] .so-grip', (n) => {
-      const box = n.getBoundingClientRect();
-      return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
-    });
-    const last = await s.page.$eval('#profileList .so-profile:last-child', (n) => n.getBoundingClientRect().bottom);
-    await s.page.mouse.move(grip.x, grip.y);
-    await s.page.mouse.down();
-    await s.page.mouse.move(grip.x, last - 4, { steps: 8 });
-    await s.page.mouse.up();
-    for (let i = 0; i < 40 && moved !== 'Default,Business'; i++) { await s.page.waitForTimeout(100); moved = await order(); }
-    ok(moved === 'Default,Business', 'and dragging puts it back', moved);
-    const rows = await s.page.$$eval('#profileList .so-profile', (nodes) => nodes.map((n) => n.dataset.id));
-    ok(rows.join(',') === ',' + business.id, 'where the list shows it', rows.join(','));
 
     ok(unexpected(s.errors).length === 0, 'no unexpected console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
@@ -13707,6 +13679,309 @@ async function chatphone() {
   } finally { await s.stop(); }
 }
 
+/* -------------------------------------------------------------- accounts */
+
+// fakeCodexBin builds the scripted Codex app-server (e2e/fakebin/fakecodex),
+// whose device-code sign-in a Codex account goes through.
+let fakeCodexPath = '';
+function fakeCodexBin() {
+  if (fakeCodexPath) return fakeCodexPath;
+  const dir = scratchDir('socrates-e2e-fakecodex-');
+  fakeCodexPath = join(dir, 'codex');
+  execFileSync('go', ['build', '-o', fakeCodexPath, './e2e/fakebin/fakecodex'], { cwd: REPO });
+  return fakeCodexPath;
+}
+
+async function accountsOf(s) {
+  const res = await s.context.request.get(s.url + '/api/accounts');
+  return (await res.json()).accounts || [];
+}
+
+const accountRowSel = (id) => '#accountList .so-account[data-id="' + id + '"]';
+
+// filesHolding is every file under dir whose bytes contain needle.
+function filesHolding(dir, needle) {
+  const out = [];
+  const walk = (at) => {
+    let entries = [];
+    try { entries = readdirSync(at, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const path = join(at, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.isFile()) {
+        try { if (readFileSync(path).includes(needle)) out.push(path); } catch { /* a socket or gone */ }
+      }
+    }
+  };
+  walk(dir);
+  return out;
+}
+
+// accounts: the dashboard's Accounts card - an API-key account added, a
+// Codex subscription signed in by its device code against the scripted
+// app-server, a rename, the order, a delete refused while a chat runs on the
+// account and taken after, and the card on a phone.
+async function accountsscenario() {
+  const key = 'sk-e2e-' + 'k'.repeat(24);
+  const s = await start({
+    viewport: { width: 1280, height: 900 },
+    env: { ...FAKE_AGENT, SOCRATES_CODEX_BIN: fakeCodexBin(), FAKECODEX_LOGIN_MS: '1500' },
+  });
+  const { page } = s;
+  try {
+    await setup(page, s.url);
+    await page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#accountList .so-account-group[data-agent="codex"]', { timeout: 20000 });
+    const groups = await page.$$eval('#accountList .so-account-group', (n) => n.map((g) => g.dataset.agent));
+    ok(['claude', 'codex', 'opencode'].every((a) => groups.includes(a)), 'the card has a group per agent', groups.join(','));
+    const profilesGone = await page.$('#profileList');
+    ok(!profilesGone, 'and the Profiles card is gone', String(!profilesGone));
+
+    // An API key, for the scripted agent.
+    await page.click('.so-account-group[data-agent="fake"] .ds-add-row');
+    await page.waitForSelector('dialog.ds-dialog .so-account-form', { timeout: 5000 });
+    await page.click('dialog.ds-dialog .ds-chip:has(input[value="api_key"])');
+    await page.fill('#accountLabel', 'Key one');
+    await page.fill('#accountKey', key);
+    await page.click('dialog.ds-dialog .ds-btn--primary');
+    await page.waitForSelector('dialog.ds-dialog', { state: 'detached', timeout: 15000 });
+    let list = await accountsOf(s);
+    const keyed = list.find((a) => a.label === 'Key one');
+    ok(!!keyed && keyed.kind === 'api_key' && keyed.state === 'signed_in', 'an API-key account is added and usable',
+      JSON.stringify(keyed));
+    await page.waitForSelector(accountRowSel(keyed.id) + ' [data-state="signed_in"]', { timeout: 10000 });
+    const raw = await (await s.context.request.get(s.url + '/api/accounts')).text();
+    ok(!raw.includes(key), 'the list never carries the key', String(raw.includes(key)));
+    const html = await page.content();
+    ok(!html.includes(key), 'nor does the page', String(html.includes(key)));
+    const holding = filesHolding(s.data, key);
+    ok(holding.length === 0, 'and no file in the data directory holds it in the clear', holding.join(',') || 'none');
+
+    // A Codex subscription, signed in by device code.
+    await page.click('.so-account-group[data-agent="codex"] .ds-add-row');
+    await page.waitForSelector('dialog.ds-dialog .so-account-form', { timeout: 5000 });
+    await page.fill('#accountLabel', 'Codex work');
+    await page.click('dialog.ds-dialog .ds-btn--primary');
+    const coded = await page.waitForSelector('dialog.ds-dialog .so-signin__code', { timeout: 20000 }).then(() => true, () => false);
+    const flow = coded ? await page.evaluate(() => ({
+      code: document.querySelector('dialog.ds-dialog .so-signin__value').textContent,
+      url: document.querySelector('dialog.ds-dialog a[href]')?.href || '',
+      waiting: !!document.querySelector('dialog.ds-dialog .so-signin__wait'),
+    })) : {};
+    ok(coded && flow.code && /^https?:/.test(flow.url) && flow.waiting,
+      'the sign-in shows the code to type, the page to type it on, and that it waits', JSON.stringify(flow));
+    await shot(page, 'accounts-device-code');
+    const closed = await page.waitForSelector('dialog.ds-dialog', { state: 'detached', timeout: 20000 }).then(() => true, () => false);
+    list = await accountsOf(s);
+    const codex = list.find((a) => a.label === 'Codex work');
+    ok(closed && codex && codex.state === 'signed_in' && codex.email === 'device@example.com',
+      'once the code is entered there the account is signed in, as the address Codex reports', JSON.stringify(codex));
+    await page.waitForSelector(accountRowSel(codex.id) + ' [data-state="signed_in"]', { timeout: 10000 });
+    const meters = await page.$$eval(accountRowSel(codex.id) + ' .so-limits__row', (n) => n.map((r) => r.textContent));
+    ok(meters.length === 2, 'and its five hours and its week are shown', meters.join(' | '));
+
+    // Rename.
+    await page.click(accountRowSel(keyed.id) + ' [data-action="rename"]');
+    await page.waitForSelector('dialog.ds-dialog .ds-input', { timeout: 5000 });
+    await page.fill('dialog.ds-dialog .ds-input', 'Renamed key');
+    await page.click('dialog.ds-dialog .ds-btn--primary');
+    await page.waitForFunction((id) => document.querySelector('#accountList .so-account[data-id="' + id + '"] .so-account__name')?.textContent.includes('Renamed key'),
+      keyed.id, { timeout: 10000 });
+    list = await accountsOf(s);
+    ok(list.find((a) => a.id === keyed.id).label === 'Renamed key', 'a rename is saved', list.map((a) => a.label).join(','));
+
+    // The order: a second scripted account, moved up by its grip.
+    const second = await (await s.context.request.post(s.url + '/api/accounts',
+      { data: { agent: 'fake', kind: 'subscription', label: 'Second' } })).json();
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector(accountRowSel(second.account.id), { timeout: 15000 });
+    const fakeOrder = async () => (await accountsOf(s)).filter((a) => a.agent === 'fake').map((a) => a.label).join(',');
+    ok(await fakeOrder() === 'Renamed key,Second', 'a new account goes at the end', await fakeOrder());
+    await page.focus(accountRowSel(second.account.id) + ' .so-grip');
+    await page.keyboard.press('ArrowUp');
+    let moved = '';
+    for (let i = 0; i < 40 && moved !== 'Second,Renamed key'; i++) { await wait(100); moved = await fakeOrder(); }
+    ok(moved === 'Second,Renamed key', 'the grip moves an account up, and the order is saved', moved);
+
+    // Delete: refused while a chat runs on the account, taken after.
+    const chat = await (await s.context.request.post(s.url + '/api/chats',
+      { data: { client_id: 'e2e-accounts-chat', harness: 'fake', account: keyed.id, workdir_mode: 'dynamic' } })).json();
+    ok(chat.session && chat.session.id, 'a chat runs on the renamed account', JSON.stringify(chat).slice(0, 160));
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector(accountRowSel(keyed.id), { timeout: 15000 });
+    await page.click(accountRowSel(keyed.id) + ' [data-action="delete"]');
+    await page.waitForSelector('dialog.ds-dialog .ds-btn--primary', { timeout: 5000 });
+    await page.click('dialog.ds-dialog .ds-btn--primary');
+    const toastSaid = await page.waitForFunction(() => [...document.querySelectorAll('.ds-toast, .ds-snackbar, [role="status"]')]
+      .some((n) => /chat/i.test(n.textContent) && /run|use/i.test(n.textContent)), null, { timeout: 8000 }).then(() => true, () => false);
+    list = await accountsOf(s);
+    ok(list.some((a) => a.id === keyed.id), 'an account a chat runs on is not deleted', String(list.some((a) => a.id === keyed.id)));
+    ok(toastSaid, 'and the page says why', String(toastSaid));
+    await s.context.request.delete(s.url + '/api/sessions/' + encodeURIComponent(chat.session.id));
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector(accountRowSel(keyed.id), { timeout: 15000 });
+    await page.click(accountRowSel(keyed.id) + ' [data-action="delete"]');
+    await page.waitForSelector('dialog.ds-dialog .ds-btn--primary', { timeout: 5000 });
+    await page.click('dialog.ds-dialog .ds-btn--primary');
+    await page.waitForSelector(accountRowSel(keyed.id), { state: 'detached', timeout: 10000 });
+    list = await accountsOf(s);
+    ok(!list.some((a) => a.id === keyed.id), 'with no chat on it, it is deleted', list.map((a) => a.label).join(','));
+    await shot(page, 'accounts-admin');
+
+    // The card on a phone, in touch mode.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(s.url + '/admin#accountsCard', { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector(accountRowSel(codex.id), { timeout: 15000 });
+    await wait(300);
+    const side = await page.evaluate(() => Math.max(document.scrollingElement.scrollWidth - document.scrollingElement.clientWidth, 0));
+    ok(side === 0, 'on a phone the card does not scroll sideways', side + ' px');
+    const actions = await page.$$eval(accountRowSel(codex.id) + ' .so-account__actions .ds-btn', (n) => n.map((b) => {
+      const r = b.getBoundingClientRect();
+      return { w: Math.round(r.width), h: Math.round(r.height), label: b.getAttribute('aria-label') || b.textContent };
+    }));
+    ok(actions.length >= 3 && actions.every((a) => a.label), 'its actions are icons with a name each', JSON.stringify(actions));
+    await shot(page, 'accounts-phone');
+    // The refused delete is a 409 the browser reports by itself.
+    const refusal = /409 \(Conflict\) @ .*\/api\/accounts\/a-/;
+    ok(unexpected(s.errors, refusal).length === 0, 'no console errors', unexpected(s.errors, refusal).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+// chat-account: a chat started on an account from the sheet, switched from
+// the composer's account picker while idle and while a turn runs, the line
+// each switch leaves, a limit's card and its Continue with, the automatic
+// switch from the chat's menu, and the picker on a phone.
+async function chataccount() {
+  const s = await chatServer();
+  const { page } = s;
+  const post = async (path, data) => (await s.context.request.post(s.url + path, { data })).json();
+  try {
+    const alpha = (await post('/api/accounts', { agent: 'fake', kind: 'subscription', label: 'Alpha' })).account;
+    const beta = (await post('/api/accounts', { agent: 'fake', kind: 'api_key', label: 'Beta', key: 'sk-beta-0123456789' })).account;
+    ok(alpha && beta && beta.state === 'signed_in', 'two accounts of the scripted agent', JSON.stringify([alpha, beta]).slice(0, 200));
+
+    // The sheet: agent, folder, model, account.
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await ensureNav(page);
+    await page.click('#newSession');
+    await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    await page.click('#newSessionSheet .so-settings__program[data-value="fake"]');
+    await page.waitForSelector('#nsAccountField:not([hidden]) .so-drop__field', { timeout: 10000 });
+    const order = await page.evaluate(() => [...document.querySelectorAll('#nsForm .so-settings > .ds-field:not([hidden])')].map((n) => n.id));
+    const at = (id) => order.indexOf(id);
+    ok(at('nsHarnessField') < at('nsDirField') && at('nsDirField') < at('nsModelField') && at('nsModelField') < at('nsAccountField'),
+      'the sheet asks for the agent, the folder, the model, then the account', order.join(','));
+    const auto = await page.$eval('#nsAutoSwitch', (n) => !n.checked && !n.closest('[hidden]'));
+    ok(auto, 'and offers the automatic switch, off', String(auto));
+    await page.click('#nsAccount .so-drop__field');
+    await page.waitForSelector('#nsAccount .ds-combo__option[data-value="' + alpha.id + '"]', { timeout: 5000 });
+    const offered = await page.$$eval('#nsAccount .ds-combo__option .ds-combo__name', (n) => n.map((x) => x.textContent));
+    ok(offered.join(',') === 'Alpha,Beta', 'the account list is the agent’s accounts in order', offered.join(','));
+    await page.click('#nsAccount .ds-combo__option[data-value="' + alpha.id + '"]');
+    await shot(page, 'chat-account-sheet');
+    await page.click('#nsStart');
+    await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
+    await chatUp(page);
+    const id = await page.evaluate(() => location.hash.slice(1));
+    const row = await sessionRow(s, id);
+    ok(row.options && row.options.account === alpha.id, 'the chat is made on the account chosen', JSON.stringify(row.options));
+    await page.waitForSelector('#chat .so-composer__account:not([hidden]) .so-composer__account-btn', { timeout: 10000 });
+    const face = await page.$eval('#chat .so-composer__account-text', (n) => n.textContent);
+    ok(face === 'Alpha', 'the composer names the account', face);
+    await say(page, '/account');
+    ok(await awaitLog(page, 'account ' + alpha.id + ', no key'), 'and the agent runs on it', alpha.id);
+
+    // Switched while idle.
+    await page.click('#chat .so-composer__account-btn');
+    await page.waitForSelector('.so-account-menu:not([hidden]) [data-account="' + beta.id + '"]', { timeout: 5000 });
+    const items = await page.$$eval('.so-account-menu [data-account]', (n) => n.map((x) => x.textContent));
+    ok(items.length === 2 && items.some((t) => /Alpha/.test(t)) && items.some((t) => /Beta/.test(t)),
+      'the picker lists the accounts with their usage', items.join(' | '));
+    await page.click('.so-account-menu [data-account="' + beta.id + '"]');
+    ok(await awaitLog(page, 'Switched from Alpha to Beta'), 'a switch leaves a line in the conversation', '');
+    await say(page, '/account');
+    ok(await awaitLog(page, 'account ' + beta.id + ', a key of 18 characters'), 'and the agent runs on the new account, with its key', beta.id);
+    const faceB = await page.$eval('#chat .so-composer__account-text', (n) => n.textContent);
+    ok(faceB === 'Beta', 'the composer follows', faceB);
+
+    // Switched while a turn runs: after this turn.
+    await say(page, '/sleep 3');
+    await page.waitForSelector('#chat .so-composer__stop:not([hidden])', { timeout: 10000 });
+    await page.click('#chat .so-composer__account-btn');
+    await page.click('.so-account-menu [data-account="' + alpha.id + '"]');
+    await page.waitForSelector('dialog.ds-dialog [data-when="after_turn"]', { timeout: 5000 });
+    await shot(page, 'chat-account-when');
+    await page.click('dialog.ds-dialog [data-when="after_turn"]');
+    const pending = await page.waitForFunction(() => /Beta → Alpha/.test(document.querySelector('#chat .so-composer__account-text')?.textContent || ''),
+      null, { timeout: 8000 }).then(() => true, () => false);
+    ok(pending, 'the composer says the switch waits for the turn', String(pending));
+    ok(await awaitLog(page, 'slept', 15000), 'the turn finishes on Beta', '');
+    ok(await awaitLog(page, 'Switched from Beta to Alpha', 15000), 'and then the chat moves to Alpha', '');
+
+    // A limit, and Continue with.
+    await say(page, '/limit');
+    await page.waitForSelector('#chat [data-kind="limit"] [data-action="continue-with"]', { timeout: 15000 });
+    const card = await page.$eval('#chat [data-kind="limit"]', (n) => n.innerText);
+    ok(/Limit reached — renews in/.test(card) && /Continue with Beta/.test(card), 'the limit card says when it renews and offers Beta',
+      oneLine(card));
+    await shot(page, 'chat-account-limit');
+    await page.click('#chat [data-kind="limit"] [data-action="continue-with"][data-account="' + beta.id + '"]');
+    ok(await awaitLog(page, 'Switched from Alpha to Beta', 15000), 'Continue with switches', '');
+    ok(await awaitLog(page, 'you said: ' + 'Continue where you left off.', 15000), 'and the new account is told to go on', '');
+    const gone = await page.$('#chat [data-kind="limit"] [data-action="continue-with"]');
+    ok(!gone, 'and the card offers nothing more', String(!gone));
+
+    // The automatic switch, from the chat's menu.
+    const gamma = (await post('/api/accounts', { agent: 'fake', kind: 'subscription', label: 'Gamma' })).account;
+    await rowMenu(page);
+    await page.waitForSelector('#sessionMenu [data-action="auto-switch"][aria-checked="false"]', { timeout: 5000 });
+    await page.click('#sessionMenu [data-action="auto-switch"]');
+    const on = await (async () => {
+      for (let i = 0; i < 40; i += 1) {
+        const r = await sessionRow(s, id);
+        if (r.options && r.options.auto_switch) return true;
+        await wait(100);
+      }
+      return false;
+    })();
+    ok(on, 'the menu turns the automatic switch on', String(on));
+    const continues = () => page.evaluate(() => (document.querySelector('#chat .so-chat__log')?.innerText.match(/Continue where you left off\./g) || []).length);
+    const before = await continues();
+    await say(page, '/limit');
+    ok(await awaitLog(page, 'Switched from Beta to Gamma', 20000), 'at the next limit the chat moves by itself to the account with the most left', gamma.id);
+    // The message and the agent's "you said:" of it.
+    const told = await page.waitForFunction((was) => (document.querySelector('#chat .so-chat__log')?.innerText.match(/Continue where you left off\./g) || []).length >= was + 2,
+      before, { timeout: 15000 }).then(() => true, () => false);
+    ok(told, 'and the turn is sent again there', String(told));
+
+    // The picker on a phone, in touch mode.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await option(page, 'touch');
+    await closeOptions(page);
+    await page.waitForSelector('.ds-toast--shown', { state: 'detached', timeout: 15000 }).catch(() => {});
+    await wait(400);
+    const phone = await page.evaluate(() => {
+      const b = document.querySelector('#chat .so-composer__account-btn');
+      const r = b ? b.getBoundingClientRect() : null;
+      const root = document.scrollingElement;
+      return {
+        shown: !!r && r.width > 0, h: r ? Math.round(r.height) : 0, right: r ? Math.round(r.right) : 0, vw: innerWidth,
+        side: Math.max(root.scrollWidth - root.clientWidth, 0), face: b ? b.textContent : '',
+      };
+    });
+    ok(phone.shown && phone.h >= 48 && phone.right <= phone.vw && phone.side === 0,
+      'on a phone the picker is a thumb\u2019s target in the composer, and nothing scrolls sideways', JSON.stringify(phone));
+    await page.click('#chat .so-composer__account-btn');
+    await page.waitForSelector('.so-account-menu:not([hidden]) [data-account="' + alpha.id + '"]', { timeout: 5000 });
+    const menuBox = await page.$eval('.so-account-menu', (n) => { const r = n.getBoundingClientRect(); return { l: Math.round(r.left), r: Math.round(r.right), vw: innerWidth }; });
+    ok(menuBox.l >= 0 && menuBox.r <= menuBox.vw, 'and its menu is on the screen', JSON.stringify(menuBox));
+    await shot(page, 'chat-account-phone');
+    await page.click('.so-account-menu [data-account="' + alpha.id + '"]');
+    ok(await awaitLog(page, 'Switched from Gamma to Alpha', 15000), 'a tap there switches too', '');
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 // -------------------------------------------------------------------- run
 
 const ALL = [
@@ -13769,6 +14044,8 @@ const ALL = [
   ['chat-ask', 'questions: the card and the dialog, every kind, a plan, a counter-question, Home, two devices', chatask],
   ['chat-attach', 'files from the button, dropped and pasted, at paths the server chose', chatattach],
   ['chat-phone', 'a chat on a phone: touch targets, no sideways scroll, the keyboard, the dialog as the screen', chatphone],
+  ['accounts', 'the Accounts card: an API key, a Codex device code, rename, order, a delete refused then taken, a phone', accountsscenario],
+  ['chat-account', 'a chat\u2019s account: from the sheet, switched idle and after a turn, a limit\u2019s Continue with, the automatic switch, a phone', chataccount],
   ['backup', 'the Backup card: a bucket configured, a backup on demand, a failure and the warning, and the next good run', backup],
   ['restore', 'a machine that is gone, and a new one restored from its backup on the setup page', restore],
   ['home-landing', 'every start of the page is Home, and the button and the address go back to it', homelanding],
