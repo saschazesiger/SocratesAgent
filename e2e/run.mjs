@@ -7793,17 +7793,22 @@ async function homequeue() {
       && d.options.length === 2 && d.options.every((o) => o.pressed === 'false'), 20000);
     ok(moved.ok, 'once the first is answered the second takes the dialog', JSON.stringify(moved.seen && { session: moved.seen.session, top: moved.seen.top }));
     const toasts = await watchToasts(s.page);
+    await s.page.evaluate((target) => { window.__followed = target; }, first.id);
     await s.page.click('dialog.so-askdlg .so-q-option[data-option="sqlite"]');
     await s.page.click('dialog.so-askdlg [data-action="send"]');
     // A link followed in the moment the last word is on screen - a
-    // notification tapped just then - is answered, not dropped with the
-    // dialog: there is nothing left to ask, and the page says so.
+    // notification tapped just then, here in the very poll that sees
+    // "Answered" - is answered, not dropped with the dialog: there is
+    // nothing left to ask, and the page says so.
     const lastWord = await s.page.waitForFunction(() => {
       const title = document.querySelector('dialog.so-askdlg .so-q-finished .ds-empty__title');
-      return !!title && title.textContent === 'Answered';
-    }, null, { timeout: 30000, polling: 50 }).then(() => true, () => false);
-    ok(lastWord && await askShut(s.page, 20000), 'after the last one says it is answered, the dialog closes', 'shut');
-    await s.page.evaluate((target) => { location.hash = '#q=' + target; }, first.id);
+      if (!title || title.textContent !== 'Answered') return false;
+      location.hash = '#q=' + window.__followed;
+      return true;
+    }, null, { timeout: 30000, polling: 50 }).then(() => true, () => false).catch(() => false);
+    const shut = await askShut(s.page, 20000);
+    ok(lastWord && shut, 'after the last one says it is answered, the dialog closes',
+      JSON.stringify({ answered: lastWord, shut }));
     const told = await s.page.waitForFunction(() => (window.__toastsSeen || []).some((t) => /Nothing is waiting for an answer/.test(t)),
       null, { timeout: 10000 }).then(() => true, () => false);
     ok(told && !(await askLook(s.page)), 'a link to a question already answered says nothing is waiting any more',
@@ -8555,9 +8560,9 @@ async function homerunlost() {
     ok(!words.some((w) => /another device|not taken/.test(w)), 'never that another device answered, nor that it was not taken', words.join(' | '));
     await askShut(s.page, 15000);
 
-    // The reply is lost on the way back - the server took the answer - and
-    // the dialog was shut before it came: opened again, it follows the
-    // answer as its own.
+    // The reply is lost on the way back - the server took the answer - with
+    // the dialog open: it follows the answer to its end and counts it as its
+    // own. (Shut before the reply and opened again is the case above.)
     const second = await askingChat(s, 'Reply lost');
     await awaitHome(s.page, (h) => h.counts.questions === 1, 10000);
     let lose = true;
@@ -8572,16 +8577,15 @@ async function homerunlost() {
     await awaitAsk(s.page, (d) => !!d && d.options.length === 2, 10000);
     await s.page.click('dialog.so-askdlg .so-q-option[data-option="postgres"]');
     await s.page.click('dialog.so-askdlg [data-action="send"]');
-    await s.page.click('dialog.so-askdlg [data-action="close"]').catch(() => {});
-    await askShut(s.page, 5000);
+    const followed = await awaitAsk(s.page, (d) => !d || d.finished === 'Answered', 30000);
     const secondGot = await returned(s, second.id, 20000);
-    await s.page.click('.so-home__card[data-id="' + second.id + '"] [data-action="answer"]').catch(() => {});
-    await wait(2500);
+    await askShut(s.page, 15000);
     const lostWords = await lostSaid();
     const after = (await historyOf(s, second.id)).asks || [];
     ok(!!secondGot && secondGot.answers.db.selected.join() === 'postgres' && after.filter((a) => a.answered).length === 1,
       'an answer whose reply was lost went in once', JSON.stringify({ got: secondGot && secondGot.answers.db.selected }));
-    ok(!lostWords.some((w) => /another device|not taken/.test(w)), 'and is never called another device’s, nor refused', lostWords.join(' | '));
+    ok(followed.ok && lostWords.includes('Answered') && !lostWords.some((w) => /another device|not taken/.test(w)),
+      'and the dialog follows it to "Answered", never calling it another device’s nor refused', lostWords.join(' | '));
     await s.page.unroute('**/api/chats/*/asks/*/answer');
     ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors', unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
   } finally { await s.stop(); }
