@@ -625,6 +625,27 @@ func TestChatParksWhenIdleAndResumes(t *testing.T) {
 	}
 }
 
+// A chat filed as done that is written to is picked up again: it goes back
+// in progress, where the sweep neither puts its agent to rest again nor
+// deletes it when the done day is up.
+func TestADoneChatWrittenToIsPickedUpAgain(t *testing.T) {
+	c := newChatEnv(t, time.Hour)
+	id := c.create(t)
+	c.send(t, id, "m1", "one")
+	c.waitJournal(t, id, 10*time.Second, "the first turn", turnsEnded(1))
+	if code, body := c.post(t, "/api/sessions/"+id+"/file", map[string]any{"status": store.StatusDone}); code != http.StatusOK {
+		t.Fatalf("file as done: %d %v", code, body)
+	}
+	if row, _ := c.store.GetSession(id); row.Status != store.StatusDone {
+		t.Fatalf("filed as %q", row.Status)
+	}
+	c.send(t, id, "m2", "two")
+	c.waitJournal(t, id, 10*time.Second, "the second turn", turnsEnded(2))
+	if row, _ := c.store.GetSession(id); row.Status != store.StatusInProgress {
+		t.Fatalf("a done chat written to is %q", row.Status)
+	}
+}
+
 // Messages sent during a turn are queued, and taken up one turn each, in order.
 func TestChatQueuesMessagesDuringATurn(t *testing.T) {
 	c := newChatEnv(t, time.Hour)

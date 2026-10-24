@@ -1038,9 +1038,18 @@ func (s *Server) handleChatMessage(w http.ResponseWriter, r *http.Request) {
 
 // sendMessage submits one message and turns the host's answer into a
 // response. Sending a message is having seen the chat, as typing at a
-// terminal is.
+// terminal is, and it picks a done chat up again, as "Pick it up again" does
+// a terminal: left done, the sweep would put its agent to rest while it
+// works, and delete the chat once its day was up.
 func (s *Server) sendMessage(ctx context.Context, p *chatPeer, m *chatMessageBody) (int, map[string]any) {
 	s.manager.MarkRead(p.id)
+	if row, err := s.store.GetSession(p.id); err == nil && row.Status == store.StatusDone {
+		if err := s.store.SetSessionStatus(p.id, store.StatusInProgress); err != nil {
+			log.Printf("chat %s: could not pick it up again: %v", p.id, err)
+		} else {
+			s.events.poke()
+		}
+	}
 	return p.command(ctx, agenthost.Command{Op: agenthost.OpSend, ClientID: m.ClientID, Text: m.Text, Attachments: m.Attachments})
 }
 
