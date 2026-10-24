@@ -816,29 +816,45 @@ func isEmpty(dir string) (bool, error) {
 // account shares (OPENCODE_DB), when there is none yet; a second account's
 // stays in its folder, read by nothing. The three files are renamed
 // together: a process that still has them open keeps the same inodes.
+//
+// Where the database was, a link to it is left: HOME's ~/.local/share/opencode
+// is this folder now, and an opencode started by hand - in a Shell, with no
+// OPENCODE_DB - opens the database there, which would otherwise be a new,
+// empty one beside the conversations. SQLite follows the link and keeps its
+// -wal and -shm beside the file it names, so both are one database.
 func (m *migration) openCodeStore(accountData string) error {
 	layout := opencode.NewLayout(m.layout.Root)
-	if _, err := os.Lstat(layout.DB()); err == nil {
-		return nil
-	}
-	if _, err := os.Lstat(filepath.Join(accountData, "opencode.db")); err != nil {
-		return nil
-	}
-	if err := os.MkdirAll(layout.Root, 0o700); err != nil {
-		return err
-	}
-	// The companions first: a crash in between leaves the main file where
-	// the next run looks for it.
-	for _, suffix := range []string{"-wal", "-shm", ""} {
-		from := filepath.Join(accountData, "opencode.db"+suffix)
-		if _, err := os.Lstat(from); err != nil {
-			continue
+	old := filepath.Join(accountData, "opencode.db")
+	if _, err := os.Lstat(layout.DB()); errors.Is(err, fs.ErrNotExist) {
+		if _, err := os.Lstat(old); err != nil {
+			return nil
 		}
-		if err := os.Rename(from, layout.DB()+suffix); err != nil {
+		if err := os.MkdirAll(layout.Root, 0o700); err != nil {
 			return err
 		}
+		// The companions first: a crash in between leaves the main file
+		// where the next run looks for it.
+		for _, suffix := range []string{"-wal", "-shm", ""} {
+			from := old + suffix
+			if _, err := os.Lstat(from); err != nil {
+				continue
+			}
+			if err := os.Rename(from, layout.DB()+suffix); err != nil {
+				return err
+			}
+		}
+	} else if err != nil {
+		return err
 	}
-	return nil
+	// A run cut short after the rename makes the link here too.
+	if _, err := os.Lstat(old); !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	target, err := filepath.Rel(accountData, layout.DB())
+	if err != nil {
+		return err
+	}
+	return os.Symlink(target, old)
 }
 
 // --------------------------------------------------------------- the backup

@@ -1217,7 +1217,10 @@ link are **one step** on Linux: a link is made at the new place and exchanged wi
 meanwhile never makes a second folder there; a file system that cannot exchange gets a rename and
 then the link. The shared folders inside (`projects/`, `sessions/`, …) are swapped for their links
 the same way before their content is merged into `<data>/agents/<agent>/` (what both have stays
-aside as `<name>.pre-rebuild`). First a tar of the data folder and the moved folders,
+aside as `<name>.pre-rebuild`). OpenCode's `opencode.db` (with `-wal`, `-shm`) is renamed to the
+shared `agents/opencode/opencode.db` and a relative link to it is left in its place, so an
+`opencode` started by hand (no `OPENCODE_DB`) opens the same database; SQLite keeps the
+write-ahead log beside the file the link names. First a tar of the data folder and the moved folders,
 `<data>.pre-rebuild.tar` (0600), the way back to the build before: its `data/socrates.db` is the
 copy the upgrade left (`store.PreUpgradeCopy`, `socrates.db.pre-v12.bak`), which that build opens
 where it refuses the upgraded file, and it keeps the mirror's `s3.json` and the agent terminals'

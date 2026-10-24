@@ -341,6 +341,9 @@ func TestTheMigrationMovesEveryLoginOnceAndLinksTheOldPaths(t *testing.T) {
 		}
 	}
 	isLink(t, filepath.Join(home, ".config/opencode"))
+	// The database left the account's folder for the shared one, and an
+	// opencode started by hand with HOME's folders still opens it.
+	sameFile(t, filepath.Join(home, ".local/share/opencode/opencode.db"), filepath.Join(data, "agents/opencode/opencode.db"))
 	untouched(t, home, multiAuth)
 
 	// Not one login exists twice (the backup tar aside, which nothing can
@@ -431,6 +434,65 @@ func TestThePreRebuildTarIsTheWayBack(t *testing.T) {
 	}
 	if version != 9 || terminals != 2 {
 		t.Fatalf("the tar's database is at schema %d with %d of the 2 agent terminals, want 9 with both", version, terminals)
+	}
+}
+
+// OpenCode's database is one database through both its paths: a write made
+// through HOME's old one, as an opencode started by hand makes it, is read
+// through the shared one every chat is given, and SQLite keeps its
+// write-ahead log beside the file the link names, not beside the link.
+func TestOpenCodesDatabaseIsOneThroughTheOldPath(t *testing.T) {
+	data, home := fixture(t)
+	oldPath := filepath.Join(home, ".local/share/opencode/opencode.db")
+	for _, suffix := range []string{"", "-wal"} {
+		if err := os.Remove(oldPath + suffix); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := func(path string, queries ...string) {
+		t.Helper()
+		db, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		for _, q := range queries {
+			if _, err := db.Exec(q); err != nil {
+				t.Fatalf("%s: %v", q, err)
+			}
+		}
+	}
+	run(oldPath, `CREATE TABLE session(id TEXT)`, `INSERT INTO session VALUES('before')`)
+	if err := migrateOnce(t, data, home, ""); err != nil {
+		t.Fatal(err)
+	}
+	shared := filepath.Join(data, "agents/opencode/opencode.db")
+	run(oldPath, `INSERT INTO session VALUES('by hand')`)
+	db, err := sql.Open("sqlite", "file:"+shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var ids []string
+	rows, err := db.Query(`SELECT id FROM session ORDER BY rowid`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if strings.Join(ids, ",") != "before,by hand" {
+		t.Fatalf("the shared database has %v", ids)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Lstat(oldPath + suffix); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("SQLite made %s beside the link: %v", filepath.Base(oldPath+suffix), err)
+		}
 	}
 }
 
