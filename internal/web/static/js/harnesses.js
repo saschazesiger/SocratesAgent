@@ -745,10 +745,20 @@ export function settingsForm(options = {}) {
   });
   accountPicker.button.setAttribute('aria-describedby', id('AccountHint'));
   accountRow.append(accountPicker.node);
+  // The button under the field signs the chosen account in, or adds the
+  // agent's first.
   accountSignIn.addEventListener('click', async () => {
-    const chosen = accounts.byId(pick.account);
-    if (!chosen) return;
-    await accounts.signIn(chosen, accountSignIn);
+    if (!accounts.forAgent(pick.harness).length) {
+      const made = await accounts.addAccountDialog(accountSignIn, pick.harness);
+      if (made) {
+        pick.account = made.id;
+        pick.accountChosen = true;
+      }
+    } else {
+      const chosen = accounts.byId(pick.account);
+      if (!chosen) return;
+      await accounts.signIn(chosen, accountSignIn);
+    }
     renderAccount();
     onChange('account');
   });
@@ -853,11 +863,13 @@ export function settingsForm(options = {}) {
 
   // renderAccount offers a chat its agent's accounts. Until somebody picks
   // one, the chat starts on the one with the most usage left; a prepared chat
-  // leaves that to its start. With no account at all the field is not there:
-  // the chat starts on a Default account the server makes for it.
+  // leaves that to its start. With no account at all the chat would start on
+  // a Default account the server makes for it, not signed in yet: the field
+  // says so, and adds one.
   function renderAccount() {
     const list = isChat(pick.harness) ? accounts.forAgent(pick.harness) : [];
-    accountField.hidden = !list.length;
+    accountField.hidden = !isChat(pick.harness);
+    accountRow.hidden = !list.length;
     // Switching needs somewhere to switch to.
     autoSwitchField.hidden = list.length < 2;
     if (autoSwitchField.hidden) {
@@ -867,6 +879,10 @@ export function settingsForm(options = {}) {
     if (!list.length) {
       pick.account = '';
       pick.accountChosen = false;
+      accountHint.textContent = 'No ' + label(pick.harness) + ' account yet. Add one, or the chat starts on a new '
+        + 'Default account that has to be signed in first.';
+      accountSignIn.hidden = !isChat(pick.harness);
+      accountSignIn.textContent = 'Add an account';
       return;
     }
     const known = pick.account === AUTO_ACCOUNT ? deferredProfile(pick.harness) : list.some((a) => a.id === pick.account);
@@ -892,6 +908,7 @@ export function settingsForm(options = {}) {
       words = key ? 'The key of ' + chosen.label + ' was not taken; replace it on the dashboard.'
         : chosen.label + ' is not signed in yet.';
       accountSignIn.hidden = key;
+      accountSignIn.textContent = 'Sign in';
     } else if (chosen && accounts.renewal(chosen)) {
       words = chosen.label + ' is at its limit and ' + accounts.renewal(chosen) + '.';
     } else if (!pick.accountChosen && chosen && chosen.id === accounts.recommended(pick.harness)
