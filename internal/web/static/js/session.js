@@ -1810,6 +1810,8 @@ function showChatQuestions(chatId, { askId = '', only = false } = {}) {
       if (!state.questionWanted || state.questionWanted.id !== chatId) toast('No connection. The question opens as soon as it is back.');
       wantQuestion(chatId);
     },
+    // Home's connection line, which the dialog over it says too.
+    connection: () => connectionLine(streamConnection(), state.reachable),
   });
 }
 

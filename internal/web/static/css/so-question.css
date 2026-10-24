@@ -10,8 +10,10 @@
  *   .so-q-shell          its box: the top bar, the scrolling body and the
  *                        action bar in one column; [data-arming] for a
  *                        moment after a new question is drawn (its buttons
- *                        take no tap)
+ *                        take no tap), [data-stale] while the connection is
+ *                        not live (the question is dimmed)
  *   .so-q-top            Close, and the step the walk is at
+ *   .so-q-conn           the connection line under the top bar (a DS alert)
  *   .so-q-scroll         the session, the question, its options, the field
  *                        of one's own, and the progress line
  *   .so-q-session        the agent's mark, the title, Open chat
@@ -91,6 +93,22 @@
   padding-right: calc(var(--so-kb-copy-reserve) + env(safe-area-inset-right, 0px));
 }
 
+/* Home's connection line, said in the dialog over it: its words, and under
+   them that the question may already have been answered. */
+.so-q-conn {
+  flex: none;
+  margin: 0 var(--ds-space-6) var(--ds-space-2);
+}
+
+.so-q-conn-words,
+.so-q-conn-detail {
+  display: block;
+}
+
+.so-q-conn-detail {
+  font: var(--ds-font-meta);
+}
+
 /* ── The scrolling body ──────────────────────────────────────────────── */
 
 .so-q-scroll {
@@ -137,8 +155,10 @@
   transition: opacity var(--ds-dur-fast) var(--ds-ease-in-out);
 }
 
-/* An answer on its way dims the question it answers. */
-.so-q-body[data-state] {
+/* An answer on its way dims the question it answers, and so does a
+   connection that is not live: the question may not be current. */
+.so-q-body[data-state],
+.so-q-shell[data-stale] .so-q-body {
   opacity: var(--ds-state-stale);
 }
 

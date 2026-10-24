@@ -55,6 +55,11 @@ const ARMED = '.so-q-scroll button, .so-q-actions button';
 // needs, and the question is scrolled up to the top.
 const SHORT_SCREEN = 500;
 
+// How often the dialog says its connection again while it is not live: the
+// age in "Offline · updated 40 s ago" moves on (HOME.md, "The dialog says it
+// too").
+const CONN_EVERY = 2000;
+
 /* ------------------------------------------------------------ the drafts */
 
 const draftKey = (askId) => 'socrates.ask.' + askId;
@@ -275,8 +280,10 @@ async function collect({ sessions, chatId = '', askId = '', view }) {
  *              than the dialog saying that it failed
  *   asking()   the chats asking now, for the walk to take up what was asked
  *              while it went, once it is at its end
+ *   connection()  the page's connection line (home.js connectionLine), which
+ *              the dialog says too: it is a modal over Home's
  */
-export async function openChatAsks({ sessions, chatId, askId = '', view, openChat, unreachable, asking }) {
+export async function openChatAsks({ sessions, chatId, askId = '', view, openChat, unreachable, asking, connection }) {
   const { all, items, failed } = await collect({ sessions, chatId, askId, view });
   if (!items.length) {
     if (all.some((item) => item.chatId === chatId) && openChat) openChat(chatId);
@@ -304,6 +311,7 @@ export async function openChatAsks({ sessions, chatId, askId = '', view, openCha
     // once the dialog is put away.
     closed: () => { if (view) view.redraw(); },
     more: asking ? async () => (await collect({ sessions: asking(), view })).items : null,
+    connection,
   });
 }
 
@@ -342,8 +350,11 @@ export function closeAskDialog() { if (current) current.close(); }
  *   closed()            the dialog has been put away
  *   more()              the questions open now, for the walk to take up at
  *               its end what was asked while it went
+ *   connection()        the page's connection line, {kind, words}: while it
+ *               is not live the dialog says so under its top bar, that the
+ *               question may already have been answered, and dims it
  */
-export function openAskDialog({ items, start = 0, watch, openChat, closed, more = null }) {
+export function openAskDialog({ items, start = 0, watch, openChat, closed, more = null, connection = null }) {
   if (current) { current.jump(items, start); return current; }
   const opener = document.activeElement;
   const dialog = document.createElement('dialog');
@@ -359,7 +370,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
   const st = {
     items: items.slice(), at: Math.max(0, Math.min(start, items.length - 1)), draft: null, phase: 'ask',
     details: new Set(), speaking: false, unwatch: null, timer: null, closed: false, problem: null,
-    refused: null, armTimer: null,
+    refused: null, armTimer: null, connTimer: null, connSaid: '',
   };
 
   // arm makes the buttons take no tap for TAP_ARM (the CSS takes the tap
@@ -465,6 +476,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     st.closed = true;
     clearTimeout(st.timer);
     clearTimeout(st.armTimer);
+    clearInterval(st.connTimer);
     if (st.unwatch) st.unwatch();
     unlisten();
     unrefused();
@@ -506,6 +518,23 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
 
   function questionsOf() { return askQuestions(item().ask); }
 
+  // doubt is the connection line while what the dialog shows may be old -
+  // connecting again, checking a quiet stream, offline - and null while it
+  // is live, or polled and current.
+  function doubt() {
+    const conn = connection ? connection() : null;
+    return conn && (conn.kind === 'connecting' || conn.kind === 'offline') ? conn : null;
+  }
+
+  // connHtml is Home's connection line as the dialog says it: a DS alert
+  // under the top bar. A question still to be answered may have been
+  // answered on another device meanwhile, and nothing would have said so.
+  function connHtml(conn) {
+    return html`<div class="${'ds-alert ' + (conn.kind === 'offline' ? 'ds-alert--error' : 'ds-alert--warning') + ' so-q-conn'}" role="status" data-ds-key="conn" data-status="${conn.kind}">${raw(icon('wifiOff', 20))}<span class="ds-alert__text"><span class="so-q-conn-words">${conn.words}</span>${
+      st.phase === 'ask' ? html`<span class="so-q-conn-detail">This question may already have been answered.</span>` : ''
+    }</span></div>`;
+  }
+
   function draw(focus = false) {
     const one = item();
     if (!one) { close(); return; }
@@ -519,7 +548,12 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     const session = one.session || {};
     const counter = st.items.length > 1 ? (st.at + 1) + ' of ' + st.items.length : '';
     const settled = st.phase === 'answered' || st.phase === 'elsewhere';
-    morph(shell, html`<div class="so-q-top" data-ds-key="top"><button class="ds-btn ds-btn--quiet ds-btn--icon so-q-close" type="button" data-action="close" aria-label="Close" data-tip="Close">${raw(icon('close', 20))}</button><span class="so-q-top-title">${counter ? 'Questions · ' + counter : 'Question'}</span></div>
+    const conn = settled ? null : doubt();
+    st.connSaid = conn ? conn.kind + ':' + conn.words + ':' + st.phase : '';
+    shell.toggleAttribute('data-stale', !!conn);
+    morph(shell, html`<div class="so-q-top" data-ds-key="top"><button class="ds-btn ds-btn--quiet ds-btn--icon so-q-close" type="button" data-action="close" aria-label="Close" data-tip="Close">${raw(icon('close', 20))}</button><span class="so-q-top-title">${counter ? 'Questions · ' + counter : 'Question'}</span></div>${
+      conn ? connHtml(conn) : ''
+    }
 <div class="so-q-scroll" data-ds-key="${'scroll:' + ask.id}"><div class="so-q-session"><span class="so-mark">${raw(agentMarkHtml(session.harness || '', 24))}</span><span class="so-q-session-text"><span class="so-q-session-title so-ellipsis">${session.title || 'Chat'}</span></span>${
       openChat ? html`<button class="ds-btn so-q-open" type="button" data-action="open-chat">Open chat</button>` : ''
     }</div>${settled ? doneHtml(ask) : html`<div class="so-q-body so-ask-body" data-ds-key="${'q:' + ask.id + ':' + step}"${st.phase === 'sent' ? html` data-state="pending"` : ''}>${
@@ -859,6 +893,15 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
   load();
   draw();
   arm();
+  // The line follows the connection, and is said again while it is down;
+  // a dialog whose line has not changed is not drawn again.
+  if (connection) {
+    st.connTimer = setInterval(() => {
+      if (st.closed || !item()) return;
+      const conn = st.phase === 'answered' || st.phase === 'elsewhere' ? null : doubt();
+      if ((conn ? conn.kind + ':' + conn.words + ':' + st.phase : '') !== st.connSaid) draw();
+    }, CONN_EVERY);
+  }
   showOverlay(dialog).then(() => {
     const target = shell.querySelector('.so-q-text') || shell;
     target.focus({ preventScroll: true });

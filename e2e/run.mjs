@@ -9431,23 +9431,14 @@ async function homeunread() {
 
 // home-honest: what Home and the dialog say is so. An age is measured on the
 // server's clock, not a device's that is minutes off; the dialog says when it
-// is offline, and that its question may have been answered; and the poll a
-// page falls back on comes compressed.
+// is offline, and that its question may have been answered; an answer sent
+// offline is saved and said to be, and goes in once the connection is back;
+// and the poll a page falls back on comes compressed.
 async function homehonest() {
-  const { s, stub } = await homeServer();
+  const s = await homeChats();
   let skewed = null;
   let away = null;
   try {
-    const asks = await makeAgent(s, 'Asks on a fast clock');
-    const offline = await makeAgent(s, 'Asks while offline');
-
-    // The poll and the list, compressed for a client that takes gzip.
-    for (const path of ['/api/home', '/api/sessions']) {
-      const res = await s.context.request.get(s.url + path, { headers: { 'Accept-Encoding': 'gzip' } });
-      ok(res.ok() && res.headers()['content-encoding'] === 'gzip' && !!(await res.json()),
-        path + ' is sent gzipped to a client that accepts it', JSON.stringify({ status: res.status(), encoding: res.headers()['content-encoding'] }));
-    }
-
     // A device whose clock is ten minutes fast.
     skewed = await deviceOf(s);
     await skewed.page.addInitScript((off) => {
@@ -9461,28 +9452,31 @@ async function homehonest() {
     }, 10 * 60 * 1000);
     await skewed.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
     await awaitHome(skewed.page, (h) => h.shown && h.conn === 'live', 20000);
-    await askQuestion(s, asks);
-    await awaitHome(skewed.page, (h) => h.rows.some((r) => r.id === asks && r.answer), 15000);
-    const meta = await skewed.page.$eval('.so-home__card[data-id="' + asks + '"] .so-home__card-status', (n) => n.textContent);
+    const fast = await askingChat(s, 'Asks on a fast clock');
+    await awaitHome(skewed.page, (h) => h.rows.some((r) => r.id === fast.id && r.answer), 15000);
+    const meta = await skewed.page.$eval('.so-home__card[data-id="' + fast.id + '"] .so-home__card-status', (n) => n.textContent);
     ok(/just now/.test(meta) && !/min ago/.test(meta), 'a question asked a moment ago says so on a device ten minutes fast', meta);
     await skewed.context.close();
     skewed = null;
+    await answerFrom(s, fast.id, fast.askId, { db: ['postgres'] });
 
     // The dialog, offline.
     away = await deviceOf(s);
     await away.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
     await awaitHome(away.page, (h) => h.shown && h.conn === 'live', 20000);
-    await askQuestion(s, offline);
-    await awaitHome(away.page, (h) => h.rows.some((r) => r.id === offline && r.answer), 15000);
-    await away.page.click('.so-home__card[data-id="' + offline + '"] .so-home__answer');
-    await awaitSheet(away.page, (d) => !!d && d.session === 'Asks while offline' && d.options.length === 2, 10000);
+    const offline = await askingChat(s, 'Asks while offline');
+    await awaitHome(away.page, (h) => h.rows.some((r) => r.id === offline.id && r.answer), 15000);
+    await away.page.click('.so-home__card[data-id="' + offline.id + '"] .so-home__answer');
+    await awaitAsk(away.page, (d) => !!d && d.session === 'Asks while offline' && d.options.length === 2, 10000);
     const connLine = () => away.page.evaluate(() => {
-      const line = document.querySelector('dialog.so-question .so-q-conn');
-      const shell = document.querySelector('dialog.so-question .so-q-shell');
+      const line = document.querySelector('dialog.so-askdlg .so-q-conn');
+      const shell = document.querySelector('dialog.so-askdlg .so-q-shell');
+      const body = document.querySelector('dialog.so-askdlg .so-q-body');
       return {
-        shown: !!line && !line.hidden,
-        text: line ? line.textContent.trim() : '',
+        shown: !!line && line.checkVisibility(),
+        text: line ? line.textContent.replace(/\s+/g, ' ').trim() : '',
         dim: !!shell && shell.hasAttribute('data-stale'),
+        opacity: body ? getComputedStyle(body).opacity : '',
       };
     });
     const liveLine = await connLine();
@@ -9495,9 +9489,19 @@ async function homehonest() {
       await wait(300);
     }
     ok(!liveLine.shown && !liveLine.dim, 'live, the dialog says nothing about its connection', JSON.stringify(liveLine));
-    ok(said.shown && said.dim && /may already have been answered/.test(said.text),
+    ok(said.shown && said.dim && Number(said.opacity) < 1 && /may already have been answered/.test(said.text),
       'offline, the dialog says so, dims the question and says it may already have been answered',
       ((Date.now() - offAt) / 1000).toFixed(1) + ' s: ' + JSON.stringify(said));
+
+    // An answer sent while offline is saved, and said to be.
+    const words = await watchAsk(away.page);
+    await away.page.click('dialog.so-askdlg .so-q-option[data-option="sqlite"]');
+    await away.page.click('dialog.so-askdlg [data-action="send"]');
+    const saved = await awaitAsk(away.page, (d) => !!d && /Saved\. Your answer goes out when the connection is back\./.test(d.status), 5000);
+    const savedLine = await connLine();
+    ok(saved.ok && savedLine.shown && !/may already have been answered/.test(savedLine.text),
+      'sent offline, the answer is saved and said to go out when the connection is back, and the question no longer said to be maybe answered',
+      JSON.stringify({ status: saved.seen && saved.seen.status, line: savedLine.text }));
     await away.context.setOffline(false);
     let back = null;
     const onAt = Date.now();
@@ -9506,13 +9510,24 @@ async function homehonest() {
       if (!back.shown && !back.dim) break;
       await wait(300);
     }
+    const got = await returned(s, offline.id, 30000);
+    const asks = (await historyOf(s, offline.id)).asks || [];
     ok(!back.shown && !back.dim, 'and stops saying it once it is live again', ((Date.now() - onAt) / 1000).toFixed(1) + ' s');
+    ok(!!got && got.answers.db.selected.join() === 'sqlite' && asks.filter((a) => a.answered).length === 1,
+      'the saved answer goes in once the connection is back, once', JSON.stringify({ got: got && got.answers.db.selected, said: await words() }));
+    // The poll and the list, compressed for a client that takes gzip, once
+    // there is enough in them to be worth it (a kilobyte).
+    for (const path of ['/api/home', '/api/sessions']) {
+      const res = await s.context.request.get(s.url + path, { headers: { 'Accept-Encoding': 'gzip' } });
+      const bytes = (await res.body()).length;
+      ok(res.ok() && res.headers()['content-encoding'] === 'gzip' && bytes > 1024,
+        path + ' is sent gzipped to a client that accepts it', JSON.stringify({ status: res.status(), encoding: res.headers()['content-encoding'], bytes }));
+    }
     ok(unexpected(s.errors, OFFLINE_NOISE).length === 0, 'no unexpected console errors', unexpected(s.errors, OFFLINE_NOISE).join(' | ') || '0');
   } finally {
     if (skewed) await skewed.context.close();
     if (away) await away.context.close();
     await s.stop();
-    await stub.close();
   }
 }
 
@@ -11928,7 +11943,7 @@ const ALL = [
   ['home-quiet', 'a tap on a stream that died quietly, chats’ questions polled across a restart, a long hide, a naming cut off, a server never reached', homequiet],
   ['home-kinds', 'a multi-select, two questions walked with Next and Back, and a plan answered by its card: sent back, then approved', homekinds],
   ['home-unread', 'a question in prose whose read failed, or had no key, is read on the open Home once it can be', homeunread],
-  ['home-honest', 'ages by the server\u2019s clock, a dialog that says it is offline, and a compressed poll', homehonest],
+  ['home-honest', 'ages by the server\u2019s clock, a dialog that says it is offline, an answer saved offline, and a compressed poll', homehonest],
   ['home-language', 'a question read in German off an English screen: two tabs that share Yes and No, each given its own answer', homelanguage],
   ['home-restart', 'a server restart under an open dialog: every question kept, its choice, its age, and the one asked in prose', homerestart],
   ['home-devices', 'two devices on one question: the second follows the first\u2019s answer, and is told when its Send crossed it', homedevices],
