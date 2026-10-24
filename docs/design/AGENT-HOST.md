@@ -1218,9 +1218,13 @@ meanwhile never makes a second folder there; a file system that cannot exchange 
 then the link. The shared folders inside (`projects/`, `sessions/`, …) are swapped for their links
 the same way before their content is merged into `<data>/agents/<agent>/` (what both have stays
 aside as `<name>.pre-rebuild`). First a tar of the data folder and the moved folders,
-`<data>.pre-rebuild.tar` (0600): it holds the logins **unencrypted**, and the agents' live SQLite
-files as they were read (a running agent may leave a torn copy; the moved originals are whole) —
-delete it once the accounts work. Idempotent and safe to interrupt: each account is made once per
+`<data>.pre-rebuild.tar` (0600), the way back to the build before: its `data/socrates.db` is the
+copy the upgrade left (`store.PreUpgradeCopy`, `socrates.db.pre-v12.bak`), which that build opens
+where it refuses the upgraded file, and it keeps the mirror's `s3.json` and the agent terminals'
+`sessions/<id>/` folders with their journals (which the clean cut deletes), leaving out only what
+neither build needs back (sockets, caches, downloaded binaries). It holds the logins
+**unencrypted**, and the agents' live SQLite files as they were read (a running agent may leave a
+torn copy; the moved originals are whole) — delete it once the accounts work. Idempotent and safe to interrupt: each account is made once per
 `origin`, a source is planned from its account row as well as from the disk (a run cut short
 between a rename and its link is finished), and every step looks at the disk before acting. A
 source that fails is logged and tried again at the next start while the others go on. A folder on

@@ -70,8 +70,14 @@ Binding documents, in order:
   health check is rolled back. `scripts/deploy-runner.sh` installs every push to `main`.
 - **First start after the merge**: the migration of §2 runs by itself. Check the log
   (`journalctl -u socrates`) for each source it moved, and Admin → Accounts for the accounts it
-  made; an account whose sign-in was lost says "Sign in again". The tar beside the data folder is
-  the way back.
+  made; an account whose sign-in was lost says "Sign in again". The tar beside the data folder
+  (`<data>.pre-rebuild.tar`) is the way back: its `data/` is the data folder as the build before
+  had it (its database at that build's schema, `s3.json`, the agent terminals' journals) and its
+  `home/` the agents' folders as they were. To go back, stop Socrates, install the build before,
+  move the data folder aside, remove the links the migration left in HOME (`~/.claude`,
+  `~/.claude.json`, `~/.codex`, `~/.local/share/opencode`, `~/.config/opencode`), and extract the
+  tar into an empty folder and move its `data/` and `home/` entries into place. A login refreshed
+  since the migration is newer in the moved folder than in the tar.
 - **What runs where**: `socrates.service` (the web server), `socrates-agents-<chat>.scope` (one
   chat's host and CLI, which outlive the service), `socrates-tmux*.scope` (the Shell terminals),
   `socrates-update.timer`. Data: `/var/lib/socrates` (README "What is where"; the layout is

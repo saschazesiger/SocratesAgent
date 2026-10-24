@@ -385,6 +385,55 @@ func TestTheMigrationMovesEveryLoginOnceAndLinksTheOldPaths(t *testing.T) {
 	}
 }
 
+// The tar is the way back to the build before: its database is the one that
+// build wrote (schema 9, with the agent terminals the cut removed), and it
+// keeps what that build reads that a backup leaves out - the mirror's
+// s3.json - and the agent terminals' folders with their journals, which the
+// cut deletes.
+func TestThePreRebuildTarIsTheWayBack(t *testing.T) {
+	data, home := fixture(t)
+	write(t, filepath.Join(data, "s3.json"), `{"bucket":"b1"}`)
+	write(t, filepath.Join(data, "sessions/s1/journal.raw"), "the terminal's bytes")
+	write(t, filepath.Join(data, "sessions/s1/journal.1.raw"), "older bytes")
+	if err := migrateOnce(t, data, home, ""); err != nil {
+		t.Fatal(err)
+	}
+	entries := tarEntries(t, data+".pre-rebuild.tar")
+	for name, want := range map[string]string{
+		"data/s3.json":                   `{"bucket":"b1"}`,
+		"data/sessions/s1/journal.raw":   "the terminal's bytes",
+		"data/sessions/s1/journal.1.raw": "older bytes",
+	} {
+		if got, ok := entries[name]; !ok || got != want {
+			t.Fatalf("the tar's %s: %q (%v), want %q", name, got, ok, want)
+		}
+	}
+	for name := range entries {
+		if strings.HasPrefix(name, "data/socrates.db") && name != "data/socrates.db" {
+			t.Fatalf("the tar has %s beside the database", name)
+		}
+	}
+	old := filepath.Join(t.TempDir(), "socrates.db")
+	if err := os.WriteFile(old, []byte(entries["data/socrates.db"]), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", "file:"+old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var version, terminals int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sessions WHERE id IN ('s1', 's2')`).Scan(&terminals); err != nil {
+		t.Fatal(err)
+	}
+	if version != 9 || terminals != 2 {
+		t.Fatalf("the tar's database is at schema %d with %d of the 2 agent terminals, want 9 with both", version, terminals)
+	}
+}
+
 // A migration cut short after any step is finished by the next start, with
 // the same result as one that ran through.
 func TestAnInterruptedMigrationIsFinishedByTheNextStart(t *testing.T) {

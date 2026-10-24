@@ -290,6 +290,11 @@ func (s *Store) bump() int64 {
 	return v
 }
 
+// PreUpgradeCopy is where the upgrade of the database at path to this build's
+// schema left the copy of it as it was: the file a build before this one can
+// open again, where the upgraded one is refused by it as newer.
+func PreUpgradeCopy(path string) string { return path + fmt.Sprintf(".pre-v%d.bak", SchemaVersion) }
+
 // migrate brings the file at path to SchemaVersion. The version lives in
 // SQLite's own user_version pragma rather than in a table of our own, so that
 // the check costs nothing and works on a database that has no tables yet.
@@ -331,7 +336,7 @@ func migrate(db *sql.DB, path string) error {
 		// above, in the old build), so without this copy a rollback has
 		// nothing to start from. version 0 is a file no build has written
 		// to yet - a new database - and has nothing worth a copy.
-		if err := backup(db, path+fmt.Sprintf(".pre-v%d.bak", SchemaVersion)); err != nil {
+		if err := backup(db, PreUpgradeCopy(path)); err != nil {
 			return fmt.Errorf("back up the database before migrating: %w", err)
 		}
 	}

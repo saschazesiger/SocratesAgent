@@ -843,11 +843,16 @@ func (m *migration) openCodeStore(accountData string) error {
 
 // --------------------------------------------------------------- the backup
 
-// backup writes <data>.pre-rebuild.tar: the data directory (the database as a
-// consistent copy, without what the backup engine leaves out and without
-// sockets) and every folder about to move, under the names it has now. It
-// is written beside itself and renamed into place whole, so a tar that is
-// there is complete; one that is there already is not written again.
+// backup writes <data>.pre-rebuild.tar, the way back to the build before: the
+// data directory as that build had it and every folder about to move, under
+// the names they have now. The database in it is the copy the store made
+// before it upgraded the file (store.PreUpgradeCopy) - the upgraded one is a
+// schema the build before refuses - and of the rest it leaves out only what
+// the backup engine does and that build does not read either (sockets, caches,
+// downloaded binaries): the mirror's s3.json and the agent terminals' folders
+// with their journals, which the clean cut deletes, stay in. It is written
+// beside itself and renamed into place whole, so a tar that is there is
+// complete; one that is there already is not written again.
 func (m *migration) backup(sources []source) error {
 	dest := m.layout.PreRebuildBackup()
 	if _, err := os.Stat(dest); err == nil {
@@ -865,18 +870,30 @@ func (m *migration) backup(sources []source) error {
 		os.Remove(tmp)
 		return err
 	}
-	dbCopy := filepath.Join(filepath.Dir(dest), filepath.Base(dest)+".db.tmp")
-	_ = os.Remove(dbCopy)
-	if err := m.opts.Store.CopyTo(dbCopy); err != nil {
-		return fail(fmt.Errorf("copy the database: %w", err))
-	}
-	defer os.Remove(dbCopy)
-	if err := addFile(tw, dbCopy, "data/"+paths.DB); err != nil {
-		return fail(err)
+	old := store.PreUpgradeCopy(m.layout.DB())
+	if _, err := os.Stat(old); err == nil {
+		if err := addFile(tw, old, "data/"+paths.DB); err != nil {
+			return fail(err)
+		}
+	} else {
+		// Upgraded without one - from before the terminal rewrite, which
+		// left a copy of its own - the database goes in as it is.
+		dbCopy := filepath.Join(filepath.Dir(dest), filepath.Base(dest)+".db.tmp")
+		_ = os.Remove(dbCopy)
+		if err := m.opts.Store.CopyTo(dbCopy); err != nil {
+			return fail(fmt.Errorf("copy the database: %w", err))
+		}
+		defer os.Remove(dbCopy)
+		if err := addFile(tw, dbCopy, "data/"+paths.DB); err != nil {
+			return fail(err)
+		}
 	}
 	skip := func(rel string) bool {
-		if rel == paths.DB || strings.HasPrefix(rel, paths.DB+"-") {
+		switch {
+		case rel == paths.DB || strings.HasPrefix(rel, paths.DB+"-") || strings.HasPrefix(rel, paths.DB+".pre-"):
 			return true
+		case rel == paths.LegacyS3Config || rel == paths.Sessions || strings.HasPrefix(rel, paths.Sessions+"/"):
+			return false
 		}
 		return paths.Excluded(rel)
 	}

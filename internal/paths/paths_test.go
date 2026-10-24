@@ -17,6 +17,7 @@ func TestExcluded(t *testing.T) {
 		"socrates.db.pre-v9.bak":    true,
 		"sessions/s1/journal.raw":   true,
 		"sessions/s1/journal.raw.1": true,
+		"sessions/s1/journal.1.raw": true,
 		"vscode/ab12/logs":          true,
 		"socrates.db":               false,
 		"sessions/s1/plan.json":     false,
