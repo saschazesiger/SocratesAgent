@@ -742,7 +742,11 @@ export function lineHtml(entry, view) {
         }</span>${infoButton([l.text], 'About the limit')}</div>`;
       }
       if (l.outcome === 'failed') {
-        return html`<div class="ds-alert ds-alert--error so-line-alert" data-ds-key="${key}" data-kind="failed" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${'The turn failed.' + (l.text ? ' ' + l.text : '')}</span>${infoButton([l.code ? 'code ' + l.code : ''], 'Error details')}</div>`;
+        // An agent that died mid-turn is said in plain words; how it died
+        // (the CLI's exit, a signal) is the "i"'s (agenthost cliExited).
+        const died = /^The agent exited during the turn: ([\s\S]+)$/.exec(String(l.text || ''));
+        const words = died ? 'The agent stopped during the turn. The next message starts it again.' : 'The turn failed.' + (l.text ? ' ' + l.text : '');
+        return html`<div class="ds-alert ds-alert--error so-line-alert" data-ds-key="${key}" data-kind="failed" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${words}</span>${infoButton([died ? died[1] : '', l.code ? 'code ' + l.code : ''], 'Error details')}</div>`;
       }
       return html`<div class="so-line" data-ds-key="${key}" data-kind="interrupted">${raw(icon('ban', 16))}<span class="so-line__text">Interrupted</span></div>`;
     }

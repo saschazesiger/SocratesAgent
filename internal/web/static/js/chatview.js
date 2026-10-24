@@ -432,6 +432,16 @@ export function mountChat(ctx) {
     return status !== 'live' && (navigator.onLine === false || (lostAt > 0 && Date.now() - lostAt >= CONNECTION_GRACE));
   }
 
+  // diedInTurn is an agent that exited during a turn: the conversation's
+  // last line says so already ("The agent stopped during the turn", with
+  // the exit behind its "i"), and the dock does not say it again - least of
+  // all as "could not start".
+  function diedInTurn() {
+    const last = chat.timeline[chat.timeline.length - 1];
+    return !!last && last.type === 'line' && last.line.kind === 'turn' && last.line.outcome === 'failed'
+      && /^The agent exited during the turn: /.test(String(last.line.text || ''));
+  }
+
   // drawState is the dock's line: the connection when it is not live, else
   // the agent when it is not well.
   function drawState() {
@@ -451,7 +461,7 @@ export function mountChat(ctx) {
       // (REBUILD §6.2): the conversation stays readable, and the agent can
       // go on once it is told where the folder is on this machine.
       line = html`<div class="ds-alert ds-alert--warning" data-ds-key="workdir">${raw(icon('alert', 20))}<span class="ds-alert__text">This chat's folder is not on this machine.</span><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-info" type="button" data-action="info" aria-label="The missing folder" data-tip="${session.workdir}">${raw(icon('info', 18))}</button><button class="ds-btn ds-btn--sm" type="button" data-action="point-folder">Point to folder</button></div>`;
-    } else if (chat.process === 'failed' && !chat.turn) {
+    } else if (chat.process === 'failed' && !chat.turn && !diedInTurn()) {
       line = html`<div class="ds-alert ds-alert--error" data-ds-key="failed">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">The agent could not start. Send a message to try again.</span><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-info" type="button" data-action="info" aria-label="Why it did not start" data-tip="${chat.processDetail || 'No detail was given.'}">${raw(icon('info', 18))}</button></div>`;
     } else if (chat.process === 'starting') {
       line = html`<div class="ds-alert" data-ds-key="starting"><span class="so-chat__spin" aria-hidden="true"><span class="ds-spinner"></span></span><span class="ds-alert__text">Starting the agent…</span></div>`;
