@@ -175,7 +175,8 @@ gitignored. Deleting `e2e/out/` is always safe.
 
 The agents' scenarios assert against the chat view and the protocol fakes; the
 Shell's against the pane. A scenario with a phone part runs it at 390×844 in
-touch mode.
+touch mode, except `options`, which measures the narrowest phone in use,
+360×740, as its viewport and nothing more.
 
 | name | what it proves |
 | --- | --- |

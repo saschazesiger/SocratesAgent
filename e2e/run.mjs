@@ -874,7 +874,8 @@ async function sessionlist() {
         && document.getElementById('sessionTitle').textContent === 'A chat renamed by the suite';
     }, chatSel, { timeout: 8000 }).then(() => true, () => false);
     ok(renamedChat, 'a chat is renamed from its row, in the row and in the header', String(renamedChat));
-    ok((await answerTo(s, chat, 'before it is done')) === 'you said: before it is done', 'the chat has worked', 'before it is done');
+    const worked = await answerTo(s, chat, 'before it is done');
+    ok(worked === 'you said: before it is done', 'the chat has worked', worked);
     await chatMenu('Done');
     const parked = await until(() => hostsOf(s.data).length === 0, 20000);
     const doneChat = (await (await s.context.request.get(s.url + '/api/sessions/' + chat)).json()).session;
@@ -3888,7 +3889,8 @@ async function activitywaiting() {
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
     const id = await startChat(s.page, 'claude');
     await clickRow(s.page, other);
-    ok((await tellChat(s, id, '/askuser')) === 200, 'Claude Code is told to ask, from another device', '/askuser');
+    const toldToAsk = await tellChat(s, id, '/askuser');
+    ok(toldToAsk === 200, 'Claude Code is told to ask, from another device', 'HTTP ' + toldToAsk);
 
     const asked = await awaitRow(s.page, id, (r) => r.waiting, 20000);
     ok(asked.ok, 'a question draws a ring that does not turn', took(asked));
@@ -7228,6 +7230,15 @@ const askShut = (page, timeout = 15000) => page.waitForFunction(() => {
   return !dialog || !dialog.open;
 }, null, { timeout }).then(() => true, () => false);
 
+// askClosed is askShut with what was measured: how long the dialog took to
+// close, or what it still showed.
+async function askClosed(page, timeout = 15000) {
+  const started = Date.now();
+  if (await askShut(page, timeout)) return { ok: true, said: 'closed after ' + (Date.now() - started) + ' ms' };
+  const look = await askLook(page);
+  return { ok: false, said: 'still open: ' + JSON.stringify(look && { top: look.top, status: look.status, finished: look.finished }) };
+}
+
 // askSettled waits for the dialog's opening animation to end: it pops in
 // from a little smaller, and a box measured on the way is not its size.
 const askSettled = (page) => page.waitForFunction(() => {
@@ -7775,7 +7786,8 @@ async function homeownanswer() {
     const db = (got && got.answers && got.answers.db) || {};
     ok(db.other === 'MariaDB, please' && (db.selected || []).length === 0,
       'the agent got the words, and no option', JSON.stringify(db));
-    ok(await askShut(s.page, 15000), 'the dialog closes when it is done', 'shut');
+    const closed = await askClosed(s.page, 15000);
+    ok(closed.ok, 'the dialog closes when it is done', closed.said);
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
@@ -7958,7 +7970,8 @@ async function homedeeplink() {
     ok(shown.ok && behind.shown, '#q= opens the question dialog on boot, over Home',
       JSON.stringify({ question: shown.seen && shown.seen.question, home: behind.shown }));
     await tab.click('dialog.so-askdlg [data-action="close"]');
-    ok(await askShut(tab, 5000), 'and Close puts it away', 'shut');
+    const closed = await askClosed(tab, 5000);
+    ok(closed.ok, 'and Close puts it away', closed.said);
     await tab.close();
 
     const other = await s.context.newPage();
@@ -8295,7 +8308,8 @@ async function hometouch() {
     const got = await returned(s, first.id);
     ok(!!got && got.answers.db.selected.join() === 'postgres' && posts.length === 1, 'a tap in the car answers, once',
       JSON.stringify({ got: got && got.answers.db.selected, posts: posts.length }));
-    ok(await askShut(car.page, 15000), 'and the dialog closes', 'shut');
+    const closed = await askClosed(car.page, 15000);
+    ok(closed.ok, 'and the dialog closes', closed.said);
     await car.context.close();
 
     // The phone, with a question of its own.
@@ -8484,7 +8498,8 @@ async function homeretry() {
       && failed.seen.actions.includes('send'),
       'an answer refused for good says why, and gives the questions back as they were, to send again',
       JSON.stringify(failed.seen && { refused: failed.seen.refused, actions: failed.seen.actions }));
-    ok((await chatOf(s, first.id)).asks.length === 1, 'and the question is still open', 'open');
+    const stillOpen = (await chatOf(s, first.id)).asks.length;
+    ok(stillOpen === 1, 'and the question is still open', stillOpen + ' open question(s)');
 
     // The second Send: the server cannot take it just now, and then can.
     refuse = 503;
@@ -8633,7 +8648,8 @@ async function homeopencode() {
     await s.page.click('dialog.so-askdlg [data-action="send"]');
     const got = await returned(s, id, 20000);
     ok(!!got && got.answers.db.selected.join() === 'sqlite', 'OpenCode got SQLite', JSON.stringify(got && got.answers.db));
-    ok(await askShut(s.page, 15000), 'the dialog closes', 'shut');
+    const closed = await askClosed(s.page, 15000);
+    ok(closed.ok, 'the dialog closes', closed.said);
     const after = await awaitHome(s.page, (h) => h.counts.questions === 0, 10000);
     ok(after.ok && ((await chatOf(s, id)).asks || []).length === 0, 'and the chat asks nothing any more', JSON.stringify(after.seen.counts));
 
@@ -9145,7 +9161,8 @@ async function homekinds() {
     const first = await returned(s, several.id, 20000);
     ok(!!first && first.answers.features.selected.join() === 'dark,export', 'the agent got both',
       JSON.stringify(first && first.answers.features));
-    ok(await askShut(s.page, 20000), 'and the dialog closes', 'shut');
+    const closed = await askClosed(s.page, 20000);
+    ok(closed.ok, 'and the dialog closes', closed.said);
 
     // Two questions: Next goes on, Back comes back to the choice made, and
     // Send answers both.
@@ -9173,7 +9190,8 @@ async function homekinds() {
     const second = await returned(s, tabs.id, 20000);
     ok(!!second && second.answers.colour.selected.join() === 'blue' && second.answers.features.selected.join() === 'search',
       'the agent got Blue and Search', JSON.stringify(second && { colour: second.answers.colour.selected, features: second.answers.features.selected }));
-    ok(await askShut(s.page, 20000), 'and the dialog closes', 'shut');
+    const closedAgain = await askClosed(s.page, 20000);
+    ok(closedAgain.ok, 'and the dialog closes', closedAgain.said);
 
     // A plan: Home counts it, and its Answer opens the chat at its card,
     // which answers it. Sent back with a note, the agent keeps planning;
@@ -9555,7 +9573,8 @@ async function homefollowup() {
     const followAsk = askFor('And which cache should it use?', ['Redis', 'Memcached']);
     // Queued behind the turn that asks, so it asks the moment that turn
     // ends: right after the answer.
-    ok((await tellChat(s, id, '/askuser ' + JSON.stringify(followAsk))) === 200, 'the follow-up waits in the chat’s queue', 'queued');
+    const queued = await tellChat(s, id, '/askuser ' + JSON.stringify(followAsk));
+    ok(queued === 200, 'the follow-up waits in the chat’s queue', 'HTTP ' + queued);
     await awaitHome(s.page, (h) => h.counts.questions === 1, 10000);
     await s.page.click('.so-home__q-action');
     await awaitAsk(s.page, (d) => !!d && d.options.length === 2, 10000);
@@ -9593,7 +9612,8 @@ async function homefollowup() {
     const asks = (await historyOf(s, id)).asks || [];
     ok(!!second && second.answers.db.selected.join() === 'redis' && asks.length === 2 && asks.every((a) => a.answered),
       'the follow-up gets the answer given to it, Redis, and only that', JSON.stringify({ second: second && second.answers.db.selected, asks: asks.length }));
-    ok(await askShut(s.page, 20000), 'and then the dialog closes', 'shut');
+    const closed = await askClosed(s.page, 20000);
+    ok(closed.ok, 'and then the dialog closes', closed.said);
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally {
     stop = true;
