@@ -1222,7 +1222,7 @@ function rowHtml(session) {
 
   return html`<div class="so-row" data-ds-key="${'row:' + id}" data-id="${id}" data-status="${status}"${prepared ? html` data-prepared` : ''}${unread ? html` data-unread` : ''}><a class="ds-drawer__item so-row__open" href="${'#' + id}"${attached ? html` aria-current="page"` : ''}><span class="so-mark" data-tip="${word}"${ring ? html` data-ring="${ring}"` : ''}>${raw(agentMarkHtml(session.harness, 20))}${
     badge ? html`<span class="so-mark__badge" data-kind="${badge}" aria-hidden="true">${raw(badgeIcon)}</span>` : ''
-  }</span><span class="so-row__text"><span class="so-row__label"${state.titling.has(id) ? html` data-titling` : ''}>${session.title}</span>${
+  }</span><span class="so-row__text"><span class="so-row__label" data-tip="${session.title}"${state.titling.has(id) ? html` data-titling` : ''}>${session.title}</span>${
     // The first line of a prepared session's prompt, which is what tells two
     // of them apart before either has a name of its own.
     preview ? html`<span class="so-row__preview">${preview}</span>` : ''

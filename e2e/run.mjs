@@ -14662,7 +14662,7 @@ const ALL = [
   ['typeafteroutage', 'a cut socket, a locked phone, and a pane that still takes keystrokes', typeafteroutage],
   ['typekeepsfocus', 'a dialog, the ⋮ menu and two sessions: the keys still land in the pane', typekeepsfocus],
   ['keyboard', 'on a touch screen only the button raises the terminal\u2019s keyboard, and every other field takes a tap', keyboard],
-  ['options', 'the ⋮ is this device\u2019s options, and the limits say when they renew', optionsmenu],
+  ['options', 'this device\u2019s options: the ⋮ on Home, \u201cThis device\u2026\u201d in a session\u2019s menu; the limits say when they renew', optionsmenu],
   ['design', 'white surfaces, marks, hover-only detail and motion that does not restart', design],
   ['clipboard', 'copy and paste: the keys, a plain drag, a click, a middle click, and OSC 52', clipboard],
   ['touchcopy', 'a finger held on the pane selects, grows and copies', touchcopy],
