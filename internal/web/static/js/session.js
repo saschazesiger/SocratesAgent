@@ -3854,6 +3854,8 @@ async function boot() {
     current: () => (isPrepared(state.current) ? null : state.current),
     live: () => (chatShown() ? state.chat.live() : state.live),
     insert: (text) => (chatShown() ? state.chat.insert(text) : insertIntoTerm(text)),
+    // The ticker is over the pane of a terminal and in the dock of a chat.
+    ticker: () => (chatShown() ? state.chat.ticker() : { box: dom.termTicker, line: dom.tickerWindow }),
   });
   // Copy, paste and upload, for whichever terminal is on screen.
   state.transfer = mountTransfer({

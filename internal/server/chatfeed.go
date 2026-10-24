@@ -11,6 +11,7 @@ package server
 import (
 	"encoding/json"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
@@ -612,4 +613,43 @@ func suffix(sep, text string) string {
 		return ""
 	}
 	return sep + text
+}
+
+// chatNow is a chat as the spoken Status is told it: its last turn (what the
+// person asked, the answer, the calls and the task list), what runs now, and
+// what it asks.
+func chatNow(p *agent.Projection) string {
+	var b strings.Builder
+	t := p.Turn
+	if t == nil {
+		t = p.LastTurn
+	}
+	if t != nil {
+		b.WriteString(chatTurnPrompt(readChatTurn(p, t)))
+	}
+	if p.Turn != nil {
+		if tool := runningTool(p, p.Turn.ID); tool != nil {
+			b.WriteString("Running now: " + oneLine(toolLine(tool), chatToolRunes) + "\n")
+		} else {
+			b.WriteString("The turn is still running.\n")
+		}
+	}
+	if q := chatQuestion(waitingAsk(p)); q != nil {
+		b.WriteString("It waits for the person to answer:\n")
+		for _, item := range q.Items {
+			b.WriteString("- " + item.Text)
+			var labels []string
+			for _, o := range item.Options {
+				labels = append(labels, o.Label)
+			}
+			if len(labels) > 0 {
+				b.WriteString(" (" + strings.Join(labels, ", ") + ")")
+			}
+			b.WriteString("\n")
+		}
+	}
+	if p.Tasks > 0 {
+		b.WriteString("Background tasks still running: " + strconv.Itoa(p.Tasks) + "\n")
+	}
+	return strings.TrimSpace(b.String())
 }
