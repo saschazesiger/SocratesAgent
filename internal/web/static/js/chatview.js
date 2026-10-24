@@ -126,6 +126,15 @@ export function mountChat(ctx) {
       return listed ? (listed.label || listed.id) : model;
     },
     effortLabel: (effort) => harnesses.effortLabel(effort),
+    // where is a path as the chat's folder sees it: relative to it when it
+    // is inside it - an agent names files by their whole path, which on a
+    // phone is mostly the folder's own name over and over - and whole
+    // otherwise.
+    where(path) {
+      const p = String(path || '');
+      const dir = session && session.workdir ? String(session.workdir).replace(/\/+$/, '') : '';
+      return dir && p.startsWith(dir + '/') ? p.slice(dir.length + 1) : p;
+    },
     renewal() {
       let latest = 0;
       for (const limit of Object.values(chat.rateLimits)) if (limit.used >= 1 && limit.resetsAt > latest) latest = limit.resetsAt;

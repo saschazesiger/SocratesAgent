@@ -2936,6 +2936,14 @@ async function deletekeepsdir() {
     const wrote = await answerTo(s, chat, '/write');
     ok(wrote === 'Wrote new.txt.' && existsSync(join(chatDir, 'new.txt')), 'a chat’s agent did some work in its directory',
       join(chatDir, 'new.txt').replace(s.data, '<data>'));
+    // Claude Code names the file by its whole path; the chat names it as its
+    // folder sees it, on the call's row and on its diff alike.
+    const named = await s.page.waitForSelector('#chat .so-tool[data-kind="diff"] .so-diff__path', { timeout: 10000 })
+      .then(() => s.page.$eval('#chat .so-tool[data-kind="diff"]', (n) => ({
+        row: n.querySelector('.so-tool__summary').textContent, diff: n.querySelector('.so-diff__path').textContent,
+      })), () => null);
+    ok(!!named && named.row === 'new.txt' && named.diff === 'new.txt',
+      'the file it wrote is named as the chat’s folder sees it', JSON.stringify(named));
     const exported = await s.context.request.get(s.url + '/api/chats/' + chat + '?history=1');
     const conversation = await exported.text();
     ok(exported.ok() && conversation.includes('Wrote new.txt.'), 'its conversation can be taken away before it goes',
