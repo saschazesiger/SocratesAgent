@@ -136,7 +136,7 @@ func (m *migration) bindPrepared() error {
 		} else if account = byOrigin["profile:"+profile+":"+row.Harness]; account == "" {
 			account = byOrigin["lost:"+profile+":"+row.Harness]
 		}
-		if profile != "" && account == "" {
+		if profile != "" && account == "" && !hasAccount(row) {
 			if err := m.opts.Store.DeleteSession(row.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
 				return err
 			}
@@ -170,15 +170,27 @@ func carriedProfile(row *store.Session) (string, bool) {
 	return profile, true
 }
 
+// hasAccount reports whether a prepared chat's options name an account.
+func hasAccount(row *store.Session) bool {
+	var options map[string]json.RawMessage
+	if len(row.Options) == 0 || json.Unmarshal(row.Options, &options) != nil {
+		return false
+	}
+	_, ok := options["account"]
+	return ok
+}
+
 // bound is a prepared chat's options with its account and without the
-// profile it was bound by.
+// profile it was bound by. An account somebody chose on the chat's panel in
+// the meantime - a start between a migration cut short and the one that
+// finishes it - is theirs, and stays.
 func bound(raw json.RawMessage, account string) json.RawMessage {
 	options := map[string]json.RawMessage{}
 	if len(raw) > 0 {
 		_ = json.Unmarshal(raw, &options)
 	}
 	delete(options, preRebuildProfile)
-	if account != "" {
+	if _, chosen := options["account"]; account != "" && !chosen {
 		value, _ := json.Marshal(account)
 		options["account"] = value
 	}

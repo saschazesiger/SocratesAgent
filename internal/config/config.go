@@ -67,7 +67,8 @@ type OpenRouterSettings struct {
 	BaseURL         string `json:"base_url"`
 	TranscribeModel string `json:"transcribe_model"`
 	TitleModel      string `json:"title_model"`
-	// StatusModel reads a screen and says what it means. Nothing in the app
+	// StatusModel says what a session is doing, from a chat's journal or a
+	// Shell's screen. Nothing in the app
 	// validates the id: there is no catalogue endpoint left, so it is free
 	// text and a model that does not exist is only found out when OpenRouter
 	// refuses it.
@@ -341,8 +342,8 @@ func (s *Settings) Normalize() {
 	if strings.TrimSpace(s.OpenRouter.StatusModel) == "" {
 		s.OpenRouter.StatusModel = d.OpenRouter.StatusModel
 	}
-	// The same for Home's digests and for the answer operator: both work
-	// wherever there is a key, so neither may need a model picked first.
+	// The same for the judge of a chat's turn: it works wherever there is a
+	// key, so it may not need a model picked first.
 	if strings.TrimSpace(s.OpenRouter.HomeModel) == "" {
 		s.OpenRouter.HomeModel = d.OpenRouter.HomeModel
 	}
