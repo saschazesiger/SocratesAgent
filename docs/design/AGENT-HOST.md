@@ -231,7 +231,9 @@ asks a model to read a screen; it is the projection.
   Codex's tokens priced by the ledger's Codex rates, OpenCode's own price - in a ledger named by the
   chat and the account: `chat-<id>@<account>`, the account a turn's `turn.started` names (WP7), so
   a chat that never switched is on its account from its first turn; the account's id is the
-  ledger's profile, which the costs page names after the account. A turn of a journal from before
+  ledger's profile, which the costs page names after the account. The page's table of
+  conversations puts a chat's ledgers back together, one row whatever accounts it ran on, and its
+  table of accounts splits the spend (`costs.js`). A turn of a journal from before
   accounts names none: it is on the account the first `account.switched` came from, and on
   `chat-<id>` until there is one. Each pass that reads a journal
   writes its ledgers and removes the ones of that journal it no longer makes. A journal rebuilt
@@ -931,7 +933,12 @@ own words (a text question's answer, a number question's number as typed, or "Ot
 the account the chat runs on (the journal's, else the row's), a switch on its way ("A → B"), and
 a menu of the agent's accounts with their usage; during a turn it asks "Switch now" (interrupt and
 continue) or "After this turn". The fold keeps `account` from `turn.started` and
-`account.switched`, and the switch asked for (`command{switch_account}`) until it happens.
+`account.switched`, and the switch asked for (`command{switch_account}`) until it happens. A
+question's card stands where the agent asked it: an ask whose `part_id` names a tool part the chat
+has is drawn at that call, inside the answer (`chatparts.js`), and one that names none (the
+scripted agent's, OpenCode's ask_user) cuts its turn's answers where they were when it came, so
+what they say afterwards is drawn under the card as their continuation (`chatfold.js`
+`cutAtAsk`).
 
 **The question dialog** (`askdialog.js`, from Home's Questions card, a card's Answer, `#q=` and a
 tapped notification) walks the open questions of every asking chat, oldest first, and is live:
@@ -1123,7 +1130,7 @@ attachment(s): …`).
 - ask_user (WP6) for the views (WP8): an `ask` payload is `askuser.Payload` (§2, Asks) or Claude's
   plan card (`kind: "plan"`); `source` says when the questions came from one of the agent's own
   mechanisms (an elicitation offers no "You decide", `allow_delegate: false`); `part_id` names the
-  tool part the call belongs to, which the view can fold into the ask card; an ask with `closed`
+  tool part the call belongs to, at which the view draws the ask card (§7); an ask with `closed`
   (`ask.closed`) is shown as not answered, and can still be answered. For the feeds (WP9): read
   `OpenAsks()` and `Summary()` — an open ask outside a running turn keeps the chat `waiting` while
   no turn runs, until it is answered or the person sends a message, which closes it (§4.4).
