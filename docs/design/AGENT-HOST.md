@@ -545,7 +545,11 @@ at once would run into the same limit, and its `turn.started` would come before 
 end); a switch starts another adapter, which the host hands what was never taken up. An adapter
 started with `StartSpec.Held` (the limited turn, on the account it ran on: a new host, or the
 account the chat was on again after a switch that failed, §4.3) holds from the start, so what the
-host hands it waits there too, `First` included. A message
+host hands it waits there too, `First` included. What is held runs in the journal's order, the
+order the host hands messages over (one at a time under its command lock, each right after its
+journal write; a new adapter gets what is owed in the journal's order): the adapter numbers each
+message at its first `Send` and keeps the queue in that order, so a steered message a turn ended
+without taking up takes its place among the queued ones rather than going ahead of them. A message
 whose text is one line starting with `!` runs `thread/shellCommand` as a turn of its own.
 
 **Turns.** A journal turn is a root turn of the chat's thread (ids are the adapter's own, `t_…`, so
@@ -1017,7 +1021,8 @@ attachment(s): …`).
   that keeps real-format rollouts, see its package comment): every mapping, steering and holding
   (a message whose steer finds a limited turn gone before its `turn/completed` held; what a turn
   leaves - steered and not taken up, a `!` line, the message after it - each run after the one
-  before, `FAKECODEX_COMMAND_START_LAG_MS` widening the gap before a command's turn starts), shell lines,
+  before, `FAKECODEX_COMMAND_START_LAG_MS` widening the gap before a command's turn starts, and
+  queued at a turn's end in the journal's order), shell lines,
   interrupt, limit, crash, answered requests, the dynamic-tool ask hook, park, resume, rebuild,
   the account-switch chain, and the adapter inside a real host process (SIGKILL takes codex along,
   the next host resumes; what a limit holds - a message steered into the limited turn, `/limit

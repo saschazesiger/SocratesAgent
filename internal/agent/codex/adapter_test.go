@@ -358,6 +358,30 @@ func TestWhatATurnLeavesRunsInTheJournalsOrder(t *testing.T) {
 	}
 }
 
+// A turn's end puts a message steered into it and not taken up at its place
+// in the journal's order among what waits, not ahead of it: the queue is in
+// the order the host handed the messages over, whichever way each came to
+// it, and resendOwed hands a new adapter what is owed in that same order.
+func TestATurnsEndQueuesWhatItLeftInTheJournalsOrder(t *testing.T) {
+	a := newAdapter()
+	a.out = newRecorder()
+	a.ending = true // no flush: the order is what is looked at
+	earlier := agent.Outgoing{MessageID: "m_earlier", Text: "!echo first"}
+	later := agent.Outgoing{MessageID: "m_later", Text: "second"}
+	a.arrived[earlier.MessageID], a.arrived[later.MessageID] = 1, 2
+	tr := &turn{codexID: "c1", id: "t_1", msgID: "t_1_a", parts: map[string]*part{}}
+	a.turns[tr.codexID], a.active = tr, tr
+	a.queue = []agent.Outgoing{earlier}
+	tr.addInput(later)
+	a.steered[later.MessageID] = later
+	a.mu.Lock()
+	a.closeTurnLocked(tr, agent.OutcomeInterrupted, "")
+	a.mu.Unlock()
+	if len(a.queue) != 2 || a.queue[0].MessageID != earlier.MessageID || a.queue[1].MessageID != later.MessageID {
+		t.Fatalf("the turn's end left the queue %+v", a.queue)
+	}
+}
+
 // findPartIn looks through every message, not only the newest.
 func findPartIn(p *agent.Projection, match func(*agent.Part) bool) *agent.Part {
 	for _, m := range p.Messages {

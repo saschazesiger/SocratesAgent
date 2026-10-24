@@ -12,6 +12,7 @@ import (
 	"io"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -96,8 +97,15 @@ type adapter struct {
 	// queue holds messages codex cannot take now (a compaction or review
 	// runs, or a "!" line waits for the turn to end); steered are messages
 	// handed to the running turn, by client id, until codex takes them up.
-	queue   []agent.Outgoing
-	steered map[string]agent.Outgoing
+	// The queue is in the journal's order (queueLocked): arrived numbers each
+	// message by its first Send, which is its place in the journal - the
+	// host hands messages over one at a time, each right after it journaled
+	// it, and a new adapter what is owed in the journal's order. One number
+	// per message, for the adapter's life.
+	queue    []agent.Outgoing
+	steered  map[string]agent.Outgoing
+	arrived  map[string]int64
+	arrivals int64
 	// held is the turn the account's limit ended, which stops the queue:
 	// what was queued behind it would go into the account at its limit and
 	// end limited too. An account switch (a new adapter, which the host
@@ -126,6 +134,7 @@ func newAdapter() *adapter {
 		exited:  make(chan struct{}),
 		turns:   map[string]*turn{},
 		steered: map[string]agent.Outgoing{},
+		arrived: map[string]int64{},
 		agents:  map[string]*subagent{},
 		calls:   map[string]*call{},
 		limits:  map[string]agent.Event{},
@@ -419,6 +428,12 @@ func (a *adapter) read(stdout io.Reader) {
 func (a *adapter) Send(ctx context.Context, msg agent.Outgoing) error {
 	a.sendMu.Lock()
 	defer a.sendMu.Unlock()
+	a.mu.Lock()
+	if _, ok := a.arrived[msg.MessageID]; !ok {
+		a.arrivals++
+		a.arrived[msg.MessageID] = a.arrivals
+	}
+	a.mu.Unlock()
 	return a.send(ctx, msg)
 }
 
@@ -449,7 +464,7 @@ func (a *adapter) send(ctx context.Context, msg agent.Outgoing) error {
 	// for this message's.
 	commanding := a.expect != turnNormal
 	if active != nil && (shell || active.kind != turnNormal) || commanding || len(a.queue) > 0 {
-		a.queue = append(a.queue, msg)
+		a.queueLocked(msg)
 		a.mu.Unlock()
 		a.out.Emit(agent.Event{Type: agent.TypeMessageState, MessageID: msg.MessageID, State: agent.MessageQueued})
 		if released {
@@ -468,7 +483,7 @@ func (a *adapter) send(ctx context.Context, msg agent.Outgoing) error {
 		return nil
 	case errors.As(err, &rerr) && notSteerable(rerr):
 		a.mu.Lock()
-		a.queue = append(a.queue, msg)
+		a.queueLocked(msg)
 		a.mu.Unlock()
 		a.out.Emit(agent.Event{Type: agent.TypeMessageState, MessageID: msg.MessageID, State: agent.MessageQueued})
 		return nil
@@ -514,8 +529,20 @@ func (a *adapter) heldBackLocked(msg agent.Outgoing) bool {
 	if a.held == "" || msg.AfterTurn == a.held {
 		return false
 	}
-	a.queue = append(a.queue, msg)
+	a.queueLocked(msg)
 	return true
+}
+
+// queueLocked puts msg in the queue at its place in the journal's order,
+// whichever way it comes there: queued at once, held by a limit, or steered
+// into a turn that ended without taking it up. Called with mu held.
+func (a *adapter) queueLocked(msg agent.Outgoing) {
+	n := a.arrived[msg.MessageID]
+	i := len(a.queue)
+	for i > 0 && a.arrived[a.queue[i-1].MessageID] > n {
+		i--
+	}
+	a.queue = slices.Insert(a.queue, i, msg)
 }
 
 // isShellLine is a "!" line, which runs as a shell command of its own.
@@ -668,7 +695,9 @@ func (a *adapter) flush() {
 		held := len(a.queue) > 0
 		if held {
 			// codex could not take this one; the rest wait behind it.
-			a.queue = append(a.queue, queue[i+1:]...)
+			for _, rest := range queue[i+1:] {
+				a.queueLocked(rest)
+			}
 		}
 		a.mu.Unlock()
 		if held {
