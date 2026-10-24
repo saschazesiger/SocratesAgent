@@ -213,11 +213,16 @@ const NO_KEY_WORDS = {
     title: 'Naming needs an OpenRouter key',
     body: 'A session is named by a model on OpenRouter, and no key is set yet. Add one in Admin, under Voice.',
   },
+  read: {
+    title: 'Read aloud needs a Text-to-Speech key',
+    body: 'Questions are read out by Google Cloud Text-to-Speech, and no key is set yet. Add one in Admin, under Voice.',
+  },
 };
 
 /**
  * explainNoKey says, before anything is recorded or sent, that what was
- * pressed needs an OpenRouter key and where it is added - in a dialog rather
+ * pressed needs a key (OpenRouter's, or Text-to-Speech's for Read aloud) and
+ * where it is added - in a dialog rather
  * than a toast, because it is the answer to the tap and has a way on: Admin.
  * It works over a dialog too (a field's own microphone in the rename dialog).
  */

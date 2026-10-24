@@ -63,6 +63,38 @@ export function onVoiceKey(fn) {
   return () => voiceKeyWatchers.delete(fn);
 }
 
+// Whether Text-to-Speech has a key, kept the same way: /api/preferences
+// (`tts`) says so when the page starts, and a speak the server refused for
+// want of one teaches it. Read aloud asks it before anything is sent, and
+// says where the key goes rather than raising the server's refusal as an
+// error over the question.
+let ttsKeyState = null;
+let ttsKeyTold = false;
+
+/** ttsKey is whether this server has a Text-to-Speech key: true, false or null. */
+export function ttsKey() { return ttsKeyState; }
+
+/** setTtsKey records what is known about it, as setVoiceKey does. */
+export function setTtsKey(on, { told = false } = {}) {
+  ttsKeyState = on === null || on === undefined ? null : !!on;
+  ttsKeyTold = told && ttsKeyState !== null;
+}
+
+/**
+ * ttsMissing is keyMissing for Text-to-Speech: asked only when the page
+ * believes there is no key, so a key added since (Admin in another tab) is
+ * found and the press goes on.
+ */
+export async function ttsMissing() {
+  if (ttsKeyState !== false) return false;
+  await askServer();
+  if (ttsKeyState === false && !ttsKeyTold) {
+    setTtsKey(null);
+    return false;
+  }
+  return ttsKeyState === false;
+}
+
 /**
  * noKeyRefusal says whether a failed request was the server saying it has
  * no OpenRouter key: Status's 400 and the transcriber's both say so.
@@ -77,6 +109,7 @@ async function askServer() {
   try {
     const { request } = await network();
     const prefs = await request('/api/preferences', { attempts: 1, timeout: 4000 });
+    if (prefs && typeof prefs.tts === 'boolean') setTtsKey(prefs.tts, { told: true });
     if (prefs && typeof prefs.openrouter === 'boolean') {
       setVoiceKey(prefs.openrouter, { told: true });
       return prefs.openrouter;
@@ -624,7 +657,10 @@ export async function fetchSpeech(text) {
     // API not enabled on the project, a voice name that does not exist, a
     // quota that ran out - arrives as a 400 with Google's words in it, and
     // those words are the answer to what to do next.
-    if (err instanceof HttpError) throw speechError(err.message, 'error');
+    if (err instanceof HttpError) {
+      if (Number(err.status) === 400 && /text-to-speech is not configured/i.test(String(err.message || ''))) setTtsKey(false);
+      throw speechError(err.message, 'error');
+    }
     throw speechError(err && err.name === 'AbortError'
       ? 'The voice did not answer within ' + Math.round(limit / 1000) + ' seconds.'
       : 'The server could not be reached, so nothing was read out loud.', 'error');

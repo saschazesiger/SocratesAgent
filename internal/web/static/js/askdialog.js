@@ -35,9 +35,9 @@ import { askQuestions } from './chatparts.js';
 import { queueAnswer, answeredHere, onOutbox, pendingAnswer, chatOutbox } from './chatoutbox.js';
 import { newChat, apply, openAsks } from './chatfold.js';
 import { ChatStream } from './chatstream.js';
-import { record, recPhase } from './dictate.js';
+import { record, recPhase, explainNoKey } from './dictate.js';
 import { touchScreen, typeHere } from './keyboard.js';
-import { speak, stopSpeaking } from './voice.js';
+import { speak, stopSpeaking, ttsKey, ttsMissing } from './voice.js';
 
 // A phone on its side (so-question.css "Phones and short screens"): the
 // chrome above a question then takes the room its first option needs, and
@@ -701,7 +701,10 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
 
   function actionsHtml({ step, last }) {
     const reading = st.speaking ? 'Stop reading' : 'Read aloud';
-    const read = html`<button class="ds-btn ds-btn--icon so-q-big so-q-read" type="button" data-action="read" aria-pressed="${st.speaking ? 'true' : 'false'}" aria-label="${reading}" data-tip="${reading}">${raw(icon(st.speaking ? 'stop' : 'speak', 20))}</button>`;
+    // Without a Text-to-Speech key the tip says why a press only explains,
+    // as Speak's and Status's do for OpenRouter's.
+    const readTip = !st.speaking && ttsKey() === false ? 'Needs a Text-to-Speech key (Admin, Voice)' : reading;
+    const read = html`<button class="ds-btn ds-btn--icon so-q-big so-q-read" type="button" data-action="read" aria-pressed="${st.speaking ? 'true' : 'false'}" aria-label="${reading}" data-tip="${readTip}">${raw(icon(st.speaking ? 'stop' : 'speak', 20))}</button>`;
     if (st.phase === 'answered' || st.phase === 'elsewhere') {
       return html`<button class="ds-btn ds-btn--primary so-q-big so-q-send" type="button" data-action="next">${st.at < st.items.length - 1 ? 'Next question' : 'Close'}</button>`;
     }
@@ -739,8 +742,16 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     return parts.filter(Boolean).join('\n');
   }
 
-  async function toggleRead() {
+  async function toggleRead(opener) {
     if (st.speaking) { st.speaking = false; stopSpeaking(); draw(); return; }
+    // Nothing is sent that the server can only refuse: without a key the
+    // press says where one is added (Close / Open Admin), no error toast
+    // over the question.
+    if (ttsKey() === false && await ttsMissing()) {
+      if (!st.closed) draw();
+      explainNoKey('read', opener && opener.isConnected ? opener : null);
+      return;
+    }
     st.speaking = true;
     draw();
     try { await speak(sayable()); } catch { /* voice.js says why */ }
@@ -861,7 +872,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
         sendAnswers();
         break;
       case 'next': next(); break;
-      case 'read': toggleRead(); break;
+      case 'read': toggleRead(target); break;
       case 'dictate': {
         if (recPhase() !== 'idle') return;
         const field = shell.querySelector('#' + CSS.escape(target.dataset.target));

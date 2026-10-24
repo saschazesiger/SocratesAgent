@@ -377,6 +377,27 @@ func TestPreferencesCarryTheLanguage(t *testing.T) {
 	}
 }
 
+// The page is told whether Text-to-Speech has a key, so Read aloud can say it
+// needs one instead of sending text the server answers with a 400 - and only
+// whether.
+func TestPreferencesSayWhetherATextToSpeechKeyIsSet(t *testing.T) {
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+	_, prefs := env.do(t, env.client, "GET", "/api/preferences", "")
+	if prefs["tts"] != false {
+		t.Fatalf("tts without a key = %#v", prefs["tts"])
+	}
+	env.configureVoice(t, map[string]any{"google_api_key": "tts-secret"})
+	_, prefs = env.do(t, env.client, "GET", "/api/preferences", "")
+	if prefs["tts"] != true {
+		t.Fatalf("tts with a key = %#v", prefs["tts"])
+	}
+	raw, _ := json.Marshal(prefs)
+	if strings.Contains(string(raw), "tts-secret") {
+		t.Fatalf("the key reached the page: %s", raw)
+	}
+}
+
 // The page is told whether an OpenRouter key is set, so a microphone can say
 // it needs one before anything is recorded - and only whether: the key itself
 // never leaves the server this way.

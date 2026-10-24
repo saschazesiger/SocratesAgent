@@ -46,7 +46,7 @@ import {
   faces, iconEl,
 } from './ui.js';
 import { mountBackupNotice } from './backup.js';
-import { setVoiceKey, voiceKey, onVoiceKey, keyMissing } from './voice.js';
+import { setVoiceKey, voiceKey, onVoiceKey, keyMissing, setTtsKey } from './voice.js';
 import { explainNoKey } from './dictate.js';
 import { mountChat } from './chatview.js';
 import { chatOutbox, queueCommand, settled } from './chatoutbox.js';
@@ -4120,6 +4120,8 @@ async function boot() {
     // Whether there is an OpenRouter key, for the microphones and Status to
     // say so before anything is recorded (voice.js), when the server tells.
     if (prefs && typeof prefs.openrouter === 'boolean') setVoiceKey(prefs.openrouter, { told: true });
+    // And whether Text-to-Speech has one, for Read aloud (askdialog.js).
+    if (prefs && typeof prefs.tts === 'boolean') setTtsKey(prefs.tts, { told: true });
   } catch { /* the defaults above are the shipped ones */ }
   // A session a notification asked for is wanted before the list is read, so
   // that an offline start opens it the moment the list can prove it exists.

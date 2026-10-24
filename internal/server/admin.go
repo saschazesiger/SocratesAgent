@@ -35,6 +35,9 @@ func (s *Server) handlePreferences(w http.ResponseWriter, r *http.Request) {
 		// Whether a key is set, never the key: dictation and Status say they
 		// need one before anything is recorded or sent (voice.js voiceKey).
 		"openrouter": strings.TrimSpace(settings.OpenRouter.APIKey) != "",
+		// The same for Text-to-Speech: Read aloud says it needs a key
+		// before anything is sent (voice.js ttsKey).
+		"tts": googletts.New(settings.Voice.GoogleAPIKey).Configured(),
 		"terminal": map[string]any{
 			"scrollback": settings.Terminal.Scrollback,
 			"font_size":  settings.Terminal.FontSize,

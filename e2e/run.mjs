@@ -8515,10 +8515,32 @@ async function homefocus() {
     ok(posts.length === 1 && !!got && got.answers.db.other === 'Use MariaDB, with 2 replicas' && got.answers.db.selected.length === 0,
       'Send sends the words, not an option, and the agent got exactly them', JSON.stringify({ posts: posts.length, got: got && got.answers.db }));
 
-    // The next question: Read aloud fails, and the failure is said over
-    // the dialog, and stays.
+    // The next question: with no Text-to-Speech key, Read aloud says where
+    // one goes, in a dialog over the question's, and sends nothing (voice.js
+    // ttsKey) - no error over the question.
     const onBeta = await awaitAsk(s.page, (d) => !!d && d.session === 'Beta asks' && d.options.length === 2, 20000);
     ok(onBeta.ok, 'the dialog moves on to the next question', onBeta.seen && onBeta.seen.session);
+    let spoke = 0;
+    s.page.on('request', (req) => { if (/\/api\/voice\/speak$/.test(req.url())) spoke += 1; });
+    const keyTitle = () => s.page.evaluate(() => {
+      const dialog = [...document.querySelectorAll('dialog.ds-dialog[open]')].find((d) => !d.classList.contains('so-askdlg'));
+      return dialog ? ((dialog.querySelector('.ds-dialog__title') || {}).textContent || '') : '';
+    });
+    const readTip = await s.page.$eval('dialog.so-askdlg [data-action="read"]', (n) => n.dataset.tip);
+    await s.page.click('dialog.so-askdlg [data-action="read"]');
+    let needs = '';
+    for (let i = 0; i < 25 && !needs; i += 1) { needs = await keyTitle(); await wait(200); }
+    const refusal = await s.page.$$eval('#toasts .ds-toast', (ts) => ts.map((t) => t.textContent).filter((t) => /not configured/.test(t)).length);
+    ok(/Read aloud needs a Text-to-Speech key/.test(needs) && /Text-to-Speech key/.test(readTip) && spoke === 0 && refusal === 0,
+      'with no Text-to-Speech key Read aloud says where one goes, and sends nothing', JSON.stringify({ readTip, needs, spoke, refusal }));
+    await s.page.keyboard.press('Escape');
+    for (let i = 0; i < 25 && await keyTitle(); i += 1) await wait(200);
+    // With a key (the request is answered here, Google is never asked), a
+    // Read aloud that fails says why, over the dialog, and it stays.
+    const keyed = await s.context.request.put(s.url + '/api/settings', {
+      data: { settings: { voice: { google_api_key: 'e2e-not-a-real-key' } } },
+    });
+    ok(keyed.ok(), 'a Text-to-Speech key is set', keyed.status());
     await s.page.route('**/api/voice/speak', (route) => route.fulfill({
       status: 400, contentType: 'application/json', body: JSON.stringify({ error: 'no voice key is configured here' }),
     }));

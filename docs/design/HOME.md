@@ -576,7 +576,9 @@ question sessions, oldest first (the one asked for first), "2 of 3" with Previou
   a plan approval's plan - is read with the first item, under which it is drawn), a second tap stops
   (the assist.js `say()` pattern). Never automatic. Its failure, and a dictation's, is said on the
   dialog's status line (kept for 10 s, or until the next Read aloud or another question) - never
-  only as a toast, which is under the top layer.
+  only as a toast, which is under the top layer. With no Text-to-Speech key (`/api/preferences`
+  `tts`, voice.js `ttsKey`) its tip says "Needs a Text-to-Speech key (Admin, Voice)" and a tap
+  opens the Close / Open Admin dialog dictation has without an OpenRouter key; nothing is sent.
 - While the digest is `pending`: "Reading the question…" with the previous content dimmed;
   `error`: the sentence and **Try again** (`POST …/digest`) and Open session. An `error` that
   still holds its question is not answered (the server refuses it until it is read again): Send
