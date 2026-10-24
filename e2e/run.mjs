@@ -2196,6 +2196,21 @@ const AGENTS = ['claude', 'codex', 'opencode'];
 // words of its fake.
 const work = (harness, sec) => (harness === 'claude' ? '/slow ' : '/sleep ') + sec;
 
+// signIn gives an agent an account that is signed in - a key, the one kind
+// a fake is signed in to without a sign-in flow of its own - for a scenario
+// that starts more than one chat from the sheet: a chat made with no account
+// at all runs on a Default account the server makes, which is not signed in
+// yet, and the sheet starts nothing more on that until it is.
+async function signIn(s, agentName = 'claude', label = 'Work') {
+  const res = await s.context.request.post(s.url + '/api/accounts', {
+    data: { agent: agentName, kind: 'api_key', label, key: 'sk-e2e-' + agentName + '-' + 'k'.repeat(16),
+      ...(agentName === 'opencode' ? { provider: 'openrouter' } : {}) },
+  });
+  const made = (await res.json()).account;
+  if (!made || made.state !== 'signed_in') throw new Error('no signed-in ' + agentName + ' account: ' + JSON.stringify(made));
+  return made;
+}
+
 // clickChat opens a chat from the list by its name, the way a person aiming
 // at it does, and waits until it is the one on screen.
 async function clickChat(page, id) {
@@ -4236,14 +4251,18 @@ async function stubSpeech(context, { seconds = 0, delay = 0 } = {}) {
   return said;
 }
 
-const noticeText = (page) => page.evaluate(() => {
-  const host = document.getElementById('termNotice');
+// The notice of the chat on screen is in its dock, where a terminal's is
+// over its pane.
+const DOCK_NOTICE = '#chat .so-chat__dock .so-notice';
+
+const noticeText = (page) => page.evaluate((sel) => {
+  const host = document.querySelector(sel);
   if (!host || host.hidden) return '';
   const line = host.querySelector('.ds-alert__text');
   return line ? line.textContent : '';
-});
+}, DOCK_NOTICE);
 
-// A session names itself. The first prompt it is sent is what the sidebar row
+// A chat names itself. The first message it is sent is what the sidebar row
 // and the header are called from then on - once, in English, in a few words -
 // and neither is reloaded to find out: the name arrives on the socket every
 // browser already has open. While the model is being asked the name pulses,
@@ -4260,22 +4279,21 @@ async function sessiontitle() {
     await setup(s.page, s.url);
     await useDomRenderer(s);
     await pointGateway(s, stub);
+    await signIn(s);
     await open(s);
-    const id = await startSession(s.page, 'claude');
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const id = await startChat(s.page, 'claude');
 
     const before = await s.page.$eval(rowSel(id) + ' .so-row__label', (n) => n.textContent.trim());
     ok(before.startsWith('Claude Code'), 'it starts life under the placeholder name', before);
 
-    // The harness starting up is busy and then idle before anybody has typed.
-    // That is not a prompt, and a name made from that screen is the name of
-    // the program.
+    // The agent coming up is no message, and a name made before the first
+    // one would be the name of the program.
     const settled = await awaitRow(s.page, id, (r) => !r.busy, 20000);
     ok(settled.ok, 'it settles before it is given anything to do', took(settled));
     await wait(1500);
     ok(asked() === 0, 'the start-up is not named after', asked() + ' calls');
 
-    // The first prompt: the moment it goes to work, the name is asked for and
+    // The first message: the moment it is sent, the name is asked for and
     // pulses until it arrives.
     await keepBusy(s.page, 3000);
     const spun = await awaitRow(s.page, id, (r) => r.busy, 10000);
@@ -4306,8 +4324,8 @@ async function sessiontitle() {
     ok(still === want, 'and the name it was given stayed', still);
     await shot(s.page, 'session-title');
 
-    // The arrow beside the name asks again, from the screen, whatever the
-    // session is called.
+    // The arrow beside the name asks again, from the chat's journal, whatever
+    // it is called.
     const again = 'Parser work, named again';
     stub.replies.push(again);
     const arrow = await s.page.$eval('#titleRegen', (n) => !n.hidden);
@@ -4321,7 +4339,7 @@ async function sessiontitle() {
     // A prepared session is named after its prompt the first time its field
     // is left - once.
     const made = await s.context.request.post(s.url + '/api/sessions', { data: { prestart: true, harness: 'claude' } });
-    ok(made.ok(), 'a prepared session is made', made.status());
+    ok(made.ok() && (await made.json()).session.kind === 'chat', 'a prepared chat is made', made.status());
     const prepared = (await made.json()).session.id;
     await s.page.click(rowSel(prepared));
     await s.page.waitForSelector('#prestart:not([hidden]) #psPrompt:not([readonly])', { timeout: 15000 });
@@ -4342,16 +4360,14 @@ async function sessiontitle() {
     await s.page.$eval('#psPrompt', (n) => n.blur());
     await wait(1500);
     ok(asked() === 3, 'leaving it again does not ask again', asked() + ' calls');
-    await s.page.click(rowSel(id));
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    await clickChat(s.page, id);
 
     // A gateway that refuses is said out loud, in a dialog, and the pulse
     // stops.
     stub.refuse = 401;
-    const failing = await startSession(s.page, 'claude');
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const failing = await startChat(s.page, 'claude');
     const quiet = await awaitRow(s.page, failing, (r) => !r.busy, 20000);
-    ok(quiet.ok, 'a second session settles', took(quiet));
+    ok(quiet.ok, 'a second chat settles', took(quiet));
     await keepBusy(s.page, 1500);
     await s.page.waitForSelector('dialog.ds-dialog[open]', { timeout: 15000 });
     const said = await s.page.$eval('dialog.ds-dialog[open]', (n) => n.textContent);
@@ -4381,10 +4397,10 @@ async function pointGateway(s, stub) {
 // watchTicker records every line the one-line ticker ever shows, in order. A
 // line that rises in and out again inside a poll interval is exactly what this
 // has to catch, so it is an observer and not a poll.
-async function watchTicker(page) {
-  await page.evaluate(() => {
+async function watchTicker(page, sel = '#tickerWindow') {
+  await page.evaluate((at) => {
     window.__ticker = [];
-    const host = document.getElementById('tickerWindow');
+    const host = document.querySelector(at);
     new MutationObserver((records) => {
       for (const record of records) {
         for (const node of record.addedNodes) {
@@ -4393,7 +4409,7 @@ async function watchTicker(page) {
         }
       }
     }).observe(host, { childList: true });
-  });
+  }, sel);
   return () => page.evaluate(() => window.__ticker.slice());
 }
 
@@ -4402,7 +4418,7 @@ async function watchTicker(page) {
 // The Status button: one request, a spinner while it is being made, the answer
 // on screen as words, and the same words handed to the voice.
 async function statusspeak() {
-  const stub = await openRouterStub({ text: 'Claude Code has finished and is waiting for your next instruction.' });
+  const stub = await openRouterStub({ text: 'Claude Code has finished and is waiting for your next message.' });
   const s = await start({
     viewport: { width: 1280, height: 720 },
     args: ['--autoplay-policy=no-user-gesture-required'],
@@ -4413,8 +4429,9 @@ async function statusspeak() {
     await pointGateway(s, stub);
     const said = await stubSpeech(s.context);
     await open(s);
-    await startSession(s.page, 'claude');
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const id = await startChat(s.page, 'claude');
+    // A chat is told from its journal, so it has said something first.
+    ok((await answerTo(s, id, 'run the tests')) === 'you said: run the tests', 'the chat has done something', 'run the tests');
 
     // The status is held for a moment on its way out, so that what the button
     // does while it waits is measured rather than caught in passing.
@@ -4464,15 +4481,15 @@ async function statusspeak() {
       'with reduced motion it still turns, rather than standing still', JSON.stringify(calm));
     await s.page.emulateMedia({ reducedMotion: null });
 
-    await s.page.waitForFunction(() => {
-      const host = document.getElementById('termNotice');
+    await s.page.waitForFunction((sel) => {
+      const host = document.querySelector(sel);
       return !!host && !host.hidden && host.dataset.kind === 'status';
-    }, null, { timeout: 40000 });
+    }, DOCK_NOTICE, { timeout: 40000 });
     const shown = await noticeText(s.page);
     ok(shown.includes('finished') && shown === stub.text,
       'what the model said is on screen, in words', oneLine(shown));
     // The line is on a timer, so everything about it is read while it is up.
-    const tip = await s.page.$eval('#termNotice .so-info', (n) => n.getAttribute('data-tip')).catch(() => '');
+    const tip = await s.page.$eval(DOCK_NOTICE + ' .so-info', (n) => n.getAttribute('data-tip')).catch(() => '');
     await shot(s.page, 'status-speak');
 
     for (let i = 0; i < 60 && said.length === 0; i += 1) await wait(200);
@@ -4492,9 +4509,9 @@ async function statusspeak() {
       cleared ? 'stopped' : 'still turning');
 
     // And the line does not sit there for ever: it is one sentence, it has
-    // been read, and the top of the pane is free again.
-    const gone = await s.page.waitForFunction(() => document.getElementById('termNotice').hidden,
-      null, { timeout: 9000 }).then(() => true).catch(() => false);
+    // been read, and the dock is the composer's again.
+    const gone = await s.page.waitForFunction((sel) => document.querySelector(sel).hidden,
+      DOCK_NOTICE, { timeout: 9000 }).then(() => true).catch(() => false);
     ok(gone, 'and the answer puts itself away once it has been read',
       gone ? 'gone' : 'still up after 9 s');
     ok(unexpected(s.errors).length === 0, 'no console errors',
@@ -4508,8 +4525,9 @@ async function statusspeak() {
 /* ------------------------------------------------------ 35. status-ticker */
 
 // Pressing Status is a question asked over a network, and the phases of it
-// arrive in the ticker in the order they happen: the screen is read, the model
-// is asked, the answer is spoken, and the answer itself is the last line.
+// arrive in the chat's ticker in the order they happen: the chat is read from
+// its journal, the model is asked, the answer is spoken, and the answer
+// itself is the last line.
 async function statusticker() {
   const stub = await openRouterStub({ text: 'The tests passed and it is waiting.' });
   const s = await start({
@@ -4522,9 +4540,9 @@ async function statusticker() {
     await pointGateway(s, stub);
     await stubSpeech(s.context);
     await open(s);
-    await startSession(s.page, 'shell');
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    const lines = await watchTicker(s.page);
+    const id = await startChat(s.page, 'claude');
+    ok((await answerTo(s, id, '/tool')) === 'The command printed two lines.', 'the chat has done something', '/tool');
+    const lines = await watchTicker(s.page, '#chat .so-chat__dock .so-ticker__line');
 
     await s.page.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 15000 });
     await s.page.click('#statusBtn');
@@ -4535,7 +4553,7 @@ async function statusticker() {
     ok(arrived, 'the answer itself is the last thing the ticker says', oneLine(said.join(' → ')));
 
     const order = said.map((l) => (
-      /^Reading the screen$/.test(l) ? 'capturing'
+      /^Reading the chat$/.test(l) ? 'capturing'
         : /^Asking /.test(l) ? 'asking'
           : /^Speaking$/.test(l) ? 'speaking'
             : l === stub.text ? 'done' : 'other'));
@@ -4547,21 +4565,21 @@ async function statusticker() {
 
     // One window, one line: the ticker never grows into a log.
     const window = await s.page.evaluate(() => {
-      const host = document.getElementById('termTicker');
+      const host = document.querySelector('#chat .so-chat__dock .so-ticker');
       return {
         hidden: host.hidden,
-        height: Math.round(document.getElementById('tickerWindow').getBoundingClientRect().height),
+        height: Math.round(host.querySelector('.so-ticker__line').getBoundingClientRect().height),
         fill: getComputedStyle(host).backgroundColor,
       };
     });
     ok(!window.hidden && window.height <= 24, 'it is one line high and no more',
       JSON.stringify(window));
     ok(window.fill !== 'rgba(0, 0, 0, 0)' && window.fill !== 'transparent',
-      'on a ground of its own, so it reads over the terminal', window.fill);
+      'on a ground of its own, so it reads apart from the conversation', window.fill);
 
     // And it gives the window back: outside auto mode, with nothing happening,
     // there is nothing to say.
-    const gone = await s.page.waitForFunction(() => document.getElementById('termTicker').hidden,
+    const gone = await s.page.waitForFunction(() => document.querySelector('#chat .so-chat__dock .so-ticker').hidden,
       null, { timeout: 20000 }).then(() => true).catch(() => false);
     ok(gone, 'and when there is nothing happening it is not there at all',
       gone ? 'hidden again' : 'still on screen');
@@ -4606,13 +4624,13 @@ const micRow = (page) => page.evaluate(() => {
   };
 });
 
-// The microphone, which is the only way into a session that is not a keyboard:
+// The microphone, which is the only way into a chat that is not a keyboard:
 // a pill in the top bar that opens a sheet, two endings while it records, a
 // discarded recording that costs nothing, and a kept one whose words are put
-// on the prompt of the pane - and left there, because the Enter that runs them
+// in the chat's composer - and left there, because the Send that sends them
 // is the person's.
 async function dictate() {
-  const stub = await openRouterStub({ text: 'echo dictated-into-the-pane' });
+  const stub = await openRouterStub({ text: 'please run the dictated tests' });
   const s = await start({
     viewport: { width: 390, height: 844 },
     touch: true,
@@ -4643,8 +4661,8 @@ async function dictate() {
     });
 
     await open(s);
-    await startSession(s.page, 'shell');
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const id = await startChat(s.page, 'claude');
+    const composer = () => s.page.$eval('#chat .so-composer__input', (n) => n.value);
 
     const idle = await micRow(s.page);
     ok(idle.pillInBar && /Speak/.test(idle.pillText),
@@ -4721,7 +4739,7 @@ async function dictate() {
       'the bar still fits on a phone, and so does the sheet', JSON.stringify(fits));
 
     // Discard: the audio is thrown away. Nothing is transcribed, and nothing
-    // reaches the pane.
+    // reaches the composer.
     await s.page.click('#recCancel');
     await s.page.waitForSelector('#recSheet:not([open])', { state: 'attached', timeout: 10000 });
     await wait(800);
@@ -4730,37 +4748,31 @@ async function dictate() {
       JSON.stringify(after));
     ok(transcribes.length === 0, 'and it costs nothing: nothing was transcribed',
       transcribes.length + ' transcribe(s)');
-    ok(!(await packed(s.page)).includes(stub.text.replace(/\s+/g, '')),
-      'nothing reached the pane', oneLine(await screen(s.page)).slice(-60));
+    ok((await composer()) === '', 'nothing reached the composer', JSON.stringify(await composer()));
 
-    // Send: transcribed once, and the words are put on the prompt verbatim.
+    // Send: transcribed once, and the words are put in the composer verbatim.
     await s.page.click('#micBtn');
     await s.page.waitForSelector('#recSheet[open]', { timeout: 15000 });
     await wait(1300);
     await s.page.click('#recSend');
-    const landed = await awaitPacked(s.page, stub.text, 60000);
-    ok(landed, 'Send types what was heard into the pane, verbatim and unconfirmed',
-      oneLine(await screen(s.page)).slice(-90));
+    const landed = await s.page.waitForFunction((want) => document.querySelector('#chat .so-composer__input').value === want,
+      stub.text, { timeout: 60000 }).then(() => true, () => false);
+    ok(landed, 'Send puts what was heard in the composer, verbatim and unconfirmed', JSON.stringify(await composer()));
     ok(transcribes.length === 1, 'and it was transcribed exactly once',
       transcribes.length + ' request(s)');
 
-    // And it stops there. The words are on the prompt, not run: the shell has
-    // not echoed anything, because nothing pressed Enter for it.
+    // And it stops there. The words are in the composer, not sent: the agent
+    // has been told nothing, because nothing pressed Send for it.
     await wait(1500);
-    const before = await packed(s.page);
-    ok(before.split('dictated-into-the-pane').length === 2,
-      'the line is on the prompt once and was not run', oneLine(await screen(s.page)).slice(-90));
+    const unsent = userTexts(await historyOf(s, id));
+    ok(unsent.length === 0 && (await composer()) === stub.text, 'the words wait in the composer and were not sent',
+      JSON.stringify({ sent: unsent, composer: await composer() }));
 
-    // The Enter is the person's, and it is the ordinary keyboard that sends it.
-    // The focus is already in the pane, because that is where the words went.
-    await s.page.keyboard.press('Enter');
-    let ran = false;
-    for (const started = Date.now(); !ran && Date.now() - started < 30000;) {
-      ran = (await packed(s.page)).split('dictated-into-the-pane').length > 2;
-      if (!ran) await wait(200);
-    }
-    ok(ran, 'and pressing it runs the line that was dictated, and the shell answers',
-      oneLine(await screen(s.page)).slice(-90));
+    // The Send is the person's, and it is the composer's own button.
+    await s.page.click('#chat .so-composer__send');
+    const ran = await awaitLog(s.page, 'you said: ' + stub.text, 30000);
+    ok(ran && userTexts(await historyOf(s, id)).join('|') === stub.text,
+      'and pressing it sends what was dictated, once, and the agent answers', oneLine(await lastAnswer(s.page)));
 
     await shot(s.page, 'dictate');
     ok(unexpected(s.errors).length === 0, 'no console errors',
@@ -4794,8 +4806,11 @@ async function nooverlap() {
     await pointGateway(s, stub);
     const said = await stubSpeech(s.context, { seconds: 1, delay: 1200 });
     await open(s);
-    await startSession(s.page, 'shell');
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const id = await startChat(s.page, 'claude');
+    // A phone's composer waits for its keyboard button: the message is sent
+    // the way it sends it.
+    await tellChat(s, id, 'run the tests');
+    ok(await awaitLog(s.page, 'you said: run the tests'), 'the chat has done something', 'run the tests');
 
     // A recording is running, and Status is pressed: the answer arrives on
     // the screen, and it is not read into the microphone.
@@ -4805,10 +4820,10 @@ async function nooverlap() {
     // rather than through the pointer the backdrop is holding.
     await s.page.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 15000 });
     await s.page.$eval('#statusBtn', (n) => n.click());
-    const shown = await s.page.waitForFunction(() => {
-      const host = document.getElementById('termNotice');
+    const shown = await s.page.waitForFunction((sel) => {
+      const host = document.querySelector(sel);
       return !!host && !host.hidden && host.dataset.kind === 'status';
-    }, null, { timeout: 45000 }).then(() => true).catch(() => false);
+    }, DOCK_NOTICE, { timeout: 45000 }).then(() => true).catch(() => false);
     ok(shown, 'the summary arrived while the microphone was open', oneLine(await noticeText(s.page)));
     await wait(2000);
     ok(said.length === 0, 'and nothing at all was read out loud', said.length + ' render(s)');
@@ -12242,10 +12257,10 @@ const ALL = [
   ['activity-waiting', 'a question: a still amber ring, and no timeout', activitywaiting],
   ['unread', 'bold when nobody saw it, gone when the chat is opened or sent a message', unread],
   ['notify', 'a chime and a notification when a chat stops working, and two switches in the options menu', notify],
-  ['session-title', 'a session that names itself on its first prompt', sessiontitle],
-  ['status-speak', 'Status says what the screen shows, on the page and out loud', statusspeak],
+  ['session-title', 'a chat that names itself on its first message, again by the arrow, and a prepared one', sessiontitle],
+  ['status-speak', 'Status says what a chat did, on the page and out loud', statusspeak],
   ['status-ticker', 'the phases of a status, in order, in one line', statusticker],
-  ['dictate', 'a recording with two endings, and the words it kept on the prompt', dictate],
+  ['dictate', 'a recording with two endings, and the words it kept in the composer', dictate],
   ['no-overlap', 'the microphone and the voice are never open at the same time', nooverlap],
   ['typeafteroutage', 'a cut socket, a locked phone, and a pane that still takes keystrokes', typeafteroutage],
   ['typekeepsfocus', 'a dialog, the ⋮ menu and two sessions: the keys still land in the pane', typekeepsfocus],
