@@ -5,7 +5,7 @@ Extends `docs/design/DESIGN.md` §A/§B/§D/§E/§F; nothing here contradicts `D
 > **Since the rebuild (REBUILD.md §7; WP9, WP10)** a chat's activity is reported by its journal
 > (AGENT-HOST.md §3), not read off a pane, and **Status** reads a chat from its journal; the
 > screen-reading layers went with the agents' terminals, and the Shell's process-tree layer holds.
-> The **Agent** button and Audio mode were gone before (DECISIONS.md, 2026-09-04).
+> The **Agent** button and Audio mode were gone before (DECISIONS.md, 2026-09-02 and 2026-09-04).
 
 > **Superseded (2026-09-02, branch `google-tts`):** the local Piper voice and
 > `internal/piper` are gone. Reading an answer out loud is now Google Cloud
