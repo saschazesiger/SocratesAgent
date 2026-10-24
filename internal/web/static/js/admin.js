@@ -1778,9 +1778,13 @@ async function refreshBackup(fillForm = false) {
   }
 }
 
+// snapshotRow is one snapshot: when, on which machine, how big. The date is
+// the short one and may wrap, and "(this one)" has a line of its own: in full
+// ("10/24/2026, 4:51:07 PM", kept from wrapping) the Size column ran past the
+// card at 360px.
 function snapshotRow(s) {
-  const machine = (s.hostname || s.host) + (s.own ? ' (this one)' : '');
-  return html`<tr data-ds-key="${s.id}"><td class="ds-nowrap">${new Date(s.at).toLocaleString()}</td><td>${machine}</td>
+  const at = new Date(s.at);
+  return html`<tr data-ds-key="${s.id}"><td title="${at.toLocaleString()}">${at.toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</td><td>${s.hostname || s.host}${s.own ? html`<span class="so-admin-own">(this one)</span>` : ''}</td>
     <td class="ds-num">${s.files ? bytes(s.size) : '–'}</td><td class="ds-num ds-col--secondary">${s.files || '–'}</td></tr>`;
 }
 

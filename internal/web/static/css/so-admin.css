@@ -62,6 +62,12 @@
   gap: var(--ds-space-2);
 }
 
+/* "(this one)" under the machine's name in the snapshot table. */
+.so-admin-own {
+  display: block;
+  color: var(--ds-text-2);
+}
+
 .so-admin-notice:empty {
   display: none;
 }
