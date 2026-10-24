@@ -409,7 +409,7 @@ func (h *host) sendContinue(ctx context.Context, cmd Command) {
 		log.Printf("journal: %v", err)
 		return
 	}
-	out := agent.Outgoing{MessageID: msg.MessageID, ClientID: clientID, Text: ContinueText}
+	out := agent.Outgoing{MessageID: msg.MessageID, ClientID: clientID, Text: ContinueText, AfterTurn: h.afterTurn(msg.MessageID)}
 	if err := h.adapter.Send(ctx, out); err != nil {
 		h.record(agent.Event{Type: agent.TypeError, Code: "send_failed", MessageID: msg.MessageID, Text: err.Error()})
 	}

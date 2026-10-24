@@ -77,6 +77,10 @@ type Message struct {
 	Model       string       `json:"model,omitempty"`
 	At          int64        `json:"at"`
 	Parts       []*Part      `json:"parts,omitempty"`
+	// AfterTurn is, for a user message, the turn that had ended last when
+	// it was journaled, empty when none had: its place in the journal's
+	// order, which goes to the adapter with it (Outgoing.AfterTurn).
+	AfterTurn string `json:"-"`
 }
 
 // Part is one part of an assistant message.
@@ -298,6 +302,9 @@ func (p *Projection) message(ev Event) {
 	m := &Message{
 		ID: ev.MessageID, Role: ev.Role, State: ev.State, ClientID: ev.ClientID, Text: ev.Text,
 		Attachments: ev.Attachments, AnswerTo: ev.AnswerTo, TurnID: ev.TurnID, Model: ev.Model, At: ev.At,
+	}
+	if m.Role == RoleUser && p.LastTurn != nil {
+		m.AfterTurn = p.LastTurn.ID
 	}
 	p.messages[m.ID] = m
 	p.Messages = append(p.Messages, m)

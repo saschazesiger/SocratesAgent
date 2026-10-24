@@ -142,6 +142,15 @@ type Outgoing struct {
 	Attachments []Attachment
 	// AnswerTo is set when the message carries the answer to an ask.
 	AnswerTo string
+	// AfterTurn is the turn that had ended last when the host journaled the
+	// message, empty when none had (Message.AfterTurn): where the message
+	// stands among the turns in the journal's order. When Send is called
+	// cannot tell: a turn can end between the journal write and the Send. A
+	// hold after a limited turn decides by it (AGENT-HOST.md §5.3): a message
+	// whose AfterTurn is that turn was written after its end, the person
+	// going on with the account, and lets the hold go; any other was written
+	// before the end, and waits with what the limit held.
+	AfterTurn string
 }
 
 // Emitter is how an adapter reports what its CLI does.

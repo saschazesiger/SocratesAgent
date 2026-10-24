@@ -466,7 +466,22 @@ func (h *host) failStart(err error) {
 }
 
 func outgoing(m *agent.Message) agent.Outgoing {
-	return agent.Outgoing{MessageID: m.ID, ClientID: m.ClientID, Text: m.Text, Attachments: m.Attachments, AnswerTo: m.AnswerTo}
+	return agent.Outgoing{MessageID: m.ID, ClientID: m.ClientID, Text: m.Text, Attachments: m.Attachments, AnswerTo: m.AnswerTo,
+		AfterTurn: m.AfterTurn}
+}
+
+// afterTurn is where the journal put message id among the turns: the turn
+// that had ended last when it was written (agent.Outgoing.AfterTurn). It is
+// fixed when the message is journaled, so a turn that ends before the
+// adapter is handed the message does not move it.
+func (h *host) afterTurn(id string) string {
+	after := ""
+	h.rec.View(func(p *agent.Projection) {
+		if m := p.Message(id); m != nil {
+			after = m.AfterTurn
+		}
+	})
+	return after
 }
 
 // emitter is the adapter's Emitter.
@@ -610,6 +625,11 @@ func newID(prefix string) string {
 	return prefix + hex.EncodeToString(b[:])
 }
 
+// journaledHook is for tests only: it runs in send between the message's
+// journal write and its handing to the adapter, where the running turn can
+// end.
+var journaledHook func()
+
 func (h *host) send(ctx context.Context, cmd Command) any {
 	if cmd.ClientID == "" {
 		return fail(cmd, CodeBadRequest, "a message needs a client_id")
@@ -633,7 +653,11 @@ func (h *host) send(ctx context.Context, cmd Command) any {
 	if err != nil {
 		return fail(cmd, CodeFailed, "the message could not be journaled: "+err.Error())
 	}
-	out := agent.Outgoing{MessageID: msg.MessageID, ClientID: cmd.ClientID, Text: cmd.Text, Attachments: cmd.Attachments}
+	if journaledHook != nil {
+		journaledHook()
+	}
+	out := agent.Outgoing{MessageID: msg.MessageID, ClientID: cmd.ClientID, Text: cmd.Text, Attachments: cmd.Attachments,
+		AfterTurn: h.afterTurn(msg.MessageID)}
 	if err := h.adapter.Send(ctx, out); err != nil {
 		// Journaled and acknowledged all the same: it stays pending, and the
 		// next host hands it to the agent.
@@ -778,7 +802,7 @@ func (h *host) deliverAsMessage(ctx context.Context, ask *agent.Ask, answer json
 	if h.adapter == nil {
 		return
 	}
-	out := agent.Outgoing{MessageID: msg.MessageID, Text: msg.Text, AnswerTo: ask.ID}
+	out := agent.Outgoing{MessageID: msg.MessageID, Text: msg.Text, AnswerTo: ask.ID, AfterTurn: h.afterTurn(msg.MessageID)}
 	if err := h.adapter.Send(ctx, out); err != nil {
 		h.record(agent.Event{Type: agent.TypeError, Code: "send_failed", MessageID: msg.MessageID, Text: err.Error()})
 	}
