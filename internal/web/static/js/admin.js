@@ -848,8 +848,8 @@ function updatesWhen(iso) {
   const s = Math.abs(diff);
   if (s < 60) return diff > 0 ? 'in a moment' : 'just now';
   let text;
-  if (s < 3600) text = Math.round(s / 60) + ' min';
-  else if (s < 86400) text = Math.round(s / 3600) + ' h';
+  if (s < 3600) text = Math.round(s / 60) + '\u00a0min';
+  else if (s < 86400) text = Math.round(s / 3600) + '\u00a0h';
   else if (s < 7 * 86400) text = Math.round(s / 86400) + (Math.round(s / 86400) === 1 ? ' day' : ' days');
   else return new Date(at).toLocaleString();
   return diff > 0 ? 'in ' + text : text + ' ago';
@@ -1615,15 +1615,15 @@ function ago(ms) {
   if (!ms) return 'never';
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
   if (s < 60) return 'just now';
-  if (s < 3600) return Math.round(s / 60) + ' min ago';
-  if (s < 86400) return Math.round(s / 3600) + ' h ago';
+  if (s < 3600) return Math.round(s / 60) + '\u00a0min ago';
+  if (s < 86400) return Math.round(s / 3600) + '\u00a0h ago';
   return new Date(ms).toLocaleString();
 }
 
 function inTime(ms) {
   const s = Math.max(0, Math.round((ms - Date.now()) / 1000));
   if (s < 60) return 'in under a minute';
-  if (s < 3600) return 'in ' + Math.round(s / 60) + ' min';
+  if (s < 3600) return 'in ' + Math.round(s / 60) + '\u00a0min';
   return 'at ' + new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 

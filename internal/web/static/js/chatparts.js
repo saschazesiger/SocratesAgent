@@ -32,15 +32,18 @@ export function statusMark(state) {
   return html`<span class="so-status-mark" data-state="${state}" role="img" aria-label="${word}" data-tip="${word}">${raw(icon(glyph, 16))}</span>`;
 }
 
-/** seconds is a duration the way the rows say it: 0.4 s, 12 s, 3 min 5 s. */
+/**
+ * seconds is a duration the way the rows say it: 0.4 s, 12 s, 3 min 5 s,
+ * each number held to its unit by a no-break space.
+ */
 export function seconds(ms) {
   const value = Number(ms) || 0;
   // Less than a tenth of a second is not worth a number.
   if (value < 100) return '';
-  if (value < 10000) return (value / 1000).toFixed(1).replace(/\.0$/, '') + ' s';
+  if (value < 10000) return (value / 1000).toFixed(1).replace(/\.0$/, '') + '\u00a0s';
   const s = Math.round(value / 1000);
-  if (s < 60) return s + ' s';
-  return Math.floor(s / 60) + ' min' + (s % 60 ? ' ' + (s % 60) + ' s' : '');
+  if (s < 60) return s + '\u00a0s';
+  return Math.floor(s / 60) + '\u00a0min' + (s % 60 ? ' ' + (s % 60) + '\u00a0s' : '');
 }
 
 /** infoButton is the "i" of infoTip() as markup; the view opens it on a tap. */
@@ -729,15 +732,18 @@ const NOTICE_GLYPH = {
   api_retry: 'sync', retrying: 'sync', retry: 'sync',
 };
 
-/** renewsIn is a reset moment as "2 h 10 min", from now. */
+/**
+ * renewsIn is a reset moment as "2 h 10 min", from now, each number held to
+ * its unit by a no-break space.
+ */
 export function renewsIn(resetsAt, now = Date.now()) {
   const ms = Number(resetsAt) * 1000 - now;
   if (!(ms > 0)) return '';
   const minutes = Math.ceil(ms / 60000);
-  if (minutes < 60) return minutes + ' min';
+  if (minutes < 60) return minutes + '\u00a0min';
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
-  return h + ' h' + (m ? ' ' + m + ' min' : '');
+  return h + '\u00a0h' + (m ? ' ' + m + '\u00a0min' : '');
 }
 
 /** lineHtml is one line between messages. */

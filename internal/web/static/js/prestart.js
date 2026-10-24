@@ -115,14 +115,15 @@ async function call(method, path, body, timeout = 15000) {
 // inWords is a distance in time the way a person says it: "in 2 h 15 min",
 // "in 3 d 4 h", "in 40 s".
 export function inWords(ms) {
-  if (ms < 60000) return 'in ' + Math.max(1, Math.ceil(ms / 1000)) + ' s';
+  // Each number held to its unit by a no-break space.
+  if (ms < 60000) return 'in ' + Math.max(1, Math.ceil(ms / 1000)) + '\u00a0s';
   const minutes = Math.round(ms / 60000);
   const days = Math.floor(minutes / 1440);
   const hours = Math.floor((minutes % 1440) / 60);
   const rest = minutes % 60;
-  if (days > 0) return 'in ' + days + ' d' + (hours ? ' ' + hours + ' h' : '');
-  if (hours > 0) return 'in ' + hours + ' h' + (rest ? ' ' + rest + ' min' : '');
-  return 'in ' + rest + ' min';
+  if (days > 0) return 'in ' + days + '\u00a0d' + (hours ? ' ' + hours + '\u00a0h' : '');
+  if (hours > 0) return 'in ' + hours + '\u00a0h' + (rest ? ' ' + rest + '\u00a0min' : '');
+  return 'in ' + rest + '\u00a0min';
 }
 
 const two = (n) => String(n).padStart(2, '0');

@@ -6730,7 +6730,7 @@ async function prestart() {
     ok(srow && Math.abs(srow.start_at - Math.floor(later / 60000) * 60000) < 1000,
       'a time picked in the panel is saved as that minute', srow && new Date(srow.start_at).toISOString());
     const hint = await page.$eval('#psStartAtHint', (n) => n.textContent.trim());
-    ok(/in 2 h/.test(hint), 'the panel says how far away it is', hint);
+    ok(/in 2\sh/.test(hint), 'the panel says how far away it is', hint);
     const clock = await page.waitForSelector('#sessionList .so-row[data-id="' + sid + '"] .so-row__when svg',
       { timeout: 20000 }).then(() => true, () => false);
     ok(clock, 'and its row wears a clock and the time',
@@ -13001,7 +13001,7 @@ async function chatstream() {
     ok(lines.some((l) => /^notice:The conversation was compacted/.test(l)) && lines.some((l) => /^account:Switched from Work to Personal/.test(l))
       && lines.some((l) => /^error:A message could not be handed/.test(l)),
       'notices, an account switch and an error are lines of their own', JSON.stringify(lines));
-    ok(/Limit reached — renews in (1 h 5\d min|2 h)/.test(limit), 'a limit says so, with when it renews', oneLine(limit));
+    ok(/Limit reached — renews in (1\sh\s5\d\smin|2\sh)/.test(limit), 'a limit says so, with when it renews', oneLine(limit));
 
     // A prepared chat: its draft is the first message when it starts.
     await ensureNav(page);

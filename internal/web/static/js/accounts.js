@@ -108,11 +108,13 @@ export function renewal(account, now = Date.now()) {
     if ((Number(w.used_percent) || 0) >= 100 && reset > at) at = reset;
   }
   if (!(at > now)) return '';
+  // A number and its unit never part at the end of a line (a no-break
+  // space): the account menu at 390 broke "renews in 2" from its "h".
   const minutes = Math.ceil((at - now) / 60000);
-  if (minutes < 60) return 'renews in ' + minutes + ' min';
+  if (minutes < 60) return 'renews in ' + minutes + '\u00a0min';
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
-  return 'renews in ' + h + ' h' + (m ? ' ' + m + ' min' : '');
+  return 'renews in ' + h + '\u00a0h' + (m ? ' ' + m + '\u00a0min' : '');
 }
 
 /** usageWords is an account's windows in a line: "5h 40% · 7d 60%". */
