@@ -175,7 +175,7 @@ The card says when the last backup ran, how large it was and what failed; a
 day without a successful one is said on the session page too.
 
 <p align="center">
-  <img src="docs/screenshot-backup.png" alt="Admin's Backup card: the bucket, when the last backup ran and its snapshot" width="760">
+  <img src="docs/screenshot-backup.png" alt="Admin's Backup card: what is backed up, when the last backup ran and when the next one runs, and its snapshot" width="760">
 </p>
 
 | backed up | left out |
