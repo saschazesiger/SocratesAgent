@@ -108,14 +108,16 @@ export function toolOf(part) {
   const summary = c.summary || c.command || field('command') || c.path || field('file_path') || field('pattern')
     || field('description') || field('url') || field('query') || (agent && (agent.label || agent.description))
     || (c.workflow && (c.workflow.description || c.workflow.name)) || c.name || '';
+  // The file a call is about; it is the summary of a Read or an Edit.
+  const path = c.path || field('file_path') || field('notebook_path') || '';
   let duration = Number(c.duration_ms) || 0;
   if (!duration && part.state !== 'running' && part.state !== 'streaming' && part.updatedAt > part.at) {
     duration = part.updatedAt - part.at;
   }
   const exit = c.exit_code;
   const failed = part.state === 'error' || c.is_error === true || (typeof exit === 'number' && exit !== 0);
-  return { name, summary: String(summary).split('\n')[0], input, duration, failed, agent, workflow: c.workflow || null,
-    command: c.command || field('command'), content: c };
+  return { name, summary: String(summary).split('\n')[0], path: String(path).split('\n')[0], input, duration, failed, agent,
+    workflow: c.workflow || null, command: c.command || field('command'), content: c };
 }
 
 // isAskTool says whether a tool part is a call of Socrates' own question
@@ -343,6 +345,17 @@ function fileHtml(part) {
   return html`<div class="so-part so-attachment" data-ds-key="${'p:' + part.id}" data-kind="${part.kind}">${raw(icon(part.kind === 'image' ? 'image' : 'file', 18))}<span class="so-ellipsis">${name}</span>${infoButton([c.path, c.mime], 'File details')}</div>`;
 }
 
+// summaryHtml is the call's one line. A path is said file first, then its
+// folder - "handler.go · /srv/app/server" - because the end of the line is
+// what a narrow screen cuts, and it cut the file name: at 360 an edit read
+// "/srv/app/server/handl…". The whole path is its tip.
+function summaryHtml(tool) {
+  const path = tool.path && tool.path === tool.summary ? tool.path.replace(/\/+$/, '') : '';
+  const cut = path.lastIndexOf('/');
+  if (!path || cut <= 0) return html`<span class="so-tool__summary so-ellipsis">${tool.summary}</span>`;
+  return html`<span class="so-tool__summary so-ellipsis" data-tip="${tool.path}">${path.slice(cut + 1) + ' · ' + path.slice(0, cut)}</span>`;
+}
+
 function toolHtml(part, view, { diff = false } = {}) {
   const tool = toolOf(part);
   const group = !diff && isGroup(part, tool);
@@ -368,7 +381,7 @@ function toolHtml(part, view, { diff = false } = {}) {
     typeof tool.content.exit_code === 'number' ? 'exit status ' + tool.content.exit_code : '',
     tool.content.cwd ? tool.content.cwd : '',
   ];
-  return html`<details class="so-part so-tool" data-ds-key="${key}" data-open-key="${key}" data-kind="${part.kind}" data-state="${state}"${group ? html` data-group` : ''}${open ? html` open` : ''}><summary class="so-tool__head"><span class="so-tool__icon" aria-hidden="true">${raw(icon(toolGlyph(tool.name), 18))}</span><span class="so-tool__name">${tool.name}</span><span class="so-tool__summary so-ellipsis">${tool.summary}</span>${
+  return html`<details class="so-part so-tool" data-ds-key="${key}" data-open-key="${key}" data-kind="${part.kind}" data-state="${state}"${group ? html` data-group` : ''}${open ? html` open` : ''}><summary class="so-tool__head"><span class="so-tool__icon" aria-hidden="true">${raw(icon(toolGlyph(tool.name), 18))}</span><span class="so-tool__name">${tool.name}</span>${summaryHtml(tool)}${
     progress ? html`<span class="so-tool__progress so-ellipsis">${progress}</span>` : ''
   }${diff && files.length ? html`<span class="so-diff__count"><span class="so-diff__added">+${added}</span><span class="so-diff__removed">−${removed}</span></span>` : ''}${
     statusMark(state)
