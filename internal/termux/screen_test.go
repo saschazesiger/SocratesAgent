@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
 )
 
 // These run against the real tmux, on a socket under t.TempDir(), because
@@ -224,6 +226,19 @@ func TestActivityTickAnswersForARealPane(t *testing.T) {
 	l := newLab(t)
 	dir := realDir(t, l.dataDir)
 	row := l.create(shellSpec(dir, "/bin/sh"))
+	// What the Shell layer saw, beside any verdict that fails: the answer is
+	// one name and one process table, and both differ between systems.
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		panes, err := l.listActivityPanes(ctx)
+		pane := panes[row.TmuxName]
+		t.Logf("activity %+v; pane command %q, pid %d (list-panes error %v); plan argv %q; the pane's process has a child: %t",
+			l.ActivityOf(row.ID), pane.command, pane.pid, err, l.planFor(row.ID).Argv, hasChild(pane.pid))
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -263,6 +278,37 @@ func TestActivityTickAnswersForARealPane(t *testing.T) {
 	l.act.tick(ctx, time.Now())
 	if got := l.ActivityOf(row.ID).State; got != StateUnknown {
 		t.Fatalf("a deleted session is %q, want unknown", got)
+	}
+}
+
+// TestShellIsKnownUnderAnotherShellsName: macOS's /bin/sh execs bash, and
+// tmux there names the foreground process by its executable, so a /bin/sh at
+// its prompt is "bash". A shell's plan whose foreground command is a shell is
+// the shell; anything else in the foreground is not.
+func TestShellIsKnownUnderAnotherShellsName(t *testing.T) {
+	plan := func(argv ...string) harnesses.LaunchPlan { return harnesses.LaunchPlan{Argv: argv} }
+	cases := []struct {
+		cmd  string
+		plan harnesses.LaunchPlan
+		want bool
+	}{
+		{"sh", plan("/bin/sh", "-l"), true},
+		{"bash", plan("/bin/sh", "-l"), true}, // macOS
+		{"zsh", plan("/bin/sh"), true},        // macOS, with /private/var/select/sh changed
+		{"-bash", plan("/bin/bash", "-l"), true},
+		{"sleep", plan("/bin/sh", "-l"), false},
+		{"vim", plan("/bin/bash"), false},
+		// A program somebody configured as their shell is only ever itself.
+		{"bash", plan("/usr/local/bin/xonsh"), false},
+		{"xonsh", plan("/usr/local/bin/xonsh"), true},
+		// No plan to read: the names alone.
+		{"bash", plan(), true},
+		{"python3", plan(), false},
+	}
+	for _, c := range cases {
+		if got := isTheShell(c.cmd, c.plan); got != c.want {
+			t.Errorf("isTheShell(%q, %q) = %t, want %t", c.cmd, c.plan.Argv, got, c.want)
+		}
 	}
 }
 
