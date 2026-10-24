@@ -759,8 +759,9 @@ open the journal → **recover**: every part
 still `running`/`streaming` (a turn's, or a subagent or workflow group that outlived its turn) gets
 a `part{interrupted}`, a turn still open in the journal is closed with `turn.ended{interrupted}`,
 and `notice{resumed}` says so; open asks are left open (a question survives everything, REBUILD
-§5.3: its answer, whenever it comes, reaches the agent as a message, §4.4) → listen → boot (holding the command lock, so nothing
-new reaches the agent first): `process{starting}`, `Adapter.Start` with `ResumeID =` the
+§5.3: its answer, whenever it comes, reaches the agent as a message, §4.4) → listen → boot (holding the command lock, taken
+before the socket accepts anything, so nothing new reaches the agent first and a command sent the moment the socket accepts
+waits for the agent instead of finding none — a `not_running` the server would keep for the next host): `process{starting}`, `Adapter.Start` with `ResumeID =` the
 journal's conversation id — or, when the journal names none, the spec's `conversation` (the journal
 was lost, or the chat was made from an existing conversation such as a fork), with
 `StartSpec.Rebuild` set when the journal has no message at all (§5) — (`First` = the first
@@ -941,7 +942,9 @@ attachment(s): …`).
   missing events (byte-identical to the journal); SIGKILL mid-turn → CLI child dead (Pdeathsig),
   recovery, resume, dedupe across hosts; park on idle → resume; no park while a question is
   waited on (in its turn) or with a background task; in process, a message handed to the adapter
-  with its place among the turns when a limited turn ends between its journal write and its `Send`; **systemd scope** (root + systemd only): host in `socrates-test-agents-<id>.scope`
+  with its place among the turns when a limited turn ends between its journal write and its `Send`, and a
+  command sent as the host starts that waits for the agent (the command lock is boot's before the socket
+  accepts); **systemd scope** (root + systemd only): host in `socrates-test-agents-<id>.scope`
   with `OOMPolicy=continue`, `Reap` refuses a live host, an orphan keeps the scope after SIGKILL and
   `Reap` ends it.
 - `internal/server` (real hosts; Linux): create idempotency, terminal routes refused, conversation
