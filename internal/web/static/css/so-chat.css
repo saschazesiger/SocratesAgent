@@ -98,6 +98,10 @@
   max-width: var(--so-chat-measure);
   margin-inline: auto;
   padding: var(--ds-space-6) var(--ds-space-6) var(--ds-space-4);
+  /* While a message that stays stands over the end of the conversation,
+     the end is that much further down (session.js placeToasts), so the
+     last answer and its Copy scroll clear of it. */
+  padding-bottom: calc(var(--ds-space-4) + var(--so-chat-reserve, 0px));
   transition: opacity var(--ds-dur-fast) var(--ds-ease-in-out);
 }
 
@@ -1227,6 +1231,7 @@
   .so-chat__log {
     gap: var(--ds-space-4);
     padding: var(--ds-space-4) var(--ds-space-4) var(--ds-space-3);
+    padding-bottom: calc(var(--ds-space-3) + var(--so-chat-reserve, 0px));
   }
 
   .so-chat__dock {

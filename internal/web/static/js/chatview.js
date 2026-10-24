@@ -647,9 +647,10 @@ export function mountChat(ctx) {
   });
 
   // A conversation read at its end stays at its end when it gets shorter:
-  // a phone's keyboard coming up, the dock growing, a turn of the screen.
-  // What the browser scrolls by itself while the height changes is not the
-  // person scrolling away from the end.
+  // a phone's keyboard coming up, the dock growing, a turn of the screen;
+  // and when its end moves down: the room kept for a message that stays
+  // (session.js placeToasts). What the browser scrolls by itself while the
+  // height changes is not the person scrolling away from the end.
   let scrollerHeight = 0;
   scroller.addEventListener('scroll', () => {
     if (scroller.clientHeight !== scrollerHeight) return;
@@ -657,12 +658,14 @@ export function mountChat(ctx) {
     showJump(!stuck);
   }, { passive: true });
 
-  new ResizeObserver(() => {
+  const keepEnd = new ResizeObserver(() => {
     scrollerHeight = scroller.clientHeight;
     if (!session || !stuck) return;
     scroller.scrollTop = scroller.scrollHeight;
     showJump(false);
-  }).observe(scroller);
+  });
+  keepEnd.observe(scroller);
+  keepEnd.observe(log, { box: 'border-box' });
 
   // Files dropped anywhere on the chat go into the composer.
   host.addEventListener('dragover', (event) => {

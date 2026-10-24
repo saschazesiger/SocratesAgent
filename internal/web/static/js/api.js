@@ -244,6 +244,7 @@ export function toast(message, kind = 'info', { persistent = false, timeout, act
     });
   }
   const handle = DS.overlay.toast(region(), content, { kind: sort, persistent, timeout });
+  watchDialogRoom();
   // DS draws the close button of a message it builds itself; it says what
   // it does on hover like every other icon button.
   const close = handle.el && handle.el.querySelector('.ds-toast__close');
@@ -262,15 +263,31 @@ export function toast(message, kind = 'info', { persistent = false, timeout, act
   return handle;
 }
 
+/** toastsStay says whether a message that stays until it is closed is on screen. */
+export function toastsStay() { return staying.size > 0; }
+
+/**
+ * onToastsStay is told when that may have changed - a page that keeps room
+ * of its own for such a message (the session page's chat, session.js
+ * placeToasts) - and hands back its own undo.
+ */
+export function onToastsStay(fn) {
+  stayWatchers.add(fn);
+  return () => stayWatchers.delete(fn);
+}
+
 // A message that stays until it is closed keeps room at the end of what
 // scrolls under it - the open sheet's body, or the page's view (Admin,
 // Costs) - so that the last actions there can scroll clear of it (DS
 // data-toast-reserve and --ds-toast-reserve): its height and its distance
 // from the bottom edge. The session page's view does not scroll; what
-// stands at its bottom moves the messages instead (session.js
-// placeToasts). The region moves into a sheet that opens and back out
-// when it closes (DS), and the room moves with it.
+// stands at its bottom moves the messages instead, and a chat's
+// conversation keeps the room at its own end (session.js placeToasts).
+// The region moves into a sheet that opens and back out when it closes
+// (DS), and the room moves with it; in a dialog, the dialog keeps it
+// (keepDialogRoom).
 const staying = new Set();
+const stayWatchers = new Set();
 let reserveWatched = false;
 
 function watchReserve() {
@@ -281,6 +298,9 @@ function watchReserve() {
 }
 
 function reserveToasts() {
+  for (const fn of [...stayWatchers]) {
+    try { fn(); } catch { /* one bad listener must not stop the others */ }
+  }
   const node = document.getElementById('toasts');
   const sheet = node && staying.size ? node.closest('.ds-sheet') : null;
   const target = !node || !staying.size ? null
@@ -294,6 +314,79 @@ function reserveToasts() {
   const room = Math.max(0, Math.round(window.innerHeight - node.getBoundingClientRect().top));
   target.setAttribute('data-toast-reserve', '');
   target.style.setProperty('--ds-toast-reserve', room + 'px');
+}
+
+// A message shown while a dialog is open stands in the dialog, above its
+// scrim, where it stood: DS moves the region in and leaves it at the
+// bottom edge - across the width, on a phone. There it lay over the
+// dialog's own last controls: an action sheet's Delete, the question's
+// options at the end of its body, Rename over a keyboard. So while a
+// message shows over its box, the dialog keeps that strip, and the box ends
+// above the messages rather than under them (so-shared.css
+// [data-so-toast-room]): the region's height and its distance from the
+// bottom edge as the page placed it (session.js lifts it past a keyboard,
+// and asks again when it does), and a little air. A box that stands clear
+// of the messages - a short form in the middle of a tall screen, beside a
+// short message at a desk - does not move. Where things stand is read from
+// the layout (offsets and the region's own bottom), without the room and
+// without the transforms of an entrance. A dialog on its way out keeps the
+// room until it has gone: its box would drop under the messages as it fades.
+export function keepDialogRoom() {
+  const node = document.getElementById('toasts');
+  const host = node && !node.closest('.ds-sheet') ? node.closest('dialog.ds-dialog[open]') : null;
+  const box = host ? host.querySelector('.ds-dialog__box') : null;
+  let room = '';
+  if (box && node.querySelector('.ds-toast') && node.offsetHeight) {
+    host.removeAttribute('data-so-toast-room');
+    const look = getComputedStyle(node);
+    const edge = (parseFloat(look.bottom) || 0) + (parseFloat(look.marginBottom) || 0);
+    const top = host.clientHeight - edge - node.offsetHeight;
+    const left = parseFloat(look.left) || 0;
+    const air = parseFloat(getComputedStyle(host).getPropertyValue('--ds-space-3')) || 0;
+    const over = box.offsetTop + box.offsetHeight > top - air
+      && box.offsetLeft < left + node.offsetWidth && box.offsetLeft + box.offsetWidth > left;
+    if (over) room = 'calc(' + Math.round(edge + node.offsetHeight) + 'px + var(--ds-space-3))';
+  }
+  for (const one of document.querySelectorAll('[data-so-toast-room]')) {
+    if (one === host || one.classList.contains('ds-dialog--closing')) continue;
+    one.removeAttribute('data-so-toast-room');
+    one.style.removeProperty('--so-toast-room');
+  }
+  // A box that grows (a question's next step, a longer form) can grow into
+  // the messages: it is watched while it holds them.
+  if (dialogRoomWatcher && roomBox !== box) {
+    if (roomBox) dialogRoomWatcher.unobserve(roomBox);
+    if (box) dialogRoomWatcher.observe(box);
+    roomBox = box;
+  }
+  if (!host) return;
+  if (!room) {
+    host.removeAttribute('data-so-toast-room');
+    host.style.removeProperty('--so-toast-room');
+    return;
+  }
+  if (host.style.getPropertyValue('--so-toast-room') !== room) host.style.setProperty('--so-toast-room', room);
+  host.setAttribute('data-so-toast-room', '');
+}
+
+// The room follows the messages (the region's height), a dialog opening
+// or closing over them, and the region going back to the page. Watched
+// from the first message on: before it there is nothing to keep room for.
+let dialogRoomWatched = false;
+let dialogRoomWatcher = null;
+let roomBox = null;
+function watchDialogRoom() {
+  const node = document.getElementById('toasts');
+  if (dialogRoomWatched || !node) return;
+  dialogRoomWatched = true;
+  if (window.ResizeObserver) {
+    dialogRoomWatcher = new ResizeObserver(() => keepDialogRoom());
+    dialogRoomWatcher.observe(node);
+  }
+  new MutationObserver(() => keepDialogRoom()).observe(document.body, { childList: true });
+  new MutationObserver((records) => {
+    if (records.some((r) => r.target.localName === 'dialog')) keepDialogRoom();
+  }).observe(document.body, { attributes: true, attributeFilter: ['open'], subtree: true });
 }
 
 // isBusyConflict is the one refusal that passes on its own: the session is still

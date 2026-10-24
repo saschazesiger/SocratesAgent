@@ -17,7 +17,8 @@
 
 import {
   api, el, toast, infoTip, confirmDialog, alertDialog, promptDialog, errorMessage, isOffline, isBusyConflict,
-  setClass, onWake, clientKey, CONNECTION_GRACE, restoreFocus, setFocusFallback,
+  setClass, onWake, clientKey, CONNECTION_GRACE, restoreFocus, setFocusFallback, toastsStay, onToastsStay,
+  keepDialogRoom,
 } from './api.js';
 import { connectionSource } from './net.js';
 import { agentMark, agentMarkHtml } from './logos.js';
@@ -3005,6 +3006,13 @@ function applyKeyBar() {
 // placeToasts keeps the snackbars off what a finger needs (DS
 // --ds-toast-bottom, "to stay above a bar pinned there"; --ds-toast-left),
 // and an error stays until it is closed:
+//   - the region in an open side sheet (DS moves it there and places it):
+//     the sheet covers the page, and its body keeps room for a message that
+//     stays (api.js reserveToasts);
+//   - the region in an open dialog (DS moves it there and leaves it where
+//     it stood): at the bottom edge, past a keyboard, and the dialog keeps
+//     that strip (api.js keepDialogRoom) - what stands at the page's bottom
+//     is under the dialog's scrim;
 //   - the modal drawer open: beside it where the window is wide enough for
 //     the messages to stand there (as beside the docked drawer, DS), else
 //     above its foot (Costs, Admin, Sign out), the session list keeping
@@ -3012,10 +3020,9 @@ function applyKeyBar() {
 //   - the key bar shown: above it - a message over Esc and Ctrl is a key bar
 //     a thumb cannot use;
 //   - a chat shown: above its dock, and above "Latest" (chatview.js says
-//     how much room it needs);
-//   - none of that while the region is in an open side sheet (DS moves it
-//     there and places it): the sheet covers the page, and its body keeps
-//     room for a message that stays (api.js reserveToasts).
+//     how much room it needs), and while a message that stays shows, the
+//     conversation keeps its height at its end, so that the last answer and
+//     its Copy can scroll clear of it.
 // The key bar and the dock stand at the bottom of the app, which is as
 // tall as what can be seen (keybar.js --so-app-h): a keyboard that only
 // shrinks the visual viewport adds its height. Heights only, never where
@@ -3031,30 +3038,38 @@ function placeToasts() {
   const vv = window.visualViewport;
   const keyboard = vv ? Math.max(0, Math.round(window.innerHeight - vv.offsetTop - vv.height)) : 0;
   const inSheet = !!region.closest('.ds-sheet');
+  const inDialog = !inSheet && !!region.closest('dialog.ds-dialog[open]');
+  const drawer = dom.app.hasAttribute('data-drawer-open') && drawerModal();
+  // The messages' height: nothing while there are none.
+  const stack = region.querySelector('.ds-toast') ? region.offsetHeight : 0;
   let room = 0;
   let list = 0;
   let left = '';
   if (inSheet) {
     room = 0;
-  } else if (dom.app.hasAttribute('data-drawer-open') && drawerModal()) {
+  } else if (inDialog) {
+    room = keyboard;
+  } else if (drawer) {
     if (TOASTS_BESIDE.matches) {
       left = 'calc(var(--ds-drawer-width) + env(safe-area-inset-left) + var(--ds-space-6))';
     } else {
       const foot = dom.sidebar.querySelector('.so-drawer-foot');
       room = foot ? foot.offsetHeight : 0;
-      list = region.querySelector('.ds-toast') ? region.offsetHeight : 0;
     }
   } else if (!dom.keybar.hidden && dom.keybar.offsetHeight) {
     room = dom.keybar.offsetHeight + keyboard;
   } else if (chatToastRoom) {
     room = chatToastRoom + keyboard;
   }
+  // The drawer's list keeps its room under a dialog opened from it (a
+  // row's ⋮), rather than jumping under the scrim.
+  if (drawer && !inSheet && !TOASTS_BESIDE.matches) list = stack;
   const value = room ? 'calc(' + room + 'px + var(--ds-space-3) - env(safe-area-inset-bottom, 0px))' : '';
   if (region.style.getPropertyValue('--ds-toast-bottom') !== value) {
     if (value) region.style.setProperty('--ds-toast-bottom', value);
     else region.style.removeProperty('--ds-toast-bottom');
   }
-  if (!inSheet) {
+  if (!inSheet && !inDialog) {
     const now = region.style.getPropertyValue('--ds-toast-left');
     if (left && now !== left) region.style.setProperty('--ds-toast-left', left);
     else if (!left && toastLeft && now === toastLeft) region.style.removeProperty('--ds-toast-left');
@@ -3065,6 +3080,16 @@ function placeToasts() {
     if (reserve) dom.sidebar.style.setProperty('--so-drawer-reserve', reserve);
     else dom.sidebar.style.removeProperty('--so-drawer-reserve');
   }
+  // A chat on screen with a message that stays over its end: the
+  // conversation is that much longer (so-chat.css --so-chat-reserve), and
+  // one read at its end stays there (chatview.js).
+  const chatReserve = chatToastRoom && stack && toastsStay() ? 'calc(' + stack + 'px + var(--ds-space-3))' : '';
+  if (dom.chat.style.getPropertyValue('--so-chat-reserve') !== chatReserve) {
+    if (chatReserve) dom.chat.style.setProperty('--so-chat-reserve', chatReserve);
+    else dom.chat.style.removeProperty('--so-chat-reserve');
+  }
+  // The lift a dialog's room is measured from may just have changed.
+  keepDialogRoom();
 }
 
 function showKeyBar(on) {
@@ -3962,8 +3987,13 @@ async function boot() {
   window.addEventListener('resize', () => placeToasts());
   if (window.visualViewport) window.visualViewport.addEventListener('resize', () => placeToasts());
   new MutationObserver(() => placeToasts()).observe(dom.app, { attributes: true, attributeFilter: ['data-drawer-open'] });
-  // DS moves the region into a sheet that opens, and back.
+  // DS moves the region into a sheet that opens, and back; into a dialog
+  // as it opens, and back once it has gone.
   new MutationObserver(() => placeToasts()).observe(document.body, { childList: true });
+  new MutationObserver((records) => { if (records.some((r) => r.target.localName === 'dialog')) placeToasts(); })
+    .observe(document.body, { attributes: true, attributeFilter: ['open'], subtree: true });
+  // A message that stays comes or goes: the conversation's room with it.
+  onToastsStay(() => placeToasts());
   // Whether the backup has worked in the last day. Silent while it has.
   mountBackupNotice(document.getElementById('backupNotice'));
   // Read before anything is fetched. Home is the landing page whatever the

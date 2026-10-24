@@ -22,6 +22,8 @@
  *                    (__value, the code to type on the agent's page, and its
  *                    Copy), __wait, __providers
  *   .so-account-form the body of the "Add an account" dialog
+ *   [data-so-toast-room]  a dialog keeping the strip at its bottom for the
+ *                    messages shown in it (api.js keepDialogRoom)
  *
  * In touch mode (.so-touch) DS's fields, check rows, switch rows, the
  * combobox's "Show all" and its options are given a finger's height (they
@@ -290,4 +292,15 @@ body[data-stale] .so-mark[data-ring="busy"]::after {
 .so-signin__providers {
   max-height: var(--so-signin-list-max);
   overflow-y: auto;
+}
+
+/* ── Messages over a dialog ───────────────────────────────────────────── */
+
+/* A message shown while a dialog is open stands in it, at the bottom edge
+   (DS). The dialog keeps that strip while it shows (api.js
+   keepDialogRoom): its box - an action sheet at the bottom, the question
+   on the whole screen, a form over the keyboard - ends above the messages
+   rather than under them, and scrolls inside what is left. */
+.ds-theme dialog.ds-dialog[data-so-toast-room] {
+  padding-bottom: var(--so-toast-room);
 }
