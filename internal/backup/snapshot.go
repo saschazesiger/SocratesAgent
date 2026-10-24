@@ -120,6 +120,11 @@ type snapshotter struct {
 // chunk it needed is in the bucket. Any failure is the run's failure: a
 // manifest is only ever written over chunks that are all there.
 func (s *snapshotter) walk(ctx context.Context) error {
+	// A failure stops the walk and the start of further uploads, but an
+	// upload already under way goes on to its end on the run's own context:
+	// cut short, it may have reached the bucket all the same, unrecorded,
+	// and the next run would send it again.
+	run := ctx
 	ctx, s.cancel = context.WithCancel(ctx)
 	defer s.cancel()
 	s.queued = map[string]bool{}
@@ -132,7 +137,7 @@ func (s *snapshotter) walk(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.upload(ctx)
+			s.upload(run, ctx)
 		}()
 	}
 	err := filepath.WalkDir(s.layout.Root, func(p string, d fs.DirEntry, err error) error {
@@ -162,14 +167,15 @@ func (s *snapshotter) failure() error {
 }
 
 // upload is one uploader: it takes chunks off the queue until it is closed.
-// After a failure it only drains the queue, so the walk is never left
-// blocked on a full one.
-func (s *snapshotter) upload(ctx context.Context) {
+// After a failure (walk is done) it only drains the queue, so the walk is
+// never left blocked on a full one; a chunk it is sending meanwhile is sent
+// to its end on run.
+func (s *snapshotter) upload(run, walk context.Context) {
 	for job := range s.jobs {
-		if ctx.Err() != nil {
+		if walk.Err() != nil {
 			continue
 		}
-		n, err := s.repo.putChunk(ctx, job.name, job.data)
+		n, err := s.repo.putChunk(run, job.name, job.data)
 		if err != nil {
 			s.fail(fmt.Errorf("upload: %w", err))
 			continue
