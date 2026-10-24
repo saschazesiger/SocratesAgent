@@ -22,6 +22,8 @@
 //	/plan            a plan item and a turn/plan/updated list
 //	/limit [S]       the usage limit: rate limits at 100 %, the turn fails as usageLimitExceeded
 //	                 (after S seconds without taking up steered messages, when S is given)
+//	/limit steered   the same, once a message is steered into the turn, which it does not
+//	                 take up: a message written while the limited turn ran, whatever the timing
 //	/crash           a delta, then the process dies
 //	/huge N          one agent message delta of N bytes
 //	/approve         a command approval request; says the decision it got
@@ -803,7 +805,14 @@ func (c *tcx) script(text string) (string, map[string]any) {
 			map[string]any{"step": "one", "status": "completed"}, map[string]any{"step": "two", "status": "inProgress"}}}))
 		ok = c.say([]string{"planned"}, 0)
 	case "/limit":
-		if len(fields) > 0 {
+		if len(fields) > 0 && fields[0] == "steered" {
+			c.deaf = true
+			select {
+			case <-c.t.steer:
+			case <-c.ctx.Done():
+				return "interrupted", nil
+			}
+		} else if len(fields) > 0 {
 			c.deaf = true
 			if !c.wait(time.Duration(atof(fields, 0, 1)*float64(time.Second)), nil) {
 				return "interrupted", nil

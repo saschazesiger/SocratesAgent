@@ -207,3 +207,177 @@ func TestASwitchThroughTheHostRunsTheChain(t *testing.T) {
 		t.Fatalf("back on A: %q", got)
 	}
 }
+
+// reply reads frames until the host answers clientID, keeping the events that
+// come before the answer.
+func (h *hostClient) reply(clientID string) agenthost.Frame {
+	h.t.Helper()
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		f, err := h.c.Next()
+		if err != nil {
+			h.t.Fatalf("waiting for the answer to %s: %v\n%s", clientID, err, dump(h.events))
+		}
+		switch {
+		case f.Event != nil:
+			h.events = append(h.events, *f.Event)
+		case f.Ack != nil && f.Ack.ClientID == clientID, f.Fail != nil && f.Fail.ClientID == clientID:
+			return f
+		}
+	}
+	h.t.Fatalf("timed out waiting for the answer to %s\n%s", clientID, dump(h.events))
+	return agenthost.Frame{}
+}
+
+// holdBehindALimit runs a turn the account's limit ends, with a message the
+// person wrote while it ran - steered into it and not taken up (fakecodex's
+// "/limit steered" ends the turn when the steer comes), so the journal has
+// it before the limited end whatever the timing - and returns that
+// message's id: what the limit holds.
+func (h *hostClient) holdBehindALimit() string {
+	h.t.Helper()
+	h.send("m1", "hello")
+	if end := h.until("the first turn", isType(agent.TypeTurnEnded)); end.Outcome != agent.OutcomeCompleted {
+		h.t.Fatalf("the first turn %+v", end)
+	}
+	h.send("m2", "/limit steered")
+	h.until("the limited turn", isType(agent.TypeTurnStarted))
+	h.send("m3", "written while the limited turn ran")
+	held := h.until("the message", func(ev agent.Event) bool { return ev.Type == agent.TypeMessage && ev.ClientID == "m3" })
+	if end := h.until("the limit", isType(agent.TypeTurnEnded)); end.Outcome != agent.OutcomeLimited {
+		h.t.Fatalf("the turn ended %+v\n%s", end, dump(h.events))
+	}
+	p := agent.Fold(h.events)
+	if m := p.Message(held.MessageID); m == nil || m.State == agent.MessageDelivered || m.AfterTurn == p.LastTurn.ID {
+		h.t.Fatalf("the message is not one the limit holds: %+v\n%s", m, dump(h.events))
+	}
+	return held.MessageID
+}
+
+// ranSince reports whether a turn started for message id among events.
+func ranSince(events []agent.Event, id string) bool {
+	for _, ev := range events {
+		if ev.Type == agent.TypeTurnStarted && ev.MessageID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// goOn sends a message after the limit, which lets the hold go here: the held
+// message runs first, on account, and then the person's.
+func (h *hostClient) goOn(held, account string) {
+	h.t.Helper()
+	h.send("m4", "going on")
+	started := h.until("the held message's turn", func(ev agent.Event) bool {
+		return ev.Type == agent.TypeTurnStarted && ev.MessageID == held
+	})
+	if started.Account != account {
+		h.t.Fatalf("the held message ran on %q, want %q", started.Account, account)
+	}
+	h.until("the person's message taken up", func(ev agent.Event) bool {
+		if ev.Type != agent.TypeMessageState || ev.State != agent.MessageDelivered {
+			return false
+		}
+		m := agent.Fold(h.events).Message(ev.MessageID)
+		return m != nil && m.ClientID == "m4"
+	})
+}
+
+// A switch to an account whose agent cannot start puts the chat back on the
+// account it was on, at its limit. The host restarts the adapter there and
+// hands it what was never taken up: a message written while the limited turn
+// ran waits, as it did on the adapter before, instead of running into the
+// same limit - the new adapter knows the hold from the journal
+// (StartSpec.Held). The person's next message lets it go.
+func TestAFailedSwitchKeepsWhatTheLimitHeld(t *testing.T) {
+	lab := newFakeLab(t)
+	data := filepath.Join(lab.root, "data")
+	chat := "codexfailedswitch"
+	l := &agenthost.Launcher{DataDir: data, Binary: os.Args[0], Logf: t.Logf}
+	t.Cleanup(func() { l.Stop(context.Background(), chat) })
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := l.Launch(ctx, agenthost.Spec{ChatID: chat, Harness: Harness, Workdir: lab.work, Account: "a",
+		Env: lab.spec("a", "").Env, ParkAfterMS: 60000}); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	h := dialHost(t, data, chat, 0)
+	held := h.holdBehindALimit()
+
+	// Account b has no codex to start.
+	envB := append(lab.spec("b", "").Env, BinEnv+"="+filepath.Join(lab.root, "no-codex"))
+	if err := h.c.Send(agenthost.Command{Op: agenthost.OpSwitchAccount, ClientID: "s1", Account: "b", Env: envB,
+		Reason: "The limit of a was reached.", Continue: true}); err != nil {
+		t.Fatal(err)
+	}
+	if f := h.reply("s1"); f.Fail == nil {
+		t.Fatalf("the switch to an account without codex was made: %+v", f.Ack)
+	}
+	// The switch's answer comes after the host restarted a and handed it
+	// what was owed.
+	if ranSince(h.events, held) {
+		t.Fatalf("the message written during the limited turn ran into the limit after the switch failed\n%s", dump(h.events))
+	}
+	p := agent.Fold(h.events)
+	if p.Account != "a" || p.Process != agent.ProcessReady || messageState(p, held) != agent.MessageQueued {
+		t.Fatalf("after the failed switch: account %s, process %s, the held message %q\n%s", p.Account, p.Process,
+			messageState(p, held), dump(h.events))
+	}
+	h.goOn(held, "a")
+}
+
+// A host that dies while the limit holds a message is followed by one on the
+// same account, started by a command that is not a message (a model change):
+// boot hands the new adapter what was never taken up, and it waits as it did,
+// until the person writes again.
+func TestAHostThatComesBackKeepsWhatTheLimitHeld(t *testing.T) {
+	lab := newFakeLab(t)
+	data := filepath.Join(lab.root, "data")
+	chat := "codexheldreboot"
+	l := &agenthost.Launcher{DataDir: data, Binary: os.Args[0], Logf: t.Logf}
+	t.Cleanup(func() { l.Stop(context.Background(), chat) })
+	spec := agenthost.Spec{ChatID: chat, Harness: Harness, Workdir: lab.work, Account: "a", Env: lab.spec("a", "").Env,
+		ParkAfterMS: 60000}
+	launch := func() {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if err := l.Launch(ctx, spec); err != nil {
+			t.Fatalf("launch: %v", err)
+		}
+	}
+	launch()
+	h := dialHost(t, data, chat, 0)
+	held := h.holdBehindALimit()
+
+	if err := syscall.Kill(h.c.Hello.HostPID, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for alive, _ := l.Alive(chat); alive; alive, _ = l.Alive(chat) {
+		if time.Now().After(deadline) {
+			t.Fatal("the killed host is still alive")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := l.Reap(context.Background(), chat); err != nil {
+		t.Fatal(err)
+	}
+	launch()
+	h2 := dialHost(t, data, chat, 0)
+	if err := h2.c.Send(agenthost.Command{Op: agenthost.OpSetModel, ClientID: "x1", Model: "gpt-fake", Effort: "low"}); err != nil {
+		t.Fatal(err)
+	}
+	// The command waits for boot, which hands the adapter what is owed.
+	if f := h2.reply("x1"); f.Ack == nil {
+		t.Fatalf("the model change was refused: %+v", f.Fail)
+	}
+	if ranSince(h2.events, held) {
+		t.Fatalf("the message written during the limited turn ran into the limit on the next host\n%s", dump(h2.events))
+	}
+	if p := agent.Fold(h2.events); p.Process != agent.ProcessReady || messageState(p, held) != agent.MessageQueued {
+		t.Fatalf("on the next host: process %s, the held message %q\n%s", p.Process, messageState(p, held), dump(h2.events))
+	}
+	h2.goOn(held, "a")
+}

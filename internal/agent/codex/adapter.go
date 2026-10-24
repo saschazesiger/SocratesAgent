@@ -104,7 +104,10 @@ type adapter struct {
 	// hands what was never taken up) lets it go, and so does a message the
 	// person wrote after that turn's end; one written before it, though the
 	// host hands it over only now, waits with the rest (AGENT-HOST.md §5.2,
-	// agent.Outgoing.AfterTurn). Empty when nothing holds.
+	// agent.Outgoing.AfterTurn). An adapter started on the account of a
+	// limited turn the journal ends with holds from the start
+	// (StartSpec.Held): a new host, or the old account back after a switch
+	// that failed. Empty when nothing holds.
 	held    string
 	agents  map[string]*subagent
 	running int
@@ -134,6 +137,9 @@ func newAdapter() *adapter {
 func (a *adapter) Start(ctx context.Context, spec agent.StartSpec, out agent.Emitter) error {
 	a.spec, a.out = spec, out
 	a.model, a.effort = spec.Model, spec.Effort
+	// Set before anything is sent, First included: what the host hands over
+	// goes through the same hold as on the adapter before this one.
+	a.held = spec.Held
 	if err := a.launch(); err != nil {
 		return err
 	}

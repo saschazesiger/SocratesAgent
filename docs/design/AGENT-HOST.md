@@ -540,7 +540,10 @@ before the end is held with the rest, even when the host hands it over only afte
 whose steer finds the turn gone (codex lets a turn go before it sends its `turn/completed`, so a
 steer answered "no active turn" waits for that end, at most 5 s, before it decides; a turn started
 at once would run into the same limit, and its `turn.started` would come before the old turn's
-end); a switch starts another adapter, which the host hands what was never taken up. A message
+end); a switch starts another adapter, which the host hands what was never taken up. An adapter
+started with `StartSpec.Held` (the limited turn, on the account it ran on: a new host, or the
+account the chat was on again after a switch that failed, §4.3) holds from the start, so what the
+host hands it waits there too, `First` included. A message
 whose text is one line starting with `!` runs `thread/shellCommand` as a turn of its own.
 
 **Turns.** A journal turn is a root turn of the chat's thread (ids are the adapter's own, `t_…`, so
@@ -1009,7 +1012,9 @@ attachment(s): …`).
   (a message whose steer finds a limited turn gone before its `turn/completed` held), shell lines,
   interrupt, limit, crash, answered requests, the dynamic-tool ask hook, park, resume, rebuild,
   the account-switch chain, and the adapter inside a real host process (SIGKILL takes codex along,
-  the next host resumes). With `SOCRATES_REAL_CODEX=1` the same scenarios run against the installed
+  the next host resumes; what a limit holds - a message steered into the limited turn, `/limit
+  steered` - stays held after a switch to an account that cannot start codex, and on the host that
+  a model change brings up after a SIGKILL, until the next message lets it go on the same account). With `SOCRATES_REAL_CODEX=1` the same scenarios run against the installed
   codex with `internal/agent/codex/fakemodel` as its model provider (a scripted
   Responses API whose encrypted reasoning is bound to an account; `e2e/fakebin/fakemodel` serves
   it on a port).
