@@ -408,11 +408,28 @@ func (m *Manager) Create(ctx context.Context, spec Spec) (*store.Session, error)
 		row.State, row.FailReason = store.StateFailed, Stderr(err)
 		return row, err
 	}
-	if err := m.st.SetSessionState(row.ID, store.StateRunning, -1, ""); err != nil {
+	if err := m.markLaunched(row.ID, store.StateStarting); err != nil {
 		return row, err
 	}
-	row.State = store.StateRunning
-	return row, nil
+	return m.st.GetSession(row.ID)
+}
+
+// markLaunched records that a launch is done: the row goes to running, but
+// only from the state it was in while the program was being started. A
+// program that ends at once - a typo, a missing binary, a crash on start -
+// can be reported by its pane-died hook while the launch is still applying
+// the size policy and the journal, and the unconditional write this used to
+// be put the row back to running over the exit the hook had just recorded:
+// the browser was shown the exit, the row said running, and the next poll
+// recorded the exit again and showed it a second time.
+func (m *Manager) markLaunched(id, from string) error {
+	err := m.st.SetSessionStateFrom(id, from, store.StateRunning, -1, "")
+	if errors.Is(err, store.ErrNotFound) {
+		// The row moved on while the program was being started, and what
+		// moved it is newer news than this.
+		return nil
+	}
+	return err
 }
 
 // ErrNotStarted is the refusal to open, resume, restart or journal a session
@@ -509,7 +526,7 @@ func (m *Manager) StartPrestart(ctx context.Context, spec Spec) (*store.Session,
 		}
 		return current, err
 	}
-	if err := m.st.SetSessionState(row.ID, store.StateRunning, -1, ""); err != nil {
+	if err := m.markLaunched(row.ID, store.StateStarting); err != nil {
 		return &row, err
 	}
 	return m.st.GetSession(row.ID)
@@ -568,7 +585,7 @@ func (m *Manager) Relaunch(ctx context.Context, row *store.Session, plan harness
 	// had derived about this session is about to be wrong. The unread mark is
 	// kept, because work that finished before the restart is still unread.
 	m.ResetActivity(row.ID)
-	return m.st.SetSessionState(row.ID, store.StateRunning, -1, "")
+	return m.markLaunched(row.ID, row.State)
 }
 
 // paneState is what tmux can say about the session behind one row.
