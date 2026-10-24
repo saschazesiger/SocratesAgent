@@ -143,7 +143,8 @@ func TestUltracodeReachesAClaudeChat(t *testing.T) {
 // A chat whose whole folder is lost gets its history back from the CLI's own
 // transcript when it is opened, for each of the three agents: the server
 // writes the row's conversation into host.json, and the host rebuilds the
-// journal before the conversation goes on.
+// journal before the conversation goes on. The turns it gets back are not
+// news: no push, no unread mark, until a new turn ends.
 func TestALostChatFolderIsRebuiltFromTheTranscript(t *testing.T) {
 	withFakeAgents(t)
 	for _, harness := range []string{"claude", "codex", "opencode"} {
@@ -168,6 +169,10 @@ func TestALostChatFolderIsRebuiltFromTheTranscript(t *testing.T) {
 			if s := c.srv.chats.chats[id].summary(); s.LastSeq != 0 {
 				t.Fatalf("the lost folder still has events: %+v", s)
 			}
+			sent := catch(c.srv.push)
+			if err := c.srv.push.add(pushSub{Subscription: testSubscription("https://push.example.net/a")}); err != nil {
+				t.Fatal(err)
+			}
 			// Opening the chat brings its history back, with nothing sent.
 			st := c.stream(t, id, 0)
 			defer st.conn.CloseNow()
@@ -186,6 +191,21 @@ func TestALostChatFolderIsRebuiltFromTheTranscript(t *testing.T) {
 			if rebuilt != 1 || users != 1 {
 				t.Fatalf("rebuilt %d, the first message %d times:\n%v", rebuilt, users, events)
 			}
+			last := events[len(events)-1].Seq
+			for deadline := time.Now().Add(10 * time.Second); c.srv.chats.chats[id].summary().LastSeq < last; {
+				if time.Now().After(deadline) {
+					t.Fatal("the server never read the rebuilt history")
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			select {
+			case s := <-sent:
+				t.Fatalf("the rebuilt history was pushed: %+v", s.note)
+			case <-time.After(700 * time.Millisecond):
+			}
+			if a := c.srv.manager.ActivityOf(id); a.Unread || a.State != termux.StateIdle {
+				t.Fatalf("after the rebuild the chat is %+v", a)
+			}
 			// And the conversation goes on where it was.
 			c.send(t, id, "m2", "and now?")
 			after := c.waitJournal(t, id, 30*time.Second, "the next turn", func(evs []agent.Event) bool {
@@ -193,6 +213,9 @@ func TestALostChatFolderIsRebuiltFromTheTranscript(t *testing.T) {
 			})
 			if lastSaid(after) == "" {
 				t.Fatalf("the agent said nothing after the rebuild:\n%v", after)
+			}
+			if done := pushOfKind(t, sent, pushFinished, 10*time.Second); !strings.Contains(done.Body, "and now?") {
+				t.Fatalf("the push of the new turn: %+v", done)
 			}
 		})
 	}

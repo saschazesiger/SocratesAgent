@@ -281,6 +281,11 @@ type chatPeer struct {
 	// warm asks the pump to start a host although the chat has nothing for
 	// it yet: a new chat, whose first message should find the agent up.
 	warm bool
+	// rebuilding is a host started on a lost journal (launch), which writes
+	// the history back before anything new happens: its turns ended long
+	// ago, and the detector is told the activity once they are all in
+	// (apply), not turn by turn.
+	rebuilding bool
 	// shown is the reading of the chat Home was last told and shownAt when;
 	// lineTimer tells a line held back by chatLineGap (publishReadingLocked).
 	shown     digest
@@ -485,6 +490,10 @@ func (p *chatPeer) launch(ctx context.Context) error {
 	}
 	p.mu.Lock()
 	busy := p.brief.Summary.TurnRunning
+	// A journal with no conversation and no message, of a chat whose row
+	// knows its conversation, is one the host rebuilds as it starts
+	// (AGENT-HOST.md §6): a folder lost, a backup restored without it.
+	p.rebuilding = row.CLISessionID != "" && p.brief.Summary.ConversationID == "" && !p.brief.Summary.Asked
 	model, effort := row.Model, row.Effort
 	if p.brief.Summary.Model != "" {
 		model, effort = p.brief.Summary.Model, p.brief.Summary.Effort
@@ -542,8 +551,15 @@ func (p *chatPeer) serve(conn *agenthost.Conn) {
 	if p.conn == conn {
 		p.conn = nil
 	}
+	// A host that went before its rebuild was in leaves the detector with
+	// what the journal says now.
+	held := p.rebuilding
+	p.rebuilding = false
 	p.mu.Unlock()
 	conn.Close()
+	if held {
+		p.report()
+	}
 }
 
 // keepForNextHost is whether a refused command stays in the outbox for the
@@ -592,13 +608,24 @@ func (p *chatPeer) apply(ev agent.Event) {
 	// Home hears what the chat now says before the detector hears what it
 	// now does, so a page that is told the chat asks has its question.
 	p.publishReadingLocked()
+	// A rebuild's history is in once its notice is, or once the agent is
+	// up without one (there was nothing to write back). Until then its
+	// turns are not news: told one by one, the first of them would be
+	// announced - chime, push, verdict - as a turn that has just ended.
+	if p.rebuilding && (ev.Type == agent.TypeNotice && (ev.Code == agent.NoticeRebuilt || ev.Code == agent.NoticeHistoryUnavailable) ||
+		ev.Type == agent.TypeProcess && ev.State != agent.ProcessStarting) {
+		p.rebuilding = false
+	}
+	held := p.rebuilding
 	p.mu.Unlock()
 	if ev.Type == agent.TypeConversation && ev.ConversationID != "" {
 		if err := p.hub.srv.store.SetChatConversation(p.id, ev.ConversationID); err != nil && !errors.Is(err, store.ErrNotFound) {
 			log.Printf("chats: %s: could not record the conversation id: %v", p.id, err)
 		}
 	}
-	p.report()
+	if !held {
+		p.report()
+	}
 }
 
 // report hands the chat's activity to the detector when it has changed:

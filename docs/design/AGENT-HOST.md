@@ -740,7 +740,9 @@ retried with backoff (200 ms → 5 s), never replaced.
 - A chat whose journal is empty while its row knows a conversation (its folder was lost, or a backup
   restored without it) gets a host when its stream is opened, which rebuilds the history from the
   CLI's transcript (`host.json` carries the conversation); not at start, so a restore of many such
-  chats starts no agent for each.
+  chats starts no agent for each. The turns it writes back are not news: the server tells the
+  detector the chat's activity once the history is in (its `notice{rebuilt|history_unavailable}`,
+  or the agent up without one), so they ring no chime and get no push, unread mark or verdict.
 - The pump connects (launching/recovering), resends the whole outbox in order, applies frames
   (events only forward: seq ≤ last is ignored, a gap is logged), and reconnects whenever the host
   is still alive, because a host can start a turn or report a task on its own. It stops when the
