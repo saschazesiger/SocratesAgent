@@ -310,9 +310,25 @@ func TestPaneDeathIsReported(t *testing.T) {
 // TestDeadPaneKeepsLastScreen is why remain-on-exit-format is emptied: with
 // tmux's own format, a client attaching after the pane died sees "Pane is
 // dead" *instead of* the screen the user was looking at.
+//
+// The program ends only once its line is on the pane. One that prints and
+// exits at birth is not the case here, and not one whose words tmux 3.4 keeps:
+// on a busy CPU its exit can be handled before its output has been read, and
+// the pane's terminal is closed with the line still in it - bare tmux 3.4,
+// with nothing of ours on the socket, left 2 of 120 such panes empty, and 0 of
+// 120 that ended after their line was on screen [V].
 func TestDeadPaneKeepsLastScreen(t *testing.T) {
 	l := newLab(t)
-	row := l.create(shellSpec(t.TempDir(), "/bin/sh", "-c", "echo the-last-thing-it-said; exit 3"))
+	dir := t.TempDir()
+	gate := filepath.Join(dir, "end-now")
+	row := l.create(shellSpec(dir, "/bin/sh", "-c",
+		"echo the-last-thing-it-said; while [ ! -e "+ShellQuote(gate)+" ]; do sleep 0.05; done; exit 3"))
+	waitFor(t, 10*time.Second, "the line to be on the pane", func() bool {
+		return strings.Contains(l.tmuxOut("capture-pane", "-p", "-t", row.TmuxName), "the-last-thing-it-said")
+	})
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	waitFor(t, 10*time.Second, "the pane to die", func() bool {
 		return l.tmuxOut("list-panes", "-t", row.TmuxName, "-F", "#{pane_dead}") == "1"
 	})
