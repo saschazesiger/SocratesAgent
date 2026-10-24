@@ -11,7 +11,7 @@ browser ── POST /api/chats…, GET /api/chats/{id}/stream (socrates.chat.v1,
    │
 socrates serve ── chatHub: one chatPeer per chat (journal copy in memory, projection,
    │               host connection, pump); outbox in SQLite (chat_outbox)
-   │  unix socket, line JSON, protocol 1 (§4)
+   │  unix socket, line JSON, protocol 2 (§4; the server also reads a version-1 host)
    ▼
 socrates agent-host --data <data> --chat <id>      one per active chat, own scope
    │  owns: the adapter, the CLI child, the journal (only writer), parking
@@ -688,7 +688,11 @@ which); its text and reasoning stay as the journal streamed them (OpenCode store
 when the part ends), and the host's recovery interrupts them. `Rebuild` reads the whole history
 from `GET /session/{id}/message` (and the task children's: each task part gets what its subagent
 did while it ran), and writes the `conversation` after it,
-so that a host that dies while it reads leaves a journal the next host rebuilds again.
+so that a host that dies while it reads leaves a journal the next host rebuilds again. A rebuilt
+turn's outcome is only what OpenCode stored: a turn that failed (an invalid credential) or hit a
+limit ("Free limit reached") is said by OpenCode as a session event and kept nowhere on its
+message, so a rebuild reads the one that never completed as interrupted and the one that completed
+with nothing as completed (measured on 1.19.4 against a real session).
 
 **Turns.** A message is posted with `prompt_async` and a message id of OpenCode's own form chosen by
 the adapter (`msg_` + 48-bit ms×4096+counter + 14 base-62), kept in `agent/opencode.json` (journal
