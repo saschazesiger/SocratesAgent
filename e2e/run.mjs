@@ -12730,6 +12730,10 @@ async function openChat(page, id) {
 
 // say writes a message and sends it: Enter at a desk, Send on a touch screen.
 async function say(page, text, { button = false } = {}) {
+  // On a touch screen a field the page focused by itself (the composer after
+  // a chat starts, or after a menu gave the focus back) waits for a finger:
+  // the tap a person makes on it is what opens it (keyboard.js).
+  if (await page.$eval('#chat .so-composer__input', (n) => n.readOnly)) await page.tap('#chat .so-composer__input');
   await page.fill('#chat .so-composer__input', text);
   if (button) await page.click('#chat .so-composer__send');
   else await page.press('#chat .so-composer__input', 'Enter');
@@ -13703,11 +13707,12 @@ async function chatphone() {
     const id = await startChat(page);
     const mode = await page.evaluate(() => document.documentElement.classList.contains('so-touch'));
     const shut = await page.$eval('#chat .so-composer__input', (n) => n.readOnly);
-    await page.click('#kbBtn');
+    await page.tap('#chat .so-composer__input');
     const typing = await page.waitForFunction(() => !document.querySelector('#chat .so-composer__input').readOnly, null,
       { timeout: 5000 }).then(() => true, () => false);
-    ok(mode && shut && typing, 'a phone is in touch mode by itself, and its keyboard button opens the composer for typing',
-      JSON.stringify({ mode, shut, typing }));
+    const keys = await page.evaluate(() => !!document.getElementById('kbBtn')?.checkVisibility());
+    ok(mode && shut && typing && !keys, 'a phone is in touch mode by itself, a tap on the composer opens it for typing, and there is no Keys button beside a chat',
+      JSON.stringify({ mode, shut, typing, keys }));
 
     await say(page, '/md 5', { button: true });
     await awaitLog(page, 'The tests in', 20000);
@@ -13765,11 +13770,18 @@ async function chatphone() {
     const usageItem = await page.waitForSelector('.so-model-menu:not([hidden]) [data-usage]', { timeout: 5000 })
       .then((n) => n.innerText(), () => '');
     ok(/Usage of this chat/.test(usageItem), 'the chat’s usage is the model menu’s last item on a phone', usageItem);
-    await page.keyboard.press('Escape');
+    // A phone has no Escape: the menu is put away by a tap beside it, on the
+    // conversation. (Escape would hand the focus back to the model button
+    // with its tooltip open over the field, as a keyboard is meant to see.)
+    const beside = await page.$eval('#chat .so-chat__scroll', (n) => { const r = n.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + 24 }; });
+    await page.touchscreen.tap(beside.x, beside.y);
+    const shutMenu = await page.waitForFunction(() => !document.querySelector('.so-model-menu:not([hidden])'), null, { timeout: 5000 })
+      .then(() => true, () => false);
+    ok(shutMenu, 'a tap beside the model menu puts it away', String(shutMenu));
     await awaitChat(s, id, idle);
-    // The menu took the focus, and the keyboard switch put the field away
-    // with it: the button brings it back, as a person would.
-    if (await page.$eval('#chat .so-composer__input', (n) => n.readOnly)) await page.click('#kbBtn');
+    // The field waits for a finger again: a tap on it brings the keyboard
+    // back, as a person would.
+    if (await page.$eval('#chat .so-composer__input', (n) => n.readOnly)) await page.tap('#chat .so-composer__input');
 
     // The keyboard: the app is as tall as what can be seen (--so-app-h,
     // which keybar.js writes from the visual viewport), and the composer is
