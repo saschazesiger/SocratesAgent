@@ -214,6 +214,42 @@ func TestTransientPollFailureDoesNotResume(t *testing.T) {
 	}
 }
 
+// TestPollWaitsForAnExitStatus: a pane tmux lists as dead before it has its
+// program's exit status is not marked ended with none on the first look, and
+// an unknown status never replaces the one the pane-died hook recorded.
+func TestPollWaitsForAnExitStatus(t *testing.T) {
+	l := newLab(t)
+	row := l.create(shellSpec(t.TempDir()))
+	rows, err := l.store.ListSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown := map[string]pane{row.TmuxName: {session: row.TmuxName, dead: true, deadStatus: -1}}
+	l.applyPanes(rows, unknown)
+	if got, _ := l.store.GetSession(row.ID); got.State != store.StateRunning {
+		t.Fatalf("one look at a dead pane with no status moved the session to %q", got.State)
+	}
+	l.applyPanes(rows, unknown)
+	got, _ := l.store.GetSession(row.ID)
+	if got.State != store.StateExited || got.ExitStatus != -1 {
+		t.Fatalf("a status that never came left the session at %q with %d", got.State, got.ExitStatus)
+	}
+
+	// The hook's status, and then a poll that read the pane before it.
+	if err := l.store.SetSessionState(row.ID, store.StateExited, 7, ""); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = l.store.ListSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.applyPanes(rows, unknown)
+	l.applyPanes(rows, unknown)
+	if got, _ := l.store.GetSession(row.ID); got.State != store.StateExited || got.ExitStatus != 7 {
+		t.Fatalf("an unknown status replaced the hook's: %q with %d", got.State, got.ExitStatus)
+	}
+}
+
 func TestPollReportsADeadPane(t *testing.T) {
 	l := newLab(t)
 	row := l.create(shellSpec(t.TempDir(), "/bin/sh", "-c", "exit 9"))

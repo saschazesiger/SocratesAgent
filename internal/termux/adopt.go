@@ -293,11 +293,24 @@ func (m *Manager) applyPanes(rows []store.Session, panes map[string]pane) {
 			if m.noteMissing(row.ID) {
 				_ = m.st.SetSessionStateFrom(row.ID, row.State, store.StateNeedsResume, row.ExitStatus, "")
 			}
+		case p.dead && p.deadStatus < 0:
+			// tmux can list a pane as dead before it has its exit status (its
+			// terminal closed, its program not reaped yet), and on a busy
+			// machine a poll reads that moment. The status follows with the
+			// pane-died hook or the next poll: an unknown one is never
+			// written over the one the hook recorded, and a running row
+			// waits one more poll for it before it is marked with none.
+			m.clearMissing(row.ID)
+			if row.State != store.StateExited && m.noteUnknownExit(row.ID) {
+				m.markExited(row, p.deadStatus)
+			}
 		case p.dead:
 			m.clearMissing(row.ID)
+			m.clearUnknownExit(row.ID)
 			m.markExited(row, p.deadStatus)
 		default:
 			m.clearMissing(row.ID)
+			m.clearUnknownExit(row.ID)
 			if row.State == store.StateStarting {
 				// The pane is alive and the row never caught up - the last
 				// write of a create that failed after tmux had done its part.
@@ -326,5 +339,21 @@ func (m *Manager) noteMissing(id string) bool {
 func (m *Manager) clearMissing(id string) {
 	m.mu.Lock()
 	delete(m.missed, id)
+	m.mu.Unlock()
+}
+
+// noteUnknownExit records one poll that found a session's pane dead with no
+// exit status yet, and reports whether that has now been seen long enough to
+// mark the session ended without one.
+func (m *Manager) noteUnknownExit(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.unknownExit[id]++
+	return m.unknownExit[id] >= pollTolerance
+}
+
+func (m *Manager) clearUnknownExit(id string) {
+	m.mu.Lock()
+	delete(m.unknownExit, id)
 	m.mu.Unlock()
 }
