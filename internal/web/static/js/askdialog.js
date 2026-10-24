@@ -27,7 +27,7 @@
 // A plan (payload.kind "plan") is not a question: the plan card in the chat
 // answers it, and this dialog leaves it out.
 
-import { api, restoreFocus, toast, errorMessage } from './api.js';
+import { api, restoreFocus, toast, errorMessage, isOffline } from './api.js';
 import { html, raw, icon, morph, showOverlay, hideOverlay, M, faces } from './ui.js';
 import { markdown } from './md.js';
 import { agentMarkHtml } from './logos.js';
@@ -227,8 +227,11 @@ function watchStream(chatId, ask, listener) {
  *              from its fold and followed by its stream
  *   openChat(id)  the dialog's "Open chat"; also where a chat whose only
  *              open question is a plan goes, because its card answers it
+ *   unreachable()  the questions could not be read for want of a
+ *              connection: the caller asks again once there is one, rather
+ *              than the dialog saying that it failed
  */
-export async function openChatAsks({ sessions, chatId, askId = '', view, openChat }) {
+export async function openChatAsks({ sessions, chatId, askId = '', view, openChat, unreachable }) {
   let failed = null;
   const lists = await Promise.all(sessions.map(async (session) => {
     const live = view ? view.liveChat(session.id) : null;
@@ -252,12 +255,20 @@ export async function openChatAsks({ sessions, chatId, askId = '', view, openCha
   const items = all.filter((item) => !isPlan(item.ask));
   if (!items.length) {
     if (all.some((item) => item.chatId === chatId) && openChat) openChat(chatId);
+    else if (failed && isOffline(failed) && unreachable) unreachable();
     else if (failed) toast('The questions could not be loaded: ' + errorMessage(failed), 'error');
     else toast('Nothing is waiting for an answer any more.');
     return;
   }
   let start = items.findIndex((item) => item.chatId === chatId && (!askId || item.ask.id === askId));
   if (start < 0) start = items.findIndex((item) => item.chatId === chatId);
+  // The chat asked for asks nothing any more - its question was answered on
+  // another device, or it moved on: another chat's question is not what was
+  // asked for.
+  if (start < 0 && chatId) {
+    toast('Nothing is waiting for an answer any more.');
+    return;
+  }
   openAskDialog({
     items,
     start: Math.max(0, start),

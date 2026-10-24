@@ -714,6 +714,9 @@ const state = {
   // the first question, and the page does not yet know whether there is one
   // (questionsWhenKnown).
   questionsWanted: false,
+  // A question asked for from outside the page that could not be shown yet
+  // (questionWhenKnown): {id, since, tries}, or null.
+  questionWanted: null,
 };
 
 const dom = {};
@@ -882,6 +885,7 @@ function drawLive() {
   if (state.home) state.home.render();
   tellAsking();
   questionsWhenKnown();
+  questionWhenKnown();
 }
 
 function drawList() {
@@ -1730,6 +1734,43 @@ function homeCtx() {
 function showQuestions(id) {
   const target = id ? sessionOf(id) : questionQueue(homeCtx())[0];
   if (isChat(target)) showChatQuestions(target.id);
+  // A Shell or an editor never asks: a link to its question has nothing to
+  // open, and says so.
+  else if (target) toast('Nothing is waiting for an answer there.');
+  else if (id) {
+    // A chat this tab does not hold yet - one made while it was offline, a
+    // list that could not be read - is looked for again once the page holds
+    // a current state; one the current list does not have is gone.
+    if (knownCurrent() && state.questionWanted && state.questionWanted.tries > 0) {
+      state.questionWanted = null;
+      toast('That chat is not here any more.');
+    } else wantQuestion(id);
+  }
+}
+
+// wantQuestion keeps a question asked for until the page can show it.
+function wantQuestion(id) {
+  const kept = state.questionWanted && state.questionWanted.id === id ? state.questionWanted : null;
+  state.questionWanted = { id, since: kept ? kept.since : Date.now(), tries: kept ? kept.tries : 0 };
+}
+
+/**
+ * questionWhenKnown shows a question asked for from outside the page - a
+ * notification tapped on a phone whose connection had gone - that could not
+ * be shown when it was asked for, the moment the page holds a current state
+ * again. It is tried a few times, for two minutes at most: a question that
+ * is still not there by then was answered or went with its chat.
+ */
+function questionWhenKnown() {
+  const wanted = state.questionWanted;
+  if (!wanted) return;
+  if (Date.now() - wanted.since > 120000 || wanted.tries >= 3 || !homeShown() || askDialogOpen()) {
+    state.questionWanted = null;
+    return;
+  }
+  if (!knownCurrent()) return;
+  wanted.tries += 1;
+  showQuestions(wanted.id);
 }
 
 /**
@@ -1748,6 +1789,11 @@ function showChatQuestions(chatId, { askId = '', only = false } = {}) {
     view: state.chat,
     // "Open chat": the dialog has closed itself, and the chat takes the stage.
     openChat: (id) => selectSession(id),
+    // No connection to read the question over: it opens once there is one.
+    unreachable: () => {
+      if (!state.questionWanted || state.questionWanted.id !== chatId) toast('No connection. The question opens as soon as it is back.');
+      wantQuestion(chatId);
+    },
   });
 }
 
