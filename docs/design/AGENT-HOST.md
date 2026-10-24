@@ -1197,8 +1197,10 @@ it, or with no account to go to, the person is told by push and on the page ("Li
 in … (<label>)", §3 "Badge and push"; not for a chat filed Background) and the limit card offers
 "Continue with <account>" for each account with room (the same switch, sent by the browser). Codex
 and OpenCode hold their queue meanwhile (§5.2, §5.3), so the messages queued behind the limit do not
-each run into it. A chat is pushed once per account it is stopped on, until a turn gets through
-again.
+each run into it - also on a new adapter on that account (`StartSpec.Held`, §4.3: a host that died
+while holding, or the automatic switch failing to start the other account), while one the switch
+starts on the other account runs them, then the continue. A chat is pushed once per account it is
+stopped on, until a turn gets through again.
 
 **A refused sign-in** (`error{code: auth}`, `agent.ErrorAuth`: OpenCode's `ProviderAuthError` or a
 401, among them a refresh token two chats of one OAuth account renewed at the same moment,
