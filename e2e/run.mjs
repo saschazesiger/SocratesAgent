@@ -10084,6 +10084,73 @@ async function chatstream() {
   } finally { await s.stop(); }
 }
 
+// chat-restart: the server restarts in the middle of a turn, as a desk and a
+// phone on the chat see it. Neither page reloads: each chat stream says hello
+// again with the last event it had, the journal replays the rest, the turn
+// completes, and nothing is there twice - one message sent, one answer, every
+// word of it once and in order, the words the server holds.
+async function chatrestart() {
+  const s = await start({ viewport: { width: 1280, height: 860 } });
+  let phone = null;
+  try {
+    await setup(s.page, s.url);
+    const id = await makeChat(s, 'claude', { title: 'Restarted mid-turn' });
+    await awaitChat(s, id, (b) => b.chat.process === 'ready', 20000);
+    await openChat(s.page, id);
+    phone = await deviceOf(s, { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+    await phone.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
+    await openChat(phone.page, id);
+    const pages = [['desk', s.page], ['phone', phone.page]];
+    for (const [, page] of pages) await page.evaluate(() => { window.__sameLoad = true; });
+
+    const TEXT = '/stream 300 20';
+    const WORDS = Array.from({ length: 300 }, (_, i) => 'w' + (i + 1)).join(' ');
+    await say(s.page, TEXT);
+    const streaming = await Promise.all(pages.map(([, page]) => awaitLog(page, 'w30 ', 20000)));
+    const mid = await chatOf(s, id);
+    ok(streaming.every(Boolean) && mid.chat.turn_running, 'the turn streams to the desk and the phone',
+      JSON.stringify({ streaming, running: mid.chat.turn_running }));
+
+    const seenBefore = ((await logText(s.page)).match(/\bw\d+\b/g) || []).length;
+    await s.restart();
+    const done = await awaitChat(s, id, (b) => idle(b) && !!b.chat.last_outcome, 30000);
+    const held = textOf(((await historyOf(s, id)).messages || []).filter((m) => m.role === 'assistant').pop() || {});
+    ok(seenBefore < 300 && done.chat.last_outcome === 'completed' && held.trim() === WORDS,
+      'the server went with the turn under way, and the turn completes across the restart, every word of it in the journal',
+      JSON.stringify({ wordsBefore: seenBefore, outcome: done.chat.last_outcome, words: held.trim().split(' ').length }));
+
+    for (const [name, page] of pages) {
+      await awaitLog(page, 'w300', 20000);
+      await page.waitForFunction(() => !document.querySelector('#chat .so-chat__log .so-msg__wait'), null, { timeout: 10000 }).catch(() => {});
+      const look = await page.evaluate((sent) => {
+        const log = document.querySelector('#chat .so-chat__log');
+        const messages = [...log.querySelectorAll('.so-msg')];
+        const assistant = messages.filter((m) => m.dataset.role === 'assistant');
+        const said = assistant.map((m) => [...m.querySelectorAll('.so-md')].map((md) => md.innerText).join(' ')).join(' ');
+        return {
+          sent: messages.filter((m) => m.dataset.role === 'user' && m.innerText.includes(sent)).length,
+          answers: assistant.length,
+          words: said.match(/\bw\d+\b/g) || [],
+          working: !!log.querySelector('.so-msg__wait'),
+          interrupted: assistant.some((m) => m.dataset.state === 'interrupted'),
+          same: window.__sameLoad === true,
+        };
+      }, TEXT);
+      ok(look.same && look.sent === 1 && look.answers === 1 && look.words.join(' ') === WORDS && !look.working && !look.interrupted,
+        'on the ' + name + ', with no reload, the stream replays the rest: one message, one answer, every word once and in order, the turn over',
+        JSON.stringify({ reloaded: !look.same, sent: look.sent, answers: look.answers, words: look.words.length,
+          firstRepeat: look.words.find((w, i) => look.words.indexOf(w) !== i) || '', working: look.working, interrupted: look.interrupted }));
+    }
+    const wide = await sideScroll(phone.page);
+    ok(wide === 0, 'and the phone does not scroll sideways', wide + ' px');
+    ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
+      unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
+  } finally {
+    if (phone) await phone.context.close();
+    await s.stop();
+  }
+}
+
 // chat-tools: tool rows that open to their input and output, a failed one,
 // the diff viewer with both content shapes, a subagent's group, a workflow's
 // phases and agents, and the task list pinned above the composer while the
@@ -11725,6 +11792,7 @@ const ALL = [
   ['transfer', 'copy, paste and upload buttons, a pasted image, and the phone layout', transfer],
   ['prestart', 'a prepared chat: its prompt kept, Start sending it as the first message, and a start by the clock', prestart],
   ['chat-stream', 'a chat: streaming, Markdown, replay, queued, Stop, the draft, the palette, the model, the lines, PreStart', chatstream],
+  ['chat-restart', 'the server restarted mid-turn under a desk and a phone: the stream replays, the turn completes, nothing twice', chatrestart],
   ['chat-tools', 'tool rows, the diff viewer, a subagent, a workflow, and the task list pinned while it runs', chattools],
   ['chat-offline', 'what a chat is told offline (two tabs, a model, an answer), or whose answer was lost, or left across a reload: delivered once', chatoffline],
   ['chat-ask', 'questions: the card and the dialog, every kind, a plan, a counter-question, Home, two devices', chatask],
