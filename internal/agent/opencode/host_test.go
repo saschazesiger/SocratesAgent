@@ -65,11 +65,20 @@ func (h *hostRig) kill() {
 	}
 }
 
-// conn is a connection with its events read into a channel.
+// conn is a connection with its frames read into a channel.
 type conn struct {
 	t      *testing.T
 	c      *agenthost.Conn
-	events chan agent.Event
+	frames chan agenthost.Frame
+	// seen is every event read so far, in order; answers are the host's
+	// answers to commands, with how many of seen came before each.
+	seen    []agent.Event
+	answers map[string]answered
+}
+
+type answered struct {
+	f      agenthost.Frame
+	before int
 }
 
 func (h *hostRig) dial() *conn {
@@ -78,38 +87,64 @@ func (h *hostRig) dial() *conn {
 	if err != nil {
 		h.t.Fatalf("dial: %v", err)
 	}
-	cn := &conn{t: h.t, c: c, events: make(chan agent.Event, 10000)}
+	cn := &conn{t: h.t, c: c, frames: make(chan agenthost.Frame, 10000), answers: map[string]answered{}}
 	go func() {
-		defer close(cn.events)
+		defer close(cn.frames)
 		for {
 			f, err := c.Next()
 			if err != nil {
 				return
 			}
-			if f.Event != nil {
-				cn.events <- *f.Event
-			}
+			cn.frames <- f
 		}
 	}()
 	h.t.Cleanup(func() { c.Close() })
 	return cn
 }
 
+// next reads one frame, keeping an event in seen and an answer in answers.
+func (cn *conn) next(what string, deadline <-chan time.Time) agenthost.Frame {
+	cn.t.Helper()
+	select {
+	case f, open := <-cn.frames:
+		if !open {
+			cn.t.Fatalf("the connection closed waiting for %s", what)
+		}
+		switch {
+		case f.Event != nil:
+			cn.seen = append(cn.seen, *f.Event)
+		case f.Ack != nil:
+			cn.answers[f.Ack.ClientID] = answered{f: f, before: len(cn.seen)}
+		case f.Fail != nil:
+			cn.answers[f.Fail.ClientID] = answered{f: f, before: len(cn.seen)}
+		}
+		return f
+	case <-deadline:
+		cn.t.Fatalf("timed out waiting for %s", what)
+	}
+	return agenthost.Frame{}
+}
+
 func (cn *conn) until(what string, ok func(agent.Event) bool) agent.Event {
 	cn.t.Helper()
 	deadline := time.After(30 * time.Second)
 	for {
-		select {
-		case ev, open := <-cn.events:
-			if !open {
-				cn.t.Fatalf("the connection closed waiting for %s", what)
-			}
-			if ok(ev) {
-				return ev
-			}
-		case <-deadline:
-			cn.t.Fatalf("timed out waiting for %s", what)
+		if f := cn.next(what, deadline); f.Event != nil && ok(*f.Event) {
+			return *f.Event
 		}
+	}
+}
+
+// answer is the host's answer to the command clientID, and the events that
+// came before it.
+func (cn *conn) answer(clientID string) (agenthost.Frame, []agent.Event) {
+	cn.t.Helper()
+	deadline := time.After(60 * time.Second)
+	for {
+		if a, ok := cn.answers[clientID]; ok {
+			return a.f, cn.seen[:a.before]
+		}
+		cn.next("the answer to "+clientID, deadline)
 	}
 }
 
@@ -358,32 +393,7 @@ func TestASwitchAfterTheTurnIsMadeWhileALimitHoldsTheQueue(t *testing.T) {
 	h.launch("")
 	cn := h.dial()
 	cn.until("the conversation", func(ev agent.Event) bool { return ev.Type == agent.TypeConversation })
-	// "/limit" and "/whoami" are written while a turn waits on a question of
-	// OpenCode's own, so the journal has "/whoami" before the limited turn's
-	// end whatever the timing. Sent right after "/limit" instead, it can be
-	// written after the limit already ended that turn (within milliseconds
-	// of its post), and a message written after a limited turn is the person
-	// going on with this account, which lets the hold go (AGENT-HOST.md
-	// §5.3; rig.queueBehindAQuestion does the same without a host).
-	cn.send("q1", "/question")
-	ask := cn.until("the question", func(ev agent.Event) bool { return ev.Type == agent.TypeAsk })
-	for _, m := range []struct{ clientID, text string }{{"m1", "/limit"}, {"m2", "/whoami"}} {
-		cn.send(m.clientID, m.text)
-		msg := cn.until(m.text, func(ev agent.Event) bool { return ev.Type == agent.TypeMessage && ev.ClientID == m.clientID })
-		cn.until(m.text+" queued", func(ev agent.Event) bool {
-			return ev.Type == agent.TypeMessageState && ev.MessageID == msg.MessageID && ev.State == agent.MessageQueued
-		})
-	}
-	if err := cn.c.Send(agenthost.Command{Op: agenthost.OpAnswer, ClientID: "a1", AskID: ask.AskID,
-		Answer: json.RawMessage(`{"answers":{"q1":{"selected":["Red"]}}}`)}); err != nil {
-		t.Fatal(err)
-	}
-	if ev := cn.until("the question's turn", turnEnded); ev.Outcome != agent.OutcomeCompleted {
-		t.Fatalf("turn %+v", ev)
-	}
-	if ev := cn.until("the limited turn", turnEnded); ev.Outcome != agent.OutcomeLimited {
-		t.Fatalf("turn %+v", ev)
-	}
+	cn.holdBehindALimit()
 	if err := cn.c.Send(agenthost.Command{Op: agenthost.OpSwitchAccount, ClientID: "s1", Account: "b", Env: h.r.env,
 		When: agenthost.WhenAfterTurn}); err != nil {
 		t.Fatal(err)
@@ -392,5 +402,91 @@ func TestASwitchAfterTheTurnIsMadeWhileALimitHoldsTheQueue(t *testing.T) {
 	started := cn.until("the held message's turn", func(ev agent.Event) bool { return ev.Type == agent.TypeTurnStarted })
 	if started.Account != "b" {
 		t.Fatalf("the held message ran on %q", started.Account)
+	}
+}
+
+// holdBehindALimit has "/limit" end a turn at the account's limit with
+// "/whoami" queued behind it, and returns the id of "/whoami": what the limit
+// holds. Both are written while a turn waits on a question of OpenCode's own,
+// so the journal has "/whoami" before the limited turn's end whatever the
+// timing. Sent right after "/limit" instead, it can be written after the
+// limit already ended that turn (within milliseconds of its post), and a
+// message written after a limited turn is the person going on with this
+// account, which lets the hold go (AGENT-HOST.md §5.3;
+// rig.queueBehindAQuestion does the same without a host).
+func (cn *conn) holdBehindALimit() string {
+	cn.t.Helper()
+	cn.send("q1", "/question")
+	ask := cn.until("the question", func(ev agent.Event) bool { return ev.Type == agent.TypeAsk })
+	held := ""
+	for _, m := range []struct{ clientID, text string }{{"m1", "/limit"}, {"m2", "/whoami"}} {
+		cn.send(m.clientID, m.text)
+		msg := cn.until(m.text, func(ev agent.Event) bool { return ev.Type == agent.TypeMessage && ev.ClientID == m.clientID })
+		cn.until(m.text+" queued", func(ev agent.Event) bool {
+			return ev.Type == agent.TypeMessageState && ev.MessageID == msg.MessageID && ev.State == agent.MessageQueued
+		})
+		held = msg.MessageID
+	}
+	if err := cn.c.Send(agenthost.Command{Op: agenthost.OpAnswer, ClientID: "a1", AskID: ask.AskID,
+		Answer: json.RawMessage(`{"answers":{"q1":{"selected":["Red"]}}}`)}); err != nil {
+		cn.t.Fatal(err)
+	}
+	if ev := cn.until("the question's turn", turnEnded); ev.Outcome != agent.OutcomeCompleted {
+		cn.t.Fatalf("turn %+v", ev)
+	}
+	if ev := cn.until("the limited turn", turnEnded); ev.Outcome != agent.OutcomeLimited {
+		cn.t.Fatalf("turn %+v", ev)
+	}
+	return held
+}
+
+// A host that dies while the limit holds a message is followed by one on the
+// same account, brought up by a command that is not a message (a model
+// change): boot hands the new adapter what was never taken up, and it waits
+// as it did - the adapter knows the hold from the journal (StartSpec.Held) -
+// until the person writes again, which lets it go: the held message first.
+func TestAHostThatComesBackKeepsWhatTheLimitHeld(t *testing.T) {
+	h := newHostRig(t)
+	h.launch("")
+	cn := h.dial()
+	sid := cn.until("the conversation", func(ev agent.Event) bool { return ev.Type == agent.TypeConversation }).ConversationID
+	ready := cn.until("ready", func(ev agent.Event) bool { return ev.Type == agent.TypeProcess && ev.State == agent.ProcessReady })
+	held := cn.holdBehindALimit()
+
+	if err := syscall.Kill(cn.c.Hello.HostPID, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 5*time.Second, "the server to follow its host", func() bool { return !alive(ready.PID) })
+	eventually(t, 5*time.Second, "the lock", func() bool { a, _ := h.l.Alive(h.chat); return !a })
+	if err := h.l.Reap(context.Background(), h.chat); err != nil {
+		t.Fatal(err)
+	}
+	h.launch(sid)
+	again := h.dial()
+	if err := again.c.Send(agenthost.Command{Op: agenthost.OpSetModel, ClientID: "x1", Model: "fake/model"}); err != nil {
+		t.Fatal(err)
+	}
+	// The command waits for boot, which hands the adapter what is owed.
+	f, before := again.answer("x1")
+	if f.Ack == nil {
+		t.Fatalf("the model change was refused: %+v", f.Fail)
+	}
+	p := agent.Fold(before)
+	if p.Process != agent.ProcessReady || p.Message(held) == nil || p.Message(held).State != agent.MessageQueued {
+		t.Fatalf("on the next host: process %s, the held message %+v", p.Process, p.Message(held))
+	}
+	for _, ev := range before {
+		if ev.Type == agent.TypeTurnStarted && ev.MessageID == held {
+			t.Fatal("the message written during the limited turn ran into the limit on the next host")
+		}
+	}
+	again.send("m3", "going on")
+	going := again.until("the person's message", func(ev agent.Event) bool { return ev.Type == agent.TypeMessage && ev.ClientID == "m3" })
+	started := again.until("the held message's turn", func(ev agent.Event) bool { return ev.Type == agent.TypeTurnStarted })
+	if started.MessageID != held {
+		t.Fatalf("the first turn after the hold is %s's, want the held %s", started.MessageID, held)
+	}
+	if next := again.until("the next turn", func(ev agent.Event) bool { return ev.Type == agent.TypeTurnStarted }); next.MessageID != going.MessageID {
+		t.Fatalf("the turn after the held one is %s's, want %s", next.MessageID, going.MessageID)
 	}
 }

@@ -164,6 +164,18 @@ func heldByLimit(p *agent.Projection) bool {
 	return p.Turn == nil && p.LastTurn != nil && p.LastTurn.Outcome == agent.OutcomeLimited
 }
 
+// heldFor is agent.StartSpec.Held for an adapter starting on account: the
+// last turn, when the limit ended it on that very account and the agent has
+// done nothing since. On any other account nothing is held: a switch is what
+// lets the hold go. The journal names the account each turn ran on (the host
+// stamps turn.started); a turn that names none ran on a host that had none.
+func heldFor(p *agent.Projection, account string) string {
+	if !heldByLimit(p) || p.LastTurn.Account != account {
+		return ""
+	}
+	return p.LastTurn.ID
+}
+
 // owesContinue reports whether a switch's Continue still has a turn to carry
 // on: the last one stopped (by the limit, or by the switch) and the agent has
 // taken nothing up since. A Continue sent twice - a second tap, another
@@ -330,8 +342,13 @@ func (h *host) startAdapter(ctx context.Context, account string, env []string) e
 	if !ok {
 		return fmt.Errorf("there is no adapter for %q", h.spec.Harness)
 	}
-	var resume, model, effort string
-	h.rec.View(func(p *agent.Projection) { resume, model, effort = p.ConversationID, p.Model, p.Effort })
+	var resume, model, effort, held string
+	h.rec.View(func(p *agent.Projection) {
+		resume, model, effort = p.ConversationID, p.Model, p.Effort
+		// Back on the account a limit stopped (a switch that failed), the
+		// new adapter holds what the old one held.
+		held = heldFor(p, account)
+	})
 	if resume == "" {
 		resume = h.spec.Conversation
 	}
@@ -340,7 +357,7 @@ func (h *host) startAdapter(ctx context.Context, account string, env []string) e
 	}
 	spec := agent.StartSpec{
 		ChatID: h.opts.ChatID, Workdir: h.spec.Workdir, StateDir: filepath.Join(h.dir, stateDir), DataDir: h.opts.DataDir,
-		Env: env, Account: account, Model: model, Effort: effort, ResumeID: resume, Spawn: h.spawn,
+		Env: env, Account: account, Model: model, Effort: effort, ResumeID: resume, Held: held, Spawn: h.spawn,
 		Binary: h.spec.Binary, AskCommand: h.askCommand(),
 	}
 	sctx, cancel := context.WithTimeout(ctx, startWait)
@@ -367,7 +384,8 @@ func (h *host) startAdapter(ctx context.Context, account string, env []string) e
 }
 
 // resendOwed hands a new adapter what the old one left: messages it never
-// took up, and answers that never reached it.
+// took up, and answers that never reached it. On the account a limit stopped
+// they go through the same hold as on the old adapter (StartSpec.Held).
 func (h *host) resendOwed(ctx context.Context) {
 	var pending []agent.Outgoing
 	var unsent []agent.Ask

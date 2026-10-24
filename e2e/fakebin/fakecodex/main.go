@@ -22,6 +22,8 @@
 //	/plan            a plan item and a turn/plan/updated list
 //	/limit [S]       the usage limit: rate limits at 100 %, the turn fails as usageLimitExceeded
 //	                 (after S seconds without taking up steered messages, when S is given)
+//	/limit steered   the same, once a message is steered into the turn, which it does not
+//	                 take up: a message written while the limited turn ran, whatever the timing
 //	/crash           a delta, then the process dies
 //	/huge N          one agent message delta of N bytes
 //	/approve         a command approval request; says the decision it got
@@ -49,7 +51,10 @@
 //
 // Like codex, it lets a turn go before it sends the turn's turn/completed (codex
 // sends it from its event stream): a steer in between finds no active turn.
-// FAKECODEX_COMPLETED_LAG_MS widens that gap.
+// FAKECODEX_COMPLETED_LAG_MS widens that gap. It also answers a command's call
+// (a compaction, a review, a shell command) before the command's turn/started,
+// with the turn already running: a turn/start in between is refused.
+// FAKECODEX_COMMAND_START_LAG_MS widens that gap.
 package main
 
 import (
@@ -98,6 +103,9 @@ func main() {
 	if ms, err := strconv.Atoi(os.Getenv("FAKECODEX_COMPLETED_LAG_MS")); err == nil {
 		s.completedLag = time.Duration(ms) * time.Millisecond
 	}
+	if ms, err := strconv.Atoi(os.Getenv("FAKECODEX_COMMAND_START_LAG_MS")); err == nil {
+		s.commandLag = time.Duration(ms) * time.Millisecond
+	}
 	s.serve()
 }
 
@@ -106,8 +114,10 @@ type server struct {
 	account string
 	strict  bool
 	// completedLag is how long a turn's turn/completed comes after the
-	// turn is gone.
+	// turn is gone, and commandLag how long a command's turn/started comes
+	// after its call was answered.
 	completedLag time.Duration
+	commandLag   time.Duration
 
 	outMu sync.Mutex
 	out   *bufio.Writer
@@ -138,10 +148,13 @@ type thread struct {
 }
 
 type fturn struct {
-	id      string
-	status  string
-	items   []json.RawMessage
-	steer   chan userInput
+	id     string
+	status string
+	items  []json.RawMessage
+	steer  chan userInput
+	// ctx ends when the turn is interrupted; both are there from the turn's
+	// opening, so an interrupt right behind turn/start finds them.
+	ctx     context.Context
 	cancel  context.CancelFunc
 	errText string
 	// eager takes steered input up at once, inside turn/steer.
@@ -507,6 +520,7 @@ func (s *server) turnStart(fr frame, threadID, clientID string, input json.RawMe
 func (s *server) openTurnLocked(th *thread, kind string) *fturn {
 	s.counter++
 	t := &fturn{id: newUUID(), status: "inProgress", steer: make(chan userInput, 16)}
+	t.ctx, t.cancel = context.WithCancel(context.Background())
 	if kind != "normal" {
 		t.steer = nil
 	}
@@ -625,9 +639,7 @@ func nilIfEmpty(s string) any {
 }
 
 func (s *server) run(th *thread, t *fturn, in userInput) {
-	ctx, cancel := context.WithCancel(context.Background())
-	t.cancel = cancel
-	c := &tcx{s: s, th: th, t: t, ctx: ctx}
+	c := &tcx{s: s, th: th, t: t, ctx: t.ctx}
 	s.record(th, "event_msg", map[string]any{"type": "task_started", "turn_id": t.id})
 	s.record(th, "turn_context", map[string]any{"turn_id": t.id, "cwd": th.cwd, "model": th.model, "approval_policy": "never"})
 	s.notify("thread/status/changed", map[string]any{"threadId": th.id, "status": map[string]any{"type": "active", "activeFlags": []any{}}})
@@ -803,7 +815,14 @@ func (c *tcx) script(text string) (string, map[string]any) {
 			map[string]any{"step": "one", "status": "completed"}, map[string]any{"step": "two", "status": "inProgress"}}}))
 		ok = c.say([]string{"planned"}, 0)
 	case "/limit":
-		if len(fields) > 0 {
+		if len(fields) > 0 && fields[0] == "steered" {
+			c.deaf = true
+			select {
+			case <-c.t.steer:
+			case <-c.ctx.Done():
+				return "interrupted", nil
+			}
+		} else if len(fields) > 0 {
 			c.deaf = true
 			if !c.wait(time.Duration(atof(fields, 0, 1)*float64(time.Second)), nil) {
 				return "interrupted", nil
@@ -1017,10 +1036,9 @@ func (s *server) special(fr frame, threadID, kind, arg string) {
 	s.mu.Unlock()
 	s.respond(fr.ID, map[string]any{})
 	go func() {
-		ctx, cancel := context.WithCancel(context.Background())
-		t.cancel = cancel
-		c := &tcx{s: s, th: th, t: t, ctx: ctx}
+		c := &tcx{s: s, th: th, t: t, ctx: t.ctx}
 		s.record(th, "event_msg", map[string]any{"type": "task_started", "turn_id": t.id})
+		time.Sleep(s.commandLag)
 		s.notify("turn/started", map[string]any{"threadId": th.id, "turn": map[string]any{"id": t.id, "rootTurnId": t.id, "status": "inProgress"}})
 		switch kind {
 		case "compact":

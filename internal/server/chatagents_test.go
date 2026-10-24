@@ -149,8 +149,11 @@ func TestALostChatFolderIsRebuiltFromTheTranscript(t *testing.T) {
 		t.Run(harness, func(t *testing.T) {
 			c := newChatEnv(t, time.Hour)
 			id := c.createAgentChat(t, harness, nil)
-			c.send(t, id, "m1", "remember the first words")
-			c.waitJournal(t, id, 30*time.Second, "the first turn", turnsEnded(1))
+			// The chat's first host is starting as the message comes: it may
+			// be queued for it rather than acked, and reaches the agent once
+			// all the same.
+			c.sendTaken(t, id, "m1", "remember the first words")
+			deliveredOnce(t, c.waitJournal(t, id, 30*time.Second, "the first turn", turnsEnded(1)), "m1")
 			deadline := time.Now().Add(10 * time.Second)
 			for row, _ := c.store.GetSession(id); row.CLISessionID == ""; row, _ = c.store.GetSession(id) {
 				if time.Now().After(deadline) {
@@ -219,10 +222,11 @@ func TestALostChatFolderIsRebuiltFromTheTranscript(t *testing.T) {
 				t.Fatalf("after the rebuild the chat is %+v", a)
 			}
 			// And the conversation goes on where it was.
-			c.send(t, id, "m2", "and now?")
+			c.sendTaken(t, id, "m2", "and now?")
 			after := c.waitJournal(t, id, 30*time.Second, "the next turn", func(evs []agent.Event) bool {
 				return count(evs, func(ev agent.Event) bool { return ev.Type == agent.TypeTurnEnded }) >= 2
 			})
+			deliveredOnce(t, after, "m2")
 			if lastSaid(after) == "" {
 				t.Fatalf("the agent said nothing after the rebuild:\n%v", after)
 			}

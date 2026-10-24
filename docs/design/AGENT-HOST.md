@@ -296,7 +296,12 @@ the adapter has one (OpenCode, §5.3), else `Park` and `Start` of a new adapter 
 environment and the same `ResumeID` (`agent.ErrConversationNotFound` → a fresh conversation with
 `notice{conversation_lost}`). The divider is journaled before the new agent starts, so the events
 of the next turn come after it; a start that fails journals `error{switch_failed}`, a divider back
-and restarts the old account. Messages the agent had not taken up are handed to the new one. With
+and restarts the old account. Messages the agent had not taken up are handed to the new one. A new
+adapter started on the account the journal's last turn was `limited` on, with nothing run since -
+the old account again after a switch that failed, or a new host on it (§6) - gets that turn as
+`StartSpec.Held` and holds what it is handed as the adapter before it did (§5.2, §5.3): the
+turn's `account` (stamped by the host on `turn.started`) against the account it starts on decides.
+On another account nothing is held: that is what the switch, by hand or automatic, was for. With
 `continue`, the new account is then sent `agenthost.ContinueText` ("Continue where you left off.")
 as a user message with `client_id` `<the switch's client_id>:continue`: what "Continue with" and the
 automatic switch at a limit send. A switch to the account the chat is on journals nothing, and
@@ -528,14 +533,24 @@ stdin (the app-server exits at once; the thread is on disk); Stop kills the proc
 `queued`; codex takes it up at its next step (0.164 cuts a streaming answer short for it) and the
 `userMessage` item carrying that id → `delivered`. A turn that cannot be steered (compaction,
 review: `activeTurnNotSteerable`) or a `!` line during a turn → held (`queued`) and sent when the turn
-ends; so is a steered message a turn ended without taking up — except after a `limited` turn, when
+ends, and so is any message while codex starts a command's turn (a `!` line, a compaction, a review:
+codex answers the call before that turn's `turn/started`, and a `turn/start` in between is refused,
+"a turn is already running"; a call codex refuses lets them go, and so does a turn that has not
+started 30 s after its call); so is a steered message a turn ended without taking up — except after a `limited` turn, when
 the adapter **holds** its queue (as OpenCode's, §5.3) until a `Send` of a message written after
 that turn's end (`AfterTurn` names it) lets it go (the person asked for it); a message written
 before the end is held with the rest, even when the host hands it over only after it, and so is one
 whose steer finds the turn gone (codex lets a turn go before it sends its `turn/completed`, so a
 steer answered "no active turn" waits for that end, at most 5 s, before it decides; a turn started
 at once would run into the same limit, and its `turn.started` would come before the old turn's
-end); a switch starts another adapter, which the host hands what was never taken up. A message
+end); a switch starts another adapter, which the host hands what was never taken up. An adapter
+started with `StartSpec.Held` (the limited turn, on the account it ran on: a new host, or the
+account the chat was on again after a switch that failed, §4.3) holds from the start, so what the
+host hands it waits there too, `First` included. What is held runs in the journal's order, the
+order the host hands messages over (one at a time under its command lock, each right after its
+journal write; a new adapter gets what is owed in the journal's order): the adapter numbers each
+message at its first `Send` and keeps the queue in that order, so a steered message a turn ended
+without taking up takes its place among the queued ones rather than going ahead of them. A message
 whose text is one line starting with `!` runs `thread/shellCommand` as a turn of its own.
 
 **Turns.** A journal turn is a root turn of the chat's thread (ids are the adapter's own, `t_…`, so
@@ -741,7 +756,11 @@ the new account) or a `Send` of a message the person wrote after that turn's end
 for it; `Outgoing.AfterTurn` names the limited turn) lets it go, and the held messages run first.
 The journal's order decides, not when `Send` comes: the host journals a message before it hands it
 over, and the limit can end the turn in between, so a message whose `AfterTurn` is any other turn
-was written while the limited turn ran (or before) and is held with the rest.
+was written while the limited turn ran (or before) and is held with the rest. A new adapter on the
+limited account - a host that died while holding is followed by one on the same account, which any
+command brings up - gets the limited turn as `StartSpec.Held` (§4.3) and holds from the start, so
+what boot hands it waits again. A switch that fails ends this adapter (above), and the host after
+it starts on the account switched to, where nothing is held.
 
 ## 6. Lifecycle
 
@@ -759,13 +778,17 @@ open the journal → **recover**: every part
 still `running`/`streaming` (a turn's, or a subagent or workflow group that outlived its turn) gets
 a `part{interrupted}`, a turn still open in the journal is closed with `turn.ended{interrupted}`,
 and `notice{resumed}` says so; open asks are left open (a question survives everything, REBUILD
-§5.3: its answer, whenever it comes, reaches the agent as a message, §4.4) → listen → boot (holding the command lock, so nothing
-new reaches the agent first): `process{starting}`, `Adapter.Start` with `ResumeID =` the
+§5.3: its answer, whenever it comes, reaches the agent as a message, §4.4) → listen → boot (holding the command lock, taken
+before the socket accepts anything, so nothing new reaches the agent first and a command sent the moment the socket accepts
+waits for the agent instead of finding none — a `not_running` the server would keep for the next host): `process{starting}`, `Adapter.Start` with `ResumeID =` the
 journal's conversation id — or, when the journal names none, the spec's `conversation` (the journal
 was lost, or the chat was made from an existing conversation such as a fork), with
 `StartSpec.Rebuild` set when the journal has no message at all (§5) — (`First` = the first
 undelivered message when there is no conversation yet), `StartSpec.DataDir` = the data folder,
-`StartSpec.AskCommand` = `<this binary> mcp-ask --socket <the host's socket>` (§5.3), `process{ready}`, re-send undelivered messages, deliver unsent answers as messages. A start
+`StartSpec.AskCommand` = `<this binary> mcp-ask --socket <the host's socket>` (§5.3), `process{ready}`, re-send undelivered messages, deliver unsent answers as messages (`StartSpec.Held`
+= the journal's last turn when it was `limited` on the spec's `account` and nothing ran since, §4.3:
+what the host before held stays held; a command other than a message that brings the host up
+does not let it go). A start
 that fails journals `process{failed, detail}` and the host exits 2 s later. A start that fails
 with an error wrapping `agent.ErrConversationNotFound` (the CLI does not know the conversation to
 resume) is retried once as a new conversation (no rebuild) with `notice{conversation_lost}`: the history stays in
@@ -837,7 +860,7 @@ key (the existing `Outbox` in `net.js`).
 |---|---|---|
 | `POST /api/chats` | `client_id`, `harness`, `model`, `effort`, `workdir_mode`, `workdir`, `title`, `ultracode` (Claude Code only; dropped for any other agent), `account`?, `auto_switch`?, `message`?{`client_id`,`text`,`attachments`} | 201 `{session, chat: <summary>, message?}`; 200 the same for a repeated `client_id`; 400 for a harness without an adapter, or an account of another agent. No `account`: the recommended one when the host launches (§11). The host is launched at once |
 | `GET /api/chats/{id}` | – | `{session, chat: <summary>, asks: [open asks], host_error?}`; `?history=1` adds `messages` (the whole projection) |
-| `POST /api/chats/{id}/messages` | `client_id`, `text`, `attachments` | 200 `{client_id, seq, dup}`; 202 `{client_id, queued: true}` when the host has not acked within 10 s (it will receive it once) |
+| `POST /api/chats/{id}/messages` | `client_id`, `text`, `attachments` | 200 `{client_id, seq, dup}`; 202 `{client_id, queued: true}` when the host has not acked within 10 s (a host still starting holds commands until its agent is up; it will receive it once) |
 | `POST /api/chats/{id}/interrupt` | `client_id` | as messages; 200 `{idle: true}` when nothing runs and no host is up |
 | `POST /api/chats/{id}/asks/{ask}/answer` | `client_id`, `answer` (any JSON), `device` | 200 / 202 as messages; **409 `{answered_elsewhere: true, by_device}`** when another device answered; 404 for an unknown ask |
 | `POST /api/chats/{id}/model` | `client_id`, `model`, `effort` | as messages (a `set_model` command) |
@@ -941,7 +964,11 @@ attachment(s): …`).
   missing events (byte-identical to the journal); SIGKILL mid-turn → CLI child dead (Pdeathsig),
   recovery, resume, dedupe across hosts; park on idle → resume; no park while a question is
   waited on (in its turn) or with a background task; in process, a message handed to the adapter
-  with its place among the turns when a limited turn ends between its journal write and its `Send`; **systemd scope** (root + systemd only): host in `socrates-test-agents-<id>.scope`
+  with its place among the turns when a limited turn ends between its journal write and its `Send`, and a
+  command sent as the host starts that waits for the agent (the command lock is boot's before the socket
+  accepts), and `StartSpec.Held` at boot and at a switch - the limited turn on its own account only (a
+  boot there, a switch that failed), nothing on another (a boot there, a switch made, the automatic one
+  with its continue); **systemd scope** (root + systemd only): host in `socrates-test-agents-<id>.scope`
   with `OOMPolicy=continue`, `Reap` refuses a live host, an orphan keeps the scope after SIGKILL and
   `Reap` ends it.
 - `internal/server` (real hosts; Linux): create idempotency, terminal routes refused, conversation
@@ -958,7 +985,8 @@ attachment(s): …`).
   left behind, a rebuilt journal's own ledgers, the transcript of a chat's conversation never
   counted, also after the chat is deleted, the shared folders scanned), Ultracode reaching a Claude
   chat's CLI and its change from the ⋮, a prepared chat started by the clock, and a lost chat folder
-  rebuilt when opened with no push for the history it gets back - the last three through real hosts with fakeclaude, fakecodex and fakeopencode, whose
+  rebuilt when opened with no push for the history it gets back (each message delivered once, whether the
+  host still starting acked it or it was queued for it) - the last three through real hosts with fakeclaude, fakecodex and fakeopencode, whose
   adapters the server's test binary registers.
 - e2e (`run.mjs`, the scripted agent): `chat-home`, `chat-push`, `chat-title`, `chat-status`,
   `chat-outcome`, `chat-prestart`, `chat-ultracode`.
@@ -992,10 +1020,15 @@ attachment(s): …`).
   provider asks in a real host and goes on from the answer; skipped when its quota is used up).
 - `internal/agent/codex` against `e2e/fakebin/fakecodex` (built by the tests; a scripted app-server
   that keeps real-format rollouts, see its package comment): every mapping, steering and holding
-  (a message whose steer finds a limited turn gone before its `turn/completed` held), shell lines,
+  (a message whose steer finds a limited turn gone before its `turn/completed` held; what a turn
+  leaves - steered and not taken up, a `!` line, the message after it - each run after the one
+  before, `FAKECODEX_COMMAND_START_LAG_MS` widening the gap before a command's turn starts, and
+  queued at a turn's end in the journal's order), shell lines,
   interrupt, limit, crash, answered requests, the dynamic-tool ask hook, park, resume, rebuild,
   the account-switch chain, and the adapter inside a real host process (SIGKILL takes codex along,
-  the next host resumes). With `SOCRATES_REAL_CODEX=1` the same scenarios run against the installed
+  the next host resumes; what a limit holds - a message steered into the limited turn, `/limit
+  steered` - stays held after a switch to an account that cannot start codex, and on the host that
+  a model change brings up after a SIGKILL, until the next message lets it go on the same account). With `SOCRATES_REAL_CODEX=1` the same scenarios run against the installed
   codex with `internal/agent/codex/fakemodel` as its model provider (a scripted
   Responses API whose encrypted reasoning is bound to an account; `e2e/fakebin/fakemodel` serves
   it on a port).
@@ -1015,7 +1048,9 @@ attachment(s): …`).
   Continue to the same account saying nothing); each adapter's switch A → B → A in a real host
   (`fakeclaude`, `fakecodex`, `fakeopencode`) keeping its conversation; Codex's and OpenCode's held
   queue after a limit, a message written during the limited turn and handed over after its end held
-  with it, and an "after this turn" switch made while OpenCode holds it; Claude's
+  with it, an "after this turn" switch made while OpenCode holds it, and the hold kept by a new
+  adapter on the limited account (Codex after a switch that failed and after a host's death,
+  OpenCode after a host's death, each brought up by a command that is not a message); Claude's
   foreign-thinking notice; `internal/server` (the routes and that no answer, `host.json`, journal,
   log or outbox holds a key, a switch while running and while parked, an "after this turn" switch
   surviving a killed host, a limit stopping the chat or switching it and pushed once, Codex's device
@@ -1162,8 +1197,10 @@ it, or with no account to go to, the person is told by push and on the page ("Li
 in … (<label>)", §3 "Badge and push"; not for a chat filed Background) and the limit card offers
 "Continue with <account>" for each account with room (the same switch, sent by the browser). Codex
 and OpenCode hold their queue meanwhile (§5.2, §5.3), so the messages queued behind the limit do not
-each run into it. A chat is pushed once per account it is stopped on, until a turn gets through
-again.
+each run into it - also on a new adapter on that account (`StartSpec.Held`, §4.3: a host that died
+while holding, or the automatic switch failing to start the other account), while one the switch
+starts on the other account runs them, then the continue. A chat is pushed once per account it is
+stopped on, until a turn gets through again.
 
 **A refused sign-in** (`error{code: auth}`, `agent.ErrorAuth`: OpenCode's `ProviderAuthError` or a
 401, among them a refresh token two chats of one OAuth account renewed at the same moment,

@@ -309,6 +309,98 @@ func TestSteeringQueueingAndShellLines(t *testing.T) {
 	}
 }
 
+// What a turn leaves when it ends runs in the order the person wrote it, the
+// journal's: messages steered into it and not taken up, and what waits in
+// the queue - here a "!" line, which runs as a turn of its own, and the
+// message written after it - each turn after the one before. Codex answers a
+// command's call before it starts the command's turn (fakecodex widens that
+// gap), so the message after a "!" line waits for that turn too, rather than
+// racing it with a turn/start of its own.
+func TestWhatATurnLeavesRunsInTheJournalsOrder(t *testing.T) {
+	lab := newFakeLab(t)
+	r := newRecorder()
+	a := lab.start(lab.spec("a", "", "FAKECODEX_COMMAND_START_LAG_MS=300"), r)
+
+	send(t, a, r, "/deaf 30")
+	steered, _ := send(t, a, r, "first")
+	shell, _ := send(t, a, r, "!echo second")
+	after, _ := send(t, a, r, "third")
+	p := r.projection()
+	for _, msg := range []agent.Outgoing{steered, shell, after} {
+		if s := messageState(p, msg.MessageID); s != agent.MessageQueued {
+			t.Fatalf("%q is %q\n%s", msg.Text, s, dump(r.all()))
+		}
+	}
+	n := len(r.all())
+	// The turn ends without taking "first" up.
+	if err := a.Interrupt(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, msg := range []agent.Outgoing{steered, shell, after} {
+		r.waitFor(t, n, "the turn of "+msg.Text, func(ev agent.Event) bool {
+			return ev.Type == agent.TypeTurnStarted && ev.MessageID == msg.MessageID
+		}, wait)
+	}
+	var order []string
+	for _, ev := range r.since(n) {
+		switch {
+		case ev.Type == agent.TypeTurnStarted:
+			order = append(order, "start "+r.projection().Message(ev.MessageID).Text)
+		case ev.Type == agent.TypeTurnEnded:
+			order = append(order, "end "+ev.Outcome)
+		case ev.Type == agent.TypeError:
+			order = append(order, "error "+ev.Text)
+		}
+	}
+	want := "end interrupted, start first, end completed, start !echo second, end completed, start third"
+	if got := strings.Join(order, ", "); !strings.HasPrefix(got, want) {
+		t.Fatalf("the turns ran %s, want %s\n%s", got, want, dump(r.since(n)))
+	}
+}
+
+// A command's turn that codex took the call for but never starts holds the
+// messages queued behind it only so long (commandWait): giving it up lets
+// them go. A late give-up of an earlier command leaves a newer one alone.
+func TestACommandsTurnThatNeverStartsIsGivenUp(t *testing.T) {
+	a := newAdapter()
+	a.out = newRecorder()
+	a.ending = true // no flush: what is looked at is the expectation
+	first := a.expectTurn(turnOther)
+	second := a.expectTurn(turnShell)
+	a.unexpect(first)
+	if a.expect != turnShell {
+		t.Fatal("the give-up of an earlier command cleared a newer one")
+	}
+	a.unexpect(second)
+	if a.expect != turnNormal || a.expectMsg != "" {
+		t.Fatalf("the command's turn is still expected: %v %q", a.expect, a.expectMsg)
+	}
+}
+
+// A turn's end puts a message steered into it and not taken up at its place
+// in the journal's order among what waits, not ahead of it: the queue is in
+// the order the host handed the messages over, whichever way each came to
+// it, and resendOwed hands a new adapter what is owed in that same order.
+func TestATurnsEndQueuesWhatItLeftInTheJournalsOrder(t *testing.T) {
+	a := newAdapter()
+	a.out = newRecorder()
+	a.ending = true // no flush: the order is what is looked at
+	earlier := agent.Outgoing{MessageID: "m_earlier", Text: "!echo first"}
+	later := agent.Outgoing{MessageID: "m_later", Text: "second"}
+	a.arrived[earlier.MessageID], a.arrived[later.MessageID] = 1, 2
+	tr := &turn{codexID: "c1", id: "t_1", msgID: "t_1_a", parts: map[string]*part{}}
+	a.turns[tr.codexID], a.active = tr, tr
+	a.queue = []agent.Outgoing{earlier}
+	tr.addInput(later)
+	a.steered[later.MessageID] = later
+	a.mu.Lock()
+	a.closeTurnLocked(tr, agent.OutcomeInterrupted, "")
+	a.mu.Unlock()
+	if len(a.queue) != 2 || a.queue[0].MessageID != earlier.MessageID || a.queue[1].MessageID != later.MessageID {
+		t.Fatalf("the turn's end left the queue %+v", a.queue)
+	}
+}
+
 // findPartIn looks through every message, not only the newest.
 func findPartIn(p *agent.Projection, match func(*agent.Part) bool) *agent.Part {
 	for _, m := range p.Messages {

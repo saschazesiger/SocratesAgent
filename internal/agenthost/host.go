@@ -185,9 +185,7 @@ func Run(opts Options) error {
 		return err
 	}
 	log.Printf("serving %s (%s) on %s", opts.ChatID, spec.Harness, h.sock)
-	go h.accept()
-	go h.boot()
-	go h.idleLoop()
+	h.start()
 	h.serveSpawns()
 	h.shutdown()
 	return nil
@@ -342,13 +340,32 @@ func (h *host) spawn(cmd *exec.Cmd) error {
 	return <-req.done
 }
 
+// start lets clients in and boots the agent. The command lock is boot's from
+// before the first connection is accepted: a server sends its outbox the
+// moment it connects, and a command handled before boot had the lock found no
+// agent and was refused as "not running" - which a server keeps for the next
+// host, not this one, so a message sent as a host started stayed undelivered
+// for as long as it ran.
+func (h *host) start() {
+	h.cmdMu.Lock()
+	go h.accept()
+	go h.boot()
+	go h.idleLoop()
+}
+
+// bootHook is for tests only: it runs as boot begins.
+var bootHook func()
+
 // boot starts the adapter, resuming the conversation the journal knows, and
 // hands it what the last host could not: messages it never took up, and
 // answers that never reached it. Commands wait for it, because it holds the
-// command lock: nothing new goes to the agent ahead of what was already owed.
+// command lock, which start took for it: nothing new goes to the agent ahead
+// of what was already owed, and nothing finds the agent not there yet.
 func (h *host) boot() {
-	h.cmdMu.Lock()
 	defer h.cmdMu.Unlock()
+	if bootHook != nil {
+		bootHook()
+	}
 	if _, err := h.rec.EmitDurable(agent.Event{Type: agent.TypeProcess, State: agent.ProcessStarting,
 		PID: os.Getpid(), Version: h.opts.Version, Detail: h.spec.Harness}); err != nil {
 		h.failStart(err)
@@ -359,12 +376,16 @@ func (h *host) boot() {
 		h.failStart(fmt.Errorf("there is no adapter for %q", h.spec.Harness))
 		return
 	}
-	var resume string
+	var resume, held string
 	var pending []agent.Outgoing
 	var unsent []agent.Ask
 	empty := false
 	h.rec.View(func(p *agent.Projection) {
 		resume, empty = p.ConversationID, len(p.Messages) == 0
+		// A host before this one that stopped at the limit of the account
+		// this one starts on held what the agent had not taken up; the new
+		// adapter holds it too, and the person's next message lets it go.
+		held = heldFor(p, h.spec.Account)
 		for _, m := range p.Undelivered() {
 			pending = append(pending, outgoing(m))
 		}
@@ -399,7 +420,7 @@ func (h *host) boot() {
 	spec := agent.StartSpec{
 		ChatID: h.opts.ChatID, Workdir: h.spec.Workdir, StateDir: filepath.Join(h.dir, stateDir),
 		DataDir: h.opts.DataDir, Env: env, Account: h.spec.Account, Model: h.spec.Model, Effort: h.spec.Effort,
-		ResumeID: resume, Rebuild: rebuild, Spawn: h.spawn, Binary: h.spec.Binary, AskCommand: h.askCommand(),
+		ResumeID: resume, Rebuild: rebuild, Held: held, Spawn: h.spawn, Binary: h.spec.Binary, AskCommand: h.askCommand(),
 	}
 	if resume == "" && len(pending) > 0 {
 		spec.First, pending = &pending[0], pending[1:]

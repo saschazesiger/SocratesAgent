@@ -122,6 +122,17 @@ type StartSpec struct {
 	// its opening prompt at start. An adapter that has no use for that sends
 	// it right after starting.
 	First *Outgoing
+	// Held is the turn the account's limit ended, when the journal has done
+	// nothing since (no turn started after it) and the adapter starts on the
+	// account that turn ran on: a new host on the same account, or the
+	// account the chat was on again after a switch that did not work. An
+	// adapter that holds its queue after a limit (Codex, OpenCode;
+	// AGENT-HOST.md §5.2, §5.3) starts holding, as the one before it did: a
+	// message the host hands over that the journal has from before that
+	// turn's end waits, and one written after it (its AfterTurn is Held)
+	// lets the hold go. Empty on another account: what waited is meant to
+	// run there.
+	Held string
 	// AskCommand is the command line of `socrates mcp-ask` for this chat:
 	// ask_user as a stdio MCP server that reaches this host over its socket,
 	// for a CLI that starts its MCP servers as processes of its own
