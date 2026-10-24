@@ -851,9 +851,20 @@ func (m *Manager) attachJournal(ctx context.Context, id, tmuxName string) error 
 	if m.cfg.SocratesBin == "" {
 		return nil
 	}
-	cmd := PipeCommand(m.cfg.SocratesBin, JournalPath(m.cfg.DataDir, id),
-		m.cfg.JournalMaxBytes, m.cfg.JournalKeep)
-	_, err := m.tmux.Run(ctx, "pipe-pane", "-t", tmuxName, cmd)
+	// A sink never makes its journal (see journalSink), so it is made here,
+	// for a session that is known to be there: one adopted after a restore has
+	// none, because backups leave journals out. Its directory is not made - a
+	// session without one is not ours to bring back.
+	path := JournalPath(m.cfg.DataDir, id)
+	journal, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	if err := journal.Close(); err != nil {
+		return err
+	}
+	cmd := PipeCommand(m.cfg.SocratesBin, path, m.cfg.JournalMaxBytes, m.cfg.JournalKeep)
+	_, err = m.tmux.Run(ctx, "pipe-pane", "-t", tmuxName, cmd)
 	if err != nil && strings.Contains(strings.ToLower(Stderr(err)), "pane has exited") {
 		// The program ended before the pipe could be attached. There is
 		// nothing left to journal, and a session whose program exited at once
