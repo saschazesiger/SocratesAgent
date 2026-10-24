@@ -86,11 +86,6 @@
   font: var(--ds-font-subtitle);
 }
 
-/* The keyboard button's copy lies over the top right corner. */
-.ds-theme.so-touch .so-q-top {
-  padding-right: calc(var(--so-kb-copy-reserve) + env(safe-area-inset-right, 0px));
-}
-
 /* ── The scrolling body ──────────────────────────────────────────────── */
 
 .so-q-scroll {

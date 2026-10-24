@@ -82,7 +82,9 @@
   --so-chat-row-height: 36px;
   --so-chat-output-max: 320px;
   --so-chat-todo-max: 28vh;
-  --so-composer-max: 40vh;
+  /* The composer's share of what can be seen: the app's height, which
+     follows a phone's keyboard (keybar.js writes --so-app-h). */
+  --so-composer-max: calc(var(--so-app-h, 100dvh) * 0.35);
   --so-palette-max: 260px;
   --so-diff-no-width: 4ch;
   --so-touch-target: 48px;
@@ -94,9 +96,6 @@
   --so-option-label-font: var(--ds-weight-label) 20px/28px var(--ds-font);
   --so-question-action-height: 56px;
   --so-question-grow-basis: 140px;
-  /* The keyboard button no longer has a copy over a dialog; the question
-     dialog's head (so-question.css) keeps its ordinary inset. */
-  --so-kb-copy-reserve: var(--ds-space-4);
 
   /* Admin */
   --so-log-max-height: 280px;
