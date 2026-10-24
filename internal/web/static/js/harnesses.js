@@ -224,6 +224,14 @@ export function modelOf(id, modelId) {
   return null;
 }
 
+// modelByWords is the entry a typed model names by its label ("Sonnet 1M"),
+// for a field that shows labels and takes ids.
+function modelByWords(id, typed) {
+  const words = String(typed || '').trim().toLowerCase();
+  if (!words) return null;
+  return offered(id).find((m) => m.id === typed || String(m.label || '').toLowerCase() === words) || null;
+}
+
 // defaultModelFor is what the picker starts on: the first of the dashboard's
 // short list, else what the CLI says is its default, else the entry that flags
 // itself as one.
@@ -523,12 +531,19 @@ export function settingsForm(options = {}) {
     onChange('dir');
   });
 
+  // The field says a model's name, as its list does; what is typed is a
+  // name from the list or an id the CLI takes.
   const picker = combobox({
     value: '',
     items: () => modelItems(pick.harness),
     placeholder: 'Pick a model, or type its id',
+    display: (value) => {
+      const model = modelOf(pick.harness, value);
+      return model ? (model.label || model.id) : value;
+    },
     onChange: (value) => {
-      pick.model = value.trim();
+      const named = modelByWords(pick.harness, value);
+      pick.model = named ? named.id : value.trim();
       // A model brings its own starting effort - the one set for it in the
       // dashboard, or the CLI's.
       const model = modelOf(pick.harness, pick.model);
