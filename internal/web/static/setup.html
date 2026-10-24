@@ -39,20 +39,20 @@
       <form class="ds-form" id="form" novalidate>
         <div class="ds-field">
           <label class="ds-field__label" for="password">Password</label>
-          <input class="ds-input" type="password" id="password" autocomplete="new-password" minlength="6" required aria-describedby="passwordError passwordHint">
+          <input class="ds-input" type="password" id="password" autocomplete="new-password" enterkeyhint="next" minlength="6" required aria-describedby="passwordError passwordHint">
           <small class="ds-field__hint ds-field__hint--error" id="passwordError" hidden></small>
-          <small class="ds-field__hint" id="passwordHint">At least 6 characters. This is the only account.</small>
+          <small class="ds-field__hint" id="passwordHint">At least 6 characters. There is one password and no user name.</small>
         </div>
         <div class="ds-field">
           <label class="ds-field__label" for="repeat">Repeat password</label>
-          <input class="ds-input" type="password" id="repeat" autocomplete="new-password" minlength="6" required aria-describedby="repeatError">
+          <input class="ds-input" type="password" id="repeat" autocomplete="new-password" enterkeyhint="next" minlength="6" required aria-describedby="repeatError">
           <small class="ds-field__hint ds-field__hint--error" id="repeatError" hidden></small>
         </div>
         <div class="ds-subsection">
           <div class="ds-field">
             <label class="ds-field__label" for="key">OpenRouter API key <span class="so-optional">· optional</span></label>
-            <input class="ds-input" type="password" id="key" placeholder="sk-or-v1-…" autocomplete="off" aria-describedby="keyHint">
-            <small class="ds-field__hint" id="keyHint">It transcribes what you dictate, and it runs the spoken status, the session names, Home's summaries and questions — which send the screen of every coding session to OpenRouter — and the operator that types your answers into a session. The coding programs bring their own credentials, and the voice that reads answers out loud has a key of its own in Admin → Voice. Get one at openrouter.ai/keys — you can also add it later.</small>
+            <input class="ds-input" type="password" id="key" placeholder="sk-or-v1-…" autocomplete="off" enterkeyhint="done" aria-describedby="keyHint">
+            <small class="ds-field__hint" id="keyHint">It transcribes what you dictate and writes the spoken status and the chats' names. The coding agents bring their own accounts, and the voice that reads answers out loud has a key of its own in Admin → Voice. Get one at openrouter.ai/keys — you can also add it later.</small>
           </div>
         </div>
         <div class="ds-subsection">
@@ -67,13 +67,13 @@
           </div>
           <div class="ds-field" id="tunnelNamed" hidden>
             <label class="ds-field__label" for="tunnelToken">Tunnel token</label>
-            <input class="ds-input" type="password" id="tunnelToken" autocomplete="off" placeholder="eyJhIjoi…" aria-describedby="tunnelTokenError tunnelTokenHint">
+            <input class="ds-input" type="password" id="tunnelToken" autocomplete="off" enterkeyhint="next" placeholder="eyJhIjoi…" aria-describedby="tunnelTokenError tunnelTokenHint">
             <small class="ds-field__hint ds-field__hint--error" id="tunnelTokenError" hidden></small>
             <small class="ds-field__hint" id="tunnelTokenHint">Cloudflare Zero Trust → Networks → Tunnels → Create a tunnel → Cloudflared. Name it and save; the token is in the install command Cloudflare shows next. Point the tunnel's public hostname at <code data-local-url>http://localhost:8080</code>.</small>
           </div>
           <div class="ds-field" id="tunnelHost" hidden>
             <label class="ds-field__label" for="tunnelHostname">Public hostname</label>
-            <input class="ds-input" type="text" id="tunnelHostname" placeholder="socrates.example.com" spellcheck="false">
+            <input class="ds-input" type="text" id="tunnelHostname" placeholder="socrates.example.com" spellcheck="false" enterkeyhint="done">
           </div>
         </div>
         <div id="notice"></div>
@@ -87,7 +87,7 @@
       <!-- Offered only while this machine holds nothing a restore would
            overwrite. -->
       <div class="ds-subsection so-restore-offer" id="restoreOffer" hidden>
-        <p class="ds-muted">Moving Socrates to this machine? Restore it from its backup instead: the settings, the password, the sessions and the profiles' sign-ins come back with it.</p>
+        <p class="ds-muted">Moving Socrates to this machine? Restore it from its backup instead: the settings, the password, the chats and the accounts' sign-ins come back with it.</p>
         <button class="ds-btn" type="button" id="restoreOpen" data-icon="history" data-icon-size="16">Restore from a backup</button>
       </div>
     </section>
@@ -96,46 +96,46 @@
     <section id="restoreStep" aria-labelledby="restoreTitle" hidden>
       <header class="ds-page-head">
         <h1 class="ds-page-head__title" id="restoreTitle">Restore from a backup</h1>
-        <p class="ds-page-head__lead">Socrates comes back as it was when the backup was taken: settings, password, sessions, and the sign-ins and transcripts of its profiles. The default sign-ins and transcripts of Claude Code, Codex and OpenCode are in the old machine's home folder, not in the backup: sign in to them again here. Working directories are not in a backup either; they live in git.</p>
+        <p class="ds-page-head__lead">Socrates comes back as it was when the backup was taken: settings, password, chats and Shells, and the accounts with their sign-ins and transcripts. Working directories are not in a backup; they live in git.</p>
       </header>
       <form class="ds-form" id="restoreForm" autocomplete="off" novalidate>
         <div class="ds-field">
           <label class="ds-field__label" for="rEndpoint">Endpoint</label>
-          <input class="ds-input" type="text" id="rEndpoint" spellcheck="false" placeholder="https://hel1.your-objectstorage.com" aria-describedby="rEndpointHint">
+          <input class="ds-input" type="text" id="rEndpoint" spellcheck="false" enterkeyhint="next" placeholder="https://hel1.your-objectstorage.com" aria-describedby="rEndpointHint">
           <small class="ds-field__hint" id="rEndpointHint">Any S3-compatible store. Empty is AWS S3.</small>
         </div>
         <div class="ds-form-grid ds-form-grid--2">
           <div class="ds-field">
             <label class="ds-field__label" for="rRegion">Region</label>
-            <input class="ds-input" type="text" id="rRegion" spellcheck="false" placeholder="us-east-1">
+            <input class="ds-input" type="text" id="rRegion" spellcheck="false" enterkeyhint="next" placeholder="us-east-1">
           </div>
           <div class="ds-field">
             <label class="ds-field__label" for="rBucket">Bucket</label>
-            <input class="ds-input" type="text" id="rBucket" spellcheck="false" required aria-describedby="rBucketError">
+            <input class="ds-input" type="text" id="rBucket" spellcheck="false" enterkeyhint="next" required aria-describedby="rBucketError">
             <small class="ds-field__hint ds-field__hint--error" id="rBucketError" hidden></small>
           </div>
         </div>
         <div class="ds-field">
           <label class="ds-field__label" for="rPrefix">Prefix <span class="so-optional">· optional</span></label>
-          <input class="ds-input" type="text" id="rPrefix" spellcheck="false" placeholder="backup/v1" aria-describedby="rPrefixHint">
+          <input class="ds-input" type="text" id="rPrefix" spellcheck="false" enterkeyhint="next" placeholder="backup/v1" aria-describedby="rPrefixHint">
           <small class="ds-field__hint" id="rPrefixHint">The folder in the bucket the backup was written to, as Admin → Backup showed it.</small>
         </div>
         <div class="ds-form-grid ds-form-grid--2">
           <div class="ds-field">
             <label class="ds-field__label" for="rKey">Access key ID</label>
-            <input class="ds-input" type="text" id="rKey" spellcheck="false" required aria-describedby="rKeyError">
+            <input class="ds-input" type="text" id="rKey" spellcheck="false" enterkeyhint="next" required aria-describedby="rKeyError">
             <small class="ds-field__hint ds-field__hint--error" id="rKeyError" hidden></small>
           </div>
           <div class="ds-field">
             <label class="ds-field__label" for="rSecret">Secret access key</label>
-            <input class="ds-input" type="password" id="rSecret" autocomplete="off" required aria-describedby="rSecretError">
+            <input class="ds-input" type="password" id="rSecret" autocomplete="off" enterkeyhint="next" required aria-describedby="rSecretError">
             <small class="ds-field__hint ds-field__hint--error" id="rSecretError" hidden></small>
           </div>
         </div>
         <label class="ds-check"><input type="checkbox" id="rPathStyle" checked><span>Path-style addressing</span></label>
         <div class="ds-field">
           <label class="ds-field__label" for="rPassphrase">Encryption passphrase</label>
-          <input class="ds-input" type="password" id="rPassphrase" autocomplete="off" required aria-describedby="rPassphraseError rPassphraseHint">
+          <input class="ds-input" type="password" id="rPassphrase" autocomplete="off" enterkeyhint="go" required aria-describedby="rPassphraseError rPassphraseHint">
           <small class="ds-field__hint ds-field__hint--error" id="rPassphraseError" hidden></small>
           <small class="ds-field__hint" id="rPassphraseHint">The passphrase the backup was made with. Nothing is written before it is proved right.</small>
         </div>
@@ -341,7 +341,13 @@ form.addEventListener('submit', async (e) => {
   e.preventDefault();
   notice($('notice'), '');
   const password = $('password').value;
-  if (password.length < 6) { fieldError('password', 'At least 6 characters.'); return; }
+  // The hint under the field says the rule; the error says what is wrong
+  // with what was typed, rather than the rule a second time.
+  if (password.length < 6) {
+    fieldError('password', !password.length ? 'Choose a password.'
+      : 'Too short: ' + password.length + (password.length === 1 ? ' character.' : ' characters.'));
+    return;
+  }
   if (password !== $('repeat').value) { fieldError('repeat', 'The two passwords do not match.'); return; }
   const body = { password, openrouter_key: $('key').value.trim() };
   if (mode.value !== 'off') {

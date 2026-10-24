@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Admin · Socrates</title>
-<meta name="description" content="Chats with Claude Code, Codex and OpenCode, and a terminal for your shell.">
+<meta name="description" content="The settings, accounts and backups of this Socrates.">
 <meta name="theme-color" content="#f0f4f9">
 <meta name="format-detection" content="telephone=no">
 <!-- The same install tags as index.html (see there): a page can be added to
@@ -99,7 +99,7 @@
 
           <section class="ds-card" id="tmuxCard" aria-labelledby="tmuxTitle">
             <h2 class="ds-card__title" id="tmuxTitle">Terminal engine</h2>
-            <p class="ds-muted">Socrates keeps every session inside tmux, which is what lets a terminal outlive the browser, the phone and Socrates itself. It is not optional and there is no fallback.</p>
+            <p class="ds-muted">Socrates keeps every Shell inside tmux, which is what lets a terminal outlive the browser, the phone and Socrates itself. It is not optional and there is no fallback.</p>
             <div class="so-state" id="tmuxStatus" aria-live="polite">
               <span class="so-state__line"><span class="ds-status"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>Loading</span></span></span>
               <span class="so-state__tip"></span>
@@ -155,7 +155,7 @@
                 </span>
               </button>
             </div>
-            <p class="ds-muted">Everything Socrates keeps is in its data directory on this machine, except for now the default sign-ins and transcripts of Claude Code, Codex and OpenCode, which are in the home folder. While anything changes, it is backed up to an S3 bucket every few minutes — encrypted here with your passphrase, and only what changed goes up. Working directories are not in the backup; they live in git. A new machine is restored from its setup page.</p>
+            <p class="ds-muted">Everything Socrates keeps is in its data directory on this machine: the chats, the accounts with their sign-ins and transcripts, the settings. While anything changes, it is backed up to an S3 bucket every few minutes — encrypted here with your passphrase, and only what changed goes up. Working directories are not in the backup; they live in git. A new machine is restored from its setup page.</p>
             <div class="so-state" id="backupStatus" aria-live="polite">
               <span class="so-state__line"><span class="ds-status"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>Loading</span></span></span>
               <span class="so-state__tip"></span>

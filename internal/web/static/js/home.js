@@ -308,6 +308,7 @@ export function mountHome(ctx) {
               <span class="so-home__q-words">
                 <button class="ds-card__action so-home__q-action" type="button" data-action="questions" aria-pressed="false">Questions</button>
                 <span class="so-home__q-note"></span>
+                <span class="ds-meta so-home__q-meta" hidden></span>
               </span>
               <span class="so-home__q-end">
                 <span class="ds-status ds-status--warning so-home__q-status" hidden>${raw(icon('waiting', 16))}<span>Waiting for you</span></span>
@@ -349,6 +350,7 @@ export function mountHome(ctx) {
       qFigure: $('.so-home__q-figure'),
       qAction: $('.so-home__q-action'),
       qNote: $('.so-home__q-note'),
+      qMeta: $('.so-home__q-meta'),
       qStatus: $('.so-home__q-status'),
       qAnswer: $('.so-home__q-answer'),
       tiles,
@@ -369,9 +371,12 @@ export function mountHome(ctx) {
       case 'new': ctx.newSession(); break;
       case 'questions':
         if (questionQueue(ctx).length) ctx.openQuestions('');
-        else choose('questions');
+        else { choose('questions'); showList(); }
         break;
-      case 'card': choose(filter === target.dataset.card ? 'all' : target.dataset.card); break;
+      case 'card':
+        choose(filter === target.dataset.card ? 'all' : target.dataset.card);
+        showList();
+        break;
       case 'seg': choose(target.dataset.filter); break;
       case 'open': if (card) ctx.select(card.dataset.id); break;
       case 'answer': if (card) ctx.openQuestions(card.dataset.id); break;
@@ -382,6 +387,19 @@ export function mountHome(ctx) {
   function choose(key) {
     filter = key;
     render({ live: false });
+  }
+
+  // showList brings the list a tile filtered into view when it is below the
+  // fold - on a phone the nine tiles fill the screen, and a tap that only
+  // changed a list nobody could see looked like a tap that did nothing.
+  function showList() {
+    const head = built && built.listTitle.closest('.so-home__list-head');
+    if (!head) return;
+    const room = host.getBoundingClientRect();
+    const at = head.getBoundingClientRect();
+    if (at.top >= room.top && at.top < room.bottom - room.height / 3) return;
+    const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    head.scrollIntoView({ block: 'start', behavior: calm ? 'auto' : 'smooth' });
   }
 
   // `live` is false only for the person's own tap: a list they reordered
@@ -417,9 +435,15 @@ export function mountHome(ctx) {
     q.qAction.setAttribute('aria-label', waiting
       ? waiting + (waiting === 1 ? ' question' : ' questions') + '. Answer'
       : 'No questions');
-    setText(q.qNote, waiting
-      ? (waiting === 1 ? asking[0].title : 'The oldest: ' + asking[0].title)
-      : 'Nothing to answer');
+    // The question itself, as the push and the dialog say it, and under it
+    // whose it is; a session whose words are not read yet is named instead.
+    const first = waiting ? asking[0] : null;
+    const words = first ? questionWords(first) : '';
+    setText(q.qNote, !first ? 'Nothing to answer' : words || first.title);
+    const meta = !first ? '' : [words ? first.title : '', waiting > 1 ? 'the oldest of ' + waiting : '']
+      .filter(Boolean).join(' · ');
+    setText(q.qMeta, meta.charAt(0).toUpperCase() + meta.slice(1));
+    q.qMeta.hidden = !meta;
     q.qStatus.hidden = !waiting;
     q.qAnswer.hidden = !waiting;
 
@@ -476,6 +500,16 @@ export function mountHome(ctx) {
 
   function setText(node, text) {
     if (node.textContent !== text) node.textContent = text;
+  }
+
+  // questionWords is the first open question of a session, in its own words
+  // (REBUILD.md §5.4), from its digest: '' while it has not been read.
+  function questionWords(session) {
+    const digest = ctx.digestOf(session.id);
+    const question = digest && digest.question;
+    if (!question) return '';
+    const item = Array.isArray(question.items) ? question.items.find((one) => one && String(one.text || '').trim()) : null;
+    return String((item && item.text) || '').trim();
   }
 
   // What a card says under its number: the one fact about its sessions that

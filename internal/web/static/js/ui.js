@@ -16,15 +16,51 @@ let started = false;
 /**
  * startUI wires the page's DS behaviour that is delegated from the document:
  * the press ripple, the tooltips of every [data-tip], and the icons of the
- * static markup. api.js calls it on import, so every page gets it once; a
- * second call does nothing.
+ * static markup - and touch mode, so that sign-in, setup and Costs have a
+ * finger's targets on a phone as the session page does. api.js calls it on
+ * import, so every page gets it once; a second call does nothing.
  */
 export function startUI() {
   if (started) return;
   started = true;
+  if (touchWanted()) document.documentElement.classList.add('so-touch');
   DS.ripple.attach(document);
   DS.overlay.tooltips(document);
   fillIcons(document);
+}
+
+/* ----------------------------------------------------------- touch mode */
+
+// Whether this device is taken for a touch screen: the answer the options
+// menu gave on this device ('on', 'off'), or else any sign of one - a
+// pointer that is a finger, main or not, touch points, touch events, or a
+// browser known to run on one (Tesla's reports a fine pointer that hovers).
+// keyboard.js asks the same question and says why it is asked generously;
+// <html class="so-touch"> is what the stylesheets ask.
+export const TOUCH_PREF = 'socrates.touch';
+export const TOUCH_QUERIES = ['(hover: none)', '(pointer: coarse)', '(any-pointer: coarse)', '(any-hover: none)']
+  .map((query) => window.matchMedia(query));
+const TOUCH_BROWSER = /\bTesla\/|QtCarBrowser/;
+
+/** touchPref is what this device said: 'on', 'off', or '' for "decide by the signs". */
+export function touchPref() {
+  try {
+    const saved = localStorage.getItem(TOUCH_PREF);
+    return saved === 'on' || saved === 'off' ? saved : '';
+  } catch { return ''; /* a private window: the signs decide */ }
+}
+
+/** looksTouch is whether the device shows any sign of a touch screen. */
+export function looksTouch() {
+  return TOUCH_QUERIES.some((query) => query.matches)
+    || navigator.maxTouchPoints > 0
+    || 'ontouchstart' in window
+    || TOUCH_BROWSER.test(navigator.userAgent);
+}
+
+/** touchWanted is whether the page starts in touch mode. */
+export function touchWanted() {
+  return touchPref() === 'on' || (touchPref() !== 'off' && looksTouch());
 }
 
 /* ---------------------------------------------------------------- icons */

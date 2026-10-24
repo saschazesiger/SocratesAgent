@@ -20,6 +20,9 @@
  *                    (__value, the code to type on the agent's page, and its
  *                    Copy), __wait, __providers
  *   .so-account-form the body of the "Add an account" dialog
+ *
+ * In touch mode (.so-touch) DS's fields, check rows, switch rows and the
+ * combobox's "Show all" are given a finger's height (they have no hook).
  */
 
 /* X1 */
@@ -192,6 +195,47 @@ body[data-stale] .so-mark[data-ring="busy"]::after {
 
 .so-page-head > .ds-page-head {
   flex: 1 1 var(--so-page-head-basis);
+}
+
+/* ── The top bar of every page ───────────────────────────────────────── */
+
+/* On a phone every page's bar is the same: its way back or its drawer, the
+   Socrates mark without its name, and the page's own controls. */
+@media (max-width: 600px) {
+  .ds-topbar .ds-brand__name {
+    display: none;
+  }
+}
+
+/* ── Touch mode: a finger's target ───────────────────────────────────── */
+
+/* DS sizes its buttons through hooks (theme.css), but a field, a check row,
+   a switch row and a combobox's "Show all" are 40px with no hook to say
+   otherwise. In touch mode - a phone, a car - they are as tall as a button,
+   so every target a finger is asked to find is at least 48px. Only the size:
+   colour, radius, type and motion stay DS's. */
+.ds-theme.so-touch :is(.ds-check, .ds-switch) {
+  min-height: var(--so-touch-target);
+}
+
+.ds-theme.so-touch .ds-input:not(textarea) {
+  min-height: var(--so-touch-target);
+}
+
+.ds-theme.so-touch .ds-combo__input {
+  padding-right: calc(var(--so-touch-target) + var(--ds-space-1));
+}
+
+.ds-theme.so-touch .ds-combo__toggle {
+  width: var(--so-touch-target);
+  height: var(--so-touch-target);
+}
+
+/* The mark in a top bar is a link home: a finger's target around it. */
+.ds-theme.so-touch .ds-topbar .ds-brand {
+  min-width: var(--so-touch-target);
+  min-height: var(--so-touch-target);
+  justify-content: center;
 }
 
 /* ── Accounts ────────────────────────────────────────────────────────── */

@@ -35,9 +35,11 @@
   --so-shelf-head-height: 32px;
   --so-rename-width: 400px;
   --so-title-min: 96px;
+  /* The session's menu as an action sheet on a phone (so-frame.css). */
+  --so-actions-width: 480px;
 
-  /* Stage: the pane's inset, its cover, the key bar, the room the floating
-     transfer buttons take on a phone, and the recording and copy dialogs. */
+  /* Stage: the pane's inset, its cover, the key bar, and the recording and
+     copy dialogs. */
   --so-font-code: var(--ds-weight-regular) 13px/20px var(--so-font-mono);
   --so-pane-pad-y: var(--ds-space-3);
   --so-pane-pad-x: var(--ds-space-4);
@@ -45,10 +47,6 @@
   --so-key-height: 36px;
   --so-key-height-touch: 48px;
   --so-key-min-width: 44px;
-  --so-talk-height: 44px;
-  --so-talk-height-touch: 48px;
-  --so-transfer-float-room: 64px;
-  --so-transfer-float-room-touch: 72px;
   --so-rec-width: 440px;
   --so-meter-height: 64px;
   --so-meter-plain-height: 12px;
@@ -96,7 +94,9 @@
   --so-option-label-font: var(--ds-weight-label) 20px/28px var(--ds-font);
   --so-question-action-height: 56px;
   --so-question-grow-basis: 140px;
-  --so-kb-copy-reserve: 120px;
+  /* The keyboard button no longer has a copy over a dialog; the question
+     dialog's head (so-question.css) keeps its ordinary inset. */
+  --so-kb-copy-reserve: var(--ds-space-4);
 
   /* Admin */
   --so-log-max-height: 280px;
@@ -123,8 +123,10 @@
 
 /* Touch mode (car, kiosk): bigger targets through DS hooks (X16). */
 .ds-theme.so-touch {
-  --ds-btn-height: 48px;
-  --ds-btn-icon-size: 48px;
+  --ds-btn-height: var(--so-touch-target);
+  --ds-btn-icon-size: var(--so-touch-target);
+  --ds-check-target: var(--so-touch-target);
+  --ds-switch-halo: var(--so-touch-target);
   --ds-chip-height: 48px;
   --ds-input-font: var(--ds-font-input);   /* 16px field text at any width: no iOS focus zoom on an iPad/car screen */
   --so-row-height: 48px;
@@ -134,6 +136,14 @@
   --so-chat-row-height: 48px;
   --so-question-action-height: 64px;
   --so-question-width: 100%;
+}
+
+/* The compact buttons set their own size on themselves (DS .ds-btn--sm):
+   in touch mode they are a finger's target too - a row's ⋮, an "i", the
+   admin page's Update now. */
+.ds-theme.so-touch .ds-btn--sm {
+  --ds-btn-height: var(--so-touch-target);
+  --ds-btn-icon-size: var(--so-touch-target);
 }
 
 /* Stage: on a phone every column of the pane counts. */

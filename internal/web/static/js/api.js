@@ -190,6 +190,7 @@ export function promptDialog({
   const fieldId = 'dlg-field' + (dialogSeq + 1);
   const input = el('input', {
     class: 'ds-input', type: 'text', id: fieldId, value, placeholder, spellcheck: 'false', autocomplete: 'off', autofocus: true,
+    enterkeyhint: 'done',
   });
   const field = el('div', { class: 'ds-field' }, el('label', { class: 'ds-field__label', for: fieldId, text: label }), input);
   const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: cancelLabel });
@@ -235,7 +236,7 @@ export function toast(message, kind = 'info', { persistent = false, timeout, act
       iconEl(sort === 'error' ? 'alertCircle' : sort === 'info' ? 'info' : 'checkCircle', 20),
       el('span', { class: 'ds-toast__text', text }),
       run,
-      el('button', { class: 'ds-btn ds-btn--quiet ds-btn--icon ds-toast__close', type: 'button', 'aria-label': 'Close' },
+      el('button', { class: 'ds-btn ds-btn--quiet ds-btn--icon ds-toast__close', type: 'button', 'aria-label': 'Close', 'data-tip': 'Close' },
         iconEl('close', 20)));
     run.addEventListener('click', () => {
       handle.close();
@@ -243,6 +244,10 @@ export function toast(message, kind = 'info', { persistent = false, timeout, act
     });
   }
   const handle = DS.overlay.toast(region(), content, { kind: sort, persistent, timeout });
+  // DS draws the close button of a message it builds itself; it says what
+  // it does on hover like every other icon button.
+  const close = handle.el && handle.el.querySelector('.ds-toast__close');
+  if (close && !close.hasAttribute('data-tip')) close.setAttribute('data-tip', close.getAttribute('aria-label') || 'Close');
   showing.set(key, handle);
   handle.closed.then(() => { if (showing.get(key) === handle) showing.delete(key); });
   return handle;
