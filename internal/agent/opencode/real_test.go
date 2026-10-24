@@ -28,6 +28,13 @@ import (
 //	                                    quota may be used up: a limit must
 //	                                    then end the turn as limited
 //
+// The default model is OpenRouter's, so without a key in
+// SOCRATES_OPENCODE_REAL_AUTH it does not answer. A whole run makes about ten
+// to twelve calls on one model, and a free tier does not allow that many in
+// one window (measured: about eight calls per opencode/* free model in a few
+// minutes): give it a provider key, or a model with more quota. On the free
+// tier alone the steps pass piecewise, in separate runs.
+//
 // It never touches ~/.local/share/opencode or ~/.config/opencode: every
 // process gets the layout's paths.
 func TestRealOpenCode(t *testing.T) {
