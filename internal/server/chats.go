@@ -507,7 +507,7 @@ func (p *chatPeer) launch(ctx context.Context) error {
 	spec := agenthost.Spec{
 		ChatID: p.id, Harness: row.Harness, Workdir: row.Workdir, Model: model, Effort: effort,
 		Conversation: row.CLISessionID, ParkAfterMS: p.hub.parkAfterFor().Milliseconds(),
-		Ultracode: chatUltracode(row.Harness, readPrestartOptions(row.Options).Ultracode),
+		Ultracode: chatUltracode(row.Harness, readUltracode(row.Options)),
 	}
 	if err := p.accountSpec(row, &spec); err != nil {
 		return err

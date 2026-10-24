@@ -10,7 +10,7 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/webpush"
 )
 
-// The scheduler starts prepared sessions at the time they were given.
+// The scheduler starts prepared chats at the time they were given.
 //
 // It is a loop rather than a timer per session because the schedule lives in
 // the rows, and the rows can change under it from anywhere - a PATCH, a
@@ -20,7 +20,8 @@ import (
 // poke it is still seen within seconds.
 //
 // What it starts, it starts through startPrepared, which is what the Start
-// button calls: the same launch, the same draft, the same profile choice.
+// button calls: the same start, the same draft as the first message, the same
+// account choice.
 // The one thing it does first is clear the schedule, in the same step that
 // claims the start, so a start that fails is reported once and then left for
 // the person rather than retried every ten seconds for ever.
@@ -108,7 +109,7 @@ func (sc *scheduler) runDue(ctx context.Context, now time.Time) (claimed int) {
 func (sc *scheduler) startOne(ctx context.Context, row store.Session) bool {
 	one, cancel := context.WithTimeout(ctx, createTimeout)
 	defer cancel()
-	next, _, err := sc.srv.startPrepared(one, row.ID, 0, 0, true)
+	next, _, err := sc.srv.startPrepared(one, row.ID, true)
 	if errors.Is(err, errNotDue) {
 		return false
 	}

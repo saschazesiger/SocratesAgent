@@ -12,20 +12,18 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 )
 
 // The session API is tested against the real substrate: a real store, a real
 // termux Manager, a real tmux server on a socket of its own under t.TempDir(),
-// and the e2e suite's fake CLI on PATH under the three names the launchers
-// look for. Nothing here starts a real Claude Code, Codex or OpenCode, and
-// nothing touches the machine's own tmux.
+// and /bin/sh in its panes. A terminal is a Shell's: the coding agents run as
+// chats (chats_test.go, chatagents_test.go), and nothing here starts one or
+// touches the machine's own tmux.
 
 // requireTmux skips a test when tmux is missing or older than the generated
 // configuration needs.
@@ -47,54 +45,6 @@ func requireTmux(t *testing.T) string {
 	return bin
 }
 
-var (
-	fakeOnce sync.Once
-	fakeDir  string
-	fakeErr  error
-)
-
-// removeFakeBin takes the shared fake CLI directory away. It is called from
-// TestMain, which is the only point at which the last test that needed it has
-// finished - a sync.Once dir belongs to no single test, so t.TempDir cannot
-// own it.
-func removeFakeBin() {
-	if fakeDir != "" {
-		os.RemoveAll(fakeDir)
-	}
-}
-
-// fakeBinDir builds e2e/fakebin/faketui once per test run and links it under
-// the three names the launchers look for, so that a session created through
-// the API runs the fake and never a real CLI.
-func fakeBinDir(t *testing.T) string {
-	t.Helper()
-	fakeOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "socrates-fakebin-")
-		if err != nil {
-			fakeErr = err
-			return
-		}
-		exe := filepath.Join(dir, "faketui")
-		build := exec.Command("go", "build", "-o", exe, "./e2e/fakebin/faketui")
-		build.Dir = "../.."
-		if out, err := build.CombinedOutput(); err != nil {
-			fakeErr = fmt.Errorf("%v: %s", err, out)
-			return
-		}
-		for _, name := range []string{"claude", "codex", "opencode"} {
-			if err := os.Symlink(exe, filepath.Join(dir, name)); err != nil {
-				fakeErr = err
-				return
-			}
-		}
-		fakeDir = dir
-	})
-	if fakeErr != nil {
-		t.Skipf("the fake CLI could not be built: %v", fakeErr)
-	}
-	return fakeDir
-}
-
 // sessionEnv is a signed-in server with its terminal substrate started.
 type sessionEnv struct {
 	*testEnv
@@ -107,7 +57,6 @@ type sessionEnv struct {
 func newSessionEnv(t *testing.T) *sessionEnv {
 	t.Helper()
 	bin := requireTmux(t)
-	fakes := fakeBinDir(t)
 
 	home := t.TempDir()
 	work := filepath.Join(home, "work")
@@ -120,7 +69,6 @@ func newSessionEnv(t *testing.T) *sessionEnv {
 	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
 	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
-	t.Setenv("PATH", fakes+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	env := newEnv(t)
 	e := &sessionEnv{testEnv: env, t: t, tmuxBin: bin, home: home, work: work}
@@ -262,22 +210,6 @@ func (e *sessionEnv) waitForPane(id, want string) string {
 	return ""
 }
 
-// planArgv reads back the argv a session was actually started with.
-func (e *sessionEnv) planArgv(id string) []string {
-	e.t.Helper()
-	raw, err := os.ReadFile(filepath.Join(e.srv.dataDir, "sessions", id, "plan.json"))
-	if err != nil {
-		e.t.Fatalf("plan.json: %v", err)
-	}
-	var plan struct {
-		Argv []string `json:"Argv"`
-	}
-	if err := json.Unmarshal(raw, &plan); err != nil {
-		e.t.Fatalf("plan.json: %v", err)
-	}
-	return plan.Argv
-}
-
 func sessionID(t *testing.T, session map[string]any) string {
 	t.Helper()
 	id, _ := session["id"].(string)
@@ -287,19 +219,32 @@ func sessionID(t *testing.T, session map[string]any) string {
 	return id
 }
 
-// TestSessionLifecycle drives the whole of the API against real tmux: one
-// session per harness, then the list, the rename, the archive and the delete.
+// TestSessionLifecycle drives the whole of the API against real tmux: a Shell,
+// then the list, the rename, the filing and the delete. An agent's terminal
+// is refused, and says where the agent is: it runs as a chat.
 func TestSessionLifecycle(t *testing.T) {
 	e := newSessionEnv(t)
+
+	for _, harness := range []string{"claude", "codex", "opencode"} {
+		res, payload := e.do(t, e.client, "POST", "/api/sessions", fmt.Sprintf(
+			`{"harness":%q,"workdir_mode":"custom","workdir":%q}`, harness, filepath.Join(e.work, harness)))
+		if res.StatusCode != http.StatusBadRequest || !strings.Contains(fmt.Sprint(payload["error"]), "runs as a chat") {
+			t.Fatalf("an agent's terminal: %d %#v", res.StatusCode, payload)
+		}
+		if _, err := os.Stat(filepath.Join(e.work, harness)); err == nil {
+			t.Fatalf("a refused %s terminal made its folder", harness)
+		}
+	}
+	// No server on the socket is the answer too: nothing was ever started.
+	if names, err := e.tmux("list-sessions", "-F", "#{session_name}"); err == nil && names != "" {
+		t.Fatalf("a refused terminal made a tmux session: %s", names)
+	}
 
 	cases := []struct {
 		harness string
 		banner  string
 	}{
 		{"shell", ""},
-		{"claude", "FAKE claude"},
-		{"codex", "FAKE codex"},
-		{"opencode", "FAKE opencode"},
 	}
 	ids := map[string]string{}
 	for _, c := range cases {
@@ -507,75 +452,6 @@ func TestRestartAfterExit(t *testing.T) {
 	}
 }
 
-// TestRebootResumesTheConversation is the reboot case end to end: the tmux
-// server is killed under the running Socrates, the session becomes one to
-// resume, and opening it starts the CLI again on its own conversation - with
-// --resume and the id it had, not a fresh one.
-func TestRebootResumesTheConversation(t *testing.T) {
-	e := newSessionEnv(t)
-	res, session := e.create(fmt.Sprintf(
-		`{"harness":"claude","workdir_mode":"custom","workdir":%q}`, filepath.Join(e.work, "resume")))
-	if res.StatusCode != http.StatusCreated {
-		t.Fatalf("create: %d %#v", res.StatusCode, session)
-	}
-	id := sessionID(t, session)
-	e.waitForPane(id, "FAKE claude")
-
-	argv := e.planArgv(id)
-	cliID := ""
-	for i, a := range argv {
-		if a == "--session-id" && i+1 < len(argv) {
-			cliID = argv[i+1]
-		}
-	}
-	if cliID == "" {
-		t.Fatalf("the first launch chose no session id: %v", argv)
-	}
-
-	// The reboot, as far as Socrates can tell it apart from one: the tmux
-	// server is gone and the rows are not.
-	if _, err := e.tmux("kill-server"); err != nil {
-		t.Fatalf("kill-server: %v", err)
-	}
-	// It takes two consecutive failed polls to declare it - a busy moment must
-	// not flip every session at once - so the loop is nudged rather than
-	// waited on, and the state is then read back through the API.
-	ctx := context.Background()
-	e.srv.Sessions().Poll(ctx)
-	e.srv.Sessions().Poll(ctx)
-	e.waitForState(id, 10*time.Second, store.StateNeedsResume)
-
-	res, payload := e.do(t, e.client, "POST", "/api/sessions/"+id+"/resume", "")
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("resume: %d %#v", res.StatusCode, payload)
-	}
-	resumed, _ := payload["session"].(map[string]any)
-	if resumed["state"] != store.StateRunning {
-		t.Fatalf("after a resume the session is %v (%v)", resumed["state"], resumed["fail_reason"])
-	}
-	if resumed["resumed"] != true || resumed["resume_count"] != float64(1) {
-		t.Fatalf("the resume was not recorded: %#v", resumed)
-	}
-
-	argv = e.planArgv(id)
-	joined := strings.Join(argv, " ")
-	if !strings.Contains(joined, "--resume "+cliID) {
-		t.Fatalf("the relaunch did not resume the conversation: %s", joined)
-	}
-	if strings.Contains(joined, "--session-id") {
-		t.Fatalf("a resume must never re-use --session-id: %s", joined)
-	}
-	e.waitForPane(id, "FAKE claude")
-
-	res, payload = e.do(t, e.client, "POST", "/api/sessions/"+id+"/ack-resume", "")
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("ack-resume: %d %#v", res.StatusCode, payload)
-	}
-	if payload["session"].(map[string]any)["resumed"] != false {
-		t.Fatal("the resumed banner was not cleared")
-	}
-}
-
 // TestAdoptAcrossARestart restarts the whole server in-process: a running
 // session is taken back, and a tmux session of ours with no row is taken in
 // rather than killed.
@@ -690,29 +566,12 @@ func TestSessionAPIRequiresAuth(t *testing.T) {
 
 // ------------------------------------------------- the WP4 review findings
 
-// typeLine types one line into a session's pane, which is what makes Codex and
-// OpenCode write down a conversation of their own.
+// typeLine types one line into a session's pane.
 func (e *sessionEnv) typeLine(id, line string) {
 	e.t.Helper()
 	if out, err := e.tmux("send-keys", "-t", termux.TmuxName(id), line, "Enter"); err != nil {
 		e.t.Fatalf("could not type into %s: %v: %s", id, err, out)
 	}
-}
-
-// waitForCLIID waits until the session-id watcher has learned the program's
-// own conversation id.
-func (e *sessionEnv) waitForCLIID(id string, within time.Duration) string {
-	e.t.Helper()
-	deadline := time.Now().Add(within)
-	for time.Now().Before(deadline) {
-		row, err := e.store.GetSession(id)
-		if err == nil && row.CLISessionID != "" {
-			return row.CLISessionID
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	e.t.Fatalf("session %s never learned its conversation id", id)
-	return ""
 }
 
 // reboot is what a restarted machine looks like from here: the tmux server is
@@ -772,12 +631,11 @@ func TestRestartRefusesALiveSession(t *testing.T) {
 func TestConcurrentResumeRelaunchesOnce(t *testing.T) {
 	e := newSessionEnv(t)
 	res, session := e.create(fmt.Sprintf(
-		`{"harness":"claude","workdir_mode":"custom","workdir":%q}`, filepath.Join(e.work, "race")))
+		`{"harness":"shell","workdir_mode":"custom","workdir":%q}`, filepath.Join(e.work, "race")))
 	if res.StatusCode != http.StatusCreated {
 		t.Fatalf("create: %d %#v", res.StatusCode, session)
 	}
 	id := sessionID(t, session)
-	e.waitForPane(id, "FAKE claude")
 	e.reboot(id)
 
 	const viewers = 3
@@ -809,179 +667,8 @@ func TestConcurrentResumeRelaunchesOnce(t *testing.T) {
 	if final["resume_count"] != float64(1) {
 		t.Fatalf("%d viewers caused %v resumes, want 1", viewers, final["resume_count"])
 	}
-	if final["state"] != store.StateRunning {
+	if final["state"] != store.StateRunning || !e.hasTmuxSession(id) {
 		t.Fatalf("the session ended up %v", final["state"])
-	}
-	e.waitForPane(id, "FAKE claude")
-}
-
-// TestResumeSaysWhenItHadToStartFresh is finding 4: a conversation that is
-// gone is not the same event as one that came back, and the row alone cannot
-// tell them apart.
-func TestResumeSaysWhenItHadToStartFresh(t *testing.T) {
-	e := newSessionEnv(t)
-	res, session := e.create(fmt.Sprintf(
-		`{"harness":"claude","workdir_mode":"custom","workdir":%q}`, filepath.Join(e.work, "fresh")))
-	if res.StatusCode != http.StatusCreated {
-		t.Fatalf("create: %d %#v", res.StatusCode, session)
-	}
-	id := sessionID(t, session)
-	e.waitForPane(id, "FAKE claude")
-
-	row, err := e.store.GetSession(id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lost := row.CLISessionID
-
-	// A genuine resume says nothing about freshness.
-	e.reboot(id)
-	_, payload := e.do(t, e.client, "POST", "/api/sessions/"+id+"/resume", "")
-	resumed, _ := payload["session"].(map[string]any)
-	if resumed["resume_fresh"] != nil {
-		t.Fatalf("a real resume claimed to be fresh: %#v", resumed)
-	}
-	if resumed["cli_session_state"] != store.CLIVerified {
-		t.Fatalf("cli_session_state = %v, want verified", resumed["cli_session_state"])
-	}
-	e.waitForPane(id, "FAKE claude")
-
-	// Now the transcript is gone, which is what a conversation the CLI has
-	// forgotten looks like from here.
-	transcripts, _ := filepath.Glob(filepath.Join(e.home, ".claude", "projects", "*", "*.jsonl"))
-	for _, path := range transcripts {
-		if err := os.Remove(path); err != nil {
-			t.Fatal(err)
-		}
-	}
-	e.reboot(id)
-	_, payload = e.do(t, e.client, "POST", "/api/sessions/"+id+"/resume", "")
-	fresh, _ := payload["session"].(map[string]any)
-	if fresh["state"] != store.StateRunning {
-		t.Fatalf("the fresh start did not run: %#v", fresh)
-	}
-	if fresh["resume_fresh"] != true {
-		t.Fatalf("a lost conversation was not reported as fresh: %#v", fresh)
-	}
-	if fresh["resumed_from"] != lost {
-		t.Fatalf("resumed_from = %v, want the id that was lost (%s)", fresh["resumed_from"], lost)
-	}
-	if !strings.Contains(strings.Join(e.planArgv(id), " "), "--session-id") {
-		t.Fatal("a lost conversation must be started fresh, with a new session id")
-	}
-
-	// Acknowledging the banner clears what it said with it.
-	_, payload = e.do(t, e.client, "POST", "/api/sessions/"+id+"/ack-resume", "")
-	acked, _ := payload["session"].(map[string]any)
-	if acked["resumed"] != false || acked["resume_fresh"] != nil {
-		t.Fatalf("the banner was not cleared: %#v", acked)
-	}
-}
-
-// TestCodexAndOpenCodeResumeTheirConversation is finding 3's first half: the
-// two harnesses whose id has to be discovered are resumed on it, which is the
-// whole reason WP4 runs the discoverers at all.
-func TestCodexAndOpenCodeResumeTheirConversation(t *testing.T) {
-	for _, c := range []struct{ harness, flag string }{
-		{"codex", "resume "},
-		{"opencode", "--session "},
-	} {
-		t.Run(c.harness, func(t *testing.T) {
-			e := newSessionEnv(t)
-			res, session := e.create(fmt.Sprintf(
-				`{"harness":%q,"workdir_mode":"custom","workdir":%q}`, c.harness, filepath.Join(e.work, c.harness)))
-			if res.StatusCode != http.StatusCreated {
-				t.Fatalf("create: %d %#v", res.StatusCode, session)
-			}
-			id := sessionID(t, session)
-			e.waitForPane(id, "FAKE "+c.harness)
-
-			// Neither writes a conversation down until a real turn happens.
-			e.typeLine(id, "hello")
-			e.waitForPane(id, "you said: hello")
-			cli := e.waitForCLIID(id, 30*time.Second)
-
-			e.reboot(id)
-			res, payload := e.do(t, e.client, "POST", "/api/sessions/"+id+"/resume", "")
-			resumed, _ := payload["session"].(map[string]any)
-			if res.StatusCode != http.StatusOK || resumed["state"] != store.StateRunning {
-				t.Fatalf("resume: %d %#v", res.StatusCode, payload)
-			}
-			if joined := strings.Join(e.planArgv(id), " "); !strings.Contains(joined, c.flag+cli) {
-				t.Fatalf("the relaunch did not continue the conversation %s: %s", cli, joined)
-			}
-			e.waitForPane(id, "FAKE "+c.harness)
-		})
-	}
-}
-
-// TestTheIDWatcherSurvivesARestart is finding 3's second half: a session that
-// outlives the Socrates which launched it still has to learn its conversation
-// id, or it can never be resumed - and for OpenCode that means recovering the
-// server password from plan.json, because the process that held it is gone.
-func TestTheIDWatcherSurvivesARestart(t *testing.T) {
-	for _, harness := range []string{"codex", "opencode"} {
-		t.Run(harness, func(t *testing.T) {
-			e := newSessionEnv(t)
-			res, session := e.create(fmt.Sprintf(
-				`{"harness":%q,"workdir_mode":"custom","workdir":%q}`, harness, filepath.Join(e.work, harness)))
-			if res.StatusCode != http.StatusCreated {
-				t.Fatalf("create: %d %#v", res.StatusCode, session)
-			}
-			id := sessionID(t, session)
-			e.waitForPane(id, "FAKE "+harness)
-			if row, _ := e.store.GetSession(id); row.CLISessionState != store.CLIPending {
-				t.Fatalf("cli_session_state = %s, want pending", row.CLISessionState)
-			}
-
-			// The restart. The session keeps running; the watcher does not.
-			e.srv.StopSessions()
-			next, err := New(e.store, e.srv.dataDir)
-			if err != nil {
-				t.Fatalf("second server: %v", err)
-			}
-			e.start(next)
-
-			e.typeLine(id, "hello")
-			e.waitForPane(id, "you said: hello")
-			if cli := e.waitForCLIID(id, 30*time.Second); cli == "" {
-				t.Fatal("no conversation id was learned after the restart")
-			}
-		})
-	}
-}
-
-// TestVerifyErrorStillTriesTheResume is finding 5, and §C.5/§C.6: "could not
-// tell" is not "gone". A question that could not be answered keeps the id and
-// tries the resume; only a provable absence starts fresh.
-func TestVerifyErrorStillTriesTheResume(t *testing.T) {
-	e := newSessionEnv(t)
-	res, session := e.create(fmt.Sprintf(
-		`{"harness":"codex","workdir_mode":"custom","workdir":%q}`, filepath.Join(e.work, "unsure")))
-	if res.StatusCode != http.StatusCreated {
-		t.Fatalf("create: %d %#v", res.StatusCode, session)
-	}
-	id := sessionID(t, session)
-	e.waitForPane(id, "FAKE codex")
-	e.typeLine(id, "hello")
-	e.waitForPane(id, "you said: hello")
-	cli := e.waitForCLIID(id, 30*time.Second)
-	e.reboot(id)
-
-	// With neither CODEX_HOME nor HOME, Codex's verification cannot answer at
-	// all - the transient failure the finding is about.
-	t.Setenv("CODEX_HOME", "")
-	t.Setenv("HOME", "")
-	res, payload := e.do(t, e.client, "POST", "/api/sessions/"+id+"/resume", "")
-	resumed, _ := payload["session"].(map[string]any)
-	if res.StatusCode != http.StatusOK || resumed["state"] != store.StateRunning {
-		t.Fatalf("resume: %d %#v", res.StatusCode, payload)
-	}
-	if joined := strings.Join(e.planArgv(id), " "); !strings.Contains(joined, "resume "+cli) {
-		t.Fatalf("an unanswerable verification threw the conversation away: %s", joined)
-	}
-	if resumed["cli_session_state"] == store.CLILost || resumed["resume_fresh"] == true {
-		t.Fatalf("an unanswerable verification recorded the conversation as gone: %#v", resumed)
 	}
 }
 
@@ -1227,65 +914,31 @@ func TestSweepParksAndDeletesDoneSessions(t *testing.T) {
 	}
 }
 
-// ultracodeSetting reads the ultracode key of the settings file a Claude Code
-// session was last started with.
-func (e *sessionEnv) ultracodeSetting(id string) any {
-	e.t.Helper()
-	raw, err := os.ReadFile(harnesses.SessionFile(e.srv.dataDir, id, "claude-settings.json"))
-	if err != nil {
-		e.t.Fatalf("claude-settings.json: %v", err)
-	}
-	var doc map[string]any
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		e.t.Fatalf("claude-settings.json: %v", err)
-	}
-	return doc["ultracode"]
+// preparedEnv is a signed-in server whose terminal substrate has NOT been
+// started: preparing a chat must work without tmux.
+func preparedEnv(t *testing.T) *sessionEnv {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	e := &sessionEnv{testEnv: newEnv(t), t: t, home: home, work: filepath.Join(home, "work")}
+	e.signIn()
+	e.configureWorkspace(filepath.Join(home, "workspaces"), true, filepath.Join(home, "preset"))
+	return e
 }
 
-func TestClaudeSessionKeepsItsUltracode(t *testing.T) {
-	e := newSessionEnv(t)
-	if res, _ := e.create(`{"harness":"codex","ultracode":true}`); res.StatusCode != http.StatusBadRequest {
-		t.Fatalf("ultracode for Codex answered %d", res.StatusCode)
-	}
-
-	res, session := e.create(`{"harness":"claude"}`)
+func (e *sessionEnv) prepare(body string) map[string]any {
+	e.t.Helper()
+	res, payload := e.do(e.t, e.client, "POST", "/api/sessions", body)
 	if res.StatusCode != http.StatusCreated {
-		t.Fatalf("create: %d %#v", res.StatusCode, session)
+		e.t.Fatalf("prepare: %d %#v", res.StatusCode, payload)
 	}
-	off := sessionID(t, session)
-	if options, _ := session["options"].(map[string]any); options["ultracode"] != nil {
-		t.Fatalf("a session nobody asked ultracode for stores %#v", options)
-	}
-	if got := e.ultracodeSetting(off); got != false {
-		t.Fatalf("ultracode = %v by default", got)
-	}
+	session, _ := payload["session"].(map[string]any)
+	return session
+}
 
-	res, session = e.create(`{"harness":"claude","ultracode":true}`)
-	if res.StatusCode != http.StatusCreated {
-		t.Fatalf("create: %d %#v", res.StatusCode, session)
-	}
-	sid := sessionID(t, session)
-	if options, _ := session["options"].(map[string]any); options["ultracode"] != true {
-		t.Fatalf("stored options = %#v", options)
-	}
-	if got := e.ultracodeSetting(sid); got != true {
-		t.Fatalf("ultracode = %v when asked for", got)
-	}
-	e.waitForPane(sid, "FAKE claude")
-
-	// A resume is planned from the row, so it comes back with ultracode on.
-	if _, err := e.tmux("kill-session", "-t", termux.TmuxName(sid)); err != nil {
-		t.Fatal(err)
-	}
-	e.waitForState(sid, 15*time.Second, store.StateNeedsResume)
-	if err := os.Remove(harnesses.SessionFile(e.srv.dataDir, sid, "claude-settings.json")); err != nil {
-		t.Fatal(err)
-	}
-	res, payload := e.do(t, e.client, "POST", "/api/sessions/"+sid+"/resume", "")
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("resume: %d %#v", res.StatusCode, payload)
-	}
-	if got := e.ultracodeSetting(sid); got != true {
-		t.Fatalf("after the resume ultracode = %v", got)
-	}
+// putDraft saves a draft with a JSON-encoded text.
+func (e *sessionEnv) putDraft(id, text string, base int64) (*http.Response, map[string]any) {
+	e.t.Helper()
+	body, _ := json.Marshal(map[string]any{"text": text, "base_rev": base})
+	return e.do(e.t, e.client, "PUT", "/api/sessions/"+id+"/draft", string(body))
 }

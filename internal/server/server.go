@@ -84,10 +84,6 @@ type Server struct {
 	// two taps on the same folder cannot start two editors on it.
 	ideMu sync.Mutex
 
-	// profilesMu makes each change to the profile list one read and one
-	// write, so two of them cannot each save a list without the other.
-	profilesMu sync.Mutex
-
 	// starts serialises everything that changes or starts one prepared
 	// session, and sched is the loop that starts them at their time. See
 	// prestart.go and schedule.go.
@@ -102,8 +98,6 @@ type Server struct {
 	restoreJob restoreJob
 
 	// usage holds the short-lived account limit reading shared by every tab.
-	// Session costs are read from each CLI's own transcript and are not cached
-	// here: the files are already local and change after every answer.
 	usageMu     sync.Mutex
 	claudeUsage map[string]cachedLimits
 	usageHTTP   *http.Client
@@ -391,7 +385,6 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/sessions/{id}/start", s.auth(s.handleStartSession))
 	mux.HandleFunc("POST /api/sessions/{id}/ack-resume", s.auth(s.handleAckResume))
 	mux.HandleFunc("POST /api/sessions/{id}/read", s.auth(s.handleMarkRead))
-	mux.HandleFunc("GET /api/sessions/{id}/usage", s.auth(s.handleSessionUsage))
 	// What every conversation on this machine cost, for the costs page.
 	mux.HandleFunc("GET /api/costs", s.auth(s.handleCosts))
 	// What a terminal is doing, said out loud.
@@ -431,11 +424,6 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/accounts/{id}/signin", s.auth(s.handleGetAccountSignIn))
 	mux.HandleFunc("POST /api/accounts/{id}/signin/code", s.auth(s.handleAccountSignInCode))
 	mux.HandleFunc("DELETE /api/accounts/{id}/signin", s.auth(s.handleCancelAccountSignIn))
-	mux.HandleFunc("GET /api/profiles", s.auth(s.handleListProfiles))
-	mux.HandleFunc("POST /api/profiles", s.auth(s.handleCreateProfile))
-	mux.HandleFunc("PUT /api/profiles/order", s.auth(s.handleReorderProfiles))
-	mux.HandleFunc("PATCH /api/profiles/{id}", s.auth(s.handleRenameProfile))
-	mux.HandleFunc("DELETE /api/profiles/{id}", s.auth(s.handleDeleteProfile))
 
 	// Admin
 	mux.HandleFunc("GET /api/settings", s.auth(s.handleGetSettings))

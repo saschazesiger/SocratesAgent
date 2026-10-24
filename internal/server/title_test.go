@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,43 +14,18 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 )
 
-// The automatic title, against the same stand in gateway the Status button and
-// the operator loop are tested with. What has to be proven is that a session
-// names itself once, from what is on its screen, and never over a name a
-// person chose.
-
-// codingSession is a session of a harness that has something to be about,
-// which is the only kind the title run happens for.
-func (e *assistEnv) codingSession(dir string) string {
-	e.t.Helper()
-	work := filepath.Join(e.work, dir)
-	if err := os.MkdirAll(work, 0o755); err != nil {
-		e.t.Fatal(err)
-	}
-	res, session := e.create(fmt.Sprintf(
-		`{"harness":"claude","workdir_mode":"custom","workdir":%q}`, work))
-	if res.StatusCode != http.StatusCreated {
-		e.t.Fatalf("create: %d %#v", res.StatusCode, session)
-	}
-	id := sessionID(e.t, session)
-	e.waitForPane(id, "FAKE claude")
-	return id
-}
+// The title of a terminal and of a prepared chat, against the same stand in
+// gateway the Status button is tested with: a Shell is never named on its
+// own, and one is named from its screen when somebody asks. A chat naming
+// itself from its first message is chattitle_test.go's.
 
 // prompted drives the one edge the title run listens for: a session that
-// somebody has typed at going busy - the harness taking up the first prompt. A
-// real pane produces it through the detector; a test produces it here, so that
-// what is tested is the naming and not the timing of a harness.
+// somebody has typed at going busy. A real pane produces it through the
+// detector; a test produces it here, so that what is tested is the naming and
+// not the timing of a program.
 func (e *assistEnv) prompted(id string) {
 	e.srv.titles.observe(id, termux.Activity{State: termux.StateIdle, Asked: true})
 	e.srv.titles.observe(id, termux.Activity{State: termux.StateBusy, Asked: true})
-}
-
-// startedUp drives the same edge before anybody has typed, which is what the
-// harness's own start-up looks like: busy while it paints, idle when ready.
-func (e *assistEnv) startedUp(id string) {
-	e.srv.titles.observe(id, termux.Activity{State: termux.StateBusy})
-	e.srv.titles.observe(id, termux.Activity{State: termux.StateIdle})
 }
 
 // titleFrames is the phases of every title frame one client has heard about
@@ -67,150 +40,6 @@ func titleFrames(client *wsClient, id string) []map[string]any {
 	return out
 }
 
-// titleOf waits for the stored name to become what it should be. The run is a
-// goroutine nobody waits for, which is the whole point of it.
-func (e *assistEnv) titleOf(id, want string, within time.Duration) {
-	e.t.Helper()
-	deadline := time.Now().Add(within)
-	var last string
-	for time.Now().Before(deadline) {
-		row, err := e.srv.store.GetSession(id)
-		if err != nil {
-			e.t.Fatalf("session %s: %v", id, err)
-		}
-		last = row.Title
-		if last == want {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	e.t.Fatalf("the session was never named %q; it is called %q", want, last)
-}
-
-// The feature itself: the first prompt a session is sent names it, every open
-// browser hears it start and finish, and it happens exactly once.
-func TestTitleRunNamesASessionOnItsFirstPrompt(t *testing.T) {
-	e := newAssistEnv(t)
-	id := e.codingSession("named")
-	e.gw.always("```\n**\"Refactoring the parser tests\"**.\n```")
-
-	client := e.dialWS(id, "")
-	// The socket is only listening once its handshake has been answered, and
-	// the naming is fast enough to beat it.
-	client.hello()
-
-	e.prompted(id)
-	e.titleOf(id, "Refactoring the parser tests", 20*time.Second)
-
-	row, err := e.srv.store.GetSession(id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if row.TitleSource != store.TitleAuto {
-		t.Fatalf("title_source = %q, want the automatic one", row.TitleSource)
-	}
-
-	// Every browser pulses the row while the model is asked, then renames it
-	// without asking for anything.
-	client.await("a finished title frame", 10*time.Second, func() bool {
-		frames := titleFrames(client, id)
-		return len(frames) == 2 && frames[0]["phase"] == titlePhaseStart &&
-			frames[1]["phase"] == titlePhaseDone && frames[1]["title"] == "Refactoring the parser tests"
-	})
-
-	calls := e.gw.seen()
-	if len(calls) != 1 {
-		t.Fatalf("the gateway saw %d calls, want one", len(calls))
-	}
-	if calls[0].Model != "test/title-model" {
-		t.Fatalf("the namer used %q", calls[0].Model)
-	}
-	if calls[0].MaxTokens != titleMaxTokens {
-		t.Fatalf("max_tokens = %d", calls[0].MaxTokens)
-	}
-	if calls[0].Temperature == nil || *calls[0].Temperature != 0.3 {
-		t.Fatalf("temperature = %#v", calls[0].Temperature)
-	}
-	if prompt := calls[0].last(); !strings.Contains(prompt, "FAKE claude") ||
-		!strings.Contains(prompt, "2 to 5 words") || !strings.Contains(prompt, "in English") {
-		t.Fatalf("the namer was not shown the screen and the instruction:\n%s", prompt)
-	}
-
-	// A second prompt is not a second name.
-	e.srv.titles.observe(id, termux.Activity{State: termux.StateIdle, Asked: true})
-	e.prompted(id)
-	time.Sleep(500 * time.Millisecond)
-	if n := e.gw.count(); n != 1 {
-		t.Fatalf("the gateway saw %d calls after a second turn, want one", n)
-	}
-	if row, _ := e.srv.store.GetSession(id); row.Title != "Refactoring the parser tests" {
-		t.Fatalf("the session was renamed a second time, to %q", row.Title)
-	}
-}
-
-// A name somebody typed is theirs. Neither the one given at creation nor a
-// rename is ever replaced by a model's idea of what the session is about.
-func TestTitleRunLeavesANameThePersonChose(t *testing.T) {
-	e := newAssistEnv(t)
-	e.gw.always("Something the model made up")
-
-	work := filepath.Join(e.work, "mine")
-	if err := os.MkdirAll(work, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	res, session := e.create(fmt.Sprintf(
-		`{"harness":"claude","workdir_mode":"custom","workdir":%q,"title":"My own name"}`, work))
-	if res.StatusCode != http.StatusCreated {
-		t.Fatalf("create: %d %#v", res.StatusCode, session)
-	}
-	named := sessionID(t, session)
-	e.waitForPane(named, "FAKE claude")
-
-	// And the other half: created nameless, renamed since.
-	renamed := e.codingSession("renamed")
-	res, payload := e.do(t, e.client, "PATCH", "/api/sessions/"+renamed, `{"title":"I named this"}`)
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("rename: %d %#v", res.StatusCode, payload)
-	}
-
-	e.prompted(named)
-	e.prompted(renamed)
-	time.Sleep(700 * time.Millisecond)
-
-	if n := e.gw.count(); n != 0 {
-		t.Fatalf("the gateway saw %d calls for sessions that already have names", n)
-	}
-	for id, want := range map[string]string{named: "My own name", renamed: "I named this"} {
-		if row, _ := e.srv.store.GetSession(id); row.Title != want {
-			t.Fatalf("session %s is called %q, want %q", id, row.Title, want)
-		}
-	}
-}
-
-// With no key there is nothing to ask, and the placeholder name stays. It is
-// silent on purpose: nobody pressed anything.
-func TestTitleRunIsSilentWithoutAKey(t *testing.T) {
-	e := newAssistEnv(t)
-	id := e.codingSession("nokey")
-	before, _ := e.srv.store.GetSession(id)
-	e.configureOpenRouter(t, map[string]any{"api_key": ""})
-
-	e.prompted(id)
-	time.Sleep(700 * time.Millisecond)
-
-	if n := e.gw.count(); n != 0 {
-		t.Fatalf("the gateway saw %d calls with no key configured", n)
-	}
-	row, _ := e.srv.store.GetSession(id)
-	if row.Title != before.Title {
-		t.Fatalf("the session was renamed to %q", row.Title)
-	}
-	// Nothing was spent, so the session may still be named once a key is set.
-	if row.TitleSource != "" {
-		t.Fatalf("title_source = %q, want it still open", row.TitleSource)
-	}
-}
-
 // A shell has no subject. Its screen is a prompt and a directory, and naming
 // it after `cd` would be worse than the name it has.
 func TestTitleRunSkipsTheShell(t *testing.T) {
@@ -221,93 +50,6 @@ func TestTitleRunSkipsTheShell(t *testing.T) {
 	time.Sleep(700 * time.Millisecond)
 	if n := e.gw.count(); n != 0 {
 		t.Fatalf("the gateway saw %d calls for a shell session", n)
-	}
-}
-
-// The harness starting up is busy and then idle before anybody has typed a
-// word. That is not a prompt: nothing is asked and nothing is spent, and the
-// first prompt afterwards still names the session.
-func TestTitleRunIgnoresTheStartUp(t *testing.T) {
-	e := newAssistEnv(t)
-	id := e.codingSession("early")
-	before, _ := e.srv.store.GetSession(id)
-	e.gw.always("Starting Claude Code in a directory")
-
-	e.startedUp(id)
-	time.Sleep(700 * time.Millisecond)
-
-	if n := e.gw.count(); n != 0 {
-		t.Fatalf("the gateway saw %d calls for a session nobody has typed at", n)
-	}
-	row, _ := e.srv.store.GetSession(id)
-	if row.Title != before.Title {
-		t.Fatalf("the session was renamed to %q before it was sent anything", row.Title)
-	}
-	if row.TitleSource != "" {
-		t.Fatalf("title_source = %q, want it still open", row.TitleSource)
-	}
-
-	e.gw.always("Fix failing parser test")
-	e.prompted(id)
-	e.titleOf(id, "Fix failing parser test", 20*time.Second)
-}
-
-// A gateway that refuses is not a silence: every browser hears why, the row
-// stops pulsing, and the one go is spent.
-func TestTitleRunReportsAFailure(t *testing.T) {
-	e := newAssistEnv(t)
-	id := e.codingSession("refused")
-	before, _ := e.srv.store.GetSession(id)
-	e.gw.refuse(http.StatusUnauthorized, "User not found.")
-
-	client := e.dialWS(id, "")
-	client.hello()
-
-	e.prompted(id)
-	client.await("a failed title frame", 10*time.Second, func() bool {
-		frames := titleFrames(client, id)
-		return len(frames) == 2 && frames[0]["phase"] == titlePhaseStart &&
-			frames[1]["phase"] == titlePhaseError &&
-			strings.Contains(fmt.Sprint(frames[1]["text"]), "API key")
-	})
-	row, _ := e.srv.store.GetSession(id)
-	if row.TitleSource != store.TitleAuto {
-		t.Fatalf("title_source = %q, want the turn spent", row.TitleSource)
-	}
-	if row.Title != before.Title {
-		t.Fatalf("the session was renamed to %q on a refusal", row.Title)
-	}
-}
-
-// A model that answers with nothing usable has still had its turn: the name
-// stays as it was, and it is not asked again.
-func TestTitleRunSpendsItsOneTurnOnGarbage(t *testing.T) {
-	e := newAssistEnv(t)
-	id := e.codingSession("garbage")
-	before, _ := e.srv.store.GetSession(id)
-	e.gw.always("   \n  ")
-
-	e.prompted(id)
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if row, _ := e.srv.store.GetSession(id); row.TitleSource == store.TitleAuto {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	row, _ := e.srv.store.GetSession(id)
-	if row.TitleSource != store.TitleAuto {
-		t.Fatalf("title_source = %q, want the turn spent", row.TitleSource)
-	}
-	if row.Title != before.Title {
-		t.Fatalf("the session was renamed to %q on an empty answer", row.Title)
-	}
-
-	e.srv.titles.observe(id, termux.Activity{State: termux.StateIdle, Asked: true})
-	e.prompted(id)
-	time.Sleep(500 * time.Millisecond)
-	if n := e.gw.count(); n != 1 {
-		t.Fatalf("the gateway saw %d calls, want the one", n)
 	}
 }
 

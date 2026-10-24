@@ -46,22 +46,14 @@ func (s Shell) Plan(ctx context.Context, req PlanRequest) (LaunchPlan, error) {
 	argv := []string{bin, "-l"}
 
 	env := baseEnv(req)
-	// A shell in a profile carries the variables of all three agents, which
-	// is where a profile is signed in to Codex and OpenCode, and where a
-	// `claude` typed by hand runs on the profile's account.
-	if req.Profile != "" {
-		extra, err := profileEnv(req, KindClaude, KindCodex, KindOpenCode)
-		if err != nil {
-			return LaunchPlan{}, err
-		}
-		mergeEnv(env, extra)
-	}
 
 	// A shell that signs an account in runs the agent's own sign-in first,
 	// and is the person's shell after it, in the account's environment:
 	// what went wrong can be read, and the sign-in typed again.
 	if req.SignIn != nil && len(req.SignIn.Command) > 0 {
-		mergeEnv(env, req.SignIn.Env)
+		for k, v := range req.SignIn.Env {
+			env[k] = v
+		}
 		quoted := make([]string, len(req.SignIn.Command))
 		for i, word := range req.SignIn.Command {
 			quoted[i] = shellQuote(word)
@@ -69,28 +61,12 @@ func (s Shell) Plan(ctx context.Context, req PlanRequest) (LaunchPlan, error) {
 		argv = []string{bin, "-l", "-c", strings.Join(quoted, " ") + "; exec " + shellQuote(bin) + " -l"}
 	}
 
-	return LaunchPlan{
-		Argv:     argv,
-		Env:      env,
-		Cwd:      req.Cwd,
-		Discover: DiscoverNone,
-	}, nil
+	return LaunchPlan{Argv: argv, Env: env, Cwd: req.Cwd}, nil
 }
 
 // shellQuote is word as one single-quoted word of a POSIX shell.
 func shellQuote(word string) string {
 	return "'" + strings.ReplaceAll(word, "'", `'\''`) + "'"
-}
-
-// ResumePlan says there is nothing to resume. A shell restarted in the same
-// directory is the same shell as far as anybody is concerned.
-func (Shell) ResumePlan(ctx context.Context, req PlanRequest) (LaunchPlan, error) {
-	return LaunchPlan{}, ErrNoResume
-}
-
-// VerifyCLISession answers "gone", because a shell never had one.
-func (Shell) VerifyCLISession(ctx context.Context, req PlanRequest) (bool, error) {
-	return false, nil
 }
 
 // DiscoverModels answers that there is no model step for a shell.

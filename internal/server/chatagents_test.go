@@ -23,9 +23,6 @@ import (
 
 // The three agents' adapters are in this test binary - which is also every
 // host it launches - with their scripted CLIs (e2e/fakebin) on the PATH.
-// Like the browser suite, the binary keeps the agent terminals for the sheet
-// and PreStart (AgentTerminalsEnv, set in TestMain), so that the tests
-// written for Claude Code, Codex and OpenCode terminals still make terminals.
 
 var (
 	fakeAgentsOnce sync.Once
@@ -237,7 +234,6 @@ func TestALostChatFolderIsRebuiltFromTheTranscript(t *testing.T) {
 // chat keeps the Ultracode it was prepared with, and another agent does not.
 func TestAPreparedChatStartsByTheClockWithItsDraft(t *testing.T) {
 	withFakeAgents(t)
-	t.Setenv(AgentTerminalsEnv, "")
 	c := newChatEnv(t, time.Hour)
 	sent := catch(c.srv.push)
 	if err := c.srv.push.add(pushSub{Subscription: testSubscription("https://push.example.net/a")}); err != nil {

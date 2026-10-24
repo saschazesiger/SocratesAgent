@@ -283,39 +283,6 @@ func (s *Store) BeginStart(row *Session) error {
 	return nil
 }
 
-// RevertStart puts a row that BeginStart moved back where it was, for a start
-// that failed before the program ever ran: the settings it was prepared with,
-// no tmux name, and the reason. The schedule stays cleared - a start that did
-// not work is not retried by itself - and the draft was never touched.
-//
-// It also takes the row back from needs_resume: the poll may have seen it
-// "starting" with no tmux server yet (after a reboot, the launch is what
-// starts one) and declared it lost in the middle of the launch. Only the
-// launch knows that nothing ran, and a prepared session must not become one
-// to resume - that path never sends the prompt.
-func (s *Store) RevertStart(prepared *Session, reason string) error {
-	options := "{}"
-	if len(prepared.Options) > 0 {
-		options = string(prepared.Options)
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	res, err := s.db.Exec(`UPDATE sessions SET title = CASE WHEN title_source = '' THEN ? ELSE title END, harness = ?, model = ?, effort = ?, workdir = ?, workdir_mode = ?,
-		options = ?, tmux_name = '', cli_session_id = '', cli_session_state = ?, state = ?, exit_status = -1,
-		fail_reason = ?, start_at = 0, cols = ?, rows = ?, updated_at = ?
-		WHERE id = ? AND state IN (?, ?)`,
-		prepared.Title, prepared.Harness, prepared.Model, prepared.Effort, prepared.Workdir, prepared.WorkdirMode, options,
-		CLINone, StatePrestart, reason, prepared.Cols, prepared.Rows, now(), prepared.ID, StateStarting, StateNeedsResume)
-	if err != nil {
-		return err
-	}
-	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		return ErrNotFound
-	}
-	s.bump()
-	return nil
-}
-
 // updatePrestart is `update` for a row that has to still be prepared: it
 // answers ErrNotFound for a row that is not there and ErrNotPrestart for one
 // that has been started.

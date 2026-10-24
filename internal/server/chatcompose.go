@@ -240,28 +240,12 @@ func (s *Server) checkAttachments(chatID string, list []agent.Attachment) (int, 
 	return 0, ""
 }
 
-// AgentTerminalsEnv keeps Claude Code, Codex and OpenCode what they were
-// before the rebuild, terminals, wherever a new session is made from the
-// sheet or prepared. The browser suite sets it while its agents are the
-// faketui stand-in, which speaks no protocol, so that the scenarios written
-// for agent terminals keep testing them until WP11 moves the suite to the
-// protocol fakes; WP10 removes it together with the agent terminals. The
-// scripted agent is a chat either way, and POST /api/chats makes a chat of
-// any agent with an adapter.
-const AgentTerminalsEnv = "SOCRATES_AGENT_TERMINALS"
-
 // chatAgent says whether a new session of this harness is a chat rather than
-// a terminal.
+// a terminal: every agent with an adapter is one (REBUILD.md §1), and the
+// three coding agents have no terminal of their own any more.
 func chatAgent(harness string) bool {
 	_, adapter := agent.Lookup(harness)
-	return chatAgentOf(harness, adapter, os.Getenv(AgentTerminalsEnv) == "1")
-}
-
-// chatAgentOf is chatAgent's rule: an agent with an adapter is a chat,
-// unless the agent terminals are kept and it is one of the three that has
-// a terminal.
-func chatAgentOf(harness string, adapter, terminals bool) bool {
-	return adapter && !(terminals && prestartHarness(harness))
+	return adapter
 }
 
 // chatAgents is every harness a new session is a chat with, sorted: what the

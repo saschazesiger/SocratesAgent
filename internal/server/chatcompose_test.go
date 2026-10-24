@@ -232,27 +232,38 @@ func TestCatalogNamesTheChats(t *testing.T) {
 	}
 }
 
-// With the agent terminals kept (the browser suite's switch), Claude Code,
-// Codex and OpenCode are terminals again where a session is made from the
-// sheet or prepared, and the scripted agent is still a chat.
-func TestAgentTerminalsKeepTheThreeTerminals(t *testing.T) {
-	for _, harness := range []string{"claude", "codex", "opencode"} {
-		if !chatAgentOf(harness, true, false) || chatAgentOf(harness, true, true) {
-			t.Fatalf("%s: a chat without the switch, a terminal with it", harness)
+// Every agent with an adapter is a chat: Claude Code, Codex and OpenCode as
+// much as the scripted agent, from the sheet and prepared alike. A Shell is
+// a terminal.
+func TestEveryAgentIsAChat(t *testing.T) {
+	for _, harness := range []string{"claude", "codex", "opencode", agent.FakeHarness} {
+		if !chatAgent(harness) {
+			t.Fatalf("%s is not a chat", harness)
 		}
 	}
-	if chatAgentOf("claude", false, false) || !chatAgentOf(agent.FakeHarness, true, true) {
-		t.Fatal("an agent without an adapter is no chat, and the scripted agent is one whatever the switch")
+	if chatAgent("shell") || chatAgent("vscode") {
+		t.Fatal("a tool is a chat")
 	}
-	t.Setenv(AgentTerminalsEnv, "1")
 	c := newChatEnv(t, time.Hour)
 	_, body := c.do(t, c.client, "GET", "/api/harnesses", "")
-	if chats, _ := body["chats"].([]any); len(chats) != 1 || chats[0] != agent.FakeHarness {
-		t.Fatalf("chats with the switch: %v", body["chats"])
+	chats, _ := body["chats"].([]any)
+	got := map[string]bool{}
+	for _, one := range chats {
+		got[one.(string)] = true
 	}
-	code, made := c.post(t, "/api/sessions", map[string]any{"prestart": true, "harness": agent.FakeHarness,
+	for _, harness := range []string{"claude", "codex", "opencode", agent.FakeHarness} {
+		if !got[harness] {
+			t.Fatalf("the catalogue's chats: %v", body["chats"])
+		}
+	}
+	code, made := c.post(t, "/api/sessions", map[string]any{"prestart": true, "harness": "codex",
 		"workdir_mode": "custom", "workdir": c.data, "prompt": "hello"})
 	if code != http.StatusCreated || made["session"].(map[string]any)["kind"] != store.KindChat {
-		t.Fatalf("a prepared scripted agent with the switch: %d %v", code, made)
+		t.Fatalf("a prepared Codex: %d %v", code, made)
+	}
+	code, made = c.post(t, "/api/sessions", map[string]any{"prestart": true, "harness": "shell",
+		"workdir_mode": "custom", "workdir": c.data})
+	if code != http.StatusBadRequest {
+		t.Fatalf("a prepared Shell: %d %v", code, made)
 	}
 }

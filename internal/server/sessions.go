@@ -168,22 +168,17 @@ func (s *Server) views(rows []store.Session) []sessionView {
 	return out
 }
 
-// createSessionBody is what the new-session sheet posts.
+// createSessionBody is what the new-session sheet posts: a Shell, or a
+// prepared chat.
 type createSessionBody struct {
 	// ClientID is the browser's idempotency key. A create retried over a link
 	// that dropped finds the session it already made instead of making a
 	// second one, which is the whole of "start a session in a tunnel and come
 	// back to one session".
-	ClientID string `json:"client_id"`
-	Harness  string `json:"harness"`
-	Model    string `json:"model"`
-	Effort   string `json:"effort"`
-	// Profile is the sign-in profile the session runs in; empty is the
-	// default one.
-	Profile string `json:"profile"`
-	// Ultracode starts a Claude Code session with dynamic workflows on every
-	// task. Off unless asked for, and kept for the session's whole life.
-	Ultracode   bool            `json:"ultracode"`
+	ClientID    string          `json:"client_id"`
+	Harness     string          `json:"harness"`
+	Model       string          `json:"model"`
+	Effort      string          `json:"effort"`
 	WorkdirMode string          `json:"workdir_mode"`
 	Workdir     string          `json:"workdir"`
 	Title       string          `json:"title"`
@@ -194,44 +189,37 @@ type createSessionBody struct {
 	Cols int `json:"cols"`
 	Rows int `json:"rows"`
 
-	// Prestart prepares the session instead of starting it: the row is
+	// Prestart prepares a chat instead of starting anything: the row is
 	// stored with these settings, and nothing else happens until Start. See
-	// prestart.go. Prompt is its first draft, ProfileAuto asks for the
-	// profile with the most headroom to be chosen when it starts, and StartAt
-	// is when it starts by itself.
-	Prestart    bool   `json:"prestart"`
-	Prompt      string `json:"prompt"`
-	ProfileAuto bool   `json:"profile_auto"`
-	StartAt     int64  `json:"start_at"`
-	// Account and AutoSwitch are a prepared chat's (chataccount.go): empty
-	// is the account recommended when it starts.
+	// prestart.go. Prompt is its first draft and StartAt when it starts by
+	// itself; Ultracode starts a Claude Code chat with dynamic workflows on
+	// every task, and Account and AutoSwitch are its account (chataccount.go)
+	// - empty is the account recommended when it starts.
+	Prestart   bool   `json:"prestart"`
+	Prompt     string `json:"prompt"`
+	StartAt    int64  `json:"start_at"`
+	Ultracode  bool   `json:"ultracode"`
 	Account    string `json:"account"`
 	AutoSwitch bool   `json:"auto_switch"`
 }
 
-// launchSpec is one session to be started, wherever its settings came from:
-// the sheet, for a new session, or the stored row, for a prepared one. It is
-// the input of launch, which is the one path from settings to a running
-// program - "Start" on a prepared session is the same launch a new session
-// gets, and it is the same because it is the same code.
+// launchSpec is one terminal to be started: a Shell from the sheet, or the
+// Shell an account signs in in. It is the input of launch, the one path from
+// settings to a running terminal.
 type launchSpec struct {
 	ID          string
 	ClientID    string
 	Harness     string
 	Model       string
 	Effort      string
-	Profile     string
-	Ultracode   bool
 	WorkdirMode string
 	Workdir     string
 	// Title is the name the person gave the session, and "" when they gave
-	// none. It is also what Claude Code is told the session is called.
+	// none.
 	Title   string
 	Options json.RawMessage
 	Cols    int
 	Rows    int
-	// Prompt is sent as the program's first prompt; see harnesses/prompt.go.
-	Prompt string
 	// SignIn makes a Shell the place an account signs in (accounts.go).
 	SignIn *harnesses.SignIn
 }
@@ -271,10 +259,16 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if body.Prestart {
-		// Preparing a session starts nothing, so it does not need tmux to be
+		// Preparing a chat starts nothing, so it does not need tmux to be
 		// there: a draft can be written on a machine whose terminal engine is
 		// still being installed.
 		s.createPrestart(w, body)
+		return
+	}
+	// An agent runs as a chat, and the terminal it ran in before is gone
+	// (REBUILD.md §1): asked for one, the server says where the agent is.
+	if refused := refuseAgentTerminal(strings.TrimSpace(body.Harness)); refused != nil {
+		writeError(w, refused.status, refused.msg)
 		return
 	}
 	if err := s.manager.Available(); err != nil {
@@ -291,15 +285,13 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		Harness:     body.Harness,
 		Model:       body.Model,
 		Effort:      body.Effort,
-		Profile:     body.Profile,
-		Ultracode:   body.Ultracode,
 		WorkdirMode: body.WorkdirMode,
 		Workdir:     body.Workdir,
 		Title:       body.Title,
 		Options:     body.Options,
 		Cols:        body.Cols,
 		Rows:        body.Rows,
-	}, nil)
+	})
 	var refused *launchError
 	if errors.As(err, &refused) {
 		writeError(w, refused.status, refused.msg)
@@ -325,56 +317,43 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"session": s.view(row)})
 }
 
-// checkLaunch is every rule a session's settings have to pass, and it changes
-// nothing on the machine: it is also what a prepared session's settings are
-// held to each time they are saved, long before anything starts. It fills in
-// what the settings leave to defaults - the harness, the shell's machine -
-// and folds the choices that have to survive a relaunch into the options.
+// refuseAgentTerminal is the refusal of a terminal for one of the coding
+// agents, which run as chats only: the clean cut of REBUILD.md §1 and §8.3.
+func refuseAgentTerminal(harness string) *launchError {
+	if !agentHarness(harness) {
+		return nil
+	}
+	return refuse(http.StatusBadRequest, "%s runs as a chat, not in a terminal: start it from the new-session sheet, "+
+		"or with POST /api/chats", chatLabel(harness))
+}
+
+// checkLaunch is every rule a terminal's settings have to pass, and it
+// changes nothing on the machine. It fills in what the settings leave to
+// defaults - the harness, the shell's machine.
 //
 // The rules are enforced here and not in the sheet: hiding a control is
 // presentation, and this is the boundary.
-func (s *Server) checkLaunch(spec *launchSpec, settings config.Settings) (harnesses.Harness, *launchError) {
+func (s *Server) checkLaunch(spec *launchSpec, settings config.Settings) (harnesses.Terminal, *launchError) {
 	spec.Harness = strings.TrimSpace(spec.Harness)
 	if spec.Harness == "" {
 		spec.Harness = settings.Workspace.DefaultHarness
 	}
-	h, ok := harnesses.Get(spec.Harness)
-	if !ok {
-		return nil, refuse(http.StatusBadRequest, "%q is not one of the harnesses", spec.Harness)
+	if refused := refuseAgentTerminal(spec.Harness); refused != nil {
+		return nil, refused
 	}
 	if spec.Harness == config.HarnessVSCode {
 		// A folder has one editor, and it is opened from the folder: see
 		// handleFolderIDE.
 		return nil, refuse(http.StatusBadRequest, "VS Code is opened from a folder in the sidebar, not as a new session")
 	}
+	h, ok := harnesses.TerminalOf(spec.Harness)
+	if !ok {
+		return nil, refuse(http.StatusBadRequest, "%q is not one of the harnesses", spec.Harness)
+	}
 	if entry, known := settings.Harnesses.Entry(spec.Harness); known && !entry.Enabled {
 		return nil, refuse(http.StatusBadRequest, "%s is switched off in the dashboard", h.Label())
 	}
-	spec.Profile = strings.TrimSpace(spec.Profile)
-	if status, msg := s.checkProfile(spec.Harness, h.Label(), spec.Profile); status != 0 {
-		return nil, refuse(status, "%s", msg)
-	}
-	if spec.Ultracode && spec.Harness != string(harnesses.KindClaude) {
-		return nil, refuse(http.StatusBadRequest, "ultracode is only valid for Claude Code sessions")
-	}
 	spec.Model, spec.Effort = strings.TrimSpace(spec.Model), strings.TrimSpace(spec.Effort)
-	// What the session has to be relaunched with is kept in its options, next
-	// to whatever the client put there.
-	choices := map[string]any{"profile": spec.Profile, "ultracode": spec.Ultracode}
-	if spec.Profile != "" || spec.Ultracode {
-		fields := map[string]json.RawMessage{}
-		if len(spec.Options) > 0 && string(spec.Options) != "null" {
-			if err := json.Unmarshal(spec.Options, &fields); err != nil || fields == nil {
-				return nil, refuse(http.StatusBadRequest, "options must be a JSON object")
-			}
-		}
-		for key, value := range choices {
-			if value != "" && value != false {
-				fields[key], _ = json.Marshal(value)
-			}
-		}
-		spec.Options, _ = json.Marshal(fields)
-	}
 	if err := checkSize(spec.Cols, spec.Rows); err != nil {
 		// Before the row, before the directory: a size that cannot be a
 		// terminal is the client's mistake, and it must not cost a failed
@@ -384,16 +363,12 @@ func (s *Server) checkLaunch(spec *launchSpec, settings config.Settings) (harnes
 	return h, nil
 }
 
-// launch starts a session's program: the checks, the working directory, the
-// plan and the manager, in that order and in no other place. prepared is nil
-// for a new session, which the manager creates; for a prepared one it is the
-// row, and the manager starts that row instead of making another. Everything
-// between the two is shared, which is the guarantee that a prepared session
-// starts exactly as the same settings would have started from the sheet.
+// launch starts a terminal: the checks, the working directory, the plan and
+// the manager, in that order and in no other place.
 //
 // A *launchError back is a refusal of the settings and nothing was made. Any
 // other error comes with the row when there is one, carrying the reason.
-func (s *Server) launch(ctx context.Context, spec launchSpec, prepared *store.Session) (*store.Session, error) {
+func (s *Server) launch(ctx context.Context, spec launchSpec) (*store.Session, error) {
 	settings := s.Settings()
 	h, refused := s.checkLaunch(&spec, settings)
 	if refused != nil {
@@ -409,18 +384,11 @@ func (s *Server) launch(ctx context.Context, spec launchSpec, prepared *store.Se
 	}
 
 	plan, err := h.Plan(ctx, harnesses.PlanRequest{
-		SessionID:     spec.ID,
-		Title:         spec.Title,
-		Cwd:           workdir,
-		Model:         spec.Model,
-		Effort:        spec.Effort,
-		Profile:       spec.Profile,
-		Ultracode:     spec.Ultracode,
-		InitialPrompt: spec.Prompt,
-		SignIn:        spec.SignIn,
-		Settings:      settings,
-		DataDir:       s.dataDir,
-		Logf:          log.Printf,
+		SessionID: spec.ID,
+		Cwd:       workdir,
+		SignIn:    spec.SignIn,
+		Settings:  settings,
+		DataDir:   s.dataDir,
 	})
 	if err != nil {
 		if mode == harnesses.WorkdirDynamic {
@@ -431,7 +399,7 @@ func (s *Server) launch(ctx context.Context, spec launchSpec, prepared *store.Se
 		return nil, refuse(http.StatusBadRequest, "%s", err.Error())
 	}
 
-	launch := termux.Spec{
+	return s.manager.Create(ctx, termux.Spec{
 		ID:          spec.ID,
 		ClientID:    spec.ClientID,
 		Title:       sessionTitle(spec.Title, h.Label(), workdir, mode),
@@ -445,11 +413,7 @@ func (s *Server) launch(ctx context.Context, spec launchSpec, prepared *store.Se
 		Cols:        spec.Cols,
 		Rows:        spec.Rows,
 		Plan:        plan,
-	}
-	if prepared == nil {
-		return s.manager.Create(ctx, launch)
-	}
-	return s.manager.StartPrestart(ctx, launch)
+	})
 }
 
 // The bounds a client-supplied terminal size has to be inside. Zero means the

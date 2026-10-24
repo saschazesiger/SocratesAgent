@@ -6,7 +6,6 @@ import (
 	"log"
 	"time"
 
-	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
 
@@ -49,7 +48,6 @@ func (s *Server) deleteSession(ctx context.Context, id string) error {
 	if err := s.manager.Delete(ctx, id); err != nil {
 		return err
 	}
-	harnesses.ForgetOpenCodeAccess(id)
 	// After the delete rather than before it, so that a turn the detector
 	// commits in between cannot start a verdict on a session that is going.
 	s.digests.forget(id)

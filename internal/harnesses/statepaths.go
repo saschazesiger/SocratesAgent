@@ -1,26 +1,53 @@
 package harnesses
 
-import "path/filepath"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+)
 
-// Where each coding agent keeps the state Socrates depends on but does not
-// own. The launchers work these out for themselves; these three exist so the
-// dashboard's diagnostics can name the same paths rather than a second guess
-// at them, which is how the two would eventually disagree.
+// Where each coding agent keeps its own state when nothing points it
+// elsewhere: the folders in HOME a CLI run by hand writes its conversations
+// into. Socrates' chats never use them - every account has a folder of its
+// own in the data directory (REBUILD.md §6.1) - but the cost ledger still
+// reads them, so that a conversation had on this machine outside Socrates is
+// on the costs page too, and the accounts migration moves them in once.
 
-// ClaudeConfigDir is the directory Claude Code keeps its transcripts in, and
-// the one Socrates has to be able to write for the light theme to pin.
-func ClaudeConfigDir() string { return claudeConfigDir() }
-
-// CodexHome is where Codex keeps its rollout files and its state database.
-func CodexHome() string { return codexHome() }
-
-// OpenCodeDBPath is OpenCode's own database, which is where a session id is
-// looked up when its HTTP server can no longer be reached. An empty string
-// means this machine has no home directory to look in.
-func OpenCodeDBPath() string {
-	dir := openCodeDataDir()
-	if dir == "" {
+// ClaudeConfigDir is the directory Claude Code keeps its transcripts in.
+func ClaudeConfigDir() string {
+	if dir := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")); dir != "" {
+		return dir
+	}
+	home := homeDir()
+	if home == "" {
 		return ""
 	}
-	return filepath.Join(dir, "opencode.db")
+	return filepath.Join(home, ".claude")
+}
+
+// CodexHome is where Codex keeps its rollout files and its state database.
+func CodexHome() string {
+	if dir := strings.TrimSpace(os.Getenv("CODEX_HOME")); dir != "" {
+		return dir
+	}
+	home := homeDir()
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".codex")
+}
+
+// OpenCodeDataDir is OpenCode's own data directory: its database and its
+// session store. An empty string means this machine has no home directory to
+// look in.
+func OpenCodeDataDir() string {
+	xdg := strings.TrimSpace(os.Getenv("XDG_DATA_HOME"))
+	if xdg == "" {
+		home := homeDir()
+		if home == "" {
+			return ""
+		}
+		xdg = filepath.Join(home, ".local", "share")
+	}
+	return filepath.Join(xdg, "opencode")
 }

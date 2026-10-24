@@ -41,16 +41,10 @@ func TestMain(m *testing.M) {
 		}
 	}
 	// The real adapters are registered here too (the accounts package
-	// imports them), but the tests drive Claude Code, Codex and OpenCode
-	// through faketui terminals, as the browser suite does; the chats run the
-	// scripted agent. A test that wants an agent's chat says so by name.
-	os.Setenv(AgentTerminalsEnv, "1")
-	code := testhome.Main(m)
-	// The fake CLI directory is shared by every test through a sync.Once, so
-	// no single test owns it and t.TempDir cannot remove it. Here is the one
-	// point at which the last test that needed it has finished.
-	removeFakeBin()
-	os.Exit(code)
+	// imports them), so Claude Code, Codex and OpenCode are chats, as in the
+	// product; most chats here run the scripted agent, and a test that wants
+	// an agent's own puts its protocol fake on the PATH (withFakeAgents).
+	os.Exit(testhome.Main(m))
 }
 
 // runJournalSink and runTmuxHook are the two subcommands the substrate calls

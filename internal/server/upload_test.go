@@ -59,7 +59,7 @@ func TestUploadLandsInTheWorkingDirectory(t *testing.T) {
 	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
 	workdir := t.TempDir()
 	if err := env.store.CreateSession(&store.Session{
-		ID: "s-up", Title: "t", Harness: "claude", Workdir: workdir, TmuxName: "t-up",
+		ID: "s-up", Title: "t", Harness: "shell", Workdir: workdir, TmuxName: "t-up",
 	}); err != nil {
 		t.Fatal(err)
 	}

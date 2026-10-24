@@ -251,8 +251,7 @@ func TestDiagnosticsCoversTheEngineTheProgramsAndTheDisk(t *testing.T) {
 	}
 	for _, name := range []string{
 		"tmux", "tmux socket", "Recovered sessions", "Workspace", "Shell", "Claude Code",
-		"Claude Code state", "Codex", "Codex state", "OpenCode", "OpenCode state", "OpenRouter",
-		"Speech to text", "Remote access", "Disk",
+		"Codex", "OpenCode", "OpenRouter", "Speech to text", "Remote access", "Disk",
 	} {
 		if _, ok := seen[name]; !ok {
 			t.Errorf("no %q row in %v", name, seen)
