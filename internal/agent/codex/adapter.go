@@ -42,6 +42,10 @@ var (
 	// for the turn/completed that 0.164 sends right after; past it, the turn
 	// is ended here so that a chat never stays busy on a lost notification.
 	errorGrace = 30 * time.Second
+	// goneWait is how long a steer that codex answers with "no active turn"
+	// waits for that turn's turn/completed: codex lets a turn go before it
+	// sends its end, and how it ended (a limit) decides what the message does.
+	goneWait = 5 * time.Second
 	// diffEvery is the most often a turn's aggregated diff is journaled while
 	// it changes. Codex re-sends the whole diff each time.
 	diffEvery = time.Second
@@ -458,7 +462,10 @@ func (a *adapter) send(ctx context.Context, msg agent.Outgoing) error {
 		return nil
 	case errors.As(err, &rerr) && strings.Contains(rerr.Message, "no active turn"):
 		// The turn ended between the look and the steer; if the limit
-		// ended it, the message was written before that end.
+		// ended it, the message was written before that end. Codex says
+		// the turn is gone before its turn/completed comes, so the end is
+		// waited for: a turn started now would run into the same limit.
+		a.awaitGone(ctx, active)
 		a.mu.Lock()
 		held := a.heldBackLocked(msg)
 		a.mu.Unlock()
@@ -469,6 +476,23 @@ func (a *adapter) send(ctx context.Context, msg agent.Outgoing) error {
 		return a.startTurn(ctx, msg)
 	}
 	return err
+}
+
+// awaitGone waits, for at most goneWait, until the adapter has seen the end of
+// t, a turn codex says is gone: t is no longer the active turn once its
+// turn/completed closed it (or a recovery took it over, or codex started
+// another). The caller holds sendMu, not mu.
+func (a *adapter) awaitGone(ctx context.Context, t *turn) {
+	deadline := time.Now().Add(goneWait)
+	for {
+		a.mu.Lock()
+		gone := a.active != t || a.ending
+		a.mu.Unlock()
+		if gone || ctx.Err() != nil || time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // heldBackLocked queues msg with what the limit holds when the journal has

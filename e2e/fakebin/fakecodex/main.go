@@ -46,6 +46,10 @@
 // the sign-in and limit methods), else to "default". A turn on a thread whose history holds another
 // account's fails with invalid_encrypted_content, as the real model does;
 // with FAKECODEX_STRICT=1 any assistant message in the history fails it too.
+//
+// Like codex, it lets a turn go before it sends the turn's turn/completed (codex
+// sends it from its event stream): a steer in between finds no active turn.
+// FAKECODEX_COMPLETED_LAG_MS widens that gap.
 package main
 
 import (
@@ -91,6 +95,9 @@ func main() {
 	}
 	s := &server{home: home, account: account, strict: os.Getenv("FAKECODEX_STRICT") == "1",
 		out: bufio.NewWriter(os.Stdout), threads: map[string]*thread{}, pending: map[int64]chan reply{}}
+	if ms, err := strconv.Atoi(os.Getenv("FAKECODEX_COMPLETED_LAG_MS")); err == nil {
+		s.completedLag = time.Duration(ms) * time.Millisecond
+	}
 	s.serve()
 }
 
@@ -98,6 +105,9 @@ type server struct {
 	home    string
 	account string
 	strict  bool
+	// completedLag is how long a turn's turn/completed comes after the
+	// turn is gone.
+	completedLag time.Duration
 
 	outMu sync.Mutex
 	out   *bufio.Writer
@@ -658,6 +668,7 @@ func (c *tcx) end(status string, terr map[string]any) {
 	c.t.status = status
 	c.th.active = nil
 	s.mu.Unlock()
+	time.Sleep(s.completedLag)
 	s.notify("thread/status/changed", map[string]any{"threadId": c.th.id, "status": map[string]any{"type": "idle"}})
 	s.notify("turn/completed", map[string]any{"threadId": c.th.id, "turn": map[string]any{"id": c.t.id, "rootTurnId": c.t.id,
 		"items": []any{}, "status": status, "error": terr}})

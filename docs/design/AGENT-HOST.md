@@ -532,9 +532,11 @@ ends; so is a steered message a turn ended without taking up — except after a 
 the adapter **holds** its queue (as OpenCode's, §5.3) until a `Send` of a message written after
 that turn's end (`AfterTurn` names it) lets it go (the person asked for it); a message written
 before the end is held with the rest, even when the host hands it over only after it, and so is one
-whose steer finds the turn gone; a switch starts another adapter, which the host hands what was
-never taken up. A message whose text is one line
-starting with `!` runs `thread/shellCommand` as a turn of its own.
+whose steer finds the turn gone (codex lets a turn go before it sends its `turn/completed`, so a
+steer answered "no active turn" waits for that end, at most 5 s, before it decides; a turn started
+at once would run into the same limit, and its `turn.started` would come before the old turn's
+end); a switch starts another adapter, which the host hands what was never taken up. A message
+whose text is one line starting with `!` runs `thread/shellCommand` as a turn of its own.
 
 **Turns.** A journal turn is a root turn of the chat's thread (ids are the adapter's own, `t_…`, so
 that a recovery can continue the same journal turn under another codex turn). Turns codex starts
@@ -989,11 +991,12 @@ attachment(s): …`).
   starts `mcp-ask` and lists ask_user with its instructions; a free model of the `opencode`
   provider asks in a real host and goes on from the answer; skipped when its quota is used up).
 - `internal/agent/codex` against `e2e/fakebin/fakecodex` (built by the tests; a scripted app-server
-  that keeps real-format rollouts, see its package comment): every mapping, steering and holding,
-  shell lines, interrupt, limit, crash, answered requests, the dynamic-tool ask hook, park, resume,
-  rebuild, the account-switch chain, and the adapter inside a real host process (SIGKILL takes
-  codex along, the next host resumes). With `SOCRATES_REAL_CODEX=1` the same scenarios run against
-  the installed codex with `internal/agent/codex/fakemodel` as its model provider (a scripted
+  that keeps real-format rollouts, see its package comment): every mapping, steering and holding
+  (a message whose steer finds a limited turn gone before its `turn/completed` held), shell lines,
+  interrupt, limit, crash, answered requests, the dynamic-tool ask hook, park, resume, rebuild,
+  the account-switch chain, and the adapter inside a real host process (SIGKILL takes codex along,
+  the next host resumes). With `SOCRATES_REAL_CODEX=1` the same scenarios run against the installed
+  codex with `internal/agent/codex/fakemodel` as its model provider (a scripted
   Responses API whose encrypted reasoning is bound to an account; `e2e/fakebin/fakemodel` serves
   it on a port).
 - Accounts (WP7): `internal/store` (the table, the order, origin once, the upgrade of a schema-9
