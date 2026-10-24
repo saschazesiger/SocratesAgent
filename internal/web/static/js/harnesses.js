@@ -207,8 +207,29 @@ export function modelItems(id) {
   }));
 }
 
+// modelOf is a model's entry in what the sheet offers. Claude Code names
+// the model an alias resolved to ("claude-sonnet-5-5" for "sonnet") in what
+// it reports, which is what a chat's journal holds: that is the alias's
+// entry, so a chat says "Sonnet" rather than the id.
 export function modelOf(id, modelId) {
-  return offered(id).find((m) => m.id === modelId) || null;
+  const list = offered(id);
+  const exact = list.find((m) => m.id === modelId);
+  if (exact || !/^claude-/i.test(String(modelId || ''))) return exact || null;
+  const wide = /\[1m\]$/i.test(modelId) ? '[1m]' : '';
+  const words = String(modelId).toLowerCase().replace(/\[1m\]$/, '').split(/[-_.]/).slice(1);
+  for (const word of words) {
+    const alias = list.find((m) => m.id === word + wide);
+    if (alias) return alias;
+  }
+  return null;
+}
+
+// modelByWords is the entry a typed model names by its label ("Sonnet 1M"),
+// for a field that shows labels and takes ids.
+function modelByWords(id, typed) {
+  const words = String(typed || '').trim().toLowerCase();
+  if (!words) return null;
+  return offered(id).find((m) => m.id === typed || String(m.label || '').toLowerCase() === words) || null;
 }
 
 // defaultModelFor is what the picker starts on: the first of the dashboard's
@@ -510,12 +531,19 @@ export function settingsForm(options = {}) {
     onChange('dir');
   });
 
+  // The field says a model's name, as its list does; what is typed is a
+  // name from the list or an id the CLI takes.
   const picker = combobox({
     value: '',
     items: () => modelItems(pick.harness),
     placeholder: 'Pick a model, or type its id',
+    display: (value) => {
+      const model = modelOf(pick.harness, value);
+      return model ? (model.label || model.id) : value;
+    },
     onChange: (value) => {
-      pick.model = value.trim();
+      const named = modelByWords(pick.harness, value);
+      pick.model = named ? named.id : value.trim();
       // A model brings its own starting effort - the one set for it in the
       // dashboard, or the CLI's.
       const model = modelOf(pick.harness, pick.model);

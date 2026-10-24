@@ -13016,16 +13016,27 @@ async function chattools() {
     ok(finished.phases.join(',') === 'Plan:done,Build:done,Review:done' && finished.agents === 4 && finished.progress === '4 of 4 agents',
       'and when it is through, every phase and every agent is done', JSON.stringify(finished));
 
-    // The task list, pinned while the turn works through it.
-    await say(page, '/todo 900');
+    // The task list, pinned while the turn works through it - once: while
+    // the list in the answer can be read, it is not said again over the
+    // composer; scrolled out of sight, it is.
+    await say(page, '/todo 1500');
+    await page.waitForSelector('#chat .so-msg .so-part[data-kind="todo"] .so-todo__item[data-status="in_progress"]', { timeout: 10000 });
+    await wait(300);
+    const once = await page.evaluate(() => {
+      const inline = [...document.querySelectorAll('#chat .so-msg .so-part[data-kind="todo"]')].pop().getBoundingClientRect();
+      const view = document.querySelector('#chat .so-chat__scroll').getBoundingClientRect();
+      return { inView: inline.top >= view.top && inline.bottom <= view.bottom, pinned: !document.querySelector('#chat .so-chat__todo').hidden };
+    });
+    await page.$eval('#chat .so-chat__scroll', (n) => { n.scrollTop = 0; });
     const pinned = await page.waitForSelector('#chat .so-chat__todo:not([hidden]) .so-todo[data-pinned]', { timeout: 10000 })
       .then(() => page.$eval('#chat .so-chat__todo', (n) => ({
         items: [...n.querySelectorAll('.so-todo__item')].map((i) => i.dataset.status),
         count: n.querySelector('.so-todo__count').textContent,
         above: n.getBoundingClientRect().bottom <= document.querySelector('#chat .so-composer').getBoundingClientRect().top + 1,
       })), () => null);
+    ok(once.inView && !once.pinned, 'a task list the conversation shows is not pinned a second time', JSON.stringify(once));
     ok(!!pinned && pinned.items.length === 3 && pinned.items.includes('in_progress') && pinned.above,
-      'a task list is pinned above the composer while the turn works through it', JSON.stringify(pinned));
+      'scrolled out of sight while the turn works through it, it is pinned above the composer', JSON.stringify(pinned));
     await awaitLog(page, 'All three tasks are done.', 20000);
     const unpinned = await page.waitForSelector('#chat .so-chat__todo', { state: 'hidden', timeout: 5000 }).then(() => true, () => false);
     const inMessage = await page.$$eval('#chat .so-msg .so-part[data-kind="todo"] .so-todo__item[data-status="completed"]', (n) => n.length);
@@ -13561,7 +13572,7 @@ async function chatattach() {
     const ready = await page.waitForFunction(() => {
       const files = [...document.querySelectorAll('#chat .so-composer__file')];
       return files.length === 3 && files.every((f) => f.dataset.state === 'ready')
-        ? files.map((f) => f.querySelector('.so-ellipsis').textContent) : null;
+        ? files.map((f) => f.querySelector('.so-composer__file-name').textContent) : null;
     }, null, { timeout: 20000 }).then((h) => h.jsonValue(), () => null);
     ok(!!ready && ready.join(',') === 'notes.txt,table.csv,pasted.png',
       'a file from the button, one dropped on the chat and a pasted image are uploaded before sending', JSON.stringify(ready));
@@ -13626,11 +13637,48 @@ async function chatphone() {
       return {
         send: box('#chat .so-composer__send'), attach: box('#chat .so-composer__attach'),
         model: box('#chat .so-composer__model'), speak: box('#micBtn'),
-        usage: box('#chat .so-composer__usage'), copy: box('#chat .so-code__copy'),
-        tool: box('#chat .so-tool > summary'),
+        field: box('#chat .so-composer__input'), copy: box('#chat .so-code__copy'),
+        answer: box('#chat .so-msg__copy'), tool: box('#chat .so-tool > summary'),
       };
     });
-    ok(Object.values(targets).every((t) => t && t.h >= 48), 'every control of the composer and a tool row is a 48 px target', JSON.stringify(targets));
+    ok(Object.values(targets).every((t) => t && t.h >= 48), 'every control of the composer, its field, Copy and a tool row is a 48 px target', JSON.stringify(targets));
+
+    // The bar is one row on a phone: while a turn runs, Stop has the action
+    // slot, and Send joins it once something is written; nothing wraps. The
+    // chat's usage, for which the row has no room, is the model menu's.
+    await say(page, '/sleep 3', { button: true });
+    await page.waitForSelector('#chat .so-composer__stop:not([hidden])', { timeout: 10000 });
+    const slot = (await page.evaluate(() => ({
+      stop: !document.querySelector('#chat .so-composer__stop').hidden,
+      send: !document.querySelector('#chat .so-composer__send').hidden,
+    })));
+    await page.fill('#chat .so-composer__input', 'written while it works');
+    const bar = await page.evaluate(() => {
+      const shown = [...document.querySelectorAll('#chat .so-composer__bar > *')].filter((n) => n.getClientRects().length && n.getBoundingClientRect().height > 0 && n.localName !== 'input');
+      const r = (sel) => { const n = document.querySelector(sel).getBoundingClientRect(); return [Math.round(n.width), Math.round(n.height)]; };
+      return {
+        rows: new Set(shown.map((n) => Math.round(n.getBoundingClientRect().top))).size,
+        stop: r('#chat .so-composer__stop'), send: r('#chat .so-composer__send'),
+        stopName: document.querySelector('#chat .so-composer__stop').getAttribute('aria-label'),
+        model: document.querySelector('#chat .so-composer__model-text').textContent,
+        hint: document.querySelector('#chat .so-composer__hint').textContent,
+      };
+    });
+    ok(slot.stop && !slot.send && bar.rows === 1 && bar.stop.join() === '48,48' && bar.send.join() === '48,48' && bar.stopName === 'Stop the agent',
+      'a turn running: Stop is an icon in the action slot, Send joins it once something is written, and the bar stays one row',
+      JSON.stringify({ slot, ...bar }));
+    ok(/waits until the agent is done/.test(bar.hint) && /^Fake small/.test(bar.model),
+      'and the phone says that the message waits for the turn, and names the model', JSON.stringify({ hint: bar.hint, model: bar.model }));
+    await page.fill('#chat .so-composer__input', '');
+    await page.click('#chat .so-composer__model');
+    const usageItem = await page.waitForSelector('.so-model-menu:not([hidden]) [data-usage]', { timeout: 5000 })
+      .then((n) => n.innerText(), () => '');
+    ok(/Usage of this chat/.test(usageItem), 'the chat’s usage is the model menu’s last item on a phone', usageItem);
+    await page.keyboard.press('Escape');
+    await awaitChat(s, id, idle);
+    // The menu took the focus, and the keyboard switch put the field away
+    // with it: the button brings it back, as a person would.
+    if (await page.$eval('#chat .so-composer__input', (n) => n.readOnly)) await page.click('#kbBtn');
 
     // The keyboard: the app is as tall as what can be seen (--so-app-h,
     // which keybar.js writes from the visual viewport), and the composer is

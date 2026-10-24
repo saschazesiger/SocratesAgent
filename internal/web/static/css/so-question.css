@@ -12,7 +12,8 @@
  *   .so-q-top            Close, and the step the walk is at
  *   .so-q-scroll         the session, the question, its options, the field
  *                        of one's own, and the progress line
- *   .so-q-session        the agent's mark, the title, Open chat
+ *   .so-q-session        the agent's mark, the title (in full, on as many
+ *                        lines as it takes), Open chat (an icon)
  *   .so-q-body           the question; [data-state="pending"] while its
  *                        answer is on its way
  *   .so-q-option         an option: a DS interactive card as a toggle
@@ -20,8 +21,9 @@
  *                        multi-select: [data-multi]) and its ring
  *   .so-q-own            the field of one's own answer (a DS field)
  *   .so-q-status         the progress line (a DS alert, data-kind)
- *   .so-q-actions        Read aloud, Back and Send; .so-q-big is a button
- *                        of the finger's size
+ *   .so-q-actions        Read aloud and Back (icons), Ask back and Send;
+ *                        .so-q-big is a button of the finger's size, an
+ *                        icon one as wide as it is tall
  *   .so-q-finished       the last word (a DS empty state)
  */
 
@@ -308,6 +310,10 @@
   --ds-btn-height: var(--so-question-action-height);
 }
 
+.so-q-big.ds-btn--icon {
+  --ds-btn-icon-size: var(--so-question-action-height);
+}
+
 .so-q-send {
   flex: 1 1 var(--so-question-grow-basis);
 }
@@ -344,6 +350,11 @@
 
   .so-q-text {
     font: var(--ds-font-title);
+  }
+
+  /* Next takes the room its row has left rather than a row of its own. */
+  .so-q-send {
+    flex-basis: auto;
   }
 }
 

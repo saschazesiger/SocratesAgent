@@ -423,11 +423,11 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
     const counter = st.items.length > 1 ? (st.at + 1) + ' of ' + st.items.length : '';
     const settled = st.phase === 'answered' || st.phase === 'elsewhere';
     morph(shell, html`<div class="so-q-top" data-ds-key="top"><button class="ds-btn ds-btn--quiet ds-btn--icon so-q-close" type="button" data-action="close" aria-label="Close" data-tip="Close">${raw(icon('close', 20))}</button><span class="so-q-top-title">${counter ? 'Questions · ' + counter : 'Question'}</span></div>
-<div class="so-q-scroll" data-ds-key="${'scroll:' + ask.id}"><div class="so-q-session"><span class="so-mark">${raw(agentMarkHtml(session.harness || '', 24))}</span><span class="so-q-session-text"><span class="so-q-session-title so-ellipsis">${session.title || 'Chat'}</span></span>${
-      openChat ? html`<button class="ds-btn so-q-open" type="button" data-action="open-chat">Open chat</button>` : ''
+<div class="so-q-scroll" data-ds-key="${'scroll:' + ask.id}"><div class="so-q-session"><span class="so-mark">${raw(agentMarkHtml(session.harness || '', 24))}</span><span class="so-q-session-text"><span class="so-q-session-title so-break">${session.title || 'Chat'}</span></span>${
+      openChat ? html`<button class="ds-btn ds-btn--quiet ds-btn--icon so-q-open" type="button" data-action="open-chat" aria-label="Open the chat" data-tip="Open the chat">${raw(icon('external', 20))}</button>` : ''
     }</div>${settled ? doneHtml(ask) : html`<div class="so-q-body so-ask-body" data-ds-key="${'q:' + ask.id + ':' + step}"${st.phase === 'sent' ? html` data-state="pending"` : ''}>${
       step === 0 && (payload.title || payload.context) ? html`${payload.title ? html`<p class="so-ask-title">${payload.title}</p>` : ''}${payload.context ? contextHtml('ctx', payload.context, 'About these questions') : ''}` : ''
-    }${st.refused ? html`<div class="ds-alert ds-alert--error so-refused" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${'Your answer was not taken: ' + (st.refused.error || 'the server refused it.') + ' Send it again, or change it first.'}</span></div>` : ''}${q ? questionHtml(q, questions.length, step) : ''}${
+    }${st.refused ? html`<div class="ds-alert ds-alert--error so-refused" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${'Your answer was not taken: ' + (st.refused.error || 'the server refused it.') + ' Send it again, or change it first.'}</span></div>` : ''}${q ? questionHtml(q, questions.length, step, last) : ''}${
       st.draft.asking ? followUpHtml() : ''
     }${last && !st.draft.asking ? generalHtml() : ''}</div>`}${
       st.phase === 'sent' ? html`<div class="ds-alert so-q-status" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text">${navigator.onLine === false ? 'Saved. Your answer goes out when the connection is back.' : 'Sending your answer…'}</span></div>` : ''
@@ -444,7 +444,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
     return html`<details class="ds-collapsible so-ask-context" data-open-key="${key}"${open ? html` open` : ''}><summary class="so-ask-context__head">${raw(icon('info', 16))}<span>${label}</span>${raw(icon('chevronDown', 20, 'ds-chevron'))}</summary><div class="so-ask-context__body so-md">${markdown(text)}</div></details>`;
   }
 
-  function questionHtml(q, total, step) {
+  function questionHtml(q, total, step, last) {
     const a = st.draft.answers[q.id];
     const kind = kindOf(q);
     const options = kind === 'confirm'
@@ -459,9 +459,9 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
 <h2 class="so-q-text" tabindex="-1">${q.question || q.header || ''}</h2>${q.context ? contextHtml('qctx:' + q.id, q.context, 'Why this matters') : ''}${
       hintWords ? html`<p class="so-q-detail">${hintWords}</p>` : ''
     }${options.length ? html`<div class="so-q-options" role="group" aria-label="${q.question || 'Options'}">${options.map((option, i) => optionHtml(q, option, i, multi, a))}</div>` : ''}${
-      kind === 'text' ? fieldHtml(q.id, 'other', 'Your answer', a.other, 3) : ''
-    }${kind === 'number' ? numberHtml(q, a, !!problem) : ''}${
-      other && (a.othering || a.other) ? fieldHtml(q.id, 'other', 'In your own words', a.other, 2) : ''
+      kind === 'text' ? fieldHtml(q.id, 'other', 'Your answer', a.other, 3, last ? 'done' : 'next') : ''
+    }${kind === 'number' ? numberHtml(q, a, !!problem, last ? 'done' : 'next') : ''}${
+      other && (a.othering || a.other) ? fieldHtml(q.id, 'other', 'In your own words', a.other, 2, last ? 'done' : 'next') : ''
     }${a.noting || a.note ? fieldHtml(q.id, 'note', 'A note to the agent', a.note, 2) : ''}${
       problem ? html`<div class="ds-alert ds-alert--error so-ask-problem" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${problem}</span></div>` : ''
     }<div class="so-ask-extras">${
@@ -492,15 +492,19 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
     }</div>`;
   }
 
-  function fieldHtml(qid, field, label, value, rows) {
+  // A field of one's own words, with its microphone. An answer's field
+  // moves on with the keyboard's own key (`key`: "next", or "done" on the
+  // last question, which puts the keyboard away); a note keeps Enter for
+  // its lines.
+  function fieldHtml(qid, field, label, value, rows, key = 'enter') {
     const fid = 'ask-' + qid + '-' + field;
-    return html`<div class="ds-field so-q-own" data-ds-key="${fid}"><label class="ds-field__label" for="${fid}">${label}</label><div class="so-field-row so-field-row--top"><textarea class="ds-input so-q-own-field" id="${fid}" rows="${rows}" data-q="${qid}" data-field="${field}">${value || ''}</textarea><button class="ds-btn so-mic" type="button" data-action="dictate" data-target="${fid}">${faces('Dictate', 'Listening')}</button></div></div>`;
+    return html`<div class="ds-field so-q-own" data-ds-key="${fid}"><label class="ds-field__label" for="${fid}">${label}</label><div class="so-field-row so-field-row--top"><textarea class="ds-input so-q-own-field" id="${fid}" rows="${rows}" enterkeyhint="${key}" data-q="${qid}" data-field="${field}"${key !== 'enter' ? html` data-moves-on` : ''}>${value || ''}</textarea><button class="ds-btn ds-btn--quiet ds-btn--icon so-mic" type="button" data-action="dictate" data-target="${fid}" aria-label="${'Dictate: ' + label}" data-tip="Dictate">${faces(raw(icon('mic', 20)), '')}</button></div></div>`;
   }
 
-  function numberHtml(q, a, invalid) {
+  function numberHtml(q, a, invalid, key) {
     const fid = 'ask-' + q.id + '-other';
     const range = [q.min !== undefined ? 'at least ' + q.min : '', q.max !== undefined ? 'at most ' + q.max : ''].filter(Boolean).join(', ');
-    return html`<div class="ds-field so-q-own" data-ds-key="${fid}"><label class="ds-field__label" for="${fid}">A number${range ? html` <span class="so-ask-range">${'(' + range + ')'}</span>` : ''}</label><input class="ds-input so-ask-number" id="${fid}" type="text" inputmode="decimal" autocomplete="off" data-q="${q.id}" data-field="other" value="${a.other || ''}"${invalid ? html` aria-invalid="true"` : ''}></div>`;
+    return html`<div class="ds-field so-q-own" data-ds-key="${fid}"><label class="ds-field__label" for="${fid}">A number${range ? html` <span class="so-ask-range">${'(' + range + ')'}</span>` : ''}</label><input class="ds-input so-ask-number" id="${fid}" type="text" inputmode="decimal" enterkeyhint="${key}" autocomplete="off" data-q="${q.id}" data-field="other" data-moves-on value="${a.other || ''}"${invalid ? html` aria-invalid="true"` : ''}></div>`;
   }
 
   function generalHtml() {
@@ -521,7 +525,8 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
   }
 
   function actionsHtml({ step, last }) {
-    const read = html`<button class="ds-btn so-q-big so-q-read" type="button" data-action="read" aria-pressed="${st.speaking ? 'true' : 'false'}">${st.speaking ? 'Stop reading' : 'Read aloud'}</button>`;
+    const reading = st.speaking ? 'Stop reading' : 'Read aloud';
+    const read = html`<button class="ds-btn ds-btn--icon so-q-big so-q-read" type="button" data-action="read" aria-pressed="${st.speaking ? 'true' : 'false'}" aria-label="${reading}" data-tip="${reading}">${raw(icon(st.speaking ? 'stop' : 'speak', 20))}</button>`;
     if (st.phase === 'answered' || st.phase === 'elsewhere') {
       return html`<button class="ds-btn ds-btn--primary so-q-big so-q-send" type="button" data-action="next">${st.at < st.items.length - 1 ? 'Next question' : 'Close'}</button>`;
     }
@@ -530,10 +535,10 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
       return html`${read}<button class="ds-btn so-q-big" type="button" data-action="${more ? 'next' : 'close'}">${more ? 'Next question' : 'Close'}</button>`;
     }
     if (st.draft.asking) {
-      return html`${read}<button class="ds-btn so-q-big so-q-back" type="button" data-action="ask-cancel">Back to the questions</button><button class="ds-btn ds-btn--primary so-q-big so-q-send" type="button" data-action="send">Send question</button>`;
+      return html`${read}<button class="ds-btn ds-btn--icon so-q-big so-q-back" type="button" data-action="ask-cancel" aria-label="Back to the questions" data-tip="Back to the questions">${raw(icon('arrowLeft', 20))}</button><button class="ds-btn ds-btn--primary so-q-big so-q-send" type="button" data-action="send">Send question</button>`;
     }
     return html`${read}<button class="ds-btn ds-btn--text so-q-big so-ask-back" type="button" data-action="ask-back">Ask back</button>${
-      step > 0 ? html`<button class="ds-btn so-q-big so-q-back" type="button" data-action="back">Back</button>` : ''
+      step > 0 ? html`<button class="ds-btn ds-btn--icon so-q-big so-q-back" type="button" data-action="back" aria-label="Previous question" data-tip="Previous question">${raw(icon('arrowLeft', 20))}</button>` : ''
     }<button class="ds-btn ds-btn--primary so-q-big so-q-send" type="button" data-action="${last ? 'send' : 'forward'}">${last ? 'Send answers' : 'Next'}</button>`;
   }
 
@@ -732,6 +737,16 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
 
   dialog.addEventListener('close', () => close());
   dialog.addEventListener('keydown', (event) => {
+    // The keyboard's own key on an answer's field: "next" goes on to the
+    // next question, as Next does, and "done" on the last one puts the
+    // keyboard away (Shift+Enter is still a new line).
+    const moving = event.target.closest('[data-moves-on]');
+    if (moving && event.key === 'Enter' && !event.shiftKey && !event.isComposing && st.phase === 'ask') {
+      event.preventDefault();
+      if (moving.getAttribute('enterkeyhint') === 'next') shell.querySelector('[data-action="forward"]')?.click();
+      else moving.blur();
+      return;
+    }
     if (event.target.closest('textarea, input') || st.phase !== 'ask') return;
     if (!/^[1-9]$/.test(event.key)) return;
     const option = shell.querySelectorAll('.so-q-option')[Number(event.key) - 1];

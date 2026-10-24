@@ -252,6 +252,8 @@ export function paletteOf(info) {
  *   usage()       the chat's usage and cost, as lines for its "i"
  *   sent()        a message or command was put on its way
  *   changed()     something the dock shows changed size
+ *   error(text)   something the person asked for did not happen: the dock
+ *                 says it, beside the composer (chatview.js)
  */
 export function mountComposer(host, ctx) {
   const id = ctx.session().id;
@@ -260,24 +262,29 @@ export function mountComposer(host, ctx) {
   let paletteShown = [];
   let interrupting = false;
 
+  // The bar's last slot is the action: Send, Stop while a turn runs and
+  // nothing is written, both while something written waits for the turn.
+  // Enter is a new line on a touch screen, where Send is the button, and
+  // sends at a desk: the keyboard's key says which.
   morph(host, html`<div class="so-composer" data-ds-key="${'composer:' + id}">
     <div class="so-composer__conflict" hidden></div>
     <ul class="so-composer__palette" role="listbox" aria-label="Commands" hidden></ul>
     <ul class="so-composer__files" hidden></ul>
-    <div>
+    <div class="so-composer__field">
       <label class="ds-sr" for="${'composer-' + id}">Message</label>
       <textarea class="ds-input so-composer__input" id="${'composer-' + id}" rows="1" spellcheck="true"
-        placeholder="Message" aria-describedby="${'composer-hint-' + id}"></textarea>
+        placeholder="Message" enterkeyhint="${touchScreen() ? 'enter' : 'send'}" aria-describedby="${'composer-hint-' + id}"></textarea>
     </div>
+    <p class="so-composer__hint ds-meta" id="${'composer-hint-' + id}" role="status"></p>
     <div class="so-composer__bar">
       <button class="ds-btn ds-btn--quiet ds-btn--icon so-composer__attach" type="button" data-action="attach" aria-label="Attach files" data-tip="Attach files">${raw(icon('plus', 20))}</button>
       <input class="so-composer__picker" type="file" multiple hidden tabindex="-1" aria-hidden="true">
-      <button class="ds-btn ds-btn--quiet ds-btn--sm so-composer__model" type="button" data-action="model" aria-haspopup="menu" aria-expanded="false"><span class="so-composer__model-text so-ellipsis"></span>${raw(icon('chevronDown', 16))}</button>
+      <button class="ds-btn ds-btn--quiet ds-btn--sm so-composer__model" type="button" data-action="model" aria-haspopup="menu" aria-expanded="false"><span class="so-composer__model-text so-ellipsis"><span class="so-composer__model-name"></span><span class="so-composer__model-effort"></span></span>${raw(icon('chevronDown', 16))}</button>
       <span class="so-composer__account" data-slot="account" hidden></span>
       <button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-info so-composer__usage" type="button" data-action="usage" aria-label="Usage of this chat" data-tip="Usage of this chat" hidden>${raw(icon('info', 18))}</button>
-      <span class="so-composer__hint ds-meta" id="${'composer-hint-' + id}" role="status"></span>
+      <span class="so-composer__gap" aria-hidden="true"></span>
       <span class="so-composer__mic"></span>
-      <button class="ds-btn ds-btn--tonal so-composer__stop" type="button" data-action="stop" hidden>${faces('Stop', 'Stopping')}</button>
+      <button class="ds-btn ds-btn--tonal ds-btn--icon so-composer__stop" type="button" data-action="stop" aria-label="Stop the agent" data-tip="Stop" hidden>${faces(raw(icon('stop', 20)), '')}</button>
       <button class="ds-btn ds-btn--primary ds-btn--icon so-composer__send" type="button" data-action="send" aria-label="Send" data-tip="Send">${raw(icon('arrowUp', 20))}</button>
     </div>
   </div>`);
@@ -291,6 +298,7 @@ export function mountComposer(host, ctx) {
   const sendBtn = $('.so-composer__send');
   const stopBtn = $('.so-composer__stop');
   const modelBtn = $('.so-composer__model');
+  const bar = $('.so-composer__bar');
   guard(input);
   input.placeholder = 'Message ' + harnesses.label(ctx.session().harness);
   // Dictation lands where the cursor is, like typing would (dictate.js).
@@ -430,9 +438,9 @@ export function mountComposer(host, ctx) {
     morph(fileList, html`${files.map((entry) => html`<li class="so-attachment so-composer__file" data-ds-key="${entry.key}" data-state="${entry.state}">${
       entry.state === 'uploading' ? html`<span class="ds-spinner" aria-hidden="true"></span>`
         : raw(icon(entry.state === 'failed' ? 'alertCircle' : (entry.file.type || '').startsWith('image/') ? 'image' : 'file', 16))
-    }<span class="so-ellipsis">${entry.file.name || 'Pasted image'}</span>${
+    }<span class="so-break so-composer__file-name">${entry.file.name || 'Pasted image'}</span>${
       FILE_WORDS[entry.state] ? html`<span class="ds-meta">${FILE_WORDS[entry.state]}</span>` : ''
-    }${entry.state === 'failed' ? html`<button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-action="file-retry" data-key="${entry.key}" data-tip="${entry.error}">Try again</button>` : ''}<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="file-remove" data-key="${entry.key}" aria-label="${'Remove ' + (entry.file.name || 'the file')}" data-tip="Remove">${raw(icon('close', 16))}</button></li>`)}`);
+    }${entry.state === 'failed' ? html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="file-retry" data-key="${entry.key}" aria-label="${'Upload ' + (entry.file.name || 'the file') + ' again'}" data-tip="${'Upload again' + (entry.error ? ' (' + entry.error + ')' : '')}">${raw(icon('sync', 18))}</button>` : ''}<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="file-remove" data-key="${entry.key}" aria-label="${'Remove ' + (entry.file.name || 'the file')}" data-tip="Remove">${raw(icon('close', 16))}</button></li>`)}`);
     ctx.changed();
   }
 
@@ -446,7 +454,7 @@ export function mountComposer(host, ctx) {
     event.preventDefault();
     addFiles(pasted);
   });
-  onWake(() => {
+  const unwakeFiles = onWake(() => {
     for (const entry of files) if (entry.state === 'failed' && navigator.onLine !== false) upload(entry);
   });
 
@@ -459,6 +467,13 @@ export function mountComposer(host, ctx) {
     const info = chat && chat.info && Array.isArray(chat.info.models) ? chat.info.models : [];
     const listed = info.find((one) => one.id === model);
     return listed ? (listed.label || listed.id) : model;
+  }
+
+  // canonical is a model as the list offers it: the journal holds what an
+  // alias resolved to ("claude-sonnet-…" for "sonnet").
+  function canonical(model) {
+    const found = harnesses.modelOf(ctx.session().harness, model);
+    return found ? found.id : model;
   }
 
   // current is the model the next message goes to: a change still on its
@@ -483,19 +498,29 @@ export function mountComposer(host, ctx) {
   let menu = null;
   function openModels() {
     const now = current();
+    const nowId = canonical(now.model);
     const list = models();
     if (!list.length) { toast('This agent has no models to choose from.'); return; }
-    const chosen = list.find((m) => m.id === now.model) || list[0];
+    const chosen = list.find((m) => m.id === nowId) || list[0];
     if (menu) menu.remove();
     menu = document.createElement('div');
     menu.className = 'ds-menu so-model-menu';
     menu.setAttribute('role', 'menu');
     menu.setAttribute('aria-label', 'Model and effort');
     menu.hidden = true;
-    morph(menu, html`${list.map((m) => html`<button class="ds-menu__item" role="menuitemradio" type="button" aria-checked="${m.id === now.model ? 'true' : 'false'}" data-model="${m.id}">${raw(icon('check', 20, 'ds-menu__check'))}<span class="ds-menu__label">${m.label}</span></button>`)}${
+    // A phone's bar has no room for the chat's "i": its usage is the
+    // menu's last item there.
+    const usage = $('.so-composer__usage');
+    const usageHere = !usage.hidden && getComputedStyle(usage).display === 'none';
+    morph(menu, html`${list.map((m) => html`<button class="ds-menu__item" role="menuitemradio" type="button" aria-checked="${m.id === nowId ? 'true' : 'false'}" data-model="${m.id}">${raw(icon('check', 20, 'ds-menu__check'))}<span class="ds-menu__label">${m.label}</span></button>`)}${
       chosen.efforts && chosen.efforts.length ? html`<div class="ds-menu__divider" role="separator"></div>${chosen.efforts.map((e) => html`<button class="ds-menu__item" role="menuitemradio" type="button" aria-checked="${e === now.effort ? 'true' : 'false'}" data-effort="${e}">${raw(icon('check', 20, 'ds-menu__check'))}<span class="ds-menu__label">${'Effort: ' + harnesses.effortLabel(e)}</span></button>`)}` : ''
-    }`);
+    }${usageHere ? html`<div class="ds-menu__divider" role="separator"></div><button class="ds-menu__item" role="menuitem" type="button" data-usage>${raw(icon('info', 20))}<span class="ds-menu__label">Usage of this chat</span></button>` : ''}`);
     menu.addEventListener('click', (event) => {
+      if (event.target.closest('[data-usage]')) {
+        hideOverlay(menu);
+        showUsage(modelBtn);
+        return;
+      }
       const item = event.target.closest('[data-model], [data-effort]');
       if (!item) return;
       const next = { ...now };
@@ -515,13 +540,13 @@ export function mountComposer(host, ctx) {
   function setModel(next) {
     const now = current();
     if (menu && !menu.hidden) hideOverlay(menu);
-    if (next.model === now.model && next.effort === now.effort) return;
+    if (canonical(next.model) === canonical(now.model) && next.effort === now.effort) return;
     const clientId = queueModel(id, next.model, next.effort);
     paint();
     settled(clientId).catch((err) => {
       const refused = failedItem(clientId);
       if (refused) chatOutbox().drop(refused.id);
-      toast('The model could not be changed: ' + errorMessage(err), 'error');
+      ctx.error('The model could not be changed: ' + errorMessage(err));
     });
   }
 
@@ -530,11 +555,16 @@ export function mountComposer(host, ctx) {
   // drawAccount hands the slot to the account picker when there is one.
   function drawAccount() {
     const slot = $('.so-composer__account');
-    const shown = accountPicker ? !!accountPicker(slot, { session: ctx.session(), chat: ctx.chat() }) : false;
+    const shown = accountPicker ? !!accountPicker(slot, { session: ctx.session(), chat: ctx.chat(), error: ctx.error }) : false;
     slot.hidden = !shown;
   }
 
   /* ----------------------------------------------------------- the usage */
+
+  function showUsage(opener) {
+    const lines = ctx.usage ? ctx.usage() : [];
+    alertDialog({ title: 'Usage of this chat', lines: lines.length ? lines : ['Nothing is known yet.'], confirmLabel: 'Close', opener });
+  }
 
   function drawUsage() {
     const button = $('.so-composer__usage');
@@ -584,13 +614,17 @@ export function mountComposer(host, ctx) {
     try {
       await api('/api/chats/' + encodeURIComponent(id) + '/interrupt', { method: 'POST', body: { client_id: clientKey() } });
     } catch (err) {
-      toast('The agent could not be stopped: ' + errorMessage(err), 'error');
+      ctx.error('The agent could not be stopped: ' + errorMessage(err));
     } finally {
       interrupting = false;
       paint();
     }
   }
 
+  // The host is the dock's slot, which every chat's composer is drawn into
+  // in turn: this one's listener goes with it (destroy), or a Stop would
+  // also stop the chat shown before.
+  const listening = new AbortController();
   host.addEventListener('click', (event) => {
     const target = event.target.closest('[data-action]');
     if (!target || !host.contains(target)) return;
@@ -600,7 +634,7 @@ export function mountComposer(host, ctx) {
       case 'attach': picker.click(); break;
       case 'model': openModels(); break;
       case 'usage':
-        alertDialog({ title: 'Usage of this chat', lines: String(target.dataset.tip || '').split('\n'), confirmLabel: 'Close', opener: target });
+        showUsage(target);
         break;
       case 'file-remove': {
         const at = files.findIndex((entry) => entry.key === target.dataset.key);
@@ -619,7 +653,7 @@ export function mountComposer(host, ctx) {
       case 'use-theirs': hideConflict(); draft.resolve(false); grow(); break;
       default: break;
     }
-  });
+  }, { signal: listening.signal });
 
   /* ------------------------------------------------------- the conflict */
 
@@ -640,21 +674,40 @@ export function mountComposer(host, ctx) {
 
   function paint() {
     const busy = ctx.busy();
-    stopBtn.hidden = !busy;
-    if (interrupting) stopBtn.setAttribute('aria-busy', 'true'); else stopBtn.removeAttribute('aria-busy');
     const empty = !input.value.trim() && !files.some((entry) => entry.state === 'ready');
+    // One slot: Stop while the turn runs and nothing is written, Send
+    // beside it once something is.
+    stopBtn.hidden = !busy;
+    sendBtn.hidden = busy && empty;
+    // With both in the slot a phone's bar is crowded: the account says
+    // itself by its mark alone then (its name is in its label and menu).
+    bar.toggleAttribute('data-crowded', busy && !empty);
+    if (interrupting) stopBtn.setAttribute('aria-busy', 'true'); else stopBtn.removeAttribute('aria-busy');
     sendBtn.disabled = empty || !ready();
+    const keyHint = touchScreen() ? 'enter' : 'send';
+    if (input.getAttribute('enterkeyhint') !== keyHint) input.setAttribute('enterkeyhint', keyHint);
+    // A phone's bar says the model's name; its effort is in the menu.
     const now = current();
-    const words = now.model ? modelLabel(now.model) + (now.effort ? ' · ' + harnesses.effortLabel(now.effort) : '') : 'Model';
-    const text = modelBtn.querySelector('.so-composer__model-text');
-    if (text.textContent !== words) text.textContent = words;
+    const name = now.model ? modelLabel(now.model) : 'Model';
+    const effort = now.model && now.effort ? ' · ' + harnesses.effortLabel(now.effort) : '';
+    const words = name + effort;
+    const nameText = modelBtn.querySelector('.so-composer__model-name');
+    const effortText = modelBtn.querySelector('.so-composer__model-effort');
+    if (nameText.textContent !== name) nameText.textContent = name;
+    if (effortText.textContent !== effort) effortText.textContent = effort;
     modelBtn.setAttribute('aria-label', 'Model: ' + words);
+    if (modelBtn.dataset.tip !== 'Model: ' + words) modelBtn.dataset.tip = 'Model: ' + words;
     modelBtn.hidden = !models().length;
+    // What is not plain from the buttons, in a line of its own over them:
+    // that a message written during a turn waits for it. The connection is
+    // the dock's to say (chatview.js).
     let said = '';
     if (draft.conflict()) said = 'Changed on another device';
     else if (busy && !empty) said = 'Sent now, it waits until the agent is done';
-    else if (ctx.stale()) said = 'Offline: what you send goes out when the connection is back';
-    if (hint.textContent !== said) hint.textContent = said;
+    if (hint.textContent !== said) {
+      hint.textContent = said;
+      ctx.changed();
+    }
     drawAccount();
     drawUsage();
   }
@@ -686,6 +739,8 @@ export function mountComposer(host, ctx) {
     insert,
     addFiles,
     destroy() {
+      listening.abort();
+      unwakeFiles();
       draft.close();
       if (menu) { menu.remove(); menu = null; }
     },
