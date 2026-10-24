@@ -33,7 +33,10 @@ Socrates:
   template, never `innerHTML`; key list rows with `data-ds-key`. Figures through `DS.motion.countUp`, timing from
   `ms()` / `DS.motion.motionDuration`, never millisecond literals.
 - **Icons only from `DS.icons`**, through `icon()` / `iconEl()` / `data-icon` (`ui.js`); the meaning-to-glyph map is
-  `GLYPH`. Brand marks of the agents stay in `logos.js` and `.so-agent`.
+  `GLYPH`. The few glyphs a phone needs that DS 1.6.2 lacks (microphone, stop, keyboard, upload, clipboard, Enter,
+  paperclip, speaker, terminal) are Lucide's - the set DS draws its own from, same grid and stroke - in `ui.js`'s
+  `LUCIDE`, until DS ships them; nothing else is drawn by the project. Brand marks of the agents stay in `logos.js`
+  and `.so-agent`.
 - **Status never by colour alone; every action is a pill; one filled button per area; no red buttons.**
 - `ui.js` is the only module that reads `window.DS`.
 - Socrates' own design rules still hold (docs/design/DESIGN.md §E.10): technical detail (versions, paths) behind

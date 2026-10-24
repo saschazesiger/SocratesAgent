@@ -29,27 +29,51 @@ export function startUI() {
 
 /* ---------------------------------------------------------------- icons */
 
-// GLYPH names what a control means, and which DS 1.6.2 glyph stands for it.
-// Where DS has no fair stand-in the value is null and the control is a text
-// button instead (mic, keyboard, the Enter key): a project drawing would be a
-// style of our own. When the missing glyphs ship upstream, only this map
-// changes.
+// GLYPH names what a control means, and which glyph stands for it: a DS 1.6.2
+// glyph, or one of LUCIDE's below where DS has none. Where neither has a fair
+// stand-in the value is null and the control is a text button instead. When
+// the missing glyphs ship upstream, only this map changes.
 export const GLYPH = {
-  home: 'overview', sidebar: 'columns', paste: 'fileText', upload: 'arrowUp', summarize: 'chat', stop: 'close',
+  home: 'overview', sidebar: 'columns', paste: 'clipboard', upload: 'upload', summarize: 'activity', stop: 'circleStop',
   review: 'flag', background: 'server', waiting: 'clock', grip: 'menu', prestart: 'fileText',
-  mic: null, keyboard: null, enter: null,
+  mic: 'mic', keyboard: 'keyboard', enter: 'cornerDownLeft', attach: 'paperclip', speak: 'volume', shell: 'terminal',
 };
 
-// glyphOf is the inner SVG of a GLYPH key or of any DS glyph name. A name
-// that has no glyph throws, so a typo is found the first time it renders
-// rather than shipping an empty button.
+// LUCIDE holds the few glyphs a phone needs that DS 1.6.2 does not ship yet,
+// from the set DS draws its own from - Lucide (https://lucide.dev), ISC
+// License, Copyright (c) Lucide Icons and Contributors; the notice is in
+// vendor/dashboard-style/LICENSE - on the same 24px grid, stroked by DS's own
+// icon(), in DS's flat element style (a polygon is written as a path). They
+// are not a style of our own; delete each one here when DS has it.
+const LUCIDE = {
+  mic: '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/>' +
+    '<line x1="12" x2="12" y1="19" y2="22"/>',
+  circleStop: '<circle cx="12" cy="12" r="10"/><rect x="9" y="9" width="6" height="6" rx="1"/>',
+  keyboard: '<path d="M10 8h.01"/><path d="M12 12h.01"/><path d="M14 8h.01"/><path d="M16 12h.01"/>' +
+    '<path d="M18 8h.01"/><path d="M6 8h.01"/><path d="M7 16h10"/><path d="M8 12h.01"/>' +
+    '<rect width="20" height="16" x="2" y="4" rx="2"/>',
+  upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/>' +
+    '<line x1="12" x2="12" y1="3" y2="15"/>',
+  clipboard: '<rect width="8" height="4" x="8" y="2" rx="1" ry="1"/>' +
+    '<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>',
+  cornerDownLeft: '<polyline points="9 10 4 15 9 20"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/>',
+  paperclip: '<path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57' +
+    'a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
+  volume: '<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>' +
+    '<path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>',
+  terminal: '<polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/>',
+};
+
+// glyphOf is the inner SVG of a GLYPH key or of any DS or LUCIDE glyph name.
+// A name that has no glyph throws, so a typo is found the first time it
+// renders rather than shipping an empty button.
 function glyphOf(name) {
   let glyph = name;
   if (Object.hasOwn(GLYPH, name)) {
     glyph = GLYPH[name];
     if (!glyph) throw new Error(`Dashboard-Style ${DS.version} has no glyph for "${name}": make it a text button`);
   }
-  const body = DS.icons[glyph];
+  const body = Object.hasOwn(DS.icons, glyph) ? DS.icons[glyph] : LUCIDE[glyph];
   if (typeof body !== 'string' || body.charAt(0) !== '<') throw new Error('Unknown icon: ' + name);
   return body;
 }
