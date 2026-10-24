@@ -480,27 +480,29 @@ export function mountChat(ctx) {
     morph(stateLine, html`${said}${line}`);
   }
 
-  // usageFacts is the chat's usage for its "i": the context it holds, what
-  // it has cost, and every usage window with when it renews.
+  // usageFacts is the chat's usage for its "i", as named facts ([label,
+  // value], the rows Info has): the context it holds, what it has cost,
+  // every usage window with when it renews, how long the last turn took
+  // (when that is worth a number), the program and the conversation.
   function usageFacts() {
     if (!chat) return [];
     const facts = [];
     const u = chat.usage || {};
     if (u.context && u.window) {
-      facts.push('Context: ' + fmtTokens(u.context) + ' of ' + fmtTokens(u.window)
-        + ' (' + Math.round((u.context / u.window) * 100) + '%)');
+      facts.push(['Context', fmtTokens(u.context) + ' of ' + fmtTokens(u.window)
+        + ' (' + Math.round((u.context / u.window) * 100) + '%)']);
     }
-    if (chat.cost) facts.push('Cost so far: $' + chat.cost.toFixed(4));
+    if (chat.cost) facts.push(['Cost so far', '$' + chat.cost.toFixed(4)]);
     for (const [name, limit] of Object.entries(chat.rateLimits)) {
       const renew = renewsIn(limit.resetsAt);
-      facts.push((WINDOW_WORDS[name] || name) + ': ' + Math.round(limit.used * 100) + '% used'
-        + (renew ? ' · renews in ' + renew : ''));
+      facts.push([WINDOW_WORDS[name] || name, Math.round(limit.used * 100) + '% used'
+        + (renew ? ' · renews in ' + renew : '')]);
     }
-    if (chat.lastTurn && chat.lastTurn.endedAt && chat.lastTurn.startedAt) {
-      facts.push('Last turn: ' + seconds(chat.lastTurn.endedAt - chat.lastTurn.startedAt));
-    }
-    if (chat.info && chat.info.version) facts.push(harnesses.label(session.harness) + ' ' + chat.info.version);
-    if (chat.conversation) facts.push('Conversation ' + chat.conversation);
+    const took = chat.lastTurn && chat.lastTurn.endedAt && chat.lastTurn.startedAt
+      ? seconds(chat.lastTurn.endedAt - chat.lastTurn.startedAt) : '';
+    if (took) facts.push(['Last turn', took]);
+    if (chat.info && chat.info.version) facts.push(['Program', harnesses.label(session.harness) + ' ' + chat.info.version]);
+    if (chat.conversation) facts.push(['Conversation', chat.conversation]);
     return facts;
   }
 
@@ -591,10 +593,16 @@ export function mountChat(ctx) {
       case 'reconnect':
         retryConnection();
         break;
-      case 'info':
+      case 'info': {
         event.preventDefault();
-        alertDialog({ title: target.getAttribute('aria-label') || 'Details', lines: String(target.dataset.tip || '').split('\n'), confirmLabel: 'Close', opener: target });
+        // Named facts are rows, as Info's are; any other line a line.
+        let said = null;
+        try { said = target.dataset.facts ? JSON.parse(target.dataset.facts) : null; } catch { said = null; }
+        const lines = said ? said.filter((one) => !Array.isArray(one)) : String(target.dataset.tip || '').split('\n');
+        const facts = said ? said.filter((one) => Array.isArray(one)) : [];
+        alertDialog({ title: target.getAttribute('aria-label') || 'Details', lines, facts, confirmLabel: 'Close', opener: target });
         break;
+      }
       case 'ask-open':
         ctx.openAsk(session.id, target.dataset.ask);
         break;

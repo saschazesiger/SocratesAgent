@@ -249,7 +249,7 @@ export function paletteOf(info) {
  *   busy()        whether a turn is running
  *   stale()       whether the chat may be behind: its stream has not been
  *                 live for longer than a blink
- *   usage()       the chat's usage and cost, as lines for its "i"
+ *   usage()       the chat's usage and cost, as named facts for its "i"
  *   sent()        a message or command was put on its way
  *   changed()     something the dock shows changed size
  *   error(text)   something the person asked for did not happen: the dock
@@ -566,17 +566,19 @@ export function mountComposer(host, ctx) {
 
   /* ----------------------------------------------------------- the usage */
 
+  // The usage is named facts ([label, value]): rows in the dialog, as
+  // Info's are, and "Label: value" lines in the tip.
   function showUsage(opener) {
-    const lines = ctx.usage ? ctx.usage() : [];
-    alertDialog({ title: 'Usage of this chat', lines: lines.length ? lines : ['Nothing is known yet.'], confirmLabel: 'Close', opener });
+    const facts = ctx.usage ? ctx.usage() : [];
+    alertDialog({ title: 'Usage of this chat', facts, lines: facts.length ? [] : ['Nothing is known yet.'], confirmLabel: 'Close', opener });
   }
 
   function drawUsage() {
     const button = $('.so-composer__usage');
-    const lines = ctx.usage ? ctx.usage() : [];
-    button.hidden = !lines.length;
-    const tip = lines.join('\n');
-    if (button.dataset.tip !== tip && lines.length) button.dataset.tip = tip;
+    const facts = ctx.usage ? ctx.usage() : [];
+    button.hidden = !facts.length;
+    const tip = facts.map(([label, value]) => label + ': ' + value).join('\n');
+    if (button.dataset.tip !== tip && facts.length) button.dataset.tip = tip;
   }
 
   /* --------------------------------------------------------- send, stop */

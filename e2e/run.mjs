@@ -12891,7 +12891,7 @@ async function chatstream() {
     await page.click('#chat .so-composer__usage');
     const usage = await page.waitForSelector('dialog .ds-dialog__title:text-is("Usage of this chat")', { timeout: 5000 })
       .then(() => page.$eval('dialog[open]', (n) => n.innerText), () => '');
-    ok(/Cost so far: \$/.test(usage) && /Scripted agent 1\.0\.0/.test(usage),
+    ok(/Cost so far\s*\$/.test(usage) && /Scripted agent 1\.0\.0/.test(usage),
       'the chat’s usage and cost are behind its "i"', oneLine(usage));
     await page.keyboard.press('Escape');
 

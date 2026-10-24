@@ -45,9 +45,18 @@ export function seconds(ms) {
 
 /** infoButton is the "i" of infoTip() as markup; the view opens it on a tap. */
 export function infoButton(lines, label = 'Details') {
-  const shown = lines.filter((line) => line !== null && line !== undefined && line !== '');
+  const shown = lines.filter((line) => line !== null && line !== undefined && line !== ''
+    && !(Array.isArray(line) && (line[1] === null || line[1] === undefined || line[1] === '')));
   if (!shown.length) return '';
-  return html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-info" type="button" data-action="info" aria-label="${label}" data-tip="${shown.join('\n')}">${raw(icon('info', 18))}</button>`;
+  // A fact with a name ([label, value]) is a row of the dialog the "i"
+  // opens, as Info's are (chatview.js), and "Label: value" in its tip.
+  const named = shown.some((line) => Array.isArray(line));
+  return html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-info" type="button" data-action="info" aria-label="${label}" data-tip="${shown.map(factLine).join('\n')}"${named ? html` data-facts="${JSON.stringify(shown)}"` : ''}>${raw(icon('info', 18))}</button>`;
+}
+
+/** factLine is one fact as a line of text: "Label: value", or the line itself. */
+function factLine(fact) {
+  return Array.isArray(fact) ? fact[0] + ': ' + fact[1] : String(fact);
 }
 
 function chevron() {
@@ -604,24 +613,31 @@ export function userMessage({ key, text, attachments, state, answerTo, error }) 
   }${error ? html`<p class="so-msg__error ds-meta">${error}</p>` : ''}</article>`;
 }
 
+// How a turn that did not complete ended, for its facts.
+const ENDED_WORDS = {
+  interrupted: 'Interrupted', failed: 'Failed', limited: 'At a usage limit', refused: 'Refused',
+};
+
 /**
- * turnFacts is what a turn cost, for the "i" under the answer: the model by
- * the name the composer gives it (view.modelLabel), not the id the journal
- * holds. `outcome` false leaves out how it ended, for the line that says so.
+ * turnFacts is what a turn cost, for the "i" under the answer, as named
+ * facts ([label, value], the rows Info has): the model by the name the
+ * composer gives it (view.modelLabel), not the id the journal holds; the
+ * tokens; the context; the cost; how long it took, when that is worth a
+ * number. `outcome` false leaves out how it ended, for the line that says so.
  */
 export function turnFacts(message, view = null, { outcome = true } = {}) {
   const turn = message.turn;
   if (!turn) return [];
   const u = turn.usage || {};
   const facts = [];
-  if (message.model) facts.push('Model ' + (view && view.modelLabel ? view.modelLabel(message.model) : message.model));
-  if (u.input || u.output) facts.push(fmtTokens(u.input || 0) + ' in · ' + fmtTokens(u.output || 0) + ' out');
-  if (u.cache_read || u.cache_write) facts.push('cache ' + fmtTokens(u.cache_read || 0) + ' read · ' + fmtTokens(u.cache_write || 0) + ' written');
-  if (u.reasoning) facts.push(fmtTokens(u.reasoning) + ' reasoning');
-  if (u.context && u.window) facts.push('context ' + fmtTokens(u.context) + ' of ' + fmtTokens(u.window));
-  if (turn.cost) facts.push('$' + turn.cost.toFixed(4));
-  if (turn.endedAt && turn.startedAt) facts.push(seconds(turn.endedAt - turn.startedAt));
-  if (outcome && turn.outcome && turn.outcome !== 'completed') facts.push('outcome ' + turn.outcome);
+  if (message.model) facts.push(['Model', view && view.modelLabel ? view.modelLabel(message.model) : message.model]);
+  if (u.input || u.output) facts.push(['Tokens', fmtTokens(u.input || 0) + ' in · ' + fmtTokens(u.output || 0) + ' out']);
+  if (u.cache_read || u.cache_write) facts.push(['Cache', fmtTokens(u.cache_read || 0) + ' read · ' + fmtTokens(u.cache_write || 0) + ' written']);
+  if (u.reasoning) facts.push(['Reasoning', fmtTokens(u.reasoning) + ' tokens']);
+  if (u.context && u.window) facts.push(['Context', fmtTokens(u.context) + ' of ' + fmtTokens(u.window)]);
+  if (turn.cost) facts.push(['Cost', '$' + turn.cost.toFixed(4)]);
+  if (turn.endedAt && turn.startedAt) facts.push(['Time', seconds(turn.endedAt - turn.startedAt)]);
+  if (outcome && turn.outcome && turn.outcome !== 'completed') facts.push(['Ended', ENDED_WORDS[turn.outcome] || turn.outcome]);
   return facts;
 }
 

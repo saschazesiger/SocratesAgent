@@ -99,14 +99,21 @@ let dialogSeq = 0;
 // The dialog leaves the page once its exit has played. `field` is any node
 // the dialog holds between its text and its actions; a caller with a form of
 // its own sets the answer with dialog.answer(value) before closing it.
-export function openDialog({ title, body, lines, code, field, actions, alert, opener }) {
+export function openDialog({ title, body, lines, facts, code, field, actions, alert, opener }) {
   const id = 'dlg' + (++dialogSeq);
+  const listed = !!(lines && lines.length);
+  const named = !!(facts && facts.length);
   const box = el('div', { class: 'ds-dialog__box' },
     el('h2', { class: 'ds-dialog__title', id: id + '-title', text: title }),
     body ? el('p', { class: 'ds-dialog__text', id: id + '-text', text: body }) : null,
-    lines && lines.length
+    listed
       ? el('ul', { class: 'ds-plain-list', id: body ? null : id + '-text' },
         lines.map((line) => el('li', {}, code ? el('code', { class: 'so-break', text: line }) : line)))
+      : null,
+    // Named facts ([label, value]) as the DS facts list, Info's shape.
+    named
+      ? el('dl', { class: 'ds-facts so-facts', id: body || listed ? null : id + '-text' },
+        facts.map(([label, value]) => el('div', {}, el('dt', { text: label }), el('dd', { class: 'so-fact', text: value }))))
       : null,
     field || null,
     el('div', { class: 'ds-dialog__actions' }, actions));
@@ -114,7 +121,7 @@ export function openDialog({ title, body, lines, code, field, actions, alert, op
     class: 'ds-dialog',
     role: alert ? 'alertdialog' : null,
     'aria-labelledby': id + '-title',
-    'aria-describedby': body || (lines && lines.length) ? id + '-text' : null,
+    'aria-describedby': body || listed || named ? id + '-text' : null,
   }, el('div', { class: 'ds-dialog__backdrop', 'data-close': true }), box);
 
   // Where the focus was. DS gives it back to the opener; when the opener is
@@ -171,12 +178,13 @@ export function confirmDialog(options = {}) {
 
 // alertDialog is window.alert in the app's own clothes: it resolves once the
 // message has been dismissed - true when its button was pressed. `lines` are
-// shown as a list, each in <code> when `code` is set (a path, an exit status).
-export function alertDialog({ title, body = '', lines = [], code = false, confirmLabel = 'OK', opener = null } = {}) {
+// shown as a list, each in <code> when `code` is set (a path, an exit status);
+// `facts` ([label, value]) as labelled rows after them.
+export function alertDialog({ title, body = '', lines = [], facts = [], code = false, confirmLabel = 'OK', opener = null } = {}) {
   const ok = el('button', {
     class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, autofocus: true, text: confirmLabel,
   });
-  const { dialog, shown } = openDialog({ title, body, lines, code, actions: [ok], opener });
+  const { dialog, shown } = openDialog({ title, body, lines, facts, code, actions: [ok], opener });
   ok.addEventListener('click', () => dialog.answer(true));
   return shown;
 }
