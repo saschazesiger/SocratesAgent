@@ -23,10 +23,11 @@ socrates mcp-ask --socket <the host's socket>
 ```
 
 A chat is a **session row** with `kind = 'chat'` (schema 10). It shares the sessions table with
-terminals, so the list, shelves, unread mark, ordering, push and Done sweep apply unchanged. The
-CLI's conversation id is stored in `cli_session_id` (`cli_session_state = known`). Terminal loops
-(adoption, lifecycle poll, the detector tick, digests, titles, the operator's routes) skip chat
-rows; the terminal-only routes (`…/ws`, `…/journal`, `…/resume`, `…/restart`) answer 409.
+terminals - a Shell, and a folder's VS Code, the only programs that still run in one (WP10) - so
+the list, shelves, unread mark, ordering, push and Done sweep apply unchanged. The CLI's
+conversation id is stored in `cli_session_id` (`cli_session_state = known`). Terminal loops
+(adoption, lifecycle poll, the detector tick, titles) skip chat rows; the terminal-only routes
+(`…/ws`, `…/journal`, `…/resume`, `…/restart`) answer 409.
 
 | Path | Written by | What |
 |---|---|---|
@@ -188,8 +189,8 @@ asks a model to read a screen; it is the projection.
   `command`/`changes`, OpenCode's `title`/`input`), else the first line of the newest text part,
   else the person's message; between turns the first line of the last turn's answer, "Failed: …",
   "Limit reached: …" or "Stopped". Markdown is taken off; a subagent's own words never are the line.
-- **The reading**: every chat is a `digest` on the event stream, the hello and `GET /api/home`,
-  beside the terminals': `phase: ready`, `state` = the activity, `summary` = the line, `question` =
+- **The reading**: every chat is a `digest` on the event stream, the hello and `GET /api/home` -
+  the only digests there are since the terminals' screen reading went (WP10): `phase: ready`, `state` = the activity, `summary` = the line, `question` =
   the open ask the chat waits on as a digest question (`source: "ask"`, `kind` single→`choice`,
   multi, confirm, text/number→`text`, plan; one item per question with its options), and `news`
   (below). It is published when it changes - before the activity report, so a page told that a
@@ -836,7 +837,7 @@ key (the existing `Outbox` in `net.js`).
 | `/api/accounts…` | §11 | the accounts |
 | `POST /api/chats/{id}/attachments` | multipart, one or more `file` parts | `{files: [attachment]}`: stored under `chats/<id>/attachments/` (a copy in the working directory's uploads); a message may only name paths this route handed out, else 400 |
 | `POST /api/chats/{id}/options` | `ultracode` | the row's options changed (400 for Ultracode on another agent), and the agent parked as soon as it is idle so the next message resumes with them; `{session}` |
-| `POST /api/sessions/{id}/status`, `…/title`, `…/digest` | – | the spoken Status, naming again and Read again of every session; for a chat read from its journal (§3), Read again judging its last turn again |
+| `POST /api/sessions/{id}/status`, `…/title`, `…/digest` | – | the spoken Status, naming again and Read again; for a chat read from its journal (§3), Read again judging its last turn again (`…/digest` is a chat's alone: 400 for a terminal) |
 | `GET`/`PUT /api/sessions/{id}/draft` | `text`, `base_rev` | the composer's draft, with PreStart's revision rule (409 `{conflict, text, rev}` when another device saved first); a prepared chat's draft is its first message |
 | `GET /api/chats/{id}/stream` | WebSocket | below |
 | `PUT /api/sessions/{id}/workdir` | `workdir` (a folder that exists) | 200 `{session}`; 400 for a folder that is not there or not allowed; 409 while a turn runs. A host that is up is sent `park`, not `stop`: a turn that started a moment ago, which the server has not heard of yet, finishes in the old folder, and the next message starts the agent in the new one (REBUILD §6.2: a restored chat whose folder is missing) |
@@ -878,10 +879,11 @@ a menu of the agent's accounts with their usage; during a turn it asks "Switch n
 continue) or "After this turn". The fold keeps `account` from `turn.started` and
 `account.switched`, and the switch asked for (`command{switch_account}`) until it happens.
 
-A new session is a chat for every agent with an adapter, from the sheet and from PreStart; the
-server lists them as the catalogue's `chats`. `SOCRATES_AGENT_TERMINALS=1` keeps Claude Code,
-Codex and OpenCode terminals there instead (the browser suite sets it while its agents are the
-faketui stand-in; DEVIATIONS, WP8).
+A new session of an agent is a chat, from the sheet and from PreStart; the server lists the
+agents as the catalogue's `chats`. An agent's terminal does not exist any more (WP10):
+`POST /api/sessions` refuses one with 400 ("… runs as a chat, not in a terminal …"), a prepared
+session is always a chat, and the sheet offers the agents as chats and the Shell as a terminal
+with a folder and nothing else.
 
 ## 8. The fake adapter
 
@@ -1045,9 +1047,10 @@ attachment(s): …`).
   journal from before WP7 names none: its turns are on the account its first switch's `from` says,
   and until there is one on `chat-<id>`, with no account. The server keeps a chat's account in its
   row's options (`account`, `auto_switch`).
-- For WP10: the terminal-only profiles (`/api/profiles`, `harnesses/profiles.go`, the sheet's
-  profile field for terminals) stay as they were; the dashboard's Profiles card is gone, and the
-  migration took every profile's logins into accounts (§11).
+- The profiles are gone (WP10): `/api/profiles`, `harnesses/profiles.go` and the sheet's profile
+  field went with the agents' terminals, and the migration took every profile's logins into
+  accounts (§11). What is left of them is the old `profiles` record the migration reads, and the
+  profile folders the cost ledger still scans.
 
 ## 11. Accounts (WP7)
 
@@ -1189,5 +1192,24 @@ source that fails is logged and tried again at the next start while the others g
 another file system (EXDEV), or one that is a link of the person's own to elsewhere, is left where
 it is, and its account says why. A lost profile's account has the origin `lost:<profile>:<agent>`.
 `~/.codex-multi` and `~/.config/opencode-multi-auth` are left alone, also when `CODEX_HOME` points
-into one. WP10 runs the clean cut (§8.3, stopping the old agent terminals) before it.
+into one.
+
+**The clean cut** (REBUILD.md §8.3, WP10; `internal/accounts/cleancut.go`), in the same migration,
+under the same mark and the same backup: after the backup and the lost profiles' accounts (whose
+agents are read off the sessions) and before anything moves, every agent terminal (harness
+`claude`, `codex` or `opencode`, `kind = 'terminal'`) is stopped as a delete stops it - `main`
+hands `MigrateOptions.StopTerminal` the terminal substrate's `Manager.Delete`, so its tmux session
+is killed on the data folder's own socket and its row and session folder go - and the list of
+what was removed is logged once. What the agents wrote stays in their folders, which the moves
+then share. A prepared agent terminal becomes a prepared chat (`Store.MakePreparedChat`) with its
+draft, schedule and Ultracode, carrying its profile in the migration's own option
+`pre_rebuild_profile`; once every account exists (`bindPrepared`, the last step) that becomes
+`account`: the agent's Default account for the default profile (none yet: the chat makes one when
+it starts), the profile's `profile:`/`lost:` account otherwise. A profile with no account of that
+agent removes the prepared session, logged; one that left its profile to the start leaves its
+account to the start. A Shell is not touched. Every step is idempotent (a row already gone or
+already a chat is skipped; `cut:<id>`, `bind:<id>` are steps a test can stop after), and a rerun
+keeps the agents an earlier run made a lost profile's accounts for. `rehearsal_test.go` runs the
+whole migration on a synthetic copy of today's installation, live tmux included, and kills a start
+in the middle of its cut.
 

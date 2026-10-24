@@ -1,5 +1,10 @@
 # Harness launch policy (2026-09-02)
 
+> Since the rebuild (REBUILD.md §3, §7; WP10) Claude Code, Codex and OpenCode run only as chats,
+> through their own protocols, and their terminal launches below are gone; what still runs in a
+> terminal is the Shell (and a folder's VS Code). The agents' fixed policy now lives in their
+> adapters (`internal/agent/*`, AGENT-HOST.md).
+
 The admin dashboard exposes the basics only: whether a program is offered,
 where its binary lives, the short list of models its picker shows, and the
 model and effort a session starts on when the person starting it did not
@@ -44,6 +49,8 @@ Upstream references:
 - OpenCode configuration — https://opencode.ai/docs/config/
 
 ## Claude Code
+
+> Superseded: this agent runs as a chat (REBUILD.md §3); its terminal launch is gone.
 
 Command line, in order:
 
@@ -155,6 +162,8 @@ names.
 
 ## Codex
 
+> Superseded: this agent runs as a chat (REBUILD.md §3); its terminal launch is gone.
+
 ```
 <binary> [resume <id>]
          --strict-config -C <cwd>
@@ -189,6 +198,8 @@ names.
   `CODEX_TUI_DISABLE_KEYBOARD_ENHANCEMENT` is not set (it was off by default).
 
 ## OpenCode
+
+> Superseded: this agent runs as a chat (REBUILD.md §3); its terminal launch is gone.
 
 ```
 <binary> --port <free loopback port> --hostname 127.0.0.1
@@ -245,8 +256,9 @@ what makes the pane look like the machine's own terminal — a shell that did
 not read it is a shell missing the very programs it was opened for.
 
 The shell is the dashboard's binary when one is set, and otherwise `$SHELL`,
-then `/bin/bash`, then `/bin/sh`. A Shell in a profile carries the variables of
-all three agents, which is where Codex and OpenCode are signed in to it.
+then `/bin/bash`, then `/bin/sh`. The profiles a Shell once ran in are gone
+with the profiles (REBUILD.md §4): an account signs in from a Shell of its own
+(AGENT-HOST.md §11).
 
 Shells and agents alike run directly on the machine, as the user the service
 runs as: the machine's files, services and tools are simply there, and nothing

@@ -2713,3 +2713,54 @@ it waits for the turn - the journaled command says its `when` in `args` (`after_
 field of the command event - or goes to the account the turn already runs on: the host is there and
 interrupts nothing (a host launched on the account of a switch still in the outbox, which reaches it
 while the first turn runs).
+
+**WP10 / §8.3 — the lost profiles' accounts are made before the clean cut, and the cut before
+the moves.** The brief puts the clean cut first; the lost profiles' accounts (a database write,
+nothing moves) come before it, because which agents a lost profile ran is read off its sessions -
+the very rows the cut removes - and a start killed after the cut would otherwise make every lost
+profile a Claude Code account. A rerun also keeps the agents an earlier run made a lost profile's
+accounts for. The backup tar is written when there is anything to cut, as it is when there is
+anything to move.
+
+**WP10 / §8.3 — "simple and lossless", spelled out.** A prepared agent terminal becomes a prepared
+chat in place (`Store.MakePreparedChat`): its agent, folder, model, effort, schedule, Ultracode and
+draft stay. Its profile becomes its account once the moves have made the accounts: the default
+profile the agent's Default account (none: the chat makes one when it starts, as any chat does), a
+named profile its `profile:` or `lost:` account, one that left the profile to its start an account
+left to its start. Only a named profile with no account of that agent loses something - the
+sign-in it was prepared for - and that prepared session is removed and logged.
+
+**WP10 / §F.7 — the agents' state rows left the diagnostics.** "Claude Code state", "Codex state",
+"OpenCode state" and "Claude Code sign-in" checked the folders an agent's terminal needed (a
+writable `CLAUDE_CONFIG_DIR` for the theme pin, the Codex and OpenCode databases for discovery,
+Claude Code's first run). A chat runs on an account's folder, and the Accounts card says each
+account's state, so the rows went with the terminals; the program rows stay.
+
+**WP10 / DESIGN rev 11 — the usage strip is gone.** Its limits were a sign-in profile's, read for
+the session on screen; a Shell has no limits of its own, and a chat says its usage under its "i"
+and in its account picker. The strip, its dialog and `GET /api/sessions/{id}/usage` went with the
+profiles.
+
+**WP10 / brief — the Shell's process tree is its busy, not "tasks".** The brief keeps "busy/idle
+of a shell, its process tree for 'tasks', exit status". The Shell's layer reads its foreground
+command and whether the shell has a child, which is busy - a script run by `bash` - as it always
+was; no Shell ever reported `tasks`, which only an agent's turn has. VS Code keeps quiescence, a
+dead pane is unknown with its exit status, and a terminal's resume note is never "fresh": it has
+no conversation to lose.
+
+**WP10 / e2e — three Shell scenarios no longer start an agent.** `exitoverlay` ends a Shell with
+`exit 7`, `backpressure` prints its two hundred lines from a shell loop, and `lighttheme` keeps the
+palette part only (the white pane and the sixteen colours drawn at 4.5:1): the Codex theme flag it
+also checked is gone with the agents' terminals, and the white answer to a program's colour query
+is termux's `TestOSCRespondsWhite`.
+
+**WP10 / §8.4 — "once the first snapshot exists" is this machine's snapshot.** The Backup card
+offers the mirror's objects for deletion once the backup holds a snapshot whose host is this
+machine's (read off the snapshot listing, which opens and starts nothing), and only for a backup
+whose prefix ends in `backup/v1/` - the one a mirror's configuration was carried over into; a
+prefix of the person's own has no known mirror beside it.
+
+**WP10 — a draft saved during a prepared chat's start is a conflict.** The test of a save racing
+a start expected "started"; a prepared session is a chat now, whose draft is its composer once it
+runs, and its start takes the first message out of it, so the late save is answered as the
+conflict it is with what the composer now holds.

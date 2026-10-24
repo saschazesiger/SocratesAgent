@@ -10,6 +10,11 @@ These are binding. The design spec must implement them; it may add detail but no
 > history.
 
 ## Product
+
+> **Superseded for the agents (2026-10-23) by REBUILD.md §1 and §7:** Claude Code, Codex and
+> OpenCode run as chats through their own protocols; only the Shell (and a folder's VS Code) is a
+> terminal, and an agent's terminal is refused since WP10.
+
 - Socrates is no longer a web chat. A "chat" (rename to "session" in code; UI label "Session") is an
   interactive terminal running one of: **Shell** (user's login shell / bash), **Claude Code**,
   **Codex**, **OpenCode**.
@@ -32,7 +37,8 @@ These are binding. The design spec must implement them; it may add detail but no
 - Output journal: Socrates keeps its own append-only byte log per session (for reconnect replay and
   scrollback) AND relies on tmux for the live screen. On (re)attach the browser must show the
   correct current screen immediately (tmux redraw), not a replay of megabytes.
-- Machine reboot: tmux sessions are gone. Socrates stores the CLI's own session/thread id per
+- *The agents' part superseded by REBUILD.md §2.1 (a chat resumes through its agent host); the
+  Shell's holds.* Machine reboot: tmux sessions are gone. Socrates stores the CLI's own session/thread id per
   session (Claude `--session-id`/`--resume`, Codex `resume <id>`, OpenCode `--session`) and the
   working directory, and on next open restarts the CLI with resume in the same directory.
   For Shell, it just starts a new shell in the same directory. UI must show "resumed after
@@ -270,6 +276,9 @@ Binding like the rest. Detail: `docs/design/DESIGN.md` §K and §L.
   depends on whether the window renews in ten minutes, and on a phone a tooltip does not exist.
 
 ## Revision 8 — the outcome of a turn, 2026-10-20
+
+> The verdict is a chat's alone since WP10 (REBUILD.md §7): it is read from the chat's journal,
+> and no screen is read for it any more.
 
 - **A finished turn can be judged: complete, partly done, waiting on you, blocked.** Optional,
   off by default, one switch in Admin. *Why:* the detector says a session is at its prompt, not

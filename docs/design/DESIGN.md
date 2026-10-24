@@ -2,6 +2,12 @@
 
 **Revision 4** (2026-09-02). Supersedes revisions 1, 2 and 3 in full.
 
+> **Since the rebuild (REBUILD.md; WP10, 2026-10-24) Claude Code, Codex and OpenCode run only as
+> chats** through their own protocols (AGENT-HOST.md). What this specification says about running
+> them in a terminal - their launchers and resume, the screen-reading activity layers, the answer
+> operator and the screen digest, the sign-in profiles and the usage strip - is history, marked
+> where it stands. The tmux substrate, the transport, the Shell, VS Code and the key bar hold.
+
 - **rev 11** (2026-10-16) — **the options menu.** The top bar's `⋮` (`#optionsBtn`) is no longer
   the session's menu: it holds what belongs to this device, as switches that stay open while they
   are pressed — **Key bar**, **Touch mode**, **Sound** and **Notifications** — and it is there
@@ -951,6 +957,8 @@ type PlanRequest struct {
 
 ## C.1 White background — the verified strategy, per CLI
 
+> Superseded for the agents by REBUILD.md §3: they run as chats, and no agent is launched in a terminal (WP10).
+
 This is the single most-likely-to-be-fudged part of the spec, so the mechanism is stated once and
 then applied per CLI.
 
@@ -1132,6 +1140,8 @@ what they configured. `-l` is omitted when `settings.Harnesses.Shell.Login` is f
 
 ## C.5 Claude Code
 
+> Superseded for the agents by REBUILD.md §3: they run as chats, and no agent is launched in a terminal (WP10).
+
 ### Launch argv
 
 ```
@@ -1229,6 +1239,8 @@ attempted anyway.
 
 ## C.6 Codex
 
+> Superseded for the agents by REBUILD.md §3: they run as chats, and no agent is launched in a terminal (WP10).
+
 ### Launch argv
 
 ```
@@ -1322,6 +1334,8 @@ fresh. Both unreadable ⇒ error ⇒ try the resume anyway; a failed resume show
 which is honest.
 
 ## C.7 OpenCode
+
+> Superseded for the agents by REBUILD.md §3: they run as chats, and no agent is launched in a terminal (WP10).
 
 ### Launch argv
 
@@ -1418,6 +1432,8 @@ must degrade to a fresh session, because guessing wrong costs the user a crashed
 
 ## C.8 Reboot detection and the resume flow
 
+> The agents' resume is superseded by REBUILD.md §2.1 (a chat resumes through its host); a Shell starts a new shell in its folder.
+
 Reboot is detected in `Adopt` (§A.8): **the store says `running` and the tmux session is
 absent**. That is the definition; there is no uptime check, no boot-id file, nothing else.
 
@@ -1459,6 +1475,8 @@ A restart triggered from the exit overlay is the same path with `state` forced t
 | `extra_env` | key=value list | `KEY` matches `[A-Za-z_][A-Za-z0-9_]*` | `-e KEY=VALUE` | start |
 
 ## C.10 Admin option catalogue — Claude Code
+
+> Superseded for the agents by REBUILD.md §3: they run as chats, and no agent is launched in a terminal (WP10).
 
 All keys under `harnesses.claude.*`. Every one is **start-only** unless marked otherwise.
 
@@ -1539,6 +1557,8 @@ error, not a launch-time surprise).
 
 ## C.11 Admin option catalogue — Codex
 
+> Superseded for the agents by REBUILD.md §3: they run as chats, and no agent is launched in a terminal (WP10).
+
 All keys under `harnesses.codex.*`, all start-only.
 
 **Model & effort**: `models[]`, `default_model` (→ `-m`), `default_effort`
@@ -1584,6 +1604,8 @@ launch loudly; the session goes to `state='failed'` with the CLI's stderr in `fa
 `CODEX_INTERNAL_ORIGINATOR_OVERRIDE=socrates`.
 
 ## C.12 Admin option catalogue — OpenCode
+
+> Superseded for the agents by REBUILD.md §3: they run as chats, and no agent is launched in a terminal (WP10).
 
 All keys under `harnesses.opencode.*`, all start-only.
 
@@ -2075,6 +2097,8 @@ the vendor files get the same immutable caching as everything else, with no chan
 Verify this in `embed_test.go`.
 
 ## E.3 The new-session sheet
+
+> Superseded in part by REBUILD.md §7: the sheet offers the agents as chats and the Shell as a terminal with a folder only; the profile field is gone (WP10).
 
 Three steps in one sheet, revealed progressively; `harnesses.js` owns it.
 
@@ -2851,6 +2875,8 @@ assertion (§E.9).
 Everything must pass under `go test -race ./...`.
 
 ## H.2 Fake CLIs for e2e
+
+> Superseded by REBUILD.md §9: the suite runs the scripted protocol fakes (`e2e/fakebin/fakeclaude`, `fakecodex`, `fakeopencode`); `faketui` is gone (WP10).
 
 The existing `internal/harness/fakes` binaries speak the old protocols and are deleted. The new
 fakes are **PTY TUIs**, not protocol speakers, and they need no API access at all.
